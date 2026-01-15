@@ -108,7 +108,7 @@ class User:
         Returns:
             User instance
         """
-        from faultmaven.models import parse_utc_timestamp
+        from faultmaven.utils.datetime import parse_utc_timestamp
 
         return cls(
             user_id=data["user_id"],

@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.models import parse_utc_timestamp
+from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.models.api_models import (
     CaseCreateRequest,
     CaseListFilter,

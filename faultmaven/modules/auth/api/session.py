@@ -42,7 +42,7 @@ from faultmaven.api.v1.dependencies import get_case_service, get_session_service
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.models import utc_timestamp
+from faultmaven.utils.datetime import utc_timestamp
 from faultmaven.models.api import (
     ErrorDetail,
     ErrorResponse,

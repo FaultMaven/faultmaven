@@ -147,7 +147,7 @@ def prepare_for_pydantic(data: Dict[str, Any]) -> Dict[str, Any]:
         This is used when deserializing data from Redis/storage before
         passing to Pydantic models.
     """
-    from faultmaven.models import parse_utc_timestamp
+    from faultmaven.utils.datetime import parse_utc_timestamp
 
     if not isinstance(data, dict):
         return data

@@ -4,8 +4,7 @@ This module provides convenient imports for commonly used models across the appl
 Models are now primarily located in their respective modules under faultmaven/modules/.
 """
 
-# Import common utilities FIRST to avoid circular imports
-# (auth models depend on parse_utc_timestamp)
+# Import common models
 from .common import AgentState as AgentStateDict
 from .common import (
     AgentStateEnum,
@@ -14,8 +13,6 @@ from .common import (
     SearchResult,
     SessionContext,
     TroubleshootingResponse,
-    parse_utc_timestamp,
-    utc_timestamp,
 )
 
 # Import agentic models from the new module location
@@ -143,9 +140,6 @@ __all__ = [
     "ILogProcessor",
     "IStorageBackend",
     "IKnowledgeIngester",
-    # Utility functions
-    "utc_timestamp",
-    "parse_utc_timestamp",
     # Case models (from modules/case)
     "Case",
     "CaseStatus",

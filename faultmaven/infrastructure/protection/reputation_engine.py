@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.models import parse_utc_timestamp
+from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.models.behavioral import (
     BehaviorProfile,
     ClientProfile,

@@ -5,7 +5,9 @@ This module contains foundational models used throughout the application:
 - AgentState: Agent workflow and execution state
 - API Response models: DataInsightsResponse, TroubleshootingResponse
 - Search models: SearchRequest, SearchResult
-- Utility functions: utc_timestamp(), parse_utc_timestamp()
+
+Note: Datetime utility functions (utc_timestamp, parse_utc_timestamp) have been
+moved to faultmaven.utils.datetime to avoid circular dependencies.
 """
 
 from datetime import datetime, timezone
@@ -182,47 +184,3 @@ class SearchResult(BaseModel):
     tags: List[str] = Field(..., description="Document tags")
     score: float = Field(..., description="Search relevance score")
     snippet: str = Field(..., description="Relevant content snippet")
-
-
-# Utility functions for timestamp formatting
-def utc_timestamp() -> str:
-    """Generate UTC timestamp with 'Z' suffix format required by API specification.
-
-    Returns:
-        str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
-    """
-    return to_json_compatible(datetime.now(timezone.utc))
-
-
-def parse_utc_timestamp(timestamp_str: str) -> datetime:
-    """Parse UTC timestamp string into timezone-aware datetime object.
-
-    Handles multiple ISO 8601 formats:
-    - '2025-10-17T04:02:59+00:00' (timezone-aware with +00:00)
-    - '2025-10-17T04:02:59Z' (Zulu time suffix)
-    - '2025-10-17T04:02:59' (naive, assumed UTC)
-    - '2025-10-17T04:02:59+00:00Z' (CORRUPTED - legacy data only, auto-fixes on save)
-
-    Args:
-        timestamp_str: UTC timestamp string in various formats
-
-    Returns:
-        datetime: Timezone-aware datetime object in UTC
-
-    Note:
-        The corrupted format (both +00:00 and Z) is handled for backwards compatibility
-        with old data. When cases are re-saved, timestamps are automatically standardized
-        to the proper +00:00 format.
-    """
-    from datetime import timezone
-
-    if timestamp_str.endswith("Z"):
-        # Remove 'Z' suffix and parse
-        # This also handles corrupted '+00:00Z' format by stripping Z, leaving valid '+00:00'
-        dt = datetime.fromisoformat(timestamp_str[:-1])
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-    else:
-        # Parse ISO format (handles +00:00 automatically)
-        dt = datetime.fromisoformat(timestamp_str)
-        # If naive, assume UTC
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
