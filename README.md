@@ -48,10 +48,16 @@ cd faultmaven
 cp .env.example .env
 # Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
 
-# Start API + Dashboard
+# Start API + Dashboard (pulls pre-built images from Docker Hub)
 ./faultmaven.sh start
 # Or: docker compose up -d
 ```
+
+**What happens:** Docker automatically pulls pre-built images from Docker Hub. First run takes ~1-2 minutes depending on your internet speed.
+
+**Image sources:** FaultMaven publishes to both Docker Hub (`docker.io/faultmaven/faultmaven`) and GitHub Container Registry (`ghcr.io/faultmaven/faultmaven`). The default docker-compose.yml uses Docker Hub for better availability and no authentication requirements.
+
+**For contributors:** To build from source instead, uncomment the `build: .` line in [docker-compose.yml](docker-compose.yml) and comment out the `image:` line.
 
 ### Step 2: Install the Copilot Extension
 

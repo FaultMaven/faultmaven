@@ -16,9 +16,11 @@
 
 services:
   api:
-    build: .
-    # Or use pre-built image:
-    # image: faultmaven/faultmaven:latest
+    # Use pre-built image from Docker Hub (recommended for users)
+    image: faultmaven/faultmaven:latest
+
+    # Or build from source (for contributors/developers)
+    # build: .
     ports:
       - "8000:8000"
     environment:
@@ -61,7 +63,8 @@ services:
   # Demo mode: Seeds sample runbooks and a demo incident case
   # Activate with: docker compose --profile demo up
   demo-seeder:
-    build: .
+    image: faultmaven/faultmaven:latest
+    # Or build from source: build: .
     profiles:
       - demo
     environment:
