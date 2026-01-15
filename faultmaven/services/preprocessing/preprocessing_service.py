@@ -42,17 +42,17 @@ class PreprocessingService:
         classifier: DataClassifier,
         sanitizer: DataSanitizer,
         logs_extractor: LogsAndErrorsExtractor,
-        config_extractor: Optional["StructuredConfigExtractor"]  # noqa: F821 = None,
-        metrics_extractor: Optional["MetricsAndPerformanceExtractor"]  # noqa: F821 = None,
-        text_extractor: Optional["UnstructuredTextExtractor"]  # noqa: F821 = None,
-        source_code_extractor: Optional["SourceCodeExtractor"]  # noqa: F821 = None,
-        visual_extractor: Optional["VisualEvidenceExtractor"]  # noqa: F821 = None,
-        trace_extractor: Optional["TraceDataExtractor"]  # noqa: F821 = None,
-        profiling_extractor: Optional["ProfilingDataExtractor"]  # noqa: F821 = None,
-        error_report_extractor: Optional["ErrorReportExtractor"]  # noqa: F821 = None,
-        documentation_extractor: Optional["DocumentationExtractor"]  # noqa: F821 = None,
-        command_output_extractor: Optional["CommandOutputExtractor"]  # noqa: F821 = None,
-        chunking_service: Optional["ChunkingService"]  # noqa: F821 = None,
+        config_extractor: Optional["StructuredConfigExtractor"] = None,  # noqa: F821
+        metrics_extractor: Optional["MetricsAndPerformanceExtractor"] = None,  # noqa: F821
+        text_extractor: Optional["UnstructuredTextExtractor"] = None,  # noqa: F821
+        source_code_extractor: Optional["SourceCodeExtractor"] = None,  # noqa: F821
+        visual_extractor: Optional["VisualEvidenceExtractor"] = None,  # noqa: F821
+        trace_extractor: Optional["TraceDataExtractor"] = None,  # noqa: F821
+        profiling_extractor: Optional["ProfilingDataExtractor"] = None,  # noqa: F821
+        error_report_extractor: Optional["ErrorReportExtractor"] = None,  # noqa: F821
+        documentation_extractor: Optional["DocumentationExtractor"] = None,  # noqa: F821
+        command_output_extractor: Optional["CommandOutputExtractor"] = None,  # noqa: F821
+        chunking_service: Optional["ChunkingService"] = None,  # noqa: F821
         chunk_trigger_tokens: int = 8000,
     ):
         """

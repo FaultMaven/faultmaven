@@ -45,7 +45,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
     Supports both Presidio-based PII detection and custom regex patterns.
     """
 
-    def __init__(self, settings: Optional["FaultMavenSettings"]  # noqa: F821 = None):
+    def __init__(self, settings: Optional["FaultMavenSettings"] = None):  # noqa: F821
         """Initialize the DataSanitizer with optional unified settings.
 
         If settings are provided and indicate skip_service_checks, external

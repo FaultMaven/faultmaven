@@ -42,9 +42,9 @@ from faultmaven.modules.auth.infrastructure.repositories.user_repository import 
 from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
     UserRepository,
 )
+from faultmaven.exceptions import AuthenticationError
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
-from faultmaven.exceptions import AuthenticationError
     hash_password,
     validate_password_strength,
     verify_password,
