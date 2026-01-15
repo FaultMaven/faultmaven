@@ -49,6 +49,7 @@ from faultmaven.api.v1.dependencies import (
 from faultmaven.api.v1.dependencies import (
     get_investigation_service,  # V2.0 milestone-based
 )
+from faultmaven.api.dependencies import get_api_case_service
 from faultmaven.api.v1.dependencies import (
     get_case_service,
     get_case_vector_store,
@@ -118,6 +119,7 @@ from faultmaven.modules.case.domain.models import (
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
+from faultmaven.services.case_service import APICaseService
 from faultmaven.services.converters import CaseConverter
 from faultmaven.utils.serialization import to_json_compatible
 
