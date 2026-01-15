@@ -82,24 +82,41 @@ class ChromaVectorBackend(IVectorBackend):
         self.embedding_function = embedding_function
         self._sanitizer = create_chroma_sanitizer()
 
-        # Initialize client
+        # Initialize client using new ChromaDB API (v0.4+)
         if host and port:
             # HTTP client mode
             self._client = chromadb.HttpClient(host=host, port=port)
             logger.info(f"ChromaDB HTTP client connected to {host}:{port}")
         elif persist_directory:
-            # Persistent local mode
-            settings = ChromaSettings(
-                chroma_db_impl="duckdb+parquet",
-                persist_directory=persist_directory,
-                anonymized_telemetry=False,
-            )
-            self._client = chromadb.Client(settings)
-            logger.info(f"ChromaDB persistent client at {persist_directory}")
+            # Persistent local mode - use PersistentClient (new API)
+            try:
+                # Try new API first (ChromaDB 0.4+)
+                self._client = chromadb.PersistentClient(
+                    path=persist_directory,
+                    settings=ChromaSettings(anonymized_telemetry=False),
+                )
+                logger.info(f"ChromaDB persistent client at {persist_directory}")
+            except (TypeError, AttributeError):
+                # Fallback to old API for older ChromaDB versions
+                settings = ChromaSettings(
+                    chroma_db_impl="duckdb+parquet",
+                    persist_directory=persist_directory,
+                    anonymized_telemetry=False,
+                )
+                self._client = chromadb.Client(settings)
+                logger.info(f"ChromaDB persistent client (legacy) at {persist_directory}")
         else:
-            # Ephemeral mode
-            self._client = chromadb.Client()
-            logger.info("ChromaDB ephemeral client initialized")
+            # Ephemeral mode - use EphemeralClient (new API)
+            try:
+                # Try new API first (ChromaDB 0.4+)
+                self._client = chromadb.EphemeralClient(
+                    settings=ChromaSettings(anonymized_telemetry=False),
+                )
+                logger.info("ChromaDB ephemeral client initialized")
+            except (TypeError, AttributeError):
+                # Fallback to old API for older ChromaDB versions
+                self._client = chromadb.Client()
+                logger.info("ChromaDB ephemeral client initialized (legacy)")
 
         # Collection cache
         self._collections: Dict[str, Any] = {}
