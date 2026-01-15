@@ -1,3 +1,11 @@
+<!--
+INSTRUCTIONS:
+1. Fill out the "Description" and "Type of Change" sections (required)
+2. DELETE any sections that don't apply to your PR
+3. Expand collapsible sections only if relevant to your change
+4. For small bug fixes, you can delete everything except Description and Type of Change
+-->
+
 ## Description
 <!-- Provide a clear and concise description of what this PR does -->
 
@@ -5,88 +13,67 @@
 <!-- Link to the issue this PR addresses (e.g., Fixes #123, Closes #456) -->
 
 ## Type of Change
+<!-- Check all that apply - this helps reviewers know what to focus on -->
 - [ ] Bug fix (non-breaking change which fixes an issue)
 - [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Database schema change
+- [ ] Database schema change (requires special review - expand "Database Safety" section below)
 - [ ] Refactor / Performance improvement
 - [ ] Documentation update
 
-## How Has This Been Tested?
-<!-- Describe the tests you ran to verify your changes -->
-- [ ] Unit tests added/updated
-- [ ] Integration tests added/updated
-- [ ] Manual testing performed (describe scenarios)
-- [ ] Performance/load testing (if applicable)
-
 ---
 
-## 🏛️ Monolith Architectural Safeguards
+<details>
+<summary><b>🏛️ Monolith Architectural Safeguards</b> (expand if adding features or refactoring)</summary>
 
 ### Module Boundaries
-- [ ] **Domain Isolation:** I have strictly respected domain boundaries
-  - No direct imports between decoupled modules
-  - Used public Interfaces/Service classes from `faultmaven.models.interfaces`
-  - Dependencies flow inward (infrastructure → domain, never domain → infrastructure)
-
-### Database Safety
-- [ ] **Migration Safety:**
-  - [ ] Migrations are **non-locking** and backwards compatible
-  - [ ] Safe to run while old code is live (no column drops, renames handled in phases)
-  - [ ] Tested rollback scenario
-
-- [ ] **Query Performance:**
-  - [ ] No "N+1" queries introduced (used `selectinload`/`joinedload` where needed)
-  - [ ] Added indexes for new query patterns
-  - [ ] Considered impact on existing queries
+- [ ] I have respected domain boundaries (no direct imports between decoupled modules)
+- [ ] Used public Interfaces/Services from `faultmaven.models.interfaces`
+- [ ] Dependencies flow inward (infrastructure → domain, never reverse)
 
 ### Dependency Management
-- [ ] **Dependency Check:**
-  - [ ] No new heavy dependencies added without team discussion
-  - [ ] Dependencies scoped appropriately (core vs. enterprise extras)
-  - [ ] Transitive dependencies reviewed for conflicts
+- [ ] No new heavy dependencies added without team discussion
+- [ ] Dependencies scoped appropriately (core vs. enterprise extras)
 
-### Testing Standards
-- [ ] **Test Coverage:**
-  - [ ] New code has unit tests (maintain 40%+ coverage)
-  - [ ] Critical paths have integration tests
-  - [ ] Edge cases and error paths tested
-  - [ ] Tests follow the [Testing Standards](../docs/standards/TESTING_STANDARDS.md)
+</details>
 
----
+<details>
+<summary><b>🗄️ Database Safety</b> (expand if database schema changed)</summary>
 
-## 🚀 CI/CD Policy Checklist
+### Migration Safety
+- [ ] Migrations are **non-locking** and backwards compatible
+- [ ] Safe to run while old code is live (no column drops, renames handled in phases)
+- [ ] Tested rollback scenario
 
-### Deployment Separation
-- [ ] This PR does **not** introduce direct Kubernetes deploy logic
-  - No `kubectl` commands in source code
-  - No `helm` charts in `/faultmaven` directory
+### Query Performance
+- [ ] No "N+1" queries introduced (used `selectinload`/`joinedload` where needed)
+- [ ] Added indexes for new query patterns
+- [ ] Verified impact on existing queries
 
-- [ ] Deployment configuration changes handled separately in:
-  - `faultmaven-enterprise-infra` repository (Kubernetes manifests)
-  - `fm-charts` repository (Helm charts)
+</details>
 
-### Docker & Containerization
+<details>
+<summary><b>🧪 Testing</b> (expand if new code added)</summary>
+
+- [ ] New code has unit tests (maintain 40%+ coverage)
+- [ ] Critical paths have integration tests
+- [ ] Edge cases and error paths tested
+- [ ] Tests follow [Testing Standards](../docs/standards/TESTING_STANDARDS.md)
+
+</details>
+
+<details>
+<summary><b>🚀 CI/CD & Deployment</b> (expand if touching infrastructure)</summary>
+
+- [ ] This PR does **not** introduce direct Kubernetes deploy logic (no `kubectl`, no `helm` in `/faultmaven`)
+- [ ] Deployment config changes handled separately in `faultmaven-enterprise-infra` or `fm-charts`
 - [ ] Dockerfile changes are minimal and necessary
 - [ ] No secrets or credentials in Docker image layers
-- [ ] Image size impact considered (if Dockerfile changed)
 
----
+</details>
 
-## 📋 Code Quality Checklist
-
-- [ ] My code follows the project's style guidelines (black, isort, flake8)
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] Any dependent changes have been merged and published
-
----
-
-## 🔒 Security Checklist (if applicable)
+<details>
+<summary><b>🔒 Security</b> (expand if touching auth, APIs, or user input)</summary>
 
 - [ ] No sensitive data (API keys, passwords, tokens) in code
 - [ ] Input validation added for user-facing endpoints
@@ -94,6 +81,16 @@
 - [ ] XSS prevention verified (proper output encoding)
 - [ ] Authentication/authorization checks in place
 - [ ] Rate limiting considered for new endpoints
+
+</details>
+
+---
+
+## How Has This Been Tested?
+<!-- Describe the tests you ran to verify your changes -->
+- [ ] Unit tests pass locally
+- [ ] Integration tests pass locally (if applicable)
+- [ ] Manual testing performed (describe key scenarios)
 
 ---
 
@@ -113,9 +110,7 @@
 ---
 
 ## ✅ Pre-Merge Checklist
-
 - [ ] All CI checks passing
-- [ ] Code review approved by at least one maintainer
-- [ ] Documentation updated (if needed)
-- [ ] CHANGELOG.md updated (if user-facing changes)
+- [ ] Code review approved
+- [ ] Documentation updated (if user-facing changes)
 - [ ] Ready to merge
