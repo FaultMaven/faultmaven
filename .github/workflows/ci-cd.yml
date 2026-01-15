@@ -86,6 +86,7 @@ jobs:
             -v
         env:
           # Community configuration - all enterprise features disabled
+          SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
           PROMETHEUS_ENABLED: "false"
           TRACING_ENABLED: "false"
@@ -152,6 +153,7 @@ jobs:
             -v
         env:
           # Enterprise configuration - features can be enabled (but external services mocked)
+          SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "true"
           OPIK_TRACK_DISABLE: "false"
           PROMETHEUS_ENABLED: "true"
