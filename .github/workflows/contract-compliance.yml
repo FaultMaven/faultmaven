@@ -21,17 +21,10 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set up Python 3.11
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+        cache: 'pip'
 
     - name: Install dependencies
       run: |
@@ -186,17 +179,22 @@ jobs:
         echo "🔍 Runtime Probe: Contract violation monitoring enabled"
         echo "📊 Coverage: All critical endpoints and error paths"
         echo ""
-        if [ $? -eq 0 ]; then
-          echo "✅ CONTRACT COMPLIANCE: PASSED"
-          echo "🚀 Safe to merge - No contract violations detected"
-        else
-          echo "❌ CONTRACT COMPLIANCE: FAILED"
-          echo "🚫 Merge blocked - Fix contract violations before proceeding"
-          echo ""
-          echo "🔧 Triage Steps:"
-          echo "1. Check test failures above"
-          echo "2. Review API_CONTRACT_MATRIX.md"
-          echo "3. Fix status codes, headers, or response shapes"
-          echo "4. Re-run: python -m pytest tests/api/test_contract_compliance_focused.py -v"
-          exit 1
-        fi
+        
+    - name: Check Contract Compliance Status
+      if: failure()
+      run: |
+        echo "❌ CONTRACT COMPLIANCE: FAILED"
+        echo "🚫 Merge blocked - Fix contract violations before proceeding"
+        echo ""
+        echo "🔧 Triage Steps:"
+        echo "1. Check test failures above"
+        echo "2. Review API_CONTRACT_MATRIX.md"
+        echo "3. Fix status codes, headers, or response shapes"
+        echo "4. Re-run: python -m pytest tests/api/test_contract_compliance_focused.py -v"
+        exit 1
+        
+    - name: Contract Compliance Success
+      if: success()
+      run: |
+        echo "✅ CONTRACT COMPLIANCE: PASSED"
+        echo "🚀 Safe to merge - No contract violations detected"

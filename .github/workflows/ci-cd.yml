@@ -12,11 +12,43 @@ on:
 
 jobs:
   # ============================================================================
+  # CODE QUALITY CHECKS
+  # Run once, used by both community and enterprise test jobs
+  # ============================================================================
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Code Quality Checks
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      - name: Run Code Quality Checks
+        run: |
+          black --check faultmaven/ tests/
+          isort --check-only faultmaven/ tests/
+          flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # ============================================================================
   # COMMUNITY EDITION TESTING
   # Test with minimal dependencies (pip install faultmaven)
   # ============================================================================
   test-community:
+    needs: [code-quality]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     name: Test Community Edition
 
     steps:
@@ -27,6 +59,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
       - name: Install Community Edition
         run: |
@@ -41,12 +74,6 @@ jobs:
           ! pip show presidio-analyzer 2>/dev/null || (echo "ERROR: presidio-analyzer should not be installed in community mode" && exit 1)
           ! pip show boto3 2>/dev/null || (echo "ERROR: boto3 should not be installed in community mode" && exit 1)
           echo "✓ Community dependencies verified"
-
-      - name: Run Code Quality Checks
-        run: |
-          black --check faultmaven/ tests/
-          isort --check-only faultmaven/ tests/
-          flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Run Tests (Community Mode)
         run: |
@@ -70,6 +97,10 @@ jobs:
           SESSION_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
 
+      - name: Check Coverage Threshold
+        run: |
+          coverage report --fail-under=71
+
       - name: Upload Community Coverage
         uses: codecov/codecov-action@v4
         with:
@@ -82,7 +113,9 @@ jobs:
   # Test with full dependencies (pip install faultmaven[enterprise,test])
   # ============================================================================
   test-enterprise:
+    needs: [code-quality]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     name: Test Enterprise Edition
 
     steps:
@@ -93,6 +126,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
       - name: Install Enterprise Edition
         run: |
@@ -107,12 +141,6 @@ jobs:
           pip show boto3 || (echo "ERROR: boto3 should be installed in enterprise mode" && exit 1)
           pip show redis || (echo "ERROR: redis should be installed in enterprise mode" && exit 1)
           echo "✓ Enterprise dependencies verified"
-
-      - name: Run Code Quality Checks
-        run: |
-          black --check faultmaven/ tests/
-          isort --check-only faultmaven/ tests/
-          flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Run Tests (Enterprise Mode)
         run: |
@@ -137,6 +165,10 @@ jobs:
           SESSION_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
 
+      - name: Check Coverage Threshold
+        run: |
+          coverage report --fail-under=71
+
       - name: Upload Enterprise Coverage
         uses: codecov/codecov-action@v4
         with:
@@ -150,6 +182,7 @@ jobs:
   # ============================================================================
   architecture-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     name: Architecture Boundary Check
 
     steps:
@@ -160,6 +193,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
       - name: Install Dependencies
         run: |
@@ -180,6 +214,7 @@ jobs:
   # ============================================================================
   test-packaging:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     name: Test Packaging Configuration
 
     steps:
@@ -190,6 +225,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
       - name: Install toml parser
         run: pip install toml
@@ -205,11 +241,20 @@ jobs:
   # ============================================================================
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [test-community, test-enterprise, architecture-lint, test-packaging]
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Validate Dockerfile exists
+        run: |
+          if [ ! -f Dockerfile ]; then
+            echo "❌ Dockerfile not found in repository root"
+            exit 1
+          fi
+          echo "✅ Dockerfile found"
 
       - name: Build Docker Image
         run: docker build -t faultmaven .
@@ -227,3 +272,34 @@ jobs:
         run: |
           docker tag faultmaven ghcr.io/${{ github.repository }}/faultmaven:latest
           docker push ghcr.io/${{ github.repository }}/faultmaven:latest
+
+  # ============================================================================
+  # SECURITY SCANNING
+  # Non-blocking security checks (safety + bandit)
+  # ============================================================================
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Security Scanning
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install security tools
+        run: |
+          pip install safety bandit
+
+      - name: Check dependencies for vulnerabilities
+        run: |
+          safety check --json || echo "⚠️ Safety check completed with warnings (non-blocking)"
+
+      - name: Run security linter
+        run: |
+          bandit -r faultmaven/ -ll || echo "⚠️ Bandit scan completed with findings (non-blocking)"
