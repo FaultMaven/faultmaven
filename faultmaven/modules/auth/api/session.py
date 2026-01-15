@@ -42,7 +42,6 @@ from faultmaven.api.v1.dependencies import get_case_service, get_session_service
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.utils.datetime import utc_timestamp
 from faultmaven.models.api import (
     ErrorDetail,
     ErrorResponse,
@@ -57,6 +56,7 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
 from faultmaven.services.converters import CaseConverter
+from faultmaven.utils.datetime import utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])

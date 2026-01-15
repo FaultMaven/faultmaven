@@ -25,9 +25,9 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from faultmaven.exceptions import ServiceException, ValidationException
-from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.models.api import JobStatus
 from faultmaven.models.interfaces import IJobService
+from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)

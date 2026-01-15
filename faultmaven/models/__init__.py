@@ -4,17 +4,6 @@ This module provides convenient imports for commonly used models across the appl
 Models are now primarily located in their respective modules under faultmaven/modules/.
 """
 
-# Import common models
-from .common import AgentState as AgentStateDict
-from .common import (
-    AgentStateEnum,
-    DataInsightsResponse,
-    SearchRequest,
-    SearchResult,
-    SessionContext,
-    TroubleshootingResponse,
-)
-
 # Import agentic models from the new module location
 from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
@@ -77,6 +66,17 @@ from .api_models import (
     CaseSearchRequest,
     CaseSummary,
     CaseUpdateRequest,
+)
+
+# Import common models
+from .common import AgentState as AgentStateDict
+from .common import (
+    AgentStateEnum,
+    DataInsightsResponse,
+    SearchRequest,
+    SearchResult,
+    SessionContext,
+    TroubleshootingResponse,
 )
 
 # Import new interfaces (Phase 1.1 of refactoring)

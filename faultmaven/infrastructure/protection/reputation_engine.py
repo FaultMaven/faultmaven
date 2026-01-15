@@ -8,7 +8,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.models.behavioral import (
     BehaviorProfile,
     ClientProfile,
@@ -19,6 +18,7 @@ from faultmaven.models.behavioral import (
     Violation,
 )
 from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.datetime import parse_utc_timestamp
 
 
 class AccessLevel:

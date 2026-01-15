@@ -10,9 +10,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
 

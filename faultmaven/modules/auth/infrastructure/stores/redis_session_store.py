@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from faultmaven.infrastructure.redis_client import create_redis_client
-from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
 
