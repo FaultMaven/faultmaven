@@ -16,10 +16,10 @@ import pytest
 
 # Conditional import - skip entire test module if redis not available
 try:
+    from faultmaven.models.interfaces import ISessionStore
     from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
         RedisSessionStore,
     )
-    from faultmaven.models.interfaces import ISessionStore
 
     REDIS_AVAILABLE = True
 except ImportError:
