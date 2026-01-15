@@ -33,7 +33,7 @@ def load_protection_settings(settings=None) -> ProtectionSettings:
 
         # Rate Limiting
         RATE_LIMITING_ENABLED: Enable rate limiting (default: true)
-        REDIS_URL: Redis connection URL (default: redis://192.168.0.111:30379)
+        REDIS_URL: Redis connection URL (default: constructed from settings)
         REDIS_KEY_PREFIX: Redis key prefix (default: faultmaven)
 
         # Rate Limits (requests:window_seconds)
@@ -146,8 +146,10 @@ def _load_from_environment() -> ProtectionSettings:
         if header.strip()
     ]
 
-    # Redis settings
-    redis_url = os.getenv("REDIS_URL", "redis://192.168.0.111:30379")
+    # Redis settings - construct from environment or use K8s ClusterIP default
+    redis_host = os.getenv("REDIS_HOST", "faultmaven-redis-master")
+    redis_port = os.getenv("REDIS_PORT", "6379")
+    redis_url = os.getenv("REDIS_URL", f"redis://{redis_host}:{redis_port}")
     redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "faultmaven")
 
     # Rate limiting settings
@@ -217,13 +219,18 @@ def get_development_protection_settings() -> ProtectionSettings:
     - Bypass headers enabled
     - Fail open on errors
     """
+    # Construct Redis URL from environment or use defaults
+    redis_host = os.getenv("REDIS_HOST", "faultmaven-redis-master")
+    redis_port = os.getenv("REDIS_PORT", "6379")
+    redis_url = os.getenv("REDIS_URL", f"redis://{redis_host}:{redis_port}")
+
     return ProtectionSettings(
         # General
         enabled=True,
         fail_open_on_redis_error=True,
         protection_bypass_headers=["X-Dev-Bypass", "X-Test-Bypass"],
         # Redis
-        redis_url="redis://192.168.0.111:30379",
+        redis_url=redis_url,
         redis_key_prefix="faultmaven_dev",
         # Rate limiting (more lenient for development)
         rate_limiting_enabled=True,

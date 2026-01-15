@@ -199,16 +199,13 @@ def create_redis_client(**kwargs) -> redis.Redis:
     Convenience function to create a Redis client.
 
     Usage:
-        # Local development
+        # Local development (uses settings defaults or .env overrides)
         client = create_redis_client()
 
-        # K8s with environment variables
-        client = create_redis_client()  # Uses REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
-
-        # Explicit configuration
+        # Explicit configuration override
         client = create_redis_client(
-            host='192.168.0.111',
-            port=30379,
+            host='custom-host',
+            port=6379,
             password='your-password'
         )
 
@@ -241,9 +238,7 @@ def create_k8s_redis_client() -> redis.Redis:
     Note: This function is now redundant since create_redis_client()
     defaults to K8s configuration. Use create_redis_client() instead.
 
-    Expected environment variables:
-        REDIS_HOST=192.168.0.111
-        REDIS_PORT=30379
-        REDIS_PASSWORD=faultmaven-dev-redis-2025
+    Reads configuration from settings (defaults to faultmaven-redis-master:6379)
+    or .env file overrides (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD).
     """
     return create_redis_client()

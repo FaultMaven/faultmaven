@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Test script for K8s Redis integration.
+Test script for K8s Redis integration from EXTERNAL access.
+
+NOTE: This script uses NodePort (192.168.0.111:30379) for external testing
+from outside the K8s cluster. Production pods use ClusterIP
+(faultmaven-redis-master:6379) for internal pod-to-pod communication.
 
 This script tests the enhanced Redis client factory with K8s authentication.
 """

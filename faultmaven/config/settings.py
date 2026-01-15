@@ -649,10 +649,10 @@ class DatabaseSettings(BaseSettings):
     database_pool_recycle: int = Field(default=1800, env="DATABASE_POOL_RECYCLE")
 
     # ============================================
-    # Redis Configuration (K8s NodePort for TCP)
+    # Redis Configuration (K8s ClusterIP internal service)
     # ============================================
-    redis_host: str = Field(default="192.168.0.111", env="REDIS_HOST")
-    redis_port: int = Field(default=30379, env="REDIS_PORT")
+    redis_host: str = Field(default="faultmaven-redis-master", env="REDIS_HOST")
+    redis_port: int = Field(default=6379, env="REDIS_PORT")
     redis_db: int = Field(default=0, env="REDIS_DB")
     redis_password: Optional[SecretStr] = Field(default=None, env="REDIS_PASSWORD")
     redis_url: Optional[str] = Field(default=None, env="REDIS_URL")
