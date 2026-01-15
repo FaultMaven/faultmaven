@@ -19,12 +19,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
-from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser, TokenClaims, TokenPair
 from faultmaven.models.rbac import get_permissions_for_roles
+
+# Conditional Redis import (enterprise-only dependency)
+try:
+    from redis.asyncio import Redis
+
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    # Type stub for Redis when not available
+    Redis = Any  # type: ignore
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:

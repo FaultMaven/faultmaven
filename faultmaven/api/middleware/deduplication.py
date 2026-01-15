@@ -11,11 +11,20 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 
-import redis.asyncio as aioredis
 from fastapi import Request, Response
-from redis.exceptions import RedisError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+
+# Conditional Redis import (enterprise-only dependency)
+try:
+    import redis.asyncio as aioredis
+    from redis.exceptions import RedisError
+
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    aioredis = Any  # type: ignore
+    RedisError = Exception  # Fallback to base Exception
 
 from ...infrastructure.protection import RequestHasher
 from ...models.protection import (
