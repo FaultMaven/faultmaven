@@ -11,13 +11,22 @@ import logging
 from typing import Optional, Union
 from urllib.parse import urlparse
 
-import redis.asyncio as redis
+# Conditional Redis import - only available in enterprise edition
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    redis = None
+    REDIS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 
 class RedisClientFactory:
-    """Factory for creating configured Redis clients."""
+    """Factory for creating configured Redis clients.
+    
+    Requires enterprise edition with redis installed.
+    """
 
     @staticmethod
     def create_client(
@@ -26,7 +35,17 @@ class RedisClientFactory:
         port: Optional[int] = None,
         password: Optional[str] = None,
         **kwargs,
-    ) -> redis.Redis:
+    ):
+        """
+        Create a Redis client with proper configuration.
+        
+        Requires enterprise edition with redis installed.
+        Raises ImportError if redis is not available.
+        """
+        if not REDIS_AVAILABLE or redis is None:
+            raise ImportError(
+                "Redis is not available. Install with: pip install faultmaven[enterprise]"
+            )
         """
         Create a Redis client with proper configuration.
 
@@ -171,7 +190,7 @@ class RedisClientFactory:
             return url.replace("://", "://***@") if "://" in url else url
 
     @staticmethod
-    async def test_connection(client: redis.Redis) -> bool:
+    async def test_connection(client) -> bool:
         """
         Test Redis connection health.
 
@@ -194,7 +213,7 @@ class RedisClientFactory:
             return False
 
 
-def create_redis_client(**kwargs) -> redis.Redis:
+def create_redis_client(**kwargs):
     """
     Convenience function to create a Redis client.
 
@@ -215,7 +234,7 @@ def create_redis_client(**kwargs) -> redis.Redis:
     return RedisClientFactory.create_client(**kwargs)
 
 
-async def validate_redis_connection(client: redis.Redis) -> None:
+async def validate_redis_connection(client) -> None:
     """
     Validate Redis connection and log results.
 
@@ -231,7 +250,7 @@ async def validate_redis_connection(client: redis.Redis) -> None:
 
 
 # K8s-specific helper
-def create_k8s_redis_client() -> redis.Redis:
+def create_k8s_redis_client():
     """
     Create Redis client specifically configured for K8s cluster.
 

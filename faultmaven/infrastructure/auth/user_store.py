@@ -26,7 +26,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from redis import Redis
+# Conditional Redis import - only available in enterprise edition
+try:
+    from redis import Redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    Redis = None
+    REDIS_AVAILABLE = False
 
 from faultmaven.models.auth import DevUser
 

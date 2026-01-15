@@ -18,7 +18,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import redis.asyncio as redis
+# Conditional Redis import - only available in enterprise edition
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    redis = None
+    REDIS_AVAILABLE = False
 
 
 class ReportLockManager:
@@ -31,7 +37,7 @@ class ReportLockManager:
 
     def __init__(
         self,
-        redis_client: redis.Redis,
+        redis_client,  # redis.Redis when available
         lock_timeout_seconds: int = 300,  # 5 minutes default
         poll_interval_seconds: float = 0.5,
     ):

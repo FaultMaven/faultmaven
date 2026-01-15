@@ -22,7 +22,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import jwt
-from redis.asyncio import Redis
+
+# Conditional Redis import - only available in enterprise edition
+try:
+    from redis.asyncio import Redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    Redis = None
+    REDIS_AVAILABLE = False
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import (

@@ -14,8 +14,15 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
-import redis.asyncio as aioredis
-from redis.exceptions import RedisError
+# Conditional Redis import - only available in enterprise edition
+try:
+    import redis.asyncio as aioredis
+    from redis.exceptions import RedisError
+    REDIS_AVAILABLE = True
+except ImportError:
+    aioredis = None
+    RedisError = Exception  # Fallback exception type
+    REDIS_AVAILABLE = False
 
 from ...models.protection import (
     LimitType,
@@ -46,8 +53,8 @@ class RedisRateLimiter:
         self.fallback_enabled = fallback_enabled
         self.logger = logging.getLogger(__name__)
 
-        # Redis connection
-        self._redis: Optional[aioredis.Redis] = None
+        # Redis connection (aioredis.Redis when available)
+        self._redis = None
         self._redis_healthy = True
 
         # In-memory fallback for when Redis is unavailable
@@ -68,6 +75,10 @@ class RedisRateLimiter:
 
     async def initialize(self) -> None:
         """Initialize Redis connection"""
+        if not REDIS_AVAILABLE or aioredis is None:
+            self.logger.warning("Redis not available - rate limiter will use in-memory fallback only")
+            self._redis_healthy = False
+            return
         try:
             self._redis = aioredis.from_url(
                 self.redis_url,
