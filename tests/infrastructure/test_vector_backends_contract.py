@@ -119,8 +119,8 @@ def sample_documents():
     ]
 
 
-@pytest.fixture(autouse=True)
-def reset_chromadb_singleton():
+@pytest.fixture(autouse=True, scope="function")
+def reset_chromadb_singleton(monkeypatch):
     """Reset ChromaDB's internal singleton state between tests.
 
     ChromaDB maintains a global singleton for ephemeral clients. When tests
@@ -130,16 +130,19 @@ def reset_chromadb_singleton():
     # Clear ChromaDB's internal singleton cache before each test
     if CHROMA_AVAILABLE:
         try:
-            import chromadb
+            import chromadb.api.client
 
-            # Clear the singleton registry if it exists
+            # Get the SharedSystemClient class that manages the singleton
+            if hasattr(chromadb.api.client, "SharedSystemClient"):
+                # Clear class-level _identifier_to_system dict
+                if hasattr(
+                    chromadb.api.client.SharedSystemClient, "_identifier_to_system"
+                ):
+                    chromadb.api.client.SharedSystemClient._identifier_to_system.clear()
+
+            # Also try old-style cache if it exists
             if hasattr(chromadb, "_client_cache"):
                 chromadb._client_cache.clear()
-            # Also try chromadb.api.client
-            if hasattr(chromadb.api, "client") and hasattr(
-                chromadb.api.client, "_client_cache"
-            ):
-                chromadb.api.client._client_cache.clear()
         except (AttributeError, ImportError):
             # If the internal API changed, just continue
             pass
@@ -149,14 +152,16 @@ def reset_chromadb_singleton():
     # Cleanup after test as well
     if CHROMA_AVAILABLE:
         try:
-            import chromadb
+            import chromadb.api.client
+
+            if hasattr(chromadb.api.client, "SharedSystemClient"):
+                if hasattr(
+                    chromadb.api.client.SharedSystemClient, "_identifier_to_system"
+                ):
+                    chromadb.api.client.SharedSystemClient._identifier_to_system.clear()
 
             if hasattr(chromadb, "_client_cache"):
                 chromadb._client_cache.clear()
-            if hasattr(chromadb.api, "client") and hasattr(
-                chromadb.api.client, "_client_cache"
-            ):
-                chromadb.api.client._client_cache.clear()
         except (AttributeError, ImportError):
             pass
 
