@@ -46,7 +46,7 @@ def unique_id(prefix: str) -> str:
 class TestArchitecturalCompliance:
     """Integration tests for spec compliance verification
 
-    NOTE: These tests require Redis (enterprise edition) and will be skipped 
+    NOTE: These tests require Redis (enterprise edition) and will be skipped
     when SESSION_STORAGE_TYPE != redis or in community edition
     """
 

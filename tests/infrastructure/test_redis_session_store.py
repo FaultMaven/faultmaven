@@ -20,6 +20,7 @@ try:
         RedisSessionStore,
     )
     from faultmaven.models.interfaces import ISessionStore
+
     REDIS_AVAILABLE = True
 except ImportError:
     RedisSessionStore = None
@@ -27,8 +28,7 @@ except ImportError:
     REDIS_AVAILABLE = False
 
 pytestmark = pytest.mark.skipif(
-    not REDIS_AVAILABLE,
-    reason="Redis not available - requires enterprise edition"
+    not REDIS_AVAILABLE, reason="Redis not available - requires enterprise edition"
 )
 
 

@@ -131,11 +131,14 @@ def reset_chromadb_singleton():
     if CHROMA_AVAILABLE:
         try:
             import chromadb
+
             # Clear the singleton registry if it exists
-            if hasattr(chromadb, '_client_cache'):
+            if hasattr(chromadb, "_client_cache"):
                 chromadb._client_cache.clear()
             # Also try chromadb.api.client
-            if hasattr(chromadb.api, 'client') and hasattr(chromadb.api.client, '_client_cache'):
+            if hasattr(chromadb.api, "client") and hasattr(
+                chromadb.api.client, "_client_cache"
+            ):
                 chromadb.api.client._client_cache.clear()
         except (AttributeError, ImportError):
             # If the internal API changed, just continue
@@ -147,9 +150,12 @@ def reset_chromadb_singleton():
     if CHROMA_AVAILABLE:
         try:
             import chromadb
-            if hasattr(chromadb, '_client_cache'):
+
+            if hasattr(chromadb, "_client_cache"):
                 chromadb._client_cache.clear()
-            if hasattr(chromadb.api, 'client') and hasattr(chromadb.api.client, '_client_cache'):
+            if hasattr(chromadb.api, "client") and hasattr(
+                chromadb.api.client, "_client_cache"
+            ):
                 chromadb.api.client._client_cache.clear()
         except (AttributeError, ImportError):
             pass

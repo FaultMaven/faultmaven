@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 # Conditional redis import - only available in enterprise edition
 try:
     import redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     redis = None
@@ -19,7 +20,9 @@ except ImportError:
 
 pytestmark = [
     pytest.mark.enterprise,
-    pytest.mark.skipif(not REDIS_AVAILABLE, reason="Redis not available - requires enterprise edition")
+    pytest.mark.skipif(
+        not REDIS_AVAILABLE, reason="Redis not available - requires enterprise edition"
+    ),
 ]
 
 
@@ -31,7 +34,7 @@ def test_redis_connection():
 
     Verifies that Redis is accessible at the default Docker host/port.
     This is a smoke test to catch basic connectivity issues.
-    
+
     Requires enterprise edition with redis installed.
     """
     if not REDIS_AVAILABLE:

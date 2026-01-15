@@ -34,6 +34,7 @@ import pytest_asyncio
 # Conditional Redis import - only available in enterprise edition
 try:
     import redis.asyncio as redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     redis = None
@@ -126,7 +127,7 @@ async def redis_client() -> AsyncGenerator:
 @pytest_asyncio.fixture
 async def clean_redis(redis_client) -> None:
     """Clean Redis before each test.
-    
+
     Requires enterprise edition with redis installed.
     """
     if not REDIS_AVAILABLE or redis_client is None:
@@ -307,7 +308,7 @@ def wait_for_service(url: str, timeout: float = 30.0) -> bool:
 
 async def wait_for_redis(redis_url: str, timeout: float = 30.0) -> bool:
     """Wait for Redis to be ready.
-    
+
     Requires enterprise edition with redis installed.
     """
     if not REDIS_AVAILABLE:
@@ -857,7 +858,7 @@ async def session_service() -> SessionService:
     Note: Uses RedisSessionStore which creates its own Redis client from .env.
     Does NOT clean Redis - tests work with existing data to simulate
     production environment where FLUSHDB may be disabled.
-    
+
     Requires enterprise edition with redis installed.
     """
     if not REDIS_AVAILABLE or RedisSessionStore is None:
