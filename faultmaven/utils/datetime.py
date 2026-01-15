@@ -10,16 +10,21 @@ Key Functions:
 
 from datetime import datetime, timezone
 
-from faultmaven.utils.serialization import to_json_compatible
-
 
 def utc_timestamp() -> str:
     """Generate UTC timestamp with 'Z' suffix format required by API specification.
 
     Returns:
         str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
+    
+    Note:
+        This function implements datetime serialization directly to avoid circular
+        dependency with faultmaven.utils.serialization module.
     """
-    return to_json_compatible(datetime.now(timezone.utc))
+    # Direct implementation to avoid circular dependency
+    # For UTC timezone-aware datetime, format as: YYYY-MM-DDTHH:MM:SS.ffffffZ
+    dt = datetime.now(timezone.utc)
+    return dt.replace(tzinfo=None).isoformat() + "Z"
 
 
 def parse_utc_timestamp(timestamp_str: str) -> datetime:
