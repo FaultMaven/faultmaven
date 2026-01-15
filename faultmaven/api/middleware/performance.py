@@ -430,7 +430,7 @@ class PerformanceMetricsEndpoint:
                         "metric_name": alert.metric_name,
                         "metric_value": alert.metric_value,
                         "threshold_value": alert.threshold_value,
-                        "triggered_at": alert.to_json_compatible(triggered_at),
+                        "triggered_at": to_json_compatible(alert.triggered_at),
                         "message": alert.message,
                     }
                     for alert in active_alerts[:10]  # Last 10 alerts

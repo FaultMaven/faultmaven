@@ -468,7 +468,6 @@ async def initialize_performance_monitoring_system() -> Dict[str, Any]:
     Returns:
         Initialization status and metrics
     """
-    global _startup_instance
 
     if _startup_instance is None:
         _startup_instance = PerformanceMonitoringStartup()
@@ -482,7 +481,6 @@ async def shutdown_performance_monitoring_system() -> Dict[str, Any]:
     Returns:
         Shutdown status and metrics
     """
-    global _startup_instance
 
     if _startup_instance is not None:
         return await _startup_instance.shutdown_performance_monitoring()
@@ -496,7 +494,6 @@ def get_startup_metrics() -> Dict[str, Any]:
     Returns:
         Current startup metrics
     """
-    global _startup_instance
 
     if _startup_instance is not None:
         return _startup_instance.startup_metrics.copy()

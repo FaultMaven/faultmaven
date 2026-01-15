@@ -23,7 +23,7 @@ Architecture:
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from uuid import uuid4
 
 from faultmaven.models.interfaces import ILLMProvider
@@ -663,7 +663,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
 
     def _create_uploaded_file_from_attachment(
         self, case: Case, attachment: Dict[str, Any], turn_number: int
-    ) -> "UploadedFile":
+    ) -> "UploadedFile":  # noqa: F821
         """
         Create uploaded file record from attachment.
 

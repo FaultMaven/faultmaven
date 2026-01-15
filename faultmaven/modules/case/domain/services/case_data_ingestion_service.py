@@ -1158,6 +1158,9 @@ class CaseDataIngestionService(BaseService):
             if isinstance(data_type, str):
                 data_type = DataType(data_type)
 
+        # Extract insights from data object if available
+        insights = self._get_data_attribute(data, "insights", {})
+
         # Base recommendations by data type
         if data_type == DataType.LOGS_AND_ERRORS:
             recommendations.extend(

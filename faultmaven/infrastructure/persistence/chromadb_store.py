@@ -79,7 +79,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         self.collection_name = (
             settings.database.chromadb_collection
             if settings
-            else config.chromadb.collection_name
+            else "faultmaven_knowledge"  # Default collection name
         )
         try:
             self.collection = self.client.get_or_create_collection(

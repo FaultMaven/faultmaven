@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import (
@@ -2057,7 +2057,7 @@ async def upload_case_data(
             )
 
         # 8. Combine preprocessing metadata with agent response
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
 
         response_data = DataUploadResponse(
             data_id=uploaded_data.get("data_id"),
@@ -2764,6 +2764,7 @@ async def get_uploaded_file_details(
     case_id: str = Path(..., description="Case ID"),
     file_id: str = Path(..., description="File ID"),
     auth: tuple = Depends(require_authentication),
+    case_service: APICaseService = Depends(get_api_case_service),
 ):
     """
     GET /api/v1/cases/{case_id}/uploaded-files/{file_id}
@@ -2853,6 +2854,7 @@ async def get_uploaded_file_details(
 async def list_uploaded_files(
     case_id: str = Path(..., description="Case ID"),
     auth: tuple = Depends(require_authentication),
+    case_service: APICaseService = Depends(get_api_case_service),
 ):
     """
     GET /api/v1/cases/{case_id}/uploaded-files
@@ -2924,6 +2926,7 @@ async def get_evidence_details(
     case_id: str = Path(..., description="Case ID"),
     evidence_id: str = Path(..., description="Evidence ID"),
     auth: tuple = Depends(require_authentication),
+    case_service: APICaseService = Depends(get_api_case_service),
 ):
     """
     GET /api/v1/cases/{case_id}/evidence/{evidence_id}

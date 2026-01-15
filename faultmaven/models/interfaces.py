@@ -1,7 +1,7 @@
 # File: faultmaven/models/interfaces.py
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, ContextManager, Dict, List, Optional
+from typing import Any, ContextManager, Dict, List, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -1130,7 +1130,7 @@ class IDataClassifier(ABC):
     @abstractmethod
     async def classify(
         self, content: str, filename: Optional[str] = None
-    ) -> "DataType":
+    ) -> "DataType":  # noqa: F821
         """Classify data content and return appropriate DataType.
 
         This method analyzes file content and optional filename to determine
@@ -1680,8 +1680,8 @@ class IGlobalConfidenceService(ABC):
 
     @abstractmethod
     async def score_confidence(
-        self, request: "ConfidenceRequest"
-    ) -> "ConfidenceResponse":
+        self, request: "ConfidenceRequest"  # noqa: F821
+    ) -> "ConfidenceResponse":  # noqa: F821
         """Compute calibrated confidence score from feature vector.
 
         This method takes extracted features from the troubleshooting workflow
@@ -2480,8 +2480,8 @@ class IPreprocessor(ABC):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional["SourceMetadata"] = None,
-    ) -> "PreprocessedData":
+        source_metadata: Optional["SourceMetadata"]  # noqa: F821 = None,
+    ) -> "PreprocessedData":  # noqa: F821
         """
         Process raw content into LLM-ready summary
 

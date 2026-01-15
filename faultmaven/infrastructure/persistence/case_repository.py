@@ -6,7 +6,7 @@ It abstracts database operations and provides clean interfaces for the service l
 
 import json
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import (

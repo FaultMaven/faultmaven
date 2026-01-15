@@ -18,7 +18,7 @@ Core Responsibilities:
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -1263,7 +1263,7 @@ class CaseService(BaseService, ICaseService):
         limit: int = 50,
         offset: int = 0,
         include_debug: bool = False,
-    ) -> "CaseMessagesResponse":
+    ) -> "CaseMessagesResponse":  # noqa: F821
         """
         Enhanced message retrieval with debugging support and metadata.
 

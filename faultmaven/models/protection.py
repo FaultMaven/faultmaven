@@ -223,7 +223,7 @@ class ProtectionErrorResponse:
             retry_after=error.retry_after,
             error_code=error.error_code,
             correlation_id=error.correlation_id,
-            timestamp=error.to_json_compatible(timestamp),
+            timestamp=to_json_compatible(self.timestamp),
             suggestions=[
                 "Wait for the specified retry period",
                 "Reduce request frequency",
@@ -242,7 +242,7 @@ class ProtectionErrorResponse:
             retry_after=error.ttl_remaining,
             error_code=error.error_code,
             correlation_id=error.correlation_id,
-            timestamp=error.to_json_compatible(timestamp),
+            timestamp=to_json_compatible(self.timestamp),
             suggestions=[
                 "Avoid sending identical requests rapidly",
                 "Check for client-side loops or bugs",
@@ -258,7 +258,7 @@ class ProtectionErrorResponse:
             message=error.message,
             error_code=error.error_code,
             correlation_id=error.correlation_id,
-            timestamp=error.to_json_compatible(timestamp),
+            timestamp=to_json_compatible(self.timestamp),
             suggestions=[
                 "Simplify your query to reduce processing time",
                 "Try breaking complex requests into smaller parts",

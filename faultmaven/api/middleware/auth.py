@@ -64,7 +64,6 @@ async def get_auth_service(request: Request) -> AuthService:
         Falls back to test service or creating a new instance if not available.
     """
     # Check test service first (for unit tests)
-    global _test_auth_service
     if _test_auth_service is not None:
         return _test_auth_service
 
@@ -94,7 +93,6 @@ def set_auth_service(
         For testing, can be called without request to set module-level test service.
         For production DI, can be called with request to set on app.state.
     """
-    global _test_auth_service
 
     if request is not None:
         try:

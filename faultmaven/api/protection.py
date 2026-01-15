@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, FastAPI
 
 from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.serialization import to_json_compatible
 
 # Basic protection imports
 from ..config.protection import (

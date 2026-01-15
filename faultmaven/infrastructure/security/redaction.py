@@ -30,7 +30,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import requests
 
@@ -45,7 +45,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
     Supports both Presidio-based PII detection and custom regex patterns.
     """
 
-    def __init__(self, settings: Optional["FaultMavenSettings"] = None):
+    def __init__(self, settings: Optional["FaultMavenSettings"]  # noqa: F821 = None):
         """Initialize the DataSanitizer with optional unified settings.
 
         If settings are provided and indicate skip_service_checks, external

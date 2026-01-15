@@ -172,7 +172,7 @@ class ServiceFactory:
             file_storage=file_storage,
         )
 
-    def create_agent_orchestration_service(self) -> "AgentOrchestrationService":
+    def create_agent_orchestration_service(self) -> "AgentOrchestrationService":  # noqa: F821
         """Create agent orchestration service with dependencies.
 
         Returns:
@@ -191,7 +191,7 @@ class ServiceFactory:
             # LLM client will be created lazily by the service
         )
 
-    def create_user_service(self) -> "UserService":
+    def create_user_service(self) -> "UserService":  # noqa: F821
         """Create user management service.
 
         Returns:

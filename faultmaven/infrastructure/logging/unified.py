@@ -633,5 +633,4 @@ def clear_logger_cache() -> None:
     This function is primarily used for testing to ensure clean state
     between test runs.
     """
-    global _logger_instances
     _logger_instances.clear()

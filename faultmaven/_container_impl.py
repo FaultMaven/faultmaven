@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from faultmaven.config.settings import FaultMavenSettings, get_settings
+from faultmaven.utils.serialization import to_json_compatible
 from faultmaven.container.base import BaseDIContainer
 from faultmaven.container.errors import InitializationError, ServiceUnavailableError
 from faultmaven.container.providers import (

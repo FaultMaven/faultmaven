@@ -35,6 +35,7 @@ from faultmaven.api.v1.dependencies import (
     require_authenticated_user,
 )
 from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.services.file_storage_service import FileStorageService
