@@ -102,6 +102,7 @@ def set_auth_service(
             logger.warning(f"Failed to set AuthService in app.state: {e}")
     else:
         # Set module-level test service for backward compatibility
+        global _test_auth_service
         _test_auth_service = service
         logger.debug("AuthService set in module-level test variable")
 
