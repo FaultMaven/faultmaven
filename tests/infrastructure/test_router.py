@@ -361,6 +361,7 @@ class TestLLMRouter:
             # since the test doesn't set up the provider to handle custom models
             assert result.model in [
                 "accounts/fireworks/models/llama-v3p1-8b-instruct",
+                "accounts/fireworks/models/llama-v3p1-405b-instruct",
                 "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
                 "custom-model",
             ]

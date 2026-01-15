@@ -95,12 +95,24 @@ def _create_chroma_backend(settings) -> IVectorBackend:
     from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
 
     # Get Chroma settings
-    persist_directory = getattr(
-        settings.embedding, "chroma_persist_directory", "./data/chroma"
-    )
-    collection_name = getattr(
-        settings.embedding, "chroma_collection_name", "faultmaven_kb"
-    )
+    # Check if settings has a proper embedding configuration
+    try:
+        if hasattr(settings, "embedding") and hasattr(
+            settings.embedding, "chroma_persist_directory"
+        ):
+            persist_directory = settings.embedding.chroma_persist_directory
+        else:
+            persist_directory = "./data/chroma"
+
+        if hasattr(settings, "embedding") and hasattr(
+            settings.embedding, "chroma_collection_name"
+        ):
+            collection_name = settings.embedding.chroma_collection_name
+        else:
+            collection_name = "faultmaven_kb"
+    except AttributeError:
+        persist_directory = "./data/chroma"
+        collection_name = "faultmaven_kb"
 
     # Check for HTTP client configuration
     chroma_host = os.getenv("CHROMADB_HOST")
