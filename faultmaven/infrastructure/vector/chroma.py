@@ -104,7 +104,9 @@ class ChromaVectorBackend(IVectorBackend):
                     anonymized_telemetry=False,
                 )
                 self._client = chromadb.Client(settings)
-                logger.info(f"ChromaDB persistent client (legacy) at {persist_directory}")
+                logger.info(
+                    f"ChromaDB persistent client (legacy) at {persist_directory}"
+                )
         else:
             # Ephemeral mode - use EphemeralClient (new API)
             try:
