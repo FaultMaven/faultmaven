@@ -81,8 +81,8 @@ jobs:
         else:
             print('✅ No dangling references found')
             
-        # Check critical schemas exist
-        critical_schemas = ['QueryJobStatus', 'AgentResponse', 'CaseSummary']
+        # Check critical schemas exist (only schemas actually used in API endpoints)
+        critical_schemas = ['AgentResponse', 'CaseSummary']
         missing = [s for s in critical_schemas if s not in schemas]
         if missing:
             print(f'❌ Missing critical schemas: {missing}')
