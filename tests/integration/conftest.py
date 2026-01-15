@@ -30,7 +30,14 @@ import conftest as root_conftest  # noqa: F401
 import httpx
 import pytest
 import pytest_asyncio
-import redis.asyncio as redis
+
+# Conditional Redis import - only available in enterprise edition
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    redis = None
+    REDIS_AVAILABLE = False
 
 # WorkflowContext removed - using dict instead
 from faultmaven.exceptions import ServiceException, ValidationException
@@ -45,9 +52,14 @@ from faultmaven.models.interfaces import (
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService as SessionService,
 )
-from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
-    RedisSessionStore,
-)
+
+# Conditional RedisSessionStore import - only available in enterprise edition
+if REDIS_AVAILABLE:
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+        RedisSessionStore,
+    )
+else:
+    RedisSessionStore = None
 
 # Legacy services/domain/* was removed; use extracted module path.
 # This import triggers: CaseService -> persistence -> chromadb -> protobuf -> ctypes
@@ -83,8 +95,15 @@ async def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def redis_client() -> AsyncGenerator[redis.Redis, None]:
-    """Create a Redis client for testing."""
+@pytest.fixture
+async def redis_client() -> AsyncGenerator:
+    """Create a Redis client for testing.
+    
+    Requires enterprise edition with redis installed.
+    Marked as enterprise-only fixture.
+    """
+    if not REDIS_AVAILABLE:
+        pytest.skip("Redis not available - requires enterprise edition")
     client = redis.Redis(
         host=REDIS_HOST,
         port=REDIS_PORT,
@@ -106,8 +125,13 @@ async def redis_client() -> AsyncGenerator[redis.Redis, None]:
 
 
 @pytest_asyncio.fixture
-async def clean_redis(redis_client: redis.Redis) -> None:
-    """Clean Redis before each test."""
+async def clean_redis(redis_client) -> None:
+    """Clean Redis before each test.
+    
+    Requires enterprise edition with redis installed.
+    """
+    if not REDIS_AVAILABLE or redis_client is None:
+        return
     try:
         await redis_client.flushdb()
         yield
@@ -283,7 +307,12 @@ def wait_for_service(url: str, timeout: float = 30.0) -> bool:
 
 
 async def wait_for_redis(redis_url: str, timeout: float = 30.0) -> bool:
-    """Wait for Redis to be ready."""
+    """Wait for Redis to be ready.
+    
+    Requires enterprise edition with redis installed.
+    """
+    if not REDIS_AVAILABLE:
+        return False
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
@@ -398,9 +427,12 @@ async def wait_for_services():
     if not wait_for_service(f"{BASE_URL}/health"):
         pytest.fail(f"Backend API not ready at {BASE_URL}")
 
-    # Wait for Redis
-    if not await wait_for_redis(REDIS_URL):
+    # Wait for Redis (only if available - enterprise edition)
+    if REDIS_AVAILABLE and not await wait_for_redis(REDIS_URL):
         pytest.fail(f"Redis not ready at {REDIS_URL}")
+    elif not REDIS_AVAILABLE:
+        # Skip Redis-dependent setup in community edition
+        pass
 
     print("All services are ready")
 
@@ -826,10 +858,11 @@ async def session_service() -> SessionService:
     Note: Uses RedisSessionStore which creates its own Redis client from .env.
     Does NOT clean Redis - tests work with existing data to simulate
     production environment where FLUSHDB may be disabled.
+    
+    Requires enterprise edition with redis installed.
     """
-    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
-        RedisSessionStore,
-    )
+    if not REDIS_AVAILABLE or RedisSessionStore is None:
+        pytest.skip("RedisSessionStore not available - requires enterprise edition")
 
     # Create RedisSessionStore - it will use create_redis_client() from .env
     session_store = RedisSessionStore()

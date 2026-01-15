@@ -73,7 +73,8 @@ jobs:
           ! pip show opik 2>/dev/null || (echo "ERROR: opik should not be installed in community mode" && exit 1)
           ! pip show presidio-analyzer 2>/dev/null || (echo "ERROR: presidio-analyzer should not be installed in community mode" && exit 1)
           ! pip show boto3 2>/dev/null || (echo "ERROR: boto3 should not be installed in community mode" && exit 1)
-          echo "✓ Community dependencies verified"
+          ! pip show redis 2>/dev/null || (echo "ERROR: redis should not be installed in community mode (deployment-agnostic)" && exit 1)
+          echo "✓ Community dependencies verified (deployment-agnostic)"
 
       - name: Run Tests (Community Mode)
         run: |
@@ -140,7 +141,7 @@ jobs:
           pip show opik || (echo "ERROR: opik should be installed in enterprise mode" && exit 1)
           pip show presidio-analyzer || (echo "ERROR: presidio-analyzer should be installed in enterprise mode" && exit 1)
           pip show boto3 || (echo "ERROR: boto3 should be installed in enterprise mode" && exit 1)
-          pip show redis || (echo "ERROR: redis should be installed in enterprise mode" && exit 1)
+          pip show redis || (echo "ERROR: redis should be installed in enterprise mode (for infrastructure testing)" && exit 1)
           echo "✓ Enterprise dependencies verified"
 
       - name: Run Tests (Enterprise Mode)

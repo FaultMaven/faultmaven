@@ -3,6 +3,8 @@ Unit tests for RedisSessionStore implementation.
 
 This module tests the RedisSessionStore class to ensure proper
 implementation of the ISessionStore interface with comprehensive coverage.
+
+NOTE: These tests require enterprise edition with redis installed.
 """
 
 import json
@@ -12,9 +14,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.models.interfaces import ISessionStore
-from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
-    RedisSessionStore,
+# Conditional import - skip entire test module if redis not available
+try:
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+        RedisSessionStore,
+    )
+    from faultmaven.models.interfaces import ISessionStore
+    REDIS_AVAILABLE = True
+except ImportError:
+    RedisSessionStore = None
+    ISessionStore = None
+    REDIS_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(
+    not REDIS_AVAILABLE,
+    reason="Redis not available - requires enterprise edition"
 )
 
 
