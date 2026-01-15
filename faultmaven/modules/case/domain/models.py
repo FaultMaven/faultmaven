@@ -20,7 +20,7 @@ Architecture:
 - Repository abstraction (no direct database imports)
 """
 
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4

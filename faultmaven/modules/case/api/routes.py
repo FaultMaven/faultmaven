@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import (
@@ -38,6 +38,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
+from faultmaven.api.dependencies import get_api_case_service
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
     get_current_user_optional,
@@ -49,7 +50,6 @@ from faultmaven.api.v1.dependencies import (
 from faultmaven.api.v1.dependencies import (
     get_investigation_service,  # V2.0 milestone-based
 )
-from faultmaven.api.dependencies import get_api_case_service
 from faultmaven.api.v1.dependencies import (
     get_case_service,
     get_case_vector_store,
@@ -2059,7 +2059,7 @@ async def upload_case_data(
             )
 
         # 8. Combine preprocessing metadata with agent response
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
 
         response_data = DataUploadResponse(
             data_id=uploaded_data.get("data_id"),

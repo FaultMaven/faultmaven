@@ -26,6 +26,7 @@ from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import (
+    AuthenticationError,
     AuthorizationError,
     ConflictError,
     NotFoundError,
@@ -42,7 +43,6 @@ from faultmaven.modules.auth.infrastructure.repositories.user_repository import 
 from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
     UserRepository,
 )
-from faultmaven.exceptions import AuthenticationError
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,

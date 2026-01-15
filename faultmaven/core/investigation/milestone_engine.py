@@ -23,7 +23,7 @@ Architecture:
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from faultmaven.models.interfaces import ILLMProvider
