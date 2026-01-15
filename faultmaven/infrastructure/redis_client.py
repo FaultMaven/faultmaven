@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 # Conditional Redis import - only available in enterprise edition
 try:
     import redis.asyncio as redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     redis = None
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 class RedisClientFactory:
     """Factory for creating configured Redis clients.
-    
+
     Requires enterprise edition with redis installed.
     """
 
@@ -38,7 +39,7 @@ class RedisClientFactory:
     ):
         """
         Create a Redis client with proper configuration.
-        
+
         Requires enterprise edition with redis installed.
         Raises ImportError if redis is not available.
         """

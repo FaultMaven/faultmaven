@@ -26,6 +26,7 @@ import jwt
 # Conditional Redis import - only available in enterprise edition
 try:
     from redis.asyncio import Redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     Redis = None

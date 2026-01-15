@@ -29,6 +29,7 @@ from typing import List, Optional
 # Conditional Redis import - only available in enterprise edition
 try:
     from redis import Redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     Redis = None

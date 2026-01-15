@@ -22,9 +22,11 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
+
 # Conditional Redis import - only available in enterprise edition
 try:
     from redis.asyncio import Redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     Redis = None

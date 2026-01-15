@@ -21,6 +21,7 @@ from typing import Optional
 # Conditional Redis import - only available in enterprise edition
 try:
     import redis.asyncio as redis
+
     REDIS_AVAILABLE = True
 except ImportError:
     redis = None
