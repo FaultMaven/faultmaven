@@ -500,7 +500,15 @@ def register_services(container: BaseDIContainer) -> None:
     if user_service:
         container._register_service("user_service", user_service)
 
-    # Tenant Provider (create before Case Service so it can be injected)
+    # Organization Service (create first, before TenantProvider which depends on organization_repository)
+    organization_service, organization_repository = create_organization_service(
+        db_session, settings
+    )
+    container.organization_service = organization_service
+    if organization_service:
+        container._register_service("organization_service", organization_service)
+
+    # Tenant Provider (create after OrganizationService, before CaseService)
     tenant_provider = create_tenant_provider(
         db_session, organization_repository, settings
     )
@@ -550,15 +558,7 @@ def register_services(container: BaseDIContainer) -> None:
     if evidence_service:
         container._register_service("evidence_service", evidence_service)
 
-    # Organization Service
-    organization_service, organization_repository = create_organization_service(
-        db_session, settings
-    )
-    container.organization_service = organization_service
-    if organization_service:
-        container._register_service("organization_service", organization_service)
-
-    # Team Service
+    # Team Service (organization_repository already created above)
     team_service = create_team_service(db_session, organization_repository, settings)
     container.team_service = team_service
     if team_service:

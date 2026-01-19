@@ -121,15 +121,22 @@ def _create_s3_backend(settings) -> IFileStorageBackend:
         ImportError: If boto3 is not installed
         ValueError: If required S3 settings are missing
     """
-    from faultmaven.infrastructure.storage.s3 import S3StorageBackend
-
-    # Get S3 settings from EvidenceStorageSettings (deployment-agnostic)
+    # Check for required S3 settings first (before importing S3StorageBackend)
+    # This ensures we raise ValueError before ImportError if boto3 is missing
     bucket_name = settings.evidence_storage.s3_bucket_name
     if not bucket_name:
         raise ValueError(
             "S3_BUCKET_NAME environment variable is required for S3 storage. "
             "Set STORAGE_BACKEND=filesystem for local development."
         )
+
+    # Import after bucket_name check (so ValueError is raised first)
+    try:
+        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+    except ImportError as e:
+        raise ImportError(
+            "boto3 is required for S3 storage. Install with: pip install boto3"
+        ) from e
 
     region = settings.evidence_storage.s3_region
     prefix = settings.evidence_storage.s3_key_prefix

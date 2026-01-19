@@ -481,6 +481,10 @@ def get_evidence_artifact_repository(
         f"Creating evidence artifact repository with storage type: {effective_type}"
     )
 
+    # Validate storage type
+    if effective_type not in (STORAGE_TYPE_INMEMORY, STORAGE_TYPE_DATABASE):
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
         if _inmemory_evidence_artifact_repository is None:
@@ -530,6 +534,10 @@ async def get_evidence_artifact_repository_async(
     global _inmemory_evidence_artifact_repository
 
     effective_type = storage_type or get_evidence_artifact_storage_type()
+
+    # Validate storage type
+    if effective_type not in (STORAGE_TYPE_INMEMORY, STORAGE_TYPE_DATABASE):
+        raise ValueError(f"Unknown storage type: {effective_type}")
 
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
