@@ -54,18 +54,37 @@ from .infrastructure.logging.config import get_logger
 
 logger = get_logger(__name__)
 
+# Module-level settings cache (set during lifespan startup)
+_app_settings = None
 
-def _is_test_environment() -> bool:
+
+def _is_test_environment(settings=None) -> bool:
     """Detect if we're running in a test environment (pytest or skip_service_checks)."""
     # Check for pytest in command line arguments
     if "pytest" in " ".join(sys.argv) or any("test" in arg.lower() for arg in sys.argv):
         return True
 
-    # Check for common test environment variables
-    if os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true":
+    # Get settings (from parameter, module cache, or environment)
+    if settings is None:
+        settings = _app_settings
+        if settings is None:
+            # Fallback: try to get settings (for early calls before lifespan)
+            try:
+                from .config.settings import get_settings
+                settings = get_settings()
+            except Exception:
+                # If settings not available, fall back to os.getenv for backward compatibility
+                if os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true":
+                    return True
+                if os.getenv("PYTEST_CURRENT_TEST"):
+                    return True
+                return False
+
+    # Use settings (deployment-agnostic)
+    if settings.server.skip_service_checks:
         return True
 
-    if os.getenv("PYTEST_CURRENT_TEST"):
+    if settings.server.pytest_current_test:
         return True
 
     # Check if we're being imported by pytest
@@ -75,23 +94,35 @@ def _is_test_environment() -> bool:
     return False
 
 
-def _check_llm_configuration(llm_provider) -> None:
+def _check_llm_configuration(llm_provider, settings=None) -> None:
     """Check if any LLM provider is configured and print warning if not."""
+    # Get settings if not provided
+    if settings is None:
+        settings = _app_settings
+        if settings is None:
+            try:
+                from .config.settings import get_settings
+                settings = get_settings()
+            except Exception:
+                # If settings unavailable, skip check
+                return
+
     # Skip check in test environments
-    if _is_test_environment():
+    if _is_test_environment(settings=settings):
         return
 
     # Check if we have any configured providers
     has_provider = False
     provider_name = None
 
-    # Check common API key environment variables
+    # Check common API key environment variables from settings (deployment-agnostic)
+    llm_settings = settings.llm
     llm_keys = {
-        "OpenAI": os.getenv("OPENAI_API_KEY", ""),
-        "Anthropic": os.getenv("ANTHROPIC_API_KEY", ""),
-        "Fireworks": os.getenv("FIREWORKS_API_KEY", ""),
-        "Groq": os.getenv("GROQ_API_KEY", ""),
-        "Gemini": os.getenv("GEMINI_API_KEY", ""),
+        "OpenAI": llm_settings.openai_api_key.get_secret_value() if llm_settings.openai_api_key else "",
+        "Anthropic": llm_settings.anthropic_api_key.get_secret_value() if llm_settings.anthropic_api_key else "",
+        "Fireworks": llm_settings.fireworks_api_key.get_secret_value() if llm_settings.fireworks_api_key else "",
+        "Groq": llm_settings.groq_api_key.get_secret_value() if llm_settings.groq_api_key else "",
+        "Gemini": llm_settings.gemini_api_key.get_secret_value() if llm_settings.gemini_api_key else "",
     }
 
     for name, key in llm_keys.items():
@@ -100,9 +131,11 @@ def _check_llm_configuration(llm_provider) -> None:
             provider_name = name
             break
 
-    # Check for local LLM configuration
-    chat_provider = os.getenv("CHAT_PROVIDER", "").lower()
-    if chat_provider == "local" and os.getenv("LOCAL_LLM_URL"):
+    # Check for local LLM configuration from settings
+    chat_provider = llm_settings.provider.value.lower() if llm_settings.provider else ""
+    if chat_provider == "local":
+        # Note: LOCAL_LLM_URL would need to be added to LLMSettings if used
+        # For now, checking provider setting is sufficient
         has_provider = True
         provider_name = "Local (Ollama)"
 
@@ -202,6 +235,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"Configuration initialization failed: {e}")
         raise
 
+    # Store settings in module scope for helper functions
+    global _app_settings
+    _app_settings = settings
+
     # Initialize the DI container first (before any services that depend on it)
     # Container initialization includes service registration internally
     logger.info("Initializing DI container...")
@@ -213,6 +250,21 @@ async def lifespan(app: FastAPI):
 
         # Make container available to app for access by other components
         app.extra["di_container"] = container
+
+        # ============================================================
+        # Bootstrap Application (deployment-agnostic architecture)
+        # ============================================================
+        # Ensures default organization exists for single-tenant mode
+        # Must run after container initialization (requires tenant_provider)
+        try:
+            from .bootstrap.startup import bootstrap_application
+
+            await bootstrap_application(container)
+            logger.debug("✅ Application bootstrap complete")
+        except Exception as e:
+            logger.error(f"Application bootstrap failed: {e}")
+            # Don't fail startup - let it degrade gracefully for non-critical bootstrap tasks
+            # (Critical bootstrap failures should raise in bootstrap_application itself)
 
         # ============================================================
         # Composition Root: Attach all services to app.state
@@ -256,7 +308,7 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Services attached to app.state (Composition Root)")
 
         # Check LLM provider configuration and warn if none configured
-        _check_llm_configuration(app.state.llm_provider)
+        _check_llm_configuration(app.state.llm_provider, settings=settings)
     except RuntimeError as e:
         # Container already logged the error and raised if it's a production fail-fast
         # Re-raise to let FastAPI handle startup failure
@@ -264,7 +316,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"DI container initialization failed: {e}")
         # Only allow graceful degradation in non-production environments
-        is_production = os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
+        # Use settings (deployment-agnostic) instead of os.getenv()
+        from .config.settings import Environment
+        is_production = settings.server.environment == Environment.PRODUCTION
         if is_production:
             logger.critical(
                 "Production startup failed - cannot continue with incomplete container"
@@ -337,11 +391,19 @@ async def lifespan(app: FastAPI):
         )
 
         # Check if we're configured to use local LLM providers
-        chat_provider = os.getenv("CHAT_PROVIDER", "").lower()
-        classifier_provider = os.getenv("CLASSIFIER_PROVIDER", "").lower()
+        # Use settings (deployment-agnostic) instead of os.getenv()
+        llm_settings = settings.llm
+        chat_provider = llm_settings.provider.value.lower() if llm_settings.provider else ""
+        classifier_provider = (
+            llm_settings.classifier_provider.value.lower()
+            if llm_settings.classifier_provider
+            else ""
+        )
 
-        local_llm_model = os.getenv("LOCAL_LLM_MODEL", "llama2-7b")
-        local_llm_base_url = os.getenv("LOCAL_LLM_URL", "http://localhost:8080")
+        # Note: LOCAL_LLM_MODEL and LOCAL_LLM_URL would need to be added to LLMSettings
+        # For now, using defaults (these are rarely used in local deployment)
+        local_llm_model = "llama2-7b"  # Default fallback
+        local_llm_base_url = "http://localhost:8080"  # Default fallback
 
         if chat_provider == "local":
             logger.info("Chat provider set to 'local', checking local LLM service...")
@@ -845,20 +907,41 @@ except Exception as e:
 
 # Debug endpoints - ONLY available in development/testing environments
 # These endpoints expose internal state and should never be enabled in production
-def _is_debug_enabled() -> bool:
+def _is_debug_enabled(settings=None) -> bool:
     """Check if debug endpoints should be enabled based on environment."""
-    env = os.getenv("ENVIRONMENT", "development").lower()
-    # Only enable in development or when explicitly requested for testing
+    # Get settings if not provided
+    if settings is None:
+        settings = _app_settings
+        if settings is None:
+            try:
+                from .config.settings import get_settings, Environment
+                settings = get_settings()
+            except Exception:
+                # Fallback to environment check if settings unavailable
+                env = os.getenv("ENVIRONMENT", "development").lower()
+                return env in ("development", "testing", "test") or os.getenv(
+                    "ENABLE_DEBUG_ENDPOINTS", ""
+                ).lower() == "true"
+
+    # Use settings (deployment-agnostic)
+    env = settings.server.environment.value.lower()
     return (
         env in ("development", "testing", "test")
-        or os.getenv("ENABLE_DEBUG_ENDPOINTS", "").lower() == "true"
+        or settings.server.enable_debug_endpoints
     )
 
 
-if _is_debug_enabled():
+# Get settings for debug check (may not be available at module level)
+try:
+    from .config.settings import get_settings
+    _debug_settings = get_settings()
+except Exception:
+    _debug_settings = None
+
+if _is_debug_enabled(settings=_debug_settings):
     logger.info(
         "🔧 Debug endpoints enabled (ENVIRONMENT=%s)",
-        os.getenv("ENVIRONMENT", "development"),
+        _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
 
     @app.get("/debug/routes")
@@ -933,8 +1016,11 @@ if _is_debug_enabled():
             # Get available providers
             available_providers = llm_provider.registry.get_available_providers()
 
-            # Check if strict mode is enabled
-            strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
+            # Check if strict mode is enabled (from settings, deployment-agnostic)
+            from .config.settings import get_settings
+
+            settings_debug = get_settings()
+            strict_mode = settings_debug.agent.strict_provider_mode
 
             return {
                 "timestamp": to_json_compatible(datetime.now(timezone.utc)),
@@ -955,7 +1041,7 @@ if _is_debug_enabled():
 else:
     logger.info(
         "🔒 Debug endpoints disabled in production (ENVIRONMENT=%s)",
-        os.getenv("ENVIRONMENT", "development"),
+        _debug_settings.server.environment.value if _debug_settings else "unknown",
     )
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled

@@ -35,6 +35,7 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.services.base import BaseService
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
@@ -50,6 +51,7 @@ class CaseService(BaseService, ICaseService):
         case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
         max_cases_per_user: int = 100,
+        tenant_provider: Optional[TenantProvider] = None,
     ):
         """
         Initialize the Case Service
@@ -60,12 +62,14 @@ class CaseService(BaseService, ICaseService):
             case_vector_store: Optional case vector store for Working Memory cleanup
             settings: Configuration settings for the service
             max_cases_per_user: Maximum cases per user
+            tenant_provider: Optional tenant provider for deployment-neutral organization context
         """
         super().__init__("case_service")
         self.repository = case_repository
         self.session_store = session_store
         self.case_vector_store = case_vector_store
         self._settings = settings
+        self.tenant_provider = tenant_provider
 
         # Use settings values if available, otherwise use parameter defaults
         if settings and hasattr(settings, "case"):
@@ -143,13 +147,31 @@ class CaseService(BaseService, ICaseService):
                 if len(title) > 200:
                     raise ValidationException("Case title cannot exceed 200 characters")
 
+            # Resolve organization context using TenantProvider (deployment-neutral)
+            # In single-tenant mode: uses default organization
+            # In multi-tenant mode: uses user's organization
+            resolved_org_id = owner_id.strip()  # Fallback for backward compatibility
+            if self.tenant_provider:
+                try:
+                    # For single-tenant: get_default_organization() is simpler
+                    # For multi-tenant: would need User object, but single-tenant is primary use case
+                    organization = await self.tenant_provider.get_default_organization()
+                    resolved_org_id = organization.org_id
+                except Exception as e:
+                    # If get_default_organization fails (e.g., multi-tenant mode),
+                    # fall back to owner_id (legacy behavior)
+                    self.logger.debug(
+                        f"TenantProvider.get_default_organization() failed: {e}. "
+                        f"Using owner_id as fallback for organization_id"
+                    )
+                    # Fallback to owner_id if TenantProvider fails
+
             # Create new case using milestone-based model
-            # Note: organization_id required by new model - using owner_id for now
             case = Case(
                 title=title,
                 description=description.strip() if description else "",
                 user_id=owner_id.strip(),
-                organization_id=owner_id.strip(),  # TODO: Get from user context
+                organization_id=resolved_org_id,  # Deployment-agnostic org resolution
             )
 
             # Add initial message if provided (restored from old implementation)

@@ -78,13 +78,18 @@ _inmemory_knowledge_item_repository: Optional[InMemoryKnowledgeItemRepository] =
 
 def get_storage_type() -> str:
     """
-    Get configured storage type from settings.
+    Get configured storage type from settings (deployment-agnostic).
 
     Uses settings.database.case_storage_type (env: CASE_STORAGE_TYPE)
     Default: "database"
 
     Returns:
         Storage type string ("inmemory" or "database")
+
+    Design Notes:
+        - Always attempts to use settings first (deployment-agnostic)
+        - Falls back to os.getenv() only if settings unavailable (backward compatibility)
+        - This fallback should rarely occur in normal operation
     """
     from faultmaven.config.settings import get_settings
 
@@ -93,18 +98,28 @@ def get_storage_type() -> str:
         return settings.database.case_storage_type
     except Exception:
         # Fallback for early initialization before settings are available
+        # NOTE: os.getenv() usage here is intentional for backward compatibility
+        # when settings are unavailable during early initialization
+        logger.debug(
+            "Settings unavailable, falling back to os.getenv() for storage type"
+        )
         return os.getenv("CASE_STORAGE_TYPE", STORAGE_TYPE_DATABASE)
 
 
 def get_session_storage_type() -> str:
     """
-    Get configured session storage type from settings.
+    Get configured session storage type from settings (deployment-agnostic).
 
     Uses settings.database.session_storage_type (env: SESSION_STORAGE_TYPE)
     Default: Falls back to case_storage_type, then "database"
 
     Returns:
         Storage type string ("inmemory" or "database")
+
+    Design Notes:
+        - Always attempts to use settings first (deployment-agnostic)
+        - Falls back to os.getenv() only if settings unavailable (backward compatibility)
+        - This fallback should rarely occur in normal operation
     """
     from faultmaven.config.settings import get_settings
 
@@ -112,7 +127,12 @@ def get_session_storage_type() -> str:
         settings = get_settings()
         return settings.database.session_storage_type
     except Exception:
-        # Fallback for early initialization
+        # Fallback for early initialization before settings are available
+        # NOTE: os.getenv() usage here is intentional for backward compatibility
+        # when settings are unavailable during early initialization
+        logger.debug(
+            "Settings unavailable, falling back to os.getenv() for session storage type"
+        )
         return os.getenv("SESSION_STORAGE_TYPE", get_storage_type())
 
 
@@ -418,7 +438,20 @@ def get_evidence_artifact_storage_type() -> str:
     Returns:
         Storage type string ("inmemory" or "database")
     """
-    return os.getenv("EVIDENCE_ARTIFACT_STORAGE_TYPE", get_storage_type())
+    # Use settings (deployment-agnostic) instead of os.getenv()
+    from faultmaven.config.settings import get_settings
+
+    try:
+        settings = get_settings()
+        # Note: evidence_artifact_storage_type may not exist in settings yet
+        # Use case_storage_type as fallback
+        return getattr(settings.database, "evidence_artifact_storage_type", None) or get_storage_type()
+    except Exception:
+        # Fallback for early initialization (backward compatibility)
+        logger.debug(
+            "Settings unavailable, falling back to os.getenv() for evidence artifact storage type"
+        )
+        return os.getenv("EVIDENCE_ARTIFACT_STORAGE_TYPE", get_storage_type())
 
 
 def get_evidence_artifact_repository(
@@ -629,7 +662,20 @@ def get_investigation_session_storage_type() -> str:
     Returns:
         Storage type string ("inmemory" or "database")
     """
-    return os.getenv("INVESTIGATION_SESSION_STORAGE_TYPE", get_storage_type())
+    # Use settings (deployment-agnostic) instead of os.getenv()
+    from faultmaven.config.settings import get_settings
+
+    try:
+        settings = get_settings()
+        # Note: investigation_session_storage_type may not exist in settings yet
+        # Use case_storage_type as fallback
+        return getattr(settings.database, "investigation_session_storage_type", None) or get_storage_type()
+    except Exception:
+        # Fallback for early initialization (backward compatibility)
+        logger.debug(
+            "Settings unavailable, falling back to os.getenv() for investigation session storage type"
+        )
+        return os.getenv("INVESTIGATION_SESSION_STORAGE_TYPE", get_storage_type())
 
 
 def get_investigation_session_repository(
@@ -797,7 +843,20 @@ def get_knowledge_item_storage_type() -> str:
     Returns:
         Storage type string ("inmemory" or "database")
     """
-    return os.getenv("KNOWLEDGE_ITEM_STORAGE_TYPE", get_storage_type())
+    # Use settings (deployment-agnostic) instead of os.getenv()
+    from faultmaven.config.settings import get_settings
+
+    try:
+        settings = get_settings()
+        # Note: knowledge_item_storage_type may not exist in settings yet
+        # Use case_storage_type as fallback
+        return getattr(settings.database, "knowledge_item_storage_type", None) or get_storage_type()
+    except Exception:
+        # Fallback for early initialization (backward compatibility)
+        logger.debug(
+            "Settings unavailable, falling back to os.getenv() for knowledge item storage type"
+        )
+        return os.getenv("KNOWLEDGE_ITEM_STORAGE_TYPE", get_storage_type())
 
 
 def get_knowledge_item_repository(

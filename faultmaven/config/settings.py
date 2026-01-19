@@ -134,6 +134,14 @@ class ServerSettings(BaseSettings):
         "Set to True only for single-process convenience mode (not recommended for production).",
     )
 
+    # Debug endpoints configuration
+    enable_debug_endpoints: bool = Field(
+        default=False,
+        env="ENABLE_DEBUG_ENDPOINTS",
+        description="Enable debug endpoints (development/testing only). "
+        "Automatically enabled if ENVIRONMENT is development/testing/test.",
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -685,6 +693,30 @@ class DatabaseSettings(BaseSettings):
     embedding_model: str = Field(default="BAAI/bge-m3", env="EMBEDDING_MODEL")
     similarity_threshold: float = Field(default=0.7, env="SIMILARITY_THRESHOLD")
     max_search_results: int = Field(default=10, env="MAX_SEARCH_RESULTS")
+
+    # ============================================
+    # Pinecone Configuration (Optional Vector Backend)
+    # ============================================
+    pinecone_api_key: Optional[SecretStr] = Field(
+        default=None,
+        env="PINECONE_API_KEY",
+        description="Pinecone API key (required if VECTOR_BACKEND=pinecone)",
+    )
+    pinecone_index: str = Field(
+        default="faultmaven",
+        env="PINECONE_INDEX",
+        description="Pinecone index name",
+    )
+    pinecone_environment: str = Field(
+        default="us-east-1",
+        env="PINECONE_ENVIRONMENT",
+        description="Pinecone environment/region",
+    )
+    pinecone_dimension: int = Field(
+        default=1536,
+        env="PINECONE_DIMENSION",
+        description="Vector dimension for Pinecone index",
+    )
 
     # ============================================
     # PostgreSQL Configuration (K8s Deployment)
@@ -1803,10 +1835,30 @@ class EvidenceStorageSettings(BaseSettings):
     # Videos: video/mp4, video/webm, video/quicktime
     # Documents: application/pdf, text/html
 
-    # Future: Cloud storage configuration
-    # storage_backend: str = Field(default="local", env="EVIDENCE_STORAGE_BACKEND")
-    # s3_bucket: Optional[str] = Field(default=None, env="EVIDENCE_S3_BUCKET")
-    # s3_region: Optional[str] = Field(default=None, env="EVIDENCE_S3_REGION")
+    # Cloud storage configuration (S3)
+    # These settings are used when STORAGE_BACKEND=s3
+    s3_bucket_name: Optional[str] = Field(
+        default=None,
+        env="S3_BUCKET_NAME",
+        description="S3 bucket name for evidence storage (required if STORAGE_BACKEND=s3)",
+    )
+    s3_region: str = Field(
+        default="us-east-1",
+        env="S3_REGION",
+        description="AWS region for S3 bucket",
+    )
+    s3_key_prefix: str = Field(
+        default="evidence/",
+        env="S3_KEY_PREFIX",
+        description="Key prefix for S3 object keys",
+    )
+    s3_endpoint_url: Optional[str] = Field(
+        default=None,
+        env="S3_ENDPOINT_URL",
+        description="Custom S3 endpoint URL (for S3-compatible services like MinIO)",
+    )
+
+    # Future: Additional cloud storage backends
     # azure_container: Optional[str] = Field(default=None, env="EVIDENCE_AZURE_CONTAINER")
     # gcs_bucket: Optional[str] = Field(default=None, env="EVIDENCE_GCS_BUCKET")
 

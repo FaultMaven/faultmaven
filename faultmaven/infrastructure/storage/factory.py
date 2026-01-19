@@ -121,22 +121,19 @@ def _create_s3_backend(settings) -> IFileStorageBackend:
         ImportError: If boto3 is not installed
         ValueError: If required S3 settings are missing
     """
-    # Get S3 settings (these would need to be added to settings.py)
-    # For now, we use environment variables as fallback
-    import os
-
     from faultmaven.infrastructure.storage.s3 import S3StorageBackend
 
-    bucket_name = os.getenv("S3_BUCKET_NAME")
+    # Get S3 settings from EvidenceStorageSettings (deployment-agnostic)
+    bucket_name = settings.evidence_storage.s3_bucket_name
     if not bucket_name:
         raise ValueError(
             "S3_BUCKET_NAME environment variable is required for S3 storage. "
             "Set STORAGE_BACKEND=filesystem for local development."
         )
 
-    region = os.getenv("S3_REGION", "us-east-1")
-    prefix = os.getenv("S3_KEY_PREFIX", "evidence/")
-    endpoint_url = os.getenv("S3_ENDPOINT_URL")  # For S3-compatible services
+    region = settings.evidence_storage.s3_region
+    prefix = settings.evidence_storage.s3_key_prefix
+    endpoint_url = settings.evidence_storage.s3_endpoint_url
 
     backend = S3StorageBackend(
         bucket_name=bucket_name,

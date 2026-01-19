@@ -27,6 +27,7 @@ def create_case_service(
     case_vector_store: Any | None,
     settings: FaultMavenSettings,
     minimal_factory: callable,
+    tenant_provider: Any | None = None,
 ) -> Any:
     """Create case service for case persistence and management."""
     if not case_repository:
@@ -41,8 +42,9 @@ def create_case_service(
             session_store=session_store,
             case_vector_store=case_vector_store,
             settings=settings,
+            tenant_provider=tenant_provider,  # Inject TenantProvider for deployment-agnostic org resolution
         )
-        logger.debug("Case service initialized with milestone-based repository")
+        logger.debug("Case service initialized with milestone-based repository and TenantProvider")
         return service
     except Exception as e:
         logger.warning(f"Case service initialization failed: {e}")
@@ -498,13 +500,22 @@ def register_services(container: BaseDIContainer) -> None:
     if user_service:
         container._register_service("user_service", user_service)
 
-    # Case Service
+    # Tenant Provider (create before Case Service so it can be injected)
+    tenant_provider = create_tenant_provider(
+        db_session, organization_repository, settings
+    )
+    container.tenant_provider = tenant_provider
+    if tenant_provider:
+        container._register_service("tenant_provider", tenant_provider)
+
+    # Case Service (with TenantProvider injection for deployment-agnostic org resolution)
     case_service = create_case_service(
         case_repository,
         session_store,
         case_vector_store,
         settings,
         container._create_minimal_case_service,
+        tenant_provider=tenant_provider,  # Inject TenantProvider
     )
     container._register_service("case_service", case_service)
 
@@ -546,14 +557,6 @@ def register_services(container: BaseDIContainer) -> None:
     container.organization_service = organization_service
     if organization_service:
         container._register_service("organization_service", organization_service)
-
-    # Tenant Provider
-    tenant_provider = create_tenant_provider(
-        db_session, organization_repository, settings
-    )
-    container.tenant_provider = tenant_provider
-    if tenant_provider:
-        container._register_service("tenant_provider", tenant_provider)
 
     # Team Service
     team_service = create_team_service(db_session, organization_repository, settings)

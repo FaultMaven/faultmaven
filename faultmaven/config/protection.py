@@ -20,60 +20,34 @@ from ..models.protection import (
 
 def load_protection_settings(settings=None) -> ProtectionSettings:
     """
-    Load protection settings from unified settings or environment variables (fallback)
+    Load protection settings from unified settings or environment variables (fallback).
 
     Args:
-        settings: FaultMavenSettings instance (if None, loads from environment)
-
-    Environment Variables (used only as fallback when settings unavailable):
-        # General
-        PROTECTION_ENABLED: Enable all protection mechanisms (default: true)
-        PROTECTION_FAIL_OPEN: Fail open on Redis errors (default: true)
-        PROTECTION_BYPASS_HEADERS: Comma-separated list of bypass headers
-
-        # Rate Limiting
-        RATE_LIMITING_ENABLED: Enable rate limiting (default: true)
-        REDIS_URL: Redis connection URL (default: constructed from settings)
-        REDIS_KEY_PREFIX: Redis key prefix (default: faultmaven)
-
-        # Rate Limits (requests:window_seconds)
-        RATE_LIMIT_GLOBAL: Global rate limit (default: 1000:60)
-        RATE_LIMIT_PER_SESSION: Per-session rate limit (default: 10:60)
-        RATE_LIMIT_PER_SESSION_HOURLY: Per-session hourly (default: 100:3600)
-        RATE_LIMIT_TITLE_GENERATION: Title generation (default: 1:300)
-
-        # Deduplication
-        DEDUPLICATION_ENABLED: Enable request deduplication (default: true)
-        DEDUP_DEFAULT_TTL: Default deduplication TTL seconds (default: 300)
-        DEDUP_AGENT_QUERY_TTL: Agent query TTL seconds (default: 60)
-
-        # Timeouts
-        TIMEOUTS_ENABLED: Enable timeout protection (default: true)
-        TIMEOUT_AGENT_TOTAL: Total agent timeout seconds (default: 300)
-        TIMEOUT_AGENT_PHASE: Agent phase timeout seconds (default: 120)
-        TIMEOUT_LLM_CALL: LLM call timeout seconds (default: 30)
-        TIMEOUT_EMERGENCY_SHUTDOWN: Emergency shutdown timeout (default: 600)
+        settings: FaultMavenSettings instance (if None, attempts to load from get_settings())
 
     Returns:
         ProtectionSettings instance with loaded configuration
+
+    Design Notes:
+        - Always attempts to use settings first (deployment-agnostic)
+        - Only falls back to os.getenv() if settings are completely unavailable
+        - This maintains backward compatibility while following settings-only principle
     """
 
-    # If settings provided, use them
-    if settings is not None:
-        # Get settings if not provided
+    # Always try to get settings first (deployment-agnostic)
+    if settings is None:
         try:
             from faultmaven.config.settings import get_settings
-
-            if settings is None:
-                settings = get_settings()
+            settings = get_settings()
         except Exception:
             settings = None
 
     if settings is not None:
-        # Use settings-based configuration
+        # Use settings-based configuration (preferred path)
         return _load_from_settings(settings)
     else:
-        # Fallback to environment variables
+        # Fallback to environment variables (backward compatibility only)
+        # This should rarely happen in normal operation
         return _load_from_environment()
 
 
@@ -116,7 +90,18 @@ def _load_from_settings(settings) -> ProtectionSettings:
 
 
 def _load_from_environment() -> ProtectionSettings:
-    """Load protection settings from environment variables (fallback)"""
+    """Load protection settings from environment variables (backward compatibility fallback).
+
+    NOTE: This function uses os.getenv() directly, which violates the "Settings-Only
+    Environment Reads" principle. However, this is intentional as a fallback for
+    backward compatibility when settings are unavailable.
+
+    This function should only be called when settings cannot be loaded. In normal
+    operation, _load_from_settings() should be used instead.
+
+    TODO: Add rate limits, deduplication, and timeout settings to ProtectionSettings
+    in settings.py to fully eliminate os.getenv() usage here.
+    """
 
     # Helper function to parse rate limit string
     def parse_rate_limit(

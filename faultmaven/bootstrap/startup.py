@@ -44,7 +44,7 @@ async def bootstrap_application(container: Any) -> None:
         async def startup_event():
             await bootstrap_application(container)
     """
-    logger.info("Starting application bootstrap")
+    logger.debug("Starting application bootstrap")
 
     # Get tenant provider from container
     if not hasattr(container, "tenant_provider") or container.tenant_provider is None:
@@ -55,10 +55,11 @@ async def bootstrap_application(container: Any) -> None:
 
     # Single-tenant mode: Ensure default organization exists
     if isinstance(tenant_provider, SingleTenantProvider):
-        logger.info("Single-tenant mode: Ensuring default organization exists")
+        # Silent operation in local mode - use debug level to avoid user-visible output
+        logger.debug("Single-tenant mode: Ensuring default organization exists")
         try:
             default_org = await tenant_provider.ensure_default_organization_exists()
-            logger.info(
+            logger.debug(
                 f"Default organization ready: {default_org.name} "
                 f"(ID: {default_org.org_id}, Tier: {default_org.plan_tier.value})"
             )
@@ -66,11 +67,11 @@ async def bootstrap_application(container: Any) -> None:
             logger.error(f"Failed to create default organization: {e}")
             raise
     else:
-        logger.info("Multi-tenant mode: No default organization created")
+        logger.debug("Multi-tenant mode: No default organization created")
 
     # Future: Add more bootstrap tasks here
     # - Verify database schema
     # - Initialize infrastructure providers
     # - Load system configuration
 
-    logger.info("Application bootstrap complete")
+    logger.debug("Application bootstrap complete")

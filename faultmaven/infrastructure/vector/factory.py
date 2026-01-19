@@ -10,7 +10,6 @@ Usage:
 """
 
 import logging
-import os
 from typing import Optional
 
 from faultmaven.config.settings import VectorBackend
@@ -94,36 +93,17 @@ def _create_chroma_backend(settings) -> IVectorBackend:
     """
     from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
 
-    # Get Chroma settings
-    # Check if settings has a proper embedding configuration
-    try:
-        # Attempt to access and validate as strings
-        if hasattr(settings, "embedding"):
-            persist_dir = getattr(settings.embedding, "chroma_persist_directory", None)
-            persist_directory = (
-                str(persist_dir) if isinstance(persist_dir, str) else "./data/chroma"
-            )
-
-            coll_name = getattr(settings.embedding, "chroma_collection_name", None)
-            collection_name = (
-                str(coll_name) if isinstance(coll_name, str) else "faultmaven_kb"
-            )
-        else:
-            persist_directory = "./data/chroma"
-            collection_name = "faultmaven_kb"
-    except (AttributeError, TypeError):
-        persist_directory = "./data/chroma"
-        collection_name = "faultmaven_kb"
-
-    # Check for HTTP client configuration
-    chroma_host = os.getenv("CHROMADB_HOST")
-    chroma_port = os.getenv("CHROMADB_PORT")
+    # Get ChromaDB configuration from DatabaseSettings (deployment-agnostic)
+    persist_directory = settings.database.chromadb_persist_dir
+    collection_name = settings.database.chromadb_collection
+    chroma_host = settings.database.chromadb_host
+    chroma_port = settings.database.chromadb_port
 
     backend = ChromaVectorBackend(
         persist_directory=persist_directory,
         default_collection=collection_name,
         host=chroma_host,
-        port=int(chroma_port) if chroma_port else None,
+        port=chroma_port if chroma_port else None,
     )
 
     logger.info(f"ChromaDB backend created: {persist_directory}")
@@ -145,17 +125,18 @@ def _create_pinecone_backend(settings) -> IVectorBackend:
     """
     from faultmaven.infrastructure.vector.pinecone import PineconeVectorBackend
 
-    # Get Pinecone settings from environment
-    api_key = os.getenv("PINECONE_API_KEY")
-    if not api_key:
+    # Get Pinecone settings from DatabaseSettings (deployment-agnostic)
+    api_key_secret = settings.database.pinecone_api_key
+    if not api_key_secret:
         raise ValueError(
             "PINECONE_API_KEY environment variable is required for Pinecone backend. "
             "Set VECTOR_BACKEND=chroma for local development."
         )
+    api_key = api_key_secret.get_secret_value()
 
-    index_name = os.getenv("PINECONE_INDEX", "faultmaven")
-    environment = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
-    dimension = int(os.getenv("PINECONE_DIMENSION", "1536"))
+    index_name = settings.database.pinecone_index
+    environment = settings.database.pinecone_environment
+    dimension = settings.database.pinecone_dimension
 
     backend = PineconeVectorBackend(
         api_key=api_key,
