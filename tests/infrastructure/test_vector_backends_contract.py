@@ -431,6 +431,12 @@ class TestVectorFactory:
                     vector_backend=MagicMock(value="pinecone")  # Settings say Pinecone
                 ),
                 evidence_storage=MagicMock(evidence_storage_root="./data"),
+                database=MagicMock(
+                    chromadb_persist_dir="./data/chroma",
+                    chromadb_collection="faultmaven_kb",
+                    chromadb_host=None,  # Local mode
+                    chromadb_port=None,
+                ),
             )
 
             reset_vector_backend()
@@ -449,6 +455,12 @@ class TestVectorFactory:
         with patch("faultmaven.config.settings.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 providers=MagicMock(vector_backend=MagicMock(value="pinecone")),
+                database=MagicMock(
+                    pinecone_api_key=None,  # Missing API key
+                    pinecone_index="faultmaven",
+                    pinecone_environment="us-east-1",
+                    pinecone_dimension=1536,
+                ),
             )
 
             reset_vector_backend()

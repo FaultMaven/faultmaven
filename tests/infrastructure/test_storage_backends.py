@@ -406,6 +406,12 @@ class TestStorageFactory:
         with patch("faultmaven.config.settings.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 providers=MagicMock(storage_backend=MagicMock(value="s3")),
+                evidence_storage=MagicMock(
+                    s3_bucket_name=None,  # Missing bucket name
+                    s3_region="us-east-1",
+                    s3_key_prefix="evidence/",
+                    s3_endpoint_url=None,
+                ),
             )
 
             with pytest.raises(ValueError, match="S3_BUCKET_NAME"):

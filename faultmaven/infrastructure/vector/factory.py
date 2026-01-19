@@ -96,10 +96,11 @@ def _create_chroma_backend(settings) -> IVectorBackend:
     # Get ChromaDB configuration from DatabaseSettings (deployment-agnostic)
     # Handle missing database settings gracefully for tests
     try:
-        persist_directory = settings.database.chromadb_persist_dir
-        collection_name = settings.database.chromadb_collection
-        chroma_host = getattr(settings.database, "chromadb_host", None)
-        chroma_port = getattr(settings.database, "chromadb_port", None)
+        database_settings = settings.database
+        persist_directory = getattr(database_settings, "chromadb_persist_dir", "./data/chroma")
+        collection_name = getattr(database_settings, "chromadb_collection", "faultmaven_kb")
+        chroma_host = getattr(database_settings, "chromadb_host", None)
+        chroma_port = getattr(database_settings, "chromadb_port", None)
     except AttributeError:
         # Fallback for test scenarios where database settings might not be fully mocked
         persist_directory = "./data/chroma"

@@ -443,9 +443,19 @@ def get_evidence_artifact_storage_type() -> str:
 
     try:
         settings = get_settings()
-        # Note: evidence_artifact_storage_type may not exist in settings yet
-        # Use case_storage_type as fallback
-        return getattr(settings.database, "evidence_artifact_storage_type", None) or get_storage_type()
+        # Check if evidence_artifact_storage_type exists in settings
+        # If not, check environment variable for backward compatibility (test scenarios)
+        storage_type = getattr(settings.database, "evidence_artifact_storage_type", None)
+        if storage_type:
+            return storage_type
+        
+        # Fallback to environment variable (for test compatibility)
+        env_type = os.getenv("EVIDENCE_ARTIFACT_STORAGE_TYPE")
+        if env_type:
+            return env_type
+        
+        # Fallback to case_storage_type
+        return get_storage_type()
     except Exception:
         # Fallback for early initialization (backward compatibility)
         logger.debug(
