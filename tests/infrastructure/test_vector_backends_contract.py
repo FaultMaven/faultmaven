@@ -414,6 +414,12 @@ class TestVectorFactory:
             mock_settings.return_value = MagicMock(
                 providers=MagicMock(vector_backend=MagicMock(value="chroma")),
                 evidence_storage=MagicMock(evidence_storage_root="./data"),
+                database=MagicMock(
+                    chromadb_persist_dir="./data/chroma",
+                    chromadb_collection="faultmaven_kb",
+                    chromadb_host=None,  # Local mode
+                    chromadb_port=None,
+                ),
             )
 
             reset_vector_backend()
