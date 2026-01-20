@@ -158,7 +158,7 @@ test = [
     "safety>=2.3.0",
 
     # Code quality (for CI checks)
-    "black>=23.0.0",
+    "black==24.10.0",  # Pinned for consistent formatting across environments
     "isort>=5.12.0",
     "flake8>=7.0.0",
 ]
