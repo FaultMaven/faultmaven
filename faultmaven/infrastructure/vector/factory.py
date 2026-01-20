@@ -99,24 +99,29 @@ def _create_chroma_backend(settings) -> IVectorBackend:
         database_settings = settings.database
         persist_directory = getattr(database_settings, "chromadb_persist_dir", "./data/chroma")
         collection_name = getattr(database_settings, "chromadb_collection", "faultmaven_kb")
-        chroma_host = getattr(database_settings, "chromadb_host", None)
-        chroma_port = getattr(database_settings, "chromadb_port", None)
+        chroma_host_raw = getattr(database_settings, "chromadb_host", None)
+        chroma_port_raw = getattr(database_settings, "chromadb_port", None)
+        
+        # Normalize values (handle MagicMock objects that might evaluate to True)
+        # Convert to actual None if the value is None, empty string, or default local host
+        if chroma_host_raw is None or chroma_host_raw == "" or chroma_host_raw in ("localhost", "127.0.0.1", "chromadb.faultmaven.local"):
+            chroma_host = None
+        else:
+            chroma_host = chroma_host_raw
+            
+        # Port should be None if host is None, or if explicitly None/empty
+        if chroma_host is None:
+            chroma_port = None
+        elif chroma_port_raw is None or chroma_port_raw == "":
+            chroma_port = None
+        else:
+            chroma_port = chroma_port_raw
+            
     except AttributeError:
         # Fallback for test scenarios where database settings might not be fully mocked
         persist_directory = "./data/chroma"
         collection_name = "faultmaven_kb"
         chroma_host = None
-        chroma_port = None
-
-    # Normalize None values (in case MagicMock returns something that evaluates to True)
-    # Use local mode (no host/port) if host is not set or is default local host
-    # This allows ChromaDB to work in test scenarios without needing a running server
-    if chroma_host is None or chroma_host == "" or chroma_host in ("localhost", "127.0.0.1", "chromadb.faultmaven.local"):
-        chroma_host = None
-        chroma_port = None
-    
-    # Ensure port is None if host is None (local mode)
-    if chroma_host is None:
         chroma_port = None
 
     backend = ChromaVectorBackend(
