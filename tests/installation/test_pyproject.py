@@ -64,7 +64,12 @@ def test_test_dependencies_include_code_quality():
     test_deps = data["project"]["optional-dependencies"]["test"]
     # Extract package names, handling version specifiers: >=, ==, <=, ~=, etc.
     dep_names = [
-        dep.split(">=")[0].split("==")[0].split("<=")[0].split("~=")[0].split("[")[0].strip()
+        dep.split(">=")[0]
+        .split("==")[0]
+        .split("<=")[0]
+        .split("~=")[0]
+        .split("[")[0]
+        .strip()
         for dep in test_deps
     ]
 
