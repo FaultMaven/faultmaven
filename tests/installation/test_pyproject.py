@@ -62,7 +62,11 @@ def test_test_dependencies_include_code_quality():
         data = tomllib.load(f)
 
     test_deps = data["project"]["optional-dependencies"]["test"]
-    dep_names = [dep.split(">=")[0].split("[")[0] for dep in test_deps]
+    # Extract package names, handling version specifiers: >=, ==, <=, ~=, etc.
+    dep_names = [
+        dep.split(">=")[0].split("==")[0].split("<=")[0].split("~=")[0].split("[")[0].strip()
+        for dep in test_deps
+    ]
 
     # Code quality tools should be in test dependencies for CI
     code_quality_tools = ["black", "isort", "flake8"]

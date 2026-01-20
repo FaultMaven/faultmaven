@@ -939,7 +939,7 @@ def _is_debug_enabled(settings=None) -> bool:
         settings = _app_settings
         if settings is None:
             try:
-                from .config.settings import get_settings, Environment
+                from .config.settings import Environment, get_settings
 
                 settings = get_settings()
             except Exception:
