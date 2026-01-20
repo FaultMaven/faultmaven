@@ -108,15 +108,22 @@ def _create_chroma_backend(settings) -> IVectorBackend:
         chroma_host = None
         chroma_port = None
 
+    # Normalize None values (in case MagicMock returns something that evaluates to True)
     # Use local mode (no host/port) if host is not set or is default local host
     # This allows ChromaDB to work in test scenarios without needing a running server
-    use_local_mode = not chroma_host or chroma_host in ("localhost", "127.0.0.1", "chromadb.faultmaven.local")
+    if chroma_host is None or chroma_host == "" or chroma_host in ("localhost", "127.0.0.1", "chromadb.faultmaven.local"):
+        chroma_host = None
+        chroma_port = None
+    
+    # Ensure port is None if host is None (local mode)
+    if chroma_host is None:
+        chroma_port = None
 
     backend = ChromaVectorBackend(
         persist_directory=persist_directory,
         default_collection=collection_name,
-        host=chroma_host if not use_local_mode else None,
-        port=chroma_port if (not use_local_mode and chroma_port) else None,
+        host=chroma_host,  # Will be None for local mode
+        port=chroma_port,  # Will be None for local mode
     )
 
     logger.info(f"ChromaDB backend created: {persist_directory}")
