@@ -73,3 +73,45 @@ jobs:
       - name: Image digest
         if: github.event_name != 'pull_request'
         run: echo "Published Docker images with digest ${{ steps.meta.outputs.digest }}"
+
+      # Update image queue for promotion workflow
+      - name: Update image queue
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          # Clone the enterprise-infra repository
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/faultmaven-enterprise-infra.git /tmp/infra
+          cd /tmp/infra
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Update the queue file
+          QUEUE_FILE="available-images/staging/faultmaven.yaml"
+          SHA_SHORT="${GITHUB_SHA:0:7}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat > "$QUEUE_FILE" << EOF
+          # FaultMaven Modular Monolith Backend
+          # Updated by: faultmaven/.github/workflows/publish-docker.yml
+          # Consumed by: promote-images.yaml workflow
+
+          image: ghcr.io/${{ github.repository_owner }}/faultmaven
+          tag: sha-${SHA_SHORT}
+          updated_at: "${TIMESTAMP}"
+          commit_sha: "${GITHUB_SHA}"
+          EOF
+
+          # Commit and push
+          git add "$QUEUE_FILE"
+          if git diff --staged --quiet; then
+            echo "No changes to queue file"
+          else
+            git commit -m "chore(queue): update faultmaven image to sha-${SHA_SHORT}
+
+          Built from: ${{ github.repository }}@${GITHUB_SHA}
+          Triggered by: @${{ github.actor }}
+          Workflow: ${{ github.workflow }}"
+            git push origin develop
+            echo "✓ Updated image queue: sha-${SHA_SHORT}"
+          fi
