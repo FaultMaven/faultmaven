@@ -71,6 +71,7 @@ def _is_test_environment(settings=None) -> bool:
             # Fallback: try to get settings (for early calls before lifespan)
             try:
                 from .config.settings import get_settings
+
                 settings = get_settings()
             except Exception:
                 # If settings not available, fall back to os.getenv for backward compatibility
@@ -102,6 +103,7 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
         if settings is None:
             try:
                 from .config.settings import get_settings
+
                 settings = get_settings()
             except Exception:
                 # If settings unavailable, skip check
@@ -118,11 +120,31 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
     # Check common API key environment variables from settings (deployment-agnostic)
     llm_settings = settings.llm
     llm_keys = {
-        "OpenAI": llm_settings.openai_api_key.get_secret_value() if llm_settings.openai_api_key else "",
-        "Anthropic": llm_settings.anthropic_api_key.get_secret_value() if llm_settings.anthropic_api_key else "",
-        "Fireworks": llm_settings.fireworks_api_key.get_secret_value() if llm_settings.fireworks_api_key else "",
-        "Groq": llm_settings.groq_api_key.get_secret_value() if llm_settings.groq_api_key else "",
-        "Gemini": llm_settings.gemini_api_key.get_secret_value() if llm_settings.gemini_api_key else "",
+        "OpenAI": (
+            llm_settings.openai_api_key.get_secret_value()
+            if llm_settings.openai_api_key
+            else ""
+        ),
+        "Anthropic": (
+            llm_settings.anthropic_api_key.get_secret_value()
+            if llm_settings.anthropic_api_key
+            else ""
+        ),
+        "Fireworks": (
+            llm_settings.fireworks_api_key.get_secret_value()
+            if llm_settings.fireworks_api_key
+            else ""
+        ),
+        "Groq": (
+            llm_settings.groq_api_key.get_secret_value()
+            if llm_settings.groq_api_key
+            else ""
+        ),
+        "Gemini": (
+            llm_settings.gemini_api_key.get_secret_value()
+            if llm_settings.gemini_api_key
+            else ""
+        ),
     }
 
     for name, key in llm_keys.items():
@@ -318,6 +340,7 @@ async def lifespan(app: FastAPI):
         # Only allow graceful degradation in non-production environments
         # Use settings (deployment-agnostic) instead of os.getenv()
         from .config.settings import Environment
+
         is_production = settings.server.environment == Environment.PRODUCTION
         if is_production:
             logger.critical(
@@ -393,7 +416,9 @@ async def lifespan(app: FastAPI):
         # Check if we're configured to use local LLM providers
         # Use settings (deployment-agnostic) instead of os.getenv()
         llm_settings = settings.llm
-        chat_provider = llm_settings.provider.value.lower() if llm_settings.provider else ""
+        chat_provider = (
+            llm_settings.provider.value.lower() if llm_settings.provider else ""
+        )
         classifier_provider = (
             llm_settings.classifier_provider.value.lower()
             if llm_settings.classifier_provider
@@ -915,13 +940,15 @@ def _is_debug_enabled(settings=None) -> bool:
         if settings is None:
             try:
                 from .config.settings import get_settings, Environment
+
                 settings = get_settings()
             except Exception:
                 # Fallback to environment check if settings unavailable
                 env = os.getenv("ENVIRONMENT", "development").lower()
-                return env in ("development", "testing", "test") or os.getenv(
-                    "ENABLE_DEBUG_ENDPOINTS", ""
-                ).lower() == "true"
+                return (
+                    env in ("development", "testing", "test")
+                    or os.getenv("ENABLE_DEBUG_ENDPOINTS", "").lower() == "true"
+                )
 
     # Use settings (deployment-agnostic)
     env = settings.server.environment.value.lower()
@@ -934,6 +961,7 @@ def _is_debug_enabled(settings=None) -> bool:
 # Get settings for debug check (may not be available at module level)
 try:
     from .config.settings import get_settings
+
     _debug_settings = get_settings()
 except Exception:
     _debug_settings = None

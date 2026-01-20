@@ -44,7 +44,9 @@ def create_case_service(
             settings=settings,
             tenant_provider=tenant_provider,  # Inject TenantProvider for deployment-agnostic org resolution
         )
-        logger.debug("Case service initialized with milestone-based repository and TenantProvider")
+        logger.debug(
+            "Case service initialized with milestone-based repository and TenantProvider"
+        )
         return service
     except Exception as e:
         logger.warning(f"Case service initialization failed: {e}")

@@ -38,6 +38,7 @@ def load_protection_settings(settings=None) -> ProtectionSettings:
     if settings is None:
         try:
             from faultmaven.config.settings import get_settings
+
             settings = get_settings()
         except Exception:
             settings = None

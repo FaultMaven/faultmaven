@@ -445,15 +445,17 @@ def get_evidence_artifact_storage_type() -> str:
         settings = get_settings()
         # Check if evidence_artifact_storage_type exists in settings
         # If not, check environment variable for backward compatibility (test scenarios)
-        storage_type = getattr(settings.database, "evidence_artifact_storage_type", None)
+        storage_type = getattr(
+            settings.database, "evidence_artifact_storage_type", None
+        )
         if storage_type:
             return storage_type
-        
+
         # Fallback to environment variable (for test compatibility)
         env_type = os.getenv("EVIDENCE_ARTIFACT_STORAGE_TYPE")
         if env_type:
             return env_type
-        
+
         # Fallback to case_storage_type
         return get_storage_type()
     except Exception:
@@ -687,7 +689,10 @@ def get_investigation_session_storage_type() -> str:
         settings = get_settings()
         # Note: investigation_session_storage_type may not exist in settings yet
         # Use case_storage_type as fallback
-        return getattr(settings.database, "investigation_session_storage_type", None) or get_storage_type()
+        return (
+            getattr(settings.database, "investigation_session_storage_type", None)
+            or get_storage_type()
+        )
     except Exception:
         # Fallback for early initialization (backward compatibility)
         logger.debug(
@@ -868,7 +873,10 @@ def get_knowledge_item_storage_type() -> str:
         settings = get_settings()
         # Note: knowledge_item_storage_type may not exist in settings yet
         # Use case_storage_type as fallback
-        return getattr(settings.database, "knowledge_item_storage_type", None) or get_storage_type()
+        return (
+            getattr(settings.database, "knowledge_item_storage_type", None)
+            or get_storage_type()
+        )
     except Exception:
         # Fallback for early initialization (backward compatibility)
         logger.debug(
