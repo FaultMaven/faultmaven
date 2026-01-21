@@ -73,6 +73,21 @@ cp .env.example .env
 2. Navigate to any observability tool (AWS Console, Datadog, Grafana)
 3. Click the **Copilot** extension icon and start troubleshooting
 
+### Docker Management Commands
+
+Convenient scripts for managing the Docker-based stack:
+
+```bash
+# Main CLI for Docker-based deployment
+./faultmaven.sh start              # Start services
+./faultmaven.sh start --demo       # Start with demo data
+./faultmaven.sh status             # Check service health
+./faultmaven.sh logs               # View all logs
+./faultmaven.sh logs api           # View specific service logs
+./faultmaven.sh restart            # Restart all services
+./faultmaven.sh stop               # Stop all services
+```
+
 ### Access Points
 
 | Component | URL | Description |
@@ -123,32 +138,22 @@ The dashboard will be available at `http://localhost:5173` (Vite dev server) and
 
 > **Note:** Make sure the API backend is running before starting the dashboard. The dashboard requires the API to be available at `http://localhost:8000`.
 
-For more detailed setup instructions, see [Development Setup](docs/development/local-setup.md).
+### Local Development Management Commands
 
-### Helper Scripts
-
-Convenient scripts for managing the FaultMaven stack:
-
-**Docker Deployment (Recommended):**
-
-```bash
-# Main CLI for Docker-based deployment
-./faultmaven.sh start              # Start services
-./faultmaven.sh start --demo       # Start with demo data
-./faultmaven.sh status             # Check service health
-./faultmaven.sh logs               # View all logs
-./faultmaven.sh logs api           # View specific service logs
-./faultmaven.sh restart            # Restart all services
-./faultmaven.sh stop               # Stop all services
-```
-
-**Local Development (without Docker):**
+Convenient scripts for managing the local development environment:
 
 ```bash
 # For contributors developing FaultMaven
-./scripts/faultmaven-dev.sh start  # Start API as local process
-./scripts/faultmaven-dev.sh health    # Verify local setup
+./scripts/faultmaven-dev.sh start   # Start API as local process
+./scripts/faultmaven-dev.sh stop    # Stop the API
+./scripts/faultmaven-dev.sh restart # Restart the API
+./scripts/faultmaven-dev.sh status  # Show service status
+./scripts/faultmaven-dev.sh health  # Run comprehensive health checks
+./scripts/faultmaven-dev.sh logs    # Stream application logs
+./scripts/faultmaven-dev.sh test    # Run tests (delegates to scripts/tests.py)
 ```
+
+For more detailed setup instructions, see [Development Setup](docs/development/local-setup.md).
 
 ---
 
