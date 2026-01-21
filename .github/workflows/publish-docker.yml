@@ -81,7 +81,7 @@ jobs:
         with:
           repository: FaultMaven/faultmaven-enterprise-infra
           ref: develop
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_CROSS_REPO_ACCESS }}
           path: enterprise-infra
 
       # Update image queue for promotion workflow
