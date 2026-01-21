@@ -74,15 +74,23 @@ jobs:
         if: github.event_name != 'pull_request'
         run: echo "Published Docker images with digest ${{ steps.meta.outputs.digest }}"
 
+      # Checkout enterprise-infra repository
+      - name: Checkout enterprise-infra
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@v4
+        with:
+          repository: FaultMaven/faultmaven-enterprise-infra
+          ref: develop
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: enterprise-infra
+
       # Update image queue for promotion workflow
       - name: Update image queue
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          # Clone the enterprise-infra repository
-          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/faultmaven-enterprise-infra.git /tmp/infra
-          cd /tmp/infra
+          cd enterprise-infra
 
-          # Configure git
+          # Configure git identity
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -96,7 +104,7 @@ jobs:
           # Updated by: faultmaven/.github/workflows/publish-docker.yml
           # Consumed by: promote-images.yaml workflow
 
-          image: ghcr.io/${{ github.repository_owner }}/faultmaven
+          image: ghcr.io/faultmaven/faultmaven
           tag: sha-${SHA_SHORT}
           updated_at: "${TIMESTAMP}"
           commit_sha: "${GITHUB_SHA}"
