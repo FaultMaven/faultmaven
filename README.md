@@ -83,7 +83,47 @@ cp .env.example .env
 
 ### Alternative: Local Development Setup
 
-For contributors or debugging, you can run the components as local processes instead of Docker. See [Development Setup](docs/development/local-setup.md).
+For contributors or debugging, you can run the components as local processes instead of Docker.
+
+**1. Start the API Backend:**
+
+```bash
+# Start API as local process
+./scripts/faultmaven-dev.sh start
+
+# Verify it's running
+./scripts/faultmaven-dev.sh health
+```
+
+The API will be available at `http://localhost:8000`
+
+**2. Start the Dashboard (separate process):**
+
+The dashboard is in a separate repository. To run it locally:
+
+```bash
+# Clone the dashboard repository (if not already cloned)
+git clone https://github.com/FaultMaven/faultmaven-dashboard.git
+cd faultmaven-dashboard
+
+# Install dependencies
+npm install
+# Or: pnpm install
+
+# Configure API endpoint (optional - defaults to http://localhost:8000)
+cp .env.example .env
+# Edit .env if needed: VITE_API_URL=http://localhost:8000
+
+# Start the development server
+npm run dev
+# Or: pnpm dev
+```
+
+The dashboard will be available at `http://localhost:5173` (Vite dev server) and will connect to the API at `http://localhost:8000`.
+
+> **Note:** Make sure the API backend is running before starting the dashboard. The dashboard requires the API to be available at `http://localhost:8000`.
+
+For more detailed setup instructions, see [Development Setup](docs/development/local-setup.md).
 
 ### Helper Scripts
 
@@ -108,14 +148,6 @@ Convenient scripts for managing the FaultMaven stack:
 # For contributors developing FaultMaven
 ./scripts/faultmaven-dev.sh start  # Start API as local process
 ./scripts/faultmaven-dev.sh health    # Verify local setup
-```
-
-**Legacy Commands:**
-
-```bash
-# Alternative quick-start scripts
-./faultmaven.sh start           # Start with Docker Compose
-./faultmaven.sh status          # Health check for containers
 ```
 
 ---
