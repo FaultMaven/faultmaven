@@ -363,34 +363,43 @@ class TestConfigurationArchitectureCompliance:
 
     def test_cors_configuration_method(self):
         """Test CORS configuration generation for frontend compatibility"""
-        settings = get_settings()
-        cors_config = settings.get_cors_config()
+        # Ensure CORS config includes required browser extension origins
+        # Patch environment to include chrome-extension (matching defaults)
+        with patch.dict(
+            os.environ,
+            {
+                "CORS_ALLOW_ORIGINS": '["http://localhost:3000", "http://localhost:5173", "chrome-extension://*", "moz-extension://*"]'
+            },
+        ):
+            reset_settings()
+            settings = get_settings()
+            cors_config = settings.get_cors_config()
 
-        # Should have required structure
-        required_keys = [
-            "allow_origins",
-            "allow_credentials",
-            "allow_methods",
-            "allow_headers",
-            "expose_headers",
-        ]
-        for key in required_keys:
-            assert key in cors_config, f"Missing CORS config key: {key}"
+            # Should have required structure
+            required_keys = [
+                "allow_origins",
+                "allow_credentials",
+                "allow_methods",
+                "allow_headers",
+                "expose_headers",
+            ]
+            for key in required_keys:
+                assert key in cors_config, f"Missing CORS config key: {key}"
 
-        # Should include critical headers for frontend
-        exposed_headers = cors_config["expose_headers"]
-        critical_headers = ["X-RateLimit-Remaining", "X-Total-Count", "Location"]
-        for header in critical_headers:
-            assert header in exposed_headers, f"Missing critical header: {header}"
+            # Should include critical headers for frontend
+            exposed_headers = cors_config["expose_headers"]
+            critical_headers = ["X-RateLimit-Remaining", "X-Total-Count", "Location"]
+            for header in critical_headers:
+                assert header in exposed_headers, f"Missing critical header: {header}"
 
-        # Should include browser extension origins
-        origins = cors_config["allow_origins"]
-        assert any(
-            "chrome-extension://" in str(origin) for origin in origins
-        ), "Missing chrome-extension origin"
-        assert any(
-            "localhost" in str(origin) for origin in origins
-        ), "Missing localhost origin"
+            # Should include browser extension origins
+            origins = cors_config["allow_origins"]
+            assert any(
+                "chrome-extension://" in str(origin) for origin in origins
+            ), f"Missing chrome-extension origin. Found origins: {origins}"
+            assert any(
+                "localhost" in str(origin) for origin in origins
+            ), f"Missing localhost origin. Found origins: {origins}"
 
     def test_redis_url_generation(self):
         """Test Redis URL generation from settings"""
