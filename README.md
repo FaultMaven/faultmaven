@@ -70,10 +70,7 @@ cp .env.example .env
 
 **Note:** Users must be created before login. This ensures production parity between local and cloud deployments.
 
-**Storage and Workers:**
-- **Default configuration** (`WORKERS=1` with in-memory storage): Works perfectly for local deployment. You can create unlimited users - they're all stored in the single worker's memory.
-- **In-memory storage limitation**: In-memory storage **requires** `WORKERS=1`. If you set `WORKERS > 1` with in-memory storage, the server will fail to start with a clear error message. This is by design - each worker process has separate memory, so users created in one worker won't be visible to others.
-- **Multiple workers**: If you need multiple workers (for higher throughput), you must use Redis storage by setting `SESSION_STORAGE_TYPE=redis` in your `.env` file. Redis allows all workers to share the same user data.
+**Local Deployment:** Designed for single-user usage with `WORKERS=1` (required). While you can create multiple user accounts, local deployment is optimized for one active user.
 
 **Image sources:** FaultMaven publishes to both Docker Hub (`docker.io/faultmaven/faultmaven`) and GitHub Container Registry (`ghcr.io/faultmaven/faultmaven`). The default docker-compose.yml uses Docker Hub for better availability and no authentication requirements.
 
