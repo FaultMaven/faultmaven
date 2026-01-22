@@ -859,10 +859,17 @@ class SecuritySettings(BaseSettings):
         description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured.",
     )
     jwt_access_token_expire_minutes: int = Field(
-        default=15, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES"
+        default=60, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES"
     )
     jwt_refresh_token_expire_days: int = Field(
         default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS"
+    )
+
+    # Refresh token rotation (security best practice)
+    jwt_rotate_refresh_tokens: bool = Field(
+        default=True,
+        env="JWT_ROTATE_REFRESH_TOKENS",
+        description="Rotate refresh tokens on use (one-time use tokens)",
     )
     jwt_issuer: str = Field(default="faultmaven-api", env="JWT_ISSUER")
     jwt_audience: str = Field(default="faultmaven-app", env="JWT_AUDIENCE")

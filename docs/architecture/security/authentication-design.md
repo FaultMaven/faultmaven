@@ -224,17 +224,39 @@ ALLOWED_REDIRECT_URIS = {
 
 ### 4. Token Security
 
+**Token Lifecycle**:
+
+- **Access Token**: Short-lived (1 hour), used for API authentication
+- **Refresh Token**: Long-lived (7 days), used to obtain new access tokens
+- **Rotation**: Refresh tokens are rotated on each use (one-time use)
+- **Revocation**: Both tokens can be revoked immediately on logout
+
 **Storage**:
 
 - Extension: `chrome.storage.local` (not sync storage, never transmitted)
+  - Access token: Used for API calls
+  - Refresh token: Stored securely, used only for token refresh
 - Backend: JWT signed with RS256 (asymmetric key)
-- Authorization codes: Redis with 10-minute TTL
+  - Access tokens: Stateless validation (no DB lookup)
+  - Refresh tokens: Stored in database/Redis for revocation tracking
+- Authorization codes: Redis/in-memory with 10-minute TTL
 
 **Transmission**:
 
 - Always HTTPS
-- JWT in `Authorization: Bearer` header
+- Access token in `Authorization: Bearer` header
+- Refresh token only in refresh endpoint body
 - Never in URL parameters
+
+**Silent Token Refresh**:
+
+The extension automatically refreshes the access token before expiry:
+
+1. Extension detects access token expiring (< 5 minutes remaining)
+2. Extension calls `/auth/token` with `grant_type=refresh_token`
+3. Backend validates refresh token and issues new tokens
+4. Backend rotates refresh token (invalidates old one)
+5. Extension stores new tokens, user experiences no interruption
 
 ## Authentication Endpoints
 
@@ -305,8 +327,10 @@ Content-Type: application/json
 ```json
 {
   "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "Bearer",
-  "expires_in": 86400,
+  "expires_in": 3600,
+  "refresh_expires_in": 604800,
   "session_id": "session-xyz",
   "user": {
     "user_id": "user_123",
@@ -315,6 +339,31 @@ Content-Type: application/json
     "display_name": "Alice Smith",
     "roles": ["user", "admin"]
   }
+}
+```
+
+### Token Refresh
+
+```http
+POST /auth/token
+Content-Type: application/json
+
+{
+  "grant_type": "refresh_token",
+  "refresh_token": "{refresh_token}",
+  "client_id": "faultmaven-copilot"
+}
+```
+
+**Response (200 OK)**:
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_expires_in": 604800
 }
 ```
 
@@ -514,7 +563,112 @@ async function handleAuthCallback(callbackUrl: string): Promise<AuthResult> {
 }
 ```
 
-### API Client with Dual Headers
+### Token Refresh Implementation
+
+```typescript
+// Extension: src/lib/auth/token-manager.ts
+interface TokenData {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  refresh_expires_at: number;
+}
+
+class TokenManager {
+  private refreshPromise: Promise<void> | null = null;
+
+  async getValidAccessToken(): Promise<string> {
+    const tokens = await this.getStoredTokens();
+
+    if (!tokens) {
+      throw new Error('No tokens available');
+    }
+
+    // Check if access token is expired or expiring soon (< 5 minutes)
+    const expiryBuffer = 5 * 60 * 1000; // 5 minutes
+    if (Date.now() + expiryBuffer >= tokens.expires_at) {
+      await this.refreshTokens();
+      const newTokens = await this.getStoredTokens();
+      return newTokens!.access_token;
+    }
+
+    return tokens.access_token;
+  }
+
+  private async refreshTokens(): Promise<void> {
+    // Prevent concurrent refresh requests
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = this._doRefresh();
+    try {
+      await this.refreshPromise;
+    } finally {
+      this.refreshPromise = null;
+    }
+  }
+
+  private async _doRefresh(): Promise<void> {
+    const tokens = await this.getStoredTokens();
+
+    if (!tokens) {
+      throw new Error('No refresh token available');
+    }
+
+    // Check if refresh token is expired
+    if (Date.now() >= tokens.refresh_expires_at) {
+      // Refresh token expired, need full re-authentication
+      await this.clearTokens();
+      throw new Error('Refresh token expired, re-authentication required');
+    }
+
+    try {
+      const response = await fetch('https://api.faultmaven.ai/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grant_type: 'refresh_token',
+          refresh_token: tokens.refresh_token,
+          client_id: 'faultmaven-copilot'
+        })
+      });
+
+      if (!response.ok) {
+        // Refresh failed, clear tokens and trigger re-auth
+        await this.clearTokens();
+        throw new Error('Token refresh failed');
+      }
+
+      const newTokens = await response.json();
+      await this.storeTokens({
+        access_token: newTokens.access_token,
+        refresh_token: newTokens.refresh_token,
+        expires_at: Date.now() + (newTokens.expires_in * 1000),
+        refresh_expires_at: Date.now() + (newTokens.refresh_expires_in * 1000)
+      });
+    } catch (error) {
+      await this.clearTokens();
+      throw error;
+    }
+  }
+
+  private async getStoredTokens(): Promise<TokenData | null> {
+    const result = await chrome.storage.local.get(['tokens']);
+    return result.tokens || null;
+  }
+
+  private async storeTokens(tokens: TokenData): Promise<void> {
+    await chrome.storage.local.set({ tokens });
+  }
+
+  private async clearTokens(): Promise<void> {
+    await chrome.storage.local.remove(['tokens']);
+  }
+}
+```
+
+### API Client with Dual Headers and Auto-Refresh
 
 ```typescript
 // src/lib/api.ts
@@ -524,26 +678,29 @@ interface ApiClientConfig {
 }
 
 class FaultMavenAPI {
-  private authToken?: string;
   private sessionId?: string;
+  private tokenManager: TokenManager;
 
-  async setAuthToken(token: string) {
-    this.authToken = token;
-    await this.saveAuthState();
+  constructor() {
+    this.tokenManager = new TokenManager();
   }
 
   async setSessionId(sessionId: string) {
     this.sessionId = sessionId;
   }
 
-  private getHeaders(): Record<string, string> {
+  private async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };
 
-    // Add auth header if token available
-    if (this.authToken) {
-      headers['Authorization'] = `Bearer ${this.authToken}`;
+    // Get valid access token (auto-refreshes if needed)
+    try {
+      const accessToken = await this.tokenManager.getValidAccessToken();
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    } catch (error) {
+      // No valid token, request will be unauthenticated
+      console.warn('No valid access token available', error);
     }
 
     // Add session header if session available
@@ -555,10 +712,12 @@ class FaultMavenAPI {
   }
 
   async apiCall(endpoint: string, options: RequestInit = {}) {
+    const headers = await this.getHeaders();
+
     const response = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
       headers: {
-        ...this.getHeaders(),
+        ...headers,
         ...(options.headers || {})
       }
     });
@@ -574,8 +733,7 @@ class FaultMavenAPI {
 
   private async handleAuthError() {
     // Clear stored auth data
-    await chrome.storage.local.remove(['authState']);
-    this.authToken = undefined;
+    await this.tokenManager.clearTokens();
 
     // Trigger re-authentication flow
     await this.showLoginForm();

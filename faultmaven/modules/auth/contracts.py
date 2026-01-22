@@ -69,8 +69,10 @@ class OAuthAuthorizationDTO:
 class OAuthTokenDTO:
     """Data Transfer Object for OAuth token response."""
     access_token: str
+    refresh_token: str
     token_type: str = "Bearer"
-    expires_in: int = 86400  # 24 hours
+    expires_in: int = 3600  # 1 hour
+    refresh_expires_in: int = 604800  # 7 days
     user_id: str
     username: str
 
@@ -209,11 +211,38 @@ class IOAuthService(ABC):
         """
         ...
 
+    async def refresh_access_token(
+        self,
+        refresh_token: str,
+        client_id: str
+    ) -> OAuthTokenDTO:
+        """Refresh access token using refresh token.
+
+        Args:
+            refresh_token: Valid refresh token
+            client_id: OAuth client ID
+
+        Returns:
+            New access token and rotated refresh token
+
+        Raises:
+            InvalidGrantError: If refresh token invalid, expired, or revoked
+        """
+        ...
+
     async def revoke_token(self, token: str) -> None:
         """Revoke access token (logout).
 
         Args:
             token: Access token to revoke
+        """
+        ...
+
+    async def revoke_refresh_token(self, refresh_token: str) -> None:
+        """Revoke refresh token (prevents future token refresh).
+
+        Args:
+            refresh_token: Refresh token to revoke
         """
         ...
 
