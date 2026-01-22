@@ -158,3 +158,45 @@ type = layers
 layers =
     faultmaven.modules.report.api
     faultmaven.modules.report.domain
+
+# ============================================================================
+# CONTRACT 10: Auth Module - Other Modules Use Contracts Only
+# ============================================================================
+# Other modules must only import from auth module's contracts.py, not from
+# internal implementation (domain, infrastructure, api).
+# This enforces the module boundary and prevents coupling to auth internals.
+[importlinter:contract:10]
+name = Other modules use auth contracts only
+type = forbidden
+source_modules =
+    faultmaven.modules.case
+    faultmaven.modules.knowledge
+    faultmaven.modules.evidence
+    faultmaven.modules.agent
+    faultmaven.modules.report
+forbidden_modules =
+    faultmaven.modules.auth.domain
+    faultmaven.modules.auth.infrastructure
+    faultmaven.modules.auth.api
+allow_indirect_imports = false
+
+# ============================================================================
+# CONTRACT 11: No Direct Database Access to Auth Tables
+# ============================================================================
+# Other modules MUST NOT directly access auth module's database tables.
+# All access must go through IOAuthService or IOAuthCodeRepository contracts.
+# This enforces database-per-module boundaries.
+[importlinter:contract:11]
+name = No direct database access to auth tables
+type = forbidden
+source_modules =
+    faultmaven.modules.case
+    faultmaven.modules.knowledge
+    faultmaven.modules.evidence
+    faultmaven.modules.agent
+    faultmaven.modules.report
+forbidden_modules =
+    faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository
+    faultmaven.modules.auth.infrastructure.repositories.token_repository
+    faultmaven.modules.auth.infrastructure.repositories.user_repository
+allow_indirect_imports = false

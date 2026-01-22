@@ -50,6 +50,46 @@ class SessionDTO:
     is_valid: bool = True
 
 
+@dataclass
+class OAuthAuthorizationDTO:
+    """Data Transfer Object for OAuth authorization request.
+
+    Used in the Dashboard-centric authentication flow where the Dashboard
+    acts as IdP and issues authorization codes for the Extension.
+    """
+    client_id: str
+    redirect_uri: str
+    state: str
+    code_challenge: str
+    code_challenge_method: str = "S256"
+    scope: str = "openid profile email"
+
+
+@dataclass
+class OAuthTokenDTO:
+    """Data Transfer Object for OAuth token response."""
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int = 86400  # 24 hours
+    user_id: str
+    username: str
+
+
+@dataclass
+class OAuthCodeDTO:
+    """Internal representation of authorization code.
+
+    This is stored temporarily (10 minutes) during the OAuth flow
+    and includes PKCE challenge for verification.
+    """
+    code: str
+    user_id: str
+    redirect_uri: str
+    code_challenge: str
+    expires_at: datetime
+    used: bool = False
+
+
 # ============================================================
 # Repository Contracts
 # ============================================================
@@ -106,11 +146,132 @@ class IAuthService(ABC):
     pass
 
 
+class IOAuthService(ABC):
+    """Contract for OAuth authentication operations.
+
+    This interface defines the boundary between the auth module
+    and the rest of the system for OAuth-based authentication.
+    All OAuth operations must go through this abstraction.
+
+    Implements OAuth 2.0 Authorization Code Flow with PKCE for
+    Dashboard-centric authentication (Dashboard acts as IdP for Extension).
+    """
+
+    async def create_authorization_code(
+        self,
+        user_id: str,
+        request: OAuthAuthorizationDTO
+    ) -> str:
+        """Generate authorization code for OAuth flow.
+
+        Args:
+            user_id: Authenticated user's ID from Dashboard session
+            request: OAuth authorization request parameters (includes PKCE challenge)
+
+        Returns:
+            Authorization code (short-lived, single-use, 10 minutes)
+
+        Raises:
+            InvalidRequestError: If request parameters invalid
+        """
+        ...
+
+    async def exchange_code_for_token(
+        self,
+        code: str,
+        code_verifier: str,
+        redirect_uri: str
+    ) -> OAuthTokenDTO:
+        """Exchange authorization code for access token.
+
+        Args:
+            code: Authorization code from authorization endpoint
+            code_verifier: PKCE code verifier (proves client owns code_challenge)
+            redirect_uri: Must match original redirect_uri
+
+        Returns:
+            Access token and user information
+
+        Raises:
+            InvalidGrantError: If code invalid, expired, or already used
+            PKCEVerificationError: If code_verifier doesn't match code_challenge
+        """
+        ...
+
+    async def validate_token(self, token: str) -> Optional[str]:
+        """Validate access token and return user_id.
+
+        Args:
+            token: Access token from Authorization header
+
+        Returns:
+            user_id if token valid, None otherwise
+        """
+        ...
+
+    async def revoke_token(self, token: str) -> None:
+        """Revoke access token (logout).
+
+        Args:
+            token: Access token to revoke
+        """
+        ...
+
+
 class IPermissionChecker(Protocol):
     """Interface for permission checking (for high fan-in scenarios)."""
 
     async def can_access(self, user_id: str, resource: str) -> bool:
         """Check if user can access a resource."""
+        ...
+
+
+class IOAuthCodeRepository(ABC):
+    """Storage abstraction for OAuth authorization codes.
+
+    This repository handles persistence of short-lived authorization codes
+    during the OAuth flow. Implementation can use Redis, PostgreSQL, or
+    in-memory storage depending on deployment configuration.
+
+    The storage is owned by the auth module - no other modules should
+    access OAuth codes directly.
+    """
+
+    async def save_code(self, code_data: OAuthCodeDTO) -> None:
+        """Store authorization code with PKCE challenge.
+
+        Args:
+            code_data: Authorization code and associated metadata
+
+        The code should expire automatically after 10 minutes (TTL).
+        """
+        ...
+
+    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+        """Retrieve authorization code data.
+
+        Args:
+            code: The authorization code
+
+        Returns:
+            Code data if found and not expired, None otherwise
+        """
+        ...
+
+    async def mark_code_used(self, code: str) -> None:
+        """Mark code as used (prevents replay attacks).
+
+        Args:
+            code: The authorization code to mark as used
+        """
+        ...
+
+    async def delete_expired_codes(self) -> int:
+        """Clean up expired codes (maintenance operation).
+
+        Returns:
+            Count of codes deleted
+        """
         ...
 
 
@@ -168,11 +329,16 @@ __all__ = [
     # DTOs
     "UserDTO",
     "SessionDTO",
+    "OAuthAuthorizationDTO",
+    "OAuthTokenDTO",
+    "OAuthCodeDTO",
     # Repository Protocols
     "IUserRepository",
     "IUserQuery",
+    "IOAuthCodeRepository",
     # Service Protocols
     "IAuthService",
+    "IOAuthService",
     "IPermissionChecker",
     "ISessionService",
 ]

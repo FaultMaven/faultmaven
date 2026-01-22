@@ -73,6 +73,704 @@ sequenceDiagram
     FE->>FE: Show login form
 ```
 
+## Cross-Application Authentication Flow (Extension + Dashboard)
+
+### Architecture Overview
+
+FaultMaven uses a **dashboard-centric authentication** pattern where the Dashboard acts as the Identity Provider (IdP). This follows the **OAuth 2.0 Authorization Code Flow with PKCE**, ensuring secure delegation of identity from the Web App to the Extension without sharing credentials.
+
+**Key Design Decisions**:
+- **Dashboard as Identity Provider**: All authentication UI, social login, and MFA handled on dashboard
+- **Extension as Public Client**: No client secrets stored in extension
+- **PKCE Required**: Mandatory for browser extensions to prevent authorization code interception
+- **Standard OAuth 2.0**: Industry-standard pattern for secure delegated authentication
+
+### Why Dashboard-Centric Authentication?
+
+**Security Benefits**:
+1. **No Credentials in Extension**: Extension never handles passwords or MFA codes
+2. **Simplified Extension**: No complex authentication UI in extension
+3. **Centralized Auth Logic**: All authentication flows (social login, MFA, SSO) in one place
+4. **Better User Experience**: Users see familiar dashboard login UI
+5. **Easier Updates**: Authentication changes don't require extension updates
+
+**Architecture Benefits**:
+- Dashboard handles complex OAuth flows (Google, GitHub, Microsoft)
+- Dashboard implements MFA, password reset, email verification
+- Extension remains lightweight and focused on core functionality
+- Backend issues standard JWT tokens for both dashboard and extension
+
+### Complete Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Ext as FaultMaven Copilot (Extension)
+    participant Dash as FaultMaven Dashboard (Web)
+    participant API as Backend API
+
+    Note over Ext, API: Phase 1: Initiation
+    User->>Ext: Clicks "Sign In"
+    Ext->>Ext: Generate PKCE Verifier & Challenge<br/>verifier = random(43-128 chars)<br/>challenge = SHA256(verifier)
+    Ext->>Ext: Save state + verifier in storage
+    Ext->>Dash: Open new tab: /auth/authorize?<br/>client_id=copilot<br/>&redirect_uri=chrome-extension://...<br/>&code_challenge=SHA256_HASH<br/>&code_challenge_method=S256<br/>&state=RANDOM_STATE
+
+    Note over Dash, API: Phase 2: User Login
+    Dash->>User: Show Login UI (email/password, social, MFA)
+    User->>Dash: Enter Credentials
+    Dash->>API: POST /auth/login {credentials}
+    API->>API: Validate Credentials
+    API-->>Dash: {user_id, session}
+    Dash->>API: POST /auth/authorize {user_id, client_id, code_challenge}
+    API->>API: Generate authorization code<br/>Store: code → {user_id, challenge, expires}
+    API-->>Dash: {authorization_code}
+    Dash-->>User: Redirect to chrome-extension://.../callback?<br/>code=AUTH_CODE<br/>&state=RANDOM_STATE
+    User->>Ext: Browser redirects to extension
+
+    Note over Ext, API: Phase 3: Token Exchange
+    Ext->>Ext: Verify state matches saved state
+    Ext->>Ext: Retrieve code_verifier from storage
+    Ext->>API: POST /auth/token {<br/>code: AUTH_CODE,<br/>code_verifier: ORIGINAL_VERIFIER,<br/>client_id: copilot,<br/>redirect_uri: chrome-extension://...<br/>}
+    API->>API: Validate authorization code<br/>Verify SHA256(verifier) == stored challenge<br/>Check code not expired/used<br/>Validate redirect_uri matches
+    API-->>Ext: {<br/>access_token: JWT,<br/>token_type: Bearer,<br/>expires_in: 86400,<br/>session_id: SESSION_ID,<br/>user: {...}<br/>}
+    Ext->>Ext: Store access_token & session_id
+    Ext->>Ext: Clear PKCE verifier & state
+    Ext->>API: API calls with dual headers<br/>Authorization: Bearer JWT<br/>X-Session-Id: SESSION_ID
+```
+
+### Implementation Details
+
+#### Phase 1: Extension Initiates Auth
+
+**Step 1: Generate PKCE Parameters**
+
+```typescript
+// src/lib/auth/pkce.ts
+import { createHash, randomBytes } from 'crypto';
+
+export class PKCEGenerator {
+  /**
+   * Generate PKCE code verifier (43-128 characters, base64url-encoded)
+   */
+  static generateCodeVerifier(): string {
+    // Generate 32 random bytes, base64url encode
+    const verifier = randomBytes(32)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+
+    return verifier; // 43 characters
+  }
+
+  /**
+   * Generate PKCE code challenge (SHA256 hash of verifier)
+   */
+  static generateCodeChallenge(verifier: string): string {
+    const hash = createHash('sha256')
+      .update(verifier)
+      .digest('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+
+    return hash;
+  }
+
+  /**
+   * Generate state parameter for CSRF protection
+   */
+  static generateState(): string {
+    return randomBytes(16).toString('hex'); // 32 characters
+  }
+}
+```
+
+**Step 2: Redirect to Dashboard**
+
+```typescript
+// src/lib/auth/oauth-client.ts
+export class OAuthClient {
+  private readonly dashboardUrl = 'https://dashboard.faultmaven.ai';
+  private readonly extensionId = chrome.runtime.id;
+
+  async initiateLogin(): Promise<void> {
+    // Generate PKCE parameters
+    const codeVerifier = PKCEGenerator.generateCodeVerifier();
+    const codeChallenge = PKCEGenerator.generateCodeChallenge(codeVerifier);
+    const state = PKCEGenerator.generateState();
+
+    // Store for later verification
+    await chrome.storage.local.set({
+      pkce_verifier: codeVerifier,
+      auth_state: state,
+      auth_initiated_at: Date.now()
+    });
+
+    // Build authorization URL
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'faultmaven-copilot',
+      redirect_uri: `chrome-extension://${this.extensionId}/callback`,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      state: state,
+      scope: 'openid profile email cases:read cases:write'
+    });
+
+    const authUrl = `${this.dashboardUrl}/auth/authorize?${params.toString()}`;
+
+    // Open dashboard in new tab
+    await chrome.tabs.create({ url: authUrl });
+  }
+}
+```
+
+#### Phase 2: Dashboard Handles Login
+
+**Dashboard Authorization Endpoint**
+
+```typescript
+// Dashboard: app/auth/authorize/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+
+  // Extract OAuth parameters
+  const {
+    response_type,
+    client_id,
+    redirect_uri,
+    code_challenge,
+    code_challenge_method,
+    state,
+    scope
+  } = Object.fromEntries(searchParams);
+
+  // Validate parameters
+  if (response_type !== 'code') {
+    return NextResponse.json({ error: 'unsupported_response_type' }, { status: 400 });
+  }
+
+  if (code_challenge_method !== 'S256') {
+    return NextResponse.json({ error: 'invalid_request', error_description: 'PKCE required' }, { status: 400 });
+  }
+
+  // Validate client_id and redirect_uri
+  const validClients = {
+    'faultmaven-copilot': /^chrome-extension:\/\/[a-z]{32}\/callback$/
+  };
+
+  if (!validClients[client_id] || !validClients[client_id].test(redirect_uri)) {
+    return NextResponse.json({ error: 'invalid_client' }, { status: 400 });
+  }
+
+  // Store authorization request in session
+  await storeAuthorizationRequest({
+    client_id,
+    redirect_uri,
+    code_challenge,
+    state,
+    scope,
+    expires_at: Date.now() + 600_000 // 10 minutes
+  });
+
+  // Show login UI (redirect to login page)
+  return NextResponse.redirect('/login?auth_request=true');
+}
+```
+
+**After Successful Login**
+
+```typescript
+// Dashboard: app/api/auth/authorize/complete/route.ts
+export async function POST(request: NextRequest) {
+  const session = await getSession(request);
+  const authRequest = await getAuthorizationRequest(session.id);
+
+  if (!authRequest) {
+    return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
+  }
+
+  // Generate authorization code
+  const authorizationCode = generateSecureCode(); // UUID v4
+
+  // Store authorization code with PKCE challenge
+  await redis.setex(`auth:code:${authorizationCode}`, 600, JSON.stringify({
+    user_id: session.user_id,
+    client_id: authRequest.client_id,
+    redirect_uri: authRequest.redirect_uri,
+    code_challenge: authRequest.code_challenge,
+    scope: authRequest.scope,
+    created_at: Date.now()
+  }));
+
+  // Redirect back to extension
+  const redirectUrl = new URL(authRequest.redirect_uri);
+  redirectUrl.searchParams.set('code', authorizationCode);
+  redirectUrl.searchParams.set('state', authRequest.state);
+
+  return NextResponse.redirect(redirectUrl.toString());
+}
+```
+
+#### Phase 3: Extension Exchanges Code for Token
+
+**Extension Callback Handler**
+
+```typescript
+// Extension: src/background/auth-callback.ts
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'auth_callback') {
+    handleAuthCallback(message.url)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true; // Async response
+  }
+});
+
+async function handleAuthCallback(callbackUrl: string): Promise<AuthResult> {
+  const url = new URL(callbackUrl);
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+
+  if (!code || !state) {
+    throw new Error('Missing authorization code or state');
+  }
+
+  // Retrieve stored PKCE verifier and state
+  const storage = await chrome.storage.local.get(['pkce_verifier', 'auth_state']);
+
+  if (!storage.pkce_verifier || !storage.auth_state) {
+    throw new Error('No pending authorization request');
+  }
+
+  // Verify state parameter (CSRF protection)
+  if (state !== storage.auth_state) {
+    throw new Error('State parameter mismatch');
+  }
+
+  // Exchange authorization code for access token
+  const tokenResponse = await fetch('https://api.faultmaven.ai/auth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      code: code,
+      code_verifier: storage.pkce_verifier,
+      client_id: 'faultmaven-copilot',
+      redirect_uri: `chrome-extension://${chrome.runtime.id}/callback`
+    })
+  });
+
+  if (!tokenResponse.ok) {
+    const error = await tokenResponse.json();
+    throw new Error(`Token exchange failed: ${error.error_description}`);
+  }
+
+  const tokens = await tokenResponse.json();
+
+  // Store tokens
+  await chrome.storage.local.set({
+    access_token: tokens.access_token,
+    token_type: tokens.token_type,
+    expires_at: Date.now() + (tokens.expires_in * 1000),
+    session_id: tokens.session_id,
+    user: tokens.user
+  });
+
+  // Clean up PKCE data
+  await chrome.storage.local.remove(['pkce_verifier', 'auth_state', 'auth_initiated_at']);
+
+  return {
+    success: true,
+    user: tokens.user
+  };
+}
+```
+
+**Backend Token Exchange Endpoint**
+
+```python
+# Backend: faultmaven/api/v1/auth/token.py
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
+import hashlib
+import base64
+
+router = APIRouter()
+
+class TokenRequest(BaseModel):
+    grant_type: str
+    code: str
+    code_verifier: str
+    client_id: str
+    redirect_uri: str
+
+@router.post("/auth/token")
+async def exchange_token(request: TokenRequest):
+    """Exchange authorization code for access token (OAuth 2.0 with PKCE)"""
+
+    # Validate grant type
+    if request.grant_type != "authorization_code":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "unsupported_grant_type"}
+        )
+
+    # Retrieve authorization code data
+    code_data = await redis.get(f"auth:code:{request.code}")
+    if not code_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_grant", "error_description": "Invalid or expired authorization code"}
+        )
+
+    code_info = json.loads(code_data)
+
+    # Verify PKCE code_verifier
+    verifier_bytes = request.code_verifier.encode('utf-8')
+    computed_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier_bytes).digest()
+    ).decode('utf-8').rstrip('=')
+
+    if computed_challenge != code_info['code_challenge']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_grant", "error_description": "PKCE verification failed"}
+        )
+
+    # Verify client_id and redirect_uri
+    if request.client_id != code_info['client_id']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_client"}
+        )
+
+    if request.redirect_uri != code_info['redirect_uri']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_grant", "error_description": "Redirect URI mismatch"}
+        )
+
+    # Delete authorization code (single-use)
+    await redis.delete(f"auth:code:{request.code}")
+
+    # Get user profile
+    user = await user_service.get_user(code_info['user_id'])
+
+    # Generate access token (JWT)
+    access_token = generate_jwt_token(user, scope=code_info['scope'])
+
+    # Create session
+    session = await session_service.create_session(user.user_id)
+
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 86400,  # 24 hours
+        "session_id": session.session_id,
+        "user": {
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "roles": user.roles
+        }
+    }
+```
+
+### Security Considerations
+
+#### 1. PKCE (Proof Key for Code Exchange)
+
+**Why PKCE is Required**:
+- Browser extensions are **public clients** - they cannot securely store a `client_secret`
+- Authorization codes can be intercepted by malicious apps monitoring browser redirects
+- PKCE proves that the app exchanging the code is the same app that initiated the flow
+
+**How PKCE Works**:
+1. Extension generates random `code_verifier` (43-128 characters)
+2. Extension computes `code_challenge = SHA256(code_verifier)`
+3. Extension sends `code_challenge` in authorization request
+4. Backend stores `code_challenge` with authorization code
+5. Extension sends original `code_verifier` when exchanging code for token
+6. Backend verifies `SHA256(code_verifier)` matches stored `code_challenge`
+
+**Security Properties**:
+- Even if authorization code is intercepted, attacker cannot exchange it without the `code_verifier`
+- `code_verifier` never leaves the extension until token exchange
+- Backend cryptographically verifies the extension's identity
+
+#### 2. State Parameter
+
+**Purpose**: Prevent CSRF attacks during OAuth redirect
+
+**Implementation**:
+- Extension generates random `state` parameter before redirect
+- Extension stores `state` in `chrome.storage.local`
+- Dashboard includes `state` in redirect URL
+- Extension verifies returned `state` matches stored value
+
+**Attack Prevented**: Malicious site cannot trick user into authorizing extension without knowing the `state` value
+
+#### 3. Authorization Code Properties
+
+**Single-Use**: Code deleted immediately after successful exchange
+**Short-Lived**: Expires in 10 minutes
+**Bound to Client**: Validates `client_id` and `redirect_uri` match
+**PKCE Protected**: Cannot be exchanged without correct `code_verifier`
+
+#### 4. Redirect URI Validation
+
+**Strict Validation**:
+```python
+ALLOWED_REDIRECT_URIS = {
+    'faultmaven-copilot': [
+        r'^chrome-extension://[a-z]{32}/callback$',  # Regex pattern
+        r'^moz-extension://[a-f0-9-]{36}/callback$'  # Firefox support
+    ]
+}
+```
+
+**Security Properties**:
+- Only registered extension IDs can receive authorization codes
+- Prevents authorization code injection attacks
+- Supports multiple browser extension stores
+
+#### 5. Token Security
+
+**Storage**:
+- Extension: `chrome.storage.local` (not sync storage, never transmitted)
+- Backend: JWT signed with RS256 (asymmetric key)
+- Authorization codes: Redis with 10-minute TTL
+
+**Transmission**:
+- Always HTTPS
+- JWT in `Authorization: Bearer` header
+- Never in URL parameters
+
+### Error Handling
+
+#### Authorization Errors
+
+**Invalid Client**:
+```json
+{
+  "error": "invalid_client",
+  "error_description": "Unknown or invalid client_id"
+}
+```
+
+**Invalid Grant**:
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "Authorization code expired or already used"
+}
+```
+
+**PKCE Verification Failed**:
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "PKCE verification failed"
+}
+```
+
+**Redirect URI Mismatch**:
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "Redirect URI mismatch"
+}
+```
+
+#### Frontend Error Handling
+
+```typescript
+class AuthErrorHandler {
+  async handleAuthError(error: AuthError): Promise<void> {
+    switch (error.code) {
+      case 'invalid_grant':
+        // Clear stored PKCE data and retry
+        await this.clearAuthState();
+        await this.showRetryPrompt();
+        break;
+
+      case 'access_denied':
+        // User cancelled login on dashboard
+        await this.showCancelledMessage();
+        break;
+
+      case 'server_error':
+        // Backend error, show error message
+        await this.showErrorMessage(error.description);
+        break;
+
+      default:
+        // Unknown error
+        await this.showGenericError();
+    }
+  }
+}
+```
+
+### Testing Strategy
+
+#### Unit Tests
+
+**PKCE Generation**:
+```typescript
+describe('PKCEGenerator', () => {
+  it('should generate verifier with correct length', () => {
+    const verifier = PKCEGenerator.generateCodeVerifier();
+    expect(verifier.length).toBeGreaterThanOrEqual(43);
+    expect(verifier.length).toBeLessThanOrEqual(128);
+  });
+
+  it('should generate challenge matching verifier', () => {
+    const verifier = PKCEGenerator.generateCodeVerifier();
+    const challenge = PKCEGenerator.generateCodeChallenge(verifier);
+
+    // Verify challenge is SHA256 of verifier
+    const expected = crypto.createHash('sha256')
+      .update(verifier)
+      .digest('base64url');
+
+    expect(challenge).toBe(expected);
+  });
+});
+```
+
+**Token Exchange Validation**:
+```python
+@pytest.mark.asyncio
+async def test_token_exchange_pkce_mismatch():
+    """Test that token exchange fails with incorrect code_verifier"""
+    # Create authorization code with known challenge
+    verifier = "test_verifier_1234567890"
+    challenge = compute_pkce_challenge(verifier)
+
+    code = await create_auth_code(user_id="user_123", challenge=challenge)
+
+    # Try to exchange with wrong verifier
+    response = await client.post("/auth/token", json={
+        "grant_type": "authorization_code",
+        "code": code,
+        "code_verifier": "wrong_verifier",
+        "client_id": "faultmaven-copilot",
+        "redirect_uri": "chrome-extension://abc.../callback"
+    })
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+```
+
+#### Integration Tests
+
+**Complete OAuth Flow**:
+```typescript
+describe('OAuth Flow Integration', () => {
+  it('should complete full authorization flow', async () => {
+    // 1. Extension initiates login
+    const oauth = new OAuthClient();
+    await oauth.initiateLogin();
+
+    // Verify PKCE data stored
+    const storage = await chrome.storage.local.get(['pkce_verifier', 'auth_state']);
+    expect(storage.pkce_verifier).toBeDefined();
+    expect(storage.auth_state).toBeDefined();
+
+    // 2. Simulate dashboard redirect with authorization code
+    const mockCode = 'auth_code_123';
+    const mockState = storage.auth_state;
+
+    // 3. Handle callback
+    const result = await handleAuthCallback(
+      `chrome-extension://abc/callback?code=${mockCode}&state=${mockState}`
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.user).toBeDefined();
+
+    // Verify tokens stored
+    const tokens = await chrome.storage.local.get(['access_token', 'session_id']);
+    expect(tokens.access_token).toBeDefined();
+    expect(tokens.session_id).toBeDefined();
+
+    // Verify PKCE data cleaned up
+    const cleaned = await chrome.storage.local.get(['pkce_verifier', 'auth_state']);
+    expect(cleaned.pkce_verifier).toBeUndefined();
+    expect(cleaned.auth_state).toBeUndefined();
+  });
+});
+```
+
+### Comparison: Dashboard-Centric vs Direct Auth
+
+| Aspect | Dashboard-Centric (OAuth) | Direct Extension Auth |
+|--------|---------------------------|----------------------|
+| **Security** | ✅ Industry standard, PKCE protected | ⚠️ Extension handles credentials |
+| **User Experience** | ✅ Familiar dashboard UI | ⚠️ Limited extension UI |
+| **Social Login** | ✅ Easy to add (Google, GitHub) | ❌ Complex OAuth in extension |
+| **MFA** | ✅ Dashboard handles all flows | ❌ Complex MFA UI in extension |
+| **Maintenance** | ✅ Auth updates don't need extension release | ⚠️ Extension updates for auth changes |
+| **Complexity** | ⚠️ OAuth flow more complex | ✅ Simple dev-login endpoint |
+| **Enterprise SSO** | ✅ SAML/OIDC on dashboard | ❌ Very difficult in extension |
+
+### Migration Path
+
+#### Current State (Direct Extension Auth)
+- Extension calls `/api/v1/auth/dev-login` directly
+- Simple but limited to username/password
+- No social login or MFA support
+
+#### Target State (Dashboard-Centric OAuth)
+- Extension delegates to dashboard for authentication
+- Full OAuth 2.0 with PKCE implementation
+- Supports social login, MFA, enterprise SSO
+
+#### Migration Steps
+
+**Phase 1: Backend OAuth Endpoints** (Week 1)
+- Implement `/auth/authorize` endpoint
+- Implement `/auth/token` with PKCE validation
+- Add authorization code storage in Redis
+
+**Phase 2: Dashboard Authorization UI** (Week 1-2)
+- Create `/auth/authorize` page
+- Implement login UI with social providers
+- Add authorization consent screen
+
+**Phase 3: Extension OAuth Client** (Week 2)
+- Implement PKCE generation
+- Add OAuth initiation flow
+- Implement callback handler
+
+**Phase 4: Testing & Rollout** (Week 3)
+- End-to-end OAuth flow testing
+- Security audit of PKCE implementation
+- Gradual rollout with feature flag
+
+#### Backward Compatibility
+
+During migration, support both authentication methods:
+
+```python
+@router.post("/auth/login")
+async def login(request: LoginRequest):
+    """Legacy direct login endpoint (deprecated)"""
+    warnings.warn("Direct login is deprecated, use OAuth flow", DeprecationWarning)
+    # ... existing implementation
+```
+
+**Deprecation Timeline**:
+- Month 1-2: Both methods supported, OAuth recommended
+- Month 3: OAuth enforced for new users, existing tokens honored
+- Month 4: Direct login disabled, OAuth only
+
 ## Token Management
 
 ### Token Characteristics
@@ -1318,6 +2016,734 @@ gantt
     Data Migration         :2024-02-12, 7d
     Testing & Deployment   :2024-02-19, 7d
 ```
+
+## Architectural Compliance
+
+This section documents how the authentication system observes FaultMaven's [architectural design principles](../core-architecture/architectural-design-principles.md).
+
+### Module Boundaries and Contracts
+
+**Principle**: Vertical modules with explicit contracts (Important)
+
+**Implementation**:
+
+```python
+# faultmaven/modules/auth/contracts.py
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+@dataclass
+class OAuthAuthorizationDTO:
+    """Data Transfer Object for OAuth authorization request"""
+    client_id: str
+    redirect_uri: str
+    state: str
+    code_challenge: str
+    code_challenge_method: str = "S256"
+    scope: str = "openid profile email"
+
+@dataclass
+class OAuthTokenDTO:
+    """Data Transfer Object for OAuth token response"""
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int = 86400  # 24 hours
+    user_id: str
+    username: str
+
+@dataclass
+class OAuthCodeDTO:
+    """Internal representation of authorization code"""
+    code: str
+    user_id: str
+    redirect_uri: str
+    code_challenge: str
+    expires_at: datetime
+    used: bool = False
+
+class IOAuthService(ABC):
+    """
+    Contract for OAuth authentication operations.
+
+    This interface defines the boundary between the auth module
+    and the rest of the system. All OAuth operations must go through
+    this abstraction.
+    """
+
+    @abstractmethod
+    async def create_authorization_code(
+        self,
+        user_id: str,
+        request: OAuthAuthorizationDTO
+    ) -> str:
+        """
+        Generate authorization code for OAuth flow.
+
+        Args:
+            user_id: Authenticated user's ID
+            request: OAuth authorization request parameters
+
+        Returns:
+            Authorization code (short-lived, single-use)
+
+        Raises:
+            InvalidRequestError: If request parameters invalid
+        """
+        pass
+
+    @abstractmethod
+    async def exchange_code_for_token(
+        self,
+        code: str,
+        code_verifier: str,
+        redirect_uri: str
+    ) -> OAuthTokenDTO:
+        """
+        Exchange authorization code for access token.
+
+        Args:
+            code: Authorization code from authorization endpoint
+            code_verifier: PKCE code verifier
+            redirect_uri: Must match original redirect_uri
+
+        Returns:
+            Access token and user information
+
+        Raises:
+            InvalidGrantError: If code invalid, expired, or already used
+            PKCEVerificationError: If code_verifier doesn't match code_challenge
+        """
+        pass
+
+    @abstractmethod
+    async def validate_token(self, token: str) -> Optional[str]:
+        """
+        Validate access token and return user_id.
+
+        Args:
+            token: Access token from Authorization header
+
+        Returns:
+            user_id if token valid, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def revoke_token(self, token: str) -> None:
+        """Revoke access token (logout)"""
+        pass
+
+class IOAuthCodeRepository(ABC):
+    """
+    Storage abstraction for OAuth authorization codes.
+
+    This repository handles persistence of short-lived authorization codes
+    during the OAuth flow. Implementation can use Redis, PostgreSQL, or
+    in-memory storage depending on deployment configuration.
+    """
+
+    @abstractmethod
+    async def save_code(self, code_data: OAuthCodeDTO) -> None:
+        """Store authorization code with PKCE challenge"""
+        pass
+
+    @abstractmethod
+    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+        """Retrieve authorization code data"""
+        pass
+
+    @abstractmethod
+    async def mark_code_used(self, code: str) -> None:
+        """Mark code as used (prevents replay attacks)"""
+        pass
+
+    @abstractmethod
+    async def delete_expired_codes(self) -> int:
+        """Clean up expired codes, returns count deleted"""
+        pass
+```
+
+**Directory Structure**:
+```text
+faultmaven/modules/auth/
+├── contracts.py                 # IOAuthService, DTOs (this is the boundary)
+├── domain/
+│   └── oauth_service.py        # OAuthServiceImpl implements IOAuthService
+├── infrastructure/
+│   ├── oauth_code_repository.py     # Redis/PostgreSQL implementation
+│   └── token_repository.py          # Token storage
+└── api/
+    └── oauth_routes.py         # FastAPI routes (uses IOAuthService)
+```
+
+### Storage Abstraction and Database Boundaries
+
+**Principle**: Database-per-module boundaries (Critical), Interface-based design (Critical)
+
+**Implementation**:
+
+```python
+# faultmaven/modules/auth/infrastructure/oauth_code_repository.py
+from faultmaven.modules.auth.contracts import IOAuthCodeRepository, OAuthCodeDTO
+from datetime import datetime, timezone
+from typing import Optional
+import json
+
+class RedisOAuthCodeRepository(IOAuthCodeRepository):
+    """Redis implementation for OAuth code storage"""
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.key_prefix = "oauth:code:"
+        self.ttl_seconds = 600  # 10 minutes
+
+    async def save_code(self, code_data: OAuthCodeDTO) -> None:
+        key = f"{self.key_prefix}{code_data.code}"
+        value = json.dumps({
+            "user_id": code_data.user_id,
+            "redirect_uri": code_data.redirect_uri,
+            "code_challenge": code_data.code_challenge,
+            "expires_at": code_data.expires_at.isoformat(),
+            "used": code_data.used
+        })
+        await self.redis.setex(key, self.ttl_seconds, value)
+
+    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+        key = f"{self.key_prefix}{code}"
+        value = await self.redis.get(key)
+        if not value:
+            return None
+
+        data = json.loads(value)
+        return OAuthCodeDTO(
+            code=code,
+            user_id=data["user_id"],
+            redirect_uri=data["redirect_uri"],
+            code_challenge=data["code_challenge"],
+            expires_at=datetime.fromisoformat(data["expires_at"]),
+            used=data["used"]
+        )
+
+    async def mark_code_used(self, code: str) -> None:
+        code_data = await self.get_code(code)
+        if code_data:
+            code_data.used = True
+            await self.save_code(code_data)
+
+    async def delete_expired_codes(self) -> int:
+        # Redis TTL handles automatic expiry
+        return 0
+
+class PostgresOAuthCodeRepository(IOAuthCodeRepository):
+    """PostgreSQL implementation for OAuth code storage (optional)"""
+
+    def __init__(self, db_session):
+        self.db = db_session
+
+    async def save_code(self, code_data: OAuthCodeDTO) -> None:
+        query = """
+            INSERT INTO auth.oauth_codes
+            (code, user_id, redirect_uri, code_challenge, expires_at, used)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (code) DO UPDATE SET
+                used = EXCLUDED.used
+        """
+        await self.db.execute(
+            query,
+            code_data.code,
+            code_data.user_id,
+            code_data.redirect_uri,
+            code_data.code_challenge,
+            code_data.expires_at,
+            code_data.used
+        )
+
+    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+        query = """
+            SELECT code, user_id, redirect_uri, code_challenge, expires_at, used
+            FROM auth.oauth_codes
+            WHERE code = $1 AND expires_at > NOW()
+        """
+        row = await self.db.fetchrow(query, code)
+        if not row:
+            return None
+
+        return OAuthCodeDTO(
+            code=row["code"],
+            user_id=row["user_id"],
+            redirect_uri=row["redirect_uri"],
+            code_challenge=row["code_challenge"],
+            expires_at=row["expires_at"],
+            used=row["used"]
+        )
+
+    async def mark_code_used(self, code: str) -> None:
+        query = "UPDATE auth.oauth_codes SET used = TRUE WHERE code = $1"
+        await self.db.execute(query, code)
+
+    async def delete_expired_codes(self) -> int:
+        query = "DELETE FROM auth.oauth_codes WHERE expires_at <= NOW()"
+        result = await self.db.execute(query)
+        return int(result.split()[-1])  # Extract count from "DELETE N"
+```
+
+**Database Schema** (PostgreSQL option):
+```sql
+-- Schema: auth (owned by auth module)
+CREATE SCHEMA IF NOT EXISTS auth;
+
+CREATE TABLE auth.oauth_codes (
+    code VARCHAR(128) PRIMARY KEY,
+    user_id VARCHAR(20) NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge VARCHAR(128) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_oauth_codes_expires ON auth.oauth_codes(expires_at)
+WHERE NOT used;
+```
+
+**No Cross-Module Database Access**:
+
+- Auth module owns `auth.oauth_codes` table
+- Other modules MUST NOT query this table directly
+- All access through `IOAuthService` contract
+
+### Boundary Enforcement
+
+**Principle**: Enforced architectural boundaries (Important)
+
+**Implementation**: `.import-linter`
+
+```ini
+[importlinter]
+root_package = faultmaven
+
+[importlinter:contract:auth-module-boundaries]
+name = Auth module boundaries
+type = layers
+layers =
+    faultmaven.modules.auth.api
+    faultmaven.modules.auth.domain
+    faultmaven.modules.auth.infrastructure
+
+[importlinter:contract:auth-contracts-only]
+name = Other modules use auth contracts only
+type = forbidden
+source_modules =
+    faultmaven.modules.case
+    faultmaven.modules.knowledge
+    faultmaven.modules.evidence
+    faultmaven.modules.agent
+forbidden_modules =
+    faultmaven.modules.auth.domain
+    faultmaven.modules.auth.infrastructure
+    faultmaven.modules.auth.api
+
+[importlinter:contract:auth-no-db-leakage]
+name = No direct database access to auth tables
+type = forbidden
+source_modules =
+    faultmaven.modules.case
+    faultmaven.modules.knowledge
+    faultmaven.modules.evidence
+forbidden_modules =
+    faultmaven.modules.auth.infrastructure.oauth_code_repository
+    faultmaven.modules.auth.infrastructure.token_repository
+```
+
+**Verification**:
+```bash
+# Run boundary checks in CI/CD
+lint-imports
+
+# Expected output:
+# ✅ Auth module boundaries: PASSED
+# ✅ Other modules use auth contracts only: PASSED
+# ✅ No direct database access to auth tables: PASSED
+```
+
+### Dependency Injection
+
+**Principle**: Composition root pattern (Critical)
+
+**Implementation**:
+
+```python
+# faultmaven/main.py (composition root)
+from faultmaven.modules.auth.contracts import IOAuthService, IOAuthCodeRepository
+from faultmaven.modules.auth.domain.oauth_service import OAuthServiceImpl
+from faultmaven.modules.auth.infrastructure.oauth_code_repository import (
+    RedisOAuthCodeRepository,
+    PostgresOAuthCodeRepository
+)
+
+def create_app(config: AppConfig) -> FastAPI:
+    app = FastAPI()
+
+    # Wire dependencies at startup
+    if config.storage_type == "redis":
+        oauth_code_repo: IOAuthCodeRepository = RedisOAuthCodeRepository(
+            redis_client=app.state.redis
+        )
+    else:
+        oauth_code_repo: IOAuthCodeRepository = PostgresOAuthCodeRepository(
+            db_session=app.state.db
+        )
+
+    oauth_service: IOAuthService = OAuthServiceImpl(
+        code_repository=oauth_code_repo,
+        token_repository=app.state.token_repository,
+        user_repository=app.state.user_repository
+    )
+
+    # Inject into API routes
+    app.dependency_overrides[IOAuthService] = lambda: oauth_service
+
+    return app
+```
+
+### Observability
+
+**Principle**: Structured logging and tracing (Recommended)
+
+**Implementation**:
+
+```python
+# faultmaven/modules/auth/domain/oauth_service.py
+from faultmaven.observability.logger import get_logger
+from faultmaven.observability.metrics import counter, histogram
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+oauth_code_issued = counter(
+    "oauth_code_issued_total",
+    "Total authorization codes issued"
+)
+
+oauth_token_exchanged = counter(
+    "oauth_token_exchanged_total",
+    "Total successful token exchanges"
+)
+
+oauth_token_exchange_duration = histogram(
+    "oauth_token_exchange_duration_seconds",
+    "Token exchange request duration"
+)
+
+class OAuthServiceImpl(IOAuthService):
+    async def create_authorization_code(
+        self,
+        user_id: str,
+        request: OAuthAuthorizationDTO
+    ) -> str:
+        logger.info(
+            "oauth.authorization.start",
+            user_id=user_id,
+            client_id=request.client_id,
+            code_challenge_method=request.code_challenge_method
+        )
+
+        code = self._generate_code()
+
+        await self.code_repository.save_code(OAuthCodeDTO(
+            code=code,
+            user_id=user_id,
+            redirect_uri=request.redirect_uri,
+            code_challenge=request.code_challenge,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
+        ))
+
+        oauth_code_issued.inc()
+
+        logger.info(
+            "oauth.authorization.success",
+            user_id=user_id,
+            code_expires_in_seconds=600
+        )
+
+        return code
+
+    async def exchange_code_for_token(
+        self,
+        code: str,
+        code_verifier: str,
+        redirect_uri: str
+    ) -> OAuthTokenDTO:
+        with oauth_token_exchange_duration.time():
+            logger.info("oauth.token_exchange.start", code_prefix=code[:8])
+
+            # Verify code
+            code_data = await self.code_repository.get_code(code)
+            if not code_data:
+                logger.warning("oauth.token_exchange.invalid_code", code_prefix=code[:8])
+                raise InvalidGrantError("Invalid or expired authorization code")
+
+            if code_data.used:
+                logger.warning(
+                    "oauth.token_exchange.code_reuse_attempt",
+                    user_id=code_data.user_id
+                )
+                raise InvalidGrantError("Authorization code already used")
+
+            # Verify PKCE
+            if not self._verify_pkce(code_verifier, code_data.code_challenge):
+                logger.warning(
+                    "oauth.token_exchange.pkce_failed",
+                    user_id=code_data.user_id
+                )
+                raise PKCEVerificationError("PKCE verification failed")
+
+            # Mark code as used
+            await self.code_repository.mark_code_used(code)
+
+            # Generate token
+            token = await self.token_repository.create_token(code_data.user_id)
+
+            oauth_token_exchanged.inc()
+
+            logger.info(
+                "oauth.token_exchange.success",
+                user_id=code_data.user_id,
+                token_expires_in_seconds=86400
+            )
+
+            return OAuthTokenDTO(
+                access_token=token.value,
+                user_id=code_data.user_id,
+                username=token.username
+            )
+```
+
+### Deployment Configuration
+
+**Principle**: Deployment-agnostic design (Critical)
+
+**Configuration Options**:
+
+```yaml
+# config/local.yml (single-user development)
+auth:
+  mode: dev-login
+  oauth:
+    enabled: false
+  storage:
+    type: in-memory
+
+# config/production.yml (multi-user production)
+auth:
+  mode: oauth
+  oauth:
+    enabled: true
+    dashboard_url: https://dashboard.faultmaven.com
+    token_expiry_seconds: 86400
+  storage:
+    type: redis
+    redis_url: redis://localhost:6379/0
+
+# config/enterprise.yml (on-premises)
+auth:
+  mode: oauth
+  oauth:
+    enabled: true
+    dashboard_url: https://faultmaven.acme.corp
+    token_expiry_seconds: 28800  # 8 hours
+  storage:
+    type: postgresql
+    postgres_url: postgresql://user:pass@localhost:5432/auth
+```
+
+**Runtime Selection**:
+```python
+def create_oauth_service(config: AuthConfig) -> IOAuthService:
+    if not config.oauth.enabled:
+        return DevLoginAuthService()  # Simple username-only
+
+    # Production OAuth with configurable storage
+    if config.storage.type == "redis":
+        repo = RedisOAuthCodeRepository(config.storage.redis_url)
+    else:
+        repo = PostgresOAuthCodeRepository(config.storage.postgres_url)
+
+    return OAuthServiceImpl(code_repository=repo, ...)
+```
+
+### Security Principles
+
+**Alignment with OWASP and OAuth 2.0 Best Practices**:
+
+1. **PKCE Mandatory**: Prevents authorization code interception attacks
+2. **State Parameter**: CSRF protection during redirect
+3. **Short-lived Codes**: 10-minute expiry for authorization codes
+4. **Single-use Codes**: Prevents replay attacks
+5. **Constant-time Comparison**: Prevents timing attacks on code verification
+6. **Secure Token Storage**: SHA-256 hashing in Redis/PostgreSQL
+7. **No Client Secrets**: Public client pattern for browser extension
+
+### Test Safety Net
+
+**Principle**: Comprehensive test safety net (Important)
+
+**Test Structure**:
+
+```python
+# tests/unit/modules/auth/domain/test_oauth_service.py
+import pytest
+from faultmaven.modules.auth.contracts import (
+    IOAuthService,
+    OAuthAuthorizationDTO,
+    OAuthCodeDTO
+)
+from faultmaven.modules.auth.domain.oauth_service import OAuthServiceImpl
+from tests.fakes.fake_oauth_code_repository import FakeOAuthCodeRepository
+
+class TestOAuthService:
+    @pytest.fixture
+    def fake_code_repo(self):
+        return FakeOAuthCodeRepository()
+
+    @pytest.fixture
+    def oauth_service(self, fake_code_repo) -> IOAuthService:
+        return OAuthServiceImpl(code_repository=fake_code_repo)
+
+    async def test_create_authorization_code_success(self, oauth_service):
+        request = OAuthAuthorizationDTO(
+            client_id="copilot",
+            redirect_uri="https://extension.local/callback",
+            state="random_state_123",
+            code_challenge="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        )
+
+        code = await oauth_service.create_authorization_code("user_123", request)
+
+        assert len(code) == 128
+        # Verify code stored in repository
+        stored = await oauth_service.code_repository.get_code(code)
+        assert stored.user_id == "user_123"
+        assert stored.code_challenge == request.code_challenge
+
+    async def test_exchange_code_for_token_success(self, oauth_service):
+        # Setup: Create authorization code
+        code = await oauth_service.create_authorization_code(
+            "user_123",
+            OAuthAuthorizationDTO(
+                client_id="copilot",
+                redirect_uri="https://extension.local/callback",
+                state="state_123",
+                code_challenge="E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            )
+        )
+
+        # Execute: Exchange code for token
+        token = await oauth_service.exchange_code_for_token(
+            code=code,
+            code_verifier="dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+            redirect_uri="https://extension.local/callback"
+        )
+
+        # Assert
+        assert token.access_token is not None
+        assert token.user_id == "user_123"
+
+        # Verify code marked as used
+        stored = await oauth_service.code_repository.get_code(code)
+        assert stored.used is True
+
+    async def test_exchange_code_twice_fails(self, oauth_service):
+        code = await oauth_service.create_authorization_code(...)
+
+        # First exchange succeeds
+        await oauth_service.exchange_code_for_token(code, ...)
+
+        # Second exchange fails
+        with pytest.raises(InvalidGrantError, match="already used"):
+            await oauth_service.exchange_code_for_token(code, ...)
+
+    async def test_pkce_verification_failure(self, oauth_service):
+        code = await oauth_service.create_authorization_code(
+            "user_123",
+            OAuthAuthorizationDTO(..., code_challenge="correct_challenge")
+        )
+
+        # Wrong code_verifier
+        with pytest.raises(PKCEVerificationError):
+            await oauth_service.exchange_code_for_token(
+                code=code,
+                code_verifier="wrong_verifier_that_doesnt_match",
+                redirect_uri="..."
+            )
+
+# tests/integration/modules/auth/test_oauth_flow_e2e.py
+class TestOAuthFlowEndToEnd:
+    async def test_complete_oauth_flow(self, test_client, test_db):
+        # Step 1: User logs into Dashboard
+        login_response = await test_client.post("/auth/dev-login", json={
+            "username": "alice"
+        })
+        dashboard_token = login_response.json()["access_token"]
+
+        # Step 2: Dashboard initiates OAuth for Extension
+        auth_response = await test_client.get(
+            "/auth/oauth/authorize",
+            params={
+                "client_id": "copilot",
+                "redirect_uri": "https://extension.local/callback",
+                "state": "xyz",
+                "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                "code_challenge_method": "S256"
+            },
+            headers={"Authorization": f"Bearer {dashboard_token}"}
+        )
+
+        redirect_url = auth_response.headers["Location"]
+        code = parse_qs(urlparse(redirect_url).query)["code"][0]
+
+        # Step 3: Extension exchanges code for token
+        token_response = await test_client.post("/auth/token", json={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://extension.local/callback",
+            "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        })
+
+        extension_token = token_response.json()["access_token"]
+
+        # Step 4: Extension calls API with token
+        cases_response = await test_client.get(
+            "/api/v1/cases",
+            headers={"Authorization": f"Bearer {extension_token}"}
+        )
+
+        assert cases_response.status_code == 200
+```
+
+### Summary: Architectural Compliance
+
+| Principle                           | Compliance Level | Implementation                                          |
+|-------------------------------------|------------------|---------------------------------------------------------|
+| **Vertical Modules with Contracts** | ✅ Full          | `contracts.py` with `IOAuthService`, DTOs               |
+| **Database-per-Module Boundaries**  | ✅ Full          | `auth.oauth_codes` table, no cross-module JOINs         |
+| **Interface-Based Design**          | ✅ Full          | `IOAuthService`, `IOAuthCodeRepository` abstractions    |
+| **Deployment-Agnostic**             | ✅ Full          | Config-driven (dev-login vs OAuth, Redis vs PostgreSQL) |
+| **Composition Root Pattern**        | ✅ Full          | Dependency injection in `main.py`                       |
+| **Boundary Enforcement**            | ✅ Full          | `.import-linter` rules for auth module                  |
+| **Errors as Domain Concepts**       | ✅ Full          | `InvalidGrantError`, `PKCEVerificationError`            |
+| **Observability**                   | ✅ Full          | Structured logging, Prometheus metrics                  |
+| **Test Safety Net**                 | ⚠️ Partial       | Unit tests designed, integration tests needed           |
+
+**Migration Path**:
+1. ✅ Document OAuth flow with PKCE (completed)
+2. ⬜ Create `contracts.py` with interfaces
+3. ⬜ Implement `OAuthServiceImpl` and repositories
+4. ⬜ Add `.import-linter` rules
+5. ⬜ Write comprehensive tests
+6. ⬜ Deploy to staging for validation
 
 ## Quick Reference
 
