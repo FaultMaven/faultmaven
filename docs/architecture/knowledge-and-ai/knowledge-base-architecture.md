@@ -92,7 +92,7 @@ T (Live User/Agent Interaction):
 - ❌ Do NOT store investigation state (pure functions by design)
 - ❌ Do NOT make reasoning decisions (main agent's responsibility)
 
-**Future Enhancements** (see [qa-tools-design.md](./qa-tools-design.md)):
+**Future Enhancements** (see [qa-tools-design.md](qa-tools-design.md)):
 - **Hybrid Search**: ChromaDB metadata filtering + BM25 keyword scoring + vector re-ranking
 - **Conversation-Aware**: Optional `conversation_context` parameter for pronoun resolution and query enhancement
 
@@ -1012,12 +1012,12 @@ Evidence Question → Search case_{case_id} → Retrieve Case Evidence
 ## Related Documents
 
 ### Core Knowledge Base Documentation
-- [Vector Database Operations](./vector-database-operations.md) - **Operational guide**: Document ingestion pipelines, query flows, collection lifecycle, API specifications, admin procedures
-- [Q&A Tools Design](./qa-tools-design.md) - **Access layer design**: Stateless Q&A tools, prompt engineering, tool wrappers, main agent tool selection
-- [Knowledge Base Architecture](./knowledge-base-architecture.md) (this document) - **Storage layer**: Three KB systems, Strategy Pattern, ChromaDB collections, offline ingestion
+- [Vector Database Operations](vector-database-operations.md) - **Operational guide**: Document ingestion pipelines, query flows, collection lifecycle, API specifications, admin procedures
+- [Q&A Tools Design](qa-tools-design.md) - **Access layer design**: Stateless Q&A tools, prompt engineering, tool wrappers, main agent tool selection
+- [Knowledge Base Architecture](knowledge-base-architecture.md) (this document) - **Storage layer**: Three KB systems, Strategy Pattern, ChromaDB collections, offline ingestion
 
 ### Supporting Documentation
-- [Case Evidence Store Feature Documentation](../features/case-evidence-store.md) - Case Evidence Store user-facing features
+- [Case Evidence Store Feature Documentation](../case-and-session/case-evidence-store.md) - Case Evidence Store user-facing features
 - [Case Evidence Store Implementation Summary](../implementation/case-evidence-store-implementation-summary.md) - Technical implementation details
 - [Case Lifecycle Cleanup Implementation](../implementation/CASE_LIFECYCLE_CLEANUP_IMPLEMENTED.md) - Cleanup mechanisms
 - [Investigation Phases Framework](./investigation-phases-and-ooda-integration.md) - How Q&A tools integrate with investigation workflow

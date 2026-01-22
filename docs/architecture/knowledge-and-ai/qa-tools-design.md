@@ -24,7 +24,7 @@ The Document Q&A system provides **RAG retrieval** across three knowledge base t
 - **Agent manages context**: Accumulates `conversation_history + tool_results` for progressive investigation
 - **Agent decides strategy**: What to include in LLM prompt based on investigation phase
 
-**Related Documentation**: See [knowledge-base-architecture.md](./knowledge-base-architecture.md) for storage layer details (ChromaDB collections, Strategy Pattern, KBConfig interface, offline ingestion pipelines).
+**Related Documentation**: See [knowledge-base-architecture.md](knowledge-base-architecture.md) for storage layer details (ChromaDB collections, Strategy Pattern, KBConfig interface, offline ingestion pipelines).
 
 ---
 
@@ -246,7 +246,7 @@ class DocumentQATool(LangChainBaseTool):
 
 ### 2. Configuration Over Code
 
-Instead of three separate implementations, we use **one core class configured three ways** through the Strategy Pattern (see [knowledge-base-architecture.md](./knowledge-base-architecture.md)).
+Instead of three separate implementations, we use **one core class configured three ways** through the Strategy Pattern (see [knowledge-base-architecture.md](knowledge-base-architecture.md)).
 
 **Design Rationale**: The core Q&A logic (retrieve chunks, synthesize answer, cite sources) is identical across all KB types. Only the **presentation** differs (forensic vs procedural vs educational). Configuration-driven design keeps the core focused on its single responsibility: document retrieval and synthesis.
 
@@ -812,7 +812,7 @@ team_kb_qa = AnswerFromTeamKB(vector_store, llm_router)
 - Core DocumentQATool has ZERO knowledge of KB types
 - Adding new KB = create config class + wrapper (50-80 lines total)
 - No if/elif branching - behavior injected via Strategy Pattern
-- See [knowledge-base-architecture.md](./knowledge-base-architecture.md) for complete Strategy Pattern details
+- See [knowledge-base-architecture.md](knowledge-base-architecture.md) for complete Strategy Pattern details
 
 ### Agent Clarity
 
@@ -1041,11 +1041,11 @@ def _create_tools_layer(self):
 ## Related Documents
 
 ### Storage Layer Documentation
-- [knowledge-base-architecture.md](./knowledge-base-architecture.md) - ChromaDB collections, Strategy Pattern, KBConfig interface, storage lifecycle
-- [vector-database-operations.md](./vector-database-operations.md) - **Operational guide**: Document ingestion pipelines, query flows, collection lifecycle, API specifications, admin procedures
+- [knowledge-base-architecture.md](knowledge-base-architecture.md) - ChromaDB collections, Strategy Pattern, KBConfig interface, storage lifecycle
+- [vector-database-operations.md](vector-database-operations.md) - **Operational guide**: Document ingestion pipelines, query flows, collection lifecycle, API specifications, admin procedures
 
 ### Feature Documentation
-- [Case Evidence Store Feature Documentation](../features/case-evidence-store.md) - Case Evidence Store user-facing features
+- [Case Evidence Store Feature Documentation](../case-and-session/case-evidence-store.md) - Case Evidence Store user-facing features
 
 ### Implementation Documentation
 - [Case Evidence Store Implementation Summary](../implementation/case-evidence-store-implementation-summary.md) - Technical implementation details
@@ -1295,8 +1295,8 @@ Both maintain pure function design and agent-managed context architecture.
 
 ### Complementary Documentation
 
-- **Storage layer** ([knowledge-base-architecture.md](./knowledge-base-architecture.md)) - Three KB systems, Strategy Pattern, offline ingestion
-- **Operations** ([vector-database-operations.md](./vector-database-operations.md)) - Ingestion pipelines, query flows, admin procedures
+- **Storage layer** ([knowledge-base-architecture.md](knowledge-base-architecture.md)) - Three KB systems, Strategy Pattern, offline ingestion
+- **Operations** ([vector-database-operations.md](vector-database-operations.md)) - Ingestion pipelines, query flows, admin procedures
 - **Access layer** (this document) - RAG retrieval tools, context management, agent orchestration, future enhancements
 
 ---

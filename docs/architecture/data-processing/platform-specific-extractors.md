@@ -245,7 +245,7 @@ structured = llm.extract_structured_data(prompt)
 ## References
 
 - [Phase 2 Implementation Roadmap](../../faultmaven-copilot/enhanced-ui-design.md#phase-2-data-submission-weeks-4-6)
-- [Phase-Based Retrieval](./phase-based-retrieval.md) - Related evidence organization
+- [Phase-Based Retrieval](../investigation-engine/phase-based-retrieval.md) - Related evidence organization
 - [Current Page Injection Implementation](../../faultmaven-copilot/src/shared/ui/components/ChatWindow.tsx#L146-L209)
 
 ---

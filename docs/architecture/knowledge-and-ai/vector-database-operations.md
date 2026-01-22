@@ -4,13 +4,13 @@
 **Version:** 1.0
 **Last Updated:** 2025-10-21
 **Status:** 🟢 **PRODUCTION READY**
-**Related Docs:** [knowledge-base-architecture.md](./knowledge-base-architecture.md), [qa-tools-design.md](./qa-tools-design.md)
+**Related Docs:** [knowledge-base-architecture.md](knowledge-base-architecture.md), [qa-tools-design.md](qa-tools-design.md)
 
 ---
 
 ## Overview
 
-This document provides comprehensive operational details for FaultMaven's vector database system. While [knowledge-base-architecture.md](./knowledge-base-architecture.md) explains **what** the three KB systems are and **why** they exist, this document explains **how** they work operationally.
+This document provides comprehensive operational details for FaultMaven's vector database system. While [knowledge-base-architecture.md](knowledge-base-architecture.md) explains **what** the three KB systems are and **why** they exist, this document explains **how** they work operationally.
 
 **Scope**:
 - Document ingestion pipelines (how data gets into vector DB)
@@ -1159,19 +1159,19 @@ Both enhancements maintain:
 - ✅ Agent-managed context architecture
 - ✅ Offline ingestion, live retrieval separation
 
-See [qa-tools-design.md](./qa-tools-design.md) "Future Enhancements" section for detailed design.
+See [qa-tools-design.md](qa-tools-design.md) "Future Enhancements" section for detailed design.
 
 ---
 
 ## Related Documents
 
 ### Core Knowledge Base Documentation
-- [knowledge-base-architecture.md](./knowledge-base-architecture.md) - **Storage layer**: Three KB systems, Strategy Pattern, ChromaDB collections, offline ingestion
-- [qa-tools-design.md](./qa-tools-design.md) - **Access layer**: Stateless Q&A tools, prompt engineering, main agent tool selection
-- [vector-database-operations.md](./vector-database-operations.md) (this document) - **Operations**: Ingestion pipelines, query flows, lifecycle management, admin procedures
+- [knowledge-base-architecture.md](knowledge-base-architecture.md) - **Storage layer**: Three KB systems, Strategy Pattern, ChromaDB collections, offline ingestion
+- [qa-tools-design.md](qa-tools-design.md) - **Access layer**: Stateless Q&A tools, prompt engineering, main agent tool selection
+- [vector-database-operations.md](vector-database-operations.md) (this document) - **Operations**: Ingestion pipelines, query flows, lifecycle management, admin procedures
 
 ### Supporting Documentation
-- [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) - Preprocessing pipeline details (classification, extraction, chunking)
+- [data-preprocessing-design-specification.md](../data-processing/data-preprocessing-design-specification.md) - Preprocessing pipeline details (classification, extraction, chunking)
 - [HANDLING_LARGE_DOCUMENTS.md](./HANDLING_LARGE_DOCUMENTS.md) - Chunking strategies for large files
 
 ---
@@ -1188,6 +1188,6 @@ This document provides comprehensive operational details for FaultMaven's vector
 ✅ **Operational Procedures**: Admin workflows, backup/restore, reindexing, monitoring
 ✅ **Configuration**: Embedding models, chunking parameters, metadata schemas, performance tuning
 
-For implementation details of the Strategy Pattern and KB-neutral design, see [knowledge-base-architecture.md](./knowledge-base-architecture.md).
+For implementation details of the Strategy Pattern and KB-neutral design, see [knowledge-base-architecture.md](knowledge-base-architecture.md).
 
-For prompt engineering and access layer design, see [qa-tools-design.md](./qa-tools-design.md).
+For prompt engineering and access layer design, see [qa-tools-design.md](qa-tools-design.md).

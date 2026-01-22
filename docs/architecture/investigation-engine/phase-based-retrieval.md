@@ -410,9 +410,9 @@ Dynamically adjust k based on initial result quality.
 
 ## Related Documents
 
-- [Case Evidence Store](./case-evidence-store.md) - RAG implementation that this uses
+- [Case Evidence Store](../case-and-session/case-evidence-store.md) - RAG implementation that this uses
 - [OODA Framework](../architecture/investigation-phases-and-ooda-integration.md) - Investigation phases
-- [Knowledge Base Architecture](../architecture/knowledge-base-architecture.md) - Vector store systems
+- [Knowledge Base Architecture](../knowledge-and-ai/knowledge-base-architecture.md) - Vector store systems
 
 ---
 

@@ -33,12 +33,12 @@
 
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
-| **Investigation Architecture** ([milestone-based-investigation-framework.md](./milestone-based-investigation-framework.md)) | ✅ 🎯 | Milestone-based investigation framework, lifecycle, stages | CRITICAL |
+| **Investigation Architecture** ([milestone-based-investigation-framework.md](investigation-engine/milestone-based-investigation-framework.md)) | ✅ 🎯 | Milestone-based investigation framework, lifecycle, stages | CRITICAL |
 | **Case Data Model Design** ([case-data-model-design.md](./case-data-model-design.md)) | ✅ 🎯 | Complete data models, validation rules, schemas | CRITICAL |
 | **DB Design Specifications** ([db-design-specifications.md](./db-design-specifications.md)) | ✅ 🎯 | PostgreSQL schema, JSONB fields, migrations | CRITICAL |
-| **Prompt Engineering Guide** ([prompt-engineering-guide.md](./prompt-engineering-guide.md)) | ✅ 🎯 | Three-template system, LLM interaction patterns | CRITICAL |
-| **Prompt Templates** ([prompt-templates.md](./prompt-templates.md)) | ✅ | Implementation-ready prompt code | HIGH |
-| **Prompt Implementation Examples** ([prompt-implementation-examples.md](./prompt-implementation-examples.md)) | ✅ | Complete integration code examples | HIGH |
+| **Prompt Engineering Guide** ([prompt-engineering-guide.md](investigation-engine/prompt-engineering-guide.md)) | ✅ 🎯 | Three-template system, LLM interaction patterns | CRITICAL |
+| **Prompt Templates** ([prompt-templates.md](investigation-engine/prompt-templates.md)) | ✅ | Implementation-ready prompt code | HIGH |
+| **Prompt Implementation Examples** ([prompt-implementation-examples.md](investigation-engine/prompt-implementation-examples.md)) | ✅ | Complete integration code examples | HIGH |
 
 **Purpose**: Define HOW investigation works in v2.0 (milestone-based, opportunistic completion)
 
@@ -284,7 +284,7 @@
 | Data Models Reference | 📝 | Comprehensive model catalog with field descriptions | **HIGH PRIORITY** |
 | Design Patterns Guide | 📝 | Implementation patterns with code examples | MEDIUM |
 | Service Layer Patterns | ✅ | Service implementation patterns | MEDIUM |
-| Interface-Based Design Guide | ✅ | See [interface-based-design.md](./interface-based-design.md) | MEDIUM |
+| Interface-Based Design Guide | ✅ | See [interface-based-design.md](core-architecture/interface-based-design.md) | MEDIUM |
 
 **Purpose**: Code organization and implementation patterns
 

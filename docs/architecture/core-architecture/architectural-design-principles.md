@@ -5,7 +5,7 @@
 **Status**: Active
 **Related Documents**:
 
-- [ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)
+- [ADR-001: Monolith Evolution Strategy](../decisions/adr-001-monolith-evolution-strategy.md)
 - [Import Linter Baseline](IMPORT-LINTER-BASELINE.md)
 - [Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)
 
@@ -905,7 +905,7 @@ def check_exceptions():
 
 ### Core Documents
 
-- **[ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)**
+- **[ADR-001: Monolith Evolution Strategy](../decisions/adr-001-monolith-evolution-strategy.md)**
 - **[Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)**
 - **[Import Linter Baseline](IMPORT-LINTER-BASELINE.md)**
 - **[Module Organization Design](module-organization-design.md)** - Vertical vs horizontal module organization
@@ -914,7 +914,7 @@ def check_exceptions():
 
 - **[Dependency Injection System](dependency-injection-system.md)**
 - **[Interface-Based Design](interface-based-design.md)**
-- **[Testing Guide](testing-guide.md)**
+- **[Testing Guide](../guides/testing-guide.md)**
 
 ---
 

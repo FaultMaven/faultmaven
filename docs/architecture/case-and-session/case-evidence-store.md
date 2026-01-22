@@ -503,7 +503,7 @@ curl http://localhost:8000/api/v1/case/abc123/documents/count
 
 ## References
 
-- [Knowledge Base Architecture](../architecture/knowledge-base-architecture.md) - Three-tier RAG system overview
+- [Knowledge Base Architecture](../knowledge-and-ai/knowledge-base-architecture.md) - Three-tier RAG system overview
 - [Case Lifecycle Cleanup Implementation](../implementation/CASE_LIFECYCLE_CLEANUP_IMPLEMENTED.md) - Lifecycle-based cleanup details
 - [CaseVectorStore Implementation](../../faultmaven/infrastructure/persistence/case_vector_store.py)
 - [AnswerFromDocumentTool Implementation](../../faultmaven/tools/answer_from_document.py)

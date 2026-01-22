@@ -12,11 +12,11 @@ Master index for all architecture documentation.
 
 | Document | Purpose |
 |----------|---------|
-| **[Investigation Architecture](./milestone-based-investigation-framework.md)** | 🎯 Investigation workflow, lifecycle, stages, milestones |
-| **[Case Storage Design](./case-storage-design.md)** | 🎯 PostgreSQL schema (10 tables) |
-| **[Prompt Engineering Guide](./prompt-engineering-guide.md)** | 🎯 LLM prompts, templates, strategies |
-| **[Prompt Templates](./prompt-templates.md)** | Implementation-ready prompt code |
-| **[Prompt Implementation Examples](./prompt-implementation-examples.md)** | Complete code examples |
+| **[Investigation Architecture](investigation-engine/milestone-based-investigation-framework.md)** | 🎯 Investigation workflow, lifecycle, stages, milestones |
+| **[Case Storage Design](data-and-storage/case-storage-design.md)** | 🎯 PostgreSQL schema (10 tables) |
+| **[Prompt Engineering Guide](investigation-engine/prompt-engineering-guide.md)** | 🎯 LLM prompts, templates, strategies |
+| **[Prompt Templates](investigation-engine/prompt-templates.md)** | Implementation-ready prompt code |
+| **[Prompt Implementation Examples](investigation-engine/prompt-implementation-examples.md)** | Complete code examples |
 
 **Architecture Philosophy**: Milestone-based (not phase-based) investigation where agents complete tasks opportunistically based on data availability.
 
@@ -29,35 +29,35 @@ Master index for all architecture documentation.
 | Document | Version | Purpose |
 |----------|---------|---------|
 | **[Architecture Overview](./architecture-overview.md)** | v3.0 | 🎯 Master system architecture document |
-| **[Investigation Architecture](./milestone-based-investigation-framework.md)** | v2.0 | 🎯 Milestone-based investigation framework |
-| **[Case Storage Design](./case-storage-design.md)** | v2.0 | 🎯 PostgreSQL schema (10 tables) |
-| **[Prompt Engineering Guide](./prompt-engineering-guide.md)** | v2.0 | 🎯 Prompt templates and strategies |
+| **[Investigation Architecture](investigation-engine/milestone-based-investigation-framework.md)** | v2.0 | 🎯 Milestone-based investigation framework |
+| **[Case Storage Design](data-and-storage/case-storage-design.md)** | v2.0 | 🎯 PostgreSQL schema (10 tables) |
+| **[Prompt Engineering Guide](investigation-engine/prompt-engineering-guide.md)** | v2.0 | 🎯 Prompt templates and strategies |
 
 ### Supporting Components
 
 | Document | Purpose |
 |----------|---------|
-| **[Case and Session Concepts](./case-and-session-concepts.md)** | Case vs Session distinction, multi-device support |
-| **[Knowledge Base Architecture](./knowledge-base-architecture.md)** | Vector database, RAG, knowledge retrieval |
-| **[Data Submission Design](./data-submission-design.md)** | File uploads and data handling |
-| **[Data Preprocessing Design](./data-preprocessing-design-specification.md)** | Data preprocessing pipeline |
-| **[QA Tools Design](./qa-tools-design.md)** | Question answering tools and sub-agents |
+| **[Case and Session Concepts](case-and-session/case-and-session-concepts.md)** | Case vs Session distinction, multi-device support |
+| **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** | Vector database, RAG, knowledge retrieval |
+| **[Data Submission Design](data-processing/data-submission-design.md)** | File uploads and data handling |
+| **[Data Preprocessing Design](data-processing/data-preprocessing-design-specification.md)** | Data preprocessing pipeline |
+| **[QA Tools Design](knowledge-and-ai/qa-tools-design.md)** | Question answering tools and sub-agents |
 
 ### Infrastructure
 
 | Document | Purpose |
 |----------|---------|
-| **[Dependency Injection System](./dependency-injection-system.md)** | DI container and service interfaces |
-| **[Authentication Design](./authentication-design.md)** | Authentication architecture |
+| **[Dependency Injection System](core-architecture/dependency-injection-system.md)** | DI container and service interfaces |
+| **[Authentication Design](security/authentication-design.md)** | Authentication architecture |
 
 ### Implementation Guides
 
 | Document | Purpose |
 |----------|---------|
-| **[Container Usage Guide](./container-usage-guide.md)** | DI container practical guide |
-| **[Testing Guide](./testing-guide.md)** | Testing strategies |
-| **[Service Patterns](./service-patterns.md)** | Service layer patterns |
-| **[Interface-Based Design](./interface-based-design.md)** | Interface design guidelines |
+| **[Container Usage Guide](guides/container-usage-guide.md)** | DI container practical guide |
+| **[Testing Guide](guides/testing-guide.md)** | Testing strategies |
+| **[Service Patterns](core-architecture/service-patterns.md)** | Service layer patterns |
+| **[Interface-Based Design](core-architecture/interface-based-design.md)** | Interface design guidelines |
 
 ### Archived Documents (Superseded by v2.0)
 
@@ -165,7 +165,7 @@ All documents referenced by architecture-overview.md remain at the root level fo
 
 ### Data Preprocessing System v4.0
 
-**[data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md)** - Complete design specification for data preprocessing system
+**[data-preprocessing-design-specification.md](data-processing/data-preprocessing-design-specification.md)** - Complete design specification for data preprocessing system
 
 **What it covers**:
 - 3-step pipeline architecture (Classify → Preprocess → LLM Analysis)
@@ -193,5 +193,5 @@ Step 3: LLM Analysis (✅ Ready)
 ```
 
 **Related Documents**:
-- [data-submission-design.md](./data-submission-design.md) - Upload flow and dual submission paths
+- [data-submission-design.md](data-processing/data-submission-design.md) - Upload flow and dual submission paths
 

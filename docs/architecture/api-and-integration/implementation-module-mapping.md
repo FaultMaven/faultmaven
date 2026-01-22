@@ -599,7 +599,7 @@ This document maps every module in the FaultMaven codebase to its architectural 
 ## Related Documentation
 
 - [Architecture Overview](./architecture-overview.md) - High-level architecture
-- [Interface-Based Design](./interface-based-design.md) - Interface definitions
+- [Interface-Based Design](../core-architecture/interface-based-design.md) - Interface definitions
 - [Data Models Reference](./data-models-reference.md) - Comprehensive model catalog
 - [Design Patterns Guide](./design-patterns-guide.md) - Implementation patterns
 
