@@ -185,6 +185,9 @@ chroma_db/
 # Benchmark results (pytest-benchmark)
 .benchmarks/
 
+# Import linter cache
+.import_linter_cache/
+
 # Environment-specific configuration files
 scripts/config/opik_remote.sh
 scripts/config/local_*.sh
