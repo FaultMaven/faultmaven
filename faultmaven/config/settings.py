@@ -902,6 +902,117 @@ class SecuritySettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class AuthMode(str, Enum):
+    """Authentication mode selector."""
+
+    DEV_LOGIN = "dev-login"
+    OAUTH = "oauth"
+
+
+class AuthSettings(BaseSettings):
+    """Authentication configuration (deployment-agnostic).
+
+    FaultMaven supports two authentication modes:
+    - dev-login: Simple username-only authentication for local development
+    - oauth: OAuth 2.0 + PKCE for production multi-user deployments
+
+    ARCHITECTURAL PRINCIPLE: Deployment-agnostic design
+    - Configuration-driven mode selection (dev-login vs oauth)
+    - Storage abstraction (Redis vs PostgreSQL for OAuth codes)
+    - Core auth logic remains independent of deployment environment
+    """
+
+    # Authentication mode selection
+    auth_mode: AuthMode = Field(
+        default=AuthMode.DEV_LOGIN,
+        env="AUTH_MODE",
+        description="Authentication mode: 'dev-login' (local) or 'oauth' (production)",
+    )
+
+    # OAuth Configuration (only used when auth_mode=oauth)
+    oauth_enabled: bool = Field(
+        default=False,
+        env="OAUTH_ENABLED",
+        description="Enable OAuth 2.0 + PKCE authentication (production mode)",
+    )
+
+    # Dashboard URL (OAuth IdP)
+    dashboard_url: str = Field(
+        default="https://dashboard.faultmaven.ai",
+        env="DASHBOARD_URL",
+        description="Dashboard URL (acts as IdP for OAuth flow)",
+    )
+
+    # OAuth authorization code settings
+    oauth_code_expiry_seconds: int = Field(
+        default=600,
+        env="OAUTH_CODE_EXPIRY_SECONDS",
+        ge=60,
+        le=1800,
+        description="Authorization code expiry (10 minutes default, PKCE-protected)",
+    )
+
+    # OAuth storage backend selection
+    oauth_code_storage: Literal["redis", "postgres", "inmemory"] = Field(
+        default="redis",
+        env="OAUTH_CODE_STORAGE",
+        description="Storage backend for OAuth authorization codes",
+    )
+
+    # Allowed OAuth clients (extension IDs)
+    oauth_allowed_clients: List[str] = Field(
+        default=["faultmaven-copilot"],
+        env="OAUTH_ALLOWED_CLIENTS",
+        description="Allowed OAuth client IDs",
+    )
+
+    # OAuth redirect URI patterns (regex)
+    oauth_redirect_uri_patterns: List[str] = Field(
+        default=[
+            r"^chrome-extension://[a-z]{32}/callback$",
+            r"^moz-extension://[a-f0-9-]{36}/callback$",
+        ],
+        env="OAUTH_REDIRECT_URI_PATTERNS",
+        description="Allowed redirect URI patterns (regex) for OAuth",
+    )
+
+    # Dev-login settings (only used when auth_mode=dev-login)
+    dev_login_token_expiry_hours: int = Field(
+        default=24,
+        env="DEV_LOGIN_TOKEN_EXPIRY_HOURS",
+        ge=1,
+        le=168,
+        description="Dev-login token expiry (hours)",
+    )
+
+    @field_validator("oauth_enabled")
+    @classmethod
+    def validate_oauth_consistency(cls, v, info):
+        """Ensure oauth_enabled matches auth_mode"""
+        values = info.data
+        auth_mode = values.get("auth_mode", AuthMode.DEV_LOGIN)
+
+        if auth_mode == AuthMode.OAUTH and not v:
+            raise ValueError(
+                "AUTH_MODE=oauth requires OAUTH_ENABLED=true. "
+                "Set both or use AUTH_MODE=dev-login for local development."
+            )
+
+        if auth_mode == AuthMode.DEV_LOGIN and v:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "OAUTH_ENABLED=true but AUTH_MODE=dev-login. "
+                "OAuth will be available but dev-login is the active mode. "
+                "Set AUTH_MODE=oauth to use OAuth as primary authentication."
+            )
+
+        return v
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 class ProtectionSettings(BaseSettings):
     """Unified protection configuration - PII, behavioral, and ML protection"""
 
@@ -1892,6 +2003,7 @@ class FaultMavenSettings(BaseSettings):
     session: SessionSettings = Field(default_factory=SessionSettings)
     case: CaseSettings = Field(default_factory=CaseSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     protection: ProtectionSettings = Field(default_factory=ProtectionSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
