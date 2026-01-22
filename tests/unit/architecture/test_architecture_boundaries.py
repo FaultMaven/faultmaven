@@ -341,9 +341,10 @@ class TestDocumentationSync:
         docs_path = Path("docs/architecture")
         assert docs_path.exists(), "Architecture documentation directory should exist"
 
-        # Key architecture docs should exist
+        # Key architecture docs should exist (updated paths after reorganization)
         key_docs = [
-            "current-architecture.md",
+            "core-architecture/current-architecture.md",
+            "architecture-overview.md",
         ]
 
         for doc in key_docs:
@@ -357,8 +358,8 @@ class TestDocumentationSync:
             Path("FaultMaven-Refactoring-Plan.md"),
             Path("docs/migration/import-migration-guide.md"),
             Path(
-                "docs/architecture/current-architecture.md"
-            ),  # Modern architecture docs
+                "docs/architecture/core-architecture/current-architecture.md"
+            ),  # Modern architecture docs (reorganized)
             Path(
                 "docs/architecture/architecture-overview.md"
             ),  # Comprehensive architecture overview

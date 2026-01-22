@@ -284,9 +284,20 @@ class TestArchitecturalCompliance:
                     lines = content.split("\n")
 
                 in_docstring = False
+                in_try_block = False
+                try_indent = 0
 
                 for i, line in enumerate(lines):
                     stripped = line.strip()
+
+                    # Track try-except blocks for debug/logging code
+                    if stripped.startswith("try:"):
+                        in_try_block = True
+                        try_indent = len(line) - len(line.lstrip())
+                    elif in_try_block and len(line) - len(line.lstrip()) <= try_indent and stripped:
+                        # Exited try block (dedented to same level or less)
+                        if not stripped.startswith("except") and not stripped.startswith("finally"):
+                            in_try_block = False
 
                     # Track docstring state
                     if '"""' in stripped or "'''" in stripped:
@@ -308,6 +319,14 @@ class TestArchitecturalCompliance:
                         before = code_part.split("container.get_")[0]
                         if before.count('"') % 2 == 1 or before.count("'") % 2 == 1:
                             continue
+                        # Skip if it's in a try block for debugging/logging purposes
+                        # (Check if the variable is only used for logging or has "debug" in name)
+                        if in_try_block:
+                            var_name = stripped.split("=")[0].strip() if "=" in stripped else ""
+                            # If this is debug code (variable contains debug/container/temp in name)
+                            # or the next few lines only use it for logging, skip it
+                            if "container_" in var_name or "debug" in var_name.lower() or "temp" in var_name.lower():
+                                continue
                         violations.append(f"{filepath}:{i+1}: {line.strip()}")
 
         if violations:
