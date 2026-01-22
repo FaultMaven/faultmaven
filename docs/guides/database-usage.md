@@ -886,7 +886,7 @@ engine = MilestoneEngine(case_repository=mock_repo)
 
 ---
 
-**Questions?** Contact the architecture team or check `db-abstraction-layer-specification.md`
+**Questions?** Contact the architecture team or check [repository-pattern.md](../architecture/data-and-storage/repository-pattern.md)
 
 **Document End**
 

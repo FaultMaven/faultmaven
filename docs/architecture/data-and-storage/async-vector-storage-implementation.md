@@ -679,7 +679,7 @@ metadata['tags'] = tags.split(',')
 
 - **Data Preprocessing Design**: `/home/swhouse/projects/FaultMaven/docs/architecture/data-preprocessing-design-specification.md`
 - **Case Storage Design**: `/home/swhouse/projects/FaultMaven/docs/architecture/case-storage-design.md`
-- **DB Abstraction Layer**: `/home/swhouse/projects/FaultMaven/docs/architecture/db-abstraction-layer-specification.md`
+- **DB Abstraction Layer**: [repository-pattern.md](./repository-pattern.md)
 - **ChunkingService Implementation**: `/home/swhouse/projects/FaultMaven/faultmaven/services/preprocessing/chunking_service.py`
 - **CaseVectorStore Implementation**: `/home/swhouse/projects/FaultMaven/faultmaven/infrastructure/persistence/case_vector_store.py`
 

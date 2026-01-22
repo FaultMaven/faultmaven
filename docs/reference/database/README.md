@@ -495,6 +495,6 @@ SELECT COUNT(*) FROM {new_table};
 
 ## References
 
-- **Design Document**: [case-storage-design.md](../docs/architecture/case-storage-design.md)
-- **DB Abstraction Layer**: [db-abstraction-layer-specification.md](../docs/architecture/db-abstraction-layer-specification.md)
-- **Implementation**: [postgresql_hybrid_case_repository.py](../faultmaven/infrastructure/persistence/postgresql_hybrid_case_repository.py)
+- **Design Document**: [case-storage-design.md](../../architecture/data-and-storage/schemas/case-schema.md)
+- **DB Abstraction Layer**: [repository-pattern.md](../../architecture/data-and-storage/repository-pattern.md)
+- **Implementation**: [postgresql_hybrid_case_repository.py](../../../faultmaven/infrastructure/persistence/postgresql_hybrid_case_repository.py)
