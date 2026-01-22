@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPBearer
 from pydantic import ValidationError
 
@@ -70,24 +70,31 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
 @router.post("/dev-login", response_model=AuthTokenResponse, status_code=200)
 @trace("auth_dev_login")
 async def dev_login(
-    request: DevLoginRequest,
+    request_body: DevLoginRequest,
+    request: Request,
     response: Response,
     session_service: AuthSessionService = Depends(get_session_service),
 ) -> AuthTokenResponse:
     """Development login endpoint
 
-    Authenticates existing users and generates authentication tokens.
+    Authenticates users and generates authentication tokens.
+    
+    **Important:** Users must be created before login. Use `./faultmaven.sh create-user`
+    to create accounts. This ensures production parity between local and cloud deployments.
+    
     This endpoint is designed for development environments and will be replaced
     with production OAuth2/OIDC integration later.
 
     **Flow:**
     1. Validate username format
-    2. Find existing user (returns 401 if user doesn't exist)
-    3. Generate authentication token
-    4. Return token with user profile
+    2. Find existing user
+    3. If user doesn't exist: Return 401 (user must be created first)
+    4. Generate authentication token
+    5. Return token with user profile
 
     **Security:**
-    - Only authenticates existing users (no account creation)
+    - Users must exist before login (no auto-creation)
+    - Production parity: Same behavior in local and cloud
     - Tokens expire after 24 hours
     - Input validation and sanitization
     - Proper OAuth2 error responses
@@ -96,36 +103,40 @@ async def dev_login(
 
     try:
         # Get required services
-        user_store = await get_user_store()
-        token_manager = await get_token_manager()
+        user_store = await get_user_store(request)
+        token_manager = await get_token_manager(request)
 
         # Try to find existing user
-        user = await user_store.get_user_by_username(request.username)
+        user = await user_store.get_user_by_username(request_body.username)
 
-        if user:
-            logger.info(
-                f"User login: {request.username} (existing user: {user.user_id})",
-                extra={
-                    "user_id": user.user_id,
-                    "username": request.username,
-                    "correlation_id": correlation_id,
-                },
-            )
-        else:
-            # User doesn't exist - return authentication error
+        if not user:
+            # User doesn't exist - require explicit account creation
             logger.warning(
-                f"Login attempt for non-existent user: {request.username}",
-                extra={"username": request.username, "correlation_id": correlation_id},
+                f"Login attempt for non-existent user: {request_body.username}",
+                extra={"username": request_body.username, "correlation_id": correlation_id},
             )
             raise HTTPException(
                 status_code=401,
                 detail={
                     "error": "authentication_failed",
-                    "message": f"User '{request.username}' does not exist. Please check the username or register a new account.",
-                    "username": request.username,
+                    "message": (
+                        f"User '{request_body.username}' does not exist. "
+                        "Please create an account first using './faultmaven.sh create-user' "
+                        "or the dev-register endpoint."
+                    ),
+                    "username": request_body.username,
                 },
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        
+        logger.info(
+            f"User login: {request_body.username} (user: {user.user_id})",
+            extra={
+                "user_id": user.user_id,
+                "username": request_body.username,
+                "correlation_id": correlation_id,
+            },
+        )
 
         # Generate authentication token
         access_token = await token_manager.create_token(user)
@@ -181,14 +192,14 @@ async def dev_login(
         # Handle validation errors (e.g., invalid username format)
         logger.warning(
             f"Login validation error: {str(e)}",
-            extra={"username": request.username, "correlation_id": correlation_id},
+            extra={"username": request_body.username, "correlation_id": correlation_id},
         )
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "validation_error",
                 "message": str(e),
-                "username": request.username,
+                "username": request_body.username,
             },
         )
     except Exception as e:
@@ -209,7 +220,8 @@ async def dev_login(
 @router.post("/dev-register", response_model=AuthTokenResponse, status_code=201)
 @trace("auth_dev_register")
 async def dev_register(
-    request: DevLoginRequest,
+    request_body: DevLoginRequest,
+    request: Request,
     response: Response,
     session_service: AuthSessionService = Depends(get_session_service),
 ) -> AuthTokenResponse:
@@ -236,27 +248,27 @@ async def dev_register(
 
     try:
         # Get required services
-        user_store = await get_user_store()
-        token_manager = await get_token_manager()
+        user_store = await get_user_store(request)
+        token_manager = await get_token_manager(request)
 
         # Check if user already exists
-        existing_user = await user_store.get_user_by_username(request.username)
+        existing_user = await user_store.get_user_by_username(request_body.username)
         if existing_user:
             logger.warning(
-                f"Registration attempt for existing user: {request.username}"
+                f"Registration attempt for existing user: {request_body.username}"
             )
             raise HTTPException(
                 status_code=409,
-                detail=f"User with username '{request.username}' already exists. Please use login instead.",
+                detail=f"User with username '{request_body.username}' already exists. Please use login instead.",
             )
 
         # Create new user
         user = await user_store.create_user(
-            username=request.username,
-            email=request.email,
-            display_name=request.display_name,
+            username=request_body.username,
+            email=request_body.email,
+            display_name=request_body.display_name,
         )
-        logger.info(f"User registration: {request.username} (new user: {user.user_id})")
+        logger.info(f"User registration: {request_body.username} (new user: {user.user_id})")
 
         # Generate authentication token
         access_token = await token_manager.create_token(user)
@@ -312,14 +324,14 @@ async def dev_register(
         # Handle validation errors (e.g., invalid username/email format)
         logger.warning(
             f"Registration validation error: {str(e)}",
-            extra={"username": request.username, "correlation_id": correlation_id},
+            extra={"username": request_body.username, "correlation_id": correlation_id},
         )
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "validation_error",
                 "message": str(e),
-                "username": request.username,
+                "username": request_body.username,
             },
         )
     except Exception as e:

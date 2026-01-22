@@ -40,11 +40,11 @@ from faultmaven.models.auth import DevUser
 logger = logging.getLogger(__name__)
 
 
-class DevUserStore:
-    """Development user storage system
+class RedisUserStore:
+    """Redis-based user storage system
 
-    Manages user accounts for development environment.
-    Uses Redis for storage and provides user CRUD operations.
+    Manages user accounts using Redis as the backend store.
+    Suitable for production and multi-process deployments.
 
     Redis Storage Schema:
     - user:{user_id} -> {user_data}

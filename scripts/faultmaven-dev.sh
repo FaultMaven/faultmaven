@@ -1,6 +1,10 @@
 #!/bin/bash
-# FaultMaven Local Development Script
+# FaultMaven Local Deployment CLI (Process-based)
 # Manages FaultMaven API as a local Python process (no Docker)
+#
+# This script is for LOCAL DEPLOYMENT where users install and manage the application themselves.
+# Local deployment can be used for both development and production workloads.
+# For cloud/SaaS deployment, see faultmaven-enterprise-infra repository.
 
 set -e
 
@@ -28,7 +32,7 @@ NC='\033[0m'
 
 print_header() {
     echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║${NC}  FaultMaven Local Development         ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC}  FaultMaven Local Deployment         ${BLUE}║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -93,19 +97,74 @@ is_running() {
     return 1
 }
 
+check_port_available() {
+    local port=$1
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        local pids=$(lsof -ti :$port | tr '\n' ' ')
+        print_error "Port $port is already in use by process(es): $pids"
+        echo ""
+        echo "To resolve this:"
+        echo "  1. Check what's using the port: lsof -i :$port"
+        echo "  2. If it's a previous FaultMaven instance, stop it:"
+        echo "     ./scripts/faultmaven-dev.sh stop"
+        echo "  3. Or manually stop the process(es): kill $pids"
+        return 1
+    fi
+    return 0
+}
+
+wait_for_service() {
+    local port=$1
+    local max_wait=30
+    local elapsed=0
+    local check_interval=1
+
+    print_info "Waiting for service to become ready..."
+    
+    while [ $elapsed -lt $max_wait ]; do
+        # Check if process is still running
+        if ! is_running; then
+            return 1
+        fi
+
+        # Check if service is responding
+        if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+            # Service is responding, wait a bit more to ensure stability
+            sleep 2
+            # Verify it's still responding after the stability check
+            if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+                return 0
+            fi
+        fi
+
+        echo -n "."
+        sleep $check_interval
+        elapsed=$((elapsed + check_interval))
+    done
+
+    echo ""
+    return 1
+}
+
 start_app() {
     print_header
     ensure_venv
     check_env
 
     if is_running; then
-        print_warning "FaultMaven is already running (PID $(cat $PID_FILE))"
+        local existing_pid=$(cat "$PID_FILE")
+        print_warning "FaultMaven is already running (PID $existing_pid)"
         return 0
     fi
 
     # Extract port from .env
     local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
     port=${port:-$DEFAULT_PORT}
+
+    # Check if port is available
+    if ! check_port_available "$port"; then
+        exit 1
+    fi
 
     print_info "Starting FaultMaven API on port $port..."
     echo ""
@@ -115,19 +174,28 @@ start_app() {
     local pid=$!
     echo "$pid" > "$PID_FILE"
 
-    # Wait for startup
-    sleep 3
-
-    if is_running; then
-        print_success "FaultMaven started (PID $pid)"
+    # Wait for service to become ready and stable
+    if wait_for_service "$port"; then
+        print_success "FaultMaven started and ready (PID $pid)"
         echo ""
         print_info "Access points:"
         echo "  • API:      http://localhost:$port"
         echo "  • API Docs: http://localhost:$port/docs"
         echo "  • Logs:     tail -f $LOG_FILE"
     else
-        print_error "Failed to start FaultMaven"
-        echo "Check logs: cat $LOG_FILE"
+        print_error "Failed to start FaultMaven - service did not become ready"
+        echo ""
+        echo "Possible issues:"
+        echo "  • Port conflict (check if another service is using port $port)"
+        echo "  • Startup error (check logs below)"
+        echo ""
+        echo "Last 20 lines of logs:"
+        tail -20 "$LOG_FILE" 2>/dev/null || echo "  (log file not found)"
+        echo ""
+        # Clean up failed process
+        if is_running; then
+            kill "$pid" 2>/dev/null || true
+        fi
         rm -f "$PID_FILE"
         exit 1
     fi
@@ -136,24 +204,64 @@ start_app() {
 stop_app() {
     print_header
 
-    if ! is_running; then
+    local stopped_any=false
+
+    # Stop process tracked by PID file
+    if is_running; then
+        local pid=$(cat "$PID_FILE")
+        print_info "Stopping FaultMaven (PID $pid)..."
+        
+        # Kill the main process and its children
+        kill "$pid" 2>/dev/null || true
+        sleep 2
+
+        if ps -p "$pid" > /dev/null 2>&1; then
+            print_warning "Process didn't stop gracefully, forcing..."
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+
+        # Kill any child processes (workers) that might still be running
+        pkill -P "$pid" 2>/dev/null || true
+        sleep 1
+
+        rm -f "$PID_FILE"
+        stopped_any=true
+    fi
+
+    # Also check for processes using the port (in case PID file is missing)
+    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    port=${port:-$DEFAULT_PORT}
+    
+    local port_pids=$(lsof -ti :$port 2>/dev/null || true)
+    if [ -n "$port_pids" ]; then
+        print_warning "Found process(es) still using port $port: $port_pids"
+        print_info "Stopping process(es) on port $port..."
+        
+        # Kill all processes using the port
+        echo "$port_pids" | while read -r pid; do
+            [ -z "$pid" ] && continue
+            kill "$pid" 2>/dev/null || true
+        done
+        
+        sleep 2
+        
+        # Force kill if still running
+        port_pids=$(lsof -ti :$port 2>/dev/null || true)
+        if [ -n "$port_pids" ]; then
+            echo "$port_pids" | while read -r pid; do
+                [ -z "$pid" ] && continue
+                kill -9 "$pid" 2>/dev/null || true
+            done
+        fi
+        
+        stopped_any=true
+    fi
+
+    if [ "$stopped_any" = true ]; then
+        print_success "FaultMaven stopped"
+    else
         print_info "FaultMaven is not running"
-        return 0
     fi
-
-    local pid=$(cat "$PID_FILE")
-    print_info "Stopping FaultMaven (PID $pid)..."
-
-    kill "$pid" 2>/dev/null || true
-    sleep 2
-
-    if ps -p "$pid" > /dev/null 2>&1; then
-        print_warning "Process didn't stop gracefully, forcing..."
-        kill -9 "$pid" 2>/dev/null || true
-    fi
-
-    rm -f "$PID_FILE"
-    print_success "FaultMaven stopped"
 }
 
 restart_app() {
@@ -291,26 +399,140 @@ run_tests() {
     python scripts/tests.py "$@"
 }
 
+create_user() {
+    # Check if API is running
+    if ! is_running; then
+        print_header
+        print_error "FaultMaven API is not running. Run '$0 start' first."
+        exit 1
+    fi
+    
+    # Extract port
+    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    port=${port:-$DEFAULT_PORT}
+    
+    # Check if API is healthy
+    if ! curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+        print_header
+        print_error "API service is not responding. Wait for it to become healthy."
+        exit 1
+    fi
+    
+    print_header
+    echo "Create New User Account"
+    echo ""
+    echo "This will create a user account via the API endpoint."
+    echo "You'll be prompted for username, email (optional), and role."
+    echo ""
+    
+    # Interactive prompts
+    read -p "Username (required): " username
+    if [ -z "$username" ]; then
+        print_error "Username is required"
+        exit 1
+    fi
+    
+    read -p "Email (optional, will auto-generate if empty): " email
+    read -p "Display Name (optional, will auto-generate if empty): " display_name
+    read -p "Role (user/admin) [default: user]: " role_input
+    
+    role_input=${role_input:-user}
+    role_input=$(echo "$role_input" | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$role_input" != "admin" ] && [ "$role_input" != "user" ]; then
+        print_warning "Invalid role '$role_input', defaulting to 'user'"
+        role_input="user"
+    fi
+    
+    echo ""
+    echo "Creating user with:"
+    echo "  Username: $username"
+    echo "  Email: ${email:-'(auto-generated)'}"
+    echo "  Display Name: ${display_name:-'(auto-generated)'}"
+    echo "  Role: $role_input"
+    echo ""
+    
+    read -p "Create this user? (yes/no): " confirm
+    confirm=$(echo "$confirm" | tr '[:upper:]' '[:lower:]')
+    if [ "$confirm" != "yes" ] && [ "$confirm" != "y" ]; then
+        print_info "Cancelled"
+        exit 0
+    fi
+    
+    echo ""
+    print_info "Creating user via API..."
+    
+    # Build JSON payload
+    json_payload="{"
+    json_payload+="\"username\": \"$username\""
+    if [ -n "$email" ]; then
+        json_payload+=", \"email\": \"$email\""
+    fi
+    if [ -n "$display_name" ]; then
+        json_payload+=", \"display_name\": \"$display_name\""
+    fi
+    json_payload+="}"
+    
+    # Call dev-register endpoint
+    response=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:$port/api/v1/auth/dev-register" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload" 2>&1)
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" = "201" ]; then
+        echo ""
+        print_success "User '$username' created successfully!"
+        echo ""
+        print_info "You can now log in at http://localhost:3000"
+        echo ""
+        if [ "$role_input" = "admin" ]; then
+            echo "Note: To grant admin role, run:"
+            echo "  python scripts/auth/promote_to_admin.py $username"
+        fi
+    elif [ "$http_code" = "409" ]; then
+        echo ""
+        print_error "User '$username' already exists"
+        echo ""
+        print_info "Use '$0 create-user' with a different username, or log in directly."
+        exit 1
+    else
+        echo ""
+        print_error "Failed to create user (HTTP $http_code)"
+        echo ""
+        echo "Response:"
+        echo "$body" | head -20
+        exit 1
+    fi
+}
+
 usage() {
     print_header
     echo "Usage: $0 <command> [options]"
     echo ""
-    echo "Commands:"
+    echo "Service Management:"
     echo "  start       Start FaultMaven API as local process"
     echo "  stop        Stop the API"
     echo "  restart     Restart the API"
     echo "  status      Show service status"
     echo "  health      Run comprehensive health checks"
     echo "  logs        Stream application logs"
+    echo ""
+    echo "User Management:"
+    echo "  create-user Create a new user account"
+    echo ""
+    echo "Development:"
     echo "  test        Run tests (delegates to scripts/tests.py)"
     echo ""
     echo "Examples:"
     echo "  $0 start              # Start API"
+    echo "  $0 create-user        # Create user account"
     echo "  $0 health             # Check health"
     echo "  $0 logs               # View logs"
     echo "  $0 test --unit        # Run unit tests"
     echo ""
-    echo "For Docker deployment:"
+    echo "Alternative: Docker-based Local Deployment:"
     echo "  ./faultmaven.sh start # Use main script for containers"
     echo ""
 }
@@ -337,6 +559,9 @@ case "${1:-}" in
         ;;
     logs)
         logs_app
+        ;;
+    create-user)
+        create_user
         ;;
     test)
         shift

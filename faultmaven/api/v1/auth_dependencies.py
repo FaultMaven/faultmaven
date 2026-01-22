@@ -42,19 +42,26 @@ async def get_token_manager(request: Request):
     """Get token manager from app.state (Composition Root)
 
     Returns:
-        DevTokenManager instance
+        Token manager instance (RedisTokenManager or InMemoryTokenManager)
 
     Raises:
         HTTPException: 503 if service unavailable
     """
     try:
-        token_manager = request.app.state.token_manager
+        token_manager = getattr(request.app.state, "token_manager", None)
         if not token_manager:
             logger.error("Token manager not available from app.state")
             raise HTTPException(
-                status_code=503, detail="Authentication service unavailable"
+                status_code=503, detail="Authentication service unavailable. Please check server startup logs."
             )
         return token_manager
+    except HTTPException:
+        raise
+    except AttributeError as e:
+        logger.error(f"Token manager attribute not found in app.state: {e}")
+        raise HTTPException(
+            status_code=503, detail="Authentication service not initialized. Please check server startup logs."
+        )
     except Exception as e:
         logger.error(f"Failed to get token manager: {e}")
         raise HTTPException(status_code=503, detail="Authentication service error")
@@ -64,19 +71,35 @@ async def get_user_store(request: Request):
     """Get user store from app.state (Composition Root)
 
     Returns:
-        DevUserStore instance
+        User store instance (RedisUserStore or InMemoryUserStore)
 
     Raises:
         HTTPException: 503 if service unavailable
     """
     try:
-        user_store = request.app.state.user_store
+        user_store = getattr(request.app.state, "user_store", None)
         if not user_store:
             logger.error("User store not available from app.state")
+            # Try to get from container as fallback for debugging
+            try:
+                from faultmaven.container import container
+                container_user_store = container.get_user_store()
+                logger.error(f"Container user_store: {type(container_user_store).__name__ if container_user_store else 'None'}")
+                logger.error(f"Container initialized: {container.is_initialized}")
+                logger.error(f"Container has user_store attr: {hasattr(container, 'user_store')}")
+            except Exception as e:
+                logger.error(f"Failed to check container: {e}")
             raise HTTPException(
-                status_code=503, detail="User management service unavailable"
+                status_code=503, detail="User management service unavailable. Please check server startup logs."
             )
         return user_store
+    except HTTPException:
+        raise
+    except AttributeError as e:
+        logger.error(f"User store attribute not found in app.state: {e}")
+        raise HTTPException(
+            status_code=503, detail="User management service not initialized. Please check server startup logs."
+        )
     except Exception as e:
         logger.error(f"Failed to get user store: {e}")
         raise HTTPException(status_code=503, detail="User management service error")
@@ -251,7 +274,7 @@ async def check_auth_services_health(request: Request) -> dict:
         token_manager = getattr(request.app.state, "token_manager", None)
         health_status["authentication"]["services"]["token_manager"] = {
             "status": "available" if token_manager else "unavailable",
-            "type": "DevTokenManager" if token_manager else None,
+            "type": type(token_manager).__name__ if token_manager else None,
         }
     except Exception as e:
         health_status["authentication"]["services"]["token_manager"] = {
@@ -264,7 +287,7 @@ async def check_auth_services_health(request: Request) -> dict:
         user_store = getattr(request.app.state, "user_store", None)
         health_status["authentication"]["services"]["user_store"] = {
             "status": "available" if user_store else "unavailable",
-            "type": "DevUserStore" if user_store else None,
+            "type": type(user_store).__name__ if user_store else None,
         }
     except Exception as e:
         health_status["authentication"]["services"]["user_store"] = {

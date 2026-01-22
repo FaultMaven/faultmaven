@@ -236,6 +236,116 @@ def create_session_store(redis_client: Any | None, settings: FaultMavenSettings)
         return store
 
 
+def create_token_manager(
+    redis_client: Any | None,
+    settings: FaultMavenSettings,
+    user_store: Any | None = None,
+) -> Any:
+    """Create token manager (Redis or InMemory) based on configuration.
+    
+    Follows the provider pattern: selects implementation based on cache backend
+    setting, not just Redis availability. This ensures deployment-agnostic
+    architecture where local deployment defaults to in-memory.
+    
+    Args:
+        redis_client: Redis client if available
+        settings: Application settings
+        user_store: Optional user store to inject into InMemoryTokenManager
+        
+    Returns:
+        Token manager instance (RedisTokenManager or InMemoryTokenManager)
+    """
+    # Check cache backend setting (deployment-agnostic selection)
+    cache_backend = (settings.database.session_storage_type or "inmemory").lower()
+    
+    # Use Redis only if explicitly configured AND Redis is available
+    if cache_backend == "redis" and redis_client and not settings.server.skip_service_checks:
+        from faultmaven.infrastructure.auth.token_manager import RedisTokenManager
+        
+        manager = RedisTokenManager(redis_client=redis_client)
+        logger.info("✅ Token manager: Redis")
+        return manager
+    else:
+        # Default to in-memory for local deployment
+        from faultmaven.infrastructure.auth.inmemory_token_manager import InMemoryTokenManager
+        
+        manager = InMemoryTokenManager(user_store=user_store)
+        logger.debug("Token manager: InMemory (RAM) - data lost on restart")
+        return manager
+
+
+def create_user_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
+    """Create user store (Database, Redis, or InMemory) based on configuration.
+    
+    Follows the provider pattern with deployment-agnostic selection:
+    1. Database (SQLite/PostgreSQL) - if database is available (persistent)
+    2. Redis - if explicitly configured (persistent, multi-process)
+    3. InMemory - default fallback (ephemeral, single-process)
+    
+    Args:
+        redis_client: Redis client if available
+        settings: Application settings
+        
+    Returns:
+        User store instance (DatabaseUserStore, RedisUserStore, or InMemoryUserStore)
+    """
+    # Priority 1: Check if database is available (SQLite for local, PostgreSQL for cloud)
+    database_url = settings.database.database_url or ""
+    if database_url and ("sqlite" in database_url.lower() or "postgresql" in database_url.lower()):
+        try:
+            from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
+            from faultmaven.infrastructure.persistence.user_repository import (
+                PostgreSQLUserRepository,
+            )
+            from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+            from sqlalchemy.orm import sessionmaker
+
+            # Create database engine and session
+            # Use NullPool for SQLite to avoid connection issues
+            pool_class = None
+            if "sqlite" in database_url.lower():
+                from sqlalchemy.pool import NullPool
+                pool_class = NullPool
+
+            engine = create_async_engine(
+                database_url,
+                echo=False,
+                poolclass=pool_class,
+            )
+            session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            db_session = session_factory()
+
+            # Create UserRepository (works with both SQLite and PostgreSQL)
+            user_repository = PostgreSQLUserRepository(db_session)
+
+            # Create DatabaseUserStore wrapper
+            store = DatabaseUserStore(user_repository)
+            db_type = "SQLite" if "sqlite" in database_url.lower() else "PostgreSQL"
+            logger.info(f"✅ User store: Database ({db_type}) - persistent across restarts")
+            return store
+        except Exception as e:
+            logger.warning(f"Failed to create database user store: {e}, falling back to in-memory")
+            # Fall through to in-memory
+
+    # Priority 2: Check cache backend setting for Redis
+    cache_backend = (settings.database.session_storage_type or "inmemory").lower()
+    
+    # Use Redis only if explicitly configured AND Redis is available
+    if cache_backend == "redis" and redis_client and not settings.server.skip_service_checks:
+        from faultmaven.infrastructure.auth.user_store import RedisUserStore
+        
+        store = RedisUserStore(redis_client=redis_client)
+        logger.info("✅ User store: Redis - persistent across restarts")
+        return store
+    
+    # Priority 3: Default to in-memory for local deployment without database
+    from faultmaven.infrastructure.auth.inmemory_user_store import InMemoryUserStore
+    
+    store = InMemoryUserStore()
+    logger.info("✅ User store: InMemory (RAM) - data lost on restart")
+    return store
+
+
 async def register_infrastructure(container: BaseDIContainer) -> None:
     """Register all infrastructure services with the container.
 
@@ -324,5 +434,37 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     # Session store
     session_store = create_session_store(redis_client, settings)
     container._register_service("session_store", session_store)
+
+    # User store (provider pattern: Redis or InMemory)
+    # Create user_store first so it can be injected into token_manager
+    try:
+        user_store = create_user_store(redis_client, settings)
+        if user_store is None:
+            logger.error("❌ Failed to create user store: create_user_store returned None")
+            raise ValueError("User store creation returned None")
+        container.user_store = user_store
+        container._register_service("user_store", user_store)
+        logger.info(f"✅ User store registered: {type(user_store).__name__}")
+        # Verify it's accessible
+        if not hasattr(container, "user_store") or container.user_store is None:
+            logger.error("❌ User store not properly set on container after registration")
+            raise ValueError("User store registration failed - attribute not set")
+    except Exception as e:
+        logger.error(f"❌ Failed to create user store: {e}", exc_info=True)
+        raise
+
+    # Token manager (provider pattern: Redis or InMemory)
+    # Inject user_store to avoid service locator pattern
+    try:
+        token_manager = create_token_manager(redis_client, settings, user_store=user_store)
+        if token_manager is None:
+            logger.error("❌ Failed to create token manager: create_token_manager returned None")
+            raise ValueError("Token manager creation returned None")
+        container.token_manager = token_manager
+        container._register_service("token_manager", token_manager)
+        logger.debug(f"✅ Token manager registered: {type(token_manager).__name__}")
+    except Exception as e:
+        logger.error(f"❌ Failed to create token manager: {e}", exc_info=True)
+        raise
 
     logger.info("✅ Infrastructure layer registered")

@@ -1,6 +1,17 @@
 #!/bin/bash
-# FaultMaven Docker Compose CLI
-# Manages FaultMaven containerized deployment
+# FaultMaven Local Deployment CLI (Docker-based)
+# Manages FaultMaven containerized local deployment
+#
+# This script is for LOCAL DEPLOYMENT where users install and manage the application themselves.
+# Local deployment can be used for both development and production workloads.
+# For cloud/SaaS deployment, see faultmaven-enterprise-infra repository.
+#
+# IMPORTANT: This script uses docker-compose.yml which defines ONLY:
+#   - api: FaultMaven API server (uses in-process storage: in-memory sessions/vectors, SQLite)
+#   - dashboard: FaultMaven Dashboard frontend
+#
+# ChromaDB and Redis run as in-process services within the API container,
+# NOT as separate containers. For external services, use docker-compose.dev.yml separately.
 
 set -e
 
@@ -236,6 +247,84 @@ check_env_file() {
 # Core Commands
 #######################################
 
+check_docker_ports() {
+    # Check if required ports are available
+    local ports_to_check=(8000 3000)
+    local ports_in_use=()
+
+    for port in "${ports_to_check[@]}"; do
+        if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+            local pids=$(lsof -ti :$port | tr '\n' ' ')
+            ports_in_use+=("$port (PID(s): $pids)")
+        fi
+    done
+
+    if [ ${#ports_in_use[@]} -gt 0 ]; then
+        print_error "Required ports are already in use:"
+        for port_info in "${ports_in_use[@]}"; do
+            echo "  • Port $port_info"
+        done
+        echo ""
+        echo "To resolve this:"
+        echo "  1. Check what's using the ports:"
+        for port in "${ports_to_check[@]}"; do
+            if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+                echo "     lsof -i :$port"
+            fi
+        done
+        echo "  2. Stop existing FaultMaven containers: ./faultmaven.sh stop"
+        echo "  3. Or stop local processes using those ports"
+        return 1
+    fi
+    return 0
+}
+
+wait_for_containers_ready() {
+    local max_wait=60
+    local elapsed=0
+    local check_interval=2
+
+    print_info "Waiting for services to become healthy (up to ${max_wait}s)..."
+    echo ""
+
+    while [ $elapsed -lt $max_wait ]; do
+        local healthy_count=0
+        local total_count=${#HEALTH_CHECK_SERVICES[@]}
+
+        for service in "${HEALTH_CHECK_SERVICES[@]}"; do
+            local port="${service%%:*}"
+            local name="${service#*:}"
+
+            if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+                ((healthy_count++))
+            fi
+        done
+
+        if [ "$healthy_count" -eq "$total_count" ]; then
+            # All services are responding, wait a bit more to ensure stability
+            sleep 2
+            # Verify they're still responding
+            local still_healthy=0
+            for service in "${HEALTH_CHECK_SERVICES[@]}"; do
+                local port="${service%%:*}"
+                if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+                    ((still_healthy++))
+                fi
+            done
+            if [ "$still_healthy" -eq "$total_count" ]; then
+                return 0
+            fi
+        fi
+
+        echo -n "."
+        sleep $check_interval
+        elapsed=$((elapsed + check_interval))
+    done
+
+    echo ""
+    return 1
+}
+
 cmd_start() {
     print_header
     local start_time=$(date +%s)
@@ -247,6 +336,11 @@ cmd_start() {
     check_resources
     check_env_file
 
+    # Check if ports are available before starting
+    if ! check_docker_ports; then
+        exit 1
+    fi
+
     echo ""
     print_info "Starting containers with Docker Compose..."
     echo ""
@@ -257,66 +351,76 @@ cmd_start() {
         print_info "Demo mode enabled: Will seed sample data"
     fi
 
-    if $compose_cmd; then
+    # Capture compose output for error analysis
+    local compose_output
+    if ! compose_output=$($compose_cmd 2>&1); then
         echo ""
-        print_info "Waiting for services to become healthy (up to 60 seconds)..."
+        print_error "Failed to start Docker containers"
         echo ""
-
-        sleep 5  # Give containers time to start
-
-        local max_wait=60
-        local elapsed=0
-        local all_healthy=false
-
-        while [ $elapsed -lt $max_wait ]; do
-            local healthy_count=0
-            local total_count=${#HEALTH_CHECK_SERVICES[@]}
-
-            for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-                local port="${service%%:*}"
-
-                if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
-                    ((healthy_count++))
-                fi
-            done
-
-            if [ "$healthy_count" -eq "$total_count" ]; then
-                all_healthy=true
-                break
-            fi
-
-            echo -n "."
-            sleep 5
-            elapsed=$((elapsed + 5))
-        done
-
+        echo "Docker Compose output:"
+        echo "$compose_output" | head -20
         echo ""
-
-        if [ "$all_healthy" = true ]; then
-            local end_time=$(date +%s)
-            local duration=$((end_time - start_time))
-            echo ""
-            print_success "FaultMaven services started successfully! (${duration}s)"
-            echo ""
-            echo "Next steps:"
-            echo "  1. Check status:  ./faultmaven.sh status"
-            echo "  2. View logs:     ./faultmaven.sh logs"
-            echo "  3. Access services:"
-            echo "     - Dashboard: http://localhost:3000"
-            echo "     - API:       http://localhost:8000"
-            echo "     - API Docs:  http://localhost:8000/docs"
-            echo ""
+        
+        # Check for common errors
+        if echo "$compose_output" | grep -qi "port.*already.*allocated\|address already in use"; then
+            print_error "Port conflict detected"
+            echo "A container or process is already using the required ports."
+            echo "Run: ./faultmaven.sh stop  # Stop existing containers"
+        elif echo "$compose_output" | grep -qi "Cannot connect to the Docker daemon"; then
+            print_error "Cannot connect to Docker daemon"
+            echo "Make sure Docker is running: sudo systemctl start docker"
         else
-            echo ""
-            print_warning "Services started but some may still be initializing"
-            echo ""
-            echo "Run './faultmaven.sh status' in 30 seconds to verify all services are up."
-            echo ""
+            echo "Check container logs for details:"
+            echo "  ./faultmaven.sh logs"
         fi
+        exit 1
+    fi
+
+    # Verify containers actually started
+    sleep 2
+    local running_containers=0
+    if docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'; then
+        running_containers=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || echo "0")
+    fi
+    
+    if [ "$running_containers" -eq "0" ]; then
+        echo ""
+        print_error "Containers failed to start"
+        echo ""
+        echo "Container status:"
+        docker compose ps
+        echo ""
+        echo "Recent logs:"
+        docker compose logs --tail 20
+        exit 1
+    fi
+
+    # Wait for services to become ready and stable
+    if wait_for_containers_ready; then
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        echo ""
+        print_success "FaultMaven services started successfully! (${duration}s)"
+        echo ""
+        echo "Next steps:"
+        echo "  1. Check status:  ./faultmaven.sh status"
+        echo "  2. View logs:     ./faultmaven.sh logs"
+        echo "  3. Access services:"
+        echo "     - Dashboard: http://localhost:3000"
+        echo "     - API:       http://localhost:8000"
+        echo "     - API Docs:  http://localhost:8000/docs"
+        echo ""
     else
         echo ""
-        print_error "Failed to start services"
-        echo "Run './faultmaven.sh logs' to see error details"
+        print_error "Services started but did not become healthy within timeout"
+        echo ""
+        echo "Container status:"
+        docker compose ps
+        echo ""
+        echo "Recent logs:"
+        docker compose logs --tail 30
+        echo ""
+        print_info "Run './faultmaven.sh logs' for full logs or './faultmaven.sh status' to check health"
         exit 1
     fi
 }
@@ -326,7 +430,8 @@ cmd_stop() {
     echo "Stopping FaultMaven services..."
     echo ""
 
-    if docker compose down; then
+    # Use --remove-orphans to clean up containers from old compose file versions
+    if docker compose down --remove-orphans; then
         print_success "Services stopped"
         echo ""
         print_info "Data preserved in ./data directory"
@@ -342,24 +447,40 @@ cmd_status() {
     echo "Service Status:"
     echo ""
 
-    docker compose ps
+    # Get container status
+    local container_output
+    container_output=$(docker compose ps 2>/dev/null || true)
+    echo "$container_output"
+
+    # Check if any containers are running
+    local running_containers=0
+    if docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'; then
+        running_containers=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || echo "0")
+    fi
 
     echo ""
-    echo "Health Checks:"
-    echo ""
+    if [ "$running_containers" -eq "0" ]; then
+        print_warning "No containers are running"
+        echo ""
+        print_info "If you're running services locally (not in Docker), use:"
+        echo "  ./scripts/faultmaven-dev.sh status  # Check local process status"
+        echo ""
+    else
+        echo "Health Checks:"
+        echo ""
 
-    for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-        local port="${service%%:*}"
-        local name="${service#*:}"
+        for service in "${HEALTH_CHECK_SERVICES[@]}"; do
+            local port="${service%%:*}"
+            local name="${service#*:}"
 
-        if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
-            print_success "$name (port $port)"
-        else
-            print_error "$name (port $port) - Not responding"
-        fi
-    done
-
-    echo ""
+            if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+                print_success "$name (port $port)"
+            else
+                print_error "$name (port $port) - Not responding"
+            fi
+        done
+        echo ""
+    fi
 
     # Check data directory
     if [ -d ./data ]; then
@@ -431,9 +552,32 @@ cmd_kill() {
     echo "Force-killing all FaultMaven containers..."
     echo ""
 
-    # Kill and remove containers
+    # Kill and remove containers from main compose file (api + dashboard only)
+    # Use --remove-orphans to clean up containers from old compose file versions
+    # (e.g., chromadb, redis which should not exist in local version)
     docker compose kill 2>/dev/null || true
-    docker compose rm -f 2>/dev/null || true
+    docker compose rm -f --remove-orphans 2>/dev/null || true
+
+    # Also kill containers from dev compose file if it exists (for cleanup of old containers)
+    if [ -f docker-compose.dev.yml ]; then
+        docker compose -f docker-compose.dev.yml kill 2>/dev/null || true
+        docker compose -f docker-compose.dev.yml rm -f 2>/dev/null || true
+    fi
+
+    # Kill any remaining containers with faultmaven prefix (catch-all for orphaned containers)
+    # This handles containers from old compose file versions (e.g., chromadb, redis)
+    # Note: Local version uses in-process storage, so these containers shouldn't exist
+    local remaining_containers
+    remaining_containers=$(docker ps -a --filter "name=faultmaven" --format "{{.Names}}" 2>/dev/null || true)
+    if [ -n "$remaining_containers" ]; then
+        # Use process substitution to avoid subshell issues
+        while IFS= read -r container || [ -n "$container" ]; do
+            [ -z "$container" ] && continue
+            print_info "Removing orphaned container: $container"
+            docker kill "$container" 2>/dev/null || true
+            docker rm -f "$container" 2>/dev/null || true
+        done < <(echo "$remaining_containers")
+    fi
 
     print_success "All FaultMaven containers killed and removed"
     echo ""
@@ -467,7 +611,7 @@ cmd_clean() {
 
     echo ""
     print_info "Stopping services..."
-    docker compose down -v
+    docker compose down -v --remove-orphans
 
     if [ -d ./data ]; then
         print_info "Removing data directory..."
@@ -497,7 +641,7 @@ cmd_prune() {
 
     echo ""
 
-    # Stop and remove containers
+    # Stop and remove containers (including orphans from old compose files)
     print_info "Stopping and removing containers..."
     docker compose down --remove-orphans 2>/dev/null || true
 
@@ -546,6 +690,108 @@ cmd_version() {
     echo "Repository: https://github.com/FaultMaven/faultmaven"
 }
 
+cmd_create_user() {
+    # Check if API service is running
+    if ! docker compose ps --services --filter "status=running" | grep -q "api"; then
+        print_header
+        print_error "API service is not running. Run './faultmaven.sh start' first."
+        exit 1
+    fi
+    
+    # Check if API is healthy
+    if ! curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
+        print_header
+        print_error "API service is not responding. Wait for it to become healthy."
+        exit 1
+    fi
+    
+    print_header
+    echo "Create New User Account"
+    echo ""
+    echo "This will create a user account via the API endpoint."
+    echo "You'll be prompted for username, email (optional), and role."
+    echo ""
+    
+    # Interactive prompts
+    read -p "Username (required): " username
+    if [ -z "$username" ]; then
+        print_error "Username is required"
+        exit 1
+    fi
+    
+    read -p "Email (optional, will auto-generate if empty): " email
+    read -p "Display Name (optional, will auto-generate if empty): " display_name
+    read -p "Role (user/admin) [default: user]: " role_input
+    
+    role_input=${role_input:-user}
+    role_input=$(echo "$role_input" | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$role_input" != "admin" ] && [ "$role_input" != "user" ]; then
+        print_warning "Invalid role '$role_input', defaulting to 'user'"
+        role_input="user"
+    fi
+    
+    echo ""
+    echo "Creating user with:"
+    echo "  Username: $username"
+    echo "  Email: ${email:-'(auto-generated)'}"
+    echo "  Display Name: ${display_name:-'(auto-generated)'}"
+    echo "  Role: $role_input"
+    echo ""
+    
+    read -p "Create this user? (yes/no): " confirm
+    confirm=$(echo "$confirm" | tr '[:upper:]' '[:lower:]')
+    if [ "$confirm" != "yes" ] && [ "$confirm" != "y" ]; then
+        print_info "Cancelled"
+        exit 0
+    fi
+    
+    echo ""
+    print_info "Creating user via API..."
+    
+    # Build JSON payload
+    json_payload="{"
+    json_payload+="\"username\": \"$username\""
+    if [ -n "$email" ]; then
+        json_payload+=", \"email\": \"$email\""
+    fi
+    if [ -n "$display_name" ]; then
+        json_payload+=", \"display_name\": \"$display_name\""
+    fi
+    json_payload+="}"
+    
+    # Call dev-register endpoint
+    response=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/api/v1/auth/dev-register" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload" 2>&1)
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" = "201" ]; then
+        echo ""
+        print_success "User '$username' created successfully!"
+        echo ""
+        print_info "You can now log in at http://localhost:3000"
+        echo ""
+        echo "Note: If you specified 'admin' role, you'll need to promote the user:"
+        echo "  docker compose exec api python scripts/auth/promote_to_admin.py $username"
+    elif [ "$http_code" = "409" ]; then
+        echo ""
+        print_error "User '$username' already exists"
+        echo ""
+        print_info "Use './faultmaven.sh create-user' with a different username, or log in directly."
+        exit 1
+    else
+        echo ""
+        print_error "Failed to create user (HTTP $http_code)"
+        echo ""
+        echo "Response:"
+        echo "$body" | head -20
+        exit 1
+    fi
+}
+
 cmd_help() {
     print_header
     echo "Usage: ./faultmaven.sh [command] [options]"
@@ -558,7 +804,10 @@ cmd_help() {
     echo "  logs [service] [--tail N]   Stream logs from services"
     echo "  ps                          Show running containers"
     echo ""
-    echo "Development Commands:"
+    echo "User Management:"
+    echo "  create-user                 Create a new user account"
+    echo ""
+    echo "Build Commands:"
     echo "  build                       Build Docker images from source"
     echo ""
     echo "Cleanup Commands:"
@@ -584,8 +833,8 @@ cmd_help() {
     echo "  ./faultmaven.sh logs --tail 100    # View last 100 lines"
     echo "  ./faultmaven.sh restart dashboard  # Restart dashboard only"
     echo ""
-    echo "For local development (without Docker):"
-    echo "  ./scripts/faultmaven-dev.sh start  # Start API as local process"
+    echo "Alternative: Process-based Local Deployment (no Docker):"
+    echo "  ./scripts/faultmaven-dev.sh start  # Start API as local Python process"
     echo ""
 }
 
@@ -685,6 +934,9 @@ case "${COMMAND:-}" in
         ;;
     build)
         cmd_build
+        ;;
+    create-user)
+        cmd_create_user
         ;;
     ps)
         cmd_ps

@@ -7,9 +7,12 @@ Data is stored in Python dictionaries and lost on application restart.
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
+from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class InMemorySessionStore(ISessionStore):
@@ -177,6 +180,104 @@ class InMemorySessionStore(ISessionStore):
             index_key = f"{user_id}:{client_id}"
             if index_key in self._client_index:
                 del self._client_index[index_key]
+
+    async def save(self, session: SessionContext) -> None:
+        """
+        Save session context to in-memory store.
+
+        Args:
+            session: SessionContext object to save
+        """
+        session_data = {
+            "session_id": session.session_id,
+            "user_id": session.user_id,
+            "client_id": session.client_id,
+            "created_at": to_json_compatible(session.created_at),
+            "last_activity": to_json_compatible(session.last_activity),
+            "updated_at": to_json_compatible(session.updated_at),
+            "expires_at": (
+                to_json_compatible(session.expires_at) if session.expires_at else None
+            ),
+            "metadata": session.metadata or {},
+            "session_resumed": session.session_resumed,
+        }
+
+        # Calculate TTL from expires_at if available
+        ttl = None
+        if session.expires_at:
+            now = datetime.now(timezone.utc)
+            if session.expires_at > now:
+                ttl = int((session.expires_at - now).total_seconds())
+            else:
+                # Already expired, don't save
+                return
+
+        await self.set(session.session_id, session_data, ttl=ttl)
+
+    async def list_sessions(
+        self, user_id: Optional[str] = None
+    ) -> List[SessionContext]:
+        """
+        List sessions, optionally filtered by user_id.
+
+        Args:
+            user_id: Optional user ID to filter sessions
+
+        Returns:
+            List of SessionContext objects
+        """
+        async with self._lock:
+            sessions = []
+            now = datetime.now(timezone.utc)
+
+            for session_id, session_data in self._sessions.items():
+                # Skip expired sessions
+                if session_id in self._ttls and now > self._ttls[session_id]:
+                    continue
+
+                # Filter by user_id if provided
+                session_user_id = session_data.get("user_id")
+                if user_id and session_user_id != user_id:
+                    continue
+
+                # user_id is required for SessionContext
+                if not session_user_id:
+                    continue
+
+                # Convert dict to SessionContext
+                try:
+                    created_at = parse_utc_timestamp(session_data.get("created_at"))
+                    last_activity = parse_utc_timestamp(
+                        session_data.get("last_activity", session_data.get("created_at"))
+                    )
+                    updated_at = parse_utc_timestamp(
+                        session_data.get("updated_at", session_data.get("last_activity", session_data.get("created_at")))
+                    )
+                    expires_at = self._ttls.get(session_id)
+
+                    session_context = SessionContext(
+                        session_id=session_id,
+                        user_id=session_user_id,
+                        client_id=session_data.get("client_id"),
+                        session_resumed=session_data.get("session_resumed", False),
+                        created_at=created_at,
+                        last_activity=last_activity,
+                        updated_at=updated_at,
+                        expires_at=expires_at,
+                        metadata=session_data.get("metadata", {}),
+                    )
+                    sessions.append(session_context)
+                except Exception as e:
+                    # Skip sessions with invalid data
+                    import logging
+
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"Failed to convert session {session_id} to SessionContext: {e}"
+                    )
+                    continue
+
+            return sessions
 
     async def _cleanup_session(self, key: str) -> None:
         """

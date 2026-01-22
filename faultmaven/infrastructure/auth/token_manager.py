@@ -46,11 +46,11 @@ from faultmaven.models.auth import (
 logger = logging.getLogger(__name__)
 
 
-class DevTokenManager:
-    """Development token management system
+class RedisTokenManager:
+    """Redis-based token management system
 
-    Manages authentication tokens for development environment.
-    Uses Redis for storage and provides secure token operations.
+    Manages authentication tokens using Redis as the backend store.
+    Suitable for production and multi-process deployments.
 
     Token Storage Schema:
     - token:{token_hash} -> {user_id}

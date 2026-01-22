@@ -55,6 +55,26 @@ cp .env.example .env
 
 **What happens:** Docker automatically pulls pre-built images from Docker Hub. First run takes ~1-2 minutes depending on your internet speed.
 
+### Step 2: Create Your Account
+
+```bash
+# Create a user account (interactive prompts for username, email, role)
+./faultmaven.sh create-user
+```
+
+**What happens:** You'll be prompted to enter:
+- **Username** (required): Your login username
+- **Email** (optional): Will be auto-generated if not provided
+- **Display Name** (optional): Will be auto-generated if not provided
+- **Role** (user/admin): Defaults to 'user'
+
+**Note:** Users must be created before login. This ensures production parity between local and cloud deployments.
+
+**Storage and Workers:**
+- **Default configuration** (`WORKERS=1` with in-memory storage): Works perfectly for local deployment. You can create unlimited users - they're all stored in the single worker's memory.
+- **In-memory storage limitation**: In-memory storage **requires** `WORKERS=1`. If you set `WORKERS > 1` with in-memory storage, the server will fail to start with a clear error message. This is by design - each worker process has separate memory, so users created in one worker won't be visible to others.
+- **Multiple workers**: If you need multiple workers (for higher throughput), you must use Redis storage by setting `SESSION_STORAGE_TYPE=redis` in your `.env` file. Redis allows all workers to share the same user data.
+
 **Image sources:** FaultMaven publishes to both Docker Hub (`docker.io/faultmaven/faultmaven`) and GitHub Container Registry (`ghcr.io/faultmaven/faultmaven`). The default docker-compose.yml uses Docker Hub for better availability and no authentication requirements.
 
 **For contributors:** To build from source instead, uncomment the `build: .` line in [docker-compose.yml](docker-compose.yml) and comment out the `image:` line.
@@ -67,7 +87,7 @@ cp .env.example .env
 4. **Firefox:** Open `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → Select any file in `.output/firefox-mv3/`
 5. Click the extension icon → Settings → Set API URL to `http://localhost:8000`
 
-### Step 3: Start Troubleshooting
+### Step 4: Start Troubleshooting
 
 1. Open the **Dashboard** at http://localhost:3000 to upload runbooks to your Knowledge Base
 2. Navigate to any observability tool (AWS Console, Datadog, Grafana)
