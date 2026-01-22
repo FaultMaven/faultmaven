@@ -690,6 +690,118 @@ cmd_version() {
     echo "Repository: https://github.com/FaultMaven/faultmaven"
 }
 
+cmd_list_users() {
+    # Check if API service is running
+    if ! docker compose ps --services --filter "status=running" | grep -q "api"; then
+        print_header
+        print_error "API service is not running. Run './faultmaven.sh start' first."
+        exit 1
+    fi
+
+    # Extract port from environment
+    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    port=${port:-$DEFAULT_PORT}
+
+    print_header
+    print_info "Listing all user accounts..."
+    echo ""
+
+    # Call the API endpoint
+    response=$(curl -s "http://localhost:$port/api/v1/auth/dev-list-users")
+
+    # Parse and format the output
+    echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print('=' * 100)
+    print(f\"Found {data['total']} user(s):\n\")
+    if data['users']:
+        print(f\"{'#':<4} {'USERNAME':<20} {'EMAIL':<30} {'ROLES':<20} {'USER_ID'}\")
+        print('-' * 100)
+        for idx, user in enumerate(data['users'], 1):
+            roles_str = ', '.join(user['roles']) if user['roles'] else 'none'
+            admin_indicator = '👑 ' if 'admin' in user['roles'] else '   '
+            print(f\"{admin_indicator}{idx:<4} {user['username']:<20} {user['email']:<30} {roles_str:<20} {user['user_id'][:36]}\")
+        print('\n' + '=' * 100)
+        admin_count = sum(1 for u in data['users'] if 'admin' in u['roles'])
+        print(f\"Total: {data['total']} user(s) | Admins: {admin_count} | Regular: {data['total'] - admin_count}\")
+        print('=' * 100)
+except Exception as e:
+    print(f'❌ Error parsing response: {e}')
+    sys.exit(1)
+"
+}
+
+cmd_delete_user() {
+    # Check if API service is running
+    if ! docker compose ps --services --filter "status=running" | grep -q "api"; then
+        print_header
+        print_error "API service is not running. Run './faultmaven.sh start' first."
+        exit 1
+    fi
+
+    # Extract port from environment
+    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+    port=${port:-$DEFAULT_PORT}
+
+    print_header
+
+    # Prompt for username
+    local username="$1"
+    if [ -z "$username" ]; then
+        read -p "Username to delete: " username
+    fi
+
+    if [ -z "$username" ]; then
+        print_error "Username is required"
+        exit 1
+    fi
+
+    echo ""
+    print_warning "This will PERMANENTLY DELETE user: $username"
+    echo ""
+    read -p "Are you sure? Type 'DELETE' to confirm: " confirm
+
+    if [ "$confirm" != "DELETE" ]; then
+        print_info "Cancelled"
+        exit 0
+    fi
+
+    echo ""
+
+    # Call the API endpoint
+    response=$(curl -s -w "\n%{http_code}" -X DELETE "http://localhost:$port/api/v1/auth/dev-delete-user/$username")
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+
+    if [ "$http_code" -eq 200 ]; then
+        echo "$body" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(f\"✓ {data['message']}\")
+    print(f\"  User ID: {data['user_id']}\")
+except Exception as e:
+    print('✓ User deleted successfully')
+"
+        echo ""
+        print_success "User deleted successfully"
+    else
+        echo "$body" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(f\"❌ {data.get('detail', 'Failed to delete user')}\")
+except:
+    print('❌ Failed to delete user')
+"
+        echo ""
+        print_error "Failed to delete user"
+        exit 1
+    fi
+}
+
 cmd_create_user() {
     # Check if API service is running
     if ! docker compose ps --services --filter "status=running" | grep -q "api"; then
@@ -697,40 +809,40 @@ cmd_create_user() {
         print_error "API service is not running. Run './faultmaven.sh start' first."
         exit 1
     fi
-    
+
     # Check if API is healthy
     if ! curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
         print_header
         print_error "API service is not responding. Wait for it to become healthy."
         exit 1
     fi
-    
+
     print_header
     echo "Create New User Account"
     echo ""
     echo "This will create a user account via the API endpoint."
     echo "You'll be prompted for username, email (optional), and role."
     echo ""
-    
+
     # Interactive prompts
     read -p "Username (required): " username
     if [ -z "$username" ]; then
         print_error "Username is required"
         exit 1
     fi
-    
+
     read -p "Email (optional, will auto-generate if empty): " email
     read -p "Display Name (optional, will auto-generate if empty): " display_name
     read -p "Role (user/admin) [default: user]: " role_input
-    
+
     role_input=${role_input:-user}
     role_input=$(echo "$role_input" | tr '[:upper:]' '[:lower:]')
-    
+
     if [ "$role_input" != "admin" ] && [ "$role_input" != "user" ]; then
         print_warning "Invalid role '$role_input', defaulting to 'user'"
         role_input="user"
     fi
-    
+
     echo ""
     echo "Creating user with:"
     echo "  Username: $username"
@@ -738,17 +850,17 @@ cmd_create_user() {
     echo "  Display Name: ${display_name:-'(auto-generated)'}"
     echo "  Role: $role_input"
     echo ""
-    
+
     read -p "Create this user? (yes/no): " confirm
     confirm=$(echo "$confirm" | tr '[:upper:]' '[:lower:]')
     if [ "$confirm" != "yes" ] && [ "$confirm" != "y" ]; then
         print_info "Cancelled"
         exit 0
     fi
-    
+
     echo ""
     print_info "Creating user via API..."
-    
+
     # Build JSON payload
     json_payload="{"
     json_payload+="\"username\": \"$username\""
@@ -759,15 +871,15 @@ cmd_create_user() {
         json_payload+=", \"display_name\": \"$display_name\""
     fi
     json_payload+="}"
-    
+
     # Call dev-register endpoint
     response=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/api/v1/auth/dev-register" \
         -H "Content-Type: application/json" \
         -d "$json_payload" 2>&1)
-    
+
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
-    
+
     if [ "$http_code" = "201" ]; then
         echo ""
         print_success "User '$username' created successfully!"
@@ -806,6 +918,8 @@ cmd_help() {
     echo ""
     echo "User Management:"
     echo "  create-user                 Create a new user account"
+    echo "  list-users                  List all user accounts"
+    echo "  delete-user [name]          Delete a user account"
     echo ""
     echo "Build Commands:"
     echo "  build                       Build Docker images from source"
@@ -828,6 +942,9 @@ cmd_help() {
     echo "Examples:"
     echo "  ./faultmaven.sh start              # Start services"
     echo "  ./faultmaven.sh start --demo       # Start with demo data"
+    echo "  ./faultmaven.sh create-user        # Create user account"
+    echo "  ./faultmaven.sh list-users         # List all users"
+    echo "  ./faultmaven.sh delete-user bob    # Delete user 'bob'"
     echo "  ./faultmaven.sh status             # Check service health"
     echo "  ./faultmaven.sh logs api           # View API logs"
     echo "  ./faultmaven.sh logs --tail 100    # View last 100 lines"
@@ -937,6 +1054,12 @@ case "${COMMAND:-}" in
         ;;
     create-user)
         cmd_create_user
+        ;;
+    list-users)
+        cmd_list_users
+        ;;
+    delete-user)
+        cmd_delete_user "${ARGS[0]:-}"
         ;;
     ps)
         cmd_ps

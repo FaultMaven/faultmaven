@@ -349,6 +349,100 @@ async def dev_register(
         )
 
 
+@router.get("/dev-list-users", status_code=200)
+@trace("auth_dev_list_users")
+async def dev_list_users(
+    request: Request,
+) -> dict:
+    """Development endpoint to list all users
+
+    Returns a list of all users in the system for development/debugging.
+    This endpoint has no authentication requirements for development convenience.
+
+    **Security**: This endpoint should be disabled in production.
+    """
+    try:
+        user_store = await get_user_store(request)
+
+        # Get all users (up to 1000)
+        users = await user_store.list_users(limit=1000)
+        total_count = await user_store.count_users()
+
+        # Convert to simple dict format
+        users_list = []
+        for user in users:
+            users_list.append({
+                "user_id": user.user_id,
+                "username": user.username,
+                "email": user.email,
+                "display_name": user.display_name,
+                "roles": user.roles if user.roles else [],
+                "is_active": user.is_active,
+                "created_at": user.created_at.isoformat() if hasattr(user.created_at, 'isoformat') else str(user.created_at),
+            })
+
+        return {
+            "users": users_list,
+            "total": total_count,
+        }
+
+    except Exception as e:
+        logger.error(f"Dev list users failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(e)},
+        )
+
+
+@router.delete("/dev-delete-user/{username}", status_code=200)
+@trace("auth_dev_delete_user")
+async def dev_delete_user(
+    username: str,
+    request: Request,
+) -> dict:
+    """Development endpoint to delete a user by username
+
+    Deletes (soft delete) a user by username for development/debugging.
+    This endpoint has no authentication requirements for development convenience.
+
+    **Security**: This endpoint should be disabled in production.
+    """
+    try:
+        user_store = await get_user_store(request)
+
+        # Find user by username
+        user = await user_store.get_user_by_username(username)
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": f"User '{username}' not found"},
+            )
+
+        # Delete the user
+        success = await user_store.delete_user(user.user_id)
+
+        if success:
+            logger.info(f"Dev deleted user: {username} ({user.user_id})")
+            return {
+                "message": f"User '{username}' deleted successfully",
+                "user_id": user.user_id,
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "delete_failed", "message": f"Failed to delete user '{username}'"},
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dev delete user failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(e)},
+        )
+
+
 @router.post("/logout", response_model=LogoutResponse)
 @trace("auth_logout")
 async def logout(

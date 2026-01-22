@@ -180,7 +180,7 @@ class DatabaseUserStore:
 
             # Auto-generate email if not provided
             if not email:
-                email = f"{username}@dev.faultmaven.local"
+                email = f"{username}@faultmaven.example"
             else:
                 email = email.strip().lower()
                 if not self._validate_email(email):

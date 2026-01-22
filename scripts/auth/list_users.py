@@ -10,6 +10,7 @@ Usage:
 
 import asyncio
 import sys
+import os
 from pathlib import Path
 
 # Add project root to Python path
@@ -79,9 +80,22 @@ async def main():
     print(f"  Regular users: {regular_count}")
     print("=" * 80)
 
+    # Cleanup to ensure prompt returns
+    try:
+        await container.shutdown()
+    except:
+        pass  # Ignore shutdown errors
+
     return True
 
 
 if __name__ == "__main__":
-    success = asyncio.run(main())
-    sys.exit(0 if success else 1)
+    try:
+        success = asyncio.run(main())
+        # Force immediate exit to avoid hanging on background tasks
+        os._exit(0 if success else 1)
+    except KeyboardInterrupt:
+        os._exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        os._exit(1)

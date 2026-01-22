@@ -200,7 +200,7 @@ class RedisUserStore:
                 if self._validate_email(username):
                     email = username.lower()
                 else:
-                    email = f"{username.lower()}@dev.faultmaven.local"
+                    email = f"{username.lower()}@faultmaven.example"
 
             user = DevUser(
                 user_id=user_id,
