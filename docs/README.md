@@ -103,8 +103,6 @@ When creating new documentation, use this guide to determine the appropriate loc
 | Operational runbook | `operations/runbooks/` | "Database Recovery Procedure" |
 | Security guide | `operations/security/` | "API Key Security" |
 
-**Working/Temporary Documents**: Use `docs/working/` for drafts and analysis documents. Add prefixes like `WIP-`, `ANALYSIS-`, `REVIEW-`, or `DRAFT-`. Clean up when done by moving to appropriate location or `docs/archive/YYYY/MM/`.
-
 **General Rules**:
 - **Tutorials** (learning-oriented) → `getting-started/`
 - **How-to guides** (task-oriented) → `guides/` or domain-specific
