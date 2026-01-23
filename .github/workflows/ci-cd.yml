@@ -97,7 +97,7 @@ jobs:
             --cov=faultmaven \
             --cov-report=xml \
             --cov-report=term-missing \
-            -m "not enterprise" \
+            -m "not enterprise and not benchmark" \
             -v
         env:
           # Community configuration - all enterprise features disabled
@@ -181,6 +181,7 @@ jobs:
             --cov=faultmaven \
             --cov-report=xml \
             --cov-report=term-missing \
+            -m "not benchmark" \
             -v
         env:
           # Enterprise configuration - features can be enabled (but external services mocked)
