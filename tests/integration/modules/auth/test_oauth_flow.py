@@ -25,12 +25,15 @@ from httpx import ASGITransport, AsyncClient
 # IMPORTANT: These must be set before any faultmaven imports
 os.environ["SKIP_SERVICE_CHECKS"] = "true"
 os.environ["OAUTH_ENABLED"] = "true"
+os.environ["OAUTH_REQUIRE_CONSENT"] = "false"  # Auto-approve for E2E flow tests
 
 # Force reimport of app with OAuth enabled
 import sys
 
 if 'faultmaven.main' in sys.modules:
     del sys.modules['faultmaven.main']
+if 'faultmaven.config.settings' in sys.modules:
+    del sys.modules['faultmaven.config.settings']
 
 from faultmaven.main import app
 
