@@ -1016,6 +1016,18 @@ class AuthSettings(BaseSettings):
         description="Dev-login token expiry (hours)",
     )
 
+    # JWT token expiry settings (used by OAuth for access/refresh tokens)
+    jwt_access_token_expire_minutes: int = Field(
+        default=60,
+        env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
+        description="OAuth access token expiry (minutes)",
+    )
+    jwt_refresh_token_expire_days: int = Field(
+        default=7,
+        env="JWT_REFRESH_TOKEN_EXPIRE_DAYS",
+        description="OAuth refresh token expiry (days)",
+    )
+
     @field_validator("oauth_enabled")
     @classmethod
     def validate_oauth_consistency(cls, v, info):
