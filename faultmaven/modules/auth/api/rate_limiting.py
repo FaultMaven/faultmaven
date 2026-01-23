@@ -127,7 +127,6 @@ def reset_rate_limiter():
 
     This clears all request history to prevent test interference.
     """
-    global _oauth_rate_limiter
     _oauth_rate_limiter._requests.clear()
     _oauth_rate_limiter._last_cleanup = time.time()
 

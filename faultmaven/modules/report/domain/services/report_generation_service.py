@@ -70,7 +70,7 @@ class ReportGenerationService(BaseService):
     def __init__(
         self,
         llm_router: Any,  # LLMRouter for generation
-        case_repository: Optional[CaseRepository] = None,
+        case_repository: Optional[ICaseRepository] = None,
         runbook_kb: Optional[RunbookKnowledgeBase] = None,
         lock_manager: Optional[ReportLockManager] = None,
         pii_redactor: Optional[Any] = None,
