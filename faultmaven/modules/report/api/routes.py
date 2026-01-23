@@ -170,8 +170,8 @@ class ReportRecommendationResponse(BaseModel):
 
 
 def check_case_repository_available(
-    case_repository: Optional[CaseRepository],
-) -> CaseRepository:
+    case_repository: Optional[ICaseRepository],
+) -> ICaseRepository:
     """Check if case repository is available and raise appropriate error if not."""
     if case_repository is None:
         raise HTTPException(
@@ -438,7 +438,7 @@ async def get_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
     """Get report by ID.
@@ -503,7 +503,7 @@ async def update_report(
     request: ReportUpdateRequest = Body(...),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
     """Update existing report.
@@ -612,7 +612,7 @@ async def delete_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> None:
     """Delete report.
@@ -698,7 +698,7 @@ async def list_reports_for_case(
     report_type: Optional[str] = Query(None, description="Filter by report type"),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportListResponse:
     """List all reports for a case.
@@ -780,7 +780,7 @@ async def get_report_versions(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportVersionListResponse:
     """Get version history for a report.
@@ -869,7 +869,7 @@ async def link_report_to_case_closure(
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> LinkCaseResponse:
     """Link report to case closure.

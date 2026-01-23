@@ -561,11 +561,13 @@ class TestDIContainerErrorHandling:
         # Ensure the container is configured to use ChromaDB so the patch is exercised.
         # Also set CHROMADB_URL to prevent zero-config preset auto-detection from forcing
         # the "local" preset (which sets VECTOR_STORAGE_TYPE=inmemory).
+        # Set SKIP_SERVICE_CHECKS=False to ensure ChromaDB initialization is attempted.
         with patch.dict(
             "os.environ",
             {
                 "VECTOR_STORAGE_TYPE": "chromadb",
                 "CHROMADB_URL": "http://localhost:8001",
+                "SKIP_SERVICE_CHECKS": "false",
             },
         ):
             with patch(
@@ -580,11 +582,17 @@ class TestDIContainerErrorHandling:
 
                 # Vector store should gracefully degrade to InMemoryVectorStore when ChromaDB fails
                 vector_store = container.get_vector_store()
-                assert vector_store is not None, "Container should provide fallback vector store"
+                assert (
+                    vector_store is not None
+                ), "Container should provide fallback vector store"
                 # Verify it's the fallback in-memory implementation
-                from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
-                assert isinstance(vector_store, InMemoryVectorStore), \
-                    f"Expected InMemoryVectorStore fallback, got {type(vector_store).__name__}"
+                from faultmaven.infrastructure.persistence.inmemory_vector_store import (
+                    InMemoryVectorStore,
+                )
+
+                assert isinstance(
+                    vector_store, InMemoryVectorStore
+                ), f"Expected InMemoryVectorStore fallback, got {type(vector_store).__name__}"
 
                 # Health check should show degraded but functional
                 health = container.health_check()

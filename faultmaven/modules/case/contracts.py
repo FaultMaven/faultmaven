@@ -67,6 +67,33 @@ from faultmaven.modules.case.domain.owned_models.agent_execution import (
     ExecutionStatus,
 )
 
+# Investigation models from Agent module (shared for investigation coordination)
+from faultmaven.modules.agent.domain.models.investigation import (
+    AnomalyFrame,
+    EngagementMode,
+    EscalationState,
+    EvidenceLayer,
+    HierarchicalMemory,
+    HypothesisTest,
+    InvestigationLifecycle,
+    InvestigationMetadata,
+    InvestigationMomentum,
+    InvestigationPhase,
+    InvestigationState,
+    InvestigationStrategy,
+    MemoryLayer,
+    MemorySnapshot,
+    OODAEngineState,
+    OODAIteration,
+    OODAStep,
+    PHASE_OODA_WEIGHTS,
+    PhaseOODAProfile,
+    PhaseTransition,
+    ProblemConfirmation,
+    ProgressMetrics,
+    TemporalFrame,
+)
+
 
 # ============================================================
 # Repository Contract
@@ -435,6 +462,30 @@ __all__ = [
     "AgentType",
     "AgentToolCall",
     "AgentExecution",
+    # Investigation models from Agent module (shared for investigation coordination)
+    "AnomalyFrame",
+    "EngagementMode",
+    "EscalationState",
+    "EvidenceLayer",
+    "HierarchicalMemory",
+    "HypothesisTest",
+    "InvestigationLifecycle",
+    "InvestigationMetadata",
+    "InvestigationMomentum",
+    "InvestigationPhase",
+    "InvestigationState",
+    "InvestigationStrategy",
+    "MemoryLayer",
+    "MemorySnapshot",
+    "OODAEngineState",
+    "OODAIteration",
+    "OODAStep",
+    "PHASE_OODA_WEIGHTS",
+    "PhaseOODAProfile",
+    "PhaseTransition",
+    "ProblemConfirmation",
+    "ProgressMetrics",
+    "TemporalFrame",
     # Case domain models (backward compatibility)
     "Case",
     "CaseSeverity",
