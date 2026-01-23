@@ -945,7 +945,7 @@ class AuthSettings(BaseSettings):
 
     # Dashboard URL (OAuth IdP)
     dashboard_url: str = Field(
-        default="https://dashboard.faultmaven.ai",
+        default="https://app.faultmaven.ai",
         env="DASHBOARD_URL",
         description="Dashboard URL (acts as IdP for OAuth flow)",
     )
