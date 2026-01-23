@@ -153,11 +153,11 @@ async def get_oauth_service(request: Request):
     # Check settings to see if OAuth should be enabled
     try:
         from faultmaven.config.settings import get_settings
+
         settings = get_settings()
         if settings.auth.oauth_enabled and oauth_service is None:
             raise HTTPException(
-                status_code=503,
-                detail="OAuth authentication not configured"
+                status_code=503, detail="OAuth authentication not configured"
             )
     except Exception:
         pass  # If settings unavailable, just return None

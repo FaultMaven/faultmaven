@@ -353,7 +353,9 @@ class OAuthMetricsRecorder:
 
         try:
             # Truncate to prevent unbounded cardinality
-            safe_client_id = attempted_client_id[:50] if attempted_client_id else "unknown"
+            safe_client_id = (
+                attempted_client_id[:50] if attempted_client_id else "unknown"
+            )
             oauth_invalid_client_attempts.labels(
                 attempted_client_id=safe_client_id
             ).inc()

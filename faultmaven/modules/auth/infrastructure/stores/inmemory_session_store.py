@@ -248,10 +248,17 @@ class InMemorySessionStore(ISessionStore):
                 try:
                     created_at = parse_utc_timestamp(session_data.get("created_at"))
                     last_activity = parse_utc_timestamp(
-                        session_data.get("last_activity", session_data.get("created_at"))
+                        session_data.get(
+                            "last_activity", session_data.get("created_at")
+                        )
                     )
                     updated_at = parse_utc_timestamp(
-                        session_data.get("updated_at", session_data.get("last_activity", session_data.get("created_at")))
+                        session_data.get(
+                            "updated_at",
+                            session_data.get(
+                                "last_activity", session_data.get("created_at")
+                            ),
+                        )
                     )
                     expires_at = self._ttls.get(session_id)
 

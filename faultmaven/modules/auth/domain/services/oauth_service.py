@@ -82,7 +82,7 @@ class OAuthServiceImpl(IOAuthService):
                 "client_id": request.client_id,
                 "redirect_uri": request.redirect_uri,
                 "scope": request.scope,
-            }
+            },
         )
 
         # Validate client_id
@@ -92,14 +92,12 @@ class OAuthServiceImpl(IOAuthService):
                 extra={
                     "user_id": user_id,
                     "client_id": request.client_id,
-                    "error": "INVALID_CLIENT"
-                }
+                    "error": "INVALID_CLIENT",
+                },
             )
             # Record metrics
             oauth_metrics.record_authorization_request(
-                client_id=request.client_id,
-                success=False,
-                error_code="INVALID_CLIENT"
+                client_id=request.client_id, success=False, error_code="INVALID_CLIENT"
             )
             oauth_metrics.record_invalid_client(request.client_id)
             raise InvalidRequestError(
@@ -115,14 +113,14 @@ class OAuthServiceImpl(IOAuthService):
                     "user_id": user_id,
                     "client_id": request.client_id,
                     "redirect_uri": request.redirect_uri,
-                    "error": "INVALID_REDIRECT_URI"
-                }
+                    "error": "INVALID_REDIRECT_URI",
+                },
             )
             # Record metrics
             oauth_metrics.record_authorization_request(
                 client_id=request.client_id,
                 success=False,
-                error_code="INVALID_REDIRECT_URI"
+                error_code="INVALID_REDIRECT_URI",
             )
             oauth_metrics.record_redirect_uri_mismatch(request.client_id)
             raise InvalidRequestError(
@@ -138,14 +136,14 @@ class OAuthServiceImpl(IOAuthService):
                     "user_id": user_id,
                     "client_id": request.client_id,
                     "challenge_method": request.code_challenge_method,
-                    "error": "INVALID_CODE_CHALLENGE_METHOD"
-                }
+                    "error": "INVALID_CODE_CHALLENGE_METHOD",
+                },
             )
             # Record metrics
             oauth_metrics.record_authorization_request(
                 client_id=request.client_id,
                 success=False,
-                error_code="INVALID_CODE_CHALLENGE_METHOD"
+                error_code="INVALID_CODE_CHALLENGE_METHOD",
             )
             raise InvalidRequestError(
                 f"Unsupported code_challenge_method: {request.code_challenge_method}. "
@@ -180,13 +178,12 @@ class OAuthServiceImpl(IOAuthService):
                 "client_id": request.client_id,
                 "code_length": len(code),
                 "expires_in_seconds": self.settings.oauth_code_expiry_seconds,
-            }
+            },
         )
 
         # Record successful authorization metrics
         oauth_metrics.record_authorization_request(
-            client_id=request.client_id,
-            success=True
+            client_id=request.client_id, success=True
         )
 
         return code
@@ -218,7 +215,7 @@ class OAuthServiceImpl(IOAuthService):
             extra={
                 "code_prefix": code[:8] if code else None,
                 "redirect_uri": redirect_uri,
-            }
+            },
         )
 
         # Retrieve authorization code data
@@ -229,8 +226,8 @@ class OAuthServiceImpl(IOAuthService):
                 "OAuth token exchange failed: invalid or expired code",
                 extra={
                     "code_prefix": code[:8] if code else None,
-                    "error": "INVALID_AUTHORIZATION_CODE"
-                }
+                    "error": "INVALID_AUTHORIZATION_CODE",
+                },
             )
             # Record metric
             duration_seconds = time.time() - start_time
@@ -239,7 +236,7 @@ class OAuthServiceImpl(IOAuthService):
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
-                error_code="INVALID_AUTHORIZATION_CODE"
+                error_code="INVALID_AUTHORIZATION_CODE",
             )
             raise InvalidGrantError(
                 "Invalid or expired authorization code",
@@ -253,8 +250,8 @@ class OAuthServiceImpl(IOAuthService):
                 extra={
                     "user_id": code_data.user_id,
                     "code_prefix": code[:8],
-                    "error": "CODE_ALREADY_USED"
-                }
+                    "error": "CODE_ALREADY_USED",
+                },
             )
             # Record metrics
             duration_seconds = time.time() - start_time
@@ -263,7 +260,7 @@ class OAuthServiceImpl(IOAuthService):
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
-                error_code="CODE_ALREADY_USED"
+                error_code="CODE_ALREADY_USED",
             )
             oauth_metrics.record_code_replay_attempt("unknown")
             raise InvalidGrantError(
@@ -279,8 +276,8 @@ class OAuthServiceImpl(IOAuthService):
                     "user_id": code_data.user_id,
                     "code_prefix": code[:8],
                     "expires_at": code_data.expires_at.isoformat(),
-                    "error": "CODE_EXPIRED"
-                }
+                    "error": "CODE_EXPIRED",
+                },
             )
             # Record metrics
             duration_seconds = time.time() - start_time
@@ -289,7 +286,7 @@ class OAuthServiceImpl(IOAuthService):
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
-                error_code="CODE_EXPIRED"
+                error_code="CODE_EXPIRED",
             )
             oauth_metrics.record_code_expired("unknown")
             raise InvalidGrantError(
@@ -305,8 +302,8 @@ class OAuthServiceImpl(IOAuthService):
                     "user_id": code_data.user_id,
                     "expected_uri": code_data.redirect_uri,
                     "received_uri": redirect_uri,
-                    "error": "REDIRECT_URI_MISMATCH"
-                }
+                    "error": "REDIRECT_URI_MISMATCH",
+                },
             )
             # Record metrics
             duration_seconds = time.time() - start_time
@@ -315,7 +312,7 @@ class OAuthServiceImpl(IOAuthService):
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
-                error_code="REDIRECT_URI_MISMATCH"
+                error_code="REDIRECT_URI_MISMATCH",
             )
             raise InvalidGrantError(
                 "Redirect URI mismatch",
@@ -329,8 +326,8 @@ class OAuthServiceImpl(IOAuthService):
                 extra={
                     "user_id": code_data.user_id,
                     "code_prefix": code[:8],
-                    "error": "PKCE_VERIFICATION_FAILED"
-                }
+                    "error": "PKCE_VERIFICATION_FAILED",
+                },
             )
             # Record metrics
             duration_seconds = time.time() - start_time
@@ -339,7 +336,7 @@ class OAuthServiceImpl(IOAuthService):
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
-                error_code="PKCE_VERIFICATION_FAILED"
+                error_code="PKCE_VERIFICATION_FAILED",
             )
             oauth_metrics.record_pkce_failure("unknown")
             raise InvalidGrantError(
@@ -358,8 +355,8 @@ class OAuthServiceImpl(IOAuthService):
                 extra={
                     "user_id": code_data.user_id,
                     "code_prefix": code[:8],
-                    "error": "USER_NOT_FOUND"
-                }
+                    "error": "USER_NOT_FOUND",
+                },
             )
             raise InvalidGrantError(
                 "User not found",
@@ -375,9 +372,11 @@ class OAuthServiceImpl(IOAuthService):
             extra={
                 "user_id": user.user_id,
                 "username": user.username,
-                "access_token_expires_in": self.settings.jwt_access_token_expire_minutes * 60,
-                "refresh_token_expires_in": self.settings.jwt_refresh_token_expire_days * 86400,
-            }
+                "access_token_expires_in": self.settings.jwt_access_token_expire_minutes
+                * 60,
+                "refresh_token_expires_in": self.settings.jwt_refresh_token_expire_days
+                * 86400,
+            },
         )
 
         # Record success metrics
@@ -386,7 +385,7 @@ class OAuthServiceImpl(IOAuthService):
             grant_type="authorization_code",
             client_id="unknown",  # Could extract from settings if needed
             duration_seconds=duration_seconds,
-            success=True
+            success=True,
         )
 
         # Return tokens with user info
@@ -422,7 +421,7 @@ class OAuthServiceImpl(IOAuthService):
             extra={
                 "client_id": client_id,
                 "token_rotation": self.settings.jwt_rotate_refresh_tokens,
-            }
+            },
         )
 
         # Validate refresh token
@@ -431,16 +430,11 @@ class OAuthServiceImpl(IOAuthService):
         if not payload:
             logger.warning(
                 "OAuth token refresh failed: invalid refresh token",
-                extra={
-                    "client_id": client_id,
-                    "error": "INVALID_REFRESH_TOKEN"
-                }
+                extra={"client_id": client_id, "error": "INVALID_REFRESH_TOKEN"},
             )
             # Record metrics
             oauth_metrics.record_token_refresh(
-                client_id=client_id,
-                success=False,
-                error_code="INVALID_REFRESH_TOKEN"
+                client_id=client_id, success=False, error_code="INVALID_REFRESH_TOKEN"
             )
             raise InvalidGrantError(
                 "Invalid or expired refresh token",
@@ -451,10 +445,7 @@ class OAuthServiceImpl(IOAuthService):
         if not user_id:
             logger.warning(
                 "OAuth token refresh failed: invalid token payload",
-                extra={
-                    "client_id": client_id,
-                    "error": "INVALID_TOKEN_PAYLOAD"
-                }
+                extra={"client_id": client_id, "error": "INVALID_TOKEN_PAYLOAD"},
             )
             raise InvalidGrantError(
                 "Invalid refresh token payload",
@@ -469,8 +460,8 @@ class OAuthServiceImpl(IOAuthService):
                 extra={
                     "user_id": user_id,
                     "client_id": client_id,
-                    "error": "USER_NOT_FOUND"
-                }
+                    "error": "USER_NOT_FOUND",
+                },
             )
             raise InvalidGrantError(
                 "User not found",
@@ -492,7 +483,7 @@ class OAuthServiceImpl(IOAuthService):
                 extra={
                     "user_id": user.user_id,
                     "client_id": client_id,
-                }
+                },
             )
 
         logger.info(
@@ -502,14 +493,11 @@ class OAuthServiceImpl(IOAuthService):
                 "username": user.username,
                 "client_id": client_id,
                 "token_rotated": self.settings.jwt_rotate_refresh_tokens,
-            }
+            },
         )
 
         # Record success metrics
-        oauth_metrics.record_token_refresh(
-            client_id=client_id,
-            success=True
-        )
+        oauth_metrics.record_token_refresh(client_id=client_id, success=True)
 
         return OAuthTokenDTO(
             access_token=new_access_token,
@@ -545,12 +533,12 @@ class OAuthServiceImpl(IOAuthService):
         """
         logger.info(
             "OAuth access token revocation requested",
-            extra={"token_prefix": token[:16] if token else None}
+            extra={"token_prefix": token[:16] if token else None},
         )
         await self.token_generator.revoke_access_token(token)
         logger.info(
             "OAuth access token revoked",
-            extra={"token_prefix": token[:16] if token else None}
+            extra={"token_prefix": token[:16] if token else None},
         )
         # Record metrics
         oauth_metrics.record_token_revocation("access_token")
@@ -563,12 +551,12 @@ class OAuthServiceImpl(IOAuthService):
         """
         logger.info(
             "OAuth refresh token revocation requested",
-            extra={"token_prefix": refresh_token[:16] if refresh_token else None}
+            extra={"token_prefix": refresh_token[:16] if refresh_token else None},
         )
         await self.token_generator.revoke_refresh_token(refresh_token)
         logger.info(
             "OAuth refresh token revoked",
-            extra={"token_prefix": refresh_token[:16] if refresh_token else None}
+            extra={"token_prefix": refresh_token[:16] if refresh_token else None},
         )
         # Record metrics
         oauth_metrics.record_token_revocation("refresh_token")
@@ -626,14 +614,14 @@ class OAuthServiceImpl(IOAuthService):
 
             # Allow chrome-extension:// and moz-extension:// (browser extensions)
             # Require https:// for web redirects
-            if parsed.scheme not in ['chrome-extension', 'moz-extension', 'https']:
+            if parsed.scheme not in ["chrome-extension", "moz-extension", "https"]:
                 logger.warning(
                     f"Redirect URI rejected (HTTPS required): {redirect_uri}",
                     extra={
                         "security_event": "oauth_insecure_redirect",
                         "redirect_uri": redirect_uri,
                         "scheme": parsed.scheme,
-                    }
+                    },
                 )
                 return False
 

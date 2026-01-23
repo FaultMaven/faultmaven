@@ -67,25 +67,19 @@ class AuthorizationRequest(BaseModel):
     response_type: Literal["code"] = Field(
         description="Must be 'code' (authorization code flow)"
     )
-    client_id: str = Field(
-        description="OAuth client ID (e.g., 'faultmaven-copilot')"
-    )
+    client_id: str = Field(description="OAuth client ID (e.g., 'faultmaven-copilot')")
     redirect_uri: str = Field(
         description="Extension callback URI (must match allowed patterns)"
     )
-    state: str = Field(
-        description="Client state for CSRF protection"
-    )
+    state: str = Field(description="Client state for CSRF protection")
     code_challenge: str = Field(
         description="PKCE code challenge (SHA256 hash of verifier)"
     )
     code_challenge_method: Literal["S256"] = Field(
-        default="S256",
-        description="PKCE challenge method (only S256 supported)"
+        default="S256", description="PKCE challenge method (only S256 supported)"
     )
     scope: str = Field(
-        default="openid profile email",
-        description="OAuth scopes requested"
+        default="openid profile email", description="OAuth scopes requested"
     )
 
 
@@ -144,27 +138,24 @@ class TokenRequest(BaseModel):
     # For authorization_code grant
     code: Optional[str] = Field(
         default=None,
-        description="Authorization code (required for authorization_code grant)"
+        description="Authorization code (required for authorization_code grant)",
     )
     redirect_uri: Optional[str] = Field(
         default=None,
-        description="Redirect URI (required for authorization_code grant, must match)"
+        description="Redirect URI (required for authorization_code grant, must match)",
     )
     code_verifier: Optional[str] = Field(
         default=None,
-        description="PKCE code verifier (required for authorization_code grant)"
+        description="PKCE code verifier (required for authorization_code grant)",
     )
 
     # For refresh_token grant
     refresh_token: Optional[str] = Field(
-        default=None,
-        description="Refresh token (required for refresh_token grant)"
+        default=None, description="Refresh token (required for refresh_token grant)"
     )
 
     # Common parameters
-    client_id: str = Field(
-        description="OAuth client ID"
-    )
+    client_id: str = Field(description="OAuth client ID")
 
 
 class TokenResponse(BaseModel):
@@ -177,7 +168,9 @@ class TokenResponse(BaseModel):
     refresh_token: str = Field(description="JWT refresh token (7 days expiry)")
     token_type: str = Field(default="Bearer", description="Token type (always Bearer)")
     expires_in: int = Field(description="Access token expiry in seconds (3600)")
-    refresh_expires_in: int = Field(description="Refresh token expiry in seconds (604800)")
+    refresh_expires_in: int = Field(
+        description="Refresh token expiry in seconds (604800)"
+    )
     user_id: str = Field(description="User ID")
     username: str = Field(description="Username")
 
@@ -190,8 +183,7 @@ class RevokeRequest(BaseModel):
 
     token: str = Field(description="Token to revoke (access or refresh)")
     token_type_hint: Optional[Literal["access_token", "refresh_token"]] = Field(
-        default=None,
-        description="Hint about token type (optional)"
+        default=None, description="Hint about token type (optional)"
     )
     client_id: str = Field(description="OAuth client ID")
 
@@ -219,8 +211,7 @@ async def get_oauth_service(request: Request) -> IOAuthService:
     oauth_service = await get_oauth_dep(request)
     if oauth_service is None:
         raise HTTPException(
-            status_code=503,
-            detail="OAuth authentication not configured"
+            status_code=503, detail="OAuth authentication not configured"
         )
     return oauth_service
 
@@ -287,16 +278,19 @@ async def get_authorization_request(
         if response_type != "code":
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported response_type: {response_type}. Only 'code' supported."
+                detail=f"Unsupported response_type: {response_type}. Only 'code' supported.",
             )
 
         # Get settings to check if consent is required
         from faultmaven.config.settings import FaultMavenSettings
+
         settings = FaultMavenSettings()
 
         # If consent required, return consent request for Dashboard UI
         if settings.auth.oauth_require_consent:
-            logger.info(f"Authorization consent required for user {user.user_id}, client {client_id}")
+            logger.info(
+                f"Authorization consent required for user {user.user_id}, client {client_id}"
+            )
 
             # Map client_id to human-readable name
             client_names = {
@@ -316,7 +310,9 @@ async def get_authorization_request(
             )
 
         # Auto-approve mode (dev/test only)
-        logger.warning(f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)")
+        logger.warning(
+            f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)"
+        )
 
         # Create authorization request DTO
         auth_request = OAuthAuthorizationDTO(
@@ -331,7 +327,9 @@ async def get_authorization_request(
         # Generate authorization code using authenticated user's ID
         code = await oauth_service.create_authorization_code(user.user_id, auth_request)
 
-        logger.info(f"Generated authorization code (auto-approved) for user {user.user_id}, client {client_id}")
+        logger.info(
+            f"Generated authorization code (auto-approved) for user {user.user_id}, client {client_id}"
+        )
 
         return AuthorizationResponse(code=code, state=state)
 
@@ -381,10 +379,11 @@ async def post_authorization_approval(
     try:
         # Check if user denied the request
         if not approval.approved:
-            logger.info(f"User {user.user_id} denied authorization for client {approval.client_id}")
+            logger.info(
+                f"User {user.user_id} denied authorization for client {approval.client_id}"
+            )
             raise HTTPException(
-                status_code=400,
-                detail="User denied authorization request"
+                status_code=400, detail="User denied authorization request"
             )
 
         # Create authorization request DTO
@@ -400,7 +399,9 @@ async def post_authorization_approval(
         # Generate authorization code using authenticated user's ID
         code = await oauth_service.create_authorization_code(user.user_id, auth_request)
 
-        logger.info(f"Generated authorization code (user approved) for user {user.user_id}, client {approval.client_id}")
+        logger.info(
+            f"Generated authorization code (user approved) for user {user.user_id}, client {approval.client_id}"
+        )
 
         return AuthorizationResponse(code=code, state=approval.state)
 
@@ -456,18 +457,15 @@ async def token(
             # Validate required parameters
             if not token_request.code:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Missing required parameter: code"
+                    status_code=400, detail="Missing required parameter: code"
                 )
             if not token_request.redirect_uri:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Missing required parameter: redirect_uri"
+                    status_code=400, detail="Missing required parameter: redirect_uri"
                 )
             if not token_request.code_verifier:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Missing required parameter: code_verifier"
+                    status_code=400, detail="Missing required parameter: code_verifier"
                 )
 
             # Exchange authorization code for tokens
@@ -477,14 +475,15 @@ async def token(
                 redirect_uri=token_request.redirect_uri,
             )
 
-            logger.info(f"Exchanged authorization code for tokens (user: {token_dto.user_id})")
+            logger.info(
+                f"Exchanged authorization code for tokens (user: {token_dto.user_id})"
+            )
 
         elif token_request.grant_type == "refresh_token":
             # Validate required parameters
             if not token_request.refresh_token:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Missing required parameter: refresh_token"
+                    status_code=400, detail="Missing required parameter: refresh_token"
                 )
 
             # Refresh access token
@@ -498,7 +497,7 @@ async def token(
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported grant_type: {token_request.grant_type}"
+                detail=f"Unsupported grant_type: {token_request.grant_type}",
             )
 
         # Convert DTO to response model

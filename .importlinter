@@ -165,6 +165,12 @@ layers =
 # Other modules must only import from auth module's contracts.py, not from
 # internal implementation (domain, infrastructure, api).
 # This enforces the module boundary and prevents coupling to auth internals.
+#
+# TEMPORARY EXCEPTIONS:
+# - Legacy compatibility layers (faultmaven.models, faultmaven.models.auth)
+#   are allowed to import from auth.domain for backward compatibility
+# - TYPE_CHECKING imports in contracts.py are allowed
+# TODO: Remove these exceptions by migrating all imports to use contracts.py DTOs
 [importlinter:contract:10]
 name = Other modules use auth contracts only
 type = forbidden
@@ -179,6 +185,12 @@ forbidden_modules =
     faultmaven.modules.auth.infrastructure
     faultmaven.modules.auth.api
 allow_indirect_imports = false
+ignore_imports =
+    faultmaven.models.auth -> faultmaven.modules.auth.domain.models
+    faultmaven.models -> faultmaven.modules.auth.domain.models.session
+    faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.auth
+    faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.user
+    faultmaven.infrastructure.llm.router -> faultmaven.models
 
 # ============================================================================
 # CONTRACT 11: No Direct Database Access to Auth Tables

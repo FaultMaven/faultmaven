@@ -61,8 +61,10 @@ import pytest
 _original_load_dotenv = None
 try:
     from dotenv import load_dotenv as _original_load_dotenv
+
     # Patch dotenv.load_dotenv globally to be a no-op during tests
     import dotenv
+
     dotenv.load_dotenv = Mock(return_value=None)
 except ImportError:
     pass  # dotenv not installed, which is fine for tests
@@ -83,21 +85,41 @@ def clean_test_environment():
 
     # List of all environment variables from .env that should be cleared for tests
     ENV_VARS_TO_CLEAR = [
-        "ENVIRONMENT", "DEBUG", "HOST", "PORT", "WORKERS", "LOG_LEVEL", "INSTANCE_ID",
+        "ENVIRONMENT",
+        "DEBUG",
+        "HOST",
+        "PORT",
+        "WORKERS",
+        "LOG_LEVEL",
+        "INSTANCE_ID",
         "CHAT_PROVIDER",
-        "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
-        "FIREWORKS_API_KEY", "FIREWORKS_MODEL",
-        "GEMINI_API_KEY", "GEMINI_MODEL",
-        "GROQ_API_KEY", "GROQ_MODEL",
-        "HUGGINGFACE_API_KEY", "HUGGINGFACE_MODEL",
-        "OPENAI_API_KEY", "OPENAI_MODEL",
-        "OPENROUTER_API_KEY", "OPENROUTER_MODEL",
-        "LOCAL_LLM_URL", "LOCAL_LLM_MODEL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "FIREWORKS_API_KEY",
+        "FIREWORKS_MODEL",
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL",
+        "GROQ_API_KEY",
+        "GROQ_MODEL",
+        "HUGGINGFACE_API_KEY",
+        "HUGGINGFACE_MODEL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_MODEL",
+        "LOCAL_LLM_URL",
+        "LOCAL_LLM_MODEL",
         "ENABLE_WEB_SEARCH",
-        "SESSION_STORAGE_TYPE", "VECTOR_STORAGE_TYPE", "USER_STORAGE_TYPE", "CASE_STORAGE_TYPE",
-        "RATE_LIMIT_ENABLED", "RATE_LIMIT_REQUESTS_PER_MINUTE",
-        "MAX_UPLOAD_SIZE_MB", "UPLOAD_TIMEOUT_SECONDS",
-        "CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_ORIGINS",
+        "SESSION_STORAGE_TYPE",
+        "VECTOR_STORAGE_TYPE",
+        "USER_STORAGE_TYPE",
+        "CASE_STORAGE_TYPE",
+        "RATE_LIMIT_ENABLED",
+        "RATE_LIMIT_REQUESTS_PER_MINUTE",
+        "MAX_UPLOAD_SIZE_MB",
+        "UPLOAD_TIMEOUT_SECONDS",
+        "CORS_ALLOW_CREDENTIALS",
+        "CORS_ALLOW_ORIGINS",
         "TENANT_PROVIDER",  # Add any other vars that affect test isolation
     ]
 
@@ -109,6 +131,7 @@ def clean_test_environment():
 
     # Optionally restore after tests (not needed for CI/CD, but helpful for local dev)
     # If restoration is needed, save original values before clearing
+
 
 # Mock _ctypes module for Python 3.11 compatibility when libffi is not available
 # This is needed for protobuf/chromadb imports that depend on ctypes

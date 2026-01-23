@@ -667,7 +667,9 @@ def register_services(container: BaseDIContainer) -> None:
 
         # Create OAuth service (requires user_service for user repository)
         if user_service:
-            user_repo = user_service.user_repo  # Access user repository from UserService
+            user_repo = (
+                user_service.user_repo
+            )  # Access user repository from UserService
             oauth_service = create_oauth_service(
                 settings,
                 user_repository=user_repo,

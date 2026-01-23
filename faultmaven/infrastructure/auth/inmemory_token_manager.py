@@ -63,10 +63,14 @@ class InMemoryTokenManager:
 
         # In-memory storage
         self._tokens: Dict[str, str] = {}  # token_hash -> user_id (active tokens only)
-        self._token_metadata: Dict[str, dict] = {}  # token_id -> AuthToken dict (all tokens)
+        self._token_metadata: Dict[str, dict] = (
+            {}
+        )  # token_id -> AuthToken dict (all tokens)
         self._user_tokens: Dict[str, List[str]] = {}  # user_id -> [token_id, ...]
         self._expiry_times: Dict[str, datetime] = {}  # token_hash -> expiry datetime
-        self._token_hash_to_id: Dict[str, str] = {}  # token_hash -> token_id (for O(1) lookup)
+        self._token_hash_to_id: Dict[str, str] = (
+            {}
+        )  # token_hash -> token_id (for O(1) lookup)
         self._lock = asyncio.Lock()  # Thread-safe operations
 
     async def create_token(self, user: DevUser) -> str:
@@ -142,7 +146,7 @@ class InMemoryTokenManager:
             async with self._lock:
                 # Check if token exists in active tokens
                 user_id = self._tokens.get(token_hash)
-                
+
                 # If not in active tokens, check metadata (might be revoked)
                 if not user_id:
                     token_id = self._token_hash_to_id.get(token_hash)
@@ -161,7 +165,7 @@ class InMemoryTokenManager:
                                 status=TokenStatus.EXPIRED,
                                 error_message="Token has expired",
                             )
-                    
+
                     return TokenValidationResult(
                         status=TokenStatus.INVALID,
                         error_message="Token not found",
@@ -181,7 +185,8 @@ class InMemoryTokenManager:
                 token_id = self._token_hash_to_id.get(token_hash)
                 if not token_id or token_id not in self._token_metadata:
                     return TokenValidationResult(
-                        status=TokenStatus.INVALID, error_message="Token metadata not found"
+                        status=TokenStatus.INVALID,
+                        error_message="Token metadata not found",
                     )
 
                 meta_dict = self._token_metadata[token_id]
@@ -190,7 +195,8 @@ class InMemoryTokenManager:
                 # Check token status
                 if token_meta.is_revoked:
                     return TokenValidationResult(
-                        status=TokenStatus.REVOKED, error_message="Token has been revoked"
+                        status=TokenStatus.REVOKED,
+                        error_message="Token has been revoked",
                     )
 
                 if token_meta.is_expired:
@@ -230,10 +236,11 @@ class InMemoryTokenManager:
         """Get user store (injected or from container)"""
         if self._user_store:
             return self._user_store
-        
+
         # Fallback to container (for backward compatibility)
         try:
             from faultmaven.container import container
+
             return container.get_user_store()
         except Exception as e:
             logger.warning(f"Failed to get user store from container: {e}")

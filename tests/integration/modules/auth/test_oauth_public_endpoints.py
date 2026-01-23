@@ -77,6 +77,7 @@ async def client_with_mocked_oauth(mock_oauth_service):
     """HTTP client with mocked OAuth service dependency."""
     # Reset rate limiter before each test to prevent interference
     from faultmaven.modules.auth.api.rate_limiting import reset_rate_limiter
+
     reset_rate_limiter()
 
     # Import the dependency function used in the route (from oauth.py)
@@ -202,9 +203,7 @@ class TestTokenEndpoint:
         assert "code" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_token_endpoint_invalid_grant_type(
-        self, client_with_mocked_oauth
-    ):
+    async def test_token_endpoint_invalid_grant_type(self, client_with_mocked_oauth):
         """Test token endpoint with unsupported grant type.
 
         Verifies proper error handling for invalid grant types.

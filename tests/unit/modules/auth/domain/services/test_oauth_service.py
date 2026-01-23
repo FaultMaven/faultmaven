@@ -51,7 +51,9 @@ def mock_token_generator():
     generator = AsyncMock()
     generator.generate_access_token = AsyncMock(return_value="access_token_123")
     generator.generate_refresh_token = AsyncMock(return_value="refresh_token_456")
-    generator.validate_refresh_token = AsyncMock(return_value={"sub": "user_123", "type": "refresh"})
+    generator.validate_refresh_token = AsyncMock(
+        return_value={"sub": "user_123", "type": "refresh"}
+    )
     generator.revoke_access_token = AsyncMock()
     generator.revoke_refresh_token = AsyncMock()
     return generator
@@ -65,7 +67,7 @@ def mock_settings():
     settings.oauth_code_expiry_seconds = 600  # 10 minutes
     settings.oauth_redirect_uri_patterns = [
         r"^chrome-extension://[a-z0-9]+/callback$",
-        r"^https://dashboard\.faultmaven\.ai/auth/callback$"
+        r"^https://dashboard\.faultmaven\.ai/auth/callback$",
     ]
     settings.jwt_access_token_expire_minutes = 60
     settings.jwt_refresh_token_expire_days = 7
@@ -97,7 +99,9 @@ def mock_user():
 @pytest.fixture
 def pkce_pair():
     """Generate valid PKCE code_verifier and code_challenge pair."""
-    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+    code_verifier = (
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+    )
     code_challenge = (
         base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("utf-8")).digest())
         .decode("utf-8")
@@ -129,7 +133,10 @@ class TestAuthorizationCodeGeneration:
 
         # Verify code is generated (32 bytes = 44 characters base64url)
         assert len(code) == 43  # 32 bytes base64url encoded without padding
-        assert all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in code)
+        assert all(
+            c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            for c in code
+        )
 
         # Verify code saved to repository
         mock_code_repository.save_code.assert_called_once()
@@ -176,7 +183,9 @@ class TestAuthorizationCodeGeneration:
             scope="openid profile email",
         )
 
-        with pytest.raises(InvalidRequestError, match="Unsupported code_challenge_method"):
+        with pytest.raises(
+            InvalidRequestError, match="Unsupported code_challenge_method"
+        ):
             await oauth_service.create_authorization_code("user_123", auth_request)
 
 
@@ -203,7 +212,11 @@ class TestPKCEVerification:
         code_verifier, code_challenge = pkce_pair
 
         # Generate different verifier
-        wrong_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+        wrong_verifier = (
+            base64.urlsafe_b64encode(secrets.token_bytes(32))
+            .decode("utf-8")
+            .rstrip("=")
+        )
 
         result = oauth_service._verify_pkce(wrong_verifier, code_challenge)
         assert result is False
@@ -271,7 +284,9 @@ class TestCodeExchange:
         code_verifier, code_challenge = pkce_pair
         mock_code_repository.get_code.return_value = None
 
-        with pytest.raises(InvalidGrantError, match="Invalid or expired authorization code"):
+        with pytest.raises(
+            InvalidGrantError, match="Invalid or expired authorization code"
+        ):
             await oauth_service.exchange_code_for_token(
                 code="invalid_code",
                 code_verifier=code_verifier,
@@ -319,7 +334,9 @@ class TestCodeExchange:
         )
         mock_code_repository.get_code.return_value = used_code_data
 
-        with pytest.raises(InvalidGrantError, match="Authorization code has already been used"):
+        with pytest.raises(
+            InvalidGrantError, match="Authorization code has already been used"
+        ):
             await oauth_service.exchange_code_for_token(
                 code="used_code",
                 code_verifier=code_verifier,
@@ -393,7 +410,10 @@ class TestRefreshToken:
         refresh_token = "refresh_token_456"
 
         # Mock token validation to return payload dict
-        mock_token_generator.validate_refresh_token.return_value = {"sub": "user_123", "type": "refresh"}
+        mock_token_generator.validate_refresh_token.return_value = {
+            "sub": "user_123",
+            "type": "refresh",
+        }
 
         # Create real user-like object
         user_obj = Mock()
@@ -408,12 +428,16 @@ class TestRefreshToken:
 
         # Verify new tokens generated
         assert token_dto.access_token == "access_token_123"
-        assert token_dto.refresh_token == "refresh_token_456"  # New rotated refresh token
+        assert (
+            token_dto.refresh_token == "refresh_token_456"
+        )  # New rotated refresh token
         assert token_dto.user_id == "user_123"
         assert token_dto.username == "testuser"
 
         # Verify refresh token validated
-        mock_token_generator.validate_refresh_token.assert_called_once_with(refresh_token)
+        mock_token_generator.validate_refresh_token.assert_called_once_with(
+            refresh_token
+        )
 
     @pytest.mark.asyncio
     async def test_refresh_access_token_invalid_token(

@@ -78,10 +78,10 @@ async def dev_login(
     """Development login endpoint
 
     Authenticates users and generates authentication tokens.
-    
+
     **Important:** Users must be created before login. Use `./faultmaven.sh create-user`
     to create accounts. This ensures production parity between local and cloud deployments.
-    
+
     This endpoint is designed for development environments and will be replaced
     with production OAuth2/OIDC integration later.
 
@@ -113,7 +113,10 @@ async def dev_login(
             # User doesn't exist - require explicit account creation
             logger.warning(
                 f"Login attempt for non-existent user: {request_body.username}",
-                extra={"username": request_body.username, "correlation_id": correlation_id},
+                extra={
+                    "username": request_body.username,
+                    "correlation_id": correlation_id,
+                },
             )
             raise HTTPException(
                 status_code=401,
@@ -128,7 +131,7 @@ async def dev_login(
                 },
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         logger.info(
             f"User login: {request_body.username} (user: {user.user_id})",
             extra={
@@ -268,7 +271,9 @@ async def dev_register(
             email=request_body.email,
             display_name=request_body.display_name,
         )
-        logger.info(f"User registration: {request_body.username} (new user: {user.user_id})")
+        logger.info(
+            f"User registration: {request_body.username} (new user: {user.user_id})"
+        )
 
         # Generate authentication token
         access_token = await token_manager.create_token(user)
@@ -371,15 +376,21 @@ async def dev_list_users(
         # Convert to simple dict format
         users_list = []
         for user in users:
-            users_list.append({
-                "user_id": user.user_id,
-                "username": user.username,
-                "email": user.email,
-                "display_name": user.display_name,
-                "roles": user.roles if user.roles else [],
-                "is_active": user.is_active,
-                "created_at": user.created_at.isoformat() if hasattr(user.created_at, 'isoformat') else str(user.created_at),
-            })
+            users_list.append(
+                {
+                    "user_id": user.user_id,
+                    "username": user.username,
+                    "email": user.email,
+                    "display_name": user.display_name,
+                    "roles": user.roles if user.roles else [],
+                    "is_active": user.is_active,
+                    "created_at": (
+                        user.created_at.isoformat()
+                        if hasattr(user.created_at, "isoformat")
+                        else str(user.created_at)
+                    ),
+                }
+            )
 
         return {
             "users": users_list,
@@ -387,7 +398,9 @@ async def dev_list_users(
         }
 
     except Exception as e:
-        logger.error(f"Dev list users failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Dev list users failed: {type(e).__name__}: {str(e)}", exc_info=True
+        )
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": str(e)},
@@ -415,7 +428,10 @@ async def dev_delete_user(
         if not user:
             raise HTTPException(
                 status_code=404,
-                detail={"error": "not_found", "message": f"User '{username}' not found"},
+                detail={
+                    "error": "not_found",
+                    "message": f"User '{username}' not found",
+                },
             )
 
         # Delete the user
@@ -430,13 +446,18 @@ async def dev_delete_user(
         else:
             raise HTTPException(
                 status_code=500,
-                detail={"error": "delete_failed", "message": f"Failed to delete user '{username}'"},
+                detail={
+                    "error": "delete_failed",
+                    "message": f"Failed to delete user '{username}'",
+                },
             )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Dev delete user failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Dev delete user failed: {type(e).__name__}: {str(e)}", exc_info=True
+        )
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": str(e)},

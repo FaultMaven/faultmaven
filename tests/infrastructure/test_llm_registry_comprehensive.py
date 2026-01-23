@@ -443,7 +443,9 @@ class TestFallbackChain:
 
         # Configure all providers with API keys
         mock_settings.llm.fireworks_api_key = SecretStr("fw-test-key-123")
-        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        mock_settings.llm.fireworks_model = (
+            "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        )
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
 
         mock_settings.llm.openai_api_key = SecretStr("sk-openai-test-456")
@@ -635,7 +637,9 @@ class TestFallbackChain:
 
         # Configure providers
         mock_settings.llm.fireworks_api_key = SecretStr("fw-test-key-123")
-        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        mock_settings.llm.fireworks_model = (
+            "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        )
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
 
         mock_settings.llm.openai_api_key = SecretStr("sk-openai-test-456")
@@ -942,7 +946,9 @@ class TestApiKeySecurity:
                 assert config is None, f"{description} - config should be None"
             else:
                 assert config is not None, f"{description} - config should not be None"
-                assert config.api_key == expected_value, f"{description} - API key mismatch"
+                assert (
+                    config.api_key == expected_value
+                ), f"{description} - API key mismatch"
 
 
 class TestRegistryStateManagement:

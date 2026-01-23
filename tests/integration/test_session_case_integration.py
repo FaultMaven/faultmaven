@@ -398,8 +398,9 @@ async def test_repository_factory_session_database(test_session: AsyncSession):
         repo = get_session_repository(session=test_session)
 
         # Assert - Verify DatabaseSessionRepository was created
-        assert isinstance(repo, DatabaseSessionRepository), \
-            f"Expected DatabaseSessionRepository but got {type(repo).__name__}"
+        assert isinstance(
+            repo, DatabaseSessionRepository
+        ), f"Expected DatabaseSessionRepository but got {type(repo).__name__}"
 
         # Test basic operations
         session = Session(
@@ -433,7 +434,9 @@ async def test_repository_factory_session_invalid_type():
             async with get_session_repository_async() as repo:
                 pass
 
-        assert "Unknown storage type" in str(exc_info.value) or "invalid_type" in str(exc_info.value)
+        assert "Unknown storage type" in str(exc_info.value) or "invalid_type" in str(
+            exc_info.value
+        )
 
 
 # ============================================================

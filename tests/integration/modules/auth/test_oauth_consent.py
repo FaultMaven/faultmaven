@@ -45,6 +45,7 @@ def mock_oauth_service():
 def mock_user():
     """Mock authenticated user."""
     from datetime import datetime
+
     return DevUser(
         user_id="test_user_123",
         username="testuser",
@@ -59,6 +60,7 @@ async def client_with_mocked_oauth_and_auth(mock_oauth_service, mock_user):
     """HTTP client with mocked OAuth service and authentication."""
     # Reset rate limiter before each test to prevent interference
     from faultmaven.modules.auth.api.rate_limiting import reset_rate_limiter
+
     reset_rate_limiter()
 
     from faultmaven.modules.auth.api.oauth import get_oauth_service

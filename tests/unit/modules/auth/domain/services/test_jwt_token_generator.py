@@ -245,7 +245,9 @@ class TestTokenValidation:
             {
                 "sub": "user_123",
                 "username": "testuser",
-                "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+                "exp": int(
+                    (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
+                ),
                 "iat": int(datetime.now(timezone.utc).timestamp()),
                 "jti": "invalid_sig_jti",
                 "type": "access",
@@ -291,9 +293,7 @@ class TestRefreshTokenValidation:
         assert payload["type"] == "refresh"
 
     @pytest.mark.asyncio
-    async def test_validate_refresh_token_wrong_type(
-        self, token_generator, mock_user
-    ):
+    async def test_validate_refresh_token_wrong_type(self, token_generator, mock_user):
         """Test validation fails when access token used as refresh token."""
         # Generate access token
         access_token = await token_generator.generate_access_token(mock_user)

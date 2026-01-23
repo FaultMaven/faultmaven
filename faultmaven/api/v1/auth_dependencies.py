@@ -52,7 +52,8 @@ async def get_token_manager(request: Request):
         if not token_manager:
             logger.error("Token manager not available from app.state")
             raise HTTPException(
-                status_code=503, detail="Authentication service unavailable. Please check server startup logs."
+                status_code=503,
+                detail="Authentication service unavailable. Please check server startup logs.",
             )
         return token_manager
     except HTTPException:
@@ -60,7 +61,8 @@ async def get_token_manager(request: Request):
     except AttributeError as e:
         logger.error(f"Token manager attribute not found in app.state: {e}")
         raise HTTPException(
-            status_code=503, detail="Authentication service not initialized. Please check server startup logs."
+            status_code=503,
+            detail="Authentication service not initialized. Please check server startup logs.",
         )
     except Exception as e:
         logger.error(f"Failed to get token manager: {e}")
@@ -83,14 +85,20 @@ async def get_user_store(request: Request):
             # Try to get from container as fallback for debugging
             try:
                 from faultmaven.container import container
+
                 container_user_store = container.get_user_store()
-                logger.error(f"Container user_store: {type(container_user_store).__name__ if container_user_store else 'None'}")
+                logger.error(
+                    f"Container user_store: {type(container_user_store).__name__ if container_user_store else 'None'}"
+                )
                 logger.error(f"Container initialized: {container.is_initialized}")
-                logger.error(f"Container has user_store attr: {hasattr(container, 'user_store')}")
+                logger.error(
+                    f"Container has user_store attr: {hasattr(container, 'user_store')}"
+                )
             except Exception as e:
                 logger.error(f"Failed to check container: {e}")
             raise HTTPException(
-                status_code=503, detail="User management service unavailable. Please check server startup logs."
+                status_code=503,
+                detail="User management service unavailable. Please check server startup logs.",
             )
         return user_store
     except HTTPException:
@@ -98,7 +106,8 @@ async def get_user_store(request: Request):
     except AttributeError as e:
         logger.error(f"User store attribute not found in app.state: {e}")
         raise HTTPException(
-            status_code=503, detail="User management service not initialized. Please check server startup logs."
+            status_code=503,
+            detail="User management service not initialized. Please check server startup logs.",
         )
     except Exception as e:
         logger.error(f"Failed to get user store: {e}")

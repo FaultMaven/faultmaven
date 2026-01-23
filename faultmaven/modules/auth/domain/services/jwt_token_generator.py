@@ -152,6 +152,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         # Generate unique JWT ID for revocation tracking
         import uuid
+
         jti = str(uuid.uuid4())
 
         payload = {
@@ -176,7 +177,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "username": user.username,
                 "jti": jti,
                 "expires_in_minutes": self.settings.jwt_access_token_expire_minutes,
-            }
+            },
         )
         return token
 
@@ -197,12 +198,11 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             JWT refresh token string
         """
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(
-            days=self.settings.jwt_refresh_token_expire_days
-        )
+        expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
 
         # Generate unique JWT ID for revocation tracking
         import uuid
+
         jti = str(uuid.uuid4())
 
         payload = {
@@ -225,7 +225,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "user_id": user.user_id,
                 "jti": jti,
                 "expires_in_days": self.settings.jwt_refresh_token_expire_days,
-            }
+            },
         )
         return token
 
@@ -261,7 +261,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                         "expected_type": "access",
                         "actual_type": payload.get("type"),
                         "user_id": payload.get("sub"),
-                    }
+                    },
                 )
                 return None
 
@@ -275,7 +275,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                         extra={
                             "jti": jti,
                             "user_id": payload.get("sub"),
-                        }
+                        },
                     )
                     return None
 
@@ -285,7 +285,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                     "user_id": payload.get("sub"),
                     "username": payload.get("username"),
                     "jti": jti,
-                }
+                },
             )
             return payload
 
@@ -294,8 +294,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid token",
-                extra={"error": str(e)}
+                "JWT validation failed: invalid token", extra={"error": str(e)}
             )
             return None
         except Exception as e:
@@ -334,7 +333,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                         "expected_type": "refresh",
                         "actual_type": payload.get("type"),
                         "user_id": payload.get("sub"),
-                    }
+                    },
                 )
                 return None
 
@@ -343,7 +342,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             if not jti:
                 logger.warning(
                     "JWT validation failed: refresh token missing jti",
-                    extra={"user_id": payload.get("sub")}
+                    extra={"user_id": payload.get("sub")},
                 )
                 return None
 
@@ -354,7 +353,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                     extra={
                         "jti": jti,
                         "user_id": payload.get("sub"),
-                    }
+                    },
                 )
                 return None
 
@@ -363,7 +362,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 extra={
                     "user_id": payload.get("sub"),
                     "jti": jti,
-                }
+                },
             )
             return payload
 
@@ -372,16 +371,11 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid refresh token",
-                extra={"error": str(e)}
+                "JWT validation failed: invalid refresh token", extra={"error": str(e)}
             )
             return None
         except Exception as e:
-            logger.error(
-                "JWT validation error",
-                extra={"error": str(e)},
-                exc_info=True
-            )
+            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
     async def revoke_access_token(self, token: str) -> None:
@@ -393,15 +387,14 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         try:
             # Decode without verification to get jti
             payload = jwt.decode(
-                token,
-                options={"verify_signature": False, "verify_exp": False}
+                token, options={"verify_signature": False, "verify_exp": False}
             )
 
             jti = payload.get("jti")
             if not jti:
                 logger.warning(
                     "JWT revocation skipped: token missing jti",
-                    extra={"user_id": payload.get("sub")}
+                    extra={"user_id": payload.get("sub")},
                 )
                 return
 
@@ -419,7 +412,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                             "jti": jti,
                             "user_id": user_id,
                             "ttl_seconds": ttl,
-                        }
+                        },
                     )
             else:
                 # No expiration, revoke with default TTL
@@ -431,14 +424,12 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                         "jti": jti,
                         "user_id": user_id,
                         "ttl_seconds": default_ttl,
-                    }
+                    },
                 )
 
         except Exception as e:
             logger.error(
-                "JWT revocation failed",
-                extra={"error": str(e)},
-                exc_info=True
+                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
             )
 
     async def revoke_refresh_token(self, token: str) -> None:
@@ -450,15 +441,14 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         try:
             # Decode without verification to get jti
             payload = jwt.decode(
-                token,
-                options={"verify_signature": False, "verify_exp": False}
+                token, options={"verify_signature": False, "verify_exp": False}
             )
 
             jti = payload.get("jti")
             if not jti:
                 logger.warning(
                     "JWT revocation skipped: refresh token missing jti",
-                    extra={"user_id": payload.get("sub")}
+                    extra={"user_id": payload.get("sub")},
                 )
                 return
 
@@ -476,7 +466,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                             "jti": jti,
                             "user_id": user_id,
                             "ttl_seconds": ttl,
-                        }
+                        },
                     )
             else:
                 # No expiration, revoke with default TTL
@@ -488,14 +478,12 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                         "jti": jti,
                         "user_id": user_id,
                         "ttl_seconds": default_ttl,
-                    }
+                    },
                 )
 
         except Exception as e:
             logger.error(
-                "JWT revocation failed",
-                extra={"error": str(e)},
-                exc_info=True
+                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
             )
 
 

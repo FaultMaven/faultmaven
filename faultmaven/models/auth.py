@@ -6,9 +6,13 @@ All auth models are now in:
 
 This stub exists solely to prevent import errors in legacy code that still imports from
 faultmaven.models.auth. New code should import directly from the modules.
+
+WARNING: This import is whitelisted in .importlinter contract #10 for backward compatibility.
+New code should use DTOs from faultmaven.modules.auth.contracts instead.
 """
 
 # Re-export all auth models from the correct location
+# This is whitelisted in .importlinter contract #10 as a temporary exception
 from faultmaven.modules.auth.domain.models import (
     AuthenticatedUser,
     AuthToken,

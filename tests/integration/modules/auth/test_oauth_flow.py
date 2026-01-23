@@ -30,10 +30,10 @@ os.environ["OAUTH_REQUIRE_CONSENT"] = "false"  # Auto-approve for E2E flow tests
 # Force reimport of app with OAuth enabled
 import sys
 
-if 'faultmaven.main' in sys.modules:
-    del sys.modules['faultmaven.main']
-if 'faultmaven.config.settings' in sys.modules:
-    del sys.modules['faultmaven.config.settings']
+if "faultmaven.main" in sys.modules:
+    del sys.modules["faultmaven.main"]
+if "faultmaven.config.settings" in sys.modules:
+    del sys.modules["faultmaven.config.settings"]
 
 from faultmaven.main import app
 
@@ -41,7 +41,9 @@ from faultmaven.main import app
 @pytest.fixture
 def pkce_pair():
     """Generate valid PKCE code_verifier and code_challenge pair."""
-    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+    code_verifier = (
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+    )
     code_challenge = (
         base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("utf-8")).digest())
         .decode("utf-8")
@@ -70,13 +72,18 @@ async def authenticated_client(test_user):
     """Create an authenticated HTTP client with real OAuth service."""
     # Reset rate limiter
     from faultmaven.modules.auth.api.rate_limiting import reset_rate_limiter
+
     reset_rate_limiter()
 
     from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.modules.auth.api.oauth import get_oauth_service
     from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
-    from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import InMemoryOAuthCodeRepository
-    from faultmaven.modules.auth.infrastructure.repositories.user_repository import InMemoryUserRepository
+    from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
+        InMemoryOAuthCodeRepository,
+    )
+    from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
+        InMemoryUserRepository,
+    )
     from faultmaven.config.settings import get_settings
 
     settings = get_settings()
@@ -87,16 +94,23 @@ async def authenticated_client(test_user):
 
     # Mock token generator
     mock_token_generator = AsyncMock()
-    mock_token_generator.generate_access_token = AsyncMock(return_value="test_access_token_123")
-    mock_token_generator.generate_refresh_token = AsyncMock(return_value="test_refresh_token_456")
-    mock_token_generator.validate_refresh_token = AsyncMock(return_value={
-        "sub": test_user.user_id,
-        "username": test_user.username,
-        "type": "refresh"
-    })
+    mock_token_generator.generate_access_token = AsyncMock(
+        return_value="test_access_token_123"
+    )
+    mock_token_generator.generate_refresh_token = AsyncMock(
+        return_value="test_refresh_token_456"
+    )
+    mock_token_generator.validate_refresh_token = AsyncMock(
+        return_value={
+            "sub": test_user.user_id,
+            "username": test_user.username,
+            "type": "refresh",
+        }
+    )
 
     # Add test user to repository (convert DevUser to User)
     from faultmaven.modules.auth.infrastructure.repositories.user_repository import User
+
     repo_user = User(
         user_id=test_user.user_id,
         username=test_user.username,
@@ -252,9 +266,7 @@ class TestCompleteOAuthFlow:
         assert token_data["user_id"] == test_user.user_id
 
     @pytest.mark.asyncio
-    async def test_code_replay_attack_prevention(
-        self, authenticated_client, pkce_pair
-    ):
+    async def test_code_replay_attack_prevention(self, authenticated_client, pkce_pair):
         """Test that authorization codes can only be used once."""
         code_verifier, code_challenge = pkce_pair
 
@@ -322,7 +334,11 @@ class TestCompleteOAuthFlow:
         code = auth_response.json()["code"]
 
         # Wrong verifier
-        wrong_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+        wrong_verifier = (
+            base64.urlsafe_b64encode(secrets.token_bytes(32))
+            .decode("utf-8")
+            .rstrip("=")
+        )
 
         response = await authenticated_client.post(
             "/api/v1/auth/oauth/token",

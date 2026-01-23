@@ -36,8 +36,8 @@ class OAuthRateLimiter:
         # Rate limits per endpoint (requests per minute)
         self._limits = {
             "/authorize": 10,  # Prevent authorization flooding
-            "/token": 5,       # Prevent token brute force
-            "/revoke": 20,     # Allow normal logout patterns
+            "/token": 5,  # Prevent token brute force
+            "/revoke": 20,  # Allow normal logout patterns
         }
 
         # Window size in seconds

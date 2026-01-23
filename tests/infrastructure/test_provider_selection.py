@@ -263,7 +263,10 @@ class TestTenantProviderFactory:
         mock_repo = MagicMock()
 
         # Act - Patch get_settings to return our mock settings
-        with patch("faultmaven.providers.tenancy.factory.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.providers.tenancy.factory.get_settings",
+            return_value=mock_settings,
+        ):
             provider = create_tenant_provider(mock_repo)
 
         # Assert - Verify MultiTenantProvider was created

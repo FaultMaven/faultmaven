@@ -40,9 +40,7 @@ class DatabaseUserStore:
 
         # Validation patterns
         self.email_pattern = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
-        self.username_pattern = re.compile(
-            r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$"
-        )
+        self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
 
     def _user_to_devuser(self, user: User) -> DevUser:
         """Convert User (repository model) to DevUser (auth model)"""
@@ -279,9 +277,7 @@ class DatabaseUserStore:
             logger.error(f"Failed to delete user {user_id}: {e}")
             return False
 
-    async def list_users(
-        self, limit: int = 100, offset: int = 0
-    ) -> List[DevUser]:
+    async def list_users(self, limit: int = 100, offset: int = 0) -> List[DevUser]:
         """List users with pagination
 
         Args:

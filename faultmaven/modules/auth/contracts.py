@@ -57,6 +57,7 @@ class OAuthAuthorizationDTO:
     Used in the Dashboard-centric authentication flow where the Dashboard
     acts as IdP and issues authorization codes for the Extension.
     """
+
     client_id: str
     redirect_uri: str
     state: str
@@ -68,6 +69,7 @@ class OAuthAuthorizationDTO:
 @dataclass
 class OAuthTokenDTO:
     """Data Transfer Object for OAuth token response."""
+
     access_token: str
     refresh_token: str
     user_id: str
@@ -84,6 +86,7 @@ class OAuthCodeDTO:
     This is stored temporarily (10 minutes) during the OAuth flow
     and includes PKCE challenge for verification.
     """
+
     code: str
     user_id: str
     redirect_uri: str
@@ -160,9 +163,7 @@ class IOAuthService(ABC):
     """
 
     async def create_authorization_code(
-        self,
-        user_id: str,
-        request: OAuthAuthorizationDTO
+        self, user_id: str, request: OAuthAuthorizationDTO
     ) -> str:
         """Generate authorization code for OAuth flow.
 
@@ -179,10 +180,7 @@ class IOAuthService(ABC):
         ...
 
     async def exchange_code_for_token(
-        self,
-        code: str,
-        code_verifier: str,
-        redirect_uri: str
+        self, code: str, code_verifier: str, redirect_uri: str
     ) -> OAuthTokenDTO:
         """Exchange authorization code for access token.
 
@@ -212,9 +210,7 @@ class IOAuthService(ABC):
         ...
 
     async def refresh_access_token(
-        self,
-        refresh_token: str,
-        client_id: str
+        self, refresh_token: str, client_id: str
     ) -> OAuthTokenDTO:
         """Refresh access token using refresh token.
 
@@ -336,18 +332,6 @@ class ISessionService(Protocol):
             True if session is valid and active, False otherwise
         """
         ...
-
-
-# ============================================================
-# Re-export concrete interfaces from repositories
-# ============================================================
-
-# Import and re-export UserRepository as IUserRepository for convenience
-from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
-    UserRepository as _UserRepository,
-)
-
-IUserRepository = _UserRepository  # Alias for consistency
 
 
 # ============================================================

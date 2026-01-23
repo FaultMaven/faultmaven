@@ -248,13 +248,13 @@ async def lifespan(app: FastAPI):
     logger.info("Validating configuration...")
     try:
         from .config.settings import get_settings
-        
+
         settings = get_settings()
-        
+
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers
         storage_type = (settings.database.session_storage_type or "inmemory").lower()
-        
+
         if workers > 1 and storage_type == "inmemory":
             logger.error(
                 f"❌ Invalid configuration: WORKERS={workers} with in-memory storage"
@@ -262,9 +262,7 @@ async def lifespan(app: FastAPI):
             logger.error(
                 "   In-memory storage only works with WORKERS=1 (each worker has separate memory)."
             )
-            logger.error(
-                "   Solutions:"
-            )
+            logger.error("   Solutions:")
             logger.error(
                 "   1. Set WORKERS=1 in your .env file (recommended for local deployment)"
             )
@@ -300,29 +298,41 @@ async def lifespan(app: FastAPI):
         from .container import container
 
         await container.initialize()
-        
+
         # Verify critical services are available IMMEDIATELY after initialization
         user_store = container.get_user_store()
         token_manager = container.get_token_manager()
-        
-        logger.info(f"Container initialization complete. Checking authentication services...")
-        logger.info(f"   - user_store: {type(user_store).__name__ if user_store else 'None'}")
-        logger.info(f"   - token_manager: {type(token_manager).__name__ if token_manager else 'None'}")
-        
+
+        logger.info(
+            f"Container initialization complete. Checking authentication services..."
+        )
+        logger.info(
+            f"   - user_store: {type(user_store).__name__ if user_store else 'None'}"
+        )
+        logger.info(
+            f"   - token_manager: {type(token_manager).__name__ if token_manager else 'None'}"
+        )
+
         if user_store is None or token_manager is None:
-            logger.error(f"❌ Critical authentication services missing after container initialization:")
+            logger.error(
+                f"❌ Critical authentication services missing after container initialization:"
+            )
             logger.error(f"   - user_store: {user_store}")
             logger.error(f"   - token_manager: {token_manager}")
             logger.error(f"   - Container initialized: {container.is_initialized}")
-            logger.error(f"   - Container has user_store attr: {hasattr(container, 'user_store')}")
-            if hasattr(container, 'user_store'):
+            logger.error(
+                f"   - Container has user_store attr: {hasattr(container, 'user_store')}"
+            )
+            if hasattr(container, "user_store"):
                 logger.error(f"   - Container.user_store value: {container.user_store}")
             raise RuntimeError(
                 "Container initialization incomplete: authentication services not available. "
                 "Check container initialization logs for errors during register_infrastructure()."
             )
-        
-        logger.info("✅ DI container initialized successfully with authentication services")
+
+        logger.info(
+            "✅ DI container initialized successfully with authentication services"
+        )
 
         # Make container available to app for access by other components
         app.extra["di_container"] = container
@@ -350,14 +360,16 @@ async def lifespan(app: FastAPI):
         # - FastAPI dependencies access via request.app.state
         # - Services do NOT call container.get_*() themselves
         # ============================================================
-        
+
         # CRITICAL: Set authentication services FIRST - they're required for the API to work
         # These were already verified above, so they must be available
         app.state.token_manager = token_manager
         app.state.user_store = user_store
         app.state.user_service = container.get_user_service()
         app.state.auth_service = container.get_auth_service()
-        app.state.oauth_service = container.get_oauth_service()  # OAuth service (optional)
+        app.state.oauth_service = (
+            container.get_oauth_service()
+        )  # OAuth service (optional)
 
         # Other services (may fail gracefully)
         try:
@@ -376,7 +388,9 @@ async def lifespan(app: FastAPI):
             app.state.orchestration_service = container.get_orchestration_service()
             app.state.data_service = container.get_data_service()
             app.state.tenant_provider = container.get_tenant_provider()
-            app.state.report_generation_service = container.get_report_generation_service()
+            app.state.report_generation_service = (
+                container.get_report_generation_service()
+            )
             app.state.report_recommendation_service = (
                 container.get_report_recommendation_service()
             )
@@ -385,16 +399,22 @@ async def lifespan(app: FastAPI):
             app.state.job_service = container.get_job_service()
             # Query classification engine (optional - may not be available)
             try:
-                app.state.query_classification_engine = container.get_query_classification_engine()
+                app.state.query_classification_engine = (
+                    container.get_query_classification_engine()
+                )
             except AttributeError:
                 logger.warning("Query classification engine not available - skipping")
                 app.state.query_classification_engine = None
             app.state.tracer = container.get_tracer()
             app.state.llm_provider = container.get_llm_provider()
         except AttributeError as e:
-            logger.warning(f"Some optional services not available: {e} - continuing with available services")
+            logger.warning(
+                f"Some optional services not available: {e} - continuing with available services"
+            )
         except Exception as e:
-            logger.warning(f"Error setting some services: {e} - continuing with available services")
+            logger.warning(
+                f"Error setting some services: {e} - continuing with available services"
+            )
         app.state.tracer = container.get_tracer()
         app.state.llm_provider = container.get_llm_provider()
         logger.info("✅ Services attached to app.state (Composition Root)")
@@ -697,7 +717,11 @@ def setup_middleware():
     # In non-production, support dynamic CORS for local network access
     if settings.server.environment != Environment.PRODUCTION:
         # Add common development origins if not already present
-        for dev_origin in ["http://localhost:3333", "http://localhost:8090", "http://localhost:5173"]:
+        for dev_origin in [
+            "http://localhost:3333",
+            "http://localhost:8090",
+            "http://localhost:5173",
+        ]:
             if dev_origin not in cors_origins:
                 cors_origins.append(dev_origin)
 
@@ -725,7 +749,9 @@ def setup_middleware():
         )
 
         if logging_enabled:
-            logger.info(f"✅ CORS configured for development with local network support")
+            logger.info(
+                f"✅ CORS configured for development with local network support"
+            )
             logger.info(f"   Allowed origins: {cors_origins}")
             logger.info(f"   Local network pattern: {local_network_regex}")
     else:
@@ -1009,6 +1035,7 @@ logger.info("✅ Team endpoints added")
 # OAuth router (only if enabled)
 try:
     from .config.settings import get_settings
+
     _oauth_settings = get_settings()
     if _oauth_settings.auth.oauth_enabled:
         app.include_router(oauth_router, prefix="/api/v1")
