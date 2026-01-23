@@ -2101,7 +2101,7 @@ class AuthErrorHandler {
 - ✅ **Token generation**: UUID-based tokens with 24-hour expiry
 - ✅ **Token validation**: Middleware for protected endpoints
 - ✅ **Role-based access control**: User and admin roles
-- ✅ **Redis storage**: Token and user storage for development
+- ✅ **Storage abstraction**: Deployment-agnostic (InMemory/Redis/PostgreSQL)
 - ✅ **Frontend integration**: Browser extension auth support
 
 ### Recently Completed (January 2026)
@@ -2119,7 +2119,10 @@ class AuthErrorHandler {
 - Long-lived refresh tokens (7 days) with rotation
 - Token revocation support for logout
 - Constant-time PKCE comparison (timing attack prevention)
-- Provider-based architecture (InMemory, Redis, PostgreSQL)
+- Deployment-agnostic storage abstraction (3 complete implementations):
+  - **InMemoryOAuthCodeRepository**: Local dev, zero dependencies
+  - **RedisOAuthCodeRepository**: Cloud cache layer (ephemeral)
+  - **PostgresOAuthCodeRepository**: Enterprise persistent storage
 - Complete API documentation and test coverage
 
 **Production Requirements - ALL COMPLETED (January 22, 2026)**:
@@ -2209,11 +2212,26 @@ class AuthErrorHandler {
   - Passing: Authorization, PKCE, unauthenticated rejection
   - Known issues: Token exchange (requires additional mock configuration for JWT token generator)
 
-### In Progress
+### Infrastructure (Deployment Configuration)
 
-- ⬜ **PostgreSQL storage**: Production user database (auth infrastructure ready)
+The following are **deployment configuration options**, not features. All infrastructure implementations are complete and selectable via environment variables:
 
-### Planned
+- ✅ **Storage Backends** (OAuth authorization codes):
+  - `InMemoryOAuthCodeRepository` - Local development (default)
+  - `RedisOAuthCodeRepository` - Cloud deployment with Redis cache
+  - `PostgresOAuthCodeRepository` - Enterprise deployment with persistent DB
+  - **Selection**: Automatic based on `REDIS_HOST` and `DATABASE_URL` configuration
+  - **Location**: [oauth_code_repository.py](../../../faultmaven/modules/auth/infrastructure/repositories/oauth_code_repository.py)
+
+- ✅ **User Storage** (Persistent user accounts):
+  - SQLite - Local deployment (`DATABASE_URL=sqlite:///./faultmaven.db`)
+  - PostgreSQL - Cloud deployment (`DATABASE_URL=postgresql://...`)
+  - **Selection**: Automatic via `DATABASE_URL` environment variable
+  - **Location**: Database user repository in container DI
+
+**Note**: Redis (cache layer) and PostgreSQL/SQLite (DB layer) work together in cloud deployments, not as alternatives. Redis stores ephemeral OAuth codes (10-min TTL), while the database stores persistent user accounts.
+
+### Planned (Future Feature Enhancements)
 
 - ⬜ **Social login**: Google, GitHub, Microsoft OAuth providers
 - ⬜ **MFA support**: Time-based OTP and SMS verification
