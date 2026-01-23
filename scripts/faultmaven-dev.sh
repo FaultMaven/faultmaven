@@ -16,7 +16,7 @@ cd "$PROJECT_ROOT"
 APP_NAME="FaultMaven"
 PID_FILE=".faultmaven-dev.pid"
 LOG_FILE="/tmp/faultmaven-dev.log"
-DEFAULT_PORT=8000
+DEFAULT_PORT=8090
 DEFAULT_HOST="0.0.0.0"
 
 # Colors
