@@ -77,7 +77,7 @@ This document describes how FaultMaven persists Knowledge Base (KB) data across 
   - Client created with `decode_responses=true` (string I/O)
 
 - ChromaDB
-  - `CHROMADB_URL` (NodePort/ingress for external, in-cluster `http://chromadb:8000`)
+  - `CHROMADB_URL` (NodePort/ingress for external, in-cluster `http://chromadb:8090`)
   - `CHROMADB_API_KEY` optional; if set, client attempts token auth
   - `CHROMADB_COLLECTION` (default: `faultmaven_knowledge`)
 

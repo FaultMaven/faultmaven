@@ -220,7 +220,7 @@ User 'bob' can still:
 
 ### Register a New User (API)
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/dev-register \
+curl -X POST http://localhost:8090/api/v1/auth/dev-register \
   -H 'Content-Type: application/json' \
   -d '{"username": "alice"}'
 ```
@@ -246,14 +246,14 @@ curl -X POST http://localhost:8000/api/v1/auth/dev-register \
 
 ### Login (API)
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/dev-login \
+curl -X POST http://localhost:8090/api/v1/auth/dev-login \
   -H 'Content-Type: application/json' \
   -d '{"username": "alice"}'
 ```
 
 ### Get Current User Profile (API)
 ```bash
-curl http://localhost:8000/api/v1/auth/me \
+curl http://localhost:8090/api/v1/auth/me \
   -H 'Authorization: Bearer YOUR_TOKEN'
 ```
 
@@ -301,7 +301,7 @@ curl http://localhost:8000/api/v1/auth/me \
 python scripts/auth/create_user.py --username admin --role admin
 
 # 2. Login to get token
-curl -X POST http://localhost:8000/api/v1/auth/dev-login \
+curl -X POST http://localhost:8090/api/v1/auth/dev-login \
   -H 'Content-Type: application/json' \
   -d '{"username": "admin"}'
 

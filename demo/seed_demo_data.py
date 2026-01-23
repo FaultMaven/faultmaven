@@ -160,7 +160,7 @@ async def main():
         print("✅ Demo data seeded successfully!")
         print("")
         print("Next steps:")
-        print("  1. Open the Dashboard at http://localhost:3000")
+        print("  1. Open the Dashboard at http://localhost:3333")
         print("  2. View the demo case in Case History")
         print("  3. Try asking FaultMaven: 'Why is the payment service crashing?'")
         print("")

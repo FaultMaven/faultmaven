@@ -57,7 +57,7 @@ When you ask FaultMaven "Why is the payment service crashing?", it will:
 
 After seeding the demo data:
 
-1. Open the Dashboard at http://localhost:3000
+1. Open the Dashboard at http://localhost:3333
 2. Go to **Case History** to see the demo case
 3. Open the case and ask: "Why is the payment service crashing?"
 4. Watch FaultMaven correlate the evidence with your runbooks

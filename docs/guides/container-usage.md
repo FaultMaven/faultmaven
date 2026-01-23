@@ -354,10 +354,10 @@ async def check_intelligence_health():
 
 ```bash
 # Check enhanced container health via API
-curl http://localhost:8000/health
+curl http://localhost:8090/health
 
 # Check intelligence services specifically
-curl http://localhost:8000/health/intelligence
+curl http://localhost:8090/health/intelligence
 
 # Response example:
 {

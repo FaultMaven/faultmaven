@@ -41,7 +41,7 @@ def storage_adapter(mock_file_storage):
     """Create EvidenceStorageAdapter with mocked dependencies."""
     return EvidenceStorageAdapter(
         file_storage=mock_file_storage,
-        base_url="http://localhost:8000",
+        base_url="http://localhost:8090",
     )
 
 
@@ -170,7 +170,7 @@ class TestStorageAdapterGetDownloadUrl:
         result = await storage_adapter.get_download_url(path)
 
         assert result is not None
-        assert "http://localhost:8000" in result
+        assert "http://localhost:8090" in result
         assert "/api/v1/evidence/file/" in result
         assert path in result
 
@@ -192,7 +192,7 @@ class TestStorageAdapterGetDownloadUrl:
 
         result = await storage_adapter.get_download_url(path)
 
-        expected = f"http://localhost:8000/api/v1/evidence/file/{path}"
+        expected = f"http://localhost:8090/api/v1/evidence/file/{path}"
         assert result == expected
 
 

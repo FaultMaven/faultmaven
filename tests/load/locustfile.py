@@ -9,11 +9,11 @@ Usage:
     pip install locust
 
     # Run with UI (opens browser at http://localhost:8089)
-    locust -f tests/load/locustfile.py --host=http://localhost:8000
+    locust -f tests/load/locustfile.py --host=http://localhost:8090
 
     # Headless mode for CI/CD
     locust -f tests/load/locustfile.py \
-           --host=http://localhost:8000 \
+           --host=http://localhost:8090 \
            --users 50 \
            --spawn-rate 10 \
            --run-time 60s \

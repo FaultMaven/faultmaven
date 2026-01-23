@@ -406,9 +406,9 @@ cmd_start() {
         echo "  1. Check status:  ./faultmaven.sh status"
         echo "  2. View logs:     ./faultmaven.sh logs"
         echo "  3. Access services:"
-        echo "     - Dashboard: http://localhost:3000"
-        echo "     - API:       http://localhost:8000"
-        echo "     - API Docs:  http://localhost:8000/docs"
+        echo "     - Dashboard: http://localhost:3333"
+        echo "     - API:       http://localhost:8090"
+        echo "     - API Docs:  http://localhost:8090/docs"
         echo ""
     else
         echo ""
@@ -811,7 +811,7 @@ cmd_create_user() {
     fi
 
     # Check if API is healthy
-    if ! curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
+    if ! curl -sf "http://localhost:8090/health" > /dev/null 2>&1; then
         print_header
         print_error "API service is not responding. Wait for it to become healthy."
         exit 1
@@ -873,7 +873,7 @@ cmd_create_user() {
     json_payload+="}"
 
     # Call dev-register endpoint
-    response=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8000/api/v1/auth/dev-register" \
+    response=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:8090/api/v1/auth/dev-register" \
         -H "Content-Type: application/json" \
         -d "$json_payload" 2>&1)
 
@@ -884,7 +884,7 @@ cmd_create_user() {
         echo ""
         print_success "User '$username' created successfully!"
         echo ""
-        print_info "You can now log in at http://localhost:3000"
+        print_info "You can now log in at http://localhost:3333"
         echo ""
         echo "Note: If you specified 'admin' role, you'll need to promote the user:"
         echo "  docker compose exec api python scripts/auth/promote_to_admin.py $username"

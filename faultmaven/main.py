@@ -697,7 +697,7 @@ def setup_middleware():
     # In non-production, support dynamic CORS for local network access
     if settings.server.environment != Environment.PRODUCTION:
         # Add common development origins if not already present
-        for dev_origin in ["http://localhost:3000", "http://localhost:8000", "http://localhost:5173"]:
+        for dev_origin in ["http://localhost:3333", "http://localhost:8090", "http://localhost:5173"]:
             if dev_origin not in cors_origins:
                 cors_origins.append(dev_origin)
 

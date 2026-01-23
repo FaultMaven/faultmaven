@@ -578,9 +578,13 @@ class TestDIContainerErrorHandling:
                 # Should still be initialized
                 assert container._initialized
 
-                # Vector store should be None
+                # Vector store should gracefully degrade to InMemoryVectorStore when ChromaDB fails
                 vector_store = container.get_vector_store()
-                assert vector_store is None
+                assert vector_store is not None, "Container should provide fallback vector store"
+                # Verify it's the fallback in-memory implementation
+                from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+                assert isinstance(vector_store, InMemoryVectorStore), \
+                    f"Expected InMemoryVectorStore fallback, got {type(vector_store).__name__}"
 
                 # Health check should show degraded but functional
                 health = container.health_check()

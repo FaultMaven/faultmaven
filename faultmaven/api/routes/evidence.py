@@ -90,7 +90,7 @@ async def upload_evidence(
         500: File storage error
 
     Example:
-        curl -X POST "http://localhost:8000/api/v1/cases/CASE-123/evidence" \\
+        curl -X POST "http://localhost:8090/api/v1/cases/CASE-123/evidence" \\
           -H "Authorization: Bearer <token>" \\
           -F "file=@screenshot.png" \\
           -F "evidence_type=screenshot" \\

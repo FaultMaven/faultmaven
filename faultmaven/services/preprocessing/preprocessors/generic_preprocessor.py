@@ -49,7 +49,7 @@ class GenericPreprocessor(IPreprocessor):
 
         # Truncate to 8000 chars
         summary = self._format_generic_summary(content, filename, source_metadata)
-        llm_ready_content = summary[:8000]
+        llm_ready_content = summary[:8090]
 
         processing_time = (time.time() - start_time) * 1000
 

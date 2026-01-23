@@ -598,7 +598,7 @@ create_user() {
         echo ""
         print_success "User '$username' created successfully!"
         echo ""
-        print_info "You can now log in at http://localhost:3000"
+        print_info "You can now log in at http://localhost:3333"
         echo ""
         if [ "$role_input" = "admin" ]; then
             echo "Note: To grant admin role, run:"

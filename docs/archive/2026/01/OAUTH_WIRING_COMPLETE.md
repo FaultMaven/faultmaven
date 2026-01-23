@@ -390,13 +390,13 @@ The OAuth wiring implementation follows all deployment-agnostic architecture pri
 
 6. **Test authorize endpoint**:
    ```bash
-   curl -X GET "http://localhost:8000/api/v1/auth/oauth/authorize?response_type=code&client_id=faultmaven-copilot&redirect_uri=chrome-extension://abc/callback&state=test123&code_challenge=CHALLENGE_HERE" \
+   curl -X GET "http://localhost:8090/api/v1/auth/oauth/authorize?response_type=code&client_id=faultmaven-copilot&redirect_uri=chrome-extension://abc/callback&state=test123&code_challenge=CHALLENGE_HERE" \
      -H "Authorization: Bearer DEV_TOKEN"
    ```
 
 7. **Test token endpoint**:
    ```bash
-   curl -X POST "http://localhost:8000/api/v1/auth/oauth/token" \
+   curl -X POST "http://localhost:8090/api/v1/auth/oauth/token" \
      -H "Content-Type: application/json" \
      -d '{
        "grant_type": "authorization_code",

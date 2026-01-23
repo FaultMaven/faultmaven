@@ -12,7 +12,7 @@ services:
   faultmaven-backend:
     build: .
     ports:
-      - "8000:8000"
+      - "8000:8090"
     environment:
       - HOST=0.0.0.0
       - PORT=8000
@@ -21,7 +21,7 @@ services:
       # Note: In production, these services run in K8s cluster
       # For local development, you can use local services or connect to K8s
       - REDIS_URL=redis://redis:6379  # Local development fallback
-      - CHROMADB_URL=http://chromadb:8000  # Local development fallback
+      - CHROMADB_URL=http://chromadb:8090  # Local development fallback
       # - PRESIDIO_HOST=presidio.faultmaven.local  # K8s service (requires /etc/hosts setup)
       # - PRESIDIO_ANALYZER_PORT=30433
       # - PRESIDIO_ANONYMIZER_PORT=30434
@@ -51,7 +51,7 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     ports:
-      - "8001:8000"
+      - "8001:8090"
     environment:
       - ANONYMIZED_TELEMETRY=False
       - CHROMA_SERVER_AUTHN_PROVIDER=chromadb.auth.basic_authn.BasicAuthenticationServerProvider

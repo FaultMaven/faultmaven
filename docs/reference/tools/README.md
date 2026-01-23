@@ -216,7 +216,7 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 EMBEDDING_MODEL=BAAI/bge-m3
 
 # Future: MCP Server Tools
-MCP_SERVER_URL=http://localhost:3000
+MCP_SERVER_URL=http://localhost:3333
 MCP_API_KEY=your_mcp_key
 ```
 

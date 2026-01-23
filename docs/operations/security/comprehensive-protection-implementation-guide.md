@@ -353,13 +353,13 @@ protection_system.intelligent_config.custom_detectors.append(
 
 ```bash
 # Check system status
-curl http://localhost:8000/api/v1/protection/health
+curl http://localhost:8090/api/v1/protection/health
 
 # Get detailed metrics
-curl http://localhost:8000/api/v1/protection/metrics
+curl http://localhost:8090/api/v1/protection/metrics
 
 # View current configuration
-curl http://localhost:8000/api/v1/protection/config
+curl http://localhost:8090/api/v1/protection/config
 
 # Enable debug logging
 export LOG_LEVEL=DEBUG
@@ -388,7 +388,7 @@ await protection_system.setup_protection_system()
 ```bash
 # Temporary bypass (development only)
 export PROTECTION_BYPASS_HEADERS=X-Emergency-Bypass
-curl -H "X-Emergency-Bypass: true" http://localhost:8000/api/v1/cases/{case_id}/queries
+curl -H "X-Emergency-Bypass: true" http://localhost:8090/api/v1/cases/{case_id}/queries
 ```
 
 ## System Status

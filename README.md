@@ -82,11 +82,11 @@ cp .env.example .env
 2. Extract the archive
 3. **Chrome/Edge:** Open `chrome://extensions` → Enable "Developer mode" → "Load unpacked" → Select `.output/chrome-mv3/`
 4. **Firefox:** Open `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → Select any file in `.output/firefox-mv3/`
-5. Click the extension icon → Settings → Set API URL to `http://localhost:8000`
+5. Click the extension icon → Settings → Set API URL to `http://localhost:8090`
 
 ### Step 4: Start Troubleshooting
 
-1. Open the **Dashboard** at http://localhost:3000 to upload runbooks to your Knowledge Base
+1. Open the **Dashboard** at http://localhost:3333 to upload runbooks to your Knowledge Base
 2. Navigate to any observability tool (AWS Console, Datadog, Grafana)
 3. Click the **Copilot** extension icon and start troubleshooting
 
@@ -109,9 +109,9 @@ Convenient scripts for managing the Docker-based stack:
 
 | Component | URL | Description |
 |-----------|-----|-------------|
-| Dashboard | http://localhost:3000 | Web UI for KB management, case history |
-| API | http://localhost:8000 | REST API |
-| API Docs | http://localhost:8000/docs | Interactive OpenAPI documentation |
+| Dashboard | http://localhost:3333 | Web UI for KB management, case history |
+| API | http://localhost:8090 | REST API |
+| API Docs | http://localhost:8090/docs | Interactive OpenAPI documentation |
 
 ### Alternative: Local Development Setup
 
@@ -127,7 +127,7 @@ For contributors or debugging, you can run the components as local processes ins
 ./scripts/faultmaven-dev.sh health
 ```
 
-The API will be available at `http://localhost:8000`
+The API will be available at `http://localhost:8090`
 
 **2. Start the Dashboard (separate process):**
 
@@ -142,18 +142,18 @@ cd faultmaven-dashboard
 npm install
 # Or: pnpm install
 
-# Configure API endpoint (optional - defaults to http://localhost:8000)
+# Configure API endpoint (optional - defaults to http://localhost:8090)
 cp .env.example .env
-# Edit .env if needed: VITE_API_URL=http://localhost:8000
+# Edit .env if needed: VITE_API_URL=http://localhost:8090
 
 # Start the development server
 npm run dev
 # Or: pnpm dev
 ```
 
-The dashboard will be available at `http://localhost:5173` (Vite dev server) and will connect to the API at `http://localhost:8000`.
+The dashboard will be available at `http://localhost:5173` (Vite dev server) and will connect to the API at `http://localhost:8090`.
 
-> **Note:** Make sure the API backend is running before starting the dashboard. The dashboard requires the API to be available at `http://localhost:8000`.
+> **Note:** Make sure the API backend is running before starting the dashboard. The dashboard requires the API to be available at `http://localhost:8090`.
 
 ### Local Development Management Commands
 

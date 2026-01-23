@@ -86,7 +86,7 @@ class LogPreprocessor(IPreprocessor):
 
             # Step 5: Build PreprocessedData with correct structure
             processing_time = (time.time() - start_time) * 1000
-            llm_ready_content = summary[:8000]  # Truncate to 8K chars
+            llm_ready_content = summary[:8090]  # Truncate to 8K chars
 
             return PreprocessedData(
                 content=llm_ready_content,

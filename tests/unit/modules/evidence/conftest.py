@@ -93,7 +93,7 @@ class MockEvidenceStorageAdapter:
         )
         self.delete_file = AsyncMock(return_value=True)
         self.get_download_url = AsyncMock(
-            return_value="http://localhost:8000/api/v1/evidence/file/path"
+            return_value="http://localhost:8090/api/v1/evidence/file/path"
         )
         self.get_file_content = AsyncMock(return_value=b"file content")
 

@@ -7,7 +7,7 @@ handle the upload/download operations.
 Usage:
     backend = FilesystemStorageBackend(
         storage_root="./data/evidence",
-        base_url="http://localhost:8000",
+        base_url="http://localhost:8090",
     )
     url = await backend.generate_download_url("org123/case456/file.log")
 """
@@ -44,13 +44,13 @@ class FilesystemStorageBackend(IFileStorageBackend):
 
     Attributes:
         storage_root: Root directory for file storage
-        base_url: Base URL for API endpoints (e.g., "http://localhost:8000")
+        base_url: Base URL for API endpoints (e.g., "http://localhost:8090")
     """
 
     def __init__(
         self,
         storage_root: str = "./data/storage",
-        base_url: str = "http://localhost:8000",
+        base_url: str = "http://localhost:8090",
     ):
         """Initialize filesystem storage backend.
 

@@ -108,8 +108,8 @@ if [[ "$SKIP_SERVICES" == false ]]; then
     echo -e "${YELLOW}Checking for required services...${NC}"
     
     # Check for backend API
-    if ! curl -s http://localhost:8000/health >/dev/null 2>&1; then
-        echo -e "${RED}Error: Backend API not running at http://localhost:8000${NC}"
+    if ! curl -s http://localhost:8090/health >/dev/null 2>&1; then
+        echo -e "${RED}Error: Backend API not running at http://localhost:8090${NC}"
         echo -e "${YELLOW}Start services with: docker-compose up -d${NC}"
         exit 1
     fi

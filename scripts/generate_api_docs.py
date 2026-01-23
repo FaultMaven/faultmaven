@@ -899,8 +899,8 @@ def generate_documentation() -> None:
    • {docs_dir / 'README.md'}
 
 🌐 View documentation:
-   • OpenAPI UI: http://localhost:8000/docs
-   • ReDoc: http://localhost:8000/redoc
+   • OpenAPI UI: http://localhost:8090/docs
+   • ReDoc: http://localhost:8090/redoc
    • Markdown: {docs_dir / 'README.md'}
 """)
         

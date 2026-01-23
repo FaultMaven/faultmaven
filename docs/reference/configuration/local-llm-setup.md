@@ -256,10 +256,10 @@ cd /path/to/FaultMaven
 python -m faultmaven.main
 
 # Test provider registration
-curl http://localhost:8000/api/v1/health/providers
+curl http://localhost:8090/api/v1/health/providers
 
 # Test agent endpoint
-curl -X POST http://localhost:8000/api/v1/agent/chat \
+curl -X POST http://localhost:8090/api/v1/agent/chat \
   -H "Content-Type: application/json" \
   -d '{
     "message": "I have a web server returning 500 errors. Help me troubleshoot this.",
@@ -275,7 +275,7 @@ htop  # CPU and memory
 nvidia-smi  # GPU usage (if applicable)
 
 # Test response times
-time curl -X POST http://localhost:8000/api/v1/agent/chat \
+time curl -X POST http://localhost:8090/api/v1/agent/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "Test message", "session_id": "perf-test"}'
 ```
@@ -570,7 +570,7 @@ fi
 **Performance Monitoring:**
 ```bash
 # Monitor response times
-curl -w "@curl-format.txt" -o /dev/null -s http://localhost:8000/api/v1/agent/chat
+curl -w "@curl-format.txt" -o /dev/null -s http://localhost:8090/api/v1/agent/chat
 
 # Create curl format file
 cat > curl-format.txt << EOF

@@ -28,7 +28,7 @@ class MockStorage:
         return True
 
     async def get_download_url(self, path):
-        return f"http://localhost:8000/api/v1/evidence/file/{path}"
+        return f"http://localhost:8090/api/v1/evidence/file/{path}"
 
 
 class MockUploadFile:

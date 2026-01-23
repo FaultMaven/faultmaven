@@ -94,7 +94,7 @@ class APMIntegration:
         """Initialize default configurations for supported APM providers."""
         # Use fallback values if settings are not available
         fallback_environment = "development"
-        fallback_instance_id = "localhost:8000"
+        fallback_instance_id = "localhost:8090"
 
         if self.settings:
             # Use settings-based configuration

@@ -25,7 +25,7 @@ class TestCORSWildcardValidation:
         mock_settings = MagicMock()
         mock_settings.server.environment = Environment.PRODUCTION
         mock_settings.security.cors_allow_origins = [
-            "http://localhost:3000",
+            "http://localhost:3333",
             "chrome-extension://*",  # Wildcard - should be rejected
         ]
         mock_settings.security.cors_allow_credentials = True
@@ -61,7 +61,7 @@ class TestCORSWildcardValidation:
         mock_settings = MagicMock()
         mock_settings.server.environment = Environment.DEVELOPMENT
         mock_settings.security.cors_allow_origins = [
-            "http://localhost:3000",
+            "http://localhost:3333",
             "chrome-extension://*",  # Wildcard - OK in dev
             "moz-extension://*",  # Wildcard - OK in dev
         ]
@@ -78,7 +78,7 @@ class TestCORSWildcardValidation:
         mock_settings = MagicMock()
         mock_settings.server.environment = Environment.STAGING
         mock_settings.security.cors_allow_origins = [
-            "http://localhost:3000",
+            "http://localhost:3333",
             "chrome-extension://*",
         ]
         mock_settings.security.cors_allow_credentials = True

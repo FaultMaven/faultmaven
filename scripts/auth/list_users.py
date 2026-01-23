@@ -48,7 +48,7 @@ async def main():
         print("No users found in the system.")
         print("\nTo create a user:")
         print("  1. Use the registration endpoint:")
-        print("     curl -X POST http://localhost:8000/api/v1/auth/dev-register \\")
+        print("     curl -X POST http://localhost:8090/api/v1/auth/dev-register \\")
         print("       -H 'Content-Type: application/json' \\")
         print("       -d '{\"username\": \"myuser\"}'")
         print()

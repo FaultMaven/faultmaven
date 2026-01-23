@@ -52,9 +52,63 @@ sys.modules.setdefault(
 import asyncio
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+
+# CRITICAL: Prevent .env file loading in tests to avoid environment contamination
+# This must happen BEFORE any module imports that might load settings
+_original_load_dotenv = None
+try:
+    from dotenv import load_dotenv as _original_load_dotenv
+    # Patch dotenv.load_dotenv globally to be a no-op during tests
+    import dotenv
+    dotenv.load_dotenv = Mock(return_value=None)
+except ImportError:
+    pass  # dotenv not installed, which is fine for tests
+
+
+# Session-level fixture to clear .env variables that may have been loaded before tests started
+@pytest.fixture(scope="session", autouse=True)
+def clean_test_environment():
+    """Clear all .env-related environment variables before ANY tests run.
+
+    This prevents contamination from the .env file when tests run as part of
+    a large suite where settings may have been loaded by previous tests or
+    during application initialization.
+
+    Addresses: Test failures due to pydantic-settings caching real .env values
+    """
+    import os
+
+    # List of all environment variables from .env that should be cleared for tests
+    ENV_VARS_TO_CLEAR = [
+        "ENVIRONMENT", "DEBUG", "HOST", "PORT", "WORKERS", "LOG_LEVEL", "INSTANCE_ID",
+        "CHAT_PROVIDER",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+        "FIREWORKS_API_KEY", "FIREWORKS_MODEL",
+        "GEMINI_API_KEY", "GEMINI_MODEL",
+        "GROQ_API_KEY", "GROQ_MODEL",
+        "HUGGINGFACE_API_KEY", "HUGGINGFACE_MODEL",
+        "OPENAI_API_KEY", "OPENAI_MODEL",
+        "OPENROUTER_API_KEY", "OPENROUTER_MODEL",
+        "LOCAL_LLM_URL", "LOCAL_LLM_MODEL",
+        "ENABLE_WEB_SEARCH",
+        "SESSION_STORAGE_TYPE", "VECTOR_STORAGE_TYPE", "USER_STORAGE_TYPE", "CASE_STORAGE_TYPE",
+        "RATE_LIMIT_ENABLED", "RATE_LIMIT_REQUESTS_PER_MINUTE",
+        "MAX_UPLOAD_SIZE_MB", "UPLOAD_TIMEOUT_SECONDS",
+        "CORS_ALLOW_CREDENTIALS", "CORS_ALLOW_ORIGINS",
+        "TENANT_PROVIDER",  # Add any other vars that affect test isolation
+    ]
+
+    # Clear all .env variables
+    for var in ENV_VARS_TO_CLEAR:
+        os.environ.pop(var, None)
+
+    yield
+
+    # Optionally restore after tests (not needed for CI/CD, but helpful for local dev)
+    # If restoration is needed, save original values before clearing
 
 # Mock _ctypes module for Python 3.11 compatibility when libffi is not available
 # This is needed for protobuf/chromadb imports that depend on ctypes

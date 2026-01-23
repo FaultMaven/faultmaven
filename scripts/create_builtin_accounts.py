@@ -16,7 +16,7 @@ Features:
 - Returns exit codes for CI/CD integration
 
 Usage:
-    python scripts/create_builtin_accounts.py [--server-url http://localhost:8000]
+    python scripts/create_builtin_accounts.py [--server-url http://localhost:8090]
 
 Environment Variables:
     FAULTMAVEN_SERVER_URL: Override default server URL
@@ -227,8 +227,8 @@ def main():
 
     parser.add_argument(
         "--server-url",
-        default="http://localhost:8000",
-        help="FaultMaven server URL (default: http://localhost:8000)"
+        default="http://localhost:8090",
+        help="FaultMaven server URL (default: http://localhost:8090)"
     )
 
     parser.add_argument(

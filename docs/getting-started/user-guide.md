@@ -37,7 +37,7 @@ Welcome to FaultMaven! This guide will help you get started with the AI-powered 
     You should see:
     ```
     NAMES               STATUS              PORTS
-    faultmaven-backend  Up                  0.0.0.0:8000->8000/tcp
+    faultmaven-backend  Up                  0.0.0.0:8090->8000/tcp
     chromadb            Up                  8000/tcp
     redis               Up                  6379/tcp
     ```
@@ -82,7 +82,7 @@ curl -X POST \
     "timeout_minutes": 60,
     "session_type": "troubleshooting"
   }' \
-  http://localhost:8000/api/v1/sessions
+  http://localhost:8090/api/v1/sessions
 
 # Response includes:
 # - session_id: Your session identifier
@@ -102,7 +102,7 @@ curl -X POST \
     "description": "Users reporting slow API responses",
     "severity": "high"
   }' \
-  http://localhost:8000/api/v1/cases
+  http://localhost:8090/api/v1/cases
 
 # Response includes:
 # - case_id: Your case identifier
@@ -118,7 +118,7 @@ curl -X POST \
   -F "file=@/path/to/your/logfile.log" \
   -F "data_type=logs" \
   -H "X-Session-ID: <your-session-id>" \
-  http://localhost:8000/api/v1/cases/<case-id>/data
+  http://localhost:8090/api/v1/cases/<case-id>/data
 
 # Response includes:
 # - data_id: Uploaded data identifier
@@ -137,7 +137,7 @@ curl -X POST \
     "query": "What are the most common errors in the uploaded logs?",
     "include_plan": true
   }' \
-  http://localhost:8000/api/v1/cases/<case-id>/queries
+  http://localhost:8090/api/v1/cases/<case-id>/queries
 
 # Response includes:
 # - query_id: Query identifier for tracking
@@ -158,7 +158,7 @@ curl -X POST \
     "query": "Can you propose a solution for the timeout errors?",
     "include_evidence": true
   }' \
-  http://localhost:8000/api/v1/cases/<case-id>/queries
+  http://localhost:8090/api/v1/cases/<case-id>/queries
 ```
 
 ## 5. Using the Browser Extension
@@ -171,7 +171,7 @@ For a better experience, use the **FaultMaven Copilot** browser extension:
 
 2. **Configure API Connection**
    - Open extension settings
-   - Set API URL: `http://localhost:8000` (for local) or your deployed URL
+   - Set API URL: `http://localhost:8090` (for local) or your deployed URL
    - The extension will automatically manage sessions and cases
 
 3. **Start Troubleshooting**
@@ -305,7 +305,7 @@ cat .env | grep API_KEY
 **Service Health Check**
 ```bash
 # Check all services are healthy
-curl http://localhost:8000/health/dependencies
+curl http://localhost:8090/health/dependencies
 ```
 
 ## 11. Next Steps

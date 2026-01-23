@@ -1165,16 +1165,16 @@ SELECT * FROM evidence WHERE case_id = 'case_123' AND category = 'LOGS_AND_ERROR
 CASE_STORAGE_TYPE=postgres_hybrid python -m faultmaven.main
 
 # Create case via API
-curl -X POST http://localhost:8000/api/v1/cases \
+curl -X POST http://localhost:8090/api/v1/cases \
   -H "Content-Type: application/json" \
   -d '{"title": "Test API integration"}'
 
 # Upload evidence
-curl -X POST http://localhost:8000/api/v1/cases/{case_id}/data \
+curl -X POST http://localhost:8090/api/v1/cases/{case_id}/data \
   -F "file=@test.log"
 
 # Query case
-curl http://localhost:8000/api/v1/cases/{case_id}
+curl http://localhost:8090/api/v1/cases/{case_id}
 
 # Verify database records match API response
 psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM cases WHERE case_id = '{case_id}'"

@@ -5,11 +5,11 @@ stress testing the FaultMaven API.
 
 Usage:
     # Run with UI
-    locust -f tests/load/locustfile.py --host=http://localhost:8000
+    locust -f tests/load/locustfile.py --host=http://localhost:8090
 
     # Headless mode
     locust -f tests/load/locustfile.py \
-           --host=http://localhost:8000 \
+           --host=http://localhost:8090 \
            --users 50 \
            --spawn-rate 10 \
            --run-time 60s \

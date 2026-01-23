@@ -22,7 +22,7 @@ import argparse
 class FrontendVerificationTest:
     """Frontend verification smoke test runner"""
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "http://localhost:8090"):
         self.base_url = base_url.rstrip('/')
         self.session_id: Optional[str] = None
         self.case_id: Optional[str] = None
@@ -485,8 +485,8 @@ class FrontendVerificationTest:
 async def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="FaultMaven Frontend Verification Smoke Test")
-    parser.add_argument("--backend-url", default="http://localhost:8000", 
-                       help="Backend URL (default: http://localhost:8000)")
+    parser.add_argument("--backend-url", default="http://localhost:8090", 
+                       help="Backend URL (default: http://localhost:8090)")
     parser.add_argument("--output-json", help="Save results to JSON file")
     
     args = parser.parse_args()

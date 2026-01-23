@@ -247,18 +247,26 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_creates_multi_tenant_when_configured(
-        self, clean_env, reset_settings_cache
-    ):
-        """Test factory creates MultiTenantProvider when TENANT_PROVIDER=multi."""
-        os.environ["TENANT_PROVIDER"] = "multi"
+    def test_factory_creates_multi_tenant_when_configured(self):
+        """Test factory creates MultiTenantProvider when configured (using dependency injection)."""
+        from unittest.mock import MagicMock, patch
 
+        from faultmaven.config.settings import TenantProvider as TenantProviderEnum
         from faultmaven.providers.tenancy.factory import create_tenant_provider
         from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 
-        mock_repo = MagicMock()
-        provider = create_tenant_provider(mock_repo)
+        # Arrange - Create mock settings with multi-tenant configuration
+        mock_settings = MagicMock()
+        mock_settings.providers = MagicMock()
+        mock_settings.providers.tenant_provider = TenantProviderEnum.MULTI
 
+        mock_repo = MagicMock()
+
+        # Act - Patch get_settings to return our mock settings
+        with patch("faultmaven.providers.tenancy.factory.get_settings", return_value=mock_settings):
+            provider = create_tenant_provider(mock_repo)
+
+        # Assert - Verify MultiTenantProvider was created
         assert isinstance(provider, MultiTenantProvider)
 
 

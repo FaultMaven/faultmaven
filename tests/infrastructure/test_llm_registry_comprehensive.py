@@ -36,23 +36,17 @@ from faultmaven.infrastructure.llm.providers.registry import (
 
 
 @pytest.fixture(autouse=True)
-def reset_registry_before_test():
-    """Reset registry before each test to ensure clean state."""
-    reset_registry()
-    reset_settings()
-    yield
-    reset_registry()
-    reset_settings()
-
-
-@pytest.fixture(autouse=True)
 def clean_llm_environment(monkeypatch):
-    """Clean environment for LLM tests - autouse to prevent .env pollution."""
+    """Clean environment for LLM tests - autouse to prevent .env pollution.
+
+    This fixture runs FIRST to ensure environment is clean before any settings are loaded.
+    The order matters: we must clear environment BEFORE reset_settings() is called.
+    """
     # Save original environment
     original_env = os.environ.copy()
 
     # Clear all LLM-related environment variables FIRST (including from .env)
-    # This must be done BEFORE load_dotenv is called
+    # This must be done BEFORE load_dotenv is called or settings are reset
     llm_keys = [
         "CHAT_PROVIDER",
         "FIREWORKS_API_KEY",
@@ -93,7 +87,8 @@ def clean_llm_environment(monkeypatch):
     mock_load_dotenv = Mock(return_value=None)
     monkeypatch.setattr("dotenv.load_dotenv", mock_load_dotenv)
 
-    # Reset settings and registry after clearing env vars and patching dotenv
+    # CRITICAL: Reset settings AFTER clearing environment
+    # This ensures settings are re-loaded from the clean environment
     reset_settings()
     reset_registry()
 
@@ -104,6 +99,19 @@ def clean_llm_environment(monkeypatch):
     os.environ.update(original_env)
     reset_settings()
     reset_registry()
+
+
+@pytest.fixture(autouse=True)
+def reset_registry_before_test():
+    """Reset registry before each test to ensure clean state.
+
+    This runs AFTER clean_llm_environment to ensure we're working with clean settings.
+    """
+    reset_registry()
+    reset_settings()
+    yield
+    reset_registry()
+    reset_settings()
 
 
 @pytest.fixture
@@ -277,28 +285,31 @@ class TestProviderConfiguration:
         assert "anthropic" in provider_names
         assert "local" in provider_names
 
-    def test_provider_config_creation_with_api_key(self, clean_env):
-        """Test provider config creation when API key is available."""
-        os.environ.update(
-            {
-                "CHAT_PROVIDER": "fireworks",
-                "FIREWORKS_API_KEY": "fw-test-123",
-                "FIREWORKS_MODEL": "custom-model",
-            }
-        )
+    def test_provider_config_creation_with_api_key(self):
+        """Test provider config creation when API key is available (using dependency injection)."""
+        from pydantic import SecretStr
 
-        registry = ProviderRegistry()
+        # Arrange - Create mock settings with test values
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
+        mock_settings.llm.fireworks_model = "custom-model"
+        mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
+
+        # Act - Inject mock settings into registry
+        registry = ProviderRegistry(settings=mock_settings)
         schema = PROVIDER_SCHEMA["fireworks"]
         config = registry._create_provider_config("fireworks", schema)
 
+        # Assert - Verify configuration was created correctly
         assert config is not None
         assert config.name == "fireworks"
         assert config.api_key == "fw-test-123"
         assert config.models == ["custom-model"]
-        # max_retries and timeout come from schema if present, else from settings
-        # Fireworks doesn't have these in schema, so they come from settings defaults
-        assert config.max_retries is not None
-        assert config.timeout is not None
+        assert config.max_retries == 3
+        assert config.timeout == 30
         assert config.confidence_score == schema["confidence_score"]
 
     def test_provider_config_creation_without_api_key(self):
@@ -320,22 +331,30 @@ class TestProviderConfiguration:
         # Should return None for providers that require API keys when key is missing
         assert config is None
 
-    def test_local_provider_config_creation(self, clean_env):
-        """Test local provider config creation (no API key required)."""
-        os.environ.update(
-            {"LOCAL_LLM_URL": "http://localhost:11434", "LOCAL_LLM_MODEL": "llama2:7b"}
-        )
+    def test_local_provider_config_creation(self):
+        """Test local provider config creation (no API key required, using dependency injection)."""
+        # Arrange - Create mock settings for local provider
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_settings.llm.local_url = "http://localhost:11434"
+        mock_settings.llm.local_model = "llama2:7b"
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
 
-        # Registry will use settings which reads from environment
-        registry = ProviderRegistry()
+        # Act - Inject mock settings into registry
+        registry = ProviderRegistry(settings=mock_settings)
         schema = PROVIDER_SCHEMA["local"]
         config = registry._create_provider_config("local", schema)
 
+        # Assert - Verify local provider configuration
         assert config is not None
         assert config.name == "local"
         assert config.api_key is None
         assert config.base_url == "http://localhost:11434"
         assert config.models == ["llama2:7b"]
+        # Local provider has custom timeout/retries from schema
+        assert config.max_retries == 1  # Local schema specifies 1
+        assert config.timeout == 60  # Local schema specifies 60
 
     def test_local_provider_missing_requirements(self):
         """Test local provider when required environment variables are missing."""
@@ -412,28 +431,45 @@ class TestProviderConfiguration:
 class TestFallbackChain:
     """Test fallback chain setup and behavior."""
 
-    def test_fallback_chain_setup_primary_available(
-        self, clean_env, sample_env_vars, mock_provider_classes
-    ):
-        """Test fallback chain when primary provider is available."""
-        os.environ.update(sample_env_vars)
-        os.environ["CHAT_PROVIDER"] = "fireworks"
-        os.environ["STRICT_PROVIDER_MODE"] = "false"  # Ensure fallbacks are enabled
+    def test_fallback_chain_setup_primary_available(self, mock_provider_classes):
+        """Test fallback chain when primary provider is available (using dependency injection)."""
+        from pydantic import SecretStr
 
+        # Arrange - Create mock settings with multiple providers configured
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_settings.llm.provider = "fireworks"  # Primary provider
+        mock_settings.llm.strict_provider_mode = False  # Enable fallbacks
+
+        # Configure all providers with API keys
+        mock_settings.llm.fireworks_api_key = SecretStr("fw-test-key-123")
+        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
+
+        mock_settings.llm.openai_api_key = SecretStr("sk-openai-test-456")
+        mock_settings.llm.openai_model = "gpt-4o-mini"
+        mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
+
+        mock_settings.llm.local_url = "http://localhost:11434"
+        mock_settings.llm.local_model = "llama2:7b"
+
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
+
+        # Act - Inject mock settings and patch provider classes
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
             FireworksProvider=lambda config: mock_provider_classes["fireworks"],
             OpenAIProvider=lambda config: mock_provider_classes["openai"],
             LocalProvider=lambda config: mock_provider_classes["local"],
         ):
-            registry = ProviderRegistry()
+            registry = ProviderRegistry(settings=mock_settings)
             registry._ensure_initialized()
-
             fallback_chain = registry.get_fallback_chain()
 
+            # Assert - Verify fallback chain structure
             assert len(fallback_chain) > 0
-            # The primary provider from CHAT_PROVIDER should be first
-            # Note: fallback_chain may contain LLMProvider enum values or strings depending on settings implementation
+            # Primary provider should be first
             primary = (
                 str(fallback_chain[0]).lower()
                 if hasattr(fallback_chain[0], "value")
@@ -441,8 +477,7 @@ class TestFallbackChain:
             )
             assert primary == "fireworks" or primary.endswith("fireworks")
 
-            # Check that fallback providers are present (if strict mode is disabled)
-            # Convert enum values to strings for comparison
+            # Fallback providers should be present
             chain_str = [
                 str(p).lower() if hasattr(p, "value") else p for p in fallback_chain
             ]
@@ -588,23 +623,43 @@ class TestFallbackChain:
         mock_provider_classes["openai"].generate.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_route_request_all_providers_fail(
-        self, clean_env, sample_env_vars, mock_provider_classes
-    ):
-        """Test request routing when all providers fail."""
-        os.environ.update(sample_env_vars)
+    async def test_route_request_all_providers_fail(self, mock_provider_classes):
+        """Test request routing when all providers fail (using dependency injection)."""
+        from pydantic import SecretStr
+
+        # Arrange - Create mock settings with multiple providers
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_settings.llm.provider = "fireworks"
+        mock_settings.llm.strict_provider_mode = False
+
+        # Configure providers
+        mock_settings.llm.fireworks_api_key = SecretStr("fw-test-key-123")
+        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
+
+        mock_settings.llm.openai_api_key = SecretStr("sk-openai-test-456")
+        mock_settings.llm.openai_model = "gpt-4o-mini"
+        mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
+
+        mock_settings.llm.local_url = "http://localhost:11434"
+        mock_settings.llm.local_model = "llama2:7b"
+
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
 
         # Make all providers fail
         for provider in mock_provider_classes.values():
-            provider.generate.side_effect = Exception("Provider failed")
+            provider.generate = AsyncMock(side_effect=Exception("Provider failed"))
 
+        # Act & Assert - Inject mock settings and verify all providers fail
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
             FireworksProvider=lambda config: mock_provider_classes["fireworks"],
             OpenAIProvider=lambda config: mock_provider_classes["openai"],
             LocalProvider=lambda config: mock_provider_classes["local"],
         ):
-            registry = ProviderRegistry()
+            registry = ProviderRegistry(settings=mock_settings)
             registry._ensure_initialized()
 
             with pytest.raises(Exception) as exc_info:
@@ -851,31 +906,43 @@ class TestApiKeySecurity:
             assert provider.config.name == "fireworks"
 
     def test_environment_variable_validation(self):
-        """Test validation of environment variables for security."""
-        # Test with suspicious values
-        suspicious_values = [
-            "",  # Empty string
-            "test",  # Too short
-            "sk-" + "a" * 100,  # Too long
+        """Test validation of API key values (using dependency injection)."""
+        from pydantic import SecretStr
+
+        # Test with various API key values
+        test_cases = [
+            ("", None, "Empty API key should result in None config"),
+            ("test", "test", "Short API key should be accepted"),
+            ("sk-" + "a" * 100, "sk-" + "a" * 100, "Long API key should be accepted"),
         ]
 
-        for suspicious_value in suspicious_values:
-            # Reset for each iteration
-            reset_settings()
-            reset_registry()
+        for api_key_value, expected_value, description in test_cases:
+            # Arrange - Create mock settings with test API key
+            mock_settings = Mock()
+            mock_settings.llm = Mock()
 
-            os.environ["OPENAI_API_KEY"] = suspicious_value
+            # Handle empty string case
+            if api_key_value == "":
+                mock_settings.llm.openai_api_key = None
+            else:
+                mock_settings.llm.openai_api_key = SecretStr(api_key_value)
 
-            registry = ProviderRegistry()
+            mock_settings.llm.openai_model = "gpt-4o"
+            mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
+            mock_settings.llm.max_retries = 3
+            mock_settings.llm.request_timeout = 30
+
+            # Act - Create registry with mock settings
+            registry = ProviderRegistry(settings=mock_settings)
             schema = PROVIDER_SCHEMA["openai"]
             config = registry._create_provider_config("openai", schema)
 
-            # Should handle suspicious values gracefully
-            # Empty string should return None, others may return the value
-            if suspicious_value == "":
-                assert config is None
-            elif config:
-                assert config.api_key == suspicious_value or config.api_key is None
+            # Assert - Verify handling of API key value
+            if expected_value is None:
+                assert config is None, f"{description} - config should be None"
+            else:
+                assert config is not None, f"{description} - config should not be None"
+                assert config.api_key == expected_value, f"{description} - API key mismatch"
 
 
 class TestRegistryStateManagement:

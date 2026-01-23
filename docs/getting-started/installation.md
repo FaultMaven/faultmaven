@@ -122,9 +122,9 @@ uvicorn faultmaven.main:app --host 0.0.0.0 --port 8000
 
 Once running, access the API at:
 
-- **API Base URL**: `http://localhost:8000`
-- **API Documentation**: `http://localhost:8000/docs` (Swagger UI)
-- **Health Check**: `http://localhost:8000/health`
+- **API Base URL**: `http://localhost:8090`
+- **API Documentation**: `http://localhost:8090/docs` (Swagger UI)
+- **Health Check**: `http://localhost:8090/health`
 
 ---
 
@@ -445,10 +445,10 @@ pip check
 faultmaven start --test
 
 # 4. Check health endpoint
-curl http://localhost:8000/health
+curl http://localhost:8090/health
 
 # 5. Verify API documentation
-curl http://localhost:8000/docs
+curl http://localhost:8090/docs
 ```
 
 ### Getting Help

@@ -304,7 +304,7 @@ try:
 VECTOR_STORAGE_TYPE=chromadb  # or inmemory
 
 # ChromaDB Configuration (only if VECTOR_STORAGE_TYPE=chromadb)
-CHROMADB_URL=http://chromadb:8000
+CHROMADB_URL=http://chromadb:8090
 CHROMADB_API_KEY=your_key_here
 
 # Chunking Configuration
@@ -327,7 +327,7 @@ VECTOR_STORAGE_TYPE=inmemory
 **ChromaDB** (production):
 ```bash
 VECTOR_STORAGE_TYPE=chromadb
-CHROMADB_URL=http://chromadb:8000
+CHROMADB_URL=http://chromadb:8090
 ```
 - Persistent storage
 - Server-side embeddings (all-MiniLM-L6-v2)
@@ -340,7 +340,7 @@ CHROMADB_URL=http://chromadb:8000
 ### 1. Upload Evidence
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/cases/case_abc123/data \
+curl -X POST http://localhost:8090/api/v1/cases/case_abc123/data \
   -F "file=@logs/error.log" \
   -F "description=Production error logs from 2025-01-08" \
   -F "session_id=sess_xyz789"
@@ -540,7 +540,7 @@ python scripts/verify_vector_storage.py --all
 docker logs chromadb
 
 # Verify ChromaDB is accessible
-curl http://chromadb:8000/api/v1/heartbeat
+curl http://chromadb:8090/api/v1/heartbeat
 
 # Check FaultMaven logs for vectorization errors
 grep "Failed to vectorize" logs/faultmaven.log

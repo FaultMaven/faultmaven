@@ -111,7 +111,7 @@ class ServerSettings(BaseSettings):
     """Core server configuration"""
 
     host: str = Field(default="0.0.0.0", env="HOST")
-    port: int = Field(default=8000, env="PORT")
+    port: int = Field(default=8090, env="PORT")
     reload: bool = Field(default=False, env="RELOAD")
     workers: int = Field(default=1, env="WORKERS")
 
@@ -882,7 +882,7 @@ class SecuritySettings(BaseSettings):
     # CORS configuration
     cors_allow_credentials: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
     cors_allow_origins: List[str] = Field(
-        default=["http://localhost:3000", "chrome-extension://*", "moz-extension://*"],
+        default=["http://localhost:3333", "chrome-extension://*", "moz-extension://*"],
         env="CORS_ALLOW_ORIGINS",
     )
     cors_expose_headers: List[str] = Field(
@@ -1202,7 +1202,7 @@ class ObservabilitySettings(BaseSettings):
 
     # Workspace integration (merged from WorkspaceSettings)
     comet_workspace: Optional[str] = Field(default=None, env="COMET_WORKSPACE")
-    instance_id: str = Field(default="localhost:8000", env="INSTANCE_ID")
+    instance_id: str = Field(default="localhost:8090", env="INSTANCE_ID")
 
     # Performance monitoring (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Basic monitoring only
@@ -2144,7 +2144,7 @@ class FaultMavenSettings(BaseSettings):
         browser_origins = [
             "chrome-extension://*",
             "moz-extension://*",
-            "http://localhost:3000",
+            "http://localhost:3333",
         ]
         missing_origins = []
         for origin in browser_origins:
@@ -2346,7 +2346,7 @@ class ConfigurationBridge:
 
         Examples:
             bridge.get("llm.provider") -> "fireworks"
-            bridge.get("server.port") -> 8000
+            bridge.get("server.port") -> 8090
         """
         try:
             parts = key.split(".")

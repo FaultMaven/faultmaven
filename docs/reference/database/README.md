@@ -237,7 +237,7 @@ python -m faultmaven.main
 ### 2. Create Test Case
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/cases \
+curl -X POST http://localhost:8090/api/v1/cases \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Test migration case",
@@ -258,7 +258,7 @@ curl -X POST http://localhost:8000/api/v1/cases \
 ### 3. Upload Evidence
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/cases/case_abc123xyz.../data \
+curl -X POST http://localhost:8090/api/v1/cases/case_abc123xyz.../data \
   -F "file=@test.log" \
   -F "description=Test evidence upload"
 ```
@@ -349,13 +349,13 @@ After migration, verify performance meets expectations:
 ```bash
 # Load test: Create 100 cases
 for i in {1..100}; do
-  curl -X POST http://localhost:8000/api/v1/cases \
+  curl -X POST http://localhost:8090/api/v1/cases \
     -H "Content-Type: application/json" \
     -d "{\"title\": \"Load test case $i\", \"description\": \"Testing hybrid schema performance\"}"
 done
 
 # Measure retrieval time
-time curl http://localhost:8000/api/v1/cases/{case_id}
+time curl http://localhost:8090/api/v1/cases/{case_id}
 ```
 
 ### Evidence Filtering Performance (Target: <5ms)

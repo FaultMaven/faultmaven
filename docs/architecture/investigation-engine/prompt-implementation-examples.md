@@ -2198,7 +2198,7 @@ services:
   faultmaven:
     build: .
     ports:
-      - "8000:8000"
+      - "8000:8090"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DATABASE_URL=postgresql://postgres:password@db:5432/faultmaven
@@ -2349,7 +2349,7 @@ python app/main.py
 # Or: uvicorn app.main:app --reload
 
 # 6. Test endpoint
-curl -X POST http://localhost:8000/api/v1/chat \
+curl -X POST http://localhost:8090/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"case_id": "case_123", "message": "API is slow"}'
 ```

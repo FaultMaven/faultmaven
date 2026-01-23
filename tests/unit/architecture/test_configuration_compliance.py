@@ -368,7 +368,7 @@ class TestConfigurationArchitectureCompliance:
         with patch.dict(
             os.environ,
             {
-                "CORS_ALLOW_ORIGINS": '["http://localhost:3000", "http://localhost:5173", "chrome-extension://*", "moz-extension://*"]'
+                "CORS_ALLOW_ORIGINS": '["http://localhost:3333", "http://localhost:5173", "chrome-extension://*", "moz-extension://*"]'
             },
         ):
             reset_settings()

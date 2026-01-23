@@ -343,7 +343,7 @@ Fallback Chain: anthropic → fireworks → openai → local
 **HTTP Health Endpoint**:
 ```bash
 # Check via API
-curl http://localhost:8000/health/dependencies
+curl http://localhost:8090/health/dependencies
 
 # Response includes provider status
 {
@@ -767,7 +767,7 @@ export CHAT_PROVIDER="cohere"
 ./run_faultmaven.sh
 
 # Test via API
-curl -X POST http://localhost:8000/api/v1/query/troubleshoot \
+curl -X POST http://localhost:8090/api/v1/query/troubleshoot \
   -H "Content-Type: application/json" \
   -d '{"query": "Test troubleshooting query", "session_id": "test-session"}'
 
@@ -867,7 +867,7 @@ Many providers can reuse existing classes:
 
 ```bash
 # Check overall system health
-curl http://localhost:8000/health/dependencies
+curl http://localhost:8090/health/dependencies
 
 # Check provider registry status  
 python -c "
@@ -952,7 +952,7 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
 3. **Provider Health Check**:
    ```bash
    # Check provider status via health endpoint
-   curl http://localhost:8000/health/dependencies
+   curl http://localhost:8090/health/dependencies
    
    # Look for provider availability
    python -c "from faultmaven.infrastructure.llm.providers.registry import get_registry; 

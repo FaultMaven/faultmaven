@@ -846,7 +846,7 @@ export default function OAuthAuthorizePage() {
 **File:** `src/lib/api/oauth.ts`
 
 ```typescript
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8090';
 
 export async function getOAuthConsent(params: URLSearchParams) {
   const res = await fetch(`${API_BASE}/auth/oauth/authorize?${params}`, {

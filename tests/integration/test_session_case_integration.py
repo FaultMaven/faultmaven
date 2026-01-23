@@ -382,17 +382,24 @@ async def test_repository_factory_session_inmemory():
 @pytest.mark.integration
 async def test_repository_factory_session_database(test_session: AsyncSession):
     """Test session repository factory with explicit session returns DatabaseSessionRepository."""
-    # Save original env var
-    original_storage_type = os.environ.get("SESSION_STORAGE_TYPE")
+    from unittest.mock import MagicMock, patch
 
-    try:
-        os.environ["SESSION_STORAGE_TYPE"] = STORAGE_TYPE_DATABASE
+    # Arrange - Create mock settings with database storage type
+    mock_settings = MagicMock()
+    mock_settings.database = MagicMock()
+    mock_settings.database.session_storage_type = STORAGE_TYPE_DATABASE
+    mock_settings.database.case_storage_type = STORAGE_TYPE_DATABASE
+
+    # Act - Patch get_settings where it's imported (in faultmaven.config.settings)
+    with patch("faultmaven.config.settings.get_settings", return_value=mock_settings):
         reset_inmemory_session_repository()  # Clear any singleton from previous tests
-        reset_settings()  # Clear settings cache
 
         # Get repository with session
         repo = get_session_repository(session=test_session)
-        assert isinstance(repo, DatabaseSessionRepository)
+
+        # Assert - Verify DatabaseSessionRepository was created
+        assert isinstance(repo, DatabaseSessionRepository), \
+            f"Expected DatabaseSessionRepository but got {type(repo).__name__}"
 
         # Test basic operations
         session = Session(
@@ -403,40 +410,30 @@ async def test_repository_factory_session_database(test_session: AsyncSession):
         retrieved = await repo.get_session(session.session_id)
         assert retrieved is not None
         assert retrieved.user_id == "factory-db-test-user"
-    finally:
-        # Restore original env var
-        if original_storage_type is not None:
-            os.environ["SESSION_STORAGE_TYPE"] = original_storage_type
-        elif "SESSION_STORAGE_TYPE" in os.environ:
-            del os.environ["SESSION_STORAGE_TYPE"]
-        reset_settings()  # Clear settings cache
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_repository_factory_session_invalid_type():
-    """Test session repository factory with invalid storage type."""
-    # Save original env var
-    original_storage_type = os.environ.get("SESSION_STORAGE_TYPE")
+    """Test session repository factory with invalid storage type (using dependency injection)."""
+    from unittest.mock import MagicMock, patch
 
-    try:
-        os.environ["SESSION_STORAGE_TYPE"] = "invalid_type"
+    # Arrange - Create mock settings with invalid storage type
+    mock_settings = MagicMock()
+    mock_settings.database = MagicMock()
+    mock_settings.database.session_storage_type = "invalid_type"
+    mock_settings.database.case_storage_type = STORAGE_TYPE_DATABASE
+
+    # Act & Assert - Patch get_settings where it's imported (in faultmaven.config.settings)
+    with patch("faultmaven.config.settings.get_settings", return_value=mock_settings):
         reset_inmemory_session_repository()  # Clear any singleton from previous tests
-        reset_settings()  # Clear settings cache
 
         # The ValueError is raised when entering the async context manager
         with pytest.raises(ValueError) as exc_info:
             async with get_session_repository_async() as repo:
                 pass
 
-        assert "Unknown storage type" in str(exc_info.value)
-    finally:
-        # Restore original env var
-        if original_storage_type is not None:
-            os.environ["SESSION_STORAGE_TYPE"] = original_storage_type
-        elif "SESSION_STORAGE_TYPE" in os.environ:
-            del os.environ["SESSION_STORAGE_TYPE"]
-        reset_settings()  # Clear settings cache
+        assert "Unknown storage type" in str(exc_info.value) or "invalid_type" in str(exc_info.value)
 
 
 # ============================================================

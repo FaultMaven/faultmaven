@@ -416,16 +416,16 @@ pytest tests/integration/test_working_memory.py -v
 ./run_faultmaven.sh
 
 # Upload test document via API
-curl -X POST http://localhost:8000/api/v1/case/abc123/upload \
+curl -X POST http://localhost:8090/api/v1/case/abc123/upload \
   -F "file=@test_data/server.log"
 
 # Ask question via answer_from_document tool
-curl -X POST http://localhost:8000/api/v1/case/abc123/answer \
+curl -X POST http://localhost:8090/api/v1/case/abc123/answer \
   -H "Content-Type: application/json" \
   -d '{"question": "What error occurred at 10:45?"}'
 
 # Check case document count
-curl http://localhost:8000/api/v1/case/abc123/documents/count
+curl http://localhost:8090/api/v1/case/abc123/documents/count
 ```
 
 ---

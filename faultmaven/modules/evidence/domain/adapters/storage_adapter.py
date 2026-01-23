@@ -38,7 +38,7 @@ class EvidenceStorageAdapter:
 
         Args:
             file_storage: Underlying FileStorageService instance
-            base_url: Base URL for generating download URLs (e.g., "http://localhost:8000")
+            base_url: Base URL for generating download URLs (e.g., "http://localhost:8090")
         """
         self.file_storage = file_storage
         self.base_url = base_url or ""

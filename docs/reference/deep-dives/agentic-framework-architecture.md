@@ -640,13 +640,13 @@ class CustomAgenticComponent(ICustomInterface):
 python3 validate_agentic_framework.py
 
 # Component health checks
-curl http://localhost:8000/health/agentic/workflow-engine
+curl http://localhost:8090/health/agentic/workflow-engine
 
 # Performance monitoring
-curl http://localhost:8000/metrics/agentic/performance
+curl http://localhost:8090/metrics/agentic/performance
 
 # Error analytics
-curl http://localhost:8000/analytics/agentic/errors?timeframe=24h
+curl http://localhost:8090/analytics/agentic/errors?timeframe=24h
 ```
 
 ## Feature Prioritization

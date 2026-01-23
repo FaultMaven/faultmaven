@@ -401,7 +401,7 @@ Look for:
 
 ```bash
 # Get authorization code
-curl -X GET "http://localhost:8000/api/v1/auth/oauth/authorize?\
+curl -X GET "http://localhost:8090/api/v1/auth/oauth/authorize?\
 response_type=code&\
 client_id=faultmaven-copilot&\
 redirect_uri=chrome-extension://abc/callback&\
@@ -414,7 +414,7 @@ code_challenge=CHALLENGE_HERE" \
 
 ```bash
 # Exchange code for tokens
-curl -X POST "http://localhost:8000/api/v1/auth/oauth/token" \
+curl -X POST "http://localhost:8090/api/v1/auth/oauth/token" \
   -H "Content-Type: application/json" \
   -d '{
     "grant_type": "authorization_code",

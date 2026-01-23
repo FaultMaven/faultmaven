@@ -22,7 +22,7 @@ RESULTS_DIR="$PROJECT_ROOT/benchmark_results/$(date +%Y%m%d_%H%M%S)"
 # Configuration per environment
 case $ENVIRONMENT in
     local)
-        HOST="http://localhost:8000"
+        HOST="http://localhost:8090"
         USERS=10
         SPAWN_RATE=2
         RUN_TIME="60s"

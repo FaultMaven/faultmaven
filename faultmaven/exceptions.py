@@ -254,6 +254,26 @@ class NotFoundError(ServiceError):
         )
 
 
+class AuthenticationError(ServiceError):
+    """Authentication check failed.
+
+    Raised when authentication fails (invalid credentials, expired tokens,
+    missing authentication, etc.).
+
+    This is re-exported from the auth module for convenience and to maintain
+    a consistent exception hierarchy.
+    """
+
+    def __init__(
+        self,
+        message: str = "Authentication failed",
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        self.error_code = error_code
+        super().__init__(message, details={**(details or {}), "error_code": error_code})
+
+
 class AuthorizationError(ServiceError):
     """Authorization check failed.
 

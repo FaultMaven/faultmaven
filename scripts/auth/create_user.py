@@ -80,7 +80,7 @@ async def create_user(username: str, email: str = None, display_name: str = None
         print(f"  Created: {user.created_at}")
         print()
         print("Next steps:")
-        print(f"  1. Login with: curl -X POST http://localhost:8000/api/v1/auth/dev-login \\")
+        print(f"  1. Login with: curl -X POST http://localhost:8090/api/v1/auth/dev-login \\")
         print(f"       -H 'Content-Type: application/json' \\")
         print(f"       -d '{{\"username\": \"{user.username}\"}}'")
         print()

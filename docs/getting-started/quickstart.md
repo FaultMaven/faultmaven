@@ -91,13 +91,13 @@ uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 INFO:     Started server process [12345]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)
 ```
 
 **Access the API**:
-- **API Base**: http://localhost:8000
-- **Interactive Docs**: http://localhost:8000/docs (Swagger UI)
-- **Health Check**: http://localhost:8000/health
+- **API Base**: http://localhost:8090
+- **Interactive Docs**: http://localhost:8090/docs (Swagger UI)
+- **Health Check**: http://localhost:8090/health
 
 ---
 
@@ -106,7 +106,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ### Create a Troubleshooting Case
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/cases \
+curl -X POST http://localhost:8090/api/v1/cases \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Website performance degradation",
@@ -127,7 +127,7 @@ curl -X POST http://localhost:8000/api/v1/cases \
 ### Query the AI Agent
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/query \
+curl -X POST http://localhost:8090/api/v1/query \
   -H "Content-Type: application/json" \
   -d '{
     "case_id": "case_abc123",
@@ -146,7 +146,7 @@ curl -X POST http://localhost:8000/api/v1/query \
 ### Upload Evidence (Logs, Metrics, Config)
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/data \
+curl -X POST http://localhost:8090/api/v1/data \
   -F "case_id=case_abc123" \
   -F "file=@/path/to/application.log" \
   -F "data_type=logs"
@@ -179,8 +179,8 @@ FaultMaven community edition runs entirely on your local machine:
 ### Explore the API
 
 Visit the interactive API documentation:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- **Swagger UI**: http://localhost:8090/docs
+- **ReDoc**: http://localhost:8090/redoc
 
 ### Read the Guides
 
@@ -254,7 +254,7 @@ echo "OPENAI_API_KEY=sk-your-key-here" >> .env
 uvicorn faultmaven.main:app --port 8080
 
 # Or find and kill the process using port 8000
-lsof -ti:8000 | xargs kill -9  # Linux/macOS
+lsof -ti:8090 | xargs kill -9  # Linux/macOS
 ```
 
 ### Issue: `ImportError: cannot import name 'XXX' from 'pydantic'`
@@ -314,7 +314,7 @@ docker build -t faultmaven:latest .
 
 # Run container
 docker run -d \
-  -p 8000:8000 \
+  -p 8000:8090 \
   -e OPENAI_API_KEY=sk-your-key \
   -v $(pwd)/data:/app/data \
   faultmaven:latest

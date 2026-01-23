@@ -74,7 +74,7 @@ pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
 pytest_asyncio.asyncio_default_test_loop_scope = "function"
 
 # Test configuration
-BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8000")
+BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8090")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")

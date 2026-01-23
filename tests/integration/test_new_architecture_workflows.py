@@ -148,9 +148,9 @@ def integration_env():
         "REDIS_HOST": "localhost",
         "REDIS_PORT": "6379",
         "REDIS_DB": "1",
-        "CHROMADB_URL": "http://localhost:8000",
+        "CHROMADB_URL": "http://localhost:8090",
         # Security Configuration
-        "CORS_ALLOW_ORIGINS": '["http://localhost:3000", "chrome-extension://*"]',
+        "CORS_ALLOW_ORIGINS": '["http://localhost:3333", "chrome-extension://*"]',
         "RATE_LIMIT_ENABLED": "true",
         "RATE_LIMIT_REQUESTS_PER_MINUTE": "100",
         # Protection Configuration

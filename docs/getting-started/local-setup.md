@@ -46,7 +46,7 @@ cp .env.example .env
 # Or: python -m faultmaven.main
 ```
 
-The API will be available at http://localhost:8000
+The API will be available at http://localhost:8090
 
 ### 2. Dashboard (Optional)
 
@@ -62,7 +62,7 @@ npm install
 
 # Configure API endpoint
 cp .env.example .env
-# The default VITE_API_URL=http://localhost:8000 should work for local development
+# The default VITE_API_URL=http://localhost:8090 should work for local development
 
 # Start development server
 npm run dev
@@ -94,7 +94,7 @@ Load the extension:
 - **Chrome:** `chrome://extensions` → Developer mode → Load unpacked → Select `.output/chrome-mv3/`
 - **Firefox:** `about:debugging#/runtime/this-firefox` → Load Temporary Add-on → Select file in `.output/firefox-mv3/`
 
-Configure the extension to use your local API: Extension icon → Settings → API URL: `http://localhost:8000`
+Configure the extension to use your local API: Extension icon → Settings → API URL: `http://localhost:8090`
 
 ---
 
@@ -139,10 +139,10 @@ This will check:
 
 | Component | URL | Notes |
 |-----------|-----|-------|
-| API | http://localhost:8000 | Backend server |
-| API Docs | http://localhost:8000/docs | OpenAPI documentation |
+| API | http://localhost:8090 | Backend server |
+| API Docs | http://localhost:8090/docs | OpenAPI documentation |
 | Dashboard | http://localhost:5173 | Development server (Vite with hot-reload) |
-| Dashboard | http://localhost:3000 | Docker/production |
+| Dashboard | http://localhost:3333 | Docker/production |
 
 ---
 
@@ -157,14 +157,14 @@ This will check:
 
 ### Dashboard can't connect to API
 
-1. Verify API is running: `curl http://localhost:8000/health`
+1. Verify API is running: `curl http://localhost:8090/health`
 2. Check CORS settings in `.env`: `CORS_ALLOW_ORIGINS` should include `http://localhost:5173`
 3. Verify `VITE_API_URL` in dashboard `.env`
 
 ### Extension not working
 
 1. Ensure extension is loaded and enabled in browser
-2. Check extension settings: API URL should be `http://localhost:8000`
+2. Check extension settings: API URL should be `http://localhost:8090`
 3. Open browser DevTools → Console for error messages
 
 ---

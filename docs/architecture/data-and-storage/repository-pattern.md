@@ -533,7 +533,7 @@ SESSION_STORAGE_TYPE=file
 SESSION_FILE_PATH=data/sessions/
 
 VECTOR_STORAGE_TYPE=chromadb
-CHROMADB_URL=http://localhost:8000
+CHROMADB_URL=http://localhost:8090
 ```
 
 **Characteristics**:
@@ -672,7 +672,7 @@ CASE_STORAGE_TYPE=sqlite
 USER_STORAGE_TYPE=sqlite
 SESSION_STORAGE_TYPE=file
 VECTOR_STORAGE_TYPE=chromadb
-CHROMADB_URL=http://localhost:8000
+CHROMADB_URL=http://localhost:8090
 ```
 
 ### 6.3 Dependency Injection (container.py)

@@ -703,7 +703,7 @@ task = ctx.run(asyncio.create_task, background_operation())
 cat logs/app.log | jq -r 'select(.event_type=="circuit_breaker_open") | [.timestamp, .client, .service] | @csv'
 
 # Check health endpoints
-curl http://faultmaven:8000/health/dependencies
+curl http://faultmaven:8090/health/dependencies
 ```
 
 2. **Analyze failure patterns:**

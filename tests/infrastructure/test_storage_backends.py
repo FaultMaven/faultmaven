@@ -50,7 +50,7 @@ def filesystem_backend(temp_storage_dir):
 
     return FilesystemStorageBackend(
         storage_root=temp_storage_dir,
-        base_url="http://localhost:8000",
+        base_url="http://localhost:8090",
     )
 
 
@@ -96,7 +96,7 @@ class TestFilesystemStorageBackend:
             content_type="text/plain",
         )
 
-        assert url.url.startswith("http://localhost:8000/api/v1/storage/upload/")
+        assert url.url.startswith("http://localhost:8090/api/v1/storage/upload/")
         assert url.method == "POST"
         assert "Content-Type" in url.headers
         assert url.headers["Content-Type"] == "text/plain"
@@ -115,7 +115,7 @@ class TestFilesystemStorageBackend:
             filename="error.log",
         )
 
-        assert url.url.startswith("http://localhost:8000/api/v1/storage/download/")
+        assert url.url.startswith("http://localhost:8090/api/v1/storage/download/")
         assert url.method == "GET"
         assert "filename=error.log" in url.url
 

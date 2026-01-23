@@ -88,7 +88,7 @@ python -m uvicorn faultmaven.main:app --host 0.0.0.0 --port 8000
 
 ```bash
 # Run with UI (opens browser at http://localhost:8089)
-locust -f tests/load/locustfile.py --host=http://localhost:8000
+locust -f tests/load/locustfile.py --host=http://localhost:8090
 ```
 
 ### View Results

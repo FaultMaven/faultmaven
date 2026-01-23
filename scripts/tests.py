@@ -315,7 +315,7 @@ def run_load_tests(args) -> int:
         print(f"Error: Locust file not found at {locustfile}")
         return 1
 
-    host = args.host or "http://localhost:8000"
+    host = args.host or "http://localhost:8090"
     cmd = ["locust", "-f", str(locustfile), "--host", host]
 
     if args.headless:

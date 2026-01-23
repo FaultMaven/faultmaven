@@ -82,7 +82,7 @@ class MockEvidenceServiceForAPI:
     async def _get_url(self, evidence_id: UUID) -> Optional[str]:
         evidence = self._storage.get(str(evidence_id))
         if evidence:
-            return f"http://localhost:8000/api/v1/evidence/file/{evidence.file_path}"
+            return f"http://localhost:8090/api/v1/evidence/file/{evidence.file_path}"
         return None
 
 

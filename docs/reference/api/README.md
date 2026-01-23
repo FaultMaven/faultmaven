@@ -12,8 +12,8 @@ OpenAPI specification and API documentation.
 
 When running FaultMaven locally:
 
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- **Swagger UI**: http://localhost:8090/docs
+- **ReDoc**: http://localhost:8090/redoc
 
 ## Quick Links
 
