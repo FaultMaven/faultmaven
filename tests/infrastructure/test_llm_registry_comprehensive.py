@@ -503,7 +503,9 @@ class TestFallbackChain:
         mock_provider.value = "openai"
         mock_settings.llm.chat_provider = mock_provider
         mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
-        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        mock_settings.llm.fireworks_model = (
+            "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        )
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
         mock_settings.llm.openai_api_key = None  # Primary provider unavailable
         mock_settings.llm.openai_model = "gpt-4o"
@@ -734,9 +736,7 @@ class TestFallbackChain:
 class TestProviderHealthAndStatus:
     """Test provider health checking and status reporting."""
 
-    def test_get_available_providers(
-        self, clean_env, mock_provider_classes
-    ):
+    def test_get_available_providers(self, clean_env, mock_provider_classes):
         """Test getting list of available providers."""
         # Use dependency injection instead of environment manipulation
         from pydantic import SecretStr
@@ -747,7 +747,9 @@ class TestProviderHealthAndStatus:
         mock_provider.value = "fireworks"
         mock_settings.llm.chat_provider = mock_provider
         mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
-        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        mock_settings.llm.fireworks_model = (
+            "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        )
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
         mock_settings.llm.openai_api_key = SecretStr("sk-test-123")
         mock_settings.llm.openai_model = "gpt-4o"
@@ -911,9 +913,7 @@ class TestApiKeySecurity:
             # We just need to ensure the full key doesn't appear
             # The test is primarily about security, not exact log format
 
-    def test_secure_provider_config_storage(
-        self, clean_env, mock_provider_classes
-    ):
+    def test_secure_provider_config_storage(self, clean_env, mock_provider_classes):
         """Test that provider configs store API keys securely."""
         # Use dependency injection instead of environment manipulation
         from pydantic import SecretStr
@@ -924,7 +924,9 @@ class TestApiKeySecurity:
         mock_provider.value = "fireworks"
         mock_settings.llm.chat_provider = mock_provider
         mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
-        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        mock_settings.llm.fireworks_model = (
+            "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        )
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
