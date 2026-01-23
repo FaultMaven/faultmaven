@@ -14,7 +14,7 @@ Three scenarios:
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.modules.agent.contracts import (
+from faultmaven.modules.case.contracts import (
     DegradedModeType,
     InvestigationPhase,
     InvestigationState,

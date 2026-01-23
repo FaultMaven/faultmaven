@@ -23,8 +23,21 @@ from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseStatus
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    ICaseRepository,
+    # Report models - now owned by Case module
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookSource,
+)
+
+# Backward compatibility re-export (imported from case.contracts now)
 from faultmaven.modules.report.domain.models import (
     CaseReport,
     ReportGenerationRequest,

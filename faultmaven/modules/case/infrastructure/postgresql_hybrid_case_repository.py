@@ -28,11 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
-# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.evidence.contracts import IEvidenceQuery
+# Case-owned models (per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
 
-if TYPE_CHECKING:
-    from faultmaven.modules.report.domain.models import CaseReport, ReportType
+# TYPE_CHECKING imports not needed - models imported directly above
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -73,18 +72,17 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     def __init__(
         self,
         db_session: AsyncSession,
-        evidence_query: Optional[IEvidenceQuery] = None,
     ):
         """
         Initialize repository with SQLAlchemy async session.
 
         Args:
             db_session: SQLAlchemy AsyncSession for database operations
-            evidence_query: Optional evidence query interface for cross-module data access
-                           (Principle 3: Database Boundaries - no cross-module JOINs)
+
+        Note: Evidence is now owned by Case module per module-organization-design.md.
+              Evidence operations are handled directly by this repository.
         """
         self.db = db_session
-        self._evidence_query = evidence_query
 
     # ========================================================================
     # Core CRUD Operations
@@ -239,8 +237,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Reconstruct Case domain object
             case = await self._row_to_case(row)
 
-            # Load evidence via IEvidenceQuery if available (Principle 3)
-            if self._evidence_query and case:
+            # Load evidence directly (Case now owns evidence per module-organization-design.md)
+            if case:
                 await self._load_evidence_for_case(case)
 
             return case
@@ -249,38 +247,46 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to get case {case_id}: {e}") from e
 
     async def _load_evidence_for_case(self, case: Case) -> None:
-        """Load evidence for case via IEvidenceQuery interface.
+        """Load evidence for case directly from evidence_artifacts table.
 
-        This method respects database boundaries by loading evidence through
-        the evidence module's public API rather than cross-module JOINs.
+        Per module-organization-design.md, Case module now owns evidence data.
+        This method queries the evidence table directly.
 
         Args:
             case: Case to load evidence for (modified in place)
         """
-        if not self._evidence_query:
-            return
-
         try:
-            evidence_list = await self._evidence_query.list_evidence_for_case(
-                case_id=case.case_id, limit=1000  # Load all evidence
+            # Query evidence_artifacts table directly (Case owns this table now)
+            query = text(
+                """
+                SELECT
+                    evidence_id, case_id, user_id, organization_id,
+                    original_filename, stored_filename, file_path,
+                    evidence_type, mime_type, file_size, storage_backend,
+                    created_at, updated_at, metadata, description,
+                    is_primary, tags
+                FROM evidence_artifacts
+                WHERE case_id = :case_id
+                ORDER BY created_at DESC
+                LIMIT 1000
+                """
             )
-            # Convert EvidenceArtifact to Evidence domain model
+            result = await self.db.execute(query, {"case_id": case.case_id})
+            rows = result.fetchall()
+
+            # Convert to Evidence domain model
             case.evidence = [
                 Evidence(
-                    evidence_id=str(e.evidence_id),
-                    data_type=(
-                        e.evidence_type.value
-                        if hasattr(e.evidence_type, "value")
-                        else str(e.evidence_type)
-                    ),
-                    summary=e.description or "",
+                    evidence_id=str(row[0]),
+                    data_type=row[7] if row[7] else "other",
+                    summary=row[14] or "",  # description
                     preprocessed_content=None,
-                    storage_ref=e.file_path,
-                    file_size=e.file_size,
-                    filename=e.original_filename,
-                    timestamp=e.created_at,
+                    storage_ref=row[6],  # file_path
+                    file_size=row[9],  # file_size
+                    filename=row[4],  # original_filename
+                    timestamp=row[11],  # created_at
                 )
-                for e in evidence_list
+                for row in rows
             ]
         except Exception as e:
             # Log but don't fail if evidence loading fails
@@ -760,7 +766,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 return {}
 
             analytics = {
-                "evidence_count": 0,  # Will be loaded via IEvidenceQuery
+                "evidence_count": 0,  # Will be loaded directly
                 "hypothesis_count": row[0] or 0,
                 "validated_hypotheses": row[1] or 0,
                 "solution_count": row[2] or 0,
@@ -770,15 +776,19 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 "total_file_size": row[6] or 0,
             }
 
-            # Load evidence count via IEvidenceQuery if available (Principle 3)
-            if self._evidence_query:
-                try:
-                    evidence_list = await self._evidence_query.list_evidence_for_case(
-                        case_id=case_id, limit=10000
-                    )
-                    analytics["evidence_count"] = len(evidence_list)
-                except Exception:
-                    pass  # Keep default of 0 on failure
+            # Load evidence count directly (Case owns evidence per module-organization-design.md)
+            try:
+                count_query = text(
+                    "SELECT COUNT(*) FROM evidence_artifacts WHERE case_id = :case_id"
+                )
+                count_result = await self.db.execute(
+                    count_query, {"case_id": case_id}
+                )
+                count_row = count_result.fetchone()
+                if count_row:
+                    analytics["evidence_count"] = count_row[0]
+            except Exception:
+                pass  # Keep default of 0 on failure
 
             return analytics
 
@@ -1350,7 +1360,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Add report to PostgreSQL reports table."""
         from datetime import timezone
 
-        from faultmaven.modules.report.domain.models import (
+        from faultmaven.modules.case.domain.owned_models.report import (
             CaseReport,
             ReportType,
             RunbookMetadata,
@@ -1446,7 +1456,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def get_report(self, report_id: str) -> Optional["CaseReport"]:
         """Get report by ID from PostgreSQL."""
-        from faultmaven.modules.report.domain.models import (
+        from faultmaven.modules.case.domain.owned_models.report import (
             CaseReport,
             ReportStatus,
             ReportType,
@@ -1482,7 +1492,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         only_current: bool = False,
     ) -> List["CaseReport"]:
         """Get reports for a case with optional filtering."""
-        from faultmaven.modules.report.domain.models import (
+        from faultmaven.modules.case.domain.owned_models.report import (
             CaseReport,
             ReportStatus,
             ReportType,
@@ -1524,7 +1534,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Update report in PostgreSQL."""
         from datetime import timezone
 
-        from faultmaven.modules.report.domain.models import (
+        from faultmaven.modules.case.domain.owned_models.report import (
             CaseReport,
             ReportType,
             RunbookMetadata,
@@ -1624,7 +1634,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     def _row_to_report(self, row) -> "CaseReport":
         """Convert database row to CaseReport domain object."""
-        from faultmaven.modules.report.domain.models import (
+        from faultmaven.modules.case.domain.owned_models.report import (
             CaseReport,
             ReportStatus,
             ReportType,

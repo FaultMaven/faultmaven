@@ -200,3 +200,41 @@ forbidden_modules =
     faultmaven.modules.auth.infrastructure.repositories.token_repository
     faultmaven.modules.auth.infrastructure.repositories.user_repository
 allow_indirect_imports = false
+
+# ============================================================================
+# CONTRACT 12: Domain Services Cannot Bypass Case Contracts
+# ============================================================================
+# Per module-organization-design.md:
+# - Evidence, Agent, Report are Domain Services (NOT vertical modules)
+# - They should use Case module's contracts (ICaseRepository)
+# - They should NOT import directly from Case infrastructure
+[importlinter:contract:12]
+name = Domain Services use Case contracts not infrastructure
+type = forbidden
+source_modules =
+    faultmaven.modules.evidence
+    faultmaven.modules.agent
+    faultmaven.modules.report
+forbidden_modules =
+    faultmaven.modules.case.infrastructure
+allow_indirect_imports = false
+
+# ============================================================================
+# CONTRACT 13: Other Modules Use Case Contracts Only
+# ============================================================================
+# Per module-organization-design.md:
+# - Case module owns evidence, reports, and agent execution data
+# - Other modules must import these models from Case contracts
+# - Case contracts re-exports models for cross-module use
+# Note: Evidence, Agent, Report can still have domain/models for backward compat
+#       but they re-export from Case contracts
+[importlinter:contract:13]
+name = Other modules use Case contracts for shared models
+type = forbidden
+source_modules =
+    faultmaven.services
+    faultmaven.api.v1
+    faultmaven.core
+forbidden_modules =
+    faultmaven.modules.case.infrastructure
+allow_indirect_imports = false

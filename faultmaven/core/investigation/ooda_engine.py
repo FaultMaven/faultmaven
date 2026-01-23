@@ -27,7 +27,7 @@ from faultmaven.core.investigation.phases import (
     get_ooda_steps_for_phase,
     get_phase_definition,
 )
-from faultmaven.modules.agent.contracts import (
+from faultmaven.modules.case.contracts import (
     Hypothesis,
     HypothesisStatus,
     HypothesisTest,

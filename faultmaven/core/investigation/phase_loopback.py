@@ -19,12 +19,12 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.contracts import (
+    from faultmaven.modules.case.contracts import (
         InvestigationState,
         InvestigationPhase,
     )
 
-from faultmaven.modules.agent.contracts import InvestigationPhase
+from faultmaven.modules.case.contracts import InvestigationPhase
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +399,7 @@ def should_loop_back_from_validation(
     Returns:
         Tuple of (should_loop, outcome, reason)
     """
-    from faultmaven.modules.agent.contracts import HypothesisStatus
+    from faultmaven.modules.case.contracts import HypothesisStatus
 
     hypotheses = state.ooda_engine.hypotheses
 

@@ -10,9 +10,9 @@ Design Reference:
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.contracts import InvestigationPhase, OODAStep
+    from faultmaven.modules.case.contracts import InvestigationPhase, OODAStep
 
-from faultmaven.modules.agent.contracts import PHASE_OODA_WEIGHTS
+from faultmaven.modules.case.contracts import PHASE_OODA_WEIGHTS
 
 
 class PhaseIterationStrategy:
@@ -91,7 +91,7 @@ class PhaseIterationStrategy:
             Phase 4 (Validation) → [OBSERVE, ORIENT, DECIDE, ACT] (full OODA)
             Phase 5 (Solution) → [OODAStep.DECIDE, OODAStep.ACT]
         """
-        from faultmaven.modules.agent.contracts import OODAStep
+        from faultmaven.modules.case.contracts import OODAStep
 
         reqs = PhaseIterationStrategy.get_iteration_requirements(phase)
         return [OODAStep(step) for step, req in reqs.items() if req == "required"]
