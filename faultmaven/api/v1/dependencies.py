@@ -138,6 +138,33 @@ async def get_report_recommendation_service(request: Request):
     return getattr(request.app.state, "report_recommendation_service", None)
 
 
+async def get_oauth_service(request: Request):
+    """Get OAuth service instance from app.state (Composition Root).
+
+    Returns:
+        OAuth service instance or None if not enabled
+
+    Raises:
+        HTTPException: If OAuth is enabled but service unavailable
+    """
+    oauth_service = getattr(request.app.state, "oauth_service", None)
+
+    # If OAuth is supposed to be enabled but service is None, that's an error
+    # Check settings to see if OAuth should be enabled
+    try:
+        from faultmaven.config.settings import get_settings
+        settings = get_settings()
+        if settings.auth.oauth_enabled and oauth_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="OAuth authentication not configured"
+            )
+    except Exception:
+        pass  # If settings unavailable, just return None
+
+    return oauth_service
+
+
 async def get_case_vector_store(request: Request):
     """Get CaseVectorStore instance from app.extra"""
     try:

@@ -959,11 +959,21 @@ class AuthSettings(BaseSettings):
         description="Authorization code expiry (10 minutes default, PKCE-protected)",
     )
 
-    # OAuth storage backend selection
-    oauth_code_storage: Literal["redis", "postgres", "inmemory"] = Field(
-        default="redis",
-        env="OAUTH_CODE_STORAGE",
-        description="Storage backend for OAuth authorization codes",
+    # OAuth storage configuration (cache layer only - codes are ephemeral)
+    # Authorization codes are short-lived (10 min) and should use cache layer:
+    # - Local: in-memory cache
+    # - Cloud: Redis cache
+    # Database persistence is optional for compliance/audit (not for code retrieval)
+    oauth_use_cache: bool = Field(
+        default=True,
+        env="OAUTH_USE_CACHE",
+        description="Use cache layer for OAuth codes (in-memory local, Redis cloud)",
+    )
+
+    oauth_persist_codes_to_db: bool = Field(
+        default=False,
+        env="OAUTH_PERSIST_CODES_TO_DB",
+        description="Persist OAuth codes to database for audit trail (optional)",
     )
 
     # Allowed OAuth clients (extension IDs)
@@ -981,6 +991,20 @@ class AuthSettings(BaseSettings):
         ],
         env="OAUTH_REDIRECT_URI_PATTERNS",
         description="Allowed redirect URI patterns (regex) for OAuth",
+    )
+
+    # OAuth consent settings
+    oauth_require_consent: bool = Field(
+        default=True,
+        env="OAUTH_REQUIRE_CONSENT",
+        description="Require user consent screen (production). Set false for auto-approval (dev/test only)",
+    )
+
+    # OAuth security settings
+    oauth_require_https_redirect: bool = Field(
+        default=True,
+        env="OAUTH_REQUIRE_HTTPS_REDIRECT",
+        description="Require HTTPS for redirect URIs (production security). Set false for local dev",
     )
 
     # Dev-login settings (only used when auth_mode=dev-login)

@@ -11,4 +11,7 @@ __all__ = [
     "RedisSessionManager",
     "RedisSessionStore",
     "UserStore",
+    "InMemoryTokenRevocationStore",
+    "RedisTokenRevocationStore",
+    "PostgresTokenRevocationStore",
 ]

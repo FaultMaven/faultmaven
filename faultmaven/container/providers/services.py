@@ -470,6 +470,141 @@ def create_report_generation_service(
         return None
 
 
+def create_oauth_code_repository(
+    settings: FaultMavenSettings,
+    cache_client: Any = None,
+) -> Any:
+    """Create OAuth code repository based on deployment.
+
+    Authorization codes are ephemeral (10 min) and should use cache layer only.
+    Database persistence is optional for compliance/audit (write-only).
+
+    Args:
+        settings: FaultMavenSettings instance
+        cache_client: Redis client for cloud, None for local (uses in-memory)
+
+    Returns:
+        OAuth code repository instance (cache layer only)
+    """
+    # Determine if we're in cloud or local deployment
+    is_cloud = cache_client is not None
+
+    if is_cloud:
+        # Cloud deployment: Use Redis cache
+        from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
+            RedisOAuthCodeRepository,
+        )
+
+        return RedisOAuthCodeRepository(cache_client)
+    else:
+        # Local deployment: Use in-memory cache
+        from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
+            InMemoryOAuthCodeRepository,
+        )
+
+        return InMemoryOAuthCodeRepository()
+
+
+def create_token_revocation_store(
+    settings: FaultMavenSettings,
+    cache_client: Any = None,
+) -> Any:
+    """Create token revocation store based on deployment.
+
+    Revoked tokens are tracked with TTL (matching token expiration).
+    Uses cache layer only for ephemeral tracking.
+
+    Args:
+        settings: FaultMavenSettings instance
+        cache_client: Redis client for cloud, None for local (uses in-memory)
+
+    Returns:
+        Token revocation store instance (cache layer only)
+    """
+    # Determine if we're in cloud or local deployment
+    is_cloud = cache_client is not None
+
+    if is_cloud:
+        # Cloud deployment: Use Redis cache
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            RedisTokenRevocationStore,
+        )
+
+        return RedisTokenRevocationStore(cache_client)
+    else:
+        # Local deployment: Use in-memory cache
+        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+            InMemoryTokenRevocationStore,
+        )
+
+        return InMemoryTokenRevocationStore()
+
+
+def create_jwt_token_generator(
+    settings: FaultMavenSettings,
+    revocation_store: Any,
+) -> Any:
+    """Create JWT token generator with RS256 signing.
+
+    Args:
+        settings: FaultMavenSettings instance
+        revocation_store: Token revocation tracking store
+
+    Returns:
+        RS256JWTTokenGenerator instance
+    """
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        RS256JWTTokenGenerator,
+    )
+
+    # Load RSA key pair from settings (from security section, not auth)
+    private_key = None
+    public_key = None
+    if settings.security.jwt_private_key:
+        private_key = settings.security.jwt_private_key.get_secret_value()
+    if settings.security.jwt_public_key:
+        public_key = settings.security.jwt_public_key
+
+    return RS256JWTTokenGenerator(
+        private_key=private_key,
+        public_key=public_key,
+        revocation_store=revocation_store,
+        settings=settings.security,  # Pass security settings, not auth settings
+    )
+
+
+def create_oauth_service(
+    settings: FaultMavenSettings,
+    user_repository: Any,
+    code_repository: Any,
+    token_generator: Any,
+) -> Any | None:
+    """Create OAuth service based on configuration.
+
+    Args:
+        settings: FaultMavenSettings instance
+        user_repository: User repository for user lookups
+        code_repository: OAuth code storage (cache layer: in-memory or Redis)
+        token_generator: JWT token generator (RS256)
+
+    Returns:
+        OAuthServiceImpl instance or None if OAuth disabled
+    """
+    from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
+
+    # Check if OAuth enabled
+    if not settings.auth.oauth_enabled:
+        logger.info("OAuth service disabled (using dev-login)")
+        return None
+
+    return OAuthServiceImpl(
+        code_repository=code_repository,
+        user_repository=user_repository,
+        token_generator=token_generator,
+        settings=settings.auth,
+    )
+
+
 def register_services(container: BaseDIContainer) -> None:
     """Register all services with the container.
 
@@ -501,6 +636,55 @@ def register_services(container: BaseDIContainer) -> None:
     container.user_service = user_service
     if user_service:
         container._register_service("user_service", user_service)
+
+    # OAuth Service (if enabled)
+    if settings.auth.oauth_enabled:
+        logger.info("Registering OAuth service...")
+
+        # Create OAuth code repository (cache layer only)
+        oauth_code_repository = create_oauth_code_repository(
+            settings,
+            cache_client=redis_client,
+        )
+        container.oauth_code_repository = oauth_code_repository
+        container._register_service("oauth_code_repository", oauth_code_repository)
+
+        # Create token revocation store (cache layer only)
+        token_revocation_store = create_token_revocation_store(
+            settings,
+            cache_client=redis_client,
+        )
+        container.token_revocation_store = token_revocation_store
+        container._register_service("token_revocation_store", token_revocation_store)
+
+        # Create JWT token generator
+        jwt_token_generator = create_jwt_token_generator(
+            settings,
+            revocation_store=token_revocation_store,
+        )
+        container.jwt_token_generator = jwt_token_generator
+        container._register_service("jwt_token_generator", jwt_token_generator)
+
+        # Create OAuth service (requires user_service for user repository)
+        if user_service:
+            user_repo = user_service.user_repo  # Access user repository from UserService
+            oauth_service = create_oauth_service(
+                settings,
+                user_repository=user_repo,
+                code_repository=oauth_code_repository,
+                token_generator=jwt_token_generator,
+            )
+            container.oauth_service = oauth_service
+            container._register_service("oauth_service", oauth_service)
+
+            logger.info(
+                "✅ OAuth service registered (cache: %s)",
+                "Redis" if redis_client else "in-memory",
+            )
+        else:
+            logger.warning("OAuth service skipped (no user_service available)")
+    else:
+        logger.info("OAuth service disabled (using dev-login mode)")
 
     # Organization Service (create first, before TenantProvider which depends on organization_repository)
     organization_service, organization_repository = create_organization_service(

@@ -196,6 +196,7 @@ from .infrastructure.observability.tracing import init_opik_tracing
 # All routes now in modules following vertical slice architecture
 from .modules.agent.api.routes import router as agent_router
 from .modules.auth.api.auth import router as auth_router
+from .modules.auth.api.oauth import router as oauth_router
 from .modules.auth.api.organizations import router as organizations_router
 from .modules.auth.api.session import router as session_router
 from .modules.auth.api.teams import router as teams_router
@@ -356,7 +357,8 @@ async def lifespan(app: FastAPI):
         app.state.user_store = user_store
         app.state.user_service = container.get_user_service()
         app.state.auth_service = container.get_auth_service()
-        
+        app.state.oauth_service = container.get_oauth_service()  # OAuth service (optional)
+
         # Other services (may fail gracefully)
         try:
             app.state.session_service = container.get_session_service()
@@ -1003,6 +1005,18 @@ logger.info("✅ Session endpoints added")
 
 app.include_router(teams_router, prefix="/api/v1")
 logger.info("✅ Team endpoints added")
+
+# OAuth router (only if enabled)
+try:
+    from .config.settings import get_settings
+    _oauth_settings = get_settings()
+    if _oauth_settings.auth.oauth_enabled:
+        app.include_router(oauth_router, prefix="/api/v1")
+        logger.info("✅ OAuth endpoints added")
+    else:
+        logger.info("ℹ️ OAuth endpoints disabled (using dev-login mode)")
+except Exception as e:
+    logger.warning(f"OAuth router initialization failed (non-critical): {e}")
 
 # Prometheus metrics endpoint (PR #5 - observability neutrality)
 # Only mounted when METRICS_EXPORTER=prometheus_http

@@ -11,4 +11,5 @@ __all__ = [
     "session_router",
     "teams_router",
     "organizations_router",
+    "oauth_router",
 ]

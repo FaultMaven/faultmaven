@@ -122,3 +122,67 @@ class PresidioError(ServiceConnectionError):
         self, message: str, error_code: str = None, context: Dict[str, Any] = None
     ):
         super().__init__(message, error_code or "PRESIDIO_ERROR", context)
+
+
+# OAuth 2.0 specific exceptions
+class OAuthError(FaultMavenError):
+    """Base OAuth error"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "OAUTH_ERROR", context)
+
+
+class InvalidRequestError(OAuthError):
+    """Invalid OAuth request (missing or invalid parameters)"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "INVALID_REQUEST", context)
+
+
+class InvalidClientError(OAuthError):
+    """Invalid client authentication"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "INVALID_CLIENT", context)
+
+
+class InvalidGrantError(OAuthError):
+    """Invalid authorization grant (expired code, invalid verifier, etc.)"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "INVALID_GRANT", context)
+
+
+class UnauthorizedClientError(OAuthError):
+    """Client not authorized for this operation"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "UNAUTHORIZED_CLIENT", context)
+
+
+class UnsupportedGrantTypeError(OAuthError):
+    """Unsupported grant type"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "UNSUPPORTED_GRANT_TYPE", context)
+
+
+class InvalidScopeError(OAuthError):
+    """Invalid or unsupported scope"""
+
+    def __init__(
+        self, message: str, error_code: str = None, context: Dict[str, Any] = None
+    ):
+        super().__init__(message, error_code or "INVALID_SCOPE", context)

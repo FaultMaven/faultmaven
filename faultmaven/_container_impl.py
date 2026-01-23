@@ -372,6 +372,12 @@ class DIContainer(BaseDIContainer):
             self._ensure_initialized_for_getter()
         return getattr(self, "session_service", None)
 
+    def get_oauth_service(self):
+        """Get the OAuth service (if enabled)."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "oauth_service", None)
+
     def get_metrics_collector(self):
         """Get the metrics collector service"""
         if not self._initialized:

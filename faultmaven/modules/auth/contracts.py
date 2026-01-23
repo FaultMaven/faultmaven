@@ -70,11 +70,11 @@ class OAuthTokenDTO:
     """Data Transfer Object for OAuth token response."""
     access_token: str
     refresh_token: str
+    user_id: str
+    username: str
     token_type: str = "Bearer"
     expires_in: int = 3600  # 1 hour
     refresh_expires_in: int = 604800  # 7 days
-    user_id: str
-    username: str
 
 
 @dataclass
