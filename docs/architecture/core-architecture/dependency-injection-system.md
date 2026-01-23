@@ -613,6 +613,174 @@ def _create_intelligence_layer(self):
         self.prompt_engine = MockPromptEngine()
 ```
 
+### Infrastructure Provider Graceful Degradation
+
+**Status**: ✅ Fully Implemented (as of January 2026)
+**Implementation**: `faultmaven/container/providers/infrastructure.py`
+
+The container implements a standardized graceful degradation pattern for all infrastructure providers (vector stores, session stores, Redis clients, etc.). When an infrastructure component fails to initialize, the system falls back to an alternative implementation to maintain system availability.
+
+#### Pattern Requirements
+
+**All infrastructure provider functions MUST implement this pattern:**
+
+1. **Try Primary Implementation**: Attempt to create the preferred infrastructure component
+2. **Catch All Exceptions**: Handle any exception that occurs during initialization
+3. **Log Warning**: Log the failure with context for debugging
+4. **Fall Back Gracefully**: Provide a functional alternative (in-memory, mock, or disabled state)
+5. **Return Consistent Interface**: Ensure fallback matches the expected interface
+
+#### Standard Implementation
+
+```python
+def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
+    """Create vector store based on configuration.
+
+    Implements graceful degradation: if ChromaDB fails to initialize,
+    falls back to InMemoryVectorStore to maintain system availability.
+
+    Returns:
+        Tuple of (vector_store, is_disabled)
+    """
+    vector_storage_type = (settings.database.vector_storage_type or "").lower()
+    is_chroma = vector_storage_type in {"chromadb", "chroma", "chroma_db", "chroma-db"}
+
+    if is_chroma:
+        if not settings.server.skip_service_checks:
+            try:
+                from faultmaven.infrastructure.persistence.chromadb_store import (
+                    ChromaDBVectorStore,
+                )
+
+                store = ChromaDBVectorStore()
+                logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}")
+                return store, False
+            except Exception as e:
+                logger.warning(
+                    f"ChromaDB unavailable ({type(e).__name__}: {e}), "
+                    f"falling back to InMemoryVectorStore"
+                )
+                # Fall through to InMemory fallback below
+        else:
+            logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
+            return None, True
+
+    # Default/fallback: InMemoryVectorStore
+    from faultmaven.infrastructure.persistence.inmemory_vector_store import (
+        InMemoryVectorStore,
+    )
+
+    store = InMemoryVectorStore()
+    if is_chroma:
+        logger.info("Vector store: InMemory (ChromaDB fallback)")
+    else:
+        logger.debug("Vector store: InMemory (RAM)")
+    return store, False
+```
+
+#### Implemented Providers
+
+The following infrastructure providers implement this pattern:
+
+| Provider Function           | Primary Implementation | Fallback                | Purpose                          |
+| --------------------------- | ---------------------- | ----------------------- | -------------------------------- |
+| `create_vector_store()`     | ChromaDB               | InMemoryVectorStore     | Knowledge base vector search     |
+| `create_redis_client()`     | Redis                  | None (disabled)         | Session storage and caching      |
+| `create_case_vector_store()`| CaseVectorStore        | None (disabled)         | Case-specific RAG storage        |
+
+**Location**: `faultmaven/container/providers/infrastructure.py:143-191`
+
+#### Why This Pattern Exists
+
+**Design Principle**: Optional infrastructure components should degrade gracefully rather than preventing system startup.
+
+**Benefits**:
+
+1. **System Availability**: Core functionality remains available even when optional components fail
+2. **Development Flexibility**: Developers can run the system without all infrastructure services
+3. **Environment Portability**: System works in constrained environments (CI/CD, local dev, etc.)
+4. **Observability**: Warnings provide clear indication of which components failed
+5. **Consistent Behavior**: All infrastructure providers follow the same error handling pattern
+
+#### Anti-Pattern: Hard Failures
+
+**DO NOT** implement infrastructure providers like this:
+
+```python
+# ❌ WRONG: Hard failure breaks container initialization
+def create_vector_store(settings: FaultMavenSettings) -> ChromaDBVectorStore:
+    store = ChromaDBVectorStore()  # If this fails, entire system fails
+    return store
+```
+
+**Problem**: When ChromaDB is unavailable (network issue, not installed, configuration error), the entire system fails to start, even though vector search is optional for basic operation.
+
+#### Testing Graceful Degradation
+
+The pattern is validated by `test_optional_component_failure_handling`:
+
+```python
+async def test_optional_component_failure_handling(self):
+    """Test that container handles optional component failures gracefully"""
+
+    # Simulate ChromaDB failure
+    with patch.dict(
+        "os.environ",
+        {
+            "VECTOR_STORAGE_TYPE": "chromadb",
+            "CHROMADB_URL": "http://localhost:8001",
+            "SKIP_SERVICE_CHECKS": "false",
+        },
+    ):
+        with patch(
+            "faultmaven.infrastructure.persistence.chromadb_store.ChromaDBVectorStore",
+            side_effect=Exception("ChromaDB unavailable")
+        ):
+            # Container should initialize successfully
+            await container.initialize()
+
+            # Should provide fallback vector store
+            vector_store = container.get_vector_store()
+            assert vector_store is not None
+            assert isinstance(vector_store, InMemoryVectorStore)
+```
+
+**Test Location**: `tests/unit/test_container_foundation.py:560-598`
+
+#### Migration Status
+
+| Status              | Description                                                     |
+| ------------------- | --------------------------------------------------------------- |
+| ✅ **Implemented**  | Pattern fully implemented in all infrastructure providers       |
+| ✅ **Tested**       | Test coverage validates graceful degradation behavior           |
+| ✅ **Documented**   | This section documents the established pattern                  |
+| ⚠️ **Required**     | All future infrastructure providers MUST follow this pattern    |
+
+#### Adding New Infrastructure Providers
+
+When adding a new infrastructure provider, follow this checklist:
+
+1. ✅ Implement try/except around primary implementation
+2. ✅ Log warning with exception type and message
+3. ✅ Provide functional fallback (in-memory, mock, or None)
+4. ✅ Return consistent interface/type
+5. ✅ Add test case for failure scenario
+6. ✅ Document in table above
+
+#### Common Questions
+
+**Q: Is this legacy code that can be removed?**
+**A**: ❌ **NO**. This is a core architectural pattern for system resilience. It is production-quality code that should be maintained and extended to all infrastructure providers.
+
+**Q: Why not just fix the infrastructure instead of falling back?**
+**A**: Infrastructure failures can occur for many legitimate reasons (service not available, network issues, configuration errors). The system should remain operational during infrastructure issues rather than failing completely.
+
+**Q: What if I need the infrastructure component to be required?**
+**A**: For truly required components, you can raise an error instead of falling back. However, most infrastructure components are optional for basic system operation. Consider whether your component is genuinely required for startup or can be degraded gracefully.
+
+**Q: How do I know if a component successfully initialized or fell back?**
+**A**: Check the logs. Successful initialization logs "✅", fallback logs warning with details about the failure.
+
 ## Performance Optimization
 
 ### Intelligence Service Caching
