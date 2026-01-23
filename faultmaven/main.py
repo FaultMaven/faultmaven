@@ -1320,6 +1320,49 @@ async def root():
     }
 
 
+@app.get("/v1/meta/capabilities")
+async def get_capabilities():
+    """
+    Return backend capabilities for browser extension configuration.
+
+    This endpoint is called by the FaultMaven Copilot browser extension
+    to detect the deployment mode and configure itself accordingly.
+
+    Returns:
+        Backend capabilities including deployment mode, dashboard URL, and feature flags
+    """
+    from .config.settings import get_settings
+
+    settings = get_settings()
+
+    # Determine deployment mode based on dashboard URL
+    # Enterprise/Cloud: https://app.faultmaven.ai
+    # Self-hosted: localhost or custom domain
+    is_cloud = settings.auth.dashboard_url == "https://app.faultmaven.ai"
+    deployment_mode = "enterprise" if is_cloud else "self-hosted"
+
+    return {
+        "deploymentMode": deployment_mode,
+        "kbManagement": "dashboard",
+        "dashboardUrl": settings.auth.dashboard_url,
+        "features": {
+            "extensionKB": False,  # Always false - extension KB removed
+            "adminKB": deployment_mode == "enterprise",
+            "teamWorkspaces": deployment_mode == "enterprise",
+            "caseHistory": deployment_mode == "enterprise",
+            "sso": deployment_mode == "enterprise",
+        },
+        "limits": {
+            "maxFileBytes": 10485760,  # 10MB
+            "allowedExtensions": [".md", ".txt", ".log", ".json", ".csv", ".yaml", ".yml"],
+        },
+        "branding": {
+            "name": "FaultMaven",
+            "supportUrl": "https://github.com/FaultMaven/faultmaven/issues",
+        }
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Enhanced health check endpoint with component-specific metrics and SLA monitoring."""
