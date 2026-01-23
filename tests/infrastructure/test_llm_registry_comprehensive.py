@@ -494,21 +494,25 @@ class TestFallbackChain:
         self, clean_env, mock_provider_classes
     ):
         """Test fallback chain when primary provider is unavailable."""
-        # Set primary provider but don't provide API key
-        # However, clean_llm_environment fixture clears all env vars
-        # So we need to set them explicitly here
-        os.environ.update(
-            {
-                "CHAT_PROVIDER": "openai",
-                "FIREWORKS_API_KEY": "fw-test-123",  # Only fireworks key available
-                "LOCAL_LLM_URL": "http://localhost:11434",
-                "LOCAL_LLM_MODEL": "llama2:7b",
-                # Note: OPENAI_API_KEY is not set, so openai provider won't be initialized
-            }
-        )
+        # Use dependency injection instead of environment manipulation
+        from pydantic import SecretStr
 
-        # Reset settings to pick up new env vars
-        reset_settings()
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_provider = Mock()
+        mock_provider.value = "openai"
+        mock_settings.llm.chat_provider = mock_provider
+        mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
+        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
+        mock_settings.llm.openai_api_key = None  # Primary provider unavailable
+        mock_settings.llm.openai_model = "gpt-4o"
+        mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
+        mock_settings.llm.local_llm_url = "http://localhost:11434"
+        mock_settings.llm.local_llm_model = "llama2:7b"
+        mock_settings.llm.local_llm_base_url = "http://localhost:11434"
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
@@ -516,14 +520,14 @@ class TestFallbackChain:
             OpenAIProvider=lambda config: mock_provider_classes["openai"],
             LocalProvider=lambda config: mock_provider_classes["local"],
         ):
-            registry = ProviderRegistry()
+            registry = ProviderRegistry(settings=mock_settings)
             registry._ensure_initialized()
 
             fallback_chain = registry.get_fallback_chain()
 
             # Since openai has no API key, it might still be in chain if it's the primary
             # but with settings defaulting. Let's check what's actually available.
-            # With our clean env, only fireworks and local should be initialized
+            # With our mock settings, only fireworks and local should be initialized
             available = registry.get_available_providers()
 
             # Available providers should be in chain
@@ -731,10 +735,28 @@ class TestProviderHealthAndStatus:
     """Test provider health checking and status reporting."""
 
     def test_get_available_providers(
-        self, clean_env, sample_env_vars, mock_provider_classes
+        self, clean_env, mock_provider_classes
     ):
         """Test getting list of available providers."""
-        os.environ.update(sample_env_vars)
+        # Use dependency injection instead of environment manipulation
+        from pydantic import SecretStr
+
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_provider = Mock()
+        mock_provider.value = "fireworks"
+        mock_settings.llm.chat_provider = mock_provider
+        mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
+        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
+        mock_settings.llm.openai_api_key = SecretStr("sk-test-123")
+        mock_settings.llm.openai_model = "gpt-4o"
+        mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
+        mock_settings.llm.local_llm_url = "http://localhost:11434"
+        mock_settings.llm.local_llm_model = "llama2:7b"
+        mock_settings.llm.local_llm_base_url = "http://localhost:11434"
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
@@ -742,7 +764,7 @@ class TestProviderHealthAndStatus:
             OpenAIProvider=lambda config: mock_provider_classes["openai"],
             LocalProvider=lambda config: mock_provider_classes["local"],
         ):
-            registry = ProviderRegistry()
+            registry = ProviderRegistry(settings=mock_settings)
             providers = registry.get_available_providers()
 
             assert isinstance(providers, list)
@@ -890,16 +912,28 @@ class TestApiKeySecurity:
             # The test is primarily about security, not exact log format
 
     def test_secure_provider_config_storage(
-        self, clean_env, sample_env_vars, mock_provider_classes
+        self, clean_env, mock_provider_classes
     ):
         """Test that provider configs store API keys securely."""
-        os.environ.update(sample_env_vars)
+        # Use dependency injection instead of environment manipulation
+        from pydantic import SecretStr
+
+        mock_settings = Mock()
+        mock_settings.llm = Mock()
+        mock_provider = Mock()
+        mock_provider.value = "fireworks"
+        mock_settings.llm.chat_provider = mock_provider
+        mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
+        mock_settings.llm.fireworks_model = "accounts/fireworks/models/llama-v3p1-70b-instruct"
+        mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
+        mock_settings.llm.max_retries = 3
+        mock_settings.llm.request_timeout = 30
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
             FireworksProvider=lambda config: mock_provider_classes["fireworks"],
         ):
-            registry = ProviderRegistry()
+            registry = ProviderRegistry(settings=mock_settings)
             registry._ensure_initialized()
 
             provider = registry.get_provider("fireworks")
