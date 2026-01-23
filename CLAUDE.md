@@ -21,21 +21,26 @@ FaultMaven is an **AI-powered troubleshooting copilot** for modern engineering t
 
 ## Architecture
 
-### Vertical Slice Architecture
+### Module Architecture (Vertical Slice + Domain Services)
 
-FaultMaven uses **Vertical Slice Architecture** - organized by feature domain, not technical layers:
+FaultMaven uses a hybrid architecture with **Vertical Modules** (own data) and **Domain Services** (business logic only):
 
 ```
 faultmaven/
 ├── main.py                 # FastAPI entry point
 ├── api/                    # Shared API middleware, dependencies, error handling
-├── modules/                # Feature modules (vertical slices)
-│   ├── agent/              # Investigation orchestration & AI tools
+├── modules/                # Feature modules
+│   │
+│   │ # VERTICAL MODULES (own database tables, have contracts.py + infrastructure/)
 │   ├── auth/               # Authentication, JWT, OAuth 2.0, RBAC
-│   ├── case/               # Investigation case lifecycle
-│   ├── evidence/           # File uploads and evidence handling
+│   ├── case/               # Investigation cases (owns evidence, reports, agent_executions)
 │   ├── knowledge/          # Knowledge base, RAG, vector search
-│   └── report/             # Report generation
+│   │
+│   │ # DOMAIN SERVICES (business logic only, NO contracts.py, NO infrastructure/)
+│   ├── agent/              # Investigation orchestration & AI tools
+│   ├── evidence/           # Evidence processing (uses Case repository)
+│   └── report/             # Report generation (uses Case repository)
+│
 ├── core/                   # Core investigation engine
 │   ├── investigation/      # OODA framework, milestone engine
 │   ├── knowledge/          # Knowledge ingestion and retrieval
@@ -53,31 +58,65 @@ faultmaven/
 └── services/               # Service layer
 ```
 
-### Module Structure
+### Module Types
 
-Each module follows clean architecture:
+**Vertical Modules (Auth, Case, Knowledge):**
+- Own database tables
+- Have `contracts.py` - exposes ICaseRepository, models
+- Have `infrastructure/` - repositories for persistence
+- Other modules import from their contracts
+
+**Domain Services (Evidence, Agent, Report):**
+- Business logic only, NO data ownership
+- NO `contracts.py` (nothing to expose)
+- NO `infrastructure/` (use Case repository)
+- Import models from Case contracts
+
 ```
+# Vertical Module structure (Case, Auth, Knowledge)
 module/
+├── contracts.py            # Public interfaces (ICaseRepository, models)
 ├── api/
-│   ├── routes.py           # FastAPI endpoints
-│   └── dependencies.py     # Endpoint dependencies
+│   └── routes.py           # FastAPI endpoints
 ├── domain/
 │   ├── models/             # Domain entities
-│   ├── services/           # Business logic
-│   └── events/             # Domain events
+│   ├── owned_models/       # Case-owned shared models (evidence, report, agent_execution)
+│   └── services/           # Business logic
 └── infrastructure/
-    ├── persistence/        # Repositories
-    └── adapters/           # External integrations
+    └── persistence/        # Repositories
+
+# Domain Service structure (Evidence, Agent, Report)
+module/
+├── api/
+│   └── routes.py           # FastAPI endpoints
+└── domain/
+    ├── models.py           # Re-exports from Case contracts (backward compat)
+    └── services/           # Business logic (uses Case repository)
+```
+
+### Cross-Module Import Rules
+
+```python
+# ✅ CORRECT: Domain Service uses Vertical Module's contract
+from faultmaven.modules.case.contracts import ICaseRepository, EvidenceArtifact
+
+# ❌ WRONG: Domain Service bypasses contracts
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+
+# ❌ WRONG: Vertical Module imports Domain Service internals
+from faultmaven.modules.evidence.domain.validators import validate_evidence
 ```
 
 ### Architecture Enforcement
 
-Architecture is enforced via **import-linter** with 11 contracts (`.importlinter`):
+Architecture is enforced via **import-linter** with 13 contracts (`.importlinter`):
 - Service layer independence
 - Services cannot import API layer
 - Models cannot import services
 - Module layer boundaries (Knowledge, Case, Auth, Evidence, Report)
 - Cross-module boundaries (other modules use auth contracts only)
+- **Domain Services cannot bypass Case contracts** (new)
+- **Other modules use Case contracts for shared models** (new)
 
 **Run architecture checks:**
 ```bash
