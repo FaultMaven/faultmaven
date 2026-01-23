@@ -246,15 +246,11 @@ class ICaseRepository(Protocol):
         ...
 
     # Agent Execution Operations (migrated from Agent module)
-    async def create_agent_execution(
-        self, execution: AgentExecution
-    ) -> AgentExecution:
+    async def create_agent_execution(self, execution: AgentExecution) -> AgentExecution:
         """Create new agent execution record."""
         ...
 
-    async def get_agent_execution(
-        self, execution_id: str
-    ) -> Optional[AgentExecution]:
+    async def get_agent_execution(self, execution_id: str) -> Optional[AgentExecution]:
         """Get agent execution by ID with tool calls loaded."""
         ...
 
@@ -279,9 +275,7 @@ class ICaseRepository(Protocol):
         """List agent executions for a session with optional filters."""
         ...
 
-    async def update_agent_execution(
-        self, execution: AgentExecution
-    ) -> AgentExecution:
+    async def update_agent_execution(self, execution: AgentExecution) -> AgentExecution:
         """Update agent execution status and results."""
         ...
 
@@ -289,15 +283,11 @@ class ICaseRepository(Protocol):
         """Delete agent execution by ID (cascades to tool calls)."""
         ...
 
-    async def create_agent_tool_call(
-        self, tool_call: AgentToolCall
-    ) -> AgentToolCall:
+    async def create_agent_tool_call(self, tool_call: AgentToolCall) -> AgentToolCall:
         """Create new agent tool call record."""
         ...
 
-    async def update_agent_tool_call(
-        self, tool_call: AgentToolCall
-    ) -> AgentToolCall:
+    async def update_agent_tool_call(self, tool_call: AgentToolCall) -> AgentToolCall:
         """Update agent tool call status and results."""
         ...
 

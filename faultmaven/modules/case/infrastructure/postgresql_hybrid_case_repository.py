@@ -781,9 +781,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 count_query = text(
                     "SELECT COUNT(*) FROM evidence_artifacts WHERE case_id = :case_id"
                 )
-                count_result = await self.db.execute(
-                    count_query, {"case_id": case_id}
-                )
+                count_result = await self.db.execute(count_query, {"case_id": case_id})
                 count_row = count_result.fetchone()
                 if count_row:
                     analytics["evidence_count"] = count_row[0]

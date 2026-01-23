@@ -161,7 +161,9 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
                 )
 
                 store = ChromaDBVectorStore()
-                logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}")
+                logger.info(
+                    f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}"
+                )
                 return store, False
             except Exception as e:
                 logger.warning(

@@ -1354,12 +1354,20 @@ async def get_capabilities():
         },
         "limits": {
             "maxFileBytes": 10485760,  # 10MB
-            "allowedExtensions": [".md", ".txt", ".log", ".json", ".csv", ".yaml", ".yml"],
+            "allowedExtensions": [
+                ".md",
+                ".txt",
+                ".log",
+                ".json",
+                ".csv",
+                ".yaml",
+                ".yml",
+            ],
         },
         "branding": {
             "name": "FaultMaven",
             "supportUrl": "https://github.com/FaultMaven/faultmaven/issues",
-        }
+        },
     }
 
 

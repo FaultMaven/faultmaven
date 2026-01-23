@@ -32,7 +32,10 @@ from faultmaven.modules.case.domain.models import (
 
 if TYPE_CHECKING:
     # Report models now owned by Case module - import from case domain models
-    from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
+    from faultmaven.modules.case.domain.owned_models.report import (
+        CaseReport,
+        ReportType,
+    )
 
 
 # ============================================================
@@ -584,7 +587,10 @@ class InMemoryCaseRepository(CaseRepository):
         """Add report to memory."""
         from datetime import timezone
 
-        from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
+        from faultmaven.modules.case.domain.owned_models.report import (
+            CaseReport,
+            ReportType,
+        )
         from faultmaven.utils.serialization import to_json_compatible
 
         # If this is marked as current, unmark other reports of the same type for this case
@@ -737,7 +743,9 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def get_standalone_evidence(self, evidence_id: str) -> Optional[Any]:
         """Get standalone evidence by ID (in-memory implementation)."""
-        from faultmaven.modules.case.domain.owned_models.evidence import EvidenceArtifact
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+        )
 
         return self._standalone_evidence.get(evidence_id)
 
@@ -745,7 +753,9 @@ class InMemoryCaseRepository(CaseRepository):
         """List standalone evidence with filters (in-memory implementation)."""
         from uuid import UUID
 
-        from faultmaven.modules.case.domain.owned_models.evidence import EvidenceListFilter
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceListFilter,
+        )
 
         all_evidence = list(self._standalone_evidence.values())
         filtered = all_evidence
@@ -813,7 +823,9 @@ class InMemoryCaseRepository(CaseRepository):
         """Link standalone evidence to a case (in-memory implementation)."""
         from datetime import datetime, timezone
 
-        from faultmaven.modules.case.domain.owned_models.evidence import EvidenceArtifact
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+        )
 
         evidence = self._standalone_evidence.get(evidence_id)
         if not evidence:
@@ -854,7 +866,9 @@ class InMemoryCaseRepository(CaseRepository):
         """Update standalone evidence record (in-memory implementation)."""
         from datetime import datetime, timezone
 
-        from faultmaven.modules.case.domain.owned_models.evidence import EvidenceArtifact
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+        )
 
         evidence_id = getattr(evidence, "evidence_id", None)
         if not evidence_id or evidence_id not in self._standalone_evidence:
