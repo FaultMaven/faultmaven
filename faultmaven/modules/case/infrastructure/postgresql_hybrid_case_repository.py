@@ -53,7 +53,6 @@ from faultmaven.modules.case.infrastructure.case_repository import CaseRepositor
 # TYPE_CHECKING imports not needed - models imported directly above
 
 
-
 class PostgreSQLHybridCaseRepository(CaseRepository):
     """
     PostgreSQL repository using hybrid normalized schema.
