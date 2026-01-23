@@ -233,7 +233,7 @@ name = Other modules use Case contracts for shared models
 type = forbidden
 source_modules =
     faultmaven.services
-    faultmaven.api
+    faultmaven.api.v1
     faultmaven.core
 forbidden_modules =
     faultmaven.modules.case.infrastructure
