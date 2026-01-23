@@ -92,7 +92,7 @@ sequenceDiagram
     Ext->>Ext: Retrieve code_verifier from storage
     Ext->>API: POST /auth/token {<br/>code: AUTH_CODE,<br/>code_verifier: ORIGINAL_VERIFIER,<br/>client_id: copilot,<br/>redirect_uri: chrome-extension://...<br/>}
     API->>API: Validate authorization code<br/>Verify SHA256(verifier) == stored challenge<br/>Check code not expired/used<br/>Validate redirect_uri matches
-    API-->>Ext: {<br/>access_token: JWT,<br/>token_type: Bearer,<br/>expires_in: 86400,<br/>session_id: SESSION_ID,<br/>user: {...}<br/>}
+    API-->>Ext: {<br/>access_token: JWT,<br/>token_type: Bearer,<br/>expires_in: 3600,<br/>refresh_token: JWT,<br/>refresh_expires_in: 604800,<br/>session_id: SESSION_ID,<br/>user: {...}<br/>}
     Ext->>Ext: Store access_token & session_id
     Ext->>Ext: Clear PKCE verifier & state
     Ext->>API: API calls with dual headers<br/>Authorization: Bearer JWT<br/>X-Session-Id: SESSION_ID
@@ -207,20 +207,117 @@ def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
 
 **Strict Validation**:
 
-```python
-ALLOWED_REDIRECT_URIS = {
-    'faultmaven-copilot': [
-        r'^chrome-extension://[a-z]{32}/callback$',  # Regex pattern
-        r'^moz-extension://[a-f0-9-]{36}/callback$'  # Firefox support
-    ]
-}
+#### Extension ID Registration
+
+The backend validates redirect URIs using a pre-registered allowlist to prevent authorization code injection attacks.
+
+**Configuration:** `config/oauth_clients.yml`
+
+```yaml
+oauth_clients:
+  faultmaven-copilot:
+    client_id: faultmaven-copilot
+    client_type: public
+    redirect_uris:
+      # Chrome Web Store (Production)
+      - chrome-extension://abcdefghijklmnopqrstuvwxyz123456/callback
+      # Chrome Web Store (Beta)
+      - chrome-extension://bcdefghijklmnopqrstuvwxyz123456a/callback
+      # Firefox Add-ons (Production)
+      - moz-extension://12345678-1234-1234-1234-123456789abc/callback
+      # Local Development (unpacked extension)
+      - chrome-extension://*/callback  # Only enabled in dev mode
+    allowed_scopes:
+      - openid
+      - profile
+      - email
+      - cases:read
+      - cases:write
+      - knowledge:read
+      - evidence:read
 ```
+
+**Implementation:** `faultmaven/modules/auth/domain/services/oauth_client_registry.py`
+
+```python
+from typing import Dict, List
+import re
+from pydantic import BaseModel
+
+class OAuthClientConfig(BaseModel):
+    client_id: str
+    client_type: str  # "public" or "confidential"
+    redirect_uris: List[str]
+    allowed_scopes: List[str]
+
+class OAuthClientRegistry:
+    """Registry of authorized OAuth clients with redirect URI validation."""
+
+    def __init__(self, config: Dict[str, OAuthClientConfig]):
+        self.clients = config
+
+    def validate_redirect_uri(self, client_id: str, redirect_uri: str) -> bool:
+        """Validate redirect URI against registered patterns."""
+        if client_id not in self.clients:
+            return False
+
+        allowed_uris = self.clients[client_id].redirect_uris
+
+        for allowed in allowed_uris:
+            if allowed.endswith('*'):
+                # Wildcard pattern (dev mode only)
+                if settings.environment == Environment.DEVELOPMENT:
+                    pattern = allowed.replace('*', '[a-z]{32}')
+                    if re.match(pattern, redirect_uri):
+                        return True
+            elif allowed == redirect_uri:
+                # Exact match
+                return True
+
+        return False
+
+    def get_allowed_scopes(self, client_id: str) -> List[str]:
+        """Get allowed scopes for client."""
+        if client_id not in self.clients:
+            return []
+        return self.clients[client_id].allowed_scopes
+```
+
+**How to Register a New Extension ID:**
+
+1. **Obtain Extension ID:**
+   - Chrome: Publish to Chrome Web Store or load unpacked extension
+   - Firefox: Get UUID from `about:debugging` → This Firefox → Extension ID
+
+2. **Add to Configuration:**
+
+   ```yaml
+   # config/oauth_clients.yml
+   oauth_clients:
+     faultmaven-copilot:
+       redirect_uris:
+         - chrome-extension://your-new-extension-id-here/callback
+   ```
+
+3. **Restart Backend:**
+
+   ```bash
+   ./scripts/restart.sh
+   ```
+
+4. **Verify Registration:**
+
+   ```bash
+   curl https://api.faultmaven.ai/auth/oauth/clients
+   ```
 
 **Security Properties**:
 
-- Only registered extension IDs can receive authorization codes
-- Prevents authorization code injection attacks
-- Supports multiple browser extension stores
+- ✅ Only pre-registered extension IDs can receive authorization codes
+- ✅ Prevents authorization code injection attacks
+- ✅ Supports multiple browser extension stores (Chrome, Firefox, Edge)
+- ✅ Wildcard patterns only allowed in development mode
+- ✅ Exact match required in production (no regex vulnerabilities)
 
 ### 4. Token Security
 
@@ -240,6 +337,55 @@ ALLOWED_REDIRECT_URIS = {
   - Access tokens: Stateless validation (no DB lookup)
   - Refresh tokens: Stored in database/Redis for revocation tracking
 - Authorization codes: Redis/in-memory with 10-minute TTL
+
+#### ⚠️ CRITICAL: Secure Storage Requirements for Extension
+
+Refresh tokens MUST be stored in `chrome.storage.local` only. Never store refresh tokens in:
+
+| Storage Type | Security Risk | Why Unsafe |
+| ------------ | ------------- | ---------- |
+| `chrome.storage.sync` | **CRITICAL** | Tokens transmitted to Google servers and synced across devices. Creates unauthorized token copies. |
+| `localStorage` | **HIGH** | Accessible to content scripts running on web pages. Vulnerable to XSS attacks. |
+| `sessionStorage` | **HIGH** | Lost on browser restart. Accessible to content scripts. |
+| `document.cookie` | **CRITICAL** | Transmitted with every HTTP request. Vulnerable to XSS if `HttpOnly` not set. |
+| IndexedDB (in content script) | **HIGH** | Accessible to malicious web pages via content script context. |
+| URL parameters | **CRITICAL** | Logged in browser history, server logs, referrer headers. |
+
+**Correct Implementation:**
+
+```typescript
+// ✅ CORRECT: Store in chrome.storage.local (background script context)
+async function storeTokens(tokens: AuthTokens) {
+  await chrome.storage.local.set({
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,  // Safe in chrome.storage.local
+    expires_at: Date.now() + (tokens.expires_in * 1000),
+    refresh_expires_at: Date.now() + (tokens.refresh_expires_in * 1000)
+  });
+}
+
+// ✅ CORRECT: Retrieve from chrome.storage.local
+async function getRefreshToken(): Promise<string | null> {
+  const storage = await chrome.storage.local.get(['refresh_token']);
+  return storage.refresh_token || null;
+}
+```
+
+**Incorrect Implementations:**
+
+```typescript
+// ❌ WRONG: Never use chrome.storage.sync
+await chrome.storage.sync.set({ refresh_token: token }); // CRITICAL VULNERABILITY
+
+// ❌ WRONG: Never use localStorage
+localStorage.setItem('refresh_token', token); // XSS VULNERABILITY
+
+// ❌ WRONG: Never store in cookies
+document.cookie = `refresh_token=${token}`; // XSS + TRANSMISSION LEAK
+
+// ❌ WRONG: Never pass in URLs
+window.location.href = `/callback?refresh_token=${token}`; // HISTORY LEAK
+```
 
 **Transmission**:
 
@@ -277,9 +423,11 @@ Content-Type: application/json
 
 ```json
 {
-  "access_token": "550e8400-e29b-41d4-a716-446655440000",
+  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
-  "expires_in": 86400,
+  "expires_in": 3600,
+  "refresh_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_expires_in": 604800,
   "session_id": "session-41afd36b-3f3c-46dd-8794-1565984d843d",
   "user": {
     "user_id": "user_f939a782",
@@ -373,6 +521,102 @@ Content-Type: application/json
 GET /api/v1/auth/me
 Authorization: Bearer {access_token}
 ```
+
+### OAuth Scopes and Permissions
+
+OAuth scopes control what resources the access token can access. The backend validates scopes on protected endpoints to enforce authorization.
+
+#### Supported Scopes
+
+| Scope | Permissions Granted | Description |
+| ----- | ------------------- | ----------- |
+| `openid` | `read:user_id` | Access to user's unique identifier |
+| `profile` | `read:user_profile` | Access to user's profile information (username, display_name) |
+| `email` | `read:user_email` | Access to user's email address |
+| `cases:read` | `read:cases`, `list:cases`, `search:cases` | Read access to cases |
+| `cases:write` | `create:cases`, `update:cases`, `delete:cases` | Write access to cases |
+| `knowledge:read` | `read:knowledge`, `search:knowledge` | Read access to knowledge base |
+| `knowledge:write` | `create:knowledge`, `update:knowledge`, `delete:knowledge` | Write access to knowledge base |
+| `evidence:read` | `read:evidence`, `list:evidence` | Read access to evidence files |
+| `evidence:write` | `upload:evidence`, `delete:evidence` | Write access to evidence files |
+
+#### Scope Validation Implementation
+
+```python
+# Backend: faultmaven/modules/auth/domain/services/scope_validator.py
+from typing import List, Set
+
+class ScopeValidator:
+    """Validates OAuth scopes and checks permissions."""
+
+    # Scope to permissions mapping
+    SCOPE_PERMISSIONS = {
+        "openid": {"read:user_id"},
+        "profile": {"read:user_profile"},
+        "email": {"read:user_email"},
+        "cases:read": {"read:cases", "list:cases", "search:cases"},
+        "cases:write": {"create:cases", "update:cases", "delete:cases"},
+        "knowledge:read": {"read:knowledge", "search:knowledge"},
+        "knowledge:write": {"create:knowledge", "update:knowledge", "delete:knowledge"},
+        "evidence:read": {"read:evidence", "list:evidence"},
+        "evidence:write": {"upload:evidence", "delete:evidence"},
+    }
+
+    @classmethod
+    def get_permissions_for_scopes(cls, scopes: List[str]) -> Set[str]:
+        """Convert scopes to permissions."""
+        permissions = set()
+        for scope in scopes:
+            if scope in cls.SCOPE_PERMISSIONS:
+                permissions.update(cls.SCOPE_PERMISSIONS[scope])
+        return permissions
+
+    @classmethod
+    def has_permission(cls, token_scopes: List[str], required_permission: str) -> bool:
+        """Check if token has required permission."""
+        permissions = cls.get_permissions_for_scopes(token_scopes)
+        return required_permission in permissions
+```
+
+#### Protected Endpoint Example
+
+```python
+# Backend: faultmaven/modules/case/api/routes.py
+from fastapi import Depends, HTTPException, status
+from faultmaven.modules.auth.domain.services.scope_validator import ScopeValidator
+
+@router.post("/cases")
+async def create_case(
+    case_data: CaseCreateRequest,
+    token: TokenData = Depends(get_current_token)
+):
+    # Validate token has 'create:cases' permission
+    if not ScopeValidator.has_permission(token.scopes, "create:cases"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions: requires 'cases:write' scope"
+        )
+
+    # Proceed with case creation
+    return await case_service.create_case(case_data)
+```
+
+#### Default Scopes for Copilot
+
+The FaultMaven Copilot extension requests these scopes by default:
+
+```text
+openid profile email cases:read cases:write knowledge:read evidence:read
+```
+
+This provides:
+
+- User identification and profile access
+- Read/write access to cases
+- Read-only access to knowledge base
+- Read-only access to evidence files
+
+**Note:** Admin users bypass scope validation for backward compatibility with the dev-login flow, which does not use OAuth scopes.
 
 ### Logout
 
@@ -1142,7 +1386,9 @@ class OAuthTokenDTO:
     """Data Transfer Object for OAuth token response"""
     access_token: str
     token_type: str = "Bearer"
-    expires_in: int = 86400  # 24 hours
+    expires_in: int = 3600  # 1 hour
+    refresh_token: str
+    refresh_expires_in: int = 604800  # 7 days
     user_id: str
     username: str
 
@@ -1328,8 +1574,9 @@ async def exchange_token(request: TokenRequest):
     # Get user profile
     user = await user_service.get_user(code_info['user_id'])
 
-    # Generate access token (JWT)
-    access_token = generate_jwt_token(user, scope=code_info['scope'])
+    # Generate tokens (JWT)
+    access_token = generate_jwt_token(user, scope=code_info['scope'], expiry_minutes=60)
+    refresh_token = generate_refresh_token(user, expiry_days=7)
 
     # Create session
     session = await session_service.create_session(user.user_id)
@@ -1337,7 +1584,9 @@ async def exchange_token(request: TokenRequest):
     return {
         "access_token": access_token,
         "token_type": "Bearer",
-        "expires_in": 86400,  # 24 hours
+        "expires_in": 3600,  # 1 hour
+        "refresh_token": refresh_token,
+        "refresh_expires_in": 604800,  # 7 days
         "session_id": session.session_id,
         "user": {
             "user_id": user.user_id,
@@ -1630,7 +1879,8 @@ auth:
   oauth:
     enabled: true
     dashboard_url: https://dashboard.faultmaven.com
-    token_expiry_seconds: 86400
+    access_token_expiry_seconds: 3600  # 1 hour
+    refresh_token_expiry_seconds: 604800  # 7 days
   storage:
     type: redis
     redis_url: redis://localhost:6379/0
