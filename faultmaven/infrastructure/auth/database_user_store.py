@@ -12,8 +12,8 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.infrastructure.persistence.user_repository import UserRepository, User
 
 logger = logging.getLogger(__name__)
 

@@ -25,9 +25,9 @@ import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
+from faultmaven.main import app
 from faultmaven.modules.auth.contracts import OAuthTokenDTO
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.main import app
 
 
 @pytest.fixture
@@ -63,8 +63,8 @@ async def client_with_mocked_oauth_and_auth(mock_oauth_service, mock_user):
 
     reset_rate_limiter()
 
-    from faultmaven.modules.auth.api.oauth import get_oauth_service
     from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.modules.auth.api.oauth import get_oauth_service
 
     # Override OAuth service dependency
     async def mock_get_oauth_service(request: Request):

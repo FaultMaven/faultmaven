@@ -3,24 +3,24 @@
 Implements the IOAuthService contract for Dashboard-centric authentication flow.
 """
 
+import base64
 import hashlib
 import logging
 import secrets
-import base64
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from faultmaven.models.exceptions import (
+    InvalidGrantError,
+    InvalidRequestError,
+)
 from faultmaven.modules.auth.contracts import (
-    IOAuthService,
     IOAuthCodeRepository,
+    IOAuthService,
     OAuthAuthorizationDTO,
     OAuthCodeDTO,
     OAuthTokenDTO,
-)
-from faultmaven.models.exceptions import (
-    InvalidRequestError,
-    InvalidGrantError,
 )
 from faultmaven.modules.auth.infrastructure.metrics import oauth_metrics
 

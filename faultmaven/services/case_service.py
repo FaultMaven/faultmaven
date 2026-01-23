@@ -43,9 +43,9 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
     CaseStatus,
+    EvidenceListFilter,
     ICaseRepository,
     InvestigationStrategy,
-    EvidenceListFilter,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
 

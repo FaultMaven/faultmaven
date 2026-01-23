@@ -26,13 +26,6 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-
-# Case-owned models (per module-organization-design.md)
-from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
-
-# TYPE_CHECKING imports not needed - models imported directly above
-
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
@@ -52,6 +45,13 @@ from faultmaven.modules.case.domain.models import (
     UploadedFile,
     WorkingConclusion,
 )
+
+# Case-owned models (per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+
+# TYPE_CHECKING imports not needed - models imported directly above
+
 
 
 class PostgreSQLHybridCaseRepository(CaseRepository):

@@ -60,10 +60,9 @@ import pytest
 # This must happen BEFORE any module imports that might load settings
 _original_load_dotenv = None
 try:
-    from dotenv import load_dotenv as _original_load_dotenv
-
     # Patch dotenv.load_dotenv globally to be a no-op during tests
     import dotenv
+    from dotenv import load_dotenv as _original_load_dotenv
 
     dotenv.load_dotenv = Mock(return_value=None)
 except ImportError:

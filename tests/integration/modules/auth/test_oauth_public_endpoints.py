@@ -34,8 +34,8 @@ import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
-from faultmaven.modules.auth.contracts import OAuthTokenDTO
 from faultmaven.main import app
+from faultmaven.modules.auth.contracts import OAuthTokenDTO
 
 
 @pytest.fixture

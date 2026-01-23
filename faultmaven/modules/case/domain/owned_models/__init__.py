@@ -11,6 +11,14 @@ Per module-organization-design.md:
 - These models are canonical and should be imported from Case contracts
 """
 
+# Agent execution models (Case owns agent audit data per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.agent_execution import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
+)
+
 # Evidence models (Case owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
     EvidenceArtifact,
@@ -36,14 +44,6 @@ from faultmaven.modules.case.domain.owned_models.report import (
     RunbookRecommendation,
     RunbookSource,
     SimilarRunbook,
-)
-
-# Agent execution models (Case owns agent audit data per module-organization-design.md)
-from faultmaven.modules.case.domain.owned_models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
 )
 
 __all__ = [

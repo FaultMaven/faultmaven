@@ -15,11 +15,11 @@ Key Components:
 - Authentication utilities: Token hashing, validation, cleanup
 """
 
-from .token_manager import RedisTokenManager
-from .user_store import RedisUserStore
+from .database_user_store import DatabaseUserStore
 from .inmemory_token_manager import InMemoryTokenManager
 from .inmemory_user_store import InMemoryUserStore
-from .database_user_store import DatabaseUserStore
+from .token_manager import RedisTokenManager
+from .user_store import RedisUserStore
 
 __all__ = [
     "RedisTokenManager",

@@ -317,14 +317,15 @@ def create_user_store(redis_client: Any | None, settings: FaultMavenSettings) ->
         "sqlite" in database_url.lower() or "postgresql" in database_url.lower()
     ):
         try:
+            from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+            from sqlalchemy.orm import sessionmaker
+
             from faultmaven.infrastructure.auth.database_user_store import (
                 DatabaseUserStore,
             )
             from faultmaven.infrastructure.persistence.user_repository import (
                 PostgreSQLUserRepository,
             )
-            from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-            from sqlalchemy.orm import sessionmaker
 
             # Create database engine and session
             # Use NullPool for SQLite to avoid connection issues

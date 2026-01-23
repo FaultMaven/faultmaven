@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import (
         InvestigationState,
         InvestigationStrategy,
+        UrgencyLevel,
     )
-    from faultmaven.modules.case.contracts import UrgencyLevel
 
 
 class InterventionType(str, Enum):

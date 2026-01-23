@@ -31,22 +31,22 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.models.exceptions import (
+    InvalidGrantError,
+    InvalidRequestError,
+)
+from faultmaven.modules.auth.api.rate_limiting import (
+    require_oauth_rate_limit_authorize,
+    require_oauth_rate_limit_revoke,
+    require_oauth_rate_limit_token,
+)
 from faultmaven.modules.auth.contracts import (
     IOAuthService,
     OAuthAuthorizationDTO,
     OAuthTokenDTO,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.models.exceptions import (
-    InvalidGrantError,
-    InvalidRequestError,
-)
-from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.modules.auth.api.rate_limiting import (
-    require_oauth_rate_limit_authorize,
-    require_oauth_rate_limit_token,
-    require_oauth_rate_limit_revoke,
-)
 
 logger = logging.getLogger(__name__)
 

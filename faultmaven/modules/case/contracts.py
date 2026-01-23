@@ -32,6 +32,41 @@ if TYPE_CHECKING:
 # Import and Re-export Case-owned models
 # ============================================================
 
+# Investigation models from Agent module (shared for investigation coordination)
+from faultmaven.modules.agent.domain.models.investigation import (
+    PHASE_OODA_WEIGHTS,
+    AnomalyFrame,
+    EngagementMode,
+    EscalationState,
+    EvidenceLayer,
+    HierarchicalMemory,
+    HypothesisTest,
+    InvestigationLifecycle,
+    InvestigationMetadata,
+    InvestigationMomentum,
+    InvestigationPhase,
+    InvestigationState,
+    InvestigationStrategy,
+    MemoryLayer,
+    MemorySnapshot,
+    OODAEngineState,
+    OODAIteration,
+    OODAStep,
+    PhaseOODAProfile,
+    PhaseTransition,
+    ProblemConfirmation,
+    ProgressMetrics,
+    TemporalFrame,
+)
+
+# Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.agent_execution import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
+)
+
 # Case-owned Evidence models (Case module owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
     EvidenceArtifact,
@@ -58,42 +93,6 @@ from faultmaven.modules.case.domain.owned_models.report import (
     RunbookSource,
     SimilarRunbook,
 )
-
-# Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
-from faultmaven.modules.case.domain.owned_models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
-
-# Investigation models from Agent module (shared for investigation coordination)
-from faultmaven.modules.agent.domain.models.investigation import (
-    AnomalyFrame,
-    EngagementMode,
-    EscalationState,
-    EvidenceLayer,
-    HierarchicalMemory,
-    HypothesisTest,
-    InvestigationLifecycle,
-    InvestigationMetadata,
-    InvestigationMomentum,
-    InvestigationPhase,
-    InvestigationState,
-    InvestigationStrategy,
-    MemoryLayer,
-    MemorySnapshot,
-    OODAEngineState,
-    OODAIteration,
-    OODAStep,
-    PHASE_OODA_WEIGHTS,
-    PhaseOODAProfile,
-    PhaseTransition,
-    ProblemConfirmation,
-    ProgressMetrics,
-    TemporalFrame,
-)
-
 
 # ============================================================
 # Repository Contract
@@ -413,7 +412,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     UrgencyLevel,
     WorkingConclusion,
 )
-
 
 # ============================================================
 # Module Exports

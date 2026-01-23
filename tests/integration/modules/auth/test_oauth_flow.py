@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import status, Request
+from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
 # Import app after setting OAuth-specific environment variables
@@ -76,6 +76,7 @@ async def authenticated_client(test_user):
     reset_rate_limiter()
 
     from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.config.settings import get_settings
     from faultmaven.modules.auth.api.oauth import get_oauth_service
     from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
     from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
@@ -84,7 +85,6 @@ async def authenticated_client(test_user):
     from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
         InMemoryUserRepository,
     )
-    from faultmaven.config.settings import get_settings
 
     settings = get_settings()
 
