@@ -494,6 +494,37 @@ Add to `src/App.tsx`:
 />
 ```
 
+**Important:** The `ProtectedRoute` component must save the OAuth redirect URL when redirecting unauthenticated users to login:
+
+```typescript
+// Dashboard: src/components/ProtectedRoute.tsx
+export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  const location = useLocation();
+
+  if (!isAuthenticated) {
+    // Save current URL with query params for post-login redirect
+    const currentUrl = `${location.pathname}${location.search}`;
+    sessionStorage.setItem('oauth_redirect_after_login', currentUrl);
+
+    // Redirect to login
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
+}
+```
+
+**Flow:**
+
+1. Extension opens `/auth/authorize?client_id=...&code_challenge=...`
+2. User not authenticated → `ProtectedRoute` saves full URL to `sessionStorage`
+3. User redirected to `/login`
+4. User logs in successfully
+5. Login page checks `sessionStorage.oauth_redirect_after_login`
+6. If exists, redirect to saved URL (OAuth consent page)
+7. User approves → redirected back to Extension with code
+
 ### OAuth Consent Page
 
 **File:** `src/pages/OAuthAuthorizePage.tsx`
@@ -656,6 +687,120 @@ export class OAuthClient {
   }
 }
 ```
+
+### Extension Callback Page
+
+The extension must provide a callback HTML page to handle the redirect from the Dashboard after user authorization. This page extracts the authorization code and triggers token exchange.
+
+**File:** `callback.html` (placed at extension root)
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>FaultMaven - Authenticating...</title>
+    <script src="auth-callback.js" type="module"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            text-align: center;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid white;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner"></div>
+        <h2>Authenticating FaultMaven Copilot...</h2>
+        <p>Please wait while we complete the sign-in process.</p>
+    </div>
+</body>
+</html>
+```
+
+**File:** `auth-callback.js` (referenced by callback.html)
+
+```javascript
+// Extension: auth-callback.js
+(async function() {
+    try {
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        const error = url.searchParams.get('error');
+
+        if (error) {
+            // User denied authorization or error occurred
+            chrome.runtime.sendMessage({
+                type: 'AUTH_ERROR',
+                error: error,
+                error_description: url.searchParams.get('error_description')
+            });
+            window.close();
+            return;
+        }
+
+        if (!code || !state) {
+            chrome.runtime.sendMessage({
+                type: 'AUTH_ERROR',
+                error: 'invalid_callback',
+                error_description: 'Missing authorization code or state parameter'
+            });
+            window.close();
+            return;
+        }
+
+        // Send callback data to background script
+        chrome.runtime.sendMessage({
+            type: 'AUTH_CALLBACK',
+            code: code,
+            state: state
+        });
+
+        // Keep window open briefly to show success, then close
+        setTimeout(() => window.close(), 2000);
+
+    } catch (err) {
+        console.error('Callback error:', err);
+        chrome.runtime.sendMessage({
+            type: 'AUTH_ERROR',
+            error: 'callback_failed',
+            error_description: err.message
+        });
+        window.close();
+    }
+})();
+```
+
+**Important:** The `redirect_uri` in the authorization request must match exactly:
+
+```text
+chrome-extension://{extension_id}/callback
+```
+
+This resolves to `callback.html` at the extension root. Without this file, users will see a "File not found" error when the Dashboard redirects back.
 
 ### Extension Callback Handler
 
@@ -836,17 +981,26 @@ interface ApiClientConfig {
 }
 
 class FaultMavenAPI {
-  private sessionId?: string;
   private tokenManager: TokenManager;
 
   constructor() {
     this.tokenManager = new TokenManager();
   }
 
+  /**
+   * Store session ID in chrome.storage.local for persistence.
+   * Required for Manifest V3 Service Workers which terminate after 30s.
+   */
   async setSessionId(sessionId: string) {
-    this.sessionId = sessionId;
+    await chrome.storage.local.set({ session_id: sessionId });
   }
 
+  /**
+   * Fetch headers with token and session ID.
+   * IMPORTANT: Session ID is fetched from storage on every call to handle
+   * Manifest V3 Service Worker restarts (workers terminate after 30s inactivity).
+   * Do NOT store session_id in class properties - it will be lost on restart.
+   */
   private async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
@@ -861,9 +1015,11 @@ class FaultMavenAPI {
       console.warn('No valid access token available', error);
     }
 
-    // Add session header if session available
-    if (this.sessionId) {
-      headers['X-Session-Id'] = this.sessionId;
+    // Fetch session ID from storage (Manifest V3 Service Worker safe)
+    // This ensures session context is preserved across worker restarts
+    const storage = await chrome.storage.local.get(['session_id']);
+    if (storage.session_id) {
+      headers['X-Session-Id'] = storage.session_id;
     }
 
     return headers;
