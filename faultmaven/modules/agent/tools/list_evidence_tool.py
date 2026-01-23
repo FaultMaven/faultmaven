@@ -97,7 +97,7 @@ class ListEvidenceTool(AgentTool):
 
         try:
             # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-            from faultmaven.modules.evidence.contracts import EvidenceArtifactType
+            from faultmaven.modules.case.contracts import EvidenceArtifactType
 
             # Parse evidence type filter if provided
             evidence_type = None

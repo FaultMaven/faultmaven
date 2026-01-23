@@ -18,7 +18,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.contracts import (
+    from faultmaven.modules.case.contracts import (
         InvestigationState,
         InvestigationStrategy,
     )
@@ -152,7 +152,7 @@ class InvestigationCoordinator:
         Returns:
             True if phase complete, False otherwise
         """
-        from faultmaven.modules.agent.contracts import InvestigationPhase
+        from faultmaven.modules.case.contracts import InvestigationPhase
 
         current_phase = state.lifecycle.current_phase
 

@@ -18,8 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from faultmaven.models.investigation_session import SessionStatus
 
 # Import from contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import CaseSeverity, CaseStatus
-from faultmaven.modules.evidence.contracts import EvidenceArtifactType
+from faultmaven.modules.case.contracts import CaseSeverity, CaseStatus, EvidenceArtifactType
 
 # ============================================================
 # Case Models

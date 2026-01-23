@@ -6,26 +6,66 @@ Other modules should import from here, not from infrastructure or domain directl
 Following the design in module-organization-design.md:
 - Vertical modules expose contracts through contracts.py
 - Domain services use these contracts for cross-module communication
+- Case module owns evidence, reports, and agent execution data (via FK relationships)
+
+Per module-organization-design.md (lines 592-605, 757-770):
+- Domain Services (Evidence, Agent, Report) should import from Case contracts
+- Case contracts export models for Case-owned tables (evidence, reports, agent_executions)
 """
 
 from abc import ABC
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
+from uuid import UUID
+
+# ============================================================
+# TYPE_CHECKING imports - for type hints only
+# ============================================================
 
 if TYPE_CHECKING:
-    from uuid import UUID
+    pass  # All types now imported directly below
 
-    from faultmaven.modules.agent.domain.models.agent_execution import (
-        AgentExecution,
-        AgentToolCall,
-        AgentType,
-        ExecutionStatus,
-    )
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
-    from faultmaven.modules.evidence.domain.models import (
-        EvidenceArtifact,
-        EvidenceListFilter,
-    )
-    from faultmaven.modules.report.domain.models import CaseReport, ReportType
+
+# ============================================================
+# Import and Re-export Case-owned models
+# ============================================================
+
+# Case-owned Evidence models (Case module owns evidence table per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.evidence import (
+    EvidenceArtifact,
+    EvidenceArtifactResponse,
+    EvidenceArtifactType,
+    EvidenceLinkRequest,
+    EvidenceListFilter,
+    EvidenceUploadRequest,
+    StorageBackend,
+)
+
+# Case-owned Report models (Case module owns reports table per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.report import (
+    CaseClosureRequest,
+    CaseClosureResponse,
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportRecommendation,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookRecommendation,
+    RunbookSource,
+    SimilarRunbook,
+)
+
+# Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
+from faultmaven.modules.case.domain.owned_models.agent_execution import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
+)
 
 
 # ============================================================
@@ -102,25 +142,25 @@ class ICaseRepository(Protocol):
         ...
 
     # Report operations (TD-001: reports stored via Case repository)
-    async def add_report(self, report: "CaseReport") -> "CaseReport":
+    async def add_report(self, report: CaseReport) -> CaseReport:
         """Save report to persistence layer."""
         ...
 
-    async def get_report(self, report_id: str) -> Optional["CaseReport"]:
+    async def get_report(self, report_id: str) -> Optional[CaseReport]:
         """Retrieve a report by ID."""
         ...
 
     async def get_reports(
         self,
         case_id: str,
-        report_type: Optional["ReportType"] = None,
+        report_type: Optional[ReportType] = None,
         include_history: bool = False,
         only_current: bool = False,
-    ) -> List["CaseReport"]:
+    ) -> List[CaseReport]:
         """Get reports for a case with optional filtering."""
         ...
 
-    async def update_report(self, report: "CaseReport") -> "CaseReport":
+    async def update_report(self, report: CaseReport) -> CaseReport:
         """Update an existing report."""
         ...
 
@@ -135,38 +175,38 @@ class ICaseRepository(Protocol):
         content_type: str,
         size_bytes: int,
         storage_path: str,
-        uploaded_by: "UUID",
+        uploaded_by: UUID,
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
-    ) -> "EvidenceArtifact":
+    ) -> EvidenceArtifact:
         """Create standalone evidence record (can link to multiple cases)."""
         ...
 
     async def get_standalone_evidence(
-        self, evidence_id: "UUID"
-    ) -> Optional["EvidenceArtifact"]:
+        self, evidence_id: UUID
+    ) -> Optional[EvidenceArtifact]:
         """Get standalone evidence by ID."""
         ...
 
     async def list_standalone_evidence(
-        self, filters: "EvidenceListFilter"
-    ) -> tuple[List["EvidenceArtifact"], int]:
+        self, filters: EvidenceListFilter
+    ) -> tuple[List[EvidenceArtifact], int]:
         """List standalone evidence with filters."""
         ...
 
-    async def delete_standalone_evidence(self, evidence_id: "UUID") -> bool:
+    async def delete_standalone_evidence(self, evidence_id: UUID) -> bool:
         """Delete standalone evidence record."""
         ...
 
     async def link_standalone_evidence_to_case(
-        self, evidence_id: "UUID", case_id: "UUID"
-    ) -> Optional["EvidenceArtifact"]:
+        self, evidence_id: UUID, case_id: UUID
+    ) -> Optional[EvidenceArtifact]:
         """Link standalone evidence to a case."""
         ...
 
     async def update_standalone_evidence(
-        self, evidence: "EvidenceArtifact"
-    ) -> "EvidenceArtifact":
+        self, evidence: EvidenceArtifact
+    ) -> EvidenceArtifact:
         """Update standalone evidence record."""
         ...
 
@@ -174,47 +214,47 @@ class ICaseRepository(Protocol):
         """Set evidence as primary for a case (unsets others for the same case)."""
         ...
 
-    async def get_primary_evidence(self, case_id: str) -> Optional["EvidenceArtifact"]:
+    async def get_primary_evidence(self, case_id: str) -> Optional[EvidenceArtifact]:
         """Get primary evidence for a case."""
         ...
 
     # Agent Execution Operations (migrated from Agent module)
     async def create_agent_execution(
-        self, execution: "AgentExecution"
-    ) -> "AgentExecution":
+        self, execution: AgentExecution
+    ) -> AgentExecution:
         """Create new agent execution record."""
         ...
 
     async def get_agent_execution(
         self, execution_id: str
-    ) -> Optional["AgentExecution"]:
+    ) -> Optional[AgentExecution]:
         """Get agent execution by ID with tool calls loaded."""
         ...
 
     async def list_agent_executions_by_case(
         self,
         case_id: str,
-        status: Optional["ExecutionStatus"] = None,
-        agent_type: Optional["AgentType"] = None,
+        status: Optional[ExecutionStatus] = None,
+        agent_type: Optional[AgentType] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List["AgentExecution"], int]:
+    ) -> tuple[List[AgentExecution], int]:
         """List agent executions for a case with optional filters."""
         ...
 
     async def list_agent_executions_by_session(
         self,
         session_id: str,
-        status: Optional["ExecutionStatus"] = None,
+        status: Optional[ExecutionStatus] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List["AgentExecution"], int]:
+    ) -> tuple[List[AgentExecution], int]:
         """List agent executions for a session with optional filters."""
         ...
 
     async def update_agent_execution(
-        self, execution: "AgentExecution"
-    ) -> "AgentExecution":
+        self, execution: AgentExecution
+    ) -> AgentExecution:
         """Update agent execution status and results."""
         ...
 
@@ -223,21 +263,21 @@ class ICaseRepository(Protocol):
         ...
 
     async def create_agent_tool_call(
-        self, tool_call: "AgentToolCall"
-    ) -> "AgentToolCall":
+        self, tool_call: AgentToolCall
+    ) -> AgentToolCall:
         """Create new agent tool call record."""
         ...
 
     async def update_agent_tool_call(
-        self, tool_call: "AgentToolCall"
-    ) -> "AgentToolCall":
+        self, tool_call: AgentToolCall
+    ) -> AgentToolCall:
         """Update agent tool call status and results."""
         ...
 
     async def get_agent_tool_calls_for_execution(
         self,
         execution_id: str,
-    ) -> List["AgentToolCall"]:
+    ) -> List[AgentToolCall]:
         """Get all tool calls for an execution."""
         ...
 
@@ -248,8 +288,8 @@ class ICaseRepository(Protocol):
     async def get_latest_agent_execution(
         self,
         case_id: str,
-        agent_type: Optional["AgentType"] = None,
-    ) -> Optional["AgentExecution"]:
+        agent_type: Optional[AgentType] = None,
+    ) -> Optional[AgentExecution]:
         """Get the most recent agent execution for a case."""
         ...
 
@@ -288,10 +328,6 @@ ICaseService = _ICaseService  # Re-export with same name
 # DTOs (Data Transfer Objects) for Cross-Module Use
 # ============================================================
 
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
-
 
 class CaseStatusDTO(str, Enum):
     """Public case status enum for cross-module use."""
@@ -326,7 +362,7 @@ class CaseDTO:
 # Re-export domain models for backward compatibility
 # These can be used directly until full DTO migration is complete
 # Services should import from contracts.py (not domain.models) per Principle 2
-from faultmaven.modules.case.domain.models import (  # Evidence models (Case module owns the evidence table per module-organization-design.md); Hypothesis model (Case module owns hypotheses table); Investigation tracking models (used by milestone engine)
+from faultmaven.modules.case.domain.models import (  # noqa: E402
     Case,
     CaseSeverity,
     CaseStatus,
@@ -360,3 +396,76 @@ from faultmaven.modules.case.domain.models import (  # Evidence models (Case mod
     UrgencyLevel,
     WorkingConclusion,
 )
+
+
+# ============================================================
+# Module Exports
+# ============================================================
+
+__all__ = [
+    # Repository and Service Contracts
+    "ICaseRepository",
+    "ICaseService",
+    # DTOs
+    "CaseStatusDTO",
+    "CaseDTO",
+    # Case-owned Evidence models (per module-organization-design.md)
+    "EvidenceArtifactType",
+    "StorageBackend",
+    "EvidenceArtifact",
+    "EvidenceUploadRequest",
+    "EvidenceLinkRequest",
+    "EvidenceListFilter",
+    "EvidenceArtifactResponse",
+    # Case-owned Report models (per module-organization-design.md)
+    "ReportType",
+    "ReportStatus",
+    "RunbookSource",
+    "RunbookMetadata",
+    "CaseReport",
+    "SimilarRunbook",
+    "RunbookRecommendation",
+    "ReportRecommendation",
+    "ReportGenerationRequest",
+    "ReportGenerationResponse",
+    "CaseClosureRequest",
+    "CaseClosureResponse",
+    # Case-owned Agent Execution models (per module-organization-design.md)
+    "ExecutionStatus",
+    "AgentType",
+    "AgentToolCall",
+    "AgentExecution",
+    # Case domain models (backward compatibility)
+    "Case",
+    "CaseSeverity",
+    "CaseStatus",
+    "ConfidenceLevel",
+    "ConsultingData",
+    "DegradedMode",
+    "DegradedModeType",
+    "Evidence",
+    "EvidenceCategory",
+    "EvidenceForm",
+    "EvidenceSourceType",
+    "EvidenceStance",
+    "Hypothesis",
+    "HypothesisCategory",
+    "HypothesisEvidenceLink",
+    "HypothesisGenerationMode",
+    "HypothesisStatus",
+    "InvestigationPath",
+    "InvestigationProgress",
+    "InvestigationStage",
+    "InvestigationStrategy",
+    "PathSelection",
+    "ProblemVerification",
+    "RootCauseConclusion",
+    "Solution",
+    "SolutionType",
+    "TemporalState",
+    "TurnOutcome",
+    "TurnProgress",
+    "UploadedFile",
+    "UrgencyLevel",
+    "WorkingConclusion",
+]

@@ -35,9 +35,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.contracts import InvestigationState
+    from faultmaven.modules.case.contracts import InvestigationState
 
-from faultmaven.modules.agent.contracts import (
+from faultmaven.modules.case.contracts import (
     Hypothesis,
     HypothesisGenerationMode,
     HypothesisStatus,

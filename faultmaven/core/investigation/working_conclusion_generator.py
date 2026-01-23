@@ -10,7 +10,7 @@ Design Reference:
 
 from typing import List, Optional, Tuple
 
-from faultmaven.modules.agent.contracts import (
+from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     Hypothesis,
     HypothesisStatus,

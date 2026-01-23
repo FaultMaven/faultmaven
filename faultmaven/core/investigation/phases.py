@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from faultmaven.modules.agent.contracts import (
+from faultmaven.modules.case.contracts import (
     EngagementMode,
     InvestigationPhase,
     InvestigationStrategy,

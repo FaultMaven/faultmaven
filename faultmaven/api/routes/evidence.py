@@ -34,7 +34,7 @@ from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
 
 # Import from contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.evidence.contracts import EvidenceArtifactType
+from faultmaven.modules.case.contracts import EvidenceArtifactType
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 
 router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Evidence"])

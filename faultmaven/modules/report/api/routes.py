@@ -42,8 +42,8 @@ from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.modules.report.domain.models import (
+from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.modules.case.contracts import (
     CaseClosureRequest,
     CaseClosureResponse,
     CaseReport,

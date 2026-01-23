@@ -14,9 +14,9 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.contracts import InvestigationPhase, OODAStep
+    from faultmaven.modules.case.contracts import InvestigationPhase, OODAStep
 
-from faultmaven.modules.agent.contracts import PHASE_OODA_WEIGHTS, OODAStep
+from faultmaven.modules.case.contracts import PHASE_OODA_WEIGHTS, OODAStep
 
 logger = logging.getLogger(__name__)
 

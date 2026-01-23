@@ -31,8 +31,9 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.modules.evidence.contracts import (
+from faultmaven.modules.case.contracts import (
+    ICaseRepository,
+    # Evidence models - now owned by Case module
     EvidenceArtifact,
     EvidenceArtifactType,
     EvidenceListFilter,

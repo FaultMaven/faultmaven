@@ -24,7 +24,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.modules.agent.contracts import (
+from faultmaven.modules.case.contracts import (
     EngagementMode,
     InvestigationPhase,
     InvestigationStrategy,
