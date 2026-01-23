@@ -56,3 +56,20 @@ repos:
             \.secrets\.baseline$|
             \.pre-commit-config\.yaml$
           )$
+
+      - id: check-hardcoded-rsa-keys
+        name: Check for hardcoded RSA private keys
+        entry: bash -c 'if grep -r "BEGIN RSA PRIVATE KEY\|BEGIN PRIVATE KEY\|BEGIN OPENSSH PRIVATE KEY" "$@" | grep -v "scripts/generate_oauth_keys.py"; then echo "ERROR: Hardcoded RSA private key detected! Use dynamic key generation in tests or environment variables in production."; exit 1; fi' --
+        language: system
+        pass_filenames: true
+        files: \.(py|js|ts|jsx|tsx|md|txt|yml|yaml|json)$
+        exclude: |
+          (?x)^(
+            \.git/.*|
+            \.venv/.*|
+            node_modules/.*|
+            __pycache__/.*|
+            docs/operations/security/INCIDENT-.*\.md$|
+            \.secrets\.baseline$|
+            scripts/generate_oauth_keys\.py$
+          )$

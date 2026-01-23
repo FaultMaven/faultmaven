@@ -22,45 +22,48 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 )
 
 
-# Test RSA key pair (2048-bit) - for testing only
-# Generated using scripts/generate_oauth_keys.py
-TEST_PRIVATE_KEY = """-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEAr0+UcafV6BzHPkDETQ11aDtan2X7odUK6UWc+nezcWteyl6Q
-+pYjhtURJt59rDw7/gGpVC3kDxjmGttnc4UmEA1+Sxfa4ch7KXpaquAnGmZ8a70i
-MKkYkNZ3IUb2R2TeBSko+aIfMLn5D5q/mIwHjwoOC/jtlmNCz/v4fT9bo1QnrB96
-iuhFpC5BL1Y3ArAwZ8G6Oi2wnjdpLP0HlLWQ6sPBK6QmMARGi0Bec4aJnWtTnCAF
-bKD4sRmUk5BX537OPg3ZqHOl2Lfjz8CHdOgNqq1avvguJl1woDUgLGX0KPz89P35
-1byPbLSPmMdcdrs+sES1TAUwGrCv04Ml36nr+wIDAQABAoIBAE0gxN1QCtMIvjvM
-QNDph+romhEgzBlB4oAIqWykdyUCKPz9p+knXs/2M4qXPlElWvuAfZ/UZM6jlLDi
-MFxpivprBVJCV4EYM99mvjcJUQrTZg/8cOtZqb4nLNhOIRH99ZPtrOJPCkvktgfA
-fGS/zp+Gu/FWfii42O8qGwP3ePic1CP3zV2TGyo6TGL9Tpc8zAliV/rn7afuHTdi
-OBByfQHbAv8rdhQsxC+N6iBpv8kqD+SrV5UOhR1B4br1Ps4idsnvxNSK8nBf78X2
-ES01VUwsy4ibLGmKISVDU2CFUZPBL5k73oWFLbmxWFlNxJhaaOhhVZStvlsj1V19
-knKDSLECgYEA9k8ogMqghvySiFOFH1qQjyyjdpPAF7FRQQliUffXSP88mxqA1U0B
-QuZSwQhVEbjaIYMbq47UhhZO2ZMNETvUJfDS9+9j6lXOkBA0Y+pgG0d/Q8oW+f5E
-lAewUn7rFp+LWyCIHAm/B9rolnUZOQn8hjpZUoUlB9duTAJK5KTduxkCgYEAtjVS
-YQZkKvaUkbyKLozTslRpCZ3aInnHmE7v/pAxhhOtZADVIvyud8isScT51SEGENKb
-UEhguH/4J3KzwYWguQsa8nKX01kNyCYrRVTBy8mBpBbMivUeni8NnmZdN+4xWNxk
-0klcR/IfD1JPaYn2/dT2xw/UQm3pN2u6SwNlljMCgYAg9OyFdxdNmIP+y7YXQOXw
-0lc46YIdaXNm0VuffhsHQGealUxBviD6E5llDLldOq+tJj7QkLbtDhUU1bE86hVz
-0ipYVGa5FywhaJmp+NVNMR7dMjAq2RPR/slf8G2CRGzAD7VGkyNFaMwQPbDXSffI
-+guzl+8hgnjWoMPmngyxGQKBgQCi/+iGK7WISbZ2+XeUVR88tQ6SL8hodxD7TAKe
-dFgZXZkLkUMaXXmmZrrZ84CcDULj4cRXeags5S4V/CKayPQTFcAxjBoOU+hkWOD0
-0PHdYJK9PDgXR1jwoZ9JSMGzuz4iBGedR0tqgUsP5c5s16NBSDbLtXlpQ/ISRikN
-2igSyQKBgQCkvycDCG3A1mXKF8045a4YTD6AJ1iJOxDdAcdsnIggzhNzmuzN9YK+
-wlUdUYruhvuzYU1qoIk22GeuHMsSHGToFYs/bYvI5+zlK5bMMYfGFf/TmgLApT14
-0OOftMOAdZjZmI3/+oXalmKGuCaaEpyKFj+mr/v1IIxJMx0Mc+6n3Q==
------END RSA PRIVATE KEY-----"""
+# Test RSA key pair generation
+# Keys are generated dynamically for each test run to avoid hardcoding secrets
+def _generate_test_rsa_keypair():
+    """Generate ephemeral RSA key pair for testing.
 
-TEST_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr0+UcafV6BzHPkDETQ11
-aDtan2X7odUK6UWc+nezcWteyl6Q+pYjhtURJt59rDw7/gGpVC3kDxjmGttnc4Um
-EA1+Sxfa4ch7KXpaquAnGmZ8a70iMKkYkNZ3IUb2R2TeBSko+aIfMLn5D5q/mIwH
-jwoOC/jtlmNCz/v4fT9bo1QnrB96iuhFpC5BL1Y3ArAwZ8G6Oi2wnjdpLP0HlLWQ
-6sPBK6QmMARGi0Bec4aJnWtTnCAFbKD4sRmUk5BX537OPg3ZqHOl2Lfjz8CHdOgN
-qq1avvguJl1woDUgLGX0KPz89P351byPbLSPmMdcdrs+sES1TAUwGrCv04Ml36nr
-+wIDAQAB
------END PUBLIC KEY-----"""
+    This function generates a new 2048-bit RSA key pair each time it's called.
+    Keys are never persisted and exist only in memory during test execution.
+
+    Returns:
+        tuple: (private_key_pem, public_key_pem) as strings
+    """
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    # Generate private key
+    private_key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048, backend=default_backend()
+    )
+
+    # Serialize private key to PEM format
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+
+    # Get public key
+    public_key = private_key.public_key()
+
+    # Serialize public key to PEM format
+    public_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+
+    return private_pem, public_pem
+
+
+# Generate test keys once at module load
+# This is acceptable for tests as they are ephemeral and never committed
+TEST_PRIVATE_KEY, TEST_PUBLIC_KEY = _generate_test_rsa_keypair()
 
 
 @pytest.fixture
