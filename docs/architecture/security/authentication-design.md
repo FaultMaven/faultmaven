@@ -459,6 +459,164 @@ async def search_knowledge(
 
 ## Frontend Integration
 
+This section covers implementation for both Dashboard (web app) and Extension (browser copilot).
+
+---
+
+## Dashboard OAuth Implementation
+
+### Overview
+
+The Dashboard acts as the **authentication UI** for the OAuth flow:
+- Displays login page for user credentials
+- Shows OAuth consent screen (client permissions)
+- Redirects back to Extension with authorization code
+
+**Tech Stack:** React 19, TypeScript, React Router v7, Tailwind CSS, Vite
+
+**New Files Needed:**
+1. `src/pages/OAuthAuthorizePage.tsx` - Consent page
+2. `src/components/OAuthConsentCard.tsx` - Consent UI
+3. `src/lib/api/oauth.ts` - OAuth API client
+
+### Dashboard Routes
+
+Add to `src/App.tsx`:
+
+```typescript
+<Route
+  path="/auth/authorize"
+  element={
+    <ProtectedRoute>
+      <OAuthAuthorizePage />
+    </ProtectedRoute>
+  }
+/>
+```
+
+### OAuth Consent Page
+
+**File:** `src/pages/OAuthAuthorizePage.tsx`
+
+```typescript
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
+
+export default function OAuthAuthorizePage() {
+  const [searchParams] = useSearchParams();
+  const [consent, setConsent] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Call GET /auth/oauth/authorize with query params
+    fetch(`/auth/oauth/authorize?${searchParams.toString()}`, {
+      credentials: 'include' // Send session cookie
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.code) {
+          // Auto-approved (dev mode), redirect immediately
+          const redirectUri = searchParams.get('redirect_uri');
+          window.location.href = `${redirectUri}?code=${data.code}&state=${data.state}`;
+        } else {
+          // Show consent screen
+          setConsent(data);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleApprove() {
+    // POST /auth/oauth/authorize with approval
+    const response = await fetch('/auth/oauth/authorize', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        approved: true,
+        client_id: consent.client_id,
+        redirect_uri: consent.redirect_uri,
+        code_challenge: searchParams.get('code_challenge'),
+        code_challenge_method: searchParams.get('code_challenge_method'),
+        scope: consent.scope,
+        state: consent.state,
+      })
+    });
+
+    const { code, state } = await response.json();
+    window.location.href = `${consent.redirect_uri}?code=${code}&state=${state}`;
+  }
+
+  if (loading) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <h2>Authorize {consent.client_name}</h2>
+      <p>Signing in as: {consent.username}</p>
+      <h3>This app will be able to:</h3>
+      <ul>
+        {consent.scope.split(' ').map(scope => (
+          <li key={scope}>{scope}</li>
+        ))}
+      </ul>
+      <button onClick={handleApprove}>Authorize</button>
+      <button onClick={() => window.close()}>Cancel</button>
+    </div>
+  );
+}
+```
+
+### OAuth API Client
+
+**File:** `src/lib/api/oauth.ts`
+
+```typescript
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+export async function getOAuthConsent(params: URLSearchParams) {
+  const res = await fetch(`${API_BASE}/auth/oauth/authorize?${params}`, {
+    credentials: 'include'
+  });
+  return res.json();
+}
+
+export async function submitOAuthApproval(data: {
+  approved: boolean;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  code_challenge_method: string;
+  scope: string;
+  state: string;
+}) {
+  const res = await fetch(`${API_BASE}/auth/oauth/authorize`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  return res.json();
+}
+```
+
+### Login Page OAuth Redirect
+
+Update `src/pages/LoginPage.tsx` after successful login:
+
+```typescript
+// After successful devLogin()
+const oauthRedirect = sessionStorage.getItem('oauth_redirect_after_login');
+if (oauthRedirect) {
+  sessionStorage.removeItem('oauth_redirect_after_login');
+  window.location.href = oauthRedirect;
+  return;
+}
+```
+
+---
+
+## Extension OAuth Implementation
+
 ### Extension OAuth Client
 
 ```typescript
