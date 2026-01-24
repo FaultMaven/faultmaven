@@ -1336,10 +1336,10 @@ async def get_capabilities():
     settings = get_settings()
 
     # Determine deployment mode based on dashboard URL
-    # Enterprise/Cloud: https://app.faultmaven.ai
-    # Self-hosted: localhost or custom domain
+    # Cloud: https://app.faultmaven.ai (managed SaaS)
+    # Self-hosted: localhost or custom domain (customer-managed)
     is_cloud = settings.auth.dashboard_url == "https://app.faultmaven.ai"
-    deployment_mode = "enterprise" if is_cloud else "self-hosted"
+    deployment_mode = "cloud" if is_cloud else "self-hosted"
 
     return {
         "deploymentMode": deployment_mode,
@@ -1347,10 +1347,10 @@ async def get_capabilities():
         "dashboardUrl": settings.auth.dashboard_url,
         "features": {
             "extensionKB": False,  # Always false - extension KB removed
-            "adminKB": deployment_mode == "enterprise",
-            "teamWorkspaces": deployment_mode == "enterprise",
-            "caseHistory": deployment_mode == "enterprise",
-            "sso": deployment_mode == "enterprise",
+            "adminKB": deployment_mode == "cloud",
+            "teamWorkspaces": deployment_mode == "cloud",
+            "caseHistory": deployment_mode == "cloud",
+            "sso": deployment_mode == "cloud",
         },
         "limits": {
             "maxFileBytes": 10485760,  # 10MB
