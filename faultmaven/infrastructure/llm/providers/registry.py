@@ -18,6 +18,7 @@ from faultmaven.exceptions import ModelLoadingException
 
 from .anthropic import AnthropicProvider
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .cohere_provider import CohereProvider
 from .fireworks_provider import FireworksProvider
 from .gemini import GeminiProvider
 from .groq_provider import GroqProvider
@@ -107,6 +108,16 @@ PROVIDER_SCHEMA = {
         "default_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
         "provider_class": GroqProvider,
         "confidence_score": 0.88,  # Groq is fast and reliable
+        # max_retries and timeout loaded from settings
+    },
+    "cohere": {
+        "api_key_var": "COHERE_API_KEY",
+        "model_var": "COHERE_CHAT_MODEL",
+        "base_url_var": "COHERE_API_BASE",
+        "default_base_url": "https://api.cohere.ai/v2",
+        "default_model": "command-r-plus",
+        "provider_class": CohereProvider,
+        "confidence_score": 0.82,  # Between Groq (0.88) and Gemini/OpenRouter (0.8)
         # max_retries and timeout loaded from settings
     },
 }
@@ -295,6 +306,15 @@ class ProviderRegistry:
             )
             model = llm_settings.groq_chat_model or schema["default_model"]
             base_url = llm_settings.groq_base_url or schema["default_base_url"]
+
+        elif provider_name == "cohere":
+            api_key = (
+                llm_settings.cohere_api_key.get_secret_value()
+                if llm_settings.cohere_api_key
+                else None
+            )
+            model = llm_settings.cohere_chat_model or schema["default_model"]
+            base_url = llm_settings.cohere_base_url or schema["default_base_url"]
 
         # Skip providers without required API keys (except local)
         if schema.get("api_key_var") and not api_key and provider_name != "local":

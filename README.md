@@ -34,7 +34,7 @@ Get the full FaultMaven stack running in under 5 minutes.
 
 - **Docker** and **Docker Compose**
 - **LLM Provider** (one of):
-  - Cloud: OpenAI, Anthropic, Fireworks AI, Google Gemini, Groq
+  - Cloud: OpenAI, Anthropic, Fireworks AI, Google Gemini, Groq, Cohere, HuggingFace, OpenRouter
   - Local: Ollama (no API key required)
 
 ### Step 1: Start the Stack
@@ -70,7 +70,7 @@ cp .env.example .env
 
 **Note:** Users must be created before login. This ensures production parity between local and cloud deployments.
 
-**Local Deployment:** Designed for single-user usage with `WORKERS=1` (required). While you can create multiple user accounts, local deployment is optimized for one active user.
+**Local Deployment:** Designed for single-user usage on `localhost` only. Access is restricted to `http://localhost:3333` from the same machine. For remote server access, use SSH tunneling (see `.env.example` for details). While you can create multiple user accounts, local deployment is optimized for one active user.
 
 **Image sources:** FaultMaven publishes to both Docker Hub (`docker.io/faultmaven/faultmaven`) and GitHub Container Registry (`ghcr.io/faultmaven/faultmaven`). The default docker-compose.yml uses Docker Hub for better availability and no authentication requirements.
 
@@ -258,7 +258,7 @@ The SaaS edition runs the Core in a distributed, production-grade configuration.
 | **Knowledge Tiers** | Personal Only | **Global + Team + Personal** |
 | **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
 | **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
-| **Access** | `localhost` | `app.faultmaven.ai` |
+| **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
 
 **Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
 
@@ -369,12 +369,16 @@ See [.env.example](.env.example) for all options with detailed comments.
 
 ```env
 # Select primary provider
-CHAT_PROVIDER=openai  # openai, anthropic, fireworks, gemini, groq, local
+CHAT_PROVIDER=openai  # openai, anthropic, fireworks, gemini, groq, cohere, huggingface, openrouter, local
 
 # Add API key for your provider
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 FIREWORKS_API_KEY=fw-...
+GROQ_API_KEY=gsk-...
+COHERE_API_KEY=xxx
+HUGGINGFACE_API_KEY=hf_...
+OPENROUTER_API_KEY=sk-or-...
 
 # Optional: Separate providers for specific tasks
 MULTIMODAL_PROVIDER=gemini       # Visual evidence processing
@@ -432,7 +436,7 @@ alembic upgrade head
 | Layer | Technologies |
 |-------|--------------|
 | **Framework** | Python 3.11+, FastAPI, Uvicorn, AsyncIO |
-| **LLM/AI** | LangGraph, LangChain, OpenAI, Anthropic, Fireworks, Gemini |
+| **LLM/AI** | LangGraph, LangChain, OpenAI, Anthropic, Fireworks, Gemini, Groq, Cohere, HuggingFace, OpenRouter |
 | **Database** | SQLAlchemy 2.0, SQLite (local), PostgreSQL (production), Alembic |
 | **Vector DB** | ChromaDB, sentence-transformers |
 | **Cache** | Redis (optional), in-memory fallback |
