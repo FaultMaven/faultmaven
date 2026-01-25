@@ -986,8 +986,8 @@ class AuthSettings(BaseSettings):
     # OAuth redirect URI patterns (regex)
     oauth_redirect_uri_patterns: List[str] = Field(
         default=[
-            r"^chrome-extension://[a-z]{32}/callback$",
-            r"^moz-extension://[a-f0-9-]{36}/callback$",
+            r"^chrome-extension://[a-z]{32}/callback\.html$",
+            r"^moz-extension://[a-f0-9-]{36}/callback\.html$",
         ],
         env="OAUTH_REDIRECT_URI_PATTERNS",
         description="Allowed redirect URI patterns (regex) for OAuth",

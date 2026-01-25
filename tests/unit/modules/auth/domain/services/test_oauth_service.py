@@ -66,7 +66,7 @@ def mock_settings():
     settings.oauth_allowed_clients = ["faultmaven-copilot", "test-client"]
     settings.oauth_code_expiry_seconds = 600  # 10 minutes
     settings.oauth_redirect_uri_patterns = [
-        r"^chrome-extension://[a-z0-9]+/callback$",
+        r"^chrome-extension://[a-z0-9]+/callback\.html$",
         r"^https://dashboard\.faultmaven\.ai/auth/callback$",
     ]
     settings.jwt_access_token_expire_minutes = 60
@@ -122,7 +122,7 @@ class TestAuthorizationCodeGeneration:
 
         auth_request = OAuthAuthorizationDTO(
             client_id="faultmaven-copilot",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             state="random_state_123",
             code_challenge=code_challenge,
             code_challenge_method="S256",
@@ -144,7 +144,7 @@ class TestAuthorizationCodeGeneration:
 
         assert saved_code_data.code == code
         assert saved_code_data.user_id == "user_123"
-        assert saved_code_data.redirect_uri == "chrome-extension://abc123/callback"
+        assert saved_code_data.redirect_uri == "chrome-extension://abc123/callback.html"
         assert saved_code_data.code_challenge == code_challenge
         assert saved_code_data.used is False
 
@@ -157,7 +157,7 @@ class TestAuthorizationCodeGeneration:
 
         auth_request = OAuthAuthorizationDTO(
             client_id="invalid-client",  # Not in allowed clients
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             state="random_state_123",
             code_challenge=code_challenge,
             code_challenge_method="S256",
@@ -176,7 +176,7 @@ class TestAuthorizationCodeGeneration:
 
         auth_request = OAuthAuthorizationDTO(
             client_id="faultmaven-copilot",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             state="random_state_123",
             code_challenge=code_challenge,
             code_challenge_method="plain",  # Not supported
@@ -243,7 +243,7 @@ class TestCodeExchange:
         code_data = OAuthCodeDTO(
             code=authorization_code,
             user_id="user_123",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=False,
@@ -260,7 +260,7 @@ class TestCodeExchange:
         token_dto = await oauth_service.exchange_code_for_token(
             code=authorization_code,
             code_verifier=code_verifier,
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
         )
 
         # Verify token response
@@ -290,7 +290,7 @@ class TestCodeExchange:
             await oauth_service.exchange_code_for_token(
                 code="invalid_code",
                 code_verifier=code_verifier,
-                redirect_uri="chrome-extension://abc123/callback",
+                redirect_uri="chrome-extension://abc123/callback.html",
             )
 
     @pytest.mark.asyncio
@@ -303,7 +303,7 @@ class TestCodeExchange:
         expired_code_data = OAuthCodeDTO(
             code="expired_code",
             user_id="user_123",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),  # Expired
             used=False,
@@ -314,7 +314,7 @@ class TestCodeExchange:
             await oauth_service.exchange_code_for_token(
                 code="expired_code",
                 code_verifier=code_verifier,
-                redirect_uri="chrome-extension://abc123/callback",
+                redirect_uri="chrome-extension://abc123/callback.html",
             )
 
     @pytest.mark.asyncio
@@ -327,7 +327,7 @@ class TestCodeExchange:
         used_code_data = OAuthCodeDTO(
             code="used_code",
             user_id="user_123",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=True,  # Already used
@@ -340,7 +340,7 @@ class TestCodeExchange:
             await oauth_service.exchange_code_for_token(
                 code="used_code",
                 code_verifier=code_verifier,
-                redirect_uri="chrome-extension://abc123/callback",
+                redirect_uri="chrome-extension://abc123/callback.html",
             )
 
     @pytest.mark.asyncio
@@ -353,7 +353,7 @@ class TestCodeExchange:
         code_data = OAuthCodeDTO(
             code="auth_code_123",
             user_id="user_123",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=False,
@@ -367,7 +367,7 @@ class TestCodeExchange:
             await oauth_service.exchange_code_for_token(
                 code="auth_code_123",
                 code_verifier=wrong_verifier,
-                redirect_uri="chrome-extension://abc123/callback",
+                redirect_uri="chrome-extension://abc123/callback.html",
             )
 
     @pytest.mark.asyncio
@@ -380,7 +380,7 @@ class TestCodeExchange:
         code_data = OAuthCodeDTO(
             code="auth_code_123",
             user_id="user_123",
-            redirect_uri="chrome-extension://abc123/callback",
+            redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=False,
@@ -391,7 +391,7 @@ class TestCodeExchange:
             await oauth_service.exchange_code_for_token(
                 code="auth_code_123",
                 code_verifier=code_verifier,
-                redirect_uri="chrome-extension://different/callback",  # Different URI
+                redirect_uri="chrome-extension://different/callback.html",  # Different URI
             )
 
 
