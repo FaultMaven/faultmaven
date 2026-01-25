@@ -95,6 +95,28 @@ class OAuthCodeDTO:
     used: bool = False
 
 
+@dataclass
+class AuthTokenDTO:
+    """Data Transfer Object for authentication token response.
+
+    Used by both Local and Cloud modes for uniform token format.
+    Per iam-design.md, both modes use JWT tokens with identical structure.
+    """
+
+    access_token: str
+    refresh_token: str
+    user_id: str
+    username: str
+    email: str
+    display_name: str
+    roles: List[str]
+    session_id: Optional[str] = None
+    token_type: str = "Bearer"
+    expires_in: int = 3600  # 1 hour (in seconds)
+    refresh_expires_in: int = 604800  # 7 days (in seconds)
+    auth_mode: str = "local"  # "local" or "oauth"
+
+
 # ============================================================
 # Repository Contracts
 # ============================================================
@@ -243,6 +265,82 @@ class IOAuthService(ABC):
         ...
 
 
+class ILocalAuthService(ABC):
+    """Contract for Local Mode authentication operations.
+
+    Per iam-design.md, this interface handles authentication for
+    self-hosted/single-user deployments using simple username/password.
+
+    Local mode uses JWT tokens (same as OAuth mode) for middleware uniformity.
+    The only difference is the signing algorithm (HS256 vs RS256).
+    """
+
+    async def login(
+        self, username: str, password: Optional[str] = None
+    ) -> AuthTokenDTO:
+        """Authenticate user with username/password.
+
+        Args:
+            username: User's username
+            password: Optional password (for enhanced security)
+
+        Returns:
+            JWT access token and user information
+
+        Raises:
+            AuthenticationError: If credentials invalid
+        """
+        ...
+
+    async def register(
+        self,
+        username: str,
+        email: str,
+        display_name: str,
+        password: Optional[str] = None,
+    ) -> AuthTokenDTO:
+        """Register new user account.
+
+        Args:
+            username: Desired username
+            email: User's email address
+            display_name: User's display name
+            password: Optional password
+
+        Returns:
+            JWT access token and user information
+
+        Raises:
+            UserExistsError: If username or email already taken
+        """
+        ...
+
+    async def validate_token(self, token: str) -> Optional[str]:
+        """Validate access token and return user_id.
+
+        Args:
+            token: Access token from Authorization header
+
+        Returns:
+            user_id if token valid, None otherwise
+        """
+        ...
+
+    async def refresh_access_token(self, refresh_token: str) -> AuthTokenDTO:
+        """Refresh access token using refresh token.
+
+        Args:
+            refresh_token: Valid refresh token
+
+        Returns:
+            New access token and rotated refresh token
+
+        Raises:
+            InvalidGrantError: If refresh token invalid or expired
+        """
+        ...
+
+
 class IPermissionChecker(Protocol):
     """Interface for permission checking (for high fan-in scenarios)."""
 
@@ -345,6 +443,7 @@ __all__ = [
     "OAuthAuthorizationDTO",
     "OAuthTokenDTO",
     "OAuthCodeDTO",
+    "AuthTokenDTO",
     # Repository Protocols
     "IUserRepository",
     "IUserQuery",
@@ -352,6 +451,7 @@ __all__ = [
     # Service Protocols
     "IAuthService",
     "IOAuthService",
+    "ILocalAuthService",
     "IPermissionChecker",
     "ISessionService",
 ]

@@ -2,32 +2,36 @@
 
 Purpose: FastAPI routes for authentication operations
 
-This module provides authentication endpoints for the development environment,
-including login, logout, and user profile operations. The endpoints follow
-OAuth2/JWT conventions for future production compatibility.
+This module provides authentication endpoints per iam-design.md.
+Supports two authentication modes selected at deployment time:
+- Local Mode: Simple username/password authentication for self-hosted deployments
+- Cloud Mode: OAuth 2.0 + PKCE for multi-user SaaS deployments
 
 Key Endpoints:
-- POST /auth/dev-login: Development login with username
+- GET /auth/config: Auth configuration discovery (determines client auth flow)
+- POST /auth/login: Local mode login (AUTH_MODE=local only)
+- POST /auth/register: Local mode registration (AUTH_MODE=local only)
 - POST /auth/logout: Token revocation
 - GET /auth/me: Current user profile
 - GET /auth/health: Authentication system health
 
 Security Notes:
-- All tokens are stored as SHA-256 hashes
-- Automatic token expiration after 24 hours
+- JWT tokens in both modes for middleware uniformity
+- Automatic token expiration (configurable via JWT_ACCESS_TOKEN_EXPIRY)
 - Input validation and sanitization
-- Structured error responses
+- Structured error responses per RFC 6749
 """
 
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPBearer
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
+from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.container import container
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.api_auth import (
@@ -64,40 +68,191 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
 
-# Authentication endpoints
+
+# =============================================================================
+# Endpoint Gating (per iam-design.md)
+# =============================================================================
 
 
-@router.post("/dev-login", response_model=AuthTokenResponse, status_code=200)
-@trace("auth_dev_login")
-async def dev_login(
+async def require_local_mode() -> None:
+    """Dependency that ensures we're in local auth mode.
+
+    Per iam-design.md, local mode endpoints (/login, /register) should
+    only be available when AUTH_MODE=local.
+
+    Raises:
+        HTTPException: 404 if not in local mode
+    """
+    settings = get_settings()
+    if settings.auth.auth_mode != AuthMode.LOCAL:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "endpoint_not_available",
+                "message": "This endpoint is only available in local auth mode",
+                "hint": "Use OAuth endpoints for cloud deployments",
+            },
+        )
+
+
+async def require_development_environment() -> None:
+    """Dependency that ensures we're in development environment.
+
+    Per iam-design.md, admin/debug endpoints should only be available
+    in development environments, not in production.
+
+    Raises:
+        HTTPException: 404 if not in development
+    """
+    settings = get_settings()
+    # Check if we're in development mode
+    # The environment is typically set via ENVIRONMENT env var
+    environment = getattr(settings, "environment", None)
+    if environment and str(environment).lower() not in ("development", "dev", "local"):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "endpoint_not_available",
+                "message": "This endpoint is only available in development environment",
+            },
+        )
+
+
+# =============================================================================
+# Auth Configuration Discovery (per iam-design.md)
+# =============================================================================
+
+
+class OAuthConfigResponse(BaseModel):
+    """OAuth configuration for cloud mode."""
+
+    authorize_url: str
+    token_url: str
+    client_id: str
+    scopes: List[str]
+
+
+class AuthConfigResponse(BaseModel):
+    """Auth configuration discovery response.
+
+    Allows frontend to determine which authentication flow to use
+    based on deployment configuration.
+    """
+
+    auth_mode: str
+    login_endpoint: Optional[str] = None
+    register_endpoint: Optional[str] = None
+    supports_registration: bool
+    oauth: Optional[OAuthConfigResponse] = None
+
+
+@router.get("/config", response_model=AuthConfigResponse)
+@trace("auth_config")
+async def get_auth_config() -> AuthConfigResponse:
+    """Auth configuration discovery endpoint.
+
+    Returns the authentication configuration for the current deployment.
+    Frontend uses this to determine which auth flow to implement.
+
+    **Local Mode Response:**
+    ```json
+    {
+      "auth_mode": "local",
+      "login_endpoint": "/api/v1/auth/login",
+      "register_endpoint": "/api/v1/auth/register",
+      "supports_registration": true,
+      "oauth": null
+    }
+    ```
+
+    **Cloud Mode Response:**
+    ```json
+    {
+      "auth_mode": "oauth",
+      "login_endpoint": null,
+      "register_endpoint": null,
+      "supports_registration": false,
+      "oauth": {
+        "authorize_url": "/auth/oauth/authorize",
+        "token_url": "/auth/oauth/token",
+        "client_id": "faultmaven-copilot",
+        "scopes": ["openid", "profile", "email", "cases:read", "cases:write"]
+      }
+    }
+    ```
+    """
+    settings = get_settings()
+    auth_settings = settings.auth
+
+    if auth_settings.auth_mode == AuthMode.LOCAL:
+        return AuthConfigResponse(
+            auth_mode="local",
+            login_endpoint="/api/v1/auth/login",
+            register_endpoint="/api/v1/auth/register",
+            supports_registration=True,
+            oauth=None,
+        )
+    else:
+        # Cloud mode (OAuth)
+        return AuthConfigResponse(
+            auth_mode="oauth",
+            login_endpoint=None,
+            register_endpoint=None,
+            supports_registration=False,
+            oauth=OAuthConfigResponse(
+                authorize_url="/auth/oauth/authorize",
+                token_url="/auth/oauth/token",
+                client_id="faultmaven-copilot",
+                scopes=["openid", "profile", "email", "cases:read", "cases:write"],
+            ),
+        )
+
+
+# =============================================================================
+# Local Mode Authentication Endpoints (AUTH_MODE=local only)
+# =============================================================================
+
+
+@router.post(
+    "/login",
+    response_model=AuthTokenResponse,
+    status_code=200,
+    dependencies=[Depends(require_local_mode)],
+)
+@router.post(
+    "/dev-login",
+    response_model=AuthTokenResponse,
+    status_code=200,
+    deprecated=True,
+    description="Deprecated: Use /login instead",
+    dependencies=[Depends(require_local_mode)],
+)
+@trace("auth_login")
+async def local_login(
     request_body: DevLoginRequest,
     request: Request,
     response: Response,
     session_service: AuthSessionService = Depends(get_session_service),
 ) -> AuthTokenResponse:
-    """Development login endpoint
+    """Internal login implementation for local mode.
 
-    Authenticates users and generates authentication tokens.
+    Authenticates users and generates JWT tokens.
 
     **Important:** Users must be created before login. Use `./faultmaven.sh create-user`
-    to create accounts. This ensures production parity between local and cloud deployments.
-
-    This endpoint is designed for development environments and will be replaced
-    with production OAuth2/OIDC integration later.
+    to create accounts.
 
     **Flow:**
     1. Validate username format
     2. Find existing user
     3. If user doesn't exist: Return 401 (user must be created first)
-    4. Generate authentication token
+    4. Generate JWT access token
     5. Return token with user profile
 
     **Security:**
     - Users must exist before login (no auto-creation)
-    - Production parity: Same behavior in local and cloud
-    - Tokens expire after 24 hours
+    - JWT tokens (not opaque tokens) for middleware uniformity
     - Input validation and sanitization
-    - Proper OAuth2 error responses
+    - Proper OAuth2-compatible error responses
     """
     correlation_id = str(uuid.uuid4())
 
@@ -125,7 +280,7 @@ async def dev_login(
                     "message": (
                         f"User '{request_body.username}' does not exist. "
                         "Please create an account first using './faultmaven.sh create-user' "
-                        "or the dev-register endpoint."
+                        "or the /api/v1/auth/register endpoint."
                     ),
                     "username": request_body.username,
                 },
@@ -220,30 +375,42 @@ async def dev_login(
         )
 
 
-@router.post("/dev-register", response_model=AuthTokenResponse, status_code=201)
-@trace("auth_dev_register")
-async def dev_register(
+@router.post(
+    "/register",
+    response_model=AuthTokenResponse,
+    status_code=201,
+    dependencies=[Depends(require_local_mode)],
+)
+@router.post(
+    "/dev-register",
+    response_model=AuthTokenResponse,
+    status_code=201,
+    deprecated=True,
+    description="Deprecated: Use /register instead",
+    dependencies=[Depends(require_local_mode)],
+)
+@trace("auth_register")
+async def local_register(
     request_body: DevLoginRequest,
     request: Request,
     response: Response,
     session_service: AuthSessionService = Depends(get_session_service),
 ) -> AuthTokenResponse:
-    """Development registration endpoint
+    """Local mode registration endpoint.
 
-    Creates a new user account and generates an authentication token.
-    This endpoint is designed for development environments and will be replaced
-    with production registration flows later.
+    Creates a new user account and generates a JWT token.
+    Available only when AUTH_MODE=local.
 
     **Flow:**
     1. Validate username format
     2. Check if user already exists (returns 409 if exists)
     3. Create new user account
-    4. Generate authentication token
+    4. Generate JWT access token
     5. Return token with user profile
 
     **Security:**
     - Prevents duplicate account creation
-    - Tokens expire after 24 hours
+    - JWT tokens (not opaque tokens) for middleware uniformity
     - Input validation and sanitization
     - Auto-generates email and display name if not provided
     """
@@ -354,17 +521,21 @@ async def dev_register(
         )
 
 
-@router.get("/dev-list-users", status_code=200)
+@router.get(
+    "/dev-list-users",
+    status_code=200,
+    dependencies=[Depends(require_development_environment)],
+)
 @trace("auth_dev_list_users")
 async def dev_list_users(
     request: Request,
 ) -> dict:
-    """Development endpoint to list all users
+    """Development endpoint to list all users.
 
     Returns a list of all users in the system for development/debugging.
-    This endpoint has no authentication requirements for development convenience.
+    This endpoint is only available in development environments.
 
-    **Security**: This endpoint should be disabled in production.
+    **Security**: Gated by require_development_environment dependency.
     """
     try:
         user_store = await get_user_store(request)
@@ -407,18 +578,22 @@ async def dev_list_users(
         )
 
 
-@router.delete("/dev-delete-user/{username}", status_code=200)
+@router.delete(
+    "/dev-delete-user/{username}",
+    status_code=200,
+    dependencies=[Depends(require_development_environment)],
+)
 @trace("auth_dev_delete_user")
 async def dev_delete_user(
     username: str,
     request: Request,
 ) -> dict:
-    """Development endpoint to delete a user by username
+    """Development endpoint to delete a user by username.
 
     Deletes (soft delete) a user by username for development/debugging.
-    This endpoint has no authentication requirements for development convenience.
+    This endpoint is only available in development environments.
 
-    **Security**: This endpoint should be disabled in production.
+    **Security**: Gated by require_development_environment dependency.
     """
     try:
         user_store = await get_user_store(request)
@@ -582,16 +757,21 @@ async def auth_health_check():
         }
 
 
-# Optional: Debug endpoint for development (remove in production)
-@router.post("/dev/revoke-all-tokens", response_model=LogoutResponse)
+# Debug endpoint for development only
+@router.post(
+    "/dev/revoke-all-tokens",
+    response_model=LogoutResponse,
+    dependencies=[Depends(require_development_environment)],
+)
 @trace("auth_dev_revoke_all")
 async def dev_revoke_all_user_tokens(
     current_user: DevUser = Depends(require_authentication),
 ) -> LogoutResponse:
-    """Development endpoint: Revoke all tokens for current user
+    """Development endpoint: Revoke all tokens for current user.
 
-    **WARNING:** This endpoint is for development use only.
-    It will be removed in production builds.
+    This endpoint is only available in development environments.
+
+    **Security**: Gated by require_development_environment dependency.
     """
     correlation_id = str(uuid.uuid4())
 

@@ -910,30 +910,48 @@ class SecuritySettings(BaseSettings):
 
 
 class AuthMode(str, Enum):
-    """Authentication mode selector."""
+    """Authentication mode selector.
 
-    DEV_LOGIN = "dev-login"
+    Per iam-design.md, FaultMaven supports two authentication modes:
+    - local: Simple username authentication for self-hosted/single-user deployments
+    - oauth: OAuth 2.0 + PKCE for cloud/multi-user deployments
+    """
+
+    LOCAL = "local"
     OAUTH = "oauth"
+
+    # Backward compatibility alias
+    @classmethod
+    def _missing_(cls, value: object) -> "AuthMode | None":
+        """Handle legacy 'dev-login' value for backward compatibility."""
+        if value == "dev-login":
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "AUTH_MODE='dev-login' is deprecated. Use AUTH_MODE='local' instead."
+            )
+            return cls.LOCAL
+        return None
 
 
 class AuthSettings(BaseSettings):
     """Authentication configuration (deployment-agnostic).
 
-    FaultMaven supports two authentication modes:
-    - dev-login: Simple username-only authentication for local development
-    - oauth: OAuth 2.0 + PKCE for production multi-user deployments
+    Per iam-design.md, FaultMaven supports two authentication modes:
+    - local: Simple username authentication for self-hosted/single-user deployments
+    - oauth: OAuth 2.0 + PKCE for cloud/multi-user deployments
 
     ARCHITECTURAL PRINCIPLE: Deployment-agnostic design
-    - Configuration-driven mode selection (dev-login vs oauth)
+    - Configuration-driven mode selection (local vs oauth)
     - Storage abstraction (Redis vs PostgreSQL for OAuth codes)
     - Core auth logic remains independent of deployment environment
     """
 
     # Authentication mode selection
     auth_mode: AuthMode = Field(
-        default=AuthMode.DEV_LOGIN,
+        default=AuthMode.LOCAL,
         env="AUTH_MODE",
-        description="Authentication mode: 'dev-login' (local) or 'oauth' (production)",
+        description="Authentication mode: 'local' (self-hosted) or 'oauth' (cloud)",
     )
 
     # OAuth Configuration (only used when auth_mode=oauth)
@@ -1007,25 +1025,25 @@ class AuthSettings(BaseSettings):
         description="Require HTTPS for redirect URIs (production security). Set false for local dev",
     )
 
-    # Dev-login settings (only used when auth_mode=dev-login)
-    dev_login_token_expiry_hours: int = Field(
+    # Local mode settings (only used when auth_mode=local)
+    local_token_expiry_hours: int = Field(
         default=24,
-        env="DEV_LOGIN_TOKEN_EXPIRY_HOURS",
+        env="LOCAL_TOKEN_EXPIRY_HOURS",
         ge=1,
         le=168,
-        description="Dev-login token expiry (hours)",
+        description="Local mode token expiry (hours)",
     )
 
-    # JWT token expiry settings (used by OAuth for access/refresh tokens)
+    # JWT token expiry settings (common for both modes per iam-design.md)
     jwt_access_token_expire_minutes: int = Field(
         default=60,
-        env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
-        description="OAuth access token expiry (minutes)",
+        env="JWT_ACCESS_TOKEN_EXPIRY",
+        description="Access token expiry (minutes)",
     )
     jwt_refresh_token_expire_days: int = Field(
         default=7,
-        env="JWT_REFRESH_TOKEN_EXPIRE_DAYS",
-        description="OAuth refresh token expiry (days)",
+        env="JWT_REFRESH_TOKEN_EXPIRY",
+        description="Refresh token expiry (days). Default 7 days = 10080 minutes",
     )
 
     @field_validator("oauth_enabled")
@@ -1033,21 +1051,21 @@ class AuthSettings(BaseSettings):
     def validate_oauth_consistency(cls, v, info):
         """Ensure oauth_enabled matches auth_mode"""
         values = info.data
-        auth_mode = values.get("auth_mode", AuthMode.DEV_LOGIN)
+        auth_mode = values.get("auth_mode", AuthMode.LOCAL)
 
         if auth_mode == AuthMode.OAUTH and not v:
             raise ValueError(
                 "AUTH_MODE=oauth requires OAUTH_ENABLED=true. "
-                "Set both or use AUTH_MODE=dev-login for local development."
+                "Set both or use AUTH_MODE=local for self-hosted deployments."
             )
 
-        if auth_mode == AuthMode.DEV_LOGIN and v:
+        if auth_mode == AuthMode.LOCAL and v:
             import logging
 
             logger = logging.getLogger(__name__)
             logger.warning(
-                "OAUTH_ENABLED=true but AUTH_MODE=dev-login. "
-                "OAuth will be available but dev-login is the active mode. "
+                "OAUTH_ENABLED=true but AUTH_MODE=local. "
+                "OAuth will be available but local auth is the active mode. "
                 "Set AUTH_MODE=oauth to use OAuth as primary authentication."
             )
 
