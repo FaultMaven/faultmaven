@@ -93,7 +93,7 @@ This section covers how FaultMaven stores and retrieves data across:
 
 ## Related Documentation
 
-- **Security**: [../security/authentication-design.md](../security/authentication-design.md) - Session and token management
+- **Security**: [../security/iam-design.md](../security/iam-design.md) - Identity and Access Management
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
 - **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
 

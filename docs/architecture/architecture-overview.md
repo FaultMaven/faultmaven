@@ -1166,7 +1166,7 @@ class OrganizationService:
 - **Frontend Integration**: Roles included in login response for UI decisions
 
 #### Implementation Details
-See [Authentication Design](security/authentication-design.md#role-based-access-control) for complete system design and [Role-Based Access Control](../security/role-based-access-control.md) for user management and integration guide.
+See [IAM Design](security/iam-design.md#role-based-access-control) for complete system design and [Role-Based Access Control](../security/role-based-access-control.md) for user management and integration guide.
 
 #### User Management
 - **CLI Tools**: Scripts for listing, creating, promoting users (see `scripts/auth/`)
@@ -1633,7 +1633,7 @@ Milestone-based investigation engine:
 
 #### Security and Protection (`infrastructure/security/`, `infrastructure/protection/`)
 
-- [`Authentication Design`](security/authentication-design.md) - ✅ **IMPLEMENTED** - Auth implementation (infrastructure/auth/): Token management, user store, RBAC
+- [`IAM Design`](security/iam-design.md) - ✅ **IMPLEMENTED** - Identity and Access Management (infrastructure/auth/): Token management, user store, RBAC
 - [`Role-Based Access Control`](../security/role-based-access-control.md) - ✅ **IMPLEMENTED** - RBAC system: User roles, permissions, management tools, frontend integration
 - [`Security Architecture and Policies`](./security-architecture-and-policies.md) - 📝 *To create* - Security (infrastructure/security/): PII redaction (Presidio), data sanitization
 - [`Protection Systems`](./protection-systems.md) - 📝 *To create* - Protection (infrastructure/protection/): Rate limiting, circuit breakers, anomaly detection, reputation engine

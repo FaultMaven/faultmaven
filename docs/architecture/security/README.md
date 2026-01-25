@@ -4,7 +4,7 @@ Documentation for FaultMaven's authentication, authorization, and security archi
 
 ## Documents
 
-- **[Authentication Design](./authentication-design.md)** - Authentication architecture, user management, and token handling
+- **[IAM Design](./iam-design.md)** - Identity and Access Management: authentication, authorization, RBAC, and token handling
 
 ## Purpose
 

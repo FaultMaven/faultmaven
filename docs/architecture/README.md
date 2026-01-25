@@ -48,7 +48,7 @@ Master index for all architecture documentation.
 | Document | Purpose |
 |----------|---------|
 | **[Dependency Injection System](core-architecture/dependency-injection-system.md)** | DI container and service interfaces |
-| **[Authentication Design](security/authentication-design.md)** | Authentication architecture |
+| **[IAM Design](security/iam-design.md)** | Identity and Access Management |
 
 ### Implementation Guides
 
