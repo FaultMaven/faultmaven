@@ -31,6 +31,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ValidationError
 
+from faultmaven.api.v1.auth_dependencies import (
+    check_auth_services_health,
+    extract_bearer_token,
+    get_token_manager,
+    get_user_store,
+    require_authentication,
+)
+from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.container import container
 from faultmaven.infrastructure.observability.tracing import trace
@@ -45,6 +53,9 @@ from faultmaven.modules.auth.domain.models.api_auth import (
     UserProfile,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser, TokenStatus
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
@@ -53,20 +64,6 @@ logger = logging.getLogger(__name__)
 
 # Security scheme for OpenAPI documentation
 security = HTTPBearer(auto_error=False)
-
-
-# Import clean authentication dependencies
-from faultmaven.api.v1.auth_dependencies import (
-    check_auth_services_health,
-    extract_bearer_token,
-    get_token_manager,
-    get_user_store,
-    require_authentication,
-)
-from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.modules.auth.domain.services.auth_session_service import (
-    AuthSessionService,
-)
 
 
 # =============================================================================
