@@ -333,6 +333,6 @@ For complete implementation details covering all 12 data categories, see [data-s
 
 ## Related Documentation
 
-- **Security**: [../security/authentication-design.md](../security/authentication-design.md) - Session and token management
+- **Security**: [../security/iam-design.md](../security/iam-design.md) - Identity and Access Management
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
 - **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
