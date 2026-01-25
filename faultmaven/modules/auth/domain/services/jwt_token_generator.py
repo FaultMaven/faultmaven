@@ -556,7 +556,14 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "username": user.username,
             "email": user.email if hasattr(user, "email") else "",
             "roles": user.roles if hasattr(user, "roles") else ["user"],
-            "scopes": ["openid", "profile", "email", "cases:read", "cases:write", "knowledge:read"],
+            "scopes": [
+                "openid",
+                "profile",
+                "email",
+                "cases:read",
+                "cases:write",
+                "knowledge:read",
+            ],
             "exp": expires_at,  # Expiration time
             "iat": now,  # Issued at
             "iss": "faultmaven",  # Issuer
