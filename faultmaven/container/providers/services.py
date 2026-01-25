@@ -665,14 +665,14 @@ def register_services(container: BaseDIContainer) -> None:
         container.jwt_token_generator = jwt_token_generator
         container._register_service("jwt_token_generator", jwt_token_generator)
 
-        # Create OAuth service (requires user_service for user repository)
-        if user_service:
-            user_repo = (
-                user_service.user_repo
-            )  # Access user repository from UserService
+        # Create OAuth service (uses user_store for dev-login compatibility)
+        # Note: user_store is the same store used by dev-login authentication
+        # This ensures OAuth can find users created via dev-login
+        user_store = getattr(container, "user_store", None)
+        if user_store:
             oauth_service = create_oauth_service(
                 settings,
-                user_repository=user_repo,
+                user_repository=user_store,  # Use user_store, not user_repo
                 code_repository=oauth_code_repository,
                 token_generator=jwt_token_generator,
             )
@@ -684,7 +684,7 @@ def register_services(container: BaseDIContainer) -> None:
                 "Redis" if redis_client else "in-memory",
             )
         else:
-            logger.warning("OAuth service skipped (no user_service available)")
+            logger.warning("OAuth service skipped (no user_store available)")
     else:
         logger.info("OAuth service disabled (using dev-login mode)")
 
