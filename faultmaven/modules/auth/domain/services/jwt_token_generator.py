@@ -487,6 +487,405 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             )
 
 
+class HS256JWTTokenGenerator(IJWTTokenGenerator):
+    """JWT token generator using HS256 (HMAC + SHA256).
+
+    Uses symmetric signing for local development and single-user deployments:
+    - Same secret key for signing and validation
+    - Simpler key management (single JWT_SECRET_KEY environment variable)
+    - Suitable for local/self-hosted deployments
+
+    Token Structure (identical to RS256):
+    - Access Token: {sub: user_id, username, email, roles, scopes, exp, iat, jti, type: access}
+    - Refresh Token: {sub: user_id, exp, iat, jti, type: refresh}
+    """
+
+    def __init__(
+        self,
+        secret_key: str,
+        revocation_store,  # ITokenRevocationStore
+        settings,  # AuthSettings from config
+    ):
+        """Initialize JWT token generator.
+
+        Args:
+            secret_key: Secret key for HS256 signing/validation
+            revocation_store: Token revocation tracking storage
+            settings: Authentication configuration
+        """
+        self.secret_key = secret_key
+        self.revocation_store = revocation_store
+        self.settings = settings
+
+    async def generate_access_token(self, user: User) -> str:
+        """Generate HS256-signed access token.
+
+        Token Claims (per iam-design.md):
+        - sub: user_id (subject)
+        - username: user's username
+        - email: user's email
+        - roles: user roles list
+        - scopes: OAuth scopes (for compatibility)
+        - exp: expiration timestamp
+        - iat: issued at timestamp
+        - iss: "faultmaven" (issuer)
+        - aud: "faultmaven-api" (audience)
+        - jti: JWT ID (for revocation tracking)
+        - type: "access" (token type discriminator)
+        - auth_mode: "local" (authentication mode)
+
+        Args:
+            user: User to generate token for
+
+        Returns:
+            JWT access token string
+        """
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(
+            minutes=self.settings.jwt_access_token_expire_minutes
+        )
+
+        # Generate unique JWT ID for revocation tracking
+        import uuid
+
+        jti = str(uuid.uuid4())
+
+        # Build payload matching iam-design.md spec
+        payload = {
+            "sub": user.user_id,  # Subject (user ID)
+            "username": user.username,
+            "email": user.email if hasattr(user, "email") else "",
+            "roles": user.roles if hasattr(user, "roles") else ["user"],
+            "scopes": ["openid", "profile", "email", "cases:read", "cases:write", "knowledge:read"],
+            "exp": expires_at,  # Expiration time
+            "iat": now,  # Issued at
+            "iss": "faultmaven",  # Issuer
+            "aud": "faultmaven-api",  # Audience
+            "jti": jti,  # JWT ID (unique identifier)
+            "type": "access",  # Token type
+            "auth_mode": "local",  # Authentication mode
+        }
+
+        token = jwt.encode(
+            payload,
+            self.secret_key,
+            algorithm="HS256",
+        )
+
+        logger.info(
+            "JWT access token generated (HS256)",
+            extra={
+                "user_id": user.user_id,
+                "username": user.username,
+                "jti": jti,
+                "expires_in_minutes": self.settings.jwt_access_token_expire_minutes,
+                "auth_mode": "local",
+            },
+        )
+        return token
+
+    async def generate_refresh_token(self, user: User) -> str:
+        """Generate HS256-signed refresh token.
+
+        Token Claims:
+        - sub: user_id (subject)
+        - exp: expiration timestamp (7 days)
+        - iat: issued at timestamp
+        - iss: "faultmaven" (issuer)
+        - aud: "faultmaven-api" (audience)
+        - jti: JWT ID (for revocation tracking)
+        - type: "refresh" (token type discriminator)
+
+        Args:
+            user: User to generate token for
+
+        Returns:
+            JWT refresh token string
+        """
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
+
+        # Generate unique JWT ID for revocation tracking
+        import uuid
+
+        jti = str(uuid.uuid4())
+
+        payload = {
+            "sub": user.user_id,  # Subject (user ID)
+            "exp": expires_at,  # Expiration time
+            "iat": now,  # Issued at
+            "iss": "faultmaven",  # Issuer
+            "aud": "faultmaven-api",  # Audience
+            "jti": jti,  # JWT ID (unique identifier)
+            "type": "refresh",  # Token type
+        }
+
+        token = jwt.encode(
+            payload,
+            self.secret_key,
+            algorithm="HS256",
+        )
+
+        logger.info(
+            "JWT refresh token generated (HS256)",
+            extra={
+                "user_id": user.user_id,
+                "jti": jti,
+                "expires_in_days": self.settings.jwt_refresh_token_expire_days,
+            },
+        )
+        return token
+
+    async def validate_access_token(self, token: str) -> Optional[Dict]:
+        """Validate access token using secret key.
+
+        Verification:
+        1. Signature verification (HS256)
+        2. Expiration check
+        3. Issuer/Audience check
+        4. Token type check (must be "access")
+        5. Revocation check (if jti present)
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Token payload if valid, None otherwise
+        """
+        try:
+            # Decode and verify token
+            payload = jwt.decode(
+                token,
+                self.secret_key,
+                algorithms=["HS256"],
+                audience="faultmaven-api",
+                issuer="faultmaven",
+                options={"verify_exp": True},
+            )
+
+            # Verify token type
+            if payload.get("type") != "access":
+                logger.warning(
+                    "JWT validation failed: invalid token type",
+                    extra={
+                        "expected_type": "access",
+                        "actual_type": payload.get("type"),
+                        "user_id": payload.get("sub"),
+                    },
+                )
+                return None
+
+            # Check revocation status
+            jti = payload.get("jti")
+            if jti:
+                is_revoked = await self.revocation_store.is_revoked(jti)
+                if is_revoked:
+                    logger.info(
+                        "JWT validation failed: token revoked",
+                        extra={
+                            "jti": jti,
+                            "user_id": payload.get("sub"),
+                        },
+                    )
+                    return None
+
+            logger.debug(
+                "JWT access token validated (HS256)",
+                extra={
+                    "user_id": payload.get("sub"),
+                    "jti": jti,
+                },
+            )
+            return payload
+
+        except jwt.ExpiredSignatureError:
+            logger.info("JWT validation failed: access token expired")
+            return None
+        except jwt.InvalidTokenError as e:
+            logger.warning(
+                "JWT validation failed: invalid access token", extra={"error": str(e)}
+            )
+            return None
+        except Exception as e:
+            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
+            return None
+
+    async def validate_refresh_token(self, token: str) -> Optional[Dict]:
+        """Validate refresh token and check revocation status.
+
+        Args:
+            token: JWT refresh token
+
+        Returns:
+            Token payload if valid and not revoked, None otherwise
+        """
+        try:
+            # Decode and verify token
+            payload = jwt.decode(
+                token,
+                self.secret_key,
+                algorithms=["HS256"],
+                audience="faultmaven-api",
+                issuer="faultmaven",
+                options={"verify_exp": True},
+            )
+
+            # Verify token type
+            if payload.get("type") != "refresh":
+                logger.warning(
+                    "JWT validation failed: invalid token type",
+                    extra={
+                        "expected_type": "refresh",
+                        "actual_type": payload.get("type"),
+                        "user_id": payload.get("sub"),
+                    },
+                )
+                return None
+
+            # Check revocation status
+            jti = payload.get("jti")
+            if jti:
+                is_revoked = await self.revocation_store.is_revoked(jti)
+                if is_revoked:
+                    logger.info(
+                        "JWT validation failed: refresh token revoked",
+                        extra={
+                            "jti": jti,
+                            "user_id": payload.get("sub"),
+                        },
+                    )
+                    return None
+
+            logger.debug(
+                "JWT refresh token validated (HS256)",
+                extra={
+                    "user_id": payload.get("sub"),
+                    "jti": jti,
+                },
+            )
+            return payload
+
+        except jwt.ExpiredSignatureError:
+            logger.info("JWT validation failed: refresh token expired")
+            return None
+        except jwt.InvalidTokenError as e:
+            logger.warning(
+                "JWT validation failed: invalid refresh token", extra={"error": str(e)}
+            )
+            return None
+        except Exception as e:
+            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
+            return None
+
+    async def revoke_access_token(self, token: str) -> None:
+        """Revoke access token by adding jti to revocation list.
+
+        Args:
+            token: JWT access token to revoke
+        """
+        try:
+            # Decode without verification to get jti
+            payload = jwt.decode(
+                token, options={"verify_signature": False, "verify_exp": False}
+            )
+
+            jti = payload.get("jti")
+            if not jti:
+                logger.warning(
+                    "JWT revocation skipped: token missing jti",
+                    extra={"user_id": payload.get("sub")},
+                )
+                return
+
+            # Calculate remaining TTL for revocation entry
+            exp = payload.get("exp")
+            user_id = payload.get("sub")
+            if exp:
+                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+                if ttl > 0:
+                    await self.revocation_store.add_revoked_token(jti, ttl)
+                    logger.info(
+                        "JWT access token revoked (HS256)",
+                        extra={
+                            "jti": jti,
+                            "user_id": user_id,
+                            "ttl_seconds": ttl,
+                        },
+                    )
+            else:
+                # No expiration, revoke with default TTL
+                default_ttl = self.settings.jwt_access_token_expire_minutes * 60
+                await self.revocation_store.add_revoked_token(jti, default_ttl)
+                logger.info(
+                    "JWT access token revoked (HS256)",
+                    extra={
+                        "jti": jti,
+                        "user_id": user_id,
+                        "ttl_seconds": default_ttl,
+                    },
+                )
+
+        except Exception as e:
+            logger.error(
+                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
+            )
+
+    async def revoke_refresh_token(self, token: str) -> None:
+        """Revoke refresh token by adding jti to revocation list.
+
+        Args:
+            token: JWT refresh token to revoke
+        """
+        try:
+            # Decode without verification to get jti
+            payload = jwt.decode(
+                token, options={"verify_signature": False, "verify_exp": False}
+            )
+
+            jti = payload.get("jti")
+            if not jti:
+                logger.warning(
+                    "JWT revocation skipped: token missing jti",
+                    extra={"user_id": payload.get("sub")},
+                )
+                return
+
+            # Calculate remaining TTL for revocation entry
+            exp = payload.get("exp")
+            user_id = payload.get("sub")
+            if exp:
+                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+                if ttl > 0:
+                    await self.revocation_store.add_revoked_token(jti, ttl)
+                    logger.info(
+                        "JWT refresh token revoked (HS256)",
+                        extra={
+                            "jti": jti,
+                            "user_id": user_id,
+                            "ttl_seconds": ttl,
+                        },
+                    )
+            else:
+                # No expiration, revoke with default TTL
+                default_ttl = self.settings.jwt_refresh_token_expire_days * 86400
+                await self.revocation_store.add_revoked_token(jti, default_ttl)
+                logger.info(
+                    "JWT refresh token revoked (HS256)",
+                    extra={
+                        "jti": jti,
+                        "user_id": user_id,
+                        "ttl_seconds": default_ttl,
+                    },
+                )
+
+        except Exception as e:
+            logger.error(
+                "JWT revocation failed", extra={"error": str(e)}, exc_info=True
+            )
+
+
 class ITokenRevocationStore(ABC):
     """Interface for token revocation tracking.
 

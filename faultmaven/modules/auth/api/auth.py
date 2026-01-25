@@ -293,8 +293,28 @@ async def local_login(
             },
         )
 
-        # Generate authentication token
-        access_token = await token_manager.create_token(user)
+        # Generate JWT access token (HS256 for local mode)
+        # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
+        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+            HS256JWTTokenGenerator,
+        )
+
+        settings = get_settings()
+
+        # Create HS256 JWT generator for local mode
+        if not settings.auth.jwt_secret_key:
+            raise HTTPException(
+                status_code=500,
+                detail="JWT_SECRET_KEY not configured for local mode authentication",
+            )
+
+        jwt_generator = HS256JWTTokenGenerator(
+            secret_key=settings.auth.jwt_secret_key.get_secret_value(),
+            revocation_store=token_manager,  # Use existing token_manager for revocation
+            settings=settings,
+        )
+
+        access_token = await jwt_generator.generate_access_token(user)
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -439,8 +459,28 @@ async def local_register(
             f"User registration: {request_body.username} (new user: {user.user_id})"
         )
 
-        # Generate authentication token
-        access_token = await token_manager.create_token(user)
+        # Generate JWT access token (HS256 for local mode)
+        # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
+        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+            HS256JWTTokenGenerator,
+        )
+
+        settings = get_settings()
+
+        # Create HS256 JWT generator for local mode
+        if not settings.auth.jwt_secret_key:
+            raise HTTPException(
+                status_code=500,
+                detail="JWT_SECRET_KEY not configured for local mode authentication",
+            )
+
+        jwt_generator = HS256JWTTokenGenerator(
+            secret_key=settings.auth.jwt_secret_key.get_secret_value(),
+            revocation_store=token_manager,  # Use existing token_manager for revocation
+            settings=settings,
+        )
+
+        access_token = await jwt_generator.generate_access_token(user)
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(

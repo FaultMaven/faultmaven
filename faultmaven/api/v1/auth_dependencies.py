@@ -24,17 +24,78 @@ Design Principles:
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
+import jwt
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
+from faultmaven.config.settings import get_settings
 from faultmaven.models.auth import DevUser
 
 # Initialize logger and security scheme
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
+
+
+# JWT Helper Functions
+def get_verification_key() -> str:
+    """Get JWT verification key based on auth mode.
+
+    Returns the appropriate key for JWT validation:
+    - Local mode (AUTH_MODE=local): Returns JWT_SECRET_KEY for HS256 validation
+    - OAuth mode (AUTH_MODE=oauth): Returns public key for RS256 validation
+
+    Returns:
+        Verification key string
+
+    Raises:
+        RuntimeError: If required key is not configured
+
+    Notes:
+        - Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes
+          use JWT tokens with identical structure"
+        - Algorithm is implicitly determined by AUTH_MODE:
+          * local → HS256 (symmetric)
+          * oauth → RS256 (asymmetric)
+    """
+    settings = get_settings()
+
+    # Determine algorithm from auth mode per iam-design.md
+    # local → HS256, oauth → RS256
+    if settings.auth.mode == "local":
+        # Local mode: HS256 symmetric key
+        if not settings.auth.jwt_secret_key:
+            raise RuntimeError(
+                "JWT_SECRET_KEY not configured for local mode authentication. "
+                "Set JWT_SECRET_KEY environment variable."
+            )
+        return settings.auth.jwt_secret_key.get_secret_value()
+
+    elif settings.auth.mode == "oauth":
+        # OAuth mode: RS256 public key for verification
+        if settings.auth.jwt_public_key:
+            return settings.auth.jwt_public_key
+        elif settings.auth.jwt_public_key_path:
+            try:
+                with open(settings.auth.jwt_public_key_path, "r") as f:
+                    return f.read()
+            except FileNotFoundError:
+                raise RuntimeError(
+                    f"JWT public key file not found: {settings.auth.jwt_public_key_path}"
+                )
+        else:
+            raise RuntimeError(
+                "JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH not configured for OAuth mode. "
+                "Set JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH environment variable."
+            )
+
+    else:
+        raise RuntimeError(
+            f"Unsupported auth mode: {settings.auth.mode}. "
+            "Only 'local' and 'oauth' are supported."
+        )
 
 
 # Service Dependencies (Composition Root pattern - access via app.state)
@@ -150,43 +211,75 @@ async def extract_bearer_token(
 async def get_current_user_optional(
     request: Request, token: Optional[str] = Depends(extract_bearer_token)
 ) -> Optional[DevUser]:
-    """Get current user from token (optional - no error if missing/invalid)
+    """Get current user from JWT token (optional - no error if missing/invalid)
+
+    Implements unified JWT validation per iam-design.md:
+    - HS256 for local mode (symmetric key validation)
+    - RS256 for OAuth mode (public key validation)
 
     Args:
         request: FastAPI request object
-        token: Bearer token from header
+        token: Bearer token from header (JWT format)
 
     Returns:
-        DevUser if valid token provided, None otherwise
+        DevUser if valid JWT provided, None otherwise
 
     Notes:
         - Does not raise exceptions for missing/invalid tokens
         - Logs validation failures at debug level
         - Used for endpoints that work both authenticated and unauthenticated
+        - Validates JWT structure, signature, expiration, issuer, and audience
     """
     if not token:
         return None
 
     try:
-        token_manager = await get_token_manager(request)
-        validation_result = await token_manager.validate_token(token)
+        settings = get_settings()
 
-        if validation_result.is_valid and validation_result.user:
-            logger.debug(f"User authenticated: {validation_result.user.user_id}")
-            return validation_result.user
-        else:
-            # Log at debug level - not an error for optional auth
-            logger.debug(f"Token validation failed: {validation_result.error_message}")
-            return None
+        # Determine algorithm from auth mode (per iam-design.md)
+        algorithm = "HS256" if settings.auth.mode == "local" else "RS256"
 
+        # Validate JWT token using unified verification key
+        claims = jwt.decode(
+            token,
+            key=get_verification_key(),
+            algorithms=[algorithm],
+            audience=settings.auth.jwt_audience,
+            issuer=settings.auth.jwt_issuer,
+        )
+
+        # Extract user information from JWT claims
+        user = DevUser(
+            user_id=claims["sub"],
+            username=claims.get("username", ""),
+            email=claims.get("email", ""),
+            display_name=claims.get("username", ""),  # Use username as display name
+            created_at=datetime.now(timezone.utc),  # JWT doesn't include created_at
+            is_dev_user=claims.get("auth_mode") == "local",  # Local mode = dev user
+            is_active=True,
+            roles=claims.get("roles", ["user"]),
+        )
+
+        logger.debug(
+            f"User authenticated via JWT: {user.user_id} "
+            f"(mode: {claims.get('auth_mode', 'unknown')})"
+        )
+        return user
+
+    except jwt.ExpiredSignatureError:
+        logger.debug("JWT token expired")
+        return None
+    except jwt.InvalidTokenError as e:
+        logger.debug(f"JWT validation failed: {e}")
+        return None
     except HTTPException:
-        # Re-raise service availability errors
+        # Re-raise service availability errors (from get_verification_key)
         raise
     except Exception as e:
         # Log unexpected errors but don't fail the request for optional auth
         correlation_id = str(uuid.uuid4())
         logger.warning(
-            f"Unexpected error in optional auth: {e} (correlation: {correlation_id})"
+            f"Unexpected error in JWT validation: {e} (correlation: {correlation_id})"
         )
         return None
 
