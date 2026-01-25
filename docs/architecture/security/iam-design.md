@@ -1526,11 +1526,12 @@ describe('OAuth Flow Integration', () => {
 | `JWT_SECRET_KEY` | Local | Symmetric key for HS256 | Required |
 | `JWT_PRIVATE_KEY_PATH` | Cloud | Path to RS256 private key | Required |
 | `JWT_PUBLIC_KEY_PATH` | Cloud | Path to RS256 public key | Required |
-| `JWT_ACCESS_TOKEN_EXPIRY` | Both | Access token lifetime (seconds) | `3600` |
-| `JWT_REFRESH_TOKEN_EXPIRY` | Both | Refresh token lifetime (seconds) | `604800` |
-| `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `true` |
-| `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `true` |
-| `OAUTH_CODE_EXPIRY` | Cloud | Authorization code lifetime | `600` |
+| `JWT_ACCESS_TOKEN_EXPIRY` | Both | Access token lifetime (minutes) | `60` |
+| `JWT_REFRESH_TOKEN_EXPIRY` | Both | Refresh token lifetime (minutes) | `10080` (7 days) |
+| `OAUTH_CODE_EXPIRY` | Cloud | Authorization code lifetime (minutes) | `10` |
+| `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `false` |
+| `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `false` |
+| `DASHBOARD_URL` | Both | Dashboard URL for OAuth redirects | `http://localhost:3333` |
 
 ### Configuration File
 
@@ -1542,15 +1543,14 @@ auth:
   jwt:
     algorithm: HS256  # or RS256 for cloud
     secret_key: ${JWT_SECRET_KEY}
-    access_token_expiry_seconds: 3600
-    refresh_token_expiry_seconds: 604800
+    access_token_expiry_minutes: 60
+    refresh_token_expiry_minutes: 10080  # 7 days
 
   oauth:  # Cloud mode only
-    enabled: true
     dashboard_url: https://dashboard.faultmaven.ai
-    require_consent: true
-    require_https_redirect: true
-    code_expiry_seconds: 600
+    require_consent: false
+    require_https_redirect: false
+    code_expiry_minutes: 10
 
   rate_limiting:
     enabled: true
