@@ -3,11 +3,12 @@ Unit tests for CohereProvider.
 Tests the Cohere LLM provider implementation in isolation using mocked HTTP responses.
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.cohere_provider import CohereProvider
-from faultmaven.infrastructure.llm.providers.base import ProviderConfig, LLMResponse
 
 
 class TestCohereProviderBasics:
