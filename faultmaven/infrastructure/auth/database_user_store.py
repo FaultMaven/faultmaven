@@ -324,3 +324,18 @@ class DatabaseUserStore:
         # Capitalize first letter and replace underscores/dots with spaces
         display = username.replace("_", " ").replace(".", " ").title()
         return display if display else username
+
+    # OAuth service compatibility adapter
+    async def get(self, user_id: str) -> Optional[DevUser]:
+        """Get user by ID (OAuth service compatibility)
+
+        This method provides compatibility with the OAuth service which expects
+        a .get() method instead of .get_user().
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            DevUser if found, None otherwise
+        """
+        return await self.get_user(user_id)
