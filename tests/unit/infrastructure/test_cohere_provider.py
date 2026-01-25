@@ -99,27 +99,34 @@ class TestCohereProviderGenerate:
             "message": {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": '{"location": "London"}'
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "London"}',
+                        },
                     }
-                }]
+                ],
             },
-            "usage": {"tokens": {"input_tokens": 10, "output_tokens": 10}}
+            "usage": {"tokens": {"input_tokens": 10, "output_tokens": 10}},
         }
         mock_response.__aenter__.return_value = mock_response
         mock_response.__aexit__.return_value = None
 
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "parameters": {"type": "object", "properties": {"location": {"type": "string"}}}
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                    },
+                },
             }
-        }]
+        ]
 
         with patch("aiohttp.ClientSession.post", return_value=mock_response):
             result = await provider.generate("Weather?", tools=tools)
@@ -155,22 +162,24 @@ class TestCohereProviderGenerate:
         mock_response.json.return_value = {
             "id": "chat-strict",
             "message": {"role": "assistant", "content": "Response"},
-            "usage": {"tokens": {"input_tokens": 10, "output_tokens": 10}}
+            "usage": {"tokens": {"input_tokens": 10, "output_tokens": 10}},
         }
         mock_response.__aenter__.return_value = mock_response
         mock_response.__aexit__.return_value = None
 
         tools = [{"type": "function", "function": {"name": "test_tool"}}]
 
-        with patch("aiohttp.ClientSession.post", return_value=mock_response) as mock_post:
+        with patch(
+            "aiohttp.ClientSession.post", return_value=mock_response
+        ) as mock_post:
             await provider.generate("Test", tools=tools)
 
             # Verify the call was made
             assert mock_post.called
             # The payload should include strict_tools=True by default
             call_kwargs = mock_post.call_args[1]
-            payload = call_kwargs['json']
-            assert payload.get('strict_tools') is True
+            payload = call_kwargs["json"]
+            assert payload.get("strict_tools") is True
 
 
 class TestCohereProviderIntegration:
@@ -184,13 +193,17 @@ class TestCohereProviderIntegration:
         assert "cohere" in PROVIDER_SCHEMA
         assert PROVIDER_SCHEMA["cohere"]["provider_class"].__name__ == "CohereProvider"
         assert PROVIDER_SCHEMA["cohere"]["default_model"] == "command-r-plus"
-        assert PROVIDER_SCHEMA["cohere"]["default_base_url"] == "https://api.cohere.ai/v2"
+        assert (
+            PROVIDER_SCHEMA["cohere"]["default_base_url"] == "https://api.cohere.ai/v2"
+        )
         assert PROVIDER_SCHEMA["cohere"]["confidence_score"] == 0.82
 
     @pytest.mark.asyncio
     async def test_cohere_in_valid_providers(self):
         """Test Cohere appears in valid provider names"""
-        from faultmaven.infrastructure.llm.providers.registry import get_valid_provider_names
+        from faultmaven.infrastructure.llm.providers.registry import (
+            get_valid_provider_names,
+        )
 
         valid_providers = get_valid_provider_names()
         assert "cohere" in valid_providers

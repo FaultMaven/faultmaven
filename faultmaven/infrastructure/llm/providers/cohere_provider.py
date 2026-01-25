@@ -148,9 +148,7 @@ class CohereProvider(BaseLLMProvider):
                     if "tool_calls" in message and message["tool_calls"]:
                         tool_calls = [
                             ToolCall(
-                                id=tc["id"],
-                                type=tc["type"],
-                                function=tc["function"]
+                                id=tc["id"], type=tc["type"], function=tc["function"]
                             )
                             for tc in message["tool_calls"]
                         ]
@@ -163,8 +161,12 @@ class CohereProvider(BaseLLMProvider):
                                 content = "{}"
 
                     # Only validate content if we don't have tool_calls (tool_calls can have empty content)
-                    if content and hasattr(self, "_validate_response_content") and not tool_calls:
-                         content = self._validate_response_content(content)
+                    if (
+                        content
+                        and hasattr(self, "_validate_response_content")
+                        and not tool_calls
+                    ):
+                        content = self._validate_response_content(content)
 
                     # Extract token usage (Cohere v2 format)
                     usage = data.get("usage", {}).get("tokens", {})
