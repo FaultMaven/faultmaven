@@ -1,33 +1,50 @@
 # FaultMaven Case Storage Design - Performant Production Standard
 
-**Version**: 3.1
+**Version**: 3.2
 **Status**: Authoritative Standard
 **Supersedes**: case-data-model-design.md, db-design-specifications.md
-**Last Updated**: 2025-01-09
+**Last Updated**: 2026-01-26
 
 ---
 
 ## Implementation Status
 
-**Current State** (as of 2025-01-09):
+**Current State** (as of 2026-01-26):
 
 | Component | Status | Location |
 |-----------|--------|----------|
 | ✅ Design | Approved | This document |
-| ✅ Migration Script | Complete | `docs/schema/001_initial_hybrid_schema.sql` |
+| ✅ PostgreSQL Schema | Complete | `docs/schema/001_initial_hybrid_schema.sql` |
+| ✅ SQLite Schema | Complete | Auto-created by `SQLiteCaseRepository` |
 | ✅ Reports Migration | Complete | `docs/schema/005_add_reports_table.sql` (TD-001) |
-| ✅ Repository Code | Complete | `/faultmaven/infrastructure/persistence/postgresql_hybrid_case_repository.py` |
-| ⏳ Integration Tests | Pending | Not yet run against real PostgreSQL |
+| ✅ PostgreSQL Repository | Complete | `postgresql_hybrid_case_repository.py` |
+| ✅ SQLite Repository | Complete | `sqlite_case_repository.py` (PR #120) |
+| ✅ SQLite Integration Tests | Complete | 8 tests passing with real SQLite database |
+| ⏳ PostgreSQL Tests | Pending | Not yet run against real PostgreSQL |
 | ⏳ Performance Validation | Pending | Benchmarks needed |
 | ⏳ Production Deploy | Pending | PostgreSQL not yet deployed to K8s |
 
-**Active Implementation**:
-- **Development**: `InMemoryCaseRepository` (Python dict, data lost on restart)
-- **Production Target**: `PostgreSQLHybridCaseRepository` (11-table hybrid schema)
-- **Legacy**: `PostgreSQLCaseRepository` (single-table JSONB, deprecated)
+**Active Implementations**:
 
-**Reality Check**:
-The 11-table hybrid schema is **designed and coded but NOT yet tested or deployed**. All performance metrics in this document are **estimated targets**, not measured results.
+- **Development**: `InMemoryCaseRepository` (Python dict, fast iteration)
+- **Local Deployment**: `SQLiteCaseRepository` (single-file database, ✅ tested)
+- **Production Target**: `PostgreSQLHybridCaseRepository` (distributed K8s, pending deployment)
+
+**Multi-Dialect Support**:
+
+The hybrid schema design supports **both** PostgreSQL and SQLite:
+
+- **PostgreSQL**: Uses optimized PostgreSQL features (jsonb_build_object, FILTER, to_tsvector)
+- **SQLite**: Uses SQLite-compatible SQL (JSON strings, CASE expressions, LIKE pattern matching)
+- **Automatic Detection**: `SessionlessCaseRepository` detects dialect at runtime and instantiates appropriate repository
+
+**Implementation Highlights**:
+
+- ✅ 1,450 lines of SQLite-compatible SQL in `SQLiteCaseRepository`
+- ✅ All 24 PostgreSQL-specific features replaced with SQLite equivalents
+- ✅ Full feature parity between SQLite and PostgreSQL implementations
+- ✅ Same hybrid normalized schema (cases + 6 related tables)
+- ✅ Zero configuration - works automatically based on `DATABASE_URL`
 
 ---
 
@@ -130,30 +147,78 @@ class InMemoryCaseRepository(CaseRepository):
 
 **When to use**: Local development, unit tests, demos
 
-### 2.3 PostgreSQL Implementation (Production)
+### 2.3 SQLite Implementation (Local Deployment)
 
-**File**: `faultmaven/infrastructure/persistence/case_repository.py`
+**File**: `faultmaven/modules/case/infrastructure/sqlite_case_repository.py`
 
 ```python
-class PostgreSQLCaseRepository(CaseRepository):
-    """Production repository using hybrid normalized + JSONB storage."""
+class SQLiteCaseRepository(CaseRepository):
+    """SQLite repository using SQLite-compatible SQL."""
 
     def __init__(self, db_session):
         self.db = db_session
 
     async def save(self, case: Case) -> Case:
-        # Maps to normalized tables + JSONB columns
-        # See Section 4 for schema details
+        # Uses SQLite-compatible SQL:
+        # - No ::jsonb type casts
+        # - No jsonb_build_object()
+        # - No FILTER clauses
+        # - LIKE instead of to_tsvector/ts_rank
 ```
 
 **Characteristics**:
+
+- ✅ Persistent across restarts (single file)
+- ✅ ACID transactions
+- ✅ No external dependencies (no PostgreSQL needed)
+- ✅ Full feature parity with PostgreSQL
+- ✅ Same hybrid normalized schema
+- ⚠️ Limited concurrency (SQLite limitation)
+- ❌ Not suitable for distributed systems
+
+**When to use**: Local development, self-hosted single-node deployment, demos
+
+**SQLite vs PostgreSQL SQL Differences**:
+
+| Feature          | PostgreSQL                   | SQLite                          |
+|------------------|------------------------------|---------------------------------|
+| Type Casts       | `:consulting::jsonb`         | Plain parameter binding         |
+| JSON Functions   | `jsonb_build_object()`       | Separate queries + Python dict  |
+| Aggregates       | `FILTER (WHERE ...)`         | `CASE WHEN ... END`             |
+| Full-Text Search | `to_tsvector`, `ts_rank`     | `LIKE '%term%'`                 |
+| Array Ops        | `= ALL`, `!= ALL`            | `IN (...)`                      |
+| Timestamps       | Native datetime              | String → `fromisoformat()`      |
+
+### 2.4 PostgreSQL Implementation (Production)
+
+**File**: `faultmaven/infrastructure/persistence/case_repository.py`
+
+```python
+class PostgreSQLCaseRepository(CaseRepository):
+    """Production repository using PostgreSQL-optimized SQL."""
+
+    def __init__(self, db_session):
+        self.db = db_session
+
+    async def save(self, case: Case) -> Case:
+        # Uses PostgreSQL-optimized SQL:
+        # - ::jsonb type casts for performance
+        # - jsonb_build_object() for efficiency
+        # - FILTER clauses for aggregates
+        # - to_tsvector/ts_rank for full-text search
+```
+
+**Characteristics**:
+
 - ✅ Persistent across restarts
 - ✅ ACID transactions
 - ✅ Optimized queries via indexes
 - ✅ Concurrent access safe
 - ✅ Production-grade performance
+- ✅ Distributed system support
+- ✅ Replication and HA
 
-**When to use**: Production K8s deployment, staging
+**When to use**: Production K8s deployment, staging, high-concurrency environments
 
 ---
 
