@@ -323,8 +323,11 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
             from faultmaven.modules.case.infrastructure.case_repository import (
                 InMemoryCaseRepository,
             )
+
             repository = InMemoryCaseRepository()
-            logger.info("✅ Case repository initialized (InMemory - ephemeral, no persistence)")
+            logger.info(
+                "✅ Case repository initialized (InMemory - ephemeral, no persistence)"
+            )
             return repository
 
         # Persistent database storage (Local: SQLite, Cloud: PostgreSQL)
@@ -337,7 +340,9 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
         repository = SessionlessCaseRepository()
         db_type = "SQLite" if "sqlite" in database_url.lower() else "PostgreSQL"
         deployment_type = "Local" if "sqlite" in database_url.lower() else "Cloud"
-        logger.info(f"✅ Case repository initialized ({deployment_type}: {db_type}, sessionless)")
+        logger.info(
+            f"✅ Case repository initialized ({deployment_type}: {db_type}, sessionless)"
+        )
         return repository
 
     except Exception as e:
@@ -568,7 +573,9 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         if case_repository:
             container.case_repository = case_repository
             container._register_service("case_repository", case_repository)
-            logger.info(f"✅ Case repository registered: {type(case_repository).__name__}")
+            logger.info(
+                f"✅ Case repository registered: {type(case_repository).__name__}"
+            )
         else:
             container.case_repository = None
             logger.warning("⚠️ Case repository not available (database not configured)")

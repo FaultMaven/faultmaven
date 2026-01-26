@@ -9,7 +9,7 @@ FaultMaven is an **AI-powered troubleshooting copilot** for modern engineering t
 **Key Value Propositions:**
 - Evidence-centric investigation (logs, metrics, configs, past solutions)
 - Knowledge flywheel (learns from resolved incidents)
-- Multi-LLM support (9 providers: OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, local Ollama/vLLM)
+- Multi-LLM support (10 providers: OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, local Ollama/vLLM)
 - Zero context-switching (browser extension integrates into existing tools)
 
 **System Components:**
@@ -31,9 +31,21 @@ faultmaven/
 ├── api/                    # Shared API middleware, dependencies, error handling
 │   ├── dependencies.py     # DI for legacy code
 │   ├── exception_handlers.py
-│   ├── middleware/         # 11 middleware modules
+│   ├── middleware/         # 12 middleware modules
+│   │   ├── auth.py
+│   │   ├── contract_probe.py
+│   │   ├── deduplication.py
+│   │   ├── idempotency.py
+│   │   ├── intelligent_protection.py
+│   │   ├── logging.py
+│   │   ├── performance.py
+│   │   ├── rate_limiting.py
+│   │   ├── request_id.py
+│   │   ├── system_optimization.py
+│   │   └── trailing_slash.py
+│   ├── v1/                 # API v1 utilities and dependencies
 │   └── routes/             # Legacy routes (admin, auth, cases, evidence, sessions, users)
-├── modules/                # Feature modules
+├── modules/                # Feature modules (primary code organization)
 │   │
 │   │ # VERTICAL MODULES (own database tables, have contracts.py + infrastructure/)
 │   ├── auth/               # Authentication, JWT, OAuth 2.0, RBAC
@@ -47,22 +59,43 @@ faultmaven/
 │
 ├── core/                   # Core investigation engine
 │   ├── investigation/      # OODA framework, milestone engine
+│   │   ├── ooda_engine.py
+│   │   ├── milestone_engine.py
+│   │   ├── hypothesis_manager.py
+│   │   ├── memory_manager.py
+│   │   └── strategy_selector.py
 │   ├── knowledge/          # Knowledge ingestion and retrieval
-│   ├── preprocessing/      # Log analysis, pattern learning
-│   └── confidence/         # Confidence scoring
-├── infrastructure/         # Shared adapters (20 subdirectories)
+│   ├── preprocessing/      # Data preprocessor
+│   ├── processing/         # Log analyzer, pattern learner
+│   └── confidence/         # Confidence scoring aggregator
+├── infrastructure/         # Shared adapters (20+ subdirectories)
 │   ├── llm/                # LLM provider routing, caching
-│   ├── persistence/        # Database layer (SQLAlchemy, 20 repository files)
+│   │   ├── providers/      # 10 LLM providers
+│   │   ├── router.py       # Provider routing with fallback chain
+│   │   ├── cache.py        # Response caching
+│   │   └── local_llm_manager.py
+│   ├── persistence/        # Database layer (SQLAlchemy, 20+ repository files)
 │   ├── knowledge/          # Vector databases (ChromaDB)
-│   ├── auth/               # JWT, bcrypt, RBAC
+│   ├── auth/               # JWT, bcrypt, RBAC, user stores
 │   ├── security/           # PII protection (Presidio)
-│   ├── caching/            # Redis sessions
+│   ├── caching/            # Intelligent cache
 │   ├── storage/            # File storage (local, S3, Azure)
-│   ├── logging/            # Structured logging (structlog)
+│   ├── logging/            # Structured logging (structlog), coordinator
 │   ├── observability/      # Opik tracing, Prometheus metrics
-│   └── health/             # Health checks
+│   ├── monitoring/         # APM integration, alerting, metrics collector
+│   ├── health/             # Health checks, SLA tracker, component monitor
+│   ├── jobs/               # Background job service
+│   └── concurrency/        # Report lock manager
+├── bootstrap/              # Application startup and service factories
 ├── config/                 # Pydantic-settings configuration
+│   ├── settings.py         # Main settings with validation
+│   ├── presets.py          # Configuration presets
+│   ├── feature_flags.py    # Feature toggles
+│   └── protection.py       # Protection configuration
 ├── container/              # Dependency injection
+│   ├── base.py             # Base container
+│   ├── registry.py         # Service registry
+│   └── providers/          # Infrastructure, services, tools providers
 ├── services/               # Legacy service layer
 └── models/                 # Legacy models
 ```
@@ -71,7 +104,7 @@ faultmaven/
 
 **Vertical Modules (Auth, Case, Knowledge):**
 - Own database tables
-- Have `contracts.py` - exposes interfaces (ICaseRepository, etc.) and models
+- Have `contracts.py` - exposes interfaces (ICaseRepository, etc.) and DTOs
 - Have `infrastructure/` - repositories for persistence
 - Other modules import from their contracts
 
@@ -84,23 +117,27 @@ faultmaven/
 ```
 # Vertical Module structure (Case, Auth, Knowledge)
 module/
-├── contracts.py            # Public interfaces (ICaseRepository, models)
+├── contracts.py            # Public interfaces (ICaseRepository, DTOs)
 ├── api/
 │   └── routes.py           # FastAPI endpoints
 ├── domain/
 │   ├── models/             # Domain entities
 │   ├── owned_models/       # Case-owned shared models (evidence, report, agent_execution)
 │   └── services/           # Business logic
-└── infrastructure/
-    └── persistence/        # Repositories
+├── infrastructure/
+│   └── persistence/        # Repositories
+│       └── stores/         # Session/token stores (auth module)
+└── exceptions.py           # Module-specific exceptions
 
 # Domain Service structure (Evidence, Agent, Report)
 module/
 ├── api/
 │   └── routes.py           # FastAPI endpoints
-└── domain/
-    ├── models.py           # Re-exports from Case contracts (backward compat)
-    └── services/           # Business logic (uses Case repository)
+├── domain/
+│   ├── models.py           # Re-exports from Case contracts (backward compat)
+│   └── services/           # Business logic (uses Case repository)
+├── tools/                  # Agent tools (agent module only)
+└── exceptions.py           # Module-specific exceptions
 ```
 
 ### Cross-Module Import Rules
@@ -108,6 +145,9 @@ module/
 ```python
 # CORRECT: Domain Service uses Vertical Module's contract
 from faultmaven.modules.case.contracts import ICaseRepository, EvidenceArtifact
+
+# CORRECT: Use auth contracts for DTOs
+from faultmaven.modules.auth.contracts import UserDTO, AuthTokenDTO
 
 # WRONG: Domain Service bypasses contracts
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
@@ -141,6 +181,59 @@ Architecture is enforced via **import-linter** with 13 contracts (`.importlinter
 lint-imports
 ```
 
+## Authentication System
+
+FaultMaven uses a unified JWT-based authentication system supporting two modes:
+
+### Auth Modes
+
+| Mode | Algorithm | Use Case | Configuration |
+|------|-----------|----------|---------------|
+| `local` | HS256 (symmetric) | Self-hosted, single-user | `AUTH_MODE=local`, `JWT_SECRET_KEY` |
+| `oauth` | RS256 (asymmetric) | Cloud, multi-user, browser extension | `AUTH_MODE=oauth`, RSA key pair |
+
+### Key Auth Components
+
+```
+modules/auth/
+├── contracts.py                    # Public DTOs (UserDTO, AuthTokenDTO, SessionDTO)
+├── api/
+│   ├── auth.py                     # Login, register, token refresh
+│   ├── oauth.py                    # OAuth 2.0 flow with PKCE
+│   ├── session.py                  # Session management
+│   ├── organizations.py            # Organization management
+│   └── teams.py                    # Team management
+├── domain/
+│   ├── models/                     # User, Session, RBAC models
+│   └── services/
+│       ├── auth_service.py         # Core authentication logic
+│       ├── oauth_service.py        # OAuth 2.0 implementation
+│       ├── jwt_token_generator.py  # RS256/HS256 token generation
+│       └── user_service.py         # User CRUD operations
+└── infrastructure/
+    ├── repositories/               # User, session, OAuth code repositories
+    └── stores/                     # Redis/in-memory session stores
+```
+
+### Token Structure (Both Modes)
+
+```json
+{
+  "sub": "user_id",
+  "username": "john",
+  "email": "john@example.com",
+  "roles": ["user", "admin"],
+  "scopes": ["openid", "profile", "email", "cases:read", "cases:write"],
+  "exp": 1234567890,
+  "iat": 1234567890,
+  "iss": "faultmaven",
+  "aud": "faultmaven-api",
+  "jti": "unique-token-id",
+  "type": "access",
+  "auth_mode": "local"
+}
+```
+
 ## Tech Stack
 
 | Layer | Technologies |
@@ -150,7 +243,7 @@ lint-imports
 | Database | SQLAlchemy 2.0+, SQLite (local), PostgreSQL (prod), Alembic 1.13+ |
 | Vector DB | ChromaDB 0.5.3+, sentence-transformers 3.0.1+ |
 | Cache | Redis 5.0+ (optional), in-memory fallback |
-| Auth | JWT (PyJWT 2.8+), bcrypt, RBAC |
+| Auth | JWT (PyJWT 2.8+), bcrypt, RBAC, OAuth 2.0 with PKCE |
 | Observability | Opik 0.2.1+ (tracing), Prometheus (metrics), structlog (logging) |
 | Security | Presidio 2.2+ (PII redaction), cryptography 41+ |
 | Testing | pytest 8.0+, pytest-asyncio, pytest-cov, factory-boy, locust |
@@ -158,17 +251,29 @@ lint-imports
 
 ### Supported LLM Providers
 
-| Provider | Environment Variable | Notes |
-|----------|---------------------|-------|
-| Anthropic | `ANTHROPIC_API_KEY` | Recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | Recommended for consistency |
-| Google Gemini | `GEMINI_API_KEY` | Fast multimodal |
-| Fireworks AI | `FIREWORKS_API_KEY` | Fast & cheap |
-| Groq | `GROQ_API_KEY` | Ultra-fast inference |
-| HuggingFace | `HUGGINGFACE_API_KEY` | Open models |
-| Cohere | `COHERE_API_KEY` | Enterprise RAG |
-| OpenRouter | `OPENROUTER_API_KEY` | Multi-model gateway |
-| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | Private & offline |
+| Provider | Environment Variable | Models | Notes |
+|----------|---------------------|--------|-------|
+| Anthropic | `ANTHROPIC_API_KEY` | claude-3-5-sonnet-20241022 | Recommended for logic |
+| OpenAI | `OPENAI_API_KEY` | gpt-4o | Recommended for consistency |
+| Google Gemini | `GEMINI_API_KEY` | gemini-2.0-flash | Fast multimodal |
+| Fireworks AI | `FIREWORKS_API_KEY` | qwen2.5-coder-32b-instruct | Fast & cheap |
+| Groq | `GROQ_API_KEY` | Llama-3.3-70b-versatile | Ultra-fast inference |
+| HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | Open models |
+| Cohere | `COHERE_API_KEY` | command-r-plus | Enterprise RAG |
+| OpenRouter | `OPENROUTER_API_KEY` | Multiple | Multi-model gateway |
+| Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | Private & offline |
+
+### Capability Overrides
+
+Different LLM providers can be assigned to specific tasks:
+
+```bash
+CHAT_PROVIDER=anthropic      # Default for all tasks
+CODE_PROVIDER=openai         # Code generation tasks
+MULTIMODAL_PROVIDER=gemini   # Image analysis
+SYNTHESIS_PROVIDER=fireworks # Fast JSON generation
+CLASSIFIER_PROVIDER=groq     # Query routing
+```
 
 ## Development Workflow
 
@@ -195,8 +300,8 @@ cp .env.example .env
 | API | 8090 | REST API |
 | Dashboard | 3333 | Web UI |
 | API Docs | 8090/docs | Swagger UI |
-| ChromaDB | 8001 | Vector DB (dev mode) |
-| Redis | 6379 | Sessions (dev mode) |
+| ChromaDB | 8000 | Vector DB (external mode) |
+| Redis | 6379 | Sessions (external mode) |
 
 ### CLI Commands
 
@@ -229,6 +334,10 @@ python scripts/create_builtin_accounts.py  # Create default users
 python scripts/generate_oauth_keys.py      # Generate OAuth RSA keys
 ./scripts/db_migrate.sh                    # Database migrations
 python scripts/verify_vector_storage.py    # Verify ChromaDB
+python scripts/check_import_violations.py  # Check architecture
+python scripts/check_config_compliance.py  # Validate configuration
+python scripts/cleanup_corrupt_cases.py    # Database maintenance
+python scripts/resolve_duplicate_emails.py # Fix duplicate email issues
 ```
 
 ## Testing
@@ -244,10 +353,10 @@ tests/
 │   ├── services/      # Service layer
 │   └── core/          # Investigation engine
 ├── integration/       # Cross-layer workflows
-│   ├── api/
-│   └── modules/
+│   ├── api/           # API integration tests
+│   └── modules/       # Module integration (auth, OAuth)
 ├── infrastructure/    # External service tests
-├── benchmarks/        # Performance baselines
+├── benchmarks/        # Performance baselines (excluded from CI)
 ├── performance/       # Overhead validation
 ├── health/            # Docker smoke tests
 ├── load/              # Locust stress tests
@@ -366,7 +475,9 @@ Key configuration in `.env`:
 | Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
 | Sessions | `CACHE_BACKEND`, `REDIS_URL` | `inmemory` or `redis` |
 | Vectors | `VECTOR_BACKEND`, `CHROMADB_URL` | `inmemory` or `chromadb` |
-| OAuth | `OAUTH_ENABLED`, `DASHBOARD_URL` | OAuth 2.0 settings |
+| Auth | `AUTH_MODE`, `JWT_SECRET_KEY` | `local` or `oauth` |
+| OAuth | `OAUTH_ENABLED`, `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` | OAuth 2.0 settings |
+| JWT | `JWT_ACCESS_TOKEN_EXPIRY`, `JWT_REFRESH_TOKEN_EXPIRY` | Token lifetimes (minutes) |
 | Security | `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` | CORS settings |
 | Limits | `MAX_UPLOAD_SIZE_MB`, `RATE_LIMIT_REQUESTS_PER_MINUTE` | Rate limiting |
 
@@ -414,16 +525,16 @@ alembic downgrade -1
 
 ### Migration History (10 versions)
 
-1. Baseline schema
-2. Session management
-3. Evidence artifacts
-4. Agent executions
-5. Investigation sessions
-6. Knowledge items
-7. Users table
-8. Hypothesis/solution multitenancy
-9. Standalone evidence
-10. Email uniqueness constraint
+1. `001_baseline_schema` - Initial schema
+2. `002_add_session_management` - Session tables
+3. `003_add_evidence_artifacts` - Evidence storage
+4. `004_add_agent_executions` - Agent execution tracking
+5. `005_add_investigation_sessions` - Investigation sessions
+6. `006_add_knowledge_items` - Knowledge base
+7. `007_add_users_table` - User management
+8. `008_add_hypothesis_solution_multitenancy` - Multi-tenant support
+9. `009_add_standalone_evidence` - Standalone evidence
+10. `008_add_email_uniqueness_constraint` - Email uniqueness
 
 ## Key Patterns
 
@@ -440,8 +551,8 @@ Implemented in `core/investigation/ooda_engine.py`.
 ### Dependency Injection
 
 - DI Container in `faultmaven/container/`
-- Service locator pattern
-- Provider pattern for pluggable implementations
+- Service locator pattern with providers
+- Composition Root pattern in `main.py` lifespan
 
 ### Async Throughout
 
@@ -455,14 +566,47 @@ Implemented in `core/investigation/ooda_engine.py`.
 
 | Module | Endpoint | Description |
 |--------|----------|-------------|
-| Cases | `/cases` | Case management CRUD |
-| Agent | `/cases/{id}/sessions/{sid}/execute` | Start AI investigation |
-| Knowledge | `/knowledge/documents` | Knowledge base CRUD |
-| Knowledge | `/knowledge/search` | Semantic search |
-| Auth | `/auth/register`, `/auth/login` | Authentication |
-| Auth | `/auth/oauth/*` | OAuth 2.0 flow |
-| Evidence | `/evidence/upload` | File upload |
-| Reports | `/reports` | Report generation |
+| Cases | `GET/POST /cases` | Case management CRUD |
+| Cases | `GET /cases/{id}` | Get case details |
+| Agent | `POST /cases/{id}/sessions/{sid}/execute` | Start AI investigation |
+| Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
+| Knowledge | `POST /knowledge/search` | Semantic search |
+| Auth | `POST /auth/register` | User registration |
+| Auth | `POST /auth/login` | User login |
+| Auth | `POST /auth/refresh` | Token refresh |
+| OAuth | `GET /auth/oauth/authorize` | OAuth authorization |
+| OAuth | `POST /auth/oauth/token` | OAuth token exchange |
+| Evidence | `POST /evidence/upload` | File upload |
+| Reports | `GET/POST /reports` | Report generation |
+| Organizations | `GET/POST /organizations` | Organization management |
+| Teams | `GET/POST /teams` | Team management |
+| Sessions | `GET /sessions` | Session management |
+
+**Health & Metrics Endpoints:**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Overall health status |
+| `GET /health/dependencies` | Dependency health check |
+| `GET /health/sla` | SLA metrics |
+| `GET /health/logging` | Logging system health |
+| `GET /health/components/{name}` | Component-specific health |
+| `GET /health/patterns` | Error pattern detection |
+| `GET /readiness` | Kubernetes readiness probe |
+| `GET /metrics/performance` | Performance metrics |
+| `GET /metrics/realtime` | Real-time metrics |
+| `GET /metrics/alerts` | Alert status |
+| `GET /metrics/optimization` | System optimization metrics |
+| `GET /v1/meta/capabilities` | Backend capabilities for extension |
+
+**Debug Endpoints (development only):**
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /debug/routes` | List all registered routes |
+| `GET /debug/health` | Minimal debug health |
+| `GET /debug/config` | Configuration summary |
+| `GET /debug/llm-providers` | LLM provider status |
 
 **Documentation:** http://localhost:8090/docs
 
@@ -471,8 +615,12 @@ Implemented in `core/investigation/ooda_engine.py`.
 | File | Purpose |
 |------|---------|
 | `faultmaven/main.py` | FastAPI application entry point |
-| `faultmaven/config/settings.py` | Pydantic settings |
+| `faultmaven/config/settings.py` | Pydantic settings (unified config) |
 | `faultmaven/container/` | Dependency injection setup |
+| `faultmaven/bootstrap/startup.py` | Application bootstrap |
+| `faultmaven/modules/auth/contracts.py` | Auth DTOs and interfaces |
+| `faultmaven/modules/case/contracts.py` | Case DTOs and interfaces |
+| `faultmaven/modules/knowledge/contracts.py` | Knowledge DTOs and interfaces |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
 | `.importlinter` | Architecture contracts (13 rules) |
@@ -491,10 +639,11 @@ Implemented in `core/investigation/ooda_engine.py`.
 ### Adding a New LLM Provider
 
 1. Implement provider in `infrastructure/llm/providers/`
-2. Register in `infrastructure/llm/llm_router.py`
-3. Add config in `config/settings.py`
-4. Document in `.env.example`
-5. Add tests in `tests/unit/infrastructure/`
+2. Inherit from `BaseLLMProvider` in `base.py`
+3. Register in `infrastructure/llm/providers/registry.py`
+4. Add config in `config/settings.py`
+5. Document in `.env.example`
+6. Add tests in `tests/unit/infrastructure/`
 
 ### Modifying Database Schema
 
@@ -507,7 +656,7 @@ Implemented in `core/investigation/ooda_engine.py`.
 
 **Vertical Module (owns data):**
 1. Create `modules/newmodule/` with `contracts.py`, `api/`, `domain/`, `infrastructure/`
-2. Define interfaces in `contracts.py`
+2. Define interfaces and DTOs in `contracts.py`
 3. Add repository in `infrastructure/persistence/`
 4. Add layer boundary contract in `.importlinter`
 5. Register routes in `main.py`
@@ -521,11 +670,13 @@ Implemented in `core/investigation/ooda_engine.py`.
 ## Security Considerations
 
 - **PII Redaction** - Automatic scrubbing via Presidio (enterprise)
-- **JWT Auth** - Stateless session management with RS256
-- **OAuth 2.0** - Browser extension integration
+- **JWT Auth** - Stateless session management (HS256 local, RS256 OAuth)
+- **OAuth 2.0 with PKCE** - Browser extension integration
 - **RBAC** - Role-based access control
+- **Token Revocation** - JTI-based revocation tracking
 - **Secret Detection** - Pre-commit hooks prevent credential commits
 - **CORS** - Configurable origins for browser extension
+- **Rate Limiting** - Per-IP and per-user limits
 
 ## Documentation
 
@@ -585,8 +736,23 @@ lint-imports
 echo $CHAT_PROVIDER
 echo $OPENAI_API_KEY  # (or relevant provider key)
 
+# Check debug endpoint
+curl http://localhost:8090/debug/llm-providers
+
 # Check logs for API errors
 ./faultmaven.sh logs api
+```
+
+### JWT/Auth Issues
+```bash
+# Verify auth mode
+echo $AUTH_MODE
+
+# For OAuth mode, ensure RSA keys exist
+python scripts/generate_oauth_keys.py
+
+# Check token validation
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/auth/me
 ```
 
 ## Version Info

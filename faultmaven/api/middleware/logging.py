@@ -313,7 +313,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         return None
 
-    async def _get_user_id_from_session(self, request: Request, session_id: str) -> Optional[str]:
+    async def _get_user_id_from_session(
+        self, request: Request, session_id: str
+    ) -> Optional[str]:
         """
         Look up user_id from session_id using SessionService.
 
@@ -329,7 +331,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         """
         try:
             # Get SessionService from app state (initialized in main.py)
-            session_service = getattr(request.app.state, 'session_service', None)
+            session_service = getattr(request.app.state, "session_service", None)
             if not session_service:
                 logger.warning("SessionService not available in app state")
                 return None
