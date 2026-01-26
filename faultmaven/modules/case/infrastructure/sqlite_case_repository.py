@@ -1095,13 +1095,7 @@ class SQLiteCaseRepository(CaseRepository):
         case_data = {
             "case_id": row.case_id,
             "user_id": row.user_id,
-            # organization_id is required but nullable in DB schema (legacy data)
-            # Provide default "default_org" for NULL values
-            "organization_id": (
-                row.organization_id
-                if hasattr(row, "organization_id") and row.organization_id
-                else "default_org"
-            ),
+            "organization_id": row.organization_id,  # Required field, must be NOT NULL in DB
             "title": row.title,
             "status": CaseStatus(row.status),
             "status_history": [],
