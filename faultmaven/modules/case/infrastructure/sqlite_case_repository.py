@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     Hypothesis,
     InvestigationProgress,
+    InvestigationStrategy,
     PathSelection,
     ProblemVerification,
     ReportStatus,
@@ -462,12 +463,27 @@ class SQLiteCaseRepository(CaseRepository):
                 metadata = row[4]
                 if isinstance(metadata, str):
                     metadata = json.loads(metadata) if metadata else {}
+
+                # SQLite returns timestamps as strings, parse them if needed
+                created_at = row[3]
+                if created_at:
+                    if isinstance(created_at, str):
+                        # Parse ISO format timestamp string
+                        from datetime import datetime
+
+                        created_at = datetime.fromisoformat(
+                            created_at.replace(" ", "T")
+                        )
+                        created_at = created_at.isoformat()
+                    else:
+                        created_at = created_at.isoformat()
+
                 messages.append(
                     {
                         "message_id": row[0],
                         "role": row[1],
                         "content": row[2],
-                        "created_at": row[3].isoformat() if row[3] else None,
+                        "created_at": created_at,
                         "metadata": metadata,
                     }
                 )
@@ -1058,54 +1074,58 @@ class SQLiteCaseRepository(CaseRepository):
             else []
         )
 
-        from faultmaven.modules.case.domain.models import InvestigationStrategy
+        # Build case_data dict conditionally to allow Pydantic to apply field defaults
+        # Only include optional fields if they have actual values from database
+        case_data = {
+            "case_id": row.case_id,
+            "user_id": row.user_id,
+            "title": row.title,
+            "status": CaseStatus(row.status),
+            "status_history": [],
+            "closure_reason": None,
+            "progress": progress,
+            "current_turn": 0,
+            "turns_without_progress": 0,
+            "turn_history": [],
+            "path_selection": path_selection,
+            "consulting": consulting,
+            "problem_verification": problem_verification,
+            "uploaded_files": uploaded_files,
+            "evidence": [],  # Loaded separately
+            "hypotheses": hypotheses_dict,
+            "solutions": solutions_list,
+            "working_conclusion": working_conclusion,
+            "root_cause_conclusion": root_cause_conclusion,
+            "degraded_mode": degraded_mode,
+            "escalation_state": escalation_state,
+            "documentation": documentation,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
 
-        return Case(
-            case_id=row.case_id,
-            user_id=row.user_id,
-            organization_id=(
-                row.organization_id if hasattr(row, "organization_id") else ""
-            ),
-            title=row.title,
-            description=(
-                row.description
-                if hasattr(row, "description") and row.description
-                else ""
-            ),
-            status=CaseStatus(row.status),
-            status_history=[],
-            closure_reason=None,
-            progress=progress,
-            current_turn=0,
-            turns_without_progress=0,
-            turn_history=[],
-            path_selection=path_selection,
-            investigation_strategy=(
-                InvestigationStrategy(row.investigation_strategy)
-                if hasattr(row, "investigation_strategy") and row.investigation_strategy
-                else InvestigationStrategy.ACTIVE_INCIDENT
-            ),
-            consulting=consulting,
-            problem_verification=problem_verification,
-            uploaded_files=uploaded_files,
-            evidence=[],  # Loaded separately
-            hypotheses=hypotheses_dict,
-            solutions=solutions_list,
-            working_conclusion=working_conclusion,
-            root_cause_conclusion=root_cause_conclusion,
-            degraded_mode=degraded_mode,
-            escalation_state=escalation_state,
-            documentation=documentation,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_activity_at=(
-                row.last_activity_at
-                if hasattr(row, "last_activity_at")
-                else row.updated_at
-            ),
-            resolved_at=row.resolved_at if hasattr(row, "resolved_at") else None,
-            closed_at=row.closed_at if hasattr(row, "closed_at") else None,
-        )
+        # Only add optional fields if they exist and have values in database
+        # This allows Pydantic to apply its own defaults for missing fields
+        if hasattr(row, "organization_id") and row.organization_id:
+            case_data["organization_id"] = row.organization_id
+
+        if hasattr(row, "description") and row.description:
+            case_data["description"] = row.description
+
+        if hasattr(row, "investigation_strategy") and row.investigation_strategy:
+            case_data["investigation_strategy"] = InvestigationStrategy(
+                row.investigation_strategy
+            )
+
+        if hasattr(row, "last_activity_at") and row.last_activity_at:
+            case_data["last_activity_at"] = row.last_activity_at
+
+        if hasattr(row, "resolved_at") and row.resolved_at:
+            case_data["resolved_at"] = row.resolved_at
+
+        if hasattr(row, "closed_at") and row.closed_at:
+            case_data["closed_at"] = row.closed_at
+
+        return Case(**case_data)
 
     # ========================================================================
     # Report Operations (SQLite-compatible)

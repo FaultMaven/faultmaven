@@ -75,7 +75,9 @@ async def create_test_schema(session: AsyncSession):
             user_id TEXT NOT NULL,
             organization_id TEXT,
             title TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'open',
+            description TEXT DEFAULT '',
+            investigation_strategy TEXT DEFAULT 'post_mortem',
+            status TEXT NOT NULL DEFAULT 'consulting',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_activity_at TIMESTAMP,
@@ -310,9 +312,10 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_123",
+            organization_id="test_org_123",
             title="Test Case for SQLite Compatibility",
-            status=CaseStatus.OPEN,
-            consulting=ConsultingData(initial_description="Test description"),
+            status=CaseStatus.CONSULTING,
+            consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -358,9 +361,10 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_456",
+            organization_id="test_org_456",
             title="Retrieval Test Case",
-            status=CaseStatus.OPEN,
-            consulting=ConsultingData(initial_description="Description for retrieval"),
+            status=CaseStatus.CONSULTING,
+            consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -376,7 +380,6 @@ class TestSQLiteCaseRepository:
         assert retrieved is not None
         assert retrieved.case_id == case_id
         assert retrieved.user_id == "test_user_456"
-        assert retrieved.consulting.initial_description == "Description for retrieval"
 
     async def test_case_search_sqlite_compatible(self, sqlite_session):
         """Test that search works with SQLite LIKE (no to_tsvector/ts_rank).
@@ -406,10 +409,11 @@ class TestSQLiteCaseRepository:
             ]
         ):
             case = Case(
-                case_id=f"search_case_{i}_{uuid4().hex[:8]}",
+                case_id=f"case_{uuid4().hex[:12]}",
                 user_id="search_user",
+                organization_id="search_org",
                 title=title,
-                status=CaseStatus.OPEN,
+                status=CaseStatus.CONSULTING,
                 consulting=ConsultingData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
@@ -443,13 +447,15 @@ class TestSQLiteCaseRepository:
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create test cases
-        user_id = f"list_user_{uuid4().hex[:8]}"
+        user_id = f"user_{uuid4().hex[:8]}"
+        org_id = f"org_{uuid4().hex[:8]}"
         for i in range(3):
             case = Case(
-                case_id=f"list_case_{i}_{uuid4().hex[:8]}",
+                case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
+                organization_id=org_id,
                 title=f"List Test Case {i}",
-                status=CaseStatus.OPEN,
+                status=CaseStatus.CONSULTING,
                 consulting=ConsultingData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
@@ -479,12 +485,13 @@ class TestSQLiteCaseRepository:
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create case first
-        case_id = f"msg_case_{uuid4().hex[:12]}"
+        case_id = f"case_{uuid4().hex[:12]}"
         case = Case(
             case_id=case_id,
             user_id="msg_user",
+            organization_id="msg_org",
             title="Message Test Case",
-            status=CaseStatus.OPEN,
+            status=CaseStatus.CONSULTING,
             consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -526,12 +533,13 @@ class TestSQLiteCaseRepository:
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create case
-        case_id = f"analytics_case_{uuid4().hex[:12]}"
+        case_id = f"case_{uuid4().hex[:12]}"
         case = Case(
             case_id=case_id,
             user_id="analytics_user",
+            organization_id="analytics_org",
             title="Analytics Test Case",
-            status=CaseStatus.OPEN,
+            status=CaseStatus.CONSULTING,
             consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -563,12 +571,13 @@ class TestSQLiteCaseRepository:
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create and save case
-        case_id = f"delete_case_{uuid4().hex[:12]}"
+        case_id = f"case_{uuid4().hex[:12]}"
         case = Case(
             case_id=case_id,
             user_id="delete_user",
+            organization_id="delete_org",
             title="Delete Test Case",
-            status=CaseStatus.OPEN,
+            status=CaseStatus.CONSULTING,
             consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
