@@ -296,6 +296,55 @@ def create_token_manager(
         return manager
 
 
+def create_case_repository(settings: FaultMavenSettings) -> Any | None:
+    """Create case repository based on deployment configuration.
+
+    Follows Architectural Design Principles:
+    - Principle 1 (Deployment Agnostic): Infrastructure choice is deployment-time decision
+    - Principle 5 (Composition Root): Repository is stateless, uses get_db_session()
+
+    Provider Selection (Deployment-Agnostic):
+    - Local Deployment (Self-Host): SessionlessCaseRepository → SQLite
+    - Cloud Deployment (Enterprise): SessionlessCaseRepository → PostgreSQL
+    - Test/Ephemeral: InMemoryCaseRepository (no persistence)
+
+    Configuration:
+    - DATABASE_URL set → SessionlessCaseRepository (persistent database)
+    - DATABASE_URL=:memory: or unset → InMemoryCaseRepository (ephemeral)
+
+    Returns None if initialization fails.
+    """
+    try:
+        database_url = settings.database.database_url or ""
+
+        # Check if database is configured
+        if not database_url or database_url == ":memory:":
+            # Ephemeral storage (testing, no database available)
+            from faultmaven.modules.case.infrastructure.case_repository import (
+                InMemoryCaseRepository,
+            )
+            repository = InMemoryCaseRepository()
+            logger.info("✅ Case repository initialized (InMemory - ephemeral, no persistence)")
+            return repository
+
+        # Persistent database storage (Local: SQLite, Cloud: PostgreSQL)
+        from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+            SessionlessCaseRepository,
+        )
+
+        # This repository is stateless and creates sessions per operation
+        # Following Principle 5: No shared session state
+        repository = SessionlessCaseRepository()
+        db_type = "SQLite" if "sqlite" in database_url.lower() else "PostgreSQL"
+        deployment_type = "Local" if "sqlite" in database_url.lower() else "Cloud"
+        logger.info(f"✅ Case repository initialized ({deployment_type}: {db_type}, sessionless)")
+        return repository
+
+    except Exception as e:
+        logger.error(f"❌ Case repository initialization failed: {e}", exc_info=True)
+        return None
+
+
 def create_user_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
     """Create user store (Database, Redis, or InMemory) based on configuration.
 
@@ -512,5 +561,20 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     except Exception as e:
         logger.error(f"❌ Failed to create token manager: {e}", exc_info=True)
         raise
+
+    # Case repository (database persistence for cases)
+    try:
+        case_repository = create_case_repository(settings)
+        if case_repository:
+            container.case_repository = case_repository
+            container._register_service("case_repository", case_repository)
+            logger.info(f"✅ Case repository registered: {type(case_repository).__name__}")
+        else:
+            container.case_repository = None
+            logger.warning("⚠️ Case repository not available (database not configured)")
+    except Exception as e:
+        logger.error(f"❌ Failed to create case repository: {e}", exc_info=True)
+        container.case_repository = None
+        # Don't fail startup - investigation service will be unavailable
 
     logger.info("✅ Infrastructure layer registered")

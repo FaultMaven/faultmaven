@@ -837,37 +837,82 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # ========================================================================
 
     async def _upsert_case_record(self, case: Case) -> None:
-        """Upsert main cases table (JSONB columns for flexible data)."""
-        query = text(
-            """
-            INSERT INTO cases (
-                case_id, user_id, title, status, created_at, updated_at,
-                consulting, problem_verification, working_conclusion,
-                root_cause_conclusion, path_selection, degraded_mode,
-                escalation_state, documentation, progress, metadata
-            ) VALUES (
-                :case_id, :user_id, :title, :status, :created_at, :updated_at,
-                :consulting::jsonb, :problem_verification::jsonb, :working_conclusion::jsonb,
-                :root_cause_conclusion::jsonb, :path_selection::jsonb, :degraded_mode::jsonb,
-                :escalation_state::jsonb, :documentation::jsonb, :progress::jsonb, :metadata::jsonb
-            )
-            ON CONFLICT (case_id) DO UPDATE SET
-                user_id = EXCLUDED.user_id,
-                title = EXCLUDED.title,
-                status = EXCLUDED.status,
-                updated_at = EXCLUDED.updated_at,
-                consulting = EXCLUDED.consulting,
-                problem_verification = EXCLUDED.problem_verification,
-                working_conclusion = EXCLUDED.working_conclusion,
-                root_cause_conclusion = EXCLUDED.root_cause_conclusion,
-                path_selection = EXCLUDED.path_selection,
-                degraded_mode = EXCLUDED.degraded_mode,
-                escalation_state = EXCLUDED.escalation_state,
-                documentation = EXCLUDED.documentation,
-                progress = EXCLUDED.progress,
-                metadata = EXCLUDED.metadata
+        """Upsert main cases table (JSONB columns for flexible data).
+
+        Deployment-Agnostic Implementation:
+        - Detects database dialect (PostgreSQL vs SQLite)
+        - Uses PostgreSQL ::jsonb type casts when available
+        - Uses plain text/JSON for SQLite compatibility
         """
-        )
+        # Detect database dialect for deployment-agnostic SQL
+        dialect_name = self.db.bind.dialect.name if self.db.bind else "sqlite"
+        is_postgresql = dialect_name == "postgresql"
+
+        # Build dialect-specific SQL
+        if is_postgresql:
+            # PostgreSQL: Use JSONB type casts for optimal performance
+            query = text(
+                """
+                INSERT INTO cases (
+                    case_id, user_id, title, status, created_at, updated_at,
+                    consulting, problem_verification, working_conclusion,
+                    root_cause_conclusion, path_selection, degraded_mode,
+                    escalation_state, documentation, progress, metadata
+                ) VALUES (
+                    :case_id, :user_id, :title, :status, :created_at, :updated_at,
+                    :consulting::jsonb, :problem_verification::jsonb, :working_conclusion::jsonb,
+                    :root_cause_conclusion::jsonb, :path_selection::jsonb, :degraded_mode::jsonb,
+                    :escalation_state::jsonb, :documentation::jsonb, :progress::jsonb, :metadata::jsonb
+                )
+                ON CONFLICT (case_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    title = EXCLUDED.title,
+                    status = EXCLUDED.status,
+                    updated_at = EXCLUDED.updated_at,
+                    consulting = EXCLUDED.consulting,
+                    problem_verification = EXCLUDED.problem_verification,
+                    working_conclusion = EXCLUDED.working_conclusion,
+                    root_cause_conclusion = EXCLUDED.root_cause_conclusion,
+                    path_selection = EXCLUDED.path_selection,
+                    degraded_mode = EXCLUDED.degraded_mode,
+                    escalation_state = EXCLUDED.escalation_state,
+                    documentation = EXCLUDED.documentation,
+                    progress = EXCLUDED.progress,
+                    metadata = EXCLUDED.metadata
+            """
+            )
+        else:
+            # SQLite: Use plain parameter binding (no type casts)
+            query = text(
+                """
+                INSERT INTO cases (
+                    case_id, user_id, title, status, created_at, updated_at,
+                    consulting, problem_verification, working_conclusion,
+                    root_cause_conclusion, path_selection, degraded_mode,
+                    escalation_state, documentation, progress, metadata
+                ) VALUES (
+                    :case_id, :user_id, :title, :status, :created_at, :updated_at,
+                    :consulting, :problem_verification, :working_conclusion,
+                    :root_cause_conclusion, :path_selection, :degraded_mode,
+                    :escalation_state, :documentation, :progress, :metadata
+                )
+                ON CONFLICT (case_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    title = EXCLUDED.title,
+                    status = EXCLUDED.status,
+                    updated_at = EXCLUDED.updated_at,
+                    consulting = EXCLUDED.consulting,
+                    problem_verification = EXCLUDED.problem_verification,
+                    working_conclusion = EXCLUDED.working_conclusion,
+                    root_cause_conclusion = EXCLUDED.root_cause_conclusion,
+                    path_selection = EXCLUDED.path_selection,
+                    degraded_mode = EXCLUDED.degraded_mode,
+                    escalation_state = EXCLUDED.escalation_state,
+                    documentation = EXCLUDED.documentation,
+                    progress = EXCLUDED.progress,
+                    metadata = EXCLUDED.metadata
+            """
+            )
 
         await self.db.execute(
             query,
