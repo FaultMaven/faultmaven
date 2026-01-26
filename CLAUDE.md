@@ -9,7 +9,7 @@ FaultMaven is an **AI-powered troubleshooting copilot** for modern engineering t
 **Key Value Propositions:**
 - Evidence-centric investigation (logs, metrics, configs, past solutions)
 - Knowledge flywheel (learns from resolved incidents)
-- Multi-LLM support (10 providers: OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, local Ollama/vLLM)
+- Multi-LLM support (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local Ollama/vLLM)
 - Zero context-switching (browser extension integrates into existing tools)
 
 **System Components:**
@@ -31,18 +31,18 @@ faultmaven/
 ├── api/                    # Shared API middleware, dependencies, error handling
 │   ├── dependencies.py     # DI for legacy code
 │   ├── exception_handlers.py
-│   ├── middleware/         # 12 middleware modules
-│   │   ├── auth.py
-│   │   ├── contract_probe.py
-│   │   ├── deduplication.py
-│   │   ├── idempotency.py
-│   │   ├── intelligent_protection.py
-│   │   ├── logging.py
-│   │   ├── performance.py
-│   │   ├── rate_limiting.py
-│   │   ├── request_id.py
-│   │   ├── system_optimization.py
-│   │   └── trailing_slash.py
+│   ├── middleware/         # 11 middleware modules
+│   │   ├── auth.py                    # JWT/OAuth authentication
+│   │   ├── contract_probe.py          # API contract validation
+│   │   ├── deduplication.py           # Request deduplication
+│   │   ├── idempotency.py             # Idempotent request handling
+│   │   ├── intelligent_protection.py  # Adaptive rate limiting
+│   │   ├── logging.py                 # Request/response logging
+│   │   ├── performance.py             # Performance monitoring
+│   │   ├── rate_limiting.py           # Rate limiting
+│   │   ├── request_id.py              # Request ID injection
+│   │   ├── system_optimization.py     # System optimization
+│   │   └── trailing_slash.py          # URL normalization
 │   ├── v1/                 # API v1 utilities and dependencies
 │   └── routes/             # Legacy routes (admin, auth, cases, evidence, sessions, users)
 ├── modules/                # Feature modules (primary code organization)
@@ -68,16 +68,18 @@ faultmaven/
 │   ├── preprocessing/      # Data preprocessor
 │   ├── processing/         # Log analyzer, pattern learner
 │   └── confidence/         # Confidence scoring aggregator
-├── infrastructure/         # Shared adapters (20+ subdirectories)
+├── infrastructure/         # Shared adapters (18 subdirectories)
 │   ├── llm/                # LLM provider routing, caching
-│   │   ├── providers/      # 10 LLM providers
+│   │   ├── providers/      # 9 LLM providers (see Supported LLM Providers)
 │   │   ├── router.py       # Provider routing with fallback chain
 │   │   ├── cache.py        # Response caching
 │   │   └── local_llm_manager.py
-│   ├── persistence/        # Database layer (SQLAlchemy, 20+ repository files)
+│   ├── persistence/        # Database layer (SQLAlchemy)
 │   ├── knowledge/          # Vector databases (ChromaDB)
+│   ├── vector/             # Vector storage abstraction
 │   ├── auth/               # JWT, bcrypt, RBAC, user stores
 │   ├── security/           # PII protection (Presidio)
+│   ├── protection/         # System protection and rate limiting
 │   ├── caching/            # Intelligent cache
 │   ├── storage/            # File storage (local, S3, Azure)
 │   ├── logging/            # Structured logging (structlog), coordinator
@@ -85,6 +87,8 @@ faultmaven/
 │   ├── monitoring/         # APM integration, alerting, metrics collector
 │   ├── health/             # Health checks, SLA tracker, component monitor
 │   ├── jobs/               # Background job service
+│   ├── tasks/              # Async task management
+│   ├── shims/              # Compatibility shims
 │   └── concurrency/        # Report lock manager
 ├── bootstrap/              # Application startup and service factories
 ├── config/                 # Pydantic-settings configuration
@@ -129,6 +133,16 @@ module/
 │       └── stores/         # Session/token stores (auth module)
 └── exceptions.py           # Module-specific exceptions
 
+# Case module infrastructure (multiple repository implementations)
+modules/case/infrastructure/
+├── case_repository.py              # Abstract base repository
+├── sqlite_case_repository.py       # SQLite implementation (default)
+├── postgresql_hybrid_case_repository.py  # PostgreSQL implementation
+├── database_case_repository.py     # Generic database repository
+├── sessionless_case_repository.py  # Sessionless repository variant
+├── investigation_session_repository.py  # Session management
+└── case_vector_store.py            # Vector storage for cases
+
 # Domain Service structure (Evidence, Agent, Report)
 module/
 ├── api/
@@ -138,6 +152,22 @@ module/
 │   └── services/           # Business logic (uses Case repository)
 ├── tools/                  # Agent tools (agent module only)
 └── exceptions.py           # Module-specific exceptions
+
+# Agent module tools (investigation capabilities)
+modules/agent/tools/
+├── base.py                 # Base tool class
+├── knowledge_base.py       # KB interaction tool
+├── document_qa_tool.py     # Document Q&A
+├── global_kb_qa.py         # Global knowledge base queries
+├── user_kb_qa.py           # User-specific KB queries
+├── case_evidence_qa.py     # Case evidence queries
+├── list_evidence_tool.py   # List available evidence
+├── read_file_tool.py       # File reading tool
+├── web_search.py           # Web search integration (Tavily)
+└── kb_configs/             # KB tool configurations
+    ├── global_kb_config.py
+    ├── user_kb_config.py
+    └── case_evidence_config.py
 ```
 
 ### Cross-Module Import Rules
@@ -202,17 +232,22 @@ modules/auth/
 │   ├── oauth.py                    # OAuth 2.0 flow with PKCE
 │   ├── session.py                  # Session management
 │   ├── organizations.py            # Organization management
-│   └── teams.py                    # Team management
+│   ├── teams.py                    # Team management
+│   └── rate_limiting.py            # Auth-specific rate limiting
 ├── domain/
-│   ├── models/                     # User, Session, RBAC models
+│   ├── models/                     # User, Session, RBAC, Organization models
 │   └── services/
 │       ├── auth_service.py         # Core authentication logic
+│       ├── auth_session_service.py # Session management service
 │       ├── oauth_service.py        # OAuth 2.0 implementation
 │       ├── jwt_token_generator.py  # RS256/HS256 token generation
-│       └── user_service.py         # User CRUD operations
+│       ├── user_service.py         # User CRUD operations
+│       ├── organization_service.py # Organization management
+│       └── team_service.py         # Team management
 └── infrastructure/
-    ├── repositories/               # User, session, OAuth code repositories
-    └── stores/                     # Redis/in-memory session stores
+    ├── repositories/               # User, session, OAuth code, team, org repositories
+    ├── stores/                     # Redis/in-memory session stores, token revocation
+    └── metrics/                    # OAuth metrics tracking
 ```
 
 ### Token Structure (Both Modes)
@@ -330,14 +365,30 @@ cp .env.example .env
 
 **Utility Scripts (scripts/):**
 ```bash
+# User & Account Management
 python scripts/create_builtin_accounts.py  # Create default users
+python scripts/resolve_duplicate_emails.py # Fix duplicate email issues
+python scripts/check_duplicate_emails.py   # Check for duplicate emails
+
+# OAuth & Security
 python scripts/generate_oauth_keys.py      # Generate OAuth RSA keys
+python scripts/test_rbac.py                # Test RBAC configuration
+
+# Database & Storage
 ./scripts/db_migrate.sh                    # Database migrations
 python scripts/verify_vector_storage.py    # Verify ChromaDB
+python scripts/cleanup_corrupt_cases.py    # Database maintenance
+python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
+
+# Architecture & Validation
 python scripts/check_import_violations.py  # Check architecture
 python scripts/check_config_compliance.py  # Validate configuration
-python scripts/cleanup_corrupt_cases.py    # Database maintenance
-python scripts/resolve_duplicate_emails.py # Fix duplicate email issues
+python scripts/check_api_changes.py        # Detect API changes
+
+# Development & Testing
+python scripts/setup_env.py                # Environment setup
+python scripts/generate_api_docs.py        # Generate API documentation
+python scripts/frontend_verification_smoke_test.py  # Frontend smoke test
 ```
 
 ## Testing
@@ -683,17 +734,22 @@ Implemented in `core/investigation/ooda_engine.py`.
 ```
 docs/
 ├── architecture/           # System design, ADRs
-│   ├── api-and-integration/
-│   ├── case-and-session/
-│   ├── core-architecture/
-│   ├── data-and-storage/
-│   ├── investigation-engine/
-│   ├── knowledge-and-ai/
-│   └── security/
-├── guides/                 # How-to guides
-├── development/            # Dev standards
-├── operations/             # Runbooks, monitoring
-└── reference/              # API docs, config reference
+│   ├── api-and-integration/    # API mapping, integration specs
+│   ├── case-and-session/       # Case lifecycle, session management
+│   ├── core-architecture/      # Module design, DI, service patterns
+│   ├── data-and-storage/       # Database schemas, vector storage
+│   ├── data-processing/        # Data classification, preprocessing
+│   ├── investigation-engine/   # OODA, milestones, prompts
+│   ├── knowledge-and-ai/       # RAG, vector operations
+│   ├── security/               # IAM design, PII handling
+│   ├── specifications/         # Formal specs (sessions, config, errors)
+│   ├── decisions/              # Architecture Decision Records (ADRs)
+│   └── diagrams/               # System diagrams (Mermaid)
+├── getting-started/        # Installation, quickstart, user guide
+├── guides/                 # How-to guides (config, migrations, KB)
+├── development/            # Dev standards, testing, datetime handling
+├── operations/             # Runbooks, monitoring, logging policies
+└── archive/                # Historical implementation notes
 ```
 
 ## Troubleshooting
