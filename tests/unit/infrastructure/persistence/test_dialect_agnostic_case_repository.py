@@ -67,8 +67,13 @@ async def test_upsert_case_detects_sqlite_dialect():
     sql_text = str(call_args[0][0])
 
     # SQLite version should NOT have ::jsonb type casts
-    assert "::jsonb" not in sql_text, "SQLite SQL should not contain PostgreSQL ::jsonb type casts"
-    assert ":consulting, :problem_verification" in sql_text or "consulting, problem_verification" in sql_text
+    assert (
+        "::jsonb" not in sql_text
+    ), "SQLite SQL should not contain PostgreSQL ::jsonb type casts"
+    assert (
+        ":consulting, :problem_verification" in sql_text
+        or "consulting, problem_verification" in sql_text
+    )
 
 
 @pytest.mark.asyncio
@@ -116,7 +121,9 @@ async def test_upsert_case_detects_postgresql_dialect():
     sql_text = str(call_args[0][0])
 
     # PostgreSQL version SHOULD have ::jsonb type casts
-    assert "::jsonb" in sql_text, "PostgreSQL SQL should contain ::jsonb type casts for optimal performance"
+    assert (
+        "::jsonb" in sql_text
+    ), "PostgreSQL SQL should contain ::jsonb type casts for optimal performance"
 
 
 @pytest.mark.asyncio
@@ -160,4 +167,6 @@ async def test_upsert_case_defaults_to_sqlite_when_no_bind():
     sql_text = str(call_args[0][0])
 
     # Default should be SQLite (no type casts)
-    assert "::jsonb" not in sql_text, "Should default to SQLite SQL when no bind available"
+    assert (
+        "::jsonb" not in sql_text
+    ), "Should default to SQLite SQL when no bind available"

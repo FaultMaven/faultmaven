@@ -26,7 +26,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from faultmaven.infrastructure.persistence.database import get_db_session
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     Evidence,
@@ -36,7 +36,7 @@ from faultmaven.modules.case.domain.models import (
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.domain.owned_models.report import (
+    from faultmaven.modules.case.contracts import (
         CaseReport,
         ReportType,
     )
