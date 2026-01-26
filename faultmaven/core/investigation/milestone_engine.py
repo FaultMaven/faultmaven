@@ -232,9 +232,33 @@ class MilestoneEngine:
             }
 
         except Exception as e:
-            logger.error(
-                f"Error processing turn for case {case.case_id}: {e}", exc_info=True
+            error_str = str(e)
+
+            # Classify error types to determine logging level
+            is_external_service_error = any(
+                indicator in error_str.lower()
+                for indicator in [
+                    "over capacity",
+                    "503",
+                    "rate limit",
+                    "429",
+                    "timeout",
+                    "all providers failed",
+                    "api error",
+                ]
             )
+
+            if is_external_service_error:
+                # External service errors are expected - log without stack trace
+                logger.warning(
+                    f"External service error for case {case.case_id}: {error_str[:200]}"
+                )
+            else:
+                # Unexpected errors - log with full stack trace for debugging
+                logger.error(
+                    f"Error processing turn for case {case.case_id}: {e}", exc_info=True
+                )
+
             raise MilestoneEngineError(f"Turn processing failed: {e}") from e
 
     # =========================================================================
