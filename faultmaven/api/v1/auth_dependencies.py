@@ -64,26 +64,26 @@ def get_verification_key() -> str:
 
     # Determine algorithm from auth mode per iam-design.md
     # local → HS256, oauth → RS256
-    if settings.auth.mode == "local":
+    if settings.auth.auth_mode == "local":
         # Local mode: HS256 symmetric key
-        if not settings.auth.jwt_secret_key:
+        if not settings.security.jwt_secret_key:
             raise RuntimeError(
                 "JWT_SECRET_KEY not configured for local mode authentication. "
                 "Set JWT_SECRET_KEY environment variable."
             )
-        return settings.auth.jwt_secret_key.get_secret_value()
+        return settings.security.jwt_secret_key.get_secret_value()
 
-    elif settings.auth.mode == "oauth":
+    elif settings.auth.auth_mode == "oauth":
         # OAuth mode: RS256 public key for verification
-        if settings.auth.jwt_public_key:
-            return settings.auth.jwt_public_key
-        elif settings.auth.jwt_public_key_path:
+        if settings.security.jwt_public_key:
+            return settings.security.jwt_public_key
+        elif settings.security.jwt_public_key_path:
             try:
-                with open(settings.auth.jwt_public_key_path, "r") as f:
+                with open(settings.security.jwt_public_key_path, "r") as f:
                     return f.read()
             except FileNotFoundError:
                 raise RuntimeError(
-                    f"JWT public key file not found: {settings.auth.jwt_public_key_path}"
+                    f"JWT public key file not found: {settings.security.jwt_public_key_path}"
                 )
         else:
             raise RuntimeError(
@@ -93,7 +93,7 @@ def get_verification_key() -> str:
 
     else:
         raise RuntimeError(
-            f"Unsupported auth mode: {settings.auth.mode}. "
+            f"Unsupported auth mode: {settings.auth.auth_mode}. "
             "Only 'local' and 'oauth' are supported."
         )
 
@@ -237,15 +237,15 @@ async def get_current_user_optional(
         settings = get_settings()
 
         # Determine algorithm from auth mode (per iam-design.md)
-        algorithm = "HS256" if settings.auth.mode == "local" else "RS256"
+        algorithm = "HS256" if settings.auth.auth_mode == "local" else "RS256"
 
         # Validate JWT token using unified verification key
         claims = jwt.decode(
             token,
             key=get_verification_key(),
             algorithms=[algorithm],
-            audience=settings.auth.jwt_audience,
-            issuer=settings.auth.jwt_issuer,
+            audience=settings.security.jwt_audience,
+            issuer=settings.security.jwt_issuer,
         )
 
         # Extract user information from JWT claims

@@ -302,16 +302,18 @@ async def local_login(
         settings = get_settings()
 
         # Create HS256 JWT generator for local mode
-        if not settings.auth.jwt_secret_key:
+        if not settings.security.jwt_secret_key:
             raise HTTPException(
                 status_code=500,
                 detail="JWT_SECRET_KEY not configured for local mode authentication",
             )
 
         jwt_generator = HS256JWTTokenGenerator(
-            secret_key=settings.auth.jwt_secret_key.get_secret_value(),
+            secret_key=settings.security.jwt_secret_key.get_secret_value(),
             revocation_store=token_manager,  # Use existing token_manager for revocation
-            settings=settings,
+            settings=settings.auth,
+            issuer=settings.security.jwt_issuer,
+            audience=settings.security.jwt_audience,
         )
 
         access_token = await jwt_generator.generate_access_token(user)
@@ -468,16 +470,18 @@ async def local_register(
         settings = get_settings()
 
         # Create HS256 JWT generator for local mode
-        if not settings.auth.jwt_secret_key:
+        if not settings.security.jwt_secret_key:
             raise HTTPException(
                 status_code=500,
                 detail="JWT_SECRET_KEY not configured for local mode authentication",
             )
 
         jwt_generator = HS256JWTTokenGenerator(
-            secret_key=settings.auth.jwt_secret_key.get_secret_value(),
+            secret_key=settings.security.jwt_secret_key.get_secret_value(),
             revocation_store=token_manager,  # Use existing token_manager for revocation
-            settings=settings,
+            settings=settings.auth,
+            issuer=settings.security.jwt_issuer,
+            audience=settings.security.jwt_audience,
         )
 
         access_token = await jwt_generator.generate_access_token(user)

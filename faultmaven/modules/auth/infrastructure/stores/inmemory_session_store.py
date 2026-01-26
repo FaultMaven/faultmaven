@@ -181,6 +181,54 @@ class InMemorySessionStore(ISessionStore):
             if index_key in self._client_index:
                 del self._client_index[index_key]
 
+    async def get_session(self, session_id: str) -> Optional[SessionContext]:
+        """
+        Get session by ID and return as SessionContext object.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            SessionContext if found and not expired, None otherwise
+        """
+        session_data = await self.get(session_id)
+        if not session_data:
+            return None
+
+        # Convert dict to SessionContext
+        try:
+            created_at = parse_utc_timestamp(session_data.get("created_at"))
+            last_activity = parse_utc_timestamp(
+                session_data.get("last_activity", session_data.get("created_at"))
+            )
+            updated_at = parse_utc_timestamp(
+                session_data.get(
+                    "updated_at",
+                    session_data.get("last_activity", session_data.get("created_at")),
+                )
+            )
+            expires_at = self._ttls.get(session_id)
+
+            return SessionContext(
+                session_id=session_id,
+                user_id=session_data.get("user_id"),
+                client_id=session_data.get("client_id"),
+                session_resumed=session_data.get("session_resumed", False),
+                created_at=created_at,
+                last_activity=last_activity,
+                updated_at=updated_at,
+                expires_at=expires_at,
+                metadata=session_data.get("metadata", {}),
+            )
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"Failed to convert session {session_id} to SessionContext: {e}"
+            )
+            return None
+
     async def save(self, session: SessionContext) -> None:
         """
         Save session context to in-memory store.

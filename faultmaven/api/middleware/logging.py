@@ -16,7 +16,6 @@ from typing import Callable, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from faultmaven.container import BaseDIContainer
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 
@@ -62,7 +61,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         # Look up user_id from session if session_id is available
         if session_id:
-            user_id = await self._get_user_id_from_session(session_id)
+            user_id = await self._get_user_id_from_session(request, session_id)
 
         # Initialize request context through coordinator with business context
         # HTTP-specific context goes in attributes dict
@@ -314,7 +313,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         return None
 
-    async def _get_user_id_from_session(self, session_id: str) -> Optional[str]:
+    async def _get_user_id_from_session(self, request: Request, session_id: str) -> Optional[str]:
         """
         Look up user_id from session_id using SessionService.
 
@@ -322,19 +321,21 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         without user context rather than failing the request.
 
         Args:
+            request: FastAPI request object
             session_id: Session identifier
 
         Returns:
             user_id if found, None otherwise
         """
         try:
-            # Get SessionService from a DI container instance.
-            # Using BaseDIContainer() allows tests to patch BaseDIContainer.__new__ and inject a mock.
-            container_instance = BaseDIContainer()
-            session_service = container_instance.get_session_service()
+            # Get SessionService from app state (initialized in main.py)
+            session_service = getattr(request.app.state, 'session_service', None)
+            if not session_service:
+                logger.warning("SessionService not available in app state")
+                return None
 
-            # Look up session (non-validating to avoid exceptions)
-            session = await session_service.get_session(session_id, validate=False)
+            # Look up session
+            session = await session_service.get_session(session_id)
 
             return session.user_id if session else None
 

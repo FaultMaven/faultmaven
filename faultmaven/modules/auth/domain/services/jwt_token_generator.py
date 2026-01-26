@@ -505,6 +505,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         secret_key: str,
         revocation_store,  # ITokenRevocationStore
         settings,  # AuthSettings from config
+        issuer: str = "faultmaven",
+        audience: str = "faultmaven-api",
     ):
         """Initialize JWT token generator.
 
@@ -512,10 +514,14 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             secret_key: Secret key for HS256 signing/validation
             revocation_store: Token revocation tracking storage
             settings: Authentication configuration
+            issuer: JWT issuer (iss claim)
+            audience: JWT audience (aud claim)
         """
         self.secret_key = secret_key
         self.revocation_store = revocation_store
         self.settings = settings
+        self.issuer = issuer
+        self.audience = audience
 
     async def generate_access_token(self, user: User) -> str:
         """Generate HS256-signed access token.
@@ -566,8 +572,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             ],
             "exp": expires_at,  # Expiration time
             "iat": now,  # Issued at
-            "iss": "faultmaven",  # Issuer
-            "aud": "faultmaven-api",  # Audience
+            "iss": self.issuer,  # Issuer
+            "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
             "type": "access",  # Token type
             "auth_mode": "local",  # Authentication mode
