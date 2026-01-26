@@ -4,12 +4,13 @@ Tests that PostgreSQLHybridCaseRepository properly detects database dialect
 and generates appropriate SQL for both SQLite and PostgreSQL.
 """
 
-import pytest
 from datetime import datetime, timezone
-from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
-from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import uuid4
+
+import pytest
 from sqlalchemy.engine import Dialect
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models import (
     Case,

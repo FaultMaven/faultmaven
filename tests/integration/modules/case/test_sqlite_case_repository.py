@@ -15,12 +15,12 @@ Key validations:
 
 import json
 import os
-import pytest
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -291,15 +291,15 @@ class TestSQLiteCaseRepository:
             The current statement uses 16, and there are 6 supplied.
             [SQL: INSERT INTO cases (...) VALUES (..., :consulting::jsonb, ...)]
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         # Create repository with real SQLite session
@@ -340,15 +340,15 @@ class TestSQLiteCaseRepository:
             sqlite3.OperationalError: unrecognized token: ":"
             [SQL: SELECT ... '[]'::json ... jsonb_build_object(...) FILTER (WHERE ...)]
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -384,15 +384,15 @@ class TestSQLiteCaseRepository:
         PostgreSQL uses to_tsvector/ts_rank for full-text search.
         SQLite uses LIKE pattern matching instead.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -429,15 +429,15 @@ class TestSQLiteCaseRepository:
 
     async def test_case_list_sqlite_compatible(self, sqlite_session):
         """Test that list operation works with SQLite."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -465,15 +465,15 @@ class TestSQLiteCaseRepository:
 
     async def test_message_operations_sqlite_compatible(self, sqlite_session):
         """Test that message operations work with SQLite (no ::jsonb)."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -512,15 +512,15 @@ class TestSQLiteCaseRepository:
 
     async def test_analytics_sqlite_compatible(self, sqlite_session):
         """Test that analytics work with SQLite (no FILTER clause)."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -549,15 +549,15 @@ class TestSQLiteCaseRepository:
 
     async def test_case_delete_sqlite_compatible(self, sqlite_session):
         """Test that delete works with SQLite."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
