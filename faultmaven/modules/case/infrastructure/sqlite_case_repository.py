@@ -595,21 +595,27 @@ class SQLiteCaseRepository(CaseRepository):
         query = text(
             """
             INSERT INTO cases (
-                case_id, user_id, title, status, created_at, updated_at,
+                case_id, user_id, organization_id, title, description, investigation_strategy,
+                status, created_at, updated_at, last_activity_at,
                 consulting, problem_verification, working_conclusion,
                 root_cause_conclusion, path_selection, degraded_mode,
                 escalation_state, documentation, progress, metadata
             ) VALUES (
-                :case_id, :user_id, :title, :status, :created_at, :updated_at,
+                :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
+                :status, :created_at, :updated_at, :last_activity_at,
                 :consulting, :problem_verification, :working_conclusion,
                 :root_cause_conclusion, :path_selection, :degraded_mode,
                 :escalation_state, :documentation, :progress, :metadata
             )
             ON CONFLICT (case_id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
+                organization_id = EXCLUDED.organization_id,
                 title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                investigation_strategy = EXCLUDED.investigation_strategy,
                 status = EXCLUDED.status,
                 updated_at = EXCLUDED.updated_at,
+                last_activity_at = EXCLUDED.last_activity_at,
                 consulting = EXCLUDED.consulting,
                 problem_verification = EXCLUDED.problem_verification,
                 working_conclusion = EXCLUDED.working_conclusion,
@@ -628,10 +634,14 @@ class SQLiteCaseRepository(CaseRepository):
             {
                 "case_id": case.case_id,
                 "user_id": case.user_id,
+                "organization_id": case.organization_id,
                 "title": case.title,
+                "description": case.description,
+                "investigation_strategy": case.investigation_strategy.value,
                 "status": case.status.value,
                 "created_at": case.created_at,
                 "updated_at": case.updated_at,
+                "last_activity_at": case.last_activity_at,
                 "consulting": json.dumps(case.consulting.model_dump()),
                 "problem_verification": (
                     json.dumps(case.problem_verification.model_dump())
@@ -1048,14 +1058,20 @@ class SQLiteCaseRepository(CaseRepository):
             else []
         )
 
+        from faultmaven.modules.case.domain.models import InvestigationStrategy
+
         return Case(
             case_id=row.case_id,
             user_id=row.user_id,
             organization_id=(
-                row.organization_id if hasattr(row, "organization_id") else None
+                row.organization_id if hasattr(row, "organization_id") else ""
             ),
             title=row.title,
-            description=None,
+            description=(
+                row.description
+                if hasattr(row, "description") and row.description
+                else ""
+            ),
             status=CaseStatus(row.status),
             status_history=[],
             closure_reason=None,
@@ -1064,7 +1080,11 @@ class SQLiteCaseRepository(CaseRepository):
             turns_without_progress=0,
             turn_history=[],
             path_selection=path_selection,
-            investigation_strategy=None,
+            investigation_strategy=(
+                InvestigationStrategy(row.investigation_strategy)
+                if hasattr(row, "investigation_strategy") and row.investigation_strategy
+                else InvestigationStrategy.ACTIVE_INCIDENT
+            ),
             consulting=consulting,
             problem_verification=problem_verification,
             uploaded_files=uploaded_files,
