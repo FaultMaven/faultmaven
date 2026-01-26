@@ -172,15 +172,15 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
-            filename TEXT,
-            size_bytes INTEGER,
-            data_type TEXT,
-            uploaded_at_turn INTEGER,
-            uploaded_at TIMESTAMP,
-            source_type TEXT,
-            content_ref TEXT,
-            preprocessing_summary TEXT,
-            metadata TEXT,
+            filename TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            content_type TEXT,
+            storage_path TEXT,
+            processing_status TEXT NOT NULL DEFAULT 'pending',
+            processing_error TEXT,
+            uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            processed_at TIMESTAMP,
+            metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """

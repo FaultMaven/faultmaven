@@ -210,12 +210,16 @@ class SQLiteCaseRepository(CaseRepository):
         return solutions
 
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
-        """Load uploaded files for a case."""
+        """Load uploaded files for a case.
+
+        Maps production schema (file_size, content_type, storage_path, processing_status)
+        to domain model fields (size_bytes, data_type, content_ref, etc.).
+        """
         query = text(
             """
-            SELECT file_id, filename, size_bytes, data_type,
-                   uploaded_at_turn, uploaded_at, source_type,
-                   content_ref, preprocessing_summary
+            SELECT file_id, filename, file_size, content_type,
+                   uploaded_at, storage_path, processing_status,
+                   processing_error, metadata
             FROM uploaded_files
             WHERE case_id = :case_id
         """
@@ -225,17 +229,29 @@ class SQLiteCaseRepository(CaseRepository):
 
         files = []
         for row in rows:
+            # Map production schema to domain model fields
+            metadata = row[8]
+            if isinstance(metadata, str):
+                import json
+
+                metadata = json.loads(metadata) if metadata else {}
+
             files.append(
                 {
                     "file_id": row[0],
                     "filename": row[1],
-                    "size_bytes": row[2],
-                    "data_type": row[3],
-                    "uploaded_at_turn": row[4],
-                    "uploaded_at": row[5],
-                    "source_type": row[6],
-                    "content_ref": row[7],
-                    "preprocessing_summary": row[8],
+                    "size_bytes": row[2],  # file_size → size_bytes
+                    "data_type": row[3] or "unknown",  # content_type → data_type
+                    "uploaded_at_turn": 0,  # Not in production schema, default to 0
+                    "uploaded_at": row[4],
+                    "source_type": (
+                        metadata.get("source_type", "file_upload")
+                        if metadata
+                        else "file_upload"
+                    ),
+                    "content_ref": row[5],  # storage_path → content_ref
+                    "preprocessing_summary": row[7]
+                    or "",  # processing_error as summary fallback
                 }
             )
         return files
@@ -533,7 +549,7 @@ class SQLiteCaseRepository(CaseRepository):
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id AND status = 'implemented') as implemented_solutions,
                     (SELECT COUNT(*) FROM case_messages WHERE case_id = :case_id) as message_count,
                     (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count,
-                    (SELECT COALESCE(SUM(size_bytes), 0) FROM uploaded_files WHERE case_id = :case_id) as total_file_size
+                    (SELECT COALESCE(SUM(file_size), 0) FROM uploaded_files WHERE case_id = :case_id) as total_file_size
             """
             )
 
