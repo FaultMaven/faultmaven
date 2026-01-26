@@ -266,7 +266,7 @@ class SQLiteCaseRepository(CaseRepository):
                     original_filename, stored_filename, file_path,
                     evidence_type, mime_type, file_size, storage_backend,
                     created_at, updated_at, metadata, description,
-                    is_primary, tags
+                    is_primary
                 FROM evidence_artifacts
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -462,10 +462,10 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             query = text(
                 """
-                SELECT message_id, role, content, created_at, metadata
+                SELECT message_id, role, content, timestamp, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY created_at ASC
+                ORDER BY timestamp ASC
                 LIMIT :limit OFFSET :offset
             """
             )

@@ -196,7 +196,7 @@ async def create_test_schema(session: AsyncSession):
             case_id TEXT NOT NULL,
             role TEXT,
             content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
