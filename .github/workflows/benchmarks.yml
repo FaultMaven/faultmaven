@@ -20,6 +20,10 @@ jobs:
   benchmarks:
     name: Run Performance Benchmarks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
 
     steps:
       - name: Checkout code
