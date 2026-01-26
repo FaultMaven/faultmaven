@@ -1095,6 +1095,13 @@ class SQLiteCaseRepository(CaseRepository):
         case_data = {
             "case_id": row.case_id,
             "user_id": row.user_id,
+            # organization_id is required but nullable in DB schema (legacy data)
+            # Provide default "default_org" for NULL values
+            "organization_id": (
+                row.organization_id
+                if hasattr(row, "organization_id") and row.organization_id
+                else "default_org"
+            ),
             "title": row.title,
             "status": CaseStatus(row.status),
             "status_history": [],
@@ -1121,8 +1128,6 @@ class SQLiteCaseRepository(CaseRepository):
 
         # Only add optional fields if they exist and have values in database
         # This allows Pydantic to apply its own defaults for missing fields
-        if hasattr(row, "organization_id") and row.organization_id:
-            case_data["organization_id"] = row.organization_id
 
         if hasattr(row, "description") and row.description:
             case_data["description"] = row.description
