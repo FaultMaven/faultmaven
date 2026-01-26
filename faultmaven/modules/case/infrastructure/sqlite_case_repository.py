@@ -92,6 +92,7 @@ class SQLiteCaseRepository(CaseRepository):
                 await self._upsert_hypotheses(case.case_id, case.hypotheses)
                 await self._upsert_solutions(case.case_id, case.solutions)
                 await self._upsert_uploaded_files(case.case_id, case.uploaded_files)
+                await self._upsert_messages(case.case_id, case.messages)  # Save messages!
 
                 if case.status_history:
                     await self._append_status_transitions(
@@ -985,6 +986,64 @@ class SQLiteCaseRepository(CaseRepository):
                     "content_ref": file.content_ref,
                     "preprocessing_summary": file.preprocessing_summary,
                     "metadata": json.dumps({}),
+                },
+            )
+
+    async def _upsert_messages(
+        self, case_id: str, messages_list: builtins.list[dict]
+    ) -> None:
+        """Upsert case messages (SQLite-compatible).
+
+        Messages are dicts with keys: message_id, role, content, timestamp, metadata
+        """
+        # Get IDs of messages that should exist
+        current_ids = [msg.get("message_id") for msg in messages_list if msg.get("message_id")]
+
+        if current_ids:
+            # Delete messages not in current list
+            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
+            delete_query = text(
+                f"""
+                DELETE FROM case_messages
+                WHERE case_id = :case_id
+                AND message_id NOT IN ({placeholders})
+            """
+            )
+            params = {"case_id": case_id}
+            for i, mid in enumerate(current_ids):
+                params[f"id_{i}"] = mid
+            await self.db.execute(delete_query, params)
+
+        # Upsert each message
+        for msg in messages_list:
+            # Skip if no message_id (shouldn't happen, but be safe)
+            if not msg.get("message_id"):
+                continue
+
+            query = text(
+                """
+                INSERT INTO case_messages (
+                    message_id, case_id, role, content, timestamp, metadata
+                ) VALUES (
+                    :message_id, :case_id, :role, :content, :timestamp, :metadata
+                )
+                ON CONFLICT (message_id) DO UPDATE SET
+                    role = EXCLUDED.role,
+                    content = EXCLUDED.content,
+                    timestamp = EXCLUDED.timestamp,
+                    metadata = EXCLUDED.metadata
+            """
+            )
+
+            await self.db.execute(
+                query,
+                {
+                    "message_id": msg.get("message_id"),
+                    "case_id": case_id,
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", ""),
+                    "timestamp": msg.get("created_at") or msg.get("timestamp") or datetime.now(UTC),
+                    "metadata": json.dumps(msg.get("metadata", {})),
                 },
             )
 
