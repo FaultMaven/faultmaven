@@ -67,7 +67,7 @@ DATA TYPES     ┌──────────────┬─────�
                │  (Python)    │ (Filesystem) │   (K8s)      │
 ───────────────┼──────────────┼──────────────┼──────────────┤
 Long-term      │ Python dict  │ SQLite file  │ PostgreSQL   │
-(Cases/Users)  │ ✅ Impl.     │ ⚠️ Future    │ ✅ Impl.     │
+(Cases/Users)  │ ✅ Impl.     │ ✅ Impl.     │ ✅ Impl.     │
                │              │              │              │
 Technology:    │ InMemory     │ SQLite       │ PostgreSQL   │
                │ Repository   │ Repository   │ Repository   │
@@ -186,8 +186,8 @@ But session data (cached) should use Redis technology regardless of backend.
 | Backend | Implementation | Status | Use Case |
 |---------|----------------|--------|----------|
 | In-Memory | `InMemoryCaseRepository` | ✅ Implemented | Development, testing |
-| Local Files | `SQLiteCaseRepository` | ⚠️ Future | Single-node, offline |
-| Microservices | `PostgreSQLCaseRepository` | ✅ Implemented | Production K8s |
+| Local Files | `SQLiteCaseRepository` | ✅ Implemented | Single-node, local deployment |
+| Microservices | `PostgreSQLHybridCaseRepository` | ✅ Implemented | Production K8s |
 
 **Configuration**:
 ```bash
@@ -516,34 +516,41 @@ VECTOR_STORAGE_TYPE=inmemory
 
 ### 5.2 Local Files Backend (Filesystem)
 
-**Use Case**: Single-node deployment, offline development
+**Use Case**: Single-node deployment, local development, self-hosted
 
-**Implementations** (future):
-- ⚠️ `SQLiteCaseRepository` - Cases in SQLite file
-- ⚠️ `FileSessionStore` - Sessions in local files
-- ⚠️ Future: ChromaDB local mode could replace in-memory for persistence
+**Implementations**:
+- ✅ `SQLiteCaseRepository` - Cases in SQLite file (SQLite-compatible SQL)
+- ⚠️ `FileSessionStore` - Sessions in local files (future)
+- ✅ ChromaDB local mode - Vector storage with persistence
 
-**Configuration** (future):
+**Configuration**:
 ```bash
-# .env.singlenode
-CASE_STORAGE_TYPE=sqlite
-SQLITE_DB_PATH=data/faultmaven.db
+# .env.local (self-hosted deployment)
+DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
 
-SESSION_STORAGE_TYPE=file
-SESSION_FILE_PATH=data/sessions/
+SESSION_STORAGE_TYPE=inmemory  # or: redis for persistence
 
-VECTOR_STORAGE_TYPE=chromadb
-CHROMADB_URL=http://localhost:8090
+VECTOR_STORAGE_TYPE=inmemory   # or: chromadb for persistence
 ```
 
 **Characteristics**:
 - ✅ Persistent local storage
-- ✅ No external dependencies
+- ✅ No external dependencies (PostgreSQL not required)
 - ✅ Single file database (SQLite)
-- ❌ Limited concurrency
+- ✅ SQLite-compatible SQL (no PostgreSQL-specific features)
+- ❌ Limited concurrency (SQLite limitation)
 - ❌ Not distributed
 
-**Status**: ⚠️ **Planned - Can be added as needed**
+**Status**: ✅ **Implemented for Case Repository**
+
+**Implementation Details**:
+- `SQLiteCaseRepository` uses SQLite-compatible SQL:
+  - No `::jsonb` type casts (plain parameter binding)
+  - No `jsonb_build_object()` (separate queries for related data)
+  - No `FILTER (WHERE ...)` clause (uses subqueries)
+  - No `to_tsvector/ts_rank` (uses LIKE pattern matching)
+  - No array operators (uses explicit IN clauses)
+- `SessionlessCaseRepository` auto-detects dialect and selects appropriate repository
 
 ---
 
@@ -909,12 +916,17 @@ await vector_store.add_documents(
 
 **Current Implementation Status**:
 
-| Data Type | Technology | InMemory | Local Files | Microservices |
-|-----------|-----------|----------|-------------|---------------|
-| **Cases** | PostgreSQL/SQLite | ✅ Impl. | ⚠️ Future | ✅ Impl. |
-| **Users** | PostgreSQL/SQLite | ✅ Impl. | ⚠️ Future | ✅ Impl. |
+| Data Type | Technology | InMemory | Local Files (SQLite) | Microservices (PostgreSQL) |
+|-----------|-----------|----------|---------------------|---------------------------|
+| **Cases** | PostgreSQL/SQLite | ✅ Impl. | ✅ Impl. | ✅ Impl. |
+| **Users** | PostgreSQL/SQLite | ✅ Impl. | ✅ Impl. | ✅ Impl. |
 | **Sessions** | Redis | ✅ Impl. | ⚠️ Future | ✅ Impl. |
-| **Knowledge** | InMemory/ChromaDB | ✅ Impl. | ⚠️ Future | ✅ Impl. |
+| **Knowledge** | InMemory/ChromaDB | ✅ Impl. | ✅ Impl. | ✅ Impl. |
+
+**Repository Selection Logic** (SessionlessCaseRepository):
+- Dialect detected at runtime from database session
+- `sqlite` dialect → `SQLiteCaseRepository` (SQLite-compatible SQL)
+- `postgresql` dialect → `PostgreSQLHybridCaseRepository` (optimized PostgreSQL SQL)
 
 ### Appendix B: Migration Scenarios
 
@@ -978,28 +990,31 @@ VECTOR_STORAGE_TYPE=chromadb
 **FaultMaven Storage Architecture** = **Two Dimensions**:
 
 **Dimension 1 - Data Types** (3 types):
-- Long-term data → PostgreSQL technology
-- Cached data → Redis technology
-- Vector data → ChromaDB technology
+- Long-term data → PostgreSQL or SQLite technology
+- Cached data → Redis technology (or in-memory)
+- Vector data → ChromaDB technology (or in-memory)
 
 **Dimension 2 - Storage Backends** (3 options):
 - In-memory → Development/testing
-- Local files → Single-node (future)
-- Microservices → Production K8s
+- Local files (SQLite) → Single-node, self-hosted deployment
+- Microservices (PostgreSQL) → Production K8s
 
 **Current Status**:
-- ✅ InMemory + Microservices backends implemented
-- ✅ All three data types supported
-- ⚠️ Local Files backend planned for future
+- ✅ InMemory backend implemented for all data types
+- ✅ SQLite backend implemented for Case Repository (local deployment)
+- ✅ PostgreSQL backend implemented for Case Repository (cloud deployment)
+- ✅ Automatic dialect detection in SessionlessCaseRepository
+- ✅ All three data types supported across all backends
 
 **Key Benefits**:
 - ✅ Technology-appropriate storage for each data type
 - ✅ Flexible backend deployment options
 - ✅ Independent configuration per data type
 - ✅ Zero code changes when switching backends
+- ✅ True deployment-agnostic architecture (SQLite + PostgreSQL both work)
 
 ---
 
-**Document Version**: 2.1.0
-**Last Updated**: 2025-11-08
-**Status**: ✅ Accurately reflects current implementation and design objectives
+**Document Version**: 2.2.0
+**Last Updated**: 2026-01-26
+**Status**: ✅ Accurately reflects current implementation with SQLite support for local deployment
