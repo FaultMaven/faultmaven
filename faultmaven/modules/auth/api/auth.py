@@ -683,6 +683,7 @@ async def dev_delete_user(
 @router.post("/logout", response_model=LogoutResponse)
 @trace("auth_logout")
 async def logout(
+    request: Request,
     current_user: DevUser = Depends(require_authentication),
     token: str = Depends(extract_bearer_token),
 ) -> LogoutResponse:
@@ -699,7 +700,7 @@ async def logout(
     correlation_id = str(uuid.uuid4())
 
     try:
-        token_manager = await get_token_manager()
+        token_manager = await get_token_manager(request)
 
         # Revoke the current token
         success = await token_manager.revoke_token(token)
@@ -725,6 +726,7 @@ async def logout(
 @router.get("/me", response_model=UserInfoResponse)
 @trace("auth_get_current_user")
 async def get_current_user_profile(
+    request: Request,
     current_user: DevUser = Depends(require_authentication),
 ) -> UserInfoResponse:
     """Get current user profile
@@ -735,7 +737,7 @@ async def get_current_user_profile(
     correlation_id = str(uuid.uuid4())
 
     try:
-        token_manager = await get_token_manager()
+        token_manager = await get_token_manager(request)
 
         # Get user's active tokens for statistics
         user_tokens = await token_manager.get_user_tokens(current_user.user_id)
@@ -806,6 +808,7 @@ async def auth_health_check():
 )
 @trace("auth_dev_revoke_all")
 async def dev_revoke_all_user_tokens(
+    request: Request,
     current_user: DevUser = Depends(require_authentication),
 ) -> LogoutResponse:
     """Development endpoint: Revoke all tokens for current user.
@@ -817,7 +820,7 @@ async def dev_revoke_all_user_tokens(
     correlation_id = str(uuid.uuid4())
 
     try:
-        token_manager = await get_token_manager()
+        token_manager = await get_token_manager(request)
 
         # Revoke all user tokens
         revoked_count = await token_manager.revoke_user_tokens(current_user.user_id)
