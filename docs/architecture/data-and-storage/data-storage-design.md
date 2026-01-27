@@ -429,7 +429,7 @@ WHERE case_id = 'case_abc123';
 **Organization-Wide Visibility**:
 ```sql
 -- Cases belong to organization for tenant isolation
-SELECT * FROM cases WHERE org_id = 'org_acme_corp';
+SELECT * FROM cases WHERE organization_id = 'org_acme_corp';
 
 -- Org members can view cases based on org role permissions
 ```

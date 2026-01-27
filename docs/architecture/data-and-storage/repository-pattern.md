@@ -4,7 +4,7 @@
 
 **Status**: ✅ Production Implementation
 **Version**: 2.1.0
-**Last Updated**: 2025-11-08
+**Last Updated**: 2026-01-26
 **Alignment**:
 - Investigation Architecture v2.0 (Milestone-Based)
 - Case Model Design v2.0
@@ -541,16 +541,31 @@ VECTOR_STORAGE_TYPE=inmemory   # or: chromadb for persistence
 - ❌ Limited concurrency (SQLite limitation)
 - ❌ Not distributed
 
-**Status**: ✅ **Implemented for Case Repository**
+**Status**: ✅ **Fully Implemented** (PR #120)
 
 **Implementation Details**:
-- `SQLiteCaseRepository` uses SQLite-compatible SQL:
-  - No `::jsonb` type casts (plain parameter binding)
-  - No `jsonb_build_object()` (separate queries for related data)
-  - No `FILTER (WHERE ...)` clause (uses subqueries)
-  - No `to_tsvector/ts_rank` (uses LIKE pattern matching)
-  - No array operators (uses explicit IN clauses)
-- `SessionlessCaseRepository` auto-detects dialect and selects appropriate repository
+
+- **`SQLiteCaseRepository`** (1,450 lines) - Complete SQLite-compatible repository
+  - ✅ All 13 repository methods implemented
+  - ✅ 8 integration tests passing with real SQLite database
+  - ✅ Hybrid normalized schema (cases + 6 related tables)
+  - ✅ Full feature parity with PostgreSQL repository
+
+**SQLite-Compatible SQL Patterns**:
+
+- **Type Casts**: No `::jsonb` → plain parameter binding with JSON strings
+- **JSON Functions**: No `jsonb_build_object()` → separate queries + Python dict construction
+- **Aggregates**: No `FILTER (WHERE ...)` → `CASE WHEN ... END` expressions
+- **Full-Text Search**: No `to_tsvector/ts_rank` → `LIKE '%term%'` pattern matching
+- **Array Operations**: No `= ALL` / `!= ALL` → explicit `IN (...)` clauses
+- **Timestamps**: SQLite returns strings → `datetime.fromisoformat()` parsing
+
+**Runtime Dialect Detection**:
+
+- `SessionlessCaseRepository` auto-detects database dialect from SQLAlchemy session
+- `sqlite` dialect → instantiates `SQLiteCaseRepository`
+- `postgresql` dialect → instantiates `PostgreSQLHybridCaseRepository`
+- Zero configuration needed - works automatically based on `DATABASE_URL`
 
 ---
 
@@ -1017,4 +1032,4 @@ VECTOR_STORAGE_TYPE=chromadb
 
 **Document Version**: 2.2.0
 **Last Updated**: 2026-01-26
-**Status**: ✅ Accurately reflects current implementation with SQLite support for local deployment
+**Status**: ✅ Accurately reflects current implementation with fully implemented SQLite support (PR #120)

@@ -1723,10 +1723,29 @@ async def submit_case_query(
         logger.error(
             f"Turn processing failed: {e}", extra={"correlation_id": correlation_id}
         )
+        # Extract user-friendly error message from the exception
+        error_msg = str(e)
+
+        # Detect specific error conditions and provide actionable guidance
+        if "over capacity" in error_msg.lower() or "503" in error_msg:
+            detail = "AI service temporarily unavailable due to high demand. Please wait a moment and try again."
+        elif "rate limit" in error_msg.lower() or "429" in error_msg:
+            detail = "Rate limit exceeded. Please wait a minute before sending another message."
+        elif "timeout" in error_msg.lower():
+            detail = "Request timed out. Please try again with a shorter message or fewer attachments."
+        elif "authentication" in error_msg.lower() or "401" in error_msg:
+            detail = "AI service authentication error. Please contact support."
+        else:
+            # Generic fallback with hint about the error type
+            detail = f"Unable to process your message: {error_msg[:200]}"  # Limit message length
+
         raise HTTPException(
-            status_code=500,
-            detail="Failed to process turn",
-            headers={"x-correlation-id": correlation_id},
+            status_code=503 if ("over capacity" in error_msg.lower() or "503" in error_msg) else 500,
+            detail=detail,
+            headers={
+                "x-correlation-id": correlation_id,
+                "Retry-After": "60" if "over capacity" in error_msg.lower() or "rate limit" in error_msg.lower() else "10"
+            },
         )
     except Exception as e:
         logger.error(
@@ -1734,9 +1753,21 @@ async def submit_case_query(
             exc_info=True,
             extra={"correlation_id": correlation_id},
         )
+        # Provide helpful error message even for unexpected errors
+        error_str = str(e)
+        if "over capacity" in error_str.lower() or "503" in error_str:
+            detail = "AI service temporarily unavailable. Please try again in a moment."
+            status_code = 503
+        elif "connection" in error_str.lower() or "network" in error_str.lower():
+            detail = "Network error communicating with AI service. Please try again."
+            status_code = 503
+        else:
+            detail = f"An unexpected error occurred. Error ID: {correlation_id}"
+            status_code = 500
+
         raise HTTPException(
-            status_code=500,
-            detail="Internal server error",
+            status_code=status_code,
+            detail=detail,
             headers={"x-correlation-id": correlation_id},
         )
 

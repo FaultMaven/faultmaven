@@ -43,12 +43,12 @@ from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
+    AuthSessionStatus,
     ErrorDetail,
     ErrorResponse,
     SessionCasesResponse,
     SessionErrorCode,
     SessionResponse,
-    SessionStatus,
 )
 from faultmaven.models.api_models import CaseListFilter
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -171,8 +171,13 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
                 del _session_not_found_log_tracker[sid]
 
 
-class SessionCreateRequest(BaseModel):
-    """Request model for session creation."""
+class AuthSessionCreateRequest(BaseModel):
+    """Request model for authentication session creation.
+
+    This schema is for auth sessions (user authentication), not investigation sessions.
+    Investigation sessions use a different schema in the case module.
+    See: docs/architecture/case-and-session-concepts.md for the three-tier architecture.
+    """
 
     timeout_minutes: Optional[int] = Field(
         default=180,
@@ -290,7 +295,7 @@ class SessionRestoreRequest(BaseModel):
 )
 @trace("api_create_session")
 async def create_session(
-    request: Optional[SessionCreateRequest] = Body(None),
+    request: Optional[AuthSessionCreateRequest] = Body(None),
     user_id: Optional[str] = Query(None),
     session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
@@ -385,7 +390,7 @@ async def create_session(
             "expires_at": _safe_datetime_to_utc_string(
                 expires_at
             ),  # NEW: Session expiration time
-            "status": SessionStatus.ACTIVE.value,
+            "status": AuthSessionStatus.ACTIVE.value,
             "session_type": metadata.get("session_type", "troubleshooting"),
             "session_resumed": was_resumed,
             "timeout_minutes": validated_timeout_minutes,  # Return validated timeout to frontend
@@ -428,7 +433,7 @@ async def get_session(
         return SessionResponse(
             session_id=session.session_id,
             user_id=session.user_id,
-            status=SessionStatus.ACTIVE,
+            status=AuthSessionStatus.ACTIVE,
             created_at=_safe_datetime_to_utc_string(session.created_at),
             metadata={
                 "last_activity": _safe_datetime_to_utc_string(session.last_activity),

@@ -270,15 +270,27 @@ class CaseVectorStore(BaseExternalClient):
             collection_name = self._get_collection_name(case_id)
 
             try:
+                # Check if collection exists first to avoid unnecessary 404 errors in logs
+                try:
+                    self.client.get_collection(name=collection_name)
+                except Exception:
+                    # Collection doesn't exist - nothing to delete
+                    self.logger.debug(
+                        f"Collection {collection_name} does not exist, skipping deletion",
+                        extra={"case_id": case_id, "collection": collection_name}
+                    )
+                    return
+
+                # Collection exists, proceed with deletion
                 self.client.delete_collection(name=collection_name)
                 self.logger.info(
                     f"Deleted case collection: {collection_name}",
                     extra={"case_id": case_id, "collection": collection_name},
                 )
             except Exception as e:
-                # Collection might not exist - that's OK
+                # Collection might have been deleted between check and delete - that's OK
                 self.logger.debug(
-                    f"Collection {collection_name} not found or already deleted: {e}"
+                    f"Collection {collection_name} could not be deleted: {e}"
                 )
 
         await self.call_external(

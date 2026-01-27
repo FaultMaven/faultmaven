@@ -293,7 +293,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Cancel Execution Api V1 Cases  Case Id  Sessions  Session
                   Id  Executions  Execution Id  Cancel Post
         '422':
@@ -302,42 +301,96 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/config:
+    get:
+      tags:
+      - authentication
+      summary: Get Auth Config
+      description: "Auth configuration discovery endpoint.\n\nReturns the authentication\
+        \ configuration for the current deployment.\nFrontend uses this to determine\
+        \ which auth flow to implement.\n\n**Local Mode Response:**\n```json\n{\n\
+        \  \"auth_mode\": \"local\",\n  \"login_endpoint\": \"/api/v1/auth/login\"\
+        ,\n  \"register_endpoint\": \"/api/v1/auth/register\",\n  \"supports_registration\"\
+        : true,\n  \"oauth\": null\n}\n```\n\n**Cloud Mode Response:**\n```json\n\
+        {\n  \"auth_mode\": \"oauth\",\n  \"login_endpoint\": null,\n  \"register_endpoint\"\
+        : null,\n  \"supports_registration\": false,\n  \"oauth\": {\n    \"authorize_url\"\
+        : \"/auth/oauth/authorize\",\n    \"token_url\": \"/auth/oauth/token\",\n\
+        \    \"client_id\": \"faultmaven-copilot\",\n    \"scopes\": [\"openid\",\
+        \ \"profile\", \"email\", \"cases:read\", \"cases:write\"]\n  }\n}\n```"
+      operationId: get_auth_config_api_v1_auth_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthConfigResponse'
   /api/v1/auth/dev-login:
     post:
       tags:
       - authentication
-      summary: Dev Login
-      description: 'Development login endpoint
+      summary: Local Login
+      description: 'Deprecated: Use /login instead'
+      operationId: local_login_api_v1_auth_dev_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DevLoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      deprecated: true
+  /api/v1/auth/login:
+    post:
+      tags:
+      - authentication
+      summary: Local Login
+      description: 'Internal login implementation for local mode.
 
 
-        Authenticates existing users and generates authentication tokens.
+        Authenticates users and generates JWT tokens.
 
-        This endpoint is designed for development environments and will be replaced
 
-        with production OAuth2/OIDC integration later.
+        **Important:** Users must be created before login. Use `./faultmaven.sh create-user`
+
+        to create accounts.
 
 
         **Flow:**
 
         1. Validate username format
 
-        2. Find existing user (returns 401 if user doesn''t exist)
+        2. Find existing user
 
-        3. Generate authentication token
+        3. If user doesn''t exist: Return 401 (user must be created first)
 
-        4. Return token with user profile
+        4. Generate JWT access token
+
+        5. Return token with user profile
 
 
         **Security:**
 
-        - Only authenticates existing users (no account creation)
+        - Users must exist before login (no auto-creation)
 
-        - Tokens expire after 24 hours
+        - JWT tokens (not opaque tokens) for middleware uniformity
 
         - Input validation and sanitization
 
-        - Proper OAuth2 error responses'
-      operationId: dev_login_api_v1_auth_dev_login_post
+        - Proper OAuth2-compatible error responses'
+      operationId: local_login_api_v1_auth_login_post
       requestBody:
         content:
           application/json:
@@ -361,40 +414,9 @@ paths:
     post:
       tags:
       - authentication
-      summary: Dev Register
-      description: 'Development registration endpoint
-
-
-        Creates a new user account and generates an authentication token.
-
-        This endpoint is designed for development environments and will be replaced
-
-        with production registration flows later.
-
-
-        **Flow:**
-
-        1. Validate username format
-
-        2. Check if user already exists (returns 409 if exists)
-
-        3. Create new user account
-
-        4. Generate authentication token
-
-        5. Return token with user profile
-
-
-        **Security:**
-
-        - Prevents duplicate account creation
-
-        - Tokens expire after 24 hours
-
-        - Input validation and sanitization
-
-        - Auto-generates email and display name if not provided'
-      operationId: dev_register_api_v1_auth_dev_register_post
+      summary: Local Register
+      description: 'Deprecated: Use /register instead'
+      operationId: local_register_api_v1_auth_dev_register_post
       requestBody:
         content:
           application/json:
@@ -408,6 +430,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      deprecated: true
+  /api/v1/auth/register:
+    post:
+      tags:
+      - authentication
+      summary: Local Register
+      description: 'Local mode registration endpoint.
+
+
+        Creates a new user account and generates a JWT token.
+
+        Available only when AUTH_MODE=local.
+
+
+        **Flow:**
+
+        1. Validate username format
+
+        2. Check if user already exists (returns 409 if exists)
+
+        3. Create new user account
+
+        4. Generate JWT access token
+
+        5. Return token with user profile
+
+
+        **Security:**
+
+        - Prevents duplicate account creation
+
+        - JWT tokens (not opaque tokens) for middleware uniformity
+
+        - Input validation and sanitization
+
+        - Auto-generates email and display name if not provided'
+      operationId: local_register_api_v1_auth_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DevLoginRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/dev-list-users:
+    get:
+      tags:
+      - authentication
+      summary: Dev List Users
+      description: 'Development endpoint to list all users.
+
+
+        Returns a list of all users in the system for development/debugging.
+
+        This endpoint is only available in development environments.
+
+
+        **Security**: Gated by require_development_environment dependency.'
+      operationId: dev_list_users_api_v1_auth_dev_list_users_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Dev List Users Api V1 Auth Dev List Users Get
+  /api/v1/auth/dev-delete-user/{username}:
+    delete:
+      tags:
+      - authentication
+      summary: Dev Delete User
+      description: 'Development endpoint to delete a user by username.
+
+
+        Deletes (soft delete) a user by username for development/debugging.
+
+        This endpoint is only available in development environments.
+
+
+        **Security**: Gated by require_development_environment dependency.'
+      operationId: dev_delete_user_api_v1_auth_dev_delete_user__username__delete
+      parameters:
+      - name: username
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Username
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Dev Delete User Api V1 Auth Dev Delete User  Username  Delete
         '422':
           description: Validation Error
           content:
@@ -514,12 +651,13 @@ paths:
       tags:
       - authentication
       summary: Dev Revoke All User Tokens
-      description: 'Development endpoint: Revoke all tokens for current user
+      description: 'Development endpoint: Revoke all tokens for current user.
 
 
-        **WARNING:** This endpoint is for development use only.
+        This endpoint is only available in development environments.
 
-        It will be removed in production builds.'
+
+        **Security**: Gated by require_development_environment dependency.'
       operationId: dev_revoke_all_user_tokens_api_v1_auth_dev_revoke_all_tokens_post
       parameters:
       - name: Authorization
@@ -548,11 +686,20 @@ paths:
       tags:
       - cases
       summary: Delete Case
-      description: "Permanently delete a case and all associated data.\n\nThis endpoint\
-        \ provides hard delete functionality. Once deleted, \nthe case and all associated\
-        \ data are permanently removed.\n\nThe operation is idempotent - subsequent\
-        \ requests will return \n204 No Content even if the case has already been\
-        \ deleted.\n\nReturns 204 No Content on success."
+      description: 'Permanently delete a case and all associated data.
+
+
+        This endpoint provides hard delete functionality. Once deleted,
+
+        the case and all associated data are permanently removed.
+
+
+        The operation is idempotent - subsequent requests will return
+
+        204 No Content even if the case has already been deleted.
+
+
+        Returns 204 No Content on success.'
       operationId: delete_case_api_v1_cases__case_id__delete
       parameters:
       - name: case_id
@@ -877,7 +1024,7 @@ paths:
         \ overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse\
         \ with X-Correlation-ID header\n- 422: ErrorResponse with code INSUFFICIENT_CONTEXT\
         \ and X-Correlation-ID header\n\n**Description:** Returns 422 when insufficient\
-        \ meaningful context; clients SHOULD keep \nexisting title unchanged and may\
+        \ meaningful context; clients SHOULD keep\nexisting title unchanged and may\
         \ retry later."
       operationId: generate_case_title_api_v1_cases__case_id__title_post
       parameters:
@@ -910,7 +1057,6 @@ paths:
             schema:
               anyOf:
               - type: object
-                additionalProperties: true
               - type: 'null'
               description: Optional request parameters
               title: Request Body
@@ -1004,7 +1150,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Get Case Analytics Api V1 Cases  Case Id  Analytics
                   Get
         '422':
@@ -1147,7 +1292,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Create Case For Session Api V1 Cases Sessions  Session
                   Id  Case Post
         '422':
@@ -1196,7 +1340,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Resume Case In Session Api V1 Cases Sessions  Session
                   Id  Resume  Case Id  Post
         '422':
@@ -1335,7 +1478,6 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
                 title: Response Get Case Service Health Api V1 Cases Health Get
   /api/v1/cases/{case_id}/data:
@@ -1480,7 +1622,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Get Case Data Api V1 Cases  Case Id  Data  Data Id  Get
         '422':
           description: Validation Error
@@ -1603,7 +1744,6 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
               title: Request Body
       responses:
         '200':
@@ -1749,7 +1889,6 @@ paths:
             schema:
               anyOf:
               - type: object
-                additionalProperties: true
               - type: 'null'
               title: Request Body
       responses:
@@ -2011,7 +2150,6 @@ paths:
                 type: array
                 items:
                   type: object
-                  additionalProperties: true
                 title: Response Get Case Participants Api V1 Cases  Case Id  Participants
                   Get
         '422':
@@ -2097,7 +2235,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/faultmaven__api__models__SessionCreateRequest'
+              $ref: '#/components/schemas/SessionCreateRequest'
       responses:
         '201':
           description: Successful Response
@@ -2140,7 +2278,7 @@ paths:
         required: false
         schema:
           anyOf:
-          - $ref: '#/components/schemas/SessionStatus-Input'
+          - $ref: '#/components/schemas/SessionStatus'
           - type: 'null'
           title: Status
       - name: limit
@@ -2790,7 +2928,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Upload Document Api V1 Knowledge Documents Post
         '422':
           description: Validation Error
@@ -2845,7 +2982,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response List Documents Api V1 Knowledge Documents Get
         '422':
           description: Validation Error
@@ -2939,7 +3075,6 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
               title: Update Data
       responses:
         '200':
@@ -2948,7 +3083,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Update Document Api V1 Knowledge Documents  Document
                   Id  Put
         '422':
@@ -2979,7 +3113,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Get Job Status Api V1 Knowledge Jobs  Job Id  Get
         '422':
           description: Validation Error
@@ -3007,7 +3140,6 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
                 title: Response Search Documents Api V1 Knowledge Search Post
         '422':
@@ -3054,7 +3186,6 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
                 title: Response Fulltext Search Documents Api V1 Knowledge Documents
                   Search Post
@@ -3086,7 +3217,6 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
               title: Request
       responses:
         '200':
@@ -3095,7 +3225,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Bulk Update Documents Api V1 Knowledge Documents Bulk
                   Update Post
         '422':
@@ -3138,7 +3267,6 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
                 title: Response Bulk Delete Documents Api V1 Knowledge Documents Bulk
                   Delete Post
         '422':
@@ -3160,7 +3288,6 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
                 title: Response Get Knowledge Stats Api V1 Knowledge Stats Get
   /api/v1/knowledge/analytics/search:
@@ -3176,7 +3303,6 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
                 title: Response Get Search Analytics Api V1 Knowledge Analytics Search
                   Get
@@ -4133,7 +4259,7 @@ paths:
           application/json:
             schema:
               anyOf:
-              - $ref: '#/components/schemas/SessionCreateRequest'
+              - $ref: '#/components/schemas/AuthSessionCreateRequest'
               - type: 'null'
               title: Request
       responses:
@@ -4335,7 +4461,6 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
               title: Updates
       responses:
         '200':
@@ -4616,7 +4741,6 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
               title: Search Params
       responses:
         '200':
@@ -5149,6 +5273,21 @@ paths:
           content:
             application/json:
               schema: {}
+  /v1/meta/capabilities:
+    get:
+      summary: Get Capabilities
+      description: "Return backend capabilities for browser extension configuration.\n\
+        \nThis endpoint is called by the FaultMaven Copilot browser extension\nto\
+        \ detect the deployment mode and configure itself accordingly.\n\nReturns:\n\
+        \    Backend capabilities including deployment mode, dashboard URL, and feature\
+        \ flags"
+      operationId: get_capabilities_v1_meta_capabilities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /health:
     get:
       summary: Health Check
@@ -5455,6 +5594,101 @@ components:
       title: AgentResponse
       description: The single, unified JSON payload returned from the backend (v3.1.0
         - Evidence-Centric).
+    AuthConfigResponse:
+      properties:
+        auth_mode:
+          type: string
+          title: Auth Mode
+        login_endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Login Endpoint
+        register_endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Register Endpoint
+        supports_registration:
+          type: boolean
+          title: Supports Registration
+        oauth:
+          anyOf:
+          - $ref: '#/components/schemas/OAuthConfigResponse'
+          - type: 'null'
+      type: object
+      required:
+      - auth_mode
+      - supports_registration
+      title: AuthConfigResponse
+      description: 'Auth configuration discovery response.
+
+
+        Allows frontend to determine which authentication flow to use
+
+        based on deployment configuration.'
+    AuthSessionCreateRequest:
+      properties:
+        timeout_minutes:
+          anyOf:
+          - type: integer
+            maximum: 480.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Minutes
+          description: 'Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8
+            hours), Default: 180 (3 hours)'
+          default: 180
+          examples:
+          - 180
+          - 240
+          - 360
+        session_type:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Session Type
+          default: troubleshooting
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+        client_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Client Id
+          description: Client/device identifier for session resumption. If provided,
+            existing session for this client will be resumed.
+          examples:
+          - 550e8400-e29b-41d4-a716-446655440000
+      type: object
+      title: AuthSessionCreateRequest
+      description: 'Request model for authentication session creation.
+
+
+        This schema is for auth sessions (user authentication), not investigation
+        sessions.
+
+        Investigation sessions use a different schema in the case module.
+
+        See: docs/architecture/case-and-session-concepts.md for the three-tier architecture.'
+    AuthSessionStatus:
+      type: string
+      enum:
+      - active
+      - expired
+      - terminated
+      title: AuthSessionStatus
+      description: 'Defines the status of authentication sessions (not investigation
+        sessions).
+
+
+        For investigation session status, see faultmaven.models.investigation_session.SessionStatus'
     AuthTokenResponse:
       properties:
         access_token:
@@ -5897,7 +6131,6 @@ components:
         attachments:
           anyOf:
           - items:
-              additionalProperties: true
               type: object
             type: array
           - type: 'null'
@@ -5971,6 +6204,8 @@ components:
           description: Full report content in Markdown format
         format:
           type: string
+          enum:
+          - markdown
           const: markdown
           title: Format
           description: Report format
@@ -6150,6 +6385,8 @@ components:
           description: Case identifier
         status:
           type: string
+          enum:
+          - consulting
           const: consulting
           title: Status
           description: Always 'consulting' for this response type
@@ -6206,6 +6443,8 @@ components:
           description: Case identifier
         status:
           type: string
+          enum:
+          - investigating
           const: investigating
           title: Status
           description: Always 'investigating' for this response type
@@ -6299,6 +6538,8 @@ components:
           description: Case identifier
         status:
           type: string
+          enum:
+          - resolved
           const: resolved
           title: Status
           description: Always 'resolved' for this response type
@@ -6410,8 +6651,7 @@ components:
           default: 0
         problem_confirmation:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Problem Confirmation
           description: Problem type and severity guess
@@ -6439,6 +6679,8 @@ components:
       properties:
         schema_version:
           type: string
+          enum:
+          - 3.1.0
           const: 3.1.0
           title: Schema Version
           default: 3.1.0
@@ -6474,8 +6716,7 @@ components:
           description: Conversational AI analysis of the uploaded data
         classification:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Classification
           description: Classification confidence and metadata
@@ -6623,8 +6864,7 @@ components:
           title: Updated At
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
         description:
@@ -7069,8 +7309,7 @@ components:
           title: Updated At
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -7318,8 +7557,7 @@ components:
           description: Number of tokens in content
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
           description: Sources, tools used, etc.
@@ -7362,6 +7600,30 @@ components:
       - redis_operation_time_ms
       title: MessageRetrievalDebugInfo
       description: Debug information for message retrieval operations.
+    OAuthConfigResponse:
+      properties:
+        authorize_url:
+          type: string
+          title: Authorize Url
+        token_url:
+          type: string
+          title: Token Url
+        client_id:
+          type: string
+          title: Client Id
+        scopes:
+          items:
+            type: string
+          type: array
+          title: Scopes
+      type: object
+      required:
+      - authorize_url
+      - token_url
+      - client_id
+      - scopes
+      title: OAuthConfigResponse
+      description: OAuth configuration for cloud mode.
     OrganizationCreateRequest:
       properties:
         name:
@@ -7481,7 +7743,6 @@ components:
           - type: 'null'
           title: Owner User Id
         settings:
-          additionalProperties: true
           type: object
           title: Settings
         created_at:
@@ -7726,7 +7987,6 @@ components:
           type: array
           title: Available For Generation
         runbook_recommendation:
-          additionalProperties: true
           type: object
           title: Runbook Recommendation
       type: object
@@ -7776,8 +8036,7 @@ components:
           title: Linked To Closure
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -7969,8 +8228,7 @@ components:
           description: Origin of runbook
         case_context:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Case Context
           description: Case investigation context (incident-driven only)
@@ -8050,8 +8308,7 @@ components:
           description: Filter by tags (comma-separated)
         filters:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Filters
           description: Advanced filters for search
@@ -8083,51 +8340,31 @@ components:
       description: Request model for knowledge base search
     SessionCreateRequest:
       properties:
-        timeout_minutes:
+        session_goal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Goal
+        token_budget_limit:
           anyOf:
           - type: integer
-            maximum: 480.0
-            minimum: 60.0
+            minimum: 0.0
           - type: 'null'
-          title: Timeout Minutes
-          description: 'Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8
-            hours), Default: 180 (3 hours)'
-          default: 180
-          examples:
-          - 180
-          - 240
-          - 360
-        session_type:
-          anyOf:
-          - type: string
-            minLength: 1
-          - type: 'null'
-          title: Session Type
-          default: troubleshooting
+          title: Token Budget Limit
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
-        client_id:
-          anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 1
-          - type: 'null'
-          title: Client Id
-          description: Client/device identifier for session resumption. If provided,
-            existing session for this client will be resumed.
-          examples:
-          - 550e8400-e29b-41d4-a716-446655440000
       type: object
       title: SessionCreateRequest
-      description: Request model for session creation.
+      description: Request model for creating investigation session.
     SessionResponse:
       properties:
         schema_version:
           type: string
+          enum:
+          - 3.1.0
           const: 3.1.0
           title: Schema Version
           default: 3.1.0
@@ -8145,7 +8382,7 @@ components:
           - type: 'null'
           title: Client Id
         status:
-          $ref: '#/components/schemas/faultmaven__models__api__SessionStatus'
+          $ref: '#/components/schemas/AuthSessionStatus'
           default: active
         created_at:
           type: string
@@ -8157,8 +8394,7 @@ components:
           title: Expires At
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
         session_resumed:
@@ -8171,7 +8407,7 @@ components:
       - session_id
       - created_at
       title: SessionResponse
-      description: Response payload for session operations - API spec compliance.
+      description: Response payload for auth session operations - API spec compliance.
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -8205,18 +8441,6 @@ components:
 
 
         Tracks the lifecycle of an investigation session from active to completion.'
-    SessionStatus-Input:
-      type: string
-      enum:
-      - active
-      - paused
-      - completed
-      - abandoned
-      title: SessionStatus
-      description: 'Investigation session status.
-
-
-        Tracks the lifecycle of an investigation session from active to completion.'
     SessionUpdateRequest:
       properties:
         session_goal:
@@ -8232,8 +8456,7 @@ components:
           title: Token Budget Limit
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -8268,7 +8491,6 @@ components:
           type: object
           title: Features
         settings:
-          additionalProperties: true
           type: object
           title: Settings
       type: object
@@ -8314,7 +8536,6 @@ components:
           type: string
           title: Organization Id
         settings:
-          additionalProperties: true
           type: object
           title: Settings
         updated_at:
@@ -8365,8 +8586,7 @@ components:
           title: Confidence
         metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -8501,7 +8721,6 @@ components:
           - type: 'null'
           title: Description
         settings:
-          additionalProperties: true
           type: object
           title: Settings
         created_at:
@@ -8541,8 +8760,7 @@ components:
           description: Updated description
         settings:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Settings
           description: Team settings
@@ -8613,7 +8831,6 @@ components:
           type: string
           title: Tool Name
         arguments:
-          additionalProperties: true
           type: object
           title: Arguments
         result:
@@ -8715,8 +8932,7 @@ components:
           description: AI-generated summary (1-2 sentences)
         source_metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Source Metadata
           description: Additional metadata for page injections
@@ -8844,8 +9060,7 @@ components:
           description: AI-generated summary (1-2 sentences)
         source_metadata:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Source Metadata
           description: Additional metadata for page injections
@@ -9123,7 +9338,6 @@ components:
           title: Cases
         messages:
           items:
-            additionalProperties: true
             type: object
           type: array
           title: Messages
@@ -9147,20 +9361,17 @@ components:
           title: Loading State
         memory_context:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Memory Context
         planning_state:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Planning State
         investigation_progress:
           anyOf:
-          - additionalProperties: true
-            type: object
+          - type: object
           - type: 'null'
           title: Investigation Progress
           description: OODA investigation progress (phase, iteration, hypotheses)
@@ -9198,28 +9409,6 @@ components:
       - last_updated
       title: WorkingConclusionSummary
       description: Agent's current understanding during INVESTIGATING phase.
-    faultmaven__api__models__SessionCreateRequest:
-      properties:
-        session_goal:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Session Goal
-        token_budget_limit:
-          anyOf:
-          - type: integer
-            minimum: 0.0
-          - type: 'null'
-          title: Token Budget Limit
-        metadata:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Metadata
-      type: object
-      title: SessionCreateRequest
-      description: Request model for creating investigation session.
     faultmaven__api__models__SessionResponse:
       properties:
         session_id:
@@ -9299,14 +9488,6 @@ components:
       - updated_at
       title: SessionResponse
       description: Response model for investigation session.
-    faultmaven__models__api__SessionStatus:
-      type: string
-      enum:
-      - active
-      - expired
-      - terminated
-      title: SessionStatus
-      description: Defines the status of user sessions.
   securitySchemes:
     HTTPBearer:
       type: http

@@ -15,12 +15,12 @@ Key validations:
 
 import json
 import os
-import pytest
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -73,7 +73,9 @@ async def create_test_schema(session: AsyncSession):
             user_id TEXT NOT NULL,
             organization_id TEXT,
             title TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'open',
+            description TEXT DEFAULT '',
+            investigation_strategy TEXT DEFAULT 'post_mortem',
+            status TEXT NOT NULL DEFAULT 'consulting',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_activity_at TIMESTAMP,
@@ -152,15 +154,15 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
-            filename TEXT,
-            size_bytes INTEGER,
-            data_type TEXT,
-            uploaded_at_turn INTEGER,
-            uploaded_at TIMESTAMP,
-            source_type TEXT,
-            content_ref TEXT,
-            preprocessing_summary TEXT,
-            metadata TEXT,
+            filename TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            content_type TEXT,
+            storage_path TEXT,
+            processing_status TEXT NOT NULL DEFAULT 'pending',
+            processing_error TEXT,
+            uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            processed_at TIMESTAMP,
+            metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """))
@@ -172,7 +174,7 @@ async def create_test_schema(session: AsyncSession):
             case_id TEXT NOT NULL,
             role TEXT,
             content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
@@ -255,15 +257,15 @@ class TestSQLiteCaseRepository:
             The current statement uses 16, and there are 6 supplied.
             [SQL: INSERT INTO cases (...) VALUES (..., :consulting::jsonb, ...)]
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         # Create repository with real SQLite session
@@ -274,9 +276,10 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_123",
+            organization_id="test_org_123",
             title="Test Case for SQLite Compatibility",
-            status=CaseStatus.OPEN,
-            consulting=ConsultingData(initial_description="Test description"),
+            status=CaseStatus.CONSULTING,
+            consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -304,15 +307,15 @@ class TestSQLiteCaseRepository:
             sqlite3.OperationalError: unrecognized token: ":"
             [SQL: SELECT ... '[]'::json ... jsonb_build_object(...) FILTER (WHERE ...)]
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -322,9 +325,10 @@ class TestSQLiteCaseRepository:
         test_case = Case(
             case_id=case_id,
             user_id="test_user_456",
+            organization_id="test_org_456",
             title="Retrieval Test Case",
-            status=CaseStatus.OPEN,
-            consulting=ConsultingData(initial_description="Description for retrieval"),
+            status=CaseStatus.CONSULTING,
+            consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -340,7 +344,6 @@ class TestSQLiteCaseRepository:
         assert retrieved is not None
         assert retrieved.case_id == case_id
         assert retrieved.user_id == "test_user_456"
-        assert retrieved.consulting.initial_description == "Description for retrieval"
 
     async def test_case_search_sqlite_compatible(self, sqlite_session):
         """Test that search works with SQLite LIKE (no to_tsvector/ts_rank).
@@ -348,15 +351,15 @@ class TestSQLiteCaseRepository:
         PostgreSQL uses to_tsvector/ts_rank for full-text search.
         SQLite uses LIKE pattern matching instead.
         """
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
             ConsultingData,
             DocumentationData,
             InvestigationProgress,
+        )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
         )
 
         repo = SQLiteCaseRepository(sqlite_session)
@@ -370,10 +373,11 @@ class TestSQLiteCaseRepository:
             ]
         ):
             case = Case(
-                case_id=f"search_case_{i}_{uuid4().hex[:8]}",
+                case_id=f"case_{uuid4().hex[:12]}",
                 user_id="search_user",
+                organization_id="search_org",
                 title=title,
-                status=CaseStatus.OPEN,
+                status=CaseStatus.CONSULTING,
                 consulting=ConsultingData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
@@ -393,9 +397,6 @@ class TestSQLiteCaseRepository:
 
     async def test_case_list_sqlite_compatible(self, sqlite_session):
         """Test that list operation works with SQLite."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
@@ -403,17 +404,22 @@ class TestSQLiteCaseRepository:
             DocumentationData,
             InvestigationProgress,
         )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
 
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create test cases
-        user_id = f"list_user_{uuid4().hex[:8]}"
+        user_id = f"user_{uuid4().hex[:8]}"
+        org_id = f"org_{uuid4().hex[:8]}"
         for i in range(3):
             case = Case(
-                case_id=f"list_case_{i}_{uuid4().hex[:8]}",
+                case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
+                organization_id=org_id,
                 title=f"List Test Case {i}",
-                status=CaseStatus.OPEN,
+                status=CaseStatus.CONSULTING,
                 consulting=ConsultingData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
@@ -429,9 +435,6 @@ class TestSQLiteCaseRepository:
 
     async def test_message_operations_sqlite_compatible(self, sqlite_session):
         """Test that message operations work with SQLite (no ::jsonb)."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
@@ -439,16 +442,20 @@ class TestSQLiteCaseRepository:
             DocumentationData,
             InvestigationProgress,
         )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
 
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create case first
-        case_id = f"msg_case_{uuid4().hex[:12]}"
+        case_id = f"case_{uuid4().hex[:12]}"
         case = Case(
             case_id=case_id,
             user_id="msg_user",
+            organization_id="msg_org",
             title="Message Test Case",
-            status=CaseStatus.OPEN,
+            status=CaseStatus.CONSULTING,
             consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -476,9 +483,6 @@ class TestSQLiteCaseRepository:
 
     async def test_analytics_sqlite_compatible(self, sqlite_session):
         """Test that analytics work with SQLite (no FILTER clause)."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
@@ -486,16 +490,20 @@ class TestSQLiteCaseRepository:
             DocumentationData,
             InvestigationProgress,
         )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
 
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create case
-        case_id = f"analytics_case_{uuid4().hex[:12]}"
+        case_id = f"case_{uuid4().hex[:12]}"
         case = Case(
             case_id=case_id,
             user_id="analytics_user",
+            organization_id="analytics_org",
             title="Analytics Test Case",
-            status=CaseStatus.OPEN,
+            status=CaseStatus.CONSULTING,
             consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
@@ -513,9 +521,6 @@ class TestSQLiteCaseRepository:
 
     async def test_case_delete_sqlite_compatible(self, sqlite_session):
         """Test that delete works with SQLite."""
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
-            SQLiteCaseRepository,
-        )
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
@@ -523,16 +528,20 @@ class TestSQLiteCaseRepository:
             DocumentationData,
             InvestigationProgress,
         )
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
 
         repo = SQLiteCaseRepository(sqlite_session)
 
         # Create and save case
-        case_id = f"delete_case_{uuid4().hex[:12]}"
+        case_id = f"case_{uuid4().hex[:12]}"
         case = Case(
             case_id=case_id,
             user_id="delete_user",
+            organization_id="delete_org",
             title="Delete Test Case",
-            status=CaseStatus.OPEN,
+            status=CaseStatus.CONSULTING,
             consulting=ConsultingData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),

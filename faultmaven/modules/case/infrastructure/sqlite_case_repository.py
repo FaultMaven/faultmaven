@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     Hypothesis,
     InvestigationProgress,
+    InvestigationStrategy,
     PathSelection,
     ProblemVerification,
     ReportStatus,
@@ -91,6 +92,7 @@ class SQLiteCaseRepository(CaseRepository):
                 await self._upsert_hypotheses(case.case_id, case.hypotheses)
                 await self._upsert_solutions(case.case_id, case.solutions)
                 await self._upsert_uploaded_files(case.case_id, case.uploaded_files)
+                await self._upsert_messages(case.case_id, case.messages)  # Save messages!
 
                 if case.status_history:
                     await self._append_status_transitions(
@@ -216,17 +218,29 @@ class SQLiteCaseRepository(CaseRepository):
 
         files = []
         for row in rows:
+            # Map production schema to domain model fields
+            metadata = row[8]
+            if isinstance(metadata, str):
+                import json
+
+                metadata = json.loads(metadata) if metadata else {}
+
             files.append(
                 {
                     "file_id": row[0],
                     "filename": row[1],
-                    "size_bytes": row[2],
-                    "data_type": row[3],
-                    "uploaded_at_turn": row[4],
-                    "uploaded_at": row[5],
-                    "source_type": row[6],
-                    "content_ref": row[7],
-                    "preprocessing_summary": row[8],
+                    "size_bytes": row[2],  # file_size → size_bytes
+                    "data_type": row[3] or "unknown",  # content_type → data_type
+                    "uploaded_at_turn": 0,  # Not in production schema, default to 0
+                    "uploaded_at": row[4],
+                    "source_type": (
+                        metadata.get("source_type", "file_upload")
+                        if metadata
+                        else "file_upload"
+                    ),
+                    "content_ref": row[5],  # storage_path → content_ref
+                    "preprocessing_summary": row[7]
+                    or "",  # processing_error as summary fallback
                 }
             )
         return files
@@ -240,7 +254,7 @@ class SQLiteCaseRepository(CaseRepository):
                     original_filename, stored_filename, file_path,
                     evidence_type, mime_type, file_size, storage_backend,
                     created_at, updated_at, metadata, description,
-                    is_primary, tags
+                    is_primary
                 FROM evidence_artifacts
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -431,7 +445,7 @@ class SQLiteCaseRepository(CaseRepository):
                 SELECT message_id, role, content, created_at, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY created_at ASC
+                ORDER BY timestamp ASC
                 LIMIT :limit OFFSET :offset
             """)
 
@@ -444,12 +458,27 @@ class SQLiteCaseRepository(CaseRepository):
                 metadata = row[4]
                 if isinstance(metadata, str):
                     metadata = json.loads(metadata) if metadata else {}
+
+                # SQLite returns timestamps as strings, parse them if needed
+                created_at = row[3]
+                if created_at:
+                    if isinstance(created_at, str):
+                        # Parse ISO format timestamp string
+                        from datetime import datetime
+
+                        created_at = datetime.fromisoformat(
+                            created_at.replace(" ", "T")
+                        )
+                        created_at = created_at.isoformat()
+                    else:
+                        created_at = created_at.isoformat()
+
                 messages.append(
                     {
                         "message_id": row[0],
                         "role": row[1],
                         "content": row[2],
-                        "created_at": row[3].isoformat() if row[3] else None,
+                        "created_at": created_at,
                         "metadata": metadata,
                     }
                 )
@@ -570,21 +599,27 @@ class SQLiteCaseRepository(CaseRepository):
         """Upsert main cases table (SQLite-compatible - no type casts)."""
         query = text("""
             INSERT INTO cases (
-                case_id, user_id, title, status, created_at, updated_at,
+                case_id, user_id, organization_id, title, description, investigation_strategy,
+                status, created_at, updated_at, last_activity_at,
                 consulting, problem_verification, working_conclusion,
                 root_cause_conclusion, path_selection, degraded_mode,
                 escalation_state, documentation, progress, metadata
             ) VALUES (
-                :case_id, :user_id, :title, :status, :created_at, :updated_at,
+                :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
+                :status, :created_at, :updated_at, :last_activity_at,
                 :consulting, :problem_verification, :working_conclusion,
                 :root_cause_conclusion, :path_selection, :degraded_mode,
                 :escalation_state, :documentation, :progress, :metadata
             )
             ON CONFLICT (case_id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
+                organization_id = EXCLUDED.organization_id,
                 title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                investigation_strategy = EXCLUDED.investigation_strategy,
                 status = EXCLUDED.status,
                 updated_at = EXCLUDED.updated_at,
+                last_activity_at = EXCLUDED.last_activity_at,
                 consulting = EXCLUDED.consulting,
                 problem_verification = EXCLUDED.problem_verification,
                 working_conclusion = EXCLUDED.working_conclusion,
@@ -602,10 +637,14 @@ class SQLiteCaseRepository(CaseRepository):
             {
                 "case_id": case.case_id,
                 "user_id": case.user_id,
+                "organization_id": case.organization_id,
                 "title": case.title,
+                "description": case.description,
+                "investigation_strategy": case.investigation_strategy.value,
                 "status": case.status.value,
                 "created_at": case.created_at,
                 "updated_at": case.updated_at,
+                "last_activity_at": case.last_activity_at,
                 "consulting": json.dumps(case.consulting.model_dump()),
                 "problem_verification": (
                     json.dumps(case.problem_verification.model_dump())
@@ -904,6 +943,64 @@ class SQLiteCaseRepository(CaseRepository):
                 },
             )
 
+    async def _upsert_messages(
+        self, case_id: str, messages_list: builtins.list[dict]
+    ) -> None:
+        """Upsert case messages (SQLite-compatible).
+
+        Messages are dicts with keys: message_id, role, content, timestamp, metadata
+        """
+        # Get IDs of messages that should exist
+        current_ids = [msg.get("message_id") for msg in messages_list if msg.get("message_id")]
+
+        if current_ids:
+            # Delete messages not in current list
+            placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
+            delete_query = text(
+                f"""
+                DELETE FROM case_messages
+                WHERE case_id = :case_id
+                AND message_id NOT IN ({placeholders})
+            """
+            )
+            params = {"case_id": case_id}
+            for i, mid in enumerate(current_ids):
+                params[f"id_{i}"] = mid
+            await self.db.execute(delete_query, params)
+
+        # Upsert each message
+        for msg in messages_list:
+            # Skip if no message_id (shouldn't happen, but be safe)
+            if not msg.get("message_id"):
+                continue
+
+            query = text(
+                """
+                INSERT INTO case_messages (
+                    message_id, case_id, role, content, timestamp, metadata
+                ) VALUES (
+                    :message_id, :case_id, :role, :content, :timestamp, :metadata
+                )
+                ON CONFLICT (message_id) DO UPDATE SET
+                    role = EXCLUDED.role,
+                    content = EXCLUDED.content,
+                    timestamp = EXCLUDED.timestamp,
+                    metadata = EXCLUDED.metadata
+            """
+            )
+
+            await self.db.execute(
+                query,
+                {
+                    "message_id": msg.get("message_id"),
+                    "case_id": case_id,
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", ""),
+                    "timestamp": msg.get("created_at") or msg.get("timestamp") or datetime.now(UTC),
+                    "metadata": json.dumps(msg.get("metadata", {})),
+                },
+            )
+
     async def _append_status_transitions(
         self, case_id: str, transitions: builtins.list[CaseStatusTransition]
     ) -> None:
@@ -1004,44 +1101,57 @@ class SQLiteCaseRepository(CaseRepository):
             else []
         )
 
-        return Case(
-            case_id=row.case_id,
-            user_id=row.user_id,
-            organization_id=(
-                row.organization_id if hasattr(row, "organization_id") else None
-            ),
-            title=row.title,
-            description=None,
-            status=CaseStatus(row.status),
-            status_history=[],
-            closure_reason=None,
-            progress=progress,
-            current_turn=0,
-            turns_without_progress=0,
-            turn_history=[],
-            path_selection=path_selection,
-            investigation_strategy=None,
-            consulting=consulting,
-            problem_verification=problem_verification,
-            uploaded_files=uploaded_files,
-            evidence=[],  # Loaded separately
-            hypotheses=hypotheses_dict,
-            solutions=solutions_list,
-            working_conclusion=working_conclusion,
-            root_cause_conclusion=root_cause_conclusion,
-            degraded_mode=degraded_mode,
-            escalation_state=escalation_state,
-            documentation=documentation,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_activity_at=(
-                row.last_activity_at
-                if hasattr(row, "last_activity_at")
-                else row.updated_at
-            ),
-            resolved_at=row.resolved_at if hasattr(row, "resolved_at") else None,
-            closed_at=row.closed_at if hasattr(row, "closed_at") else None,
-        )
+        # Build case_data dict conditionally to allow Pydantic to apply field defaults
+        # Only include optional fields if they have actual values from database
+        case_data = {
+            "case_id": row.case_id,
+            "user_id": row.user_id,
+            "organization_id": row.organization_id,  # Required field, must be NOT NULL in DB
+            "title": row.title,
+            "status": CaseStatus(row.status),
+            "status_history": [],
+            "closure_reason": None,
+            "progress": progress,
+            "current_turn": 0,
+            "turns_without_progress": 0,
+            "turn_history": [],
+            "path_selection": path_selection,
+            "consulting": consulting,
+            "problem_verification": problem_verification,
+            "uploaded_files": uploaded_files,
+            "evidence": [],  # Loaded separately
+            "hypotheses": hypotheses_dict,
+            "solutions": solutions_list,
+            "working_conclusion": working_conclusion,
+            "root_cause_conclusion": root_cause_conclusion,
+            "degraded_mode": degraded_mode,
+            "escalation_state": escalation_state,
+            "documentation": documentation,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+        # Only add optional fields if they exist and have values in database
+        # This allows Pydantic to apply its own defaults for missing fields
+
+        if hasattr(row, "description") and row.description:
+            case_data["description"] = row.description
+
+        if hasattr(row, "investigation_strategy") and row.investigation_strategy:
+            case_data["investigation_strategy"] = InvestigationStrategy(
+                row.investigation_strategy
+            )
+
+        if hasattr(row, "last_activity_at") and row.last_activity_at:
+            case_data["last_activity_at"] = row.last_activity_at
+
+        if hasattr(row, "resolved_at") and row.resolved_at:
+            case_data["resolved_at"] = row.resolved_at
+
+        if hasattr(row, "closed_at") and row.closed_at:
+            case_data["closed_at"] = row.closed_at
+
+        return Case(**case_data)
 
     # ========================================================================
     # Report Operations (SQLite-compatible)

@@ -147,10 +147,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (011_add_standalone_evidence)
+        # Verify revision ID matches the latest migration (012_fix_schema_inconsistencies)
         assert (
-            revision == "011_add_standalone_evidence"
-        ), f"Expected revision 011_add_standalone_evidence (current head), got {revision}"
+            revision == "012_fix_schema_inconsistencies"
+        ), f"Expected revision 012_fix_schema_inconsistencies (current head), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -163,24 +163,21 @@ class TestAlembicMigrationInfrastructure:
             len(tables_before) == 18
         ), f"Expected 18 tables initially, got {len(tables_before)}"
 
-        # Rollback one migration (011 -> 010)
+        # Rollback one migration (012 -> 011)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify standalone_evidence table was removed
+        # Verify table count remains same (migration 012 modified columns, didn't add tables)
         tables_after = get_tables(TEST_DB)
         assert (
-            len(tables_after) == 17
-        ), f"Expected 17 tables after rollback, got {len(tables_after)}: {tables_after}"
-        assert (
-            "standalone_evidence" not in tables_after
-        ), "standalone_evidence table should be removed after rollback"
+            len(tables_after) == 18
+        ), f"Expected 18 tables after rollback, got {len(tables_after)}: {tables_after}"
 
         # Verify revision moved back one step
         revision = get_current_revision(database_url)
         assert (
-            revision == "010_hypothesis_solution_multitenancy"
-        ), f"Expected revision 010_hypothesis_solution_multitenancy after rollback, got {revision}"
+            revision == "011_add_standalone_evidence"
+        ), f"Expected revision 011_add_standalone_evidence after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -205,7 +202,7 @@ class TestAlembicMigrationInfrastructure:
 
         # Verify revision
         revision = get_current_revision(database_url)
-        assert revision == "011_add_standalone_evidence"
+        assert revision == "012_fix_schema_inconsistencies"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
@@ -301,7 +298,7 @@ class TestDatabaseSchemaIntegrity:
         expected_columns = [
             "case_id",
             "user_id",
-            "org_id",  # Schema uses org_id, not organization_id
+            "organization_id",  # Migration 012 renamed org_id to organization_id
             "title",
             "status",
             "created_at",
