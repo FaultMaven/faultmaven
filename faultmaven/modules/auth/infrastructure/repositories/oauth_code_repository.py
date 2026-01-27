@@ -264,11 +264,13 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         from sqlalchemy import text
 
         async with self.session_factory() as session:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO oauth_authorization_codes
                 (code, user_id, redirect_uri, code_challenge, expires_at, used)
                 VALUES (:code, :user_id, :redirect_uri, :code_challenge, :expires_at, :used)
-            """)
+            """
+            )
 
             await session.execute(
                 query,
@@ -295,11 +297,13 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         from sqlalchemy import text
 
         async with self.session_factory() as session:
-            query = text("""
+            query = text(
+                """
                 SELECT code, user_id, redirect_uri, code_challenge, expires_at, used
                 FROM oauth_authorization_codes
                 WHERE code = :code AND expires_at > NOW()
-            """)
+            """
+            )
 
             result = await session.execute(query, {"code": code})
             row = result.fetchone()
@@ -325,11 +329,13 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         from sqlalchemy import text
 
         async with self.session_factory() as session:
-            query = text("""
+            query = text(
+                """
                 UPDATE oauth_authorization_codes
                 SET used = TRUE
                 WHERE code = :code
-            """)
+            """
+            )
 
             await session.execute(query, {"code": code})
             await session.commit()
@@ -343,10 +349,12 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         from sqlalchemy import text
 
         async with self.session_factory() as session:
-            query = text("""
+            query = text(
+                """
                 DELETE FROM oauth_authorization_codes
                 WHERE expires_at <= NOW()
-            """)
+            """
+            )
 
             result = await session.execute(query)
             await session.commit()

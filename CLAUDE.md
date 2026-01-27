@@ -89,7 +89,8 @@ faultmaven/
 │   ├── jobs/               # Background job service
 │   ├── tasks/              # Async task management
 │   ├── shims/              # Compatibility shims
-│   └── concurrency/        # Report lock manager
+│   ├── concurrency/        # Report lock manager
+│   └── telemetry/          # Decision recording, correlation tracking
 ├── bootstrap/              # Application startup and service factories
 ├── config/                 # Pydantic-settings configuration
 │   ├── settings.py         # Main settings with validation
@@ -389,6 +390,21 @@ python scripts/check_api_changes.py        # Detect API changes
 python scripts/setup_env.py                # Environment setup
 python scripts/generate_api_docs.py        # Generate API documentation
 python scripts/frontend_verification_smoke_test.py  # Frontend smoke test
+./scripts/run_load_tests.sh                # Run Locust load tests
+./scripts/test_integration_logging.sh      # Test integration logging
+
+# User Management (scripts/auth/)
+python scripts/auth/create_user.py         # Create a new user
+python scripts/auth/list_users.py          # List all users
+python scripts/auth/list_users_fast.py     # Fast user listing
+python scripts/auth/promote_to_admin.py    # Promote user to admin
+python scripts/auth/demote_from_admin.py   # Remove admin privileges
+
+# Security (scripts/security/)
+./scripts/security/cleanup_exposed_keys_from_history.sh  # Clean secrets from git history
+
+# Local LLM
+./scripts/local_llm_service.sh             # Manage local LLM service (Ollama/vLLM)
 ```
 
 ## Testing
@@ -574,7 +590,7 @@ alembic downgrade -1
 | `evidence_artifacts` | Uploaded files |
 | `knowledge_documents` | Knowledge base items |
 
-### Migration History (10 versions)
+### Migration History (11 versions)
 
 1. `001_baseline_schema` - Initial schema
 2. `002_add_session_management` - Session tables
@@ -584,8 +600,9 @@ alembic downgrade -1
 6. `006_add_knowledge_items` - Knowledge base
 7. `007_add_users_table` - User management
 8. `008_add_hypothesis_solution_multitenancy` - Multi-tenant support
-9. `009_add_standalone_evidence` - Standalone evidence
-10. `008_add_email_uniqueness_constraint` - Email uniqueness
+9. `008_add_email_uniqueness_constraint` - Email uniqueness (note: duplicate numbering)
+10. `009_add_standalone_evidence` - Standalone evidence
+11. `012_fix_schema_inconsistencies` - Schema alignment fixes (org_id→organization_id, missing columns)
 
 ## Key Patterns
 
@@ -601,9 +618,10 @@ Implemented in `core/investigation/ooda_engine.py`.
 
 ### Dependency Injection
 
-- DI Container in `faultmaven/container/`
-- Service locator pattern with providers
+- DI Container in `faultmaven/container/` with centralized implementation in `_container_impl.py`
+- Service locator pattern with providers (infrastructure, services, tools)
 - Composition Root pattern in `main.py` lifespan
+- Singleton container with lazy initialization and interface-based dependency resolution
 
 ### Async Throughout
 
@@ -676,7 +694,8 @@ Implemented in `core/investigation/ooda_engine.py`.
 | `pyproject.toml` | Dependencies and tool config |
 | `.importlinter` | Architecture contracts (13 rules) |
 | `pytest.ini` | Test configuration |
-| `alembic/` | Database migrations (10 versions) |
+| `alembic/` | Database migrations (11 versions) |
+| `faultmaven/_container_impl.py` | Centralized DI container implementation |
 
 ## Common Tasks
 

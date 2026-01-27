@@ -139,11 +139,11 @@ class ChatRequest(BaseModel):
         max_length=10000,
         description="User message/prompt",
     )
-    agent_type: str = Field(
+    agent_type: Optional[str] = Field(
         default="investigator",
         description="Type of agent (investigator, debugger, researcher, validator, reporter)",
     )
-    stream: bool = Field(default=True, description="Enable SSE streaming")
+    stream: Optional[bool] = Field(default=True, description="Enable SSE streaming")
 
     class Config:
         json_schema_extra = {

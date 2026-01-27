@@ -167,7 +167,7 @@ class HypothesisValidateRequest(BaseModel):
     @classmethod
     def validate_confidence(cls, v):
         """Validate confidence score range."""
-        if v < 0 or v > 1:
+        if v is not None and (v < 0 or v > 1):
             raise ValueError("Confidence score must be between 0.00 and 1.00")
         return v
 
