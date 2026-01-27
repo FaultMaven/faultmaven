@@ -197,7 +197,9 @@ class QueryRequest(BaseModel):
         description="User query or machine data (max 200KB)",
     )
     context: Optional[Dict[str, Any]] = None
-    priority: Optional[Literal["low", "normal", "medium", "high", "critical"]] = "normal"
+    priority: Optional[Literal["low", "normal", "medium", "high", "critical"]] = (
+        "normal"
+    )
     timestamp: str = Field(
         default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
     )
