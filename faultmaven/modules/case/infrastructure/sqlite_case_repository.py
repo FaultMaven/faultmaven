@@ -131,10 +131,11 @@ class SQLiteCaseRepository(CaseRepository):
             hypotheses_data = await self._load_hypotheses(case_id)
             solutions_data = await self._load_solutions(case_id)
             uploaded_files_data = await self._load_uploaded_files(case_id)
+            messages_data = await self._load_messages(case_id)
 
             # Reconstruct Case domain object
             case = self._row_to_case(
-                row, hypotheses_data, solutions_data, uploaded_files_data
+                row, hypotheses_data, solutions_data, uploaded_files_data, messages_data
             )
 
             # Load evidence directly
@@ -254,6 +255,40 @@ class SQLiteCaseRepository(CaseRepository):
                 }
             )
         return files
+
+    async def _load_messages(self, case_id: str) -> list[dict]:
+        """Load messages for a case from case_messages table."""
+        query = text(
+            """
+            SELECT message_id, role, content, created_at, timestamp, metadata
+            FROM case_messages
+            WHERE case_id = :case_id
+            ORDER BY timestamp ASC
+        """
+        )
+        result = await self.db.execute(query, {"case_id": case_id})
+        rows = result.fetchall()
+
+        messages = []
+        for row in rows:
+            # Use created_at if available, fall back to timestamp
+            msg_timestamp = row[3] if row[3] else row[4]
+            if msg_timestamp:
+                if isinstance(msg_timestamp, str):
+                    msg_timestamp = msg_timestamp.replace(" ", "T")
+                elif hasattr(msg_timestamp, "isoformat"):
+                    msg_timestamp = msg_timestamp.isoformat()
+
+            messages.append(
+                {
+                    "message_id": row[0],
+                    "role": row[1],
+                    "content": row[2],
+                    "created_at": msg_timestamp,
+                    "metadata": json.loads(row[5]) if row[5] else {},
+                }
+            )
+        return messages
 
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load evidence for case directly from evidence_artifacts table."""
@@ -1087,6 +1122,7 @@ class SQLiteCaseRepository(CaseRepository):
         hypotheses_data: builtins.list[dict],
         solutions_data: builtins.list[dict],
         uploaded_files_data: builtins.list[dict],
+        messages_data: builtins.list[dict] | None = None,
     ) -> Case:
         """Reconstruct Case domain object from database row."""
         # Parse JSON columns
@@ -1172,6 +1208,7 @@ class SQLiteCaseRepository(CaseRepository):
             "evidence": [],  # Loaded separately
             "hypotheses": hypotheses_dict,
             "solutions": solutions_list,
+            "messages": messages_data if messages_data else [],
             "working_conclusion": working_conclusion,
             "root_cause_conclusion": root_cause_conclusion,
             "degraded_mode": degraded_mode,
