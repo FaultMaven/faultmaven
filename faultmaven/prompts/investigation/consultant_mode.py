@@ -317,8 +317,7 @@ def get_consultant_mode_prompt(
 
     # Add problem signal guidance
     if problem_signals_detected and signal_strength in ["moderate", "strong"]:
-        prompt_parts.append(
-            f"""
+        prompt_parts.append(f"""
 # Current Context: Problem Signal Detected ({signal_strength})
 
 The user's query contains signals indicating a technical problem. Based on the signal strength:
@@ -330,19 +329,16 @@ Remember:
 - Assess severity from context
 - Offer systematic investigation ONCE
 - Respect their decision
-"""
-        )
+""")
 
     # Add current query
     prompt_parts.append(f"\n# User Query\n\n{user_query}")
 
-    prompt_parts.append(
-        """
+    prompt_parts.append("""
 # Your Response
 
 Respond naturally as a consultant colleague would. Answer their question and, if a significant technical problem is detected, offer to help investigate systematically.
-"""
-    )
+""")
 
     return "\n".join(prompt_parts)
 
