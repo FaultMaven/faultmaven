@@ -165,7 +165,7 @@ async def create_test_schema(session: AsyncSession):
         )
     )
 
-    # Create uploaded_files table
+    # Create uploaded_files table (per case-schema.md §4.6)
     await session.execute(
         text(
             """
@@ -174,15 +174,12 @@ async def create_test_schema(session: AsyncSession):
             case_id TEXT NOT NULL,
             filename TEXT NOT NULL,
             size_bytes INTEGER NOT NULL DEFAULT 0,
-            data_type TEXT,
-            uploaded_at_turn INTEGER,
+            data_type TEXT NOT NULL DEFAULT 'unknown',
+            uploaded_at_turn INTEGER NOT NULL DEFAULT 0,
             uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            source_type TEXT,
+            source_type TEXT NOT NULL DEFAULT 'file_upload',
             content_ref TEXT,
             preprocessing_summary TEXT,
-            processing_status TEXT NOT NULL DEFAULT 'pending',
-            processing_error TEXT,
-            processed_at TIMESTAMP,
             metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
@@ -190,18 +187,19 @@ async def create_test_schema(session: AsyncSession):
         )
     )
 
-    # Create case_messages table
+    # Create case_messages table (per case-schema.md §4.7)
     await session.execute(
         text(
             """
         CREATE TABLE IF NOT EXISTS case_messages (
             message_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
-            role TEXT,
-            content TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            metadata TEXT,
+            turn_number INTEGER NOT NULL DEFAULT 0,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            token_count INTEGER,
+            metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """

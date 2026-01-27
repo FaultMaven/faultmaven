@@ -1,10 +1,11 @@
 -- Migration: 001 - Initial Hybrid Schema (10 Tables)
 -- Date: 2025-01-09
+-- Updated: 2026-01-27 (aligned with authoritative case-schema.md v3.2)
 -- Description: Production-ready PostgreSQL schema with hybrid normalization
 --              Normalized tables for high-cardinality data (evidence, hypotheses, solutions)
 --              JSONB columns for low-cardinality flexible data (consulting, conclusions)
 --
--- Design Reference: docs/architecture/case-storage-design.md
+-- Design Reference: docs/architecture/data-and-storage/schemas/case-schema.md (authoritative)
 
 -- ============================================================================
 -- EXTENSIONS
@@ -59,12 +60,8 @@ CREATE TYPE message_role AS ENUM (
     'system'
 );
 
-CREATE TYPE file_processing_status AS ENUM (
-    'pending',
-    'processing',
-    'completed',
-    'failed'
-);
+-- Note: file_processing_status enum removed per design spec
+-- Processing status tracking moved to separate pipeline (see case-schema.md §4.6)
 
 -- ============================================================================
 -- TABLE: cases
@@ -155,22 +152,31 @@ CREATE TABLE evidence (
     summary VARCHAR(500) NOT NULL,
     preprocessed_content TEXT NOT NULL,
     content_ref VARCHAR(1000),  -- S3 URI for raw content
+    content_size_bytes BIGINT NOT NULL,
+    preprocessing_method VARCHAR(50) NOT NULL,
+
+    -- Source
+    source_type VARCHAR(50) NOT NULL,  -- user_upload, system_collected, agent_generated
+    form VARCHAR(20) NOT NULL,  -- text, image, metric, structured
 
     -- Metadata
-    file_size INTEGER,
-    filename VARCHAR(255),
-    upload_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reliability_score REAL CHECK (reliability_score IS NULL OR (reliability_score >= 0 AND reliability_score <= 1)),
+    tags TEXT[],  -- PostgreSQL array for efficient queries
     metadata JSONB DEFAULT '{}'::jsonb,
 
     -- Constraints
     CONSTRAINT evidence_summary_not_empty CHECK (LENGTH(TRIM(summary)) > 0),
-    CONSTRAINT evidence_content_not_empty CHECK (LENGTH(TRIM(preprocessed_content)) > 0)
+    CONSTRAINT evidence_content_not_empty CHECK (LENGTH(TRIM(preprocessed_content)) > 0),
+    CONSTRAINT evidence_source_check CHECK (source_type IN ('user_upload', 'system_collected', 'agent_generated')),
+    CONSTRAINT evidence_form_check CHECK (form IN ('text', 'image', 'metric', 'structured'))
 );
 
 -- Indexes
 CREATE INDEX idx_evidence_case_id ON evidence(case_id);
-CREATE INDEX idx_evidence_category ON evidence(category);
-CREATE INDEX idx_evidence_upload_timestamp ON evidence(upload_timestamp DESC);
+CREATE INDEX idx_evidence_category ON evidence(case_id, category);
+CREATE INDEX idx_evidence_collected_at ON evidence(collected_at DESC);
+CREATE INDEX idx_evidence_tags ON evidence USING gin(tags);
 CREATE INDEX idx_evidence_metadata_gin ON evidence USING GIN (metadata);
 
 -- Full-text search on preprocessed content
@@ -271,23 +277,31 @@ CREATE TABLE case_messages (
     -- Foreign Key
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
+    -- Turn Tracking
+    turn_number INTEGER NOT NULL DEFAULT 0,
+
     -- Core Attributes
     role message_role NOT NULL,
     content TEXT NOT NULL,
 
     -- Timeline
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Token Tracking
+    token_count INTEGER,
 
     -- Metadata
     metadata JSONB DEFAULT '{}'::jsonb,
 
     -- Constraints
-    CONSTRAINT case_messages_content_not_empty CHECK (LENGTH(TRIM(content)) > 0)
+    CONSTRAINT case_messages_content_not_empty CHECK (LENGTH(TRIM(content)) > 0),
+    CONSTRAINT case_messages_turn_nonnegative CHECK (turn_number >= 0)
 );
 
 -- Indexes
 CREATE INDEX idx_case_messages_case_id ON case_messages(case_id);
-CREATE INDEX idx_case_messages_timestamp ON case_messages(timestamp ASC);
+CREATE INDEX idx_case_messages_case_turn ON case_messages(case_id, turn_number);
+CREATE INDEX idx_case_messages_created_at ON case_messages(created_at DESC);
 CREATE INDEX idx_case_messages_role ON case_messages(role);
 
 -- ============================================================================
@@ -295,38 +309,44 @@ CREATE INDEX idx_case_messages_role ON case_messages(role);
 -- ============================================================================
 
 CREATE TABLE uploaded_files (
-    -- Primary Key
+    -- Primary Key (VARCHAR for human-readable IDs like file_abc123xyz)
     file_id VARCHAR(15) PRIMARY KEY,
 
     -- Foreign Key
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
-    -- Core Attributes
+    -- File Metadata (aligns with UploadedFile Pydantic model)
     filename VARCHAR(255) NOT NULL,
-    file_size INTEGER NOT NULL,
-    content_type VARCHAR(100),
-    storage_path VARCHAR(1000),  -- S3 or local path
+    size_bytes INTEGER NOT NULL,
+    data_type VARCHAR(50) NOT NULL DEFAULT 'other',  -- log, metric, config, code, text, image, structured, other
 
-    -- Processing
-    processing_status file_processing_status NOT NULL DEFAULT 'pending',
-    processing_error TEXT,
-
-    -- Timeline
+    -- Upload Context
+    uploaded_at_turn INTEGER NOT NULL DEFAULT 0,
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    processed_at TIMESTAMPTZ,
+    source_type VARCHAR(50) NOT NULL DEFAULT 'file_upload',  -- file_upload, paste, screenshot, page_injection, agent_generated
+
+    -- Storage & Processing
+    content_ref VARCHAR(1000),  -- S3 URI or storage path (links to Evidence.content_ref)
+    preprocessing_summary TEXT,  -- AI-generated summary after analysis
 
     -- Metadata
     metadata JSONB DEFAULT '{}'::jsonb,
 
     -- Constraints
     CONSTRAINT uploaded_files_filename_not_empty CHECK (LENGTH(TRIM(filename)) > 0),
-    CONSTRAINT uploaded_files_file_size_positive CHECK (file_size > 0)
+    CONSTRAINT uploaded_files_size_positive CHECK (size_bytes > 0),
+    CONSTRAINT uploaded_files_turn_nonnegative CHECK (uploaded_at_turn >= 0),
+    CONSTRAINT uploaded_files_data_type_check
+        CHECK (data_type IN ('log', 'metric', 'config', 'code', 'text', 'image', 'structured', 'other')),
+    CONSTRAINT uploaded_files_source_type_check
+        CHECK (source_type IN ('file_upload', 'paste', 'screenshot', 'page_injection', 'agent_generated'))
 );
 
 -- Indexes
 CREATE INDEX idx_uploaded_files_case_id ON uploaded_files(case_id);
 CREATE INDEX idx_uploaded_files_uploaded_at ON uploaded_files(uploaded_at DESC);
-CREATE INDEX idx_uploaded_files_processing_status ON uploaded_files(processing_status);
+CREATE INDEX idx_uploaded_files_turn ON uploaded_files(case_id, uploaded_at_turn);
+CREATE INDEX idx_uploaded_files_content_ref ON uploaded_files(content_ref) WHERE content_ref IS NOT NULL;
 
 -- ============================================================================
 -- TABLE: case_status_transitions
@@ -507,14 +527,15 @@ SELECT
     e.case_id,
     e.category,
     e.summary,
-    e.filename,
-    e.file_size,
-    e.upload_timestamp,
+    e.source_type,
+    e.form,
+    e.content_size_bytes,
+    e.collected_at,
     c.title AS case_title,
     c.status AS case_status
 FROM evidence e
 JOIN cases c ON e.case_id = c.case_id
-ORDER BY e.upload_timestamp DESC
+ORDER BY e.collected_at DESC
 LIMIT 100;
 
 -- ============================================================================
@@ -525,8 +546,8 @@ COMMENT ON TABLE cases IS 'Core case records with hybrid normalization: normaliz
 COMMENT ON TABLE evidence IS 'Evidence artifacts with preprocessed content and S3 references for raw data';
 COMMENT ON TABLE hypotheses IS 'Root cause hypotheses with validation tracking';
 COMMENT ON TABLE solutions IS 'Proposed solutions with implementation tracking';
-COMMENT ON TABLE case_messages IS 'Conversation history between user and AI agent';
-COMMENT ON TABLE uploaded_files IS 'File upload metadata and processing status';
+COMMENT ON TABLE case_messages IS 'Turn-by-turn conversation messages with token tracking';
+COMMENT ON TABLE uploaded_files IS 'Raw file upload metadata - aligns with UploadedFile Pydantic model';
 COMMENT ON TABLE case_status_transitions IS 'Audit trail of case status changes';
 COMMENT ON TABLE case_tags IS 'User-defined tags for case categorization';
 COMMENT ON TABLE agent_tool_calls IS 'Agent tool execution audit trail for observability';
