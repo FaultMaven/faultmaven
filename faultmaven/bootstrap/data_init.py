@@ -63,24 +63,45 @@ def run_alembic_migrations() -> bool:
         - Uses alembic.ini configuration
         - Safe to run multiple times (Alembic tracks applied migrations)
         - Creates the database file if it doesn't exist (SQLite)
+        - Searches for alembic.ini in multiple locations for deployment flexibility
     """
     try:
         from alembic import command
         from alembic.config import Config
 
-        # Get the project root (where alembic.ini is located)
-        project_root = Path(__file__).parent.parent.parent
-        alembic_ini = project_root / "alembic.ini"
+        # Find alembic.ini - check multiple locations for deployment flexibility
+        # Priority: 1) env var, 2) current working dir, 3) relative to this file
+        alembic_ini = None
+        search_paths = []
 
-        if not alembic_ini.exists():
-            logger.warning(f"alembic.ini not found at {alembic_ini}")
+        # 1. Environment variable override (for Docker/custom deployments)
+        env_path = os.environ.get("ALEMBIC_CONFIG")
+        if env_path:
+            search_paths.append(Path(env_path))
+
+        # 2. Current working directory (typical for deployed apps)
+        search_paths.append(Path.cwd() / "alembic.ini")
+
+        # 3. Relative to this file (development mode)
+        project_root = Path(__file__).parent.parent.parent
+        search_paths.append(project_root / "alembic.ini")
+
+        for path in search_paths:
+            if path.exists():
+                alembic_ini = path
+                break
+
+        if not alembic_ini:
+            logger.warning(
+                f"alembic.ini not found in: {[str(p) for p in search_paths]}"
+            )
             return False
 
         # Configure Alembic
         alembic_cfg = Config(str(alembic_ini))
 
         # Run migrations
-        logger.debug("Running Alembic migrations...")
+        logger.debug(f"Running Alembic migrations (config: {alembic_ini})...")
         command.upgrade(alembic_cfg, "head")
         logger.debug("Alembic migrations complete")
         return True
