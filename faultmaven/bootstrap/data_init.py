@@ -192,9 +192,7 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         user.roles = ["user", "admin"]
         user = await user_store.update_user(user)
 
-        logger.info(
-            f"Default admin account created: {user.username} ({user.email})"
-        )
+        logger.info(f"Default admin account created: {user.username} ({user.email})")
         logger.info(
             "  Login via: POST /api/v1/auth/dev-login "
             f'with {{"username": "{user.username}"}}'

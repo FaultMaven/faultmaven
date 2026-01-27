@@ -65,7 +65,9 @@ async def bootstrap_application(container: Any) -> None:
     # ============================================================
     # Get tenant provider from container
     if not hasattr(container, "tenant_provider") or container.tenant_provider is None:
-        logger.warning("TenantProvider not available in container - skipping org bootstrap")
+        logger.warning(
+            "TenantProvider not available in container - skipping org bootstrap"
+        )
     else:
         tenant_provider = container.tenant_provider
 

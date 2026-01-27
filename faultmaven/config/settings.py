@@ -687,7 +687,9 @@ class DatabaseSettings(BaseSettings):
         default=None, env="CHROMADB_AUTH_TOKEN"
     )
     chromadb_collection: str = Field(default="faultmaven_kb", env="CHROMADB_COLLECTION")
-    chromadb_persist_dir: str = Field(default="./data/chroma", env="CHROMADB_PERSIST_DIR")
+    chromadb_persist_dir: str = Field(
+        default="./data/chroma", env="CHROMADB_PERSIST_DIR"
+    )
 
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3", env="EMBEDDING_MODEL")
