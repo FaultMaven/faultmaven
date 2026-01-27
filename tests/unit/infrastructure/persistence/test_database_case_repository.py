@@ -427,10 +427,11 @@ async def test_get_messages_with_pagination(
     # Arrange
     await repository.save(sample_case)
 
-    # Add multiple messages
+    # Add multiple messages with unique turn_number (required by unique constraint)
     for i in range(5):
         message = {
             "message_id": f"msg_{uuid4().hex[:12]}",
+            "turn_number": i,
             "role": "user" if i % 2 == 0 else "assistant",
             "content": f"Message {i}",
             "timestamp": datetime.now(timezone.utc) + timedelta(seconds=i),
