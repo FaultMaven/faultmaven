@@ -214,12 +214,15 @@ class SQLiteCaseRepository(CaseRepository):
         return solutions
 
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
-        """Load uploaded files for a case."""
+        """Load uploaded files for a case.
+
+        Handles both old schema (file_size, content_type, storage_path) and
+        new schema (size_bytes, data_type, content_ref) for backwards compatibility.
+        """
+        # Use SELECT * to handle schema variations gracefully
         query = text(
             """
-            SELECT file_id, filename, size_bytes, data_type,
-                   uploaded_at_turn, uploaded_at, source_type,
-                   content_ref, preprocessing_summary
+            SELECT *
             FROM uploaded_files
             WHERE case_id = :case_id
         """
@@ -227,65 +230,98 @@ class SQLiteCaseRepository(CaseRepository):
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
+        if not rows:
+            return []
+
+        # Get column names from result metadata
+        columns = list(result.keys())
+
         files = []
         for row in rows:
-            # Map production schema to domain model fields
-            metadata = row[8]
+            # Convert row to dict for easier column access
+            row_dict = dict(zip(columns, row))
+
+            # Parse metadata if present
+            metadata = row_dict.get("metadata")
             if isinstance(metadata, str):
-                import json
-
                 metadata = json.loads(metadata) if metadata else {}
+            elif metadata is None:
+                metadata = {}
 
+            # Map columns with fallbacks for schema compatibility
+            # Old schema: file_size, content_type, storage_path
+            # New schema: size_bytes, data_type, content_ref
             files.append(
                 {
-                    "file_id": row[0],
-                    "filename": row[1],
-                    "size_bytes": row[2],  # file_size → size_bytes
-                    "data_type": row[3] or "unknown",  # content_type → data_type
-                    "uploaded_at_turn": 0,  # Not in production schema, default to 0
-                    "uploaded_at": row[4],
-                    "source_type": (
-                        metadata.get("source_type", "file_upload")
-                        if metadata
-                        else "file_upload"
-                    ),
-                    "content_ref": row[5],  # storage_path → content_ref
-                    "preprocessing_summary": row[7]
-                    or "",  # processing_error as summary fallback
+                    "file_id": row_dict.get("file_id"),
+                    "filename": row_dict.get("filename"),
+                    "size_bytes": row_dict.get("size_bytes")
+                    or row_dict.get("file_size", 0),
+                    "data_type": row_dict.get("data_type")
+                    or row_dict.get("content_type", "unknown"),
+                    "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
+                    "uploaded_at": row_dict.get("uploaded_at"),
+                    "source_type": row_dict.get("source_type")
+                    or metadata.get("source_type", "file_upload"),
+                    "content_ref": row_dict.get("content_ref")
+                    or row_dict.get("storage_path", ""),
+                    "preprocessing_summary": row_dict.get("preprocessing_summary")
+                    or row_dict.get("processing_error", ""),
                 }
             )
         return files
 
     async def _load_messages(self, case_id: str) -> list[dict]:
-        """Load messages for a case from case_messages table."""
+        """Load messages for a case from case_messages table.
+
+        Handles both old schema (timestamp only) and new schema (created_at + timestamp)
+        for backwards compatibility.
+        """
+        # Use SELECT * to handle schema variations gracefully
         query = text(
             """
-            SELECT message_id, role, content, created_at, timestamp, metadata
+            SELECT *
             FROM case_messages
             WHERE case_id = :case_id
-            ORDER BY timestamp ASC
+            ORDER BY COALESCE(timestamp, message_id) ASC
         """
         )
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
+        if not rows:
+            return []
+
+        # Get column names from result metadata
+        columns = list(result.keys())
+
         messages = []
         for row in rows:
+            # Convert row to dict for easier column access
+            row_dict = dict(zip(columns, row))
+
             # Use created_at if available, fall back to timestamp
-            msg_timestamp = row[3] if row[3] else row[4]
+            msg_timestamp = row_dict.get("created_at") or row_dict.get("timestamp")
             if msg_timestamp:
                 if isinstance(msg_timestamp, str):
                     msg_timestamp = msg_timestamp.replace(" ", "T")
                 elif hasattr(msg_timestamp, "isoformat"):
                     msg_timestamp = msg_timestamp.isoformat()
 
+            # Parse metadata if present
+            metadata = row_dict.get("metadata")
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata) if metadata else {}
+            elif metadata is None:
+                metadata = {}
+
             messages.append(
                 {
-                    "message_id": row[0],
-                    "role": row[1],
-                    "content": row[2],
+                    "message_id": row_dict.get("message_id"),
+                    "role": row_dict.get("role"),
+                    "content": row_dict.get("content"),
                     "created_at": msg_timestamp,
-                    "metadata": json.loads(row[5]) if row[5] else {},
+                    "metadata": metadata,
                 }
             )
         return messages
@@ -571,9 +607,14 @@ class SQLiteCaseRepository(CaseRepository):
             ) from e
 
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
-        """Compute analytics for case from normalized tables."""
+        """Compute analytics for case from normalized tables.
+
+        Handles schema variations by computing file size separately using
+        schema-compatible _load_uploaded_files method.
+        """
         try:
             # SQLite-compatible: Use separate COUNT queries instead of FILTER
+            # Note: file size computed separately for schema compatibility
             query = text(
                 """
                 SELECT
@@ -582,8 +623,7 @@ class SQLiteCaseRepository(CaseRepository):
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id) as solution_count,
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id AND status = 'implemented') as implemented_solutions,
                     (SELECT COUNT(*) FROM case_messages WHERE case_id = :case_id) as message_count,
-                    (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count,
-                    (SELECT COALESCE(SUM(size_bytes), 0) FROM uploaded_files WHERE case_id = :case_id) as total_file_size
+                    (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count
             """
             )
 
@@ -601,8 +641,17 @@ class SQLiteCaseRepository(CaseRepository):
                 "implemented_solutions": row[3] or 0,
                 "message_count": row[4] or 0,
                 "file_count": row[5] or 0,
-                "total_file_size": row[6] or 0,
+                "total_file_size": 0,
             }
+
+            # Compute total file size using schema-compatible method
+            try:
+                files = await self._load_uploaded_files(case_id)
+                analytics["total_file_size"] = sum(
+                    f.get("size_bytes", 0) or 0 for f in files
+                )
+            except Exception:
+                pass  # File size will remain 0
 
             # Load evidence count
             try:
