@@ -75,10 +75,10 @@ class AuthorizationRequest(BaseModel):
     code_challenge: str = Field(
         description="PKCE code challenge (SHA256 hash of verifier)"
     )
-    code_challenge_method: Literal["S256"] = Field(
+    code_challenge_method: Optional[Literal["S256"]] = Field(
         default="S256", description="PKCE challenge method (only S256 supported)"
     )
-    scope: str = Field(
+    scope: Optional[str] = Field(
         default="openid profile email", description="OAuth scopes requested"
     )
 
@@ -106,7 +106,7 @@ class AuthorizationApprovalRequest(BaseModel):
 
     approved: bool = Field(description="True if user approved, False if denied")
     code_challenge: str = Field(description="PKCE code challenge")
-    code_challenge_method: Literal["S256"] = Field(default="S256")
+    code_challenge_method: Optional[Literal["S256"]] = Field(default="S256")
     client_id: str = Field(description="OAuth client ID")
     redirect_uri: str = Field(description="Callback URI")
     scope: str = Field(description="Requested scopes")

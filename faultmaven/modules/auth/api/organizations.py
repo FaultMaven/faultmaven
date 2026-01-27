@@ -77,7 +77,7 @@ class OrganizationCreateRequest(BaseModel):
     description: Optional[str] = Field(
         None, description="Organization description", max_length=500
     )
-    plan_tier: str = Field("free", description="Subscription plan tier")
+    plan_tier: Optional[str] = Field("free", description="Subscription plan tier")
 
     @field_validator("slug")
     @classmethod
@@ -90,7 +90,9 @@ class OrganizationCreateRequest(BaseModel):
 
     @field_validator("plan_tier")
     @classmethod
-    def validate_plan_tier(cls, v: str) -> str:
+    def validate_plan_tier(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return "free"  # Use default when null is passed
         valid_tiers = ["free", "pro", "enterprise"]
         if v.lower() not in valid_tiers:
             raise ValueError(f'Plan tier must be one of: {", ".join(valid_tiers)}')
@@ -151,11 +153,13 @@ class MemberAddRequest(BaseModel):
     """Request to add member to organization"""
 
     email: str = Field(..., description="Email of user to invite")
-    role: str = Field("member", description="Role to assign (member, admin)")
+    role: Optional[str] = Field("member", description="Role to assign (member, admin)")
 
     @field_validator("role")
     @classmethod
-    def validate_role(cls, v: str) -> str:
+    def validate_role(cls, v: Optional[str]) -> str:
+        if v is None:
+            return "member"  # Use default when null is passed
         valid_roles = ["member", "admin"]
         if v.lower() not in valid_roles:
             raise ValueError(f'Role must be one of: {", ".join(valid_roles)}')

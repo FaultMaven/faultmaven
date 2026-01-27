@@ -197,7 +197,7 @@ class QueryRequest(BaseModel):
         description="User query or machine data (max 200KB)",
     )
     context: Optional[Dict[str, Any]] = None
-    priority: Literal["low", "normal", "medium", "high", "critical"] = "normal"
+    priority: Optional[Literal["low", "normal", "medium", "high", "critical"]] = "normal"
     timestamp: str = Field(
         default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
     )
@@ -209,7 +209,7 @@ class QueryRequest(BaseModel):
     content_type: Optional[DataType] = (
         None  # Optional data type hint (if UI knows it's logs, metrics, etc.)
     )
-    is_raw_content: bool = (
+    is_raw_content: Optional[bool] = (
         False  # True if copy&paste machine data, False if typed question
     )
 
@@ -270,8 +270,8 @@ class TitleGenerateRequest(BaseModel):
 
     session_id: str
     context: Optional[Dict[str, Any]] = None
-    # Optional guardrail for word count
-    max_words: int = 8
+    # Optional guardrail for word count (accepts null for default)
+    max_words: Optional[int] = 8
 
 
 class TitleResponse(BaseModel):
