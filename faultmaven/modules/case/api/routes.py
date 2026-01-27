@@ -1740,11 +1740,20 @@ async def submit_case_query(
             detail = f"Unable to process your message: {error_msg[:200]}"  # Limit message length
 
         raise HTTPException(
-            status_code=503 if ("over capacity" in error_msg.lower() or "503" in error_msg) else 500,
+            status_code=(
+                503
+                if ("over capacity" in error_msg.lower() or "503" in error_msg)
+                else 500
+            ),
             detail=detail,
             headers={
                 "x-correlation-id": correlation_id,
-                "Retry-After": "60" if "over capacity" in error_msg.lower() or "rate limit" in error_msg.lower() else "10"
+                "Retry-After": (
+                    "60"
+                    if "over capacity" in error_msg.lower()
+                    or "rate limit" in error_msg.lower()
+                    else "10"
+                ),
             },
         )
     except Exception as e:
