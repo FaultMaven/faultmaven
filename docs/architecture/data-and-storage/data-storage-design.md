@@ -699,11 +699,11 @@ Profile Data → Profile Parser (pprof/perf/collapsed stack)
 **Two-Tier Storage**:
 
 1. **Metadata Storage** (PostgreSQL `uploaded_files` table)
-   - File metadata: filename, size, type, upload timestamp
-   - Processing status: pending → processing → completed/failed
-   - Preprocessing summary (extracted insights, ~8KB text)
-   - S3 reference key
-   - Data type classification
+   - File metadata: `filename`, `size_bytes`, `data_type`, `uploaded_at`, `uploaded_at_turn`
+   - Source tracking: `source_type` (file_upload, paste, screenshot, page_injection, agent_generated)
+   - Preprocessing summary: `preprocessing_summary` (AI-generated analysis, ~8KB text)
+   - Storage reference: `content_ref` (S3 URI or storage path)
+   - Note: Processing status tracking moved to separate pipeline (see case-schema.md §4.6)
 
 2. **Raw Artifact Storage** (S3-Compatible)
    - Full raw file content (up to 10MB)
