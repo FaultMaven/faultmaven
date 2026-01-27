@@ -398,10 +398,9 @@ class CaseService(BaseService, ICaseService):
                 except Exception as e:
                     self.logger.warning(f"Failed to get existing case for session: {e}")
 
-            # Create new case with provided title or auto-generate
-            case_title = title if title else f"Troubleshooting Session {session_id[:8]}"
+            # Create new case - pass title as-is to trigger auto-generation when None
             case = await self.create_case(
-                title=case_title,
+                title=title,  # None triggers Case-MMDD-N auto-generation
                 description="Auto-created case for troubleshooting session",
                 owner_id=user_id,
                 session_id=session_id,
