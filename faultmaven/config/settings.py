@@ -644,7 +644,7 @@ class DatabaseSettings(BaseSettings):
     # Primary Database Configuration (SQLite/PostgreSQL)
     # ============================================
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./faultmaven.db",
+        default="sqlite+aiosqlite:///./data/faultmaven.db",
         env="DATABASE_URL",
         description="Primary database URL (SQLite for dev, PostgreSQL for prod)",
     )
