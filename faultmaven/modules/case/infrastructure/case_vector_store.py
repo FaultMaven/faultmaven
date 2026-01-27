@@ -277,7 +277,7 @@ class CaseVectorStore(BaseExternalClient):
                     # Collection doesn't exist - nothing to delete
                     self.logger.debug(
                         f"Collection {collection_name} does not exist, skipping deletion",
-                        extra={"case_id": case_id, "collection": collection_name}
+                        extra={"case_id": case_id, "collection": collection_name},
                     )
                     return
 
