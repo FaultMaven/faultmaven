@@ -869,7 +869,9 @@ class TestEdgeCases:
         """revoke_token without Redis logs a warning."""
         import logging
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(
+            logging.WARNING, logger="faultmaven.services.auth_service"
+        ):
             await auth_service.revoke_token("test-jti", 12345)
 
         assert "Redis not configured" in caplog.text
@@ -1003,7 +1005,9 @@ class TestKeyLoading:
         with patch(
             "faultmaven.services.auth_service.get_settings", return_value=mock_settings
         ):
-            with caplog.at_level(logging.WARNING):
+            with caplog.at_level(
+                logging.WARNING, logger="faultmaven.services.auth_service"
+            ):
                 service = AuthService()
 
             # Verify dev keys were generated
@@ -1026,7 +1030,9 @@ class TestKeyLoading:
         with patch(
             "faultmaven.services.auth_service.get_settings", return_value=mock_settings
         ):
-            with caplog.at_level(logging.WARNING):
+            with caplog.at_level(
+                logging.WARNING, logger="faultmaven.services.auth_service"
+            ):
                 service = AuthService()
 
             # Warnings should be logged for missing files
