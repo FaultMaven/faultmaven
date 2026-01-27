@@ -869,10 +869,8 @@ class TestEdgeCases:
         """revoke_token without Redis logs a warning."""
         import logging
 
-        with caplog.at_level(
-            logging.WARNING, logger="faultmaven.services.auth_service"
-        ):
-            await auth_service.revoke_token("test-jti", 12345)
+        caplog.set_level(logging.WARNING)
+        await auth_service.revoke_token("test-jti", 12345)
 
         assert "Redis not configured" in caplog.text
 
@@ -996,6 +994,8 @@ class TestKeyLoading:
         """Development RSA keys are generated when no keys are configured."""
         import logging
 
+        caplog.set_level(logging.WARNING)
+
         # No keys configured
         mock_settings.security.jwt_private_key = None
         mock_settings.security.jwt_public_key = None
@@ -1005,21 +1005,20 @@ class TestKeyLoading:
         with patch(
             "faultmaven.services.auth_service.get_settings", return_value=mock_settings
         ):
-            with caplog.at_level(
-                logging.WARNING, logger="faultmaven.services.auth_service"
-            ):
-                service = AuthService()
+            service = AuthService()
 
-            # Verify dev keys were generated
-            assert service._private_key is not None
-            assert service._public_key is not None
-            assert "-----BEGIN PRIVATE KEY-----" in service._private_key
-            assert "-----BEGIN PUBLIC KEY-----" in service._public_key
-            assert "Generated development RSA keys" in caplog.text
+        # Verify dev keys were generated
+        assert service._private_key is not None
+        assert service._public_key is not None
+        assert "-----BEGIN PRIVATE KEY-----" in service._private_key
+        assert "-----BEGIN PUBLIC KEY-----" in service._public_key
+        assert "Generated development RSA keys" in caplog.text
 
     def test_load_keys_warns_on_missing_key_file(self, mock_settings, caplog, tmp_path):
         """Warning is logged when key file does not exist."""
         import logging
+
+        caplog.set_level(logging.WARNING)
 
         # Point to non-existent file
         mock_settings.security.jwt_private_key = None
@@ -1030,16 +1029,13 @@ class TestKeyLoading:
         with patch(
             "faultmaven.services.auth_service.get_settings", return_value=mock_settings
         ):
-            with caplog.at_level(
-                logging.WARNING, logger="faultmaven.services.auth_service"
-            ):
-                service = AuthService()
+            service = AuthService()
 
-            # Warnings should be logged for missing files
-            assert "Private key file not found" in caplog.text
-            assert "Public key file not found" in caplog.text
-            # Dev keys should still be generated as fallback
-            assert service._private_key is not None
+        # Warnings should be logged for missing files
+        assert "Private key file not found" in caplog.text
+        assert "Public key file not found" in caplog.text
+        # Dev keys should still be generated as fallback
+        assert service._private_key is not None
 
     def test_generated_keys_are_valid_rsa_2048(self, mock_settings):
         """Generated development keys are valid 2048-bit RSA keys."""
