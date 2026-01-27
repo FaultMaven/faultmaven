@@ -326,7 +326,9 @@ cp .env.example .env
 ./faultmaven.sh start
 
 # Or run locally (development)
-./scripts/faultmaven-dev.sh start
+pip install -e ".[dev]"           # Install dependencies
+alembic upgrade head              # Initialize database schema
+./scripts/faultmaven-dev.sh start # Start the server
 ```
 
 ### Service Ports
