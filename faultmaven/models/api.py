@@ -90,8 +90,11 @@ class ProcessingStatus(str, Enum):
     FAILED = "failed"
 
 
-class SessionStatus(str, Enum):
-    """Defines the status of user sessions."""
+class AuthSessionStatus(str, Enum):
+    """Defines the status of authentication sessions (not investigation sessions).
+
+    For investigation session status, see faultmaven.models.investigation_session.SessionStatus
+    """
 
     ACTIVE = "active"
     EXPIRED = "expired"
@@ -318,13 +321,13 @@ class SessionRequest(BaseModel):
 
 
 class SessionResponse(BaseModel):
-    """Response payload for session operations - API spec compliance."""
+    """Response payload for auth session operations - API spec compliance."""
 
     schema_version: Literal["3.1.0"] = "3.1.0"
     session_id: str
     user_id: Optional[str] = None
     client_id: Optional[str] = None  # Client/device identifier for session resumption
-    status: SessionStatus = SessionStatus.ACTIVE
+    status: AuthSessionStatus = AuthSessionStatus.ACTIVE
     created_at: str  # UTC ISO 8601 format
     expires_at: Optional[str] = None  # UTC ISO 8601 format - optional for compliance
     metadata: Optional[Dict[str, Any]] = None
