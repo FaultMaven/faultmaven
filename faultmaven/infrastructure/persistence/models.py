@@ -147,15 +147,6 @@ class MessageRoleEnum(str, enum.Enum):
     SYSTEM = "system"
 
 
-class FileProcessingStatusEnum(str, enum.Enum):
-    """File processing status."""
-
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
 class ToolCallStatusEnum(str, enum.Enum):
     """Tool call execution status."""
 
@@ -440,7 +431,11 @@ class SolutionModel(Base):
 
 
 class CaseMessageModel(Base):
-    """Case conversation messages."""
+    """Case conversation messages.
+
+    Schema per design spec (case-schema.md §4.7):
+    - turn_number, created_at, token_count
+    """
 
     __tablename__ = "case_messages"
 
@@ -451,11 +446,13 @@ class CaseMessageModel(Base):
         nullable=False,
         index=True,
     )
+    turn_number = Column(Integer, nullable=False, default=0)
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
-    timestamp = Column(
+    created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
+    token_count = Column(Integer)
     message_metadata = Column("metadata", Text, default="{}")
 
     # Relationship
@@ -465,6 +462,8 @@ class CaseMessageModel(Base):
         CheckConstraint(
             "LENGTH(TRIM(content)) > 0", name="case_messages_content_not_empty"
         ),
+        CheckConstraint("turn_number >= 0", name="case_messages_turn_nonnegative"),
+        Index("idx_case_messages_case_turn", "case_id", "turn_number"),
     )
 
     def __repr__(self) -> str:
@@ -477,7 +476,11 @@ class CaseMessageModel(Base):
 
 
 class UploadedFileModel(Base):
-    """Files uploaded to cases."""
+    """Files uploaded to cases.
+
+    Schema per design spec (case-schema.md §4.6):
+    - size_bytes, data_type, content_ref, uploaded_at_turn, source_type, preprocessing_summary
+    """
 
     __tablename__ = "uploaded_files"
 
@@ -489,15 +492,15 @@ class UploadedFileModel(Base):
         index=True,
     )
     filename = Column(String(255), nullable=False)
-    file_size = Column(Integer, nullable=False)
-    content_type = Column(String(100))
-    storage_path = Column(String(1000))
-    processing_status = Column(String(20), nullable=False, default="pending")
-    processing_error = Column(Text)
+    size_bytes = Column(Integer, nullable=False)
+    data_type = Column(String(50), nullable=False, default="other")
+    uploaded_at_turn = Column(Integer, nullable=False, default=0)
     uploaded_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    processed_at = Column(DateTime(timezone=True))
+    source_type = Column(String(50), nullable=False, default="file_upload")
+    content_ref = Column(String(1000))
+    preprocessing_summary = Column(Text)
     file_metadata = Column("metadata", Text, default="{}")
 
     # Relationship
@@ -507,7 +510,10 @@ class UploadedFileModel(Base):
         CheckConstraint(
             "LENGTH(TRIM(filename)) > 0", name="uploaded_files_filename_not_empty"
         ),
-        CheckConstraint("file_size > 0", name="uploaded_files_file_size_positive"),
+        CheckConstraint("size_bytes > 0", name="uploaded_files_size_positive"),
+        CheckConstraint(
+            "uploaded_at_turn >= 0", name="uploaded_files_turn_nonnegative"
+        ),
     )
 
     def __repr__(self) -> str:
