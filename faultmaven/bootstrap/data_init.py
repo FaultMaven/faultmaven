@@ -1,7 +1,7 @@
 """Data Directory and Database Initialization (Bootstrap).
 
 Handles first-run initialization tasks:
-1. Create data directories (./data/chroma, ./data/evidence)
+1. Create data directories (data/chroma, data/evidence)
 2. Run Alembic migrations to ensure schema is up-to-date
 3. Create default local admin user if database is empty
 
@@ -12,6 +12,7 @@ Design Notes:
     - Idempotent: Safe to call multiple times
     - Silent on subsequent runs (only logs on first-time setup)
     - Does not modify existing data
+    - Uses absolute paths based on project root for deployment flexibility
 """
 
 import logging
@@ -27,27 +28,54 @@ DEFAULT_ADMIN_EMAIL = "admin@local.faultmaven"
 DEFAULT_ADMIN_DISPLAY_NAME = "Local Admin"
 
 
+def get_project_root() -> Path:
+    """Get the project root directory.
+
+    Determines project root using multiple strategies for deployment flexibility:
+    1. PROJECT_ROOT environment variable (Docker/custom deployments)
+    2. Current working directory if it contains alembic.ini (deployed apps)
+    3. Relative to this file (development mode)
+
+    Returns:
+        Path to project root directory
+    """
+    # 1. Environment variable override
+    env_root = os.environ.get("PROJECT_ROOT")
+    if env_root:
+        return Path(env_root)
+
+    # 2. Current working directory (if it looks like project root)
+    cwd = Path.cwd()
+    if (cwd / "alembic.ini").exists() or (cwd / "pyproject.toml").exists():
+        return cwd
+
+    # 3. Relative to this file (faultmaven/bootstrap/data_init.py -> project root)
+    return Path(__file__).parent.parent.parent
+
+
 def ensure_data_directories() -> None:
     """Create data directories if they don't exist.
 
-    Creates:
-        - ./data/              (root data directory)
-        - ./data/chroma/       (ChromaDB vector storage)
-        - ./data/evidence/     (uploaded evidence files)
+    Creates (relative to project root):
+        - data/              (root data directory)
+        - data/chroma/       (ChromaDB vector storage)
+        - data/evidence/     (uploaded evidence files)
 
     These directories are gitignored and store runtime data.
+    Uses absolute paths based on project root for deployment flexibility.
     """
+    project_root = get_project_root()
+
     directories = [
-        "./data",
-        "./data/chroma",
-        "./data/evidence",
+        project_root / "data",
+        project_root / "data" / "chroma",
+        project_root / "data" / "evidence",
     ]
 
-    for directory in directories:
-        path = Path(directory)
+    for path in directories:
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Created data directory: {directory}")
+            logger.info(f"Created data directory: {path}")
 
 
 def run_alembic_migrations() -> bool:
@@ -70,7 +98,7 @@ def run_alembic_migrations() -> bool:
         from alembic.config import Config
 
         # Find alembic.ini - check multiple locations for deployment flexibility
-        # Priority: 1) env var, 2) current working dir, 3) relative to this file
+        # Priority: 1) env var, 2) project root (via get_project_root helper)
         alembic_ini = None
         search_paths = []
 
@@ -79,11 +107,8 @@ def run_alembic_migrations() -> bool:
         if env_path:
             search_paths.append(Path(env_path))
 
-        # 2. Current working directory (typical for deployed apps)
-        search_paths.append(Path.cwd() / "alembic.ini")
-
-        # 3. Relative to this file (development mode)
-        project_root = Path(__file__).parent.parent.parent
+        # 2. Project root (determined by get_project_root helper)
+        project_root = get_project_root()
         search_paths.append(project_root / "alembic.ini")
 
         for path in search_paths:
