@@ -216,10 +216,13 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
         """Load uploaded files for a case.
 
-        Handles both old schema (file_size, content_type, storage_path) and
-        new schema (size_bytes, data_type, content_ref) for backwards compatibility.
+        Schema per design spec (case-schema.md §4.6):
+        - size_bytes, data_type, content_ref, uploaded_at_turn, source_type, preprocessing_summary
+
+        Maintains backward compatibility with old schema (file_size, content_type, storage_path)
+        via SELECT * and dynamic column mapping until migration 013 is applied.
         """
-        # Use SELECT * to handle schema variations gracefully
+        # Use SELECT * for schema compatibility during migration period
         query = text(
             """
             SELECT *
@@ -233,38 +236,41 @@ class SQLiteCaseRepository(CaseRepository):
         if not rows:
             return []
 
-        # Get column names from result metadata
+        # Get column names from result
         columns = list(result.keys())
 
         files = []
         for row in rows:
-            # Convert row to dict for easier column access
             row_dict = dict(zip(columns, row))
 
-            # Parse metadata if present
+            # Parse metadata
             metadata = row_dict.get("metadata")
             if isinstance(metadata, str):
                 metadata = json.loads(metadata) if metadata else {}
             elif metadata is None:
                 metadata = {}
 
-            # Map columns with fallbacks for schema compatibility
-            # Old schema: file_size, content_type, storage_path
-            # New schema: size_bytes, data_type, content_ref
+            # Map to design-spec field names with old-schema fallbacks
             files.append(
                 {
                     "file_id": row_dict.get("file_id"),
                     "filename": row_dict.get("filename"),
+                    # Design: size_bytes | Legacy: file_size
                     "size_bytes": row_dict.get("size_bytes")
                     or row_dict.get("file_size", 0),
+                    # Design: data_type | Legacy: content_type
                     "data_type": row_dict.get("data_type")
                     or row_dict.get("content_type", "unknown"),
+                    # Design: uploaded_at_turn (new column)
                     "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
                     "uploaded_at": row_dict.get("uploaded_at"),
+                    # Design: source_type (new column)
                     "source_type": row_dict.get("source_type")
                     or metadata.get("source_type", "file_upload"),
+                    # Design: content_ref | Legacy: storage_path
                     "content_ref": row_dict.get("content_ref")
                     or row_dict.get("storage_path", ""),
+                    # Design: preprocessing_summary | Legacy: processing_error
                     "preprocessing_summary": row_dict.get("preprocessing_summary")
                     or row_dict.get("processing_error", ""),
                 }
@@ -274,16 +280,19 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_messages(self, case_id: str) -> list[dict]:
         """Load messages for a case from case_messages table.
 
-        Handles both old schema (timestamp only) and new schema (created_at + timestamp)
-        for backwards compatibility.
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+
+        Maintains backward compatibility with old schema (timestamp instead of created_at)
+        via SELECT * and dynamic column mapping until migration 013 is applied.
         """
-        # Use SELECT * to handle schema variations gracefully
+        # Use SELECT * for schema compatibility during migration period
         query = text(
             """
             SELECT *
             FROM case_messages
             WHERE case_id = :case_id
-            ORDER BY COALESCE(timestamp, message_id) ASC
+            ORDER BY COALESCE(created_at, timestamp, message_id) ASC
         """
         )
         result = await self.db.execute(query, {"case_id": case_id})
@@ -292,15 +301,13 @@ class SQLiteCaseRepository(CaseRepository):
         if not rows:
             return []
 
-        # Get column names from result metadata
         columns = list(result.keys())
 
         messages = []
         for row in rows:
-            # Convert row to dict for easier column access
             row_dict = dict(zip(columns, row))
 
-            # Use created_at if available, fall back to timestamp
+            # Design: created_at | Legacy: timestamp
             msg_timestamp = row_dict.get("created_at") or row_dict.get("timestamp")
             if msg_timestamp:
                 if isinstance(msg_timestamp, str):
@@ -308,7 +315,7 @@ class SQLiteCaseRepository(CaseRepository):
                 elif hasattr(msg_timestamp, "isoformat"):
                     msg_timestamp = msg_timestamp.isoformat()
 
-            # Parse metadata if present
+            # Parse metadata
             metadata = row_dict.get("metadata")
             if isinstance(metadata, str):
                 metadata = json.loads(metadata) if metadata else {}
@@ -318,9 +325,13 @@ class SQLiteCaseRepository(CaseRepository):
             messages.append(
                 {
                     "message_id": row_dict.get("message_id"),
+                    # Design: turn_number (new column)
+                    "turn_number": row_dict.get("turn_number", 0),
                     "role": row_dict.get("role"),
                     "content": row_dict.get("content"),
                     "created_at": msg_timestamp,
+                    # Design: token_count (new column)
+                    "token_count": row_dict.get("token_count"),
                     "metadata": metadata,
                 }
             )
