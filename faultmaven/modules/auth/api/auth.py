@@ -702,19 +702,13 @@ async def logout(
     try:
         token_manager = await get_token_manager(request)
 
-        # Revoke the current token
-        success = await token_manager.revoke_token(token)
+        # Revoke the current token (raises exception on failure)
+        await token_manager.revoke_token(token)
 
-        if success:
-            logger.info(
-                f"User logout: {current_user.user_id} (correlation: {correlation_id})"
-            )
-            return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
-        else:
-            logger.warning(f"Token revocation failed for user {current_user.user_id}")
-            raise HTTPException(
-                status_code=500, detail="Logout failed: Could not revoke token"
-            )
+        logger.info(
+            f"User logout: {current_user.user_id} (correlation: {correlation_id})"
+        )
+        return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
 
     except HTTPException:
         raise
