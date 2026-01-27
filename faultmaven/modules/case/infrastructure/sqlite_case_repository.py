@@ -218,14 +218,11 @@ class SQLiteCaseRepository(CaseRepository):
 
         Schema per design spec (case-schema.md §4.6):
         - size_bytes, data_type, content_ref, uploaded_at_turn, source_type, preprocessing_summary
-
-        Maintains backward compatibility with old schema (file_size, content_type, storage_path)
-        via SELECT * and dynamic column mapping until migration 013 is applied.
         """
-        # Use SELECT * for schema compatibility during migration period
         query = text(
             """
-            SELECT *
+            SELECT file_id, filename, size_bytes, data_type, uploaded_at_turn,
+                   uploaded_at, source_type, content_ref, preprocessing_summary, metadata
             FROM uploaded_files
             WHERE case_id = :case_id
         """
@@ -236,43 +233,21 @@ class SQLiteCaseRepository(CaseRepository):
         if not rows:
             return []
 
-        # Get column names from result
         columns = list(result.keys())
-
         files = []
         for row in rows:
             row_dict = dict(zip(columns, row))
-
-            # Parse metadata
-            metadata = row_dict.get("metadata")
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata) if metadata else {}
-            elif metadata is None:
-                metadata = {}
-
-            # Map to design-spec field names with old-schema fallbacks
             files.append(
                 {
                     "file_id": row_dict.get("file_id"),
                     "filename": row_dict.get("filename"),
-                    # Design: size_bytes | Legacy: file_size
-                    "size_bytes": row_dict.get("size_bytes")
-                    or row_dict.get("file_size", 0),
-                    # Design: data_type | Legacy: content_type
-                    "data_type": row_dict.get("data_type")
-                    or row_dict.get("content_type", "unknown"),
-                    # Design: uploaded_at_turn (new column)
+                    "size_bytes": row_dict.get("size_bytes", 0),
+                    "data_type": row_dict.get("data_type", "other"),
                     "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
                     "uploaded_at": row_dict.get("uploaded_at"),
-                    # Design: source_type (new column)
-                    "source_type": row_dict.get("source_type")
-                    or metadata.get("source_type", "file_upload"),
-                    # Design: content_ref | Legacy: storage_path
-                    "content_ref": row_dict.get("content_ref")
-                    or row_dict.get("storage_path", ""),
-                    # Design: preprocessing_summary | Legacy: processing_error
-                    "preprocessing_summary": row_dict.get("preprocessing_summary")
-                    or row_dict.get("processing_error", ""),
+                    "source_type": row_dict.get("source_type", "file_upload"),
+                    "content_ref": row_dict.get("content_ref", ""),
+                    "preprocessing_summary": row_dict.get("preprocessing_summary", ""),
                 }
             )
         return files
@@ -282,17 +257,13 @@ class SQLiteCaseRepository(CaseRepository):
 
         Schema per design spec (case-schema.md §4.7):
         - message_id, turn_number, role, content, created_at, token_count, metadata
-
-        Maintains backward compatibility with old schema (timestamp instead of created_at)
-        via SELECT * and dynamic column mapping until migration 013 is applied.
         """
-        # Use SELECT * for schema compatibility during migration period
         query = text(
             """
-            SELECT *
+            SELECT message_id, turn_number, role, content, created_at, token_count, metadata
             FROM case_messages
             WHERE case_id = :case_id
-            ORDER BY COALESCE(created_at, timestamp, message_id) ASC
+            ORDER BY created_at ASC
         """
         )
         result = await self.db.execute(query, {"case_id": case_id})
@@ -302,20 +273,17 @@ class SQLiteCaseRepository(CaseRepository):
             return []
 
         columns = list(result.keys())
-
         messages = []
         for row in rows:
             row_dict = dict(zip(columns, row))
 
-            # Design: created_at | Legacy: timestamp
-            msg_timestamp = row_dict.get("created_at") or row_dict.get("timestamp")
+            msg_timestamp = row_dict.get("created_at")
             if msg_timestamp:
                 if isinstance(msg_timestamp, str):
                     msg_timestamp = msg_timestamp.replace(" ", "T")
                 elif hasattr(msg_timestamp, "isoformat"):
                     msg_timestamp = msg_timestamp.isoformat()
 
-            # Parse metadata
             metadata = row_dict.get("metadata")
             if isinstance(metadata, str):
                 metadata = json.loads(metadata) if metadata else {}
@@ -325,12 +293,10 @@ class SQLiteCaseRepository(CaseRepository):
             messages.append(
                 {
                     "message_id": row_dict.get("message_id"),
-                    # Design: turn_number (new column)
                     "turn_number": row_dict.get("turn_number", 0),
                     "role": row_dict.get("role"),
                     "content": row_dict.get("content"),
                     "created_at": msg_timestamp,
-                    # Design: token_count (new column)
                     "token_count": row_dict.get("token_count"),
                     "metadata": metadata,
                 }
@@ -1087,7 +1053,8 @@ class SQLiteCaseRepository(CaseRepository):
     ) -> None:
         """Upsert case messages (SQLite-compatible).
 
-        Messages are dicts with keys: message_id, role, content, timestamp, metadata
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
         """
         # Get IDs of messages that should exist
         current_ids = [
@@ -1110,7 +1077,7 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.execute(delete_query, params)
 
         # Upsert each message
-        for msg in messages_list:
+        for idx, msg in enumerate(messages_list):
             # Skip if no message_id (shouldn't happen, but be safe)
             if not msg.get("message_id"):
                 continue
@@ -1118,14 +1085,16 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO case_messages (
-                    message_id, case_id, role, content, timestamp, metadata
+                    message_id, case_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :role, :content, :timestamp, :metadata
+                    :message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
+                    turn_number = EXCLUDED.turn_number,
                     role = EXCLUDED.role,
                     content = EXCLUDED.content,
-                    timestamp = EXCLUDED.timestamp,
+                    created_at = EXCLUDED.created_at,
+                    token_count = EXCLUDED.token_count,
                     metadata = EXCLUDED.metadata
             """
             )
@@ -1135,11 +1104,11 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": msg.get("message_id"),
                     "case_id": case_id,
+                    "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
-                    "timestamp": msg.get("created_at")
-                    or msg.get("timestamp")
-                    or datetime.now(UTC),
+                    "created_at": msg.get("created_at") or datetime.now(UTC),
+                    "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),
                 },
             )
