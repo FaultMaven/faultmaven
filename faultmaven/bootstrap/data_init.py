@@ -79,26 +79,25 @@ def ensure_data_directories() -> None:
 
 
 def run_alembic_migrations() -> bool:
-    """Run Alembic migrations programmatically.
+    """Run Alembic migrations using subprocess.
 
     Ensures the database schema is up-to-date by running
-    'alembic upgrade head' programmatically.
+    'alembic upgrade head' in a subprocess.
 
     Returns:
         True if migrations ran successfully, False otherwise.
 
     Notes:
-        - Uses alembic.ini configuration
+        - Uses subprocess to avoid blocking issues with async startup
         - Safe to run multiple times (Alembic tracks applied migrations)
         - Creates the database file if it doesn't exist (SQLite)
         - Searches for alembic.ini in multiple locations for deployment flexibility
     """
-    try:
-        from alembic import command
-        from alembic.config import Config
+    import subprocess
+    import sys
 
+    try:
         # Find alembic.ini - check multiple locations for deployment flexibility
-        # Priority: 1) env var, 2) project root (via get_project_root helper)
         alembic_ini = None
         search_paths = []
 
@@ -122,21 +121,30 @@ def run_alembic_migrations() -> bool:
             )
             return False
 
-        # Configure Alembic
-        alembic_cfg = Config(str(alembic_ini))
-
-        # Run migrations
+        # Run migrations via subprocess to avoid blocking in async context
+        # Using the same Python interpreter ensures we use the right virtualenv
         logger.info(f"Running Alembic migrations (config: {alembic_ini})...")
-        command.upgrade(alembic_cfg, "head")
-        logger.info("Alembic migrations complete")
-        return True
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=60,  # 60 second timeout
+        )
 
-    except ImportError:
-        logger.warning("Alembic not installed - skipping migrations")
-        return False
+        if result.returncode == 0:
+            logger.info("Alembic migrations complete")
+            return True
+        else:
+            raise RuntimeError(f"Alembic migration failed with exit code {result.returncode}: {result.stderr}")
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Alembic migration timed out after 60 seconds")
+    except FileNotFoundError:
+        # This one might be optional if dev env without alembic, but in prod it should fail
+        logger.warning("Alembic command not found - assuming manual schema management")
     except Exception as e:
-        logger.error(f"Alembic migration failed: {e}")
-        return False
+        raise RuntimeError(f"Alembic migration failed: {e}") from e
 
 
 async def ensure_default_admin_exists(container: Any) -> Optional[Any]:

@@ -1035,7 +1035,7 @@ function detectMachineDataPatterns(text: string): boolean {
 ```python
 from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
 from faultmaven.services.evidence.evidence_service import EvidenceService
-from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 from faultmaven.services.case.case_service import ICaseService
 ```
 
@@ -1043,7 +1043,7 @@ from faultmaven.services.case.case_service import ICaseService
 ```python
 from faultmaven.services.preprocessing.query_classifier import QueryClassifier
 from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
-from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 ```
 
 ### 8.2 Integration Flow Example

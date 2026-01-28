@@ -497,22 +497,42 @@ cmd_logs() {
         tail_opt="--tail $TAIL_LINES"
     fi
 
-    if [ -z "$service" ]; then
-        if [ -n "$TAIL_LINES" ]; then
-            echo "Showing last $TAIL_LINES lines from all services (Ctrl+C to exit)..."
+    # Check if containers are running
+    local running_containers=0
+    if docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'; then
+        running_containers=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || echo "0")
+    fi
+
+    if [ "$running_containers" -gt "0" ]; then
+        print_success "FaultMaven containers are RUNNING ($running_containers services)"
+        if [ -z "$service" ]; then
+            if [ -n "$TAIL_LINES" ]; then
+                echo "Showing last $TAIL_LINES lines from all services (Ctrl+C to exit)..."
+            else
+                echo "Streaming logs from all services (Ctrl+C to exit)..."
+            fi
+            echo ""
+            docker compose logs -f $tail_opt
         else
-            echo "Streaming logs from all services (Ctrl+C to exit)..."
+            if [ -n "$TAIL_LINES" ]; then
+                echo "Showing last $TAIL_LINES lines from $service (Ctrl+C to exit)..."
+            else
+                echo "Streaming logs from $service (Ctrl+C to exit)..."
+            fi
+            echo ""
+            docker compose logs -f $tail_opt "$service"
         fi
-        echo ""
-        docker compose logs -f $tail_opt
     else
-        if [ -n "$TAIL_LINES" ]; then
-            echo "Showing last $TAIL_LINES lines from $service (Ctrl+C to exit)..."
+        print_warning "FaultMaven containers are NOT RUNNING"
+        if [ -z "$service" ]; then
+            echo "Showing logs from stopped containers..."
+            echo ""
+            docker compose logs $tail_opt
         else
-            echo "Streaming logs from $service (Ctrl+C to exit)..."
+            echo "Showing logs from stopped $service..."
+            echo ""
+            docker compose logs $tail_opt "$service"
         fi
-        echo ""
-        docker compose logs -f $tail_opt "$service"
     fi
 }
 
@@ -587,22 +607,61 @@ cmd_kill() {
 
 cmd_clean() {
     print_header
-    print_warning "This will PERMANENTLY DELETE all data including:"
-    echo "  - All cases and troubleshooting sessions"
-    echo "  - All uploaded evidence files"
-    echo "  - All knowledge base documents"
-    echo "  - SQLite database"
-    echo ""
-    echo "Docker images and containers will be preserved"
-    echo ""
+    local wipe_data=false
 
-    if [ "$YES_FLAG" = true ]; then
-        print_warning "Proceeding with --yes flag..."
-    elif [ "$INTERACTIVE" = false ]; then
-        echo "Non-interactive mode: 'clean' requires --yes to confirm"
-        exit 1
+    # Check arguments
+    for arg in "$@"; do
+        if [ "$arg" == "--wipe-data" ]; then
+            wipe_data=true
+        fi
+    done
+
+    if [ "$wipe_data" = true ]; then
+        print_warning "This will PERMANENTLY DELETE all data including:"
+        echo "  - All cases and troubleshooting sessions"
+        echo "  - All uploaded evidence files"
+        echo "  - All knowledge base documents"
+        echo "  - SQLite database"
+        echo ""
+        echo "Docker images and containers will be preserved"
+        echo ""
+
+        if [ "$YES_FLAG" = true ]; then
+            print_warning "Proceeding with --yes flag..."
+        elif [ "$INTERACTIVE" = false ]; then
+            echo "Non-interactive mode: 'clean --wipe-data' requires --yes to confirm"
+            exit 1
+        else
+            read -p "Are you sure? Type 'DELETE' to confirm: " confirm
+            if [ "$confirm" != "DELETE" ]; then
+                print_info "Clean cancelled"
+                return
+            fi
+        fi
     else
-        read -p "Are you sure? Type 'DELETE' to confirm: " confirm
+        print_info "Cleaning Docker resources (services stopped)..."
+        echo "  (Data directory is protected. Use '--wipe-data' to delete it)"
+        echo ""
+    fi
+
+    echo ""
+    print_info "Stopping services..."
+    docker compose down -v --remove-orphans
+
+    if [ "$wipe_data" = true ]; then
+        if [ -d ./data ]; then
+            print_info "Removing data directory..."
+            rm -rf ./data
+            print_success "FaultMaven data has been deleted"
+        fi
+    else
+        print_info "Data preserved in ./data directory"
+    fi
+
+    echo ""
+    print_info "Docker images preserved - restart will be fast"
+    print_info "Run './faultmaven.sh start' to start fresh"
+}
         if [ "$confirm" != "DELETE" ]; then
             print_info "Clean cancelled"
             return
@@ -1044,7 +1103,8 @@ case "${COMMAND:-}" in
         cmd_kill
         ;;
     clean)
-        cmd_clean
+        shift
+        cmd_clean "$@"
         ;;
     prune)
         cmd_prune

@@ -383,9 +383,18 @@ logs_app() {
         exit 1
     fi
 
-    print_info "Streaming logs (Ctrl+C to exit)..."
-    echo ""
-    tail -f "$LOG_FILE"
+    if is_running; then
+        local pid=$(cat "$PID_FILE")
+        print_success "FaultMaven is RUNNING (PID $pid)"
+        print_info "Streaming live logs (Ctrl+C to exit)..."
+        echo ""
+        tail -f "$LOG_FILE"
+    else
+        print_warning "FaultMaven is NOT RUNNING"
+        print_info "Showing last 50 lines of static logs..."
+        echo ""
+        tail -n 50 "$LOG_FILE"
+    fi
 }
 
 run_tests() {

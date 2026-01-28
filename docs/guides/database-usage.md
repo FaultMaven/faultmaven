@@ -450,7 +450,7 @@ class Engine:
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from faultmaven.services.agentic.orchestration.milestone_engine import MilestoneEngine
+from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
 from faultmaven.models.case import Case, CaseStatus
 
 @pytest.fixture
@@ -512,7 +512,7 @@ Only run these occasionally (slower).
 """
 
 import pytest
-from faultmaven.services.agentic.orchestration.milestone_engine import MilestoneEngine
+from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
 from faultmaven.infrastructure.database.repositories.sqlite import SQLiteCaseRepository
 
 @pytest.mark.integration

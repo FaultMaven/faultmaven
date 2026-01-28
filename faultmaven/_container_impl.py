@@ -60,7 +60,11 @@ except ImportError as e:
     ICaseStore = Any
     ICaseService = Any
     INTERFACES_AVAILABLE = False
-# Agentic Framework Components
+# Agentic Framework Interfaces
+# NOTE: The agentic framework concrete implementations (AgentStateManager,
+# BusinessLogicWorkflowEngine, etc.) were archived during the modular refactoring.
+# The current system uses AgentOrchestrationService in modules/agent/ instead.
+# These interfaces are kept for type checking only.
 try:
     from faultmaven.modules.agent.domain.models.agentic import (
         IAgentStateManager,
@@ -70,27 +74,14 @@ try:
         IResponseSynthesizer,
         IToolSkillBroker,
     )
-    from faultmaven.services.agentic import (
-        AgentStateManager,
-        BusinessLogicWorkflowEngine,
-        ErrorFallbackManager,
-        GuardrailsPolicyLayer,
-        ResponseSynthesizer,
-        ToolSkillBroker,
-    )
-
-    AGENTIC_AVAILABLE = True
-except ImportError as e:
-    logging.getLogger(__name__).warning(f"Agentic framework not available: {e}")
-    # Create placeholder types for testing environments
+except ImportError:
+    # Interfaces not available - use Any for type compatibility
     IAgentStateManager = Any
-    # Removed: IQueryClassificationEngine (superseded by doctor/patient)
     IToolSkillBroker = Any
     IGuardrailsPolicyLayer = Any
     IResponseSynthesizer = Any
     IErrorFallbackManager = Any
     IBusinessLogicWorkflowEngine = Any
-    AGENTIC_AVAILABLE = False
 
 
 class DIContainer(BaseDIContainer):
@@ -1966,9 +1957,7 @@ class DIContainer(BaseDIContainer):
                 from faultmaven.infrastructure.jobs.job_service import JobService
 
                 redis_client = self.get_redis_client()
-                self._job_service = JobService(
-                    redis_client=redis_client, settings=self.settings
-                )
+                self._job_service = JobService(redis_client=redis_client)
                 logger.info("✅ Job service initialized")
             except Exception as e:
                 logger.warning(f"Job service initialization failed: {e}")

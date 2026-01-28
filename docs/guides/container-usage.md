@@ -41,9 +41,9 @@ print(f"Agentic components available: {health.get('components', {}).get('agentic
 ```python
 # api/v1/dependencies.py
 from faultmaven.container import container
-from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 
-def get_agent_service() -> AgentService:
+def get_agent_service() -> AgentOrchestrationService:
     """FastAPI dependency for agent service"""
     return container.get_agent_service()
 

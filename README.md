@@ -49,32 +49,31 @@ cp .env.example .env
 # Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
 
 # Start API + Dashboard (pulls pre-built images from Docker Hub)
+# This AUTOMATICALLY creates the database and a default admin user.
 ./faultmaven.sh start
 # Or: docker compose up -d
 ```
 
-**What happens:** Docker automatically pulls pre-built images from Docker Hub. First run takes ~1-2 minutes depending on your internet speed.
+**What happens:**
+1. Docker pulls images and starts services.
+2. The API automatically initializes the database and runs migrations.
+3. A default admin user is created: `admin` / `admin@local.faultmaven`
 
-### Step 2: Create Your Account
+### Step 2: Log In
+
+1. Open **http://localhost:3333**
+2. Select **Dev Login**
+3. Enter username: `admin`
+
+That's it! You are ready to go.
+
+### Optional: Create Additional Users
+
+If you need more accounts, you can create them via CLI:
 
 ```bash
-# Create a user account (interactive prompts for username, email, role)
 ./faultmaven.sh create-user
 ```
-
-**What happens:** You'll be prompted to enter:
-- **Username** (required): Your login username
-- **Email** (optional): Will be auto-generated if not provided
-- **Display Name** (optional): Will be auto-generated if not provided
-- **Role** (user/admin): Defaults to 'user'
-
-**Note:** Users must be created before login. This ensures production parity between local and cloud deployments.
-
-**Local Deployment:** Designed for single-user usage on `localhost` only. Access is restricted to `http://localhost:3333` from the same machine. For remote server access, use SSH tunneling (see `.env.example` for details). While you can create multiple user accounts, local deployment is optimized for one active user.
-
-**Image sources:** FaultMaven publishes to both Docker Hub (`docker.io/faultmaven/faultmaven`) and GitHub Container Registry (`ghcr.io/faultmaven/faultmaven`). The default docker-compose.yml uses Docker Hub for better availability and no authentication requirements.
-
-**For contributors:** To build from source instead, uncomment the `build: .` line in [docker-compose.yml](docker-compose.yml) and comment out the `image:` line.
 
 ### Step 2: Install the Copilot Extension
 
@@ -103,6 +102,8 @@ Convenient scripts for managing the Docker-based stack:
 ./faultmaven.sh logs api           # View specific service logs
 ./faultmaven.sh restart            # Restart all services
 ./faultmaven.sh stop               # Stop all services
+./faultmaven.sh clean              # Remove containers (PROTECTS ./data)
+./faultmaven.sh clean --wipe-data  # Remove containers AND delete all data
 ```
 
 ### Access Points

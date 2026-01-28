@@ -342,15 +342,17 @@ async def lifespan(app: FastAPI):
         # ============================================================
         # Ensures default organization exists for single-tenant mode
         # Must run after container initialization (requires tenant_provider)
+        # Must run after container initialization (requires tenant_provider)
         try:
             from .bootstrap.startup import bootstrap_application
 
             await bootstrap_application(container)
             logger.debug("✅ Application bootstrap complete")
         except Exception as e:
-            logger.error(f"Application bootstrap failed: {e}")
-            # Don't fail startup - let it degrade gracefully for non-critical bootstrap tasks
-            # (Critical bootstrap failures should raise in bootstrap_application itself)
+            logger.critical(f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}")
+            # FAIL FAST: Re-raise to stop startup. 
+            # A broken bootstrap means DB or critical directories are missing.
+            raise RuntimeError(f"Critical bootstrap failure: {e}") from e
 
         # ============================================================
         # Composition Root: Attach all services to app.state

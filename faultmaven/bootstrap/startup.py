@@ -52,14 +52,10 @@ async def bootstrap_application(container: Any) -> None:
     # Step 1: Initialize Data Layer
     # ============================================================
     # Creates data directories, runs migrations, creates default admin
-    try:
-        from faultmaven.bootstrap.data_init import initialize_data_layer
+    from faultmaven.bootstrap.data_init import initialize_data_layer
 
-        await initialize_data_layer(container)
-        logger.info("Data layer initialization successful")
-    except Exception as e:
-        # Log but don't fail - the app can still work with manual setup
-        logger.warning(f"Data layer initialization had issues: {e}", exc_info=True)
+    await initialize_data_layer(container)
+    logger.info("Data layer initialization successful")
 
     # ============================================================
     # Step 2: Ensure Default Organization (Single-Tenant Mode)

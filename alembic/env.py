@@ -97,7 +97,7 @@ def get_database_url() -> str:
         return _convert_async_url(url)
 
     # Default to SQLite for development
-    sqlite_path = project_root / "faultmaven.db"
+    sqlite_path = project_root / "data" / "faultmaven.db"
     return f"sqlite:///{sqlite_path}"
 
 
