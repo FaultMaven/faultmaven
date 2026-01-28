@@ -256,7 +256,7 @@ class TestChromaDBSettingsMapping:
 
         assert settings.database.chromadb_host == "chromadb.faultmaven.local"
         assert settings.database.chromadb_port == 30080
-        assert settings.database.chromadb_persist_dir == "./chroma_db"
+        assert settings.database.chromadb_persist_dir == "./data/chroma"
 
     def test_chromadb_from_env(self):
         """Test that ChromaDB settings are read from environment."""

@@ -376,13 +376,21 @@ class DatabaseCaseRepository(CaseRepository):
                 return False
 
             # Create message model
+            # Accept both 'timestamp' (legacy) and 'created_at' (design spec)
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:12]}")
+            created_at = (
+                message_dict.get("created_at")
+                or message_dict.get("timestamp")
+                or datetime.now(timezone.utc)
+            )
             message_model = CaseMessageModel(
                 message_id=message_id,
                 case_id=case_id,
+                turn_number=message_dict.get("turn_number", 0),
                 role=message_dict.get("role", "user"),
                 content=message_dict.get("content", ""),
-                timestamp=message_dict.get("timestamp", datetime.now(timezone.utc)),
+                created_at=created_at,
+                token_count=message_dict.get("token_count"),
                 message_metadata=json.dumps(message_dict.get("metadata", {})),
             )
 
@@ -426,7 +434,7 @@ class DatabaseCaseRepository(CaseRepository):
             stmt = (
                 select(CaseMessageModel)
                 .where(CaseMessageModel.case_id == case_id)
-                .order_by(CaseMessageModel.timestamp.asc())
+                .order_by(CaseMessageModel.created_at.asc())
                 .limit(limit)
                 .offset(offset)
             )
@@ -440,9 +448,13 @@ class DatabaseCaseRepository(CaseRepository):
                     {
                         "message_id": m.message_id,
                         "case_id": m.case_id,
+                        "turn_number": m.turn_number,
                         "role": m.role,
                         "content": m.content,
-                        "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+                        "created_at": (
+                            m.created_at.isoformat() if m.created_at else None
+                        ),
+                        "token_count": m.token_count,
                         "metadata": (
                             json.loads(m.message_metadata) if m.message_metadata else {}
                         ),
@@ -822,9 +834,11 @@ class DatabaseCaseRepository(CaseRepository):
                 message_model = CaseMessageModel(
                     message_id=msg_id,
                     case_id=case_id,
+                    turn_number=msg.get("turn_number", 0),
                     role=msg.get("role", "user"),
                     content=msg.get("content", ""),
-                    timestamp=self._parse_datetime(msg.get("created_at")),
+                    created_at=self._parse_datetime(msg.get("created_at")),
+                    token_count=msg.get("token_count"),
                     message_metadata=json.dumps(msg.get("metadata", {})),
                 )
                 self.db.add(message_model)
@@ -1001,11 +1015,13 @@ class DatabaseCaseRepository(CaseRepository):
                 messages.append(
                     {
                         "message_id": msg.message_id,
+                        "turn_number": msg.turn_number,
                         "role": msg.role,
                         "content": msg.content,
                         "created_at": (
-                            msg.timestamp.isoformat() if msg.timestamp else None
+                            msg.created_at.isoformat() if msg.created_at else None
                         ),
+                        "token_count": msg.token_count,
                         "metadata": self._parse_json(msg.message_metadata, {}),
                     }
                 )

@@ -471,15 +471,25 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
-        """Add message to case_messages table."""
+        """Add message to case_messages table.
+
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+        """
         try:
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
+            # Accept both 'timestamp' (legacy) and 'created_at' (design spec)
+            created_at = (
+                message_dict.get("created_at")
+                or message_dict.get("timestamp")
+                or datetime.now(UTC)
+            )
 
             # SQLite-compatible: no ::jsonb type cast
             query = text(
                 """
-                INSERT INTO case_messages (message_id, case_id, role, content, metadata)
-                VALUES (:message_id, :case_id, :role, :content, :metadata)
+                INSERT INTO case_messages (message_id, case_id, turn_number, role, content, created_at, token_count, metadata)
+                VALUES (:message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata)
             """
             )
 
@@ -488,8 +498,11 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": message_id,
                     "case_id": case_id,
+                    "turn_number": message_dict.get("turn_number", 0),
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
+                    "created_at": created_at,
+                    "token_count": message_dict.get("token_count"),
                     "metadata": json.dumps(message_dict.get("metadata", {})),
                 },
             )
@@ -505,14 +518,18 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
     ) -> builtins.list[dict]:
-        """Get messages for case with pagination."""
+        """Get messages for case with pagination.
+
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+        """
         try:
             query = text(
                 """
-                SELECT message_id, role, content, created_at, metadata
+                SELECT message_id, turn_number, role, content, created_at, token_count, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY timestamp ASC
+                ORDER BY created_at ASC
                 LIMIT :limit OFFSET :offset
             """
             )
@@ -523,12 +540,12 @@ class SQLiteCaseRepository(CaseRepository):
 
             messages = []
             for row in result.fetchall():
-                metadata = row[4]
+                metadata = row[6]
                 if isinstance(metadata, str):
                     metadata = json.loads(metadata) if metadata else {}
 
                 # SQLite returns timestamps as strings, parse them if needed
-                created_at = row[3]
+                created_at = row[4]
                 if created_at:
                     if isinstance(created_at, str):
                         # Parse ISO format timestamp string
@@ -544,9 +561,11 @@ class SQLiteCaseRepository(CaseRepository):
                 messages.append(
                     {
                         "message_id": row[0],
-                        "role": row[1],
-                        "content": row[2],
+                        "turn_number": row[1],
+                        "role": row[2],
+                        "content": row[3],
                         "created_at": created_at,
+                        "token_count": row[5],
                         "metadata": metadata,
                     }
                 )

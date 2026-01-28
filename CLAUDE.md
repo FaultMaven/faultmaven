@@ -326,8 +326,16 @@ cp .env.example .env
 ./faultmaven.sh start
 
 # Or run locally (development)
-./scripts/faultmaven-dev.sh start
+pip install -e ".[dev]"           # Install dependencies
+./scripts/faultmaven-dev.sh start # Start the server
 ```
+
+**Auto-Initialization:** On first startup, FaultMaven automatically:
+- Creates `data/` directories (database, ChromaDB, evidence)
+- Runs database migrations
+- Creates a default admin account (`admin@local.faultmaven`)
+
+Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 
 ### Service Ports
 
