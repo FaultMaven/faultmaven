@@ -176,7 +176,7 @@ async def _store_evidence_in_vector_db(
 - **Async-first**: Uses `await` for non-blocking I/O
 - **Comprehensive logging**: Success and failure paths both logged with context
 - **Silent failure**: Vector storage errors don't propagate to user (graceful degradation)
-- **Metadata preservation**: Includes data_type, timestamp, filename, file_size, etc.
+- **Metadata preservation**: Includes data_type, timestamp, filename, size_bytes, etc.
 
 ### 2. Background Task Scheduling
 
@@ -196,7 +196,7 @@ if case_vector_store and uploaded_data.get("data_id"):
         data_type=uploaded_data.get("data_type", "unknown"),
         metadata={
             'filename': file.filename,
-            'file_size': len(content),
+            'size_bytes': len(content),
             'case_id': case_id,
             'session_id': session_id
         },
@@ -352,7 +352,7 @@ curl -X POST http://localhost:8090/api/v1/cases/case_abc123/data \
   "data_id": "data_def456",
   "case_id": "case_abc123",
   "filename": "error.log",
-  "file_size": 45678,
+  "size_bytes": 45678,
   "data_type": "LOGS_AND_ERRORS",
   "summary": "Error log containing 47 ERROR events and 12 CRITICAL events...",
   "upload_timestamp": "2025-01-09T10:30:45.123Z",

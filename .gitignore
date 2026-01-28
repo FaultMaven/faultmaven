@@ -181,6 +181,7 @@ chroma_db/
 # Temporary test files in root (not part of test suite)
 /test_*.py
 *.db
+data/
 
 # Benchmark results (pytest-benchmark)
 .benchmarks/

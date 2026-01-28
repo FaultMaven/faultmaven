@@ -644,7 +644,7 @@ class DatabaseSettings(BaseSettings):
     # Primary Database Configuration (SQLite/PostgreSQL)
     # ============================================
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./faultmaven.db",
+        default="sqlite+aiosqlite:///./data/faultmaven.db",
         env="DATABASE_URL",
         description="Primary database URL (SQLite for dev, PostgreSQL for prod)",
     )
@@ -687,7 +687,9 @@ class DatabaseSettings(BaseSettings):
         default=None, env="CHROMADB_AUTH_TOKEN"
     )
     chromadb_collection: str = Field(default="faultmaven_kb", env="CHROMADB_COLLECTION")
-    chromadb_persist_dir: str = Field(default="./chroma_db", env="CHROMADB_PERSIST_DIR")
+    chromadb_persist_dir: str = Field(
+        default="./data/chroma", env="CHROMADB_PERSIST_DIR"
+    )
 
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3", env="EMBEDDING_MODEL")
@@ -1376,7 +1378,7 @@ class EmbeddingSettings(BaseSettings):
 
     # ChromaDB Vector Store
     chroma_persist_directory: str = Field(
-        default="./chroma_data",
+        default="./data/chroma",
         env="CHROMA_PERSIST_DIRECTORY",
         description="Directory for ChromaDB persistence",
     )

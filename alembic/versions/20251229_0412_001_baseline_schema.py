@@ -20,6 +20,7 @@ Revision ID: da6856719b5f
 Revises:
 Create Date: 2025-12-29 04:12:49.851535
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -69,6 +70,7 @@ def downgrade() -> None:
 # PostgreSQL Implementation
 # =============================================================================
 
+
 def _upgrade_postgresql() -> None:
     """Create PostgreSQL schema with full feature support."""
     conn = op.get_bind()
@@ -82,7 +84,9 @@ def _upgrade_postgresql() -> None:
     # -------------------------------------------------------------------------
     # Enums
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DO $$ BEGIN
             CREATE TYPE case_status AS ENUM (
                 'consulting', 'problem_verification', 'root_cause_analysis',
@@ -90,9 +94,13 @@ def _upgrade_postgresql() -> None:
             );
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$;
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DO $$ BEGIN
             CREATE TYPE evidence_category AS ENUM (
                 'LOGS_AND_ERRORS', 'STRUCTURED_CONFIG', 'METRICS_AND_PERFORMANCE',
@@ -100,46 +108,66 @@ def _upgrade_postgresql() -> None:
             );
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$;
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DO $$ BEGIN
             CREATE TYPE hypothesis_status AS ENUM (
                 'proposed', 'testing', 'validated', 'invalidated', 'deferred'
             );
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$;
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DO $$ BEGIN
             CREATE TYPE solution_status AS ENUM (
                 'proposed', 'in_progress', 'implemented', 'verified', 'rejected'
             );
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$;
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DO $$ BEGIN
             CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system');
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$;
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DO $$ BEGIN
             CREATE TYPE file_processing_status AS ENUM (
                 'pending', 'processing', 'completed', 'failed'
             );
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$;
-    """))
+    """
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Table: cases (Main table)
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS cases (
             case_id VARCHAR(17) PRIMARY KEY,
             user_id VARCHAR(255) NOT NULL,
@@ -162,22 +190,42 @@ def _upgrade_postgresql() -> None:
             CONSTRAINT cases_title_not_empty CHECK (LENGTH(TRIM(title)) > 0),
             CONSTRAINT cases_user_id_not_empty CHECK (LENGTH(TRIM(user_id)) > 0)
         )
-    """))
+    """
+        )
+    )
 
     # Cases indexes
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_user_id ON cases(user_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_created_at ON cases(created_at DESC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_updated_at ON cases(updated_at DESC)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_cases_created_at ON cases(created_at DESC)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_cases_updated_at ON cases(updated_at DESC)"
+        )
+    )
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_org_id ON cases(org_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_team_id ON cases(team_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_consulting_gin ON cases USING GIN (consulting)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_metadata_gin ON cases USING GIN (metadata)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_cases_consulting_gin ON cases USING GIN (consulting)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_cases_metadata_gin ON cases USING GIN (metadata)"
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Table: evidence
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS evidence (
             evidence_id VARCHAR(15) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
@@ -192,18 +240,38 @@ def _upgrade_postgresql() -> None:
             CONSTRAINT evidence_summary_not_empty CHECK (LENGTH(TRIM(summary)) > 0),
             CONSTRAINT evidence_content_not_empty CHECK (LENGTH(TRIM(preprocessed_content)) > 0)
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_evidence_case_id ON evidence(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_evidence_category ON evidence(category)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_evidence_upload_timestamp ON evidence(upload_timestamp DESC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_evidence_metadata_gin ON evidence USING GIN (metadata)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_evidence_content_fts ON evidence USING GIN (to_tsvector('english', preprocessed_content))"))
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_evidence_case_id ON evidence(case_id)")
+    )
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_evidence_category ON evidence(category)")
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_upload_timestamp ON evidence(upload_timestamp DESC)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_metadata_gin ON evidence USING GIN (metadata)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_content_fts ON evidence USING GIN (to_tsvector('english', preprocessed_content))"
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Table: hypotheses
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS hypotheses (
             hypothesis_id VARCHAR(15) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
@@ -219,17 +287,33 @@ def _upgrade_postgresql() -> None:
             CONSTRAINT hypotheses_description_not_empty CHECK (LENGTH(TRIM(description)) > 0),
             CONSTRAINT hypotheses_confidence_range CHECK (confidence_score IS NULL OR (confidence_score >= 0 AND confidence_score <= 1))
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_hypotheses_case_id ON hypotheses(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_hypotheses_proposed_at ON hypotheses(proposed_at DESC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_hypotheses_confidence_score ON hypotheses(confidence_score DESC NULLS LAST)"))
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_hypotheses_case_id ON hypotheses(case_id)")
+    )
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status)")
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_hypotheses_proposed_at ON hypotheses(proposed_at DESC)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_hypotheses_confidence_score ON hypotheses(confidence_score DESC NULLS LAST)"
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Table: solutions
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS solutions (
             solution_id VARCHAR(15) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
@@ -247,61 +331,117 @@ def _upgrade_postgresql() -> None:
             CONSTRAINT solutions_description_not_empty CHECK (LENGTH(TRIM(description)) > 0),
             CONSTRAINT solutions_risk_level_valid CHECK (risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical'))
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_solutions_case_id ON solutions(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_solutions_status ON solutions(status)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_solutions_proposed_at ON solutions(proposed_at DESC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_solutions_risk_level ON solutions(risk_level)"))
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_solutions_case_id ON solutions(case_id)")
+    )
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_solutions_status ON solutions(status)")
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_solutions_proposed_at ON solutions(proposed_at DESC)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_solutions_risk_level ON solutions(risk_level)"
+        )
+    )
 
     # -------------------------------------------------------------------------
-    # Table: case_messages
+    # Table: case_messages (per case-schema.md §4.7)
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS case_messages (
             message_id VARCHAR(20) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+            turn_number INTEGER NOT NULL DEFAULT 0,
             role message_role NOT NULL,
             content TEXT NOT NULL,
-            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            token_count INTEGER,
             metadata JSONB DEFAULT '{}'::jsonb,
-            CONSTRAINT case_messages_content_not_empty CHECK (LENGTH(TRIM(content)) > 0)
+            CONSTRAINT case_messages_content_not_empty CHECK (LENGTH(TRIM(content)) > 0),
+            CONSTRAINT case_messages_role_check CHECK (role IN ('user', 'assistant', 'system'))
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_messages_case_id ON case_messages(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_messages_timestamp ON case_messages(timestamp ASC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_messages_role ON case_messages(role)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_case_messages_case_turn ON case_messages(case_id, turn_number)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_case_messages_created_at ON case_messages(created_at DESC)"
+        )
+    )
 
     # -------------------------------------------------------------------------
-    # Table: uploaded_files
+    # Table: uploaded_files (per case-schema.md §4.6)
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id VARCHAR(15) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
             filename VARCHAR(255) NOT NULL,
-            file_size INTEGER NOT NULL,
-            content_type VARCHAR(100),
-            storage_path VARCHAR(1000),
-            processing_status file_processing_status NOT NULL DEFAULT 'pending',
-            processing_error TEXT,
+            size_bytes INTEGER NOT NULL,
+            data_type VARCHAR(50) NOT NULL DEFAULT 'other',
+            uploaded_at_turn INTEGER NOT NULL DEFAULT 0,
             uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            processed_at TIMESTAMPTZ,
+            source_type VARCHAR(50) NOT NULL DEFAULT 'file_upload',
+            content_ref VARCHAR(1000),
+            preprocessing_summary TEXT,
             metadata JSONB DEFAULT '{}'::jsonb,
             CONSTRAINT uploaded_files_filename_not_empty CHECK (LENGTH(TRIM(filename)) > 0),
-            CONSTRAINT uploaded_files_file_size_positive CHECK (file_size > 0)
+            CONSTRAINT uploaded_files_size_positive CHECK (size_bytes > 0),
+            CONSTRAINT uploaded_files_turn_nonnegative CHECK (uploaded_at_turn >= 0),
+            CONSTRAINT uploaded_files_data_type_check
+                CHECK (data_type IN ('log', 'metric', 'config', 'code', 'text', 'image', 'structured', 'other')),
+            CONSTRAINT uploaded_files_source_type_check
+                CHECK (source_type IN ('file_upload', 'paste', 'screenshot', 'page_injection', 'agent_generated'))
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_uploaded_files_case_id ON uploaded_files(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_uploaded_files_uploaded_at ON uploaded_files(uploaded_at DESC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_uploaded_files_processing_status ON uploaded_files(processing_status)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_uploaded_files_case_id ON uploaded_files(case_id)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_uploaded_files_uploaded_at ON uploaded_files(uploaded_at DESC)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_uploaded_files_turn ON uploaded_files(case_id, uploaded_at_turn)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_uploaded_files_content_ref ON uploaded_files(content_ref) WHERE content_ref IS NOT NULL"
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Table: case_status_transitions
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS case_status_transitions (
             transition_id SERIAL PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
@@ -311,15 +451,27 @@ def _upgrade_postgresql() -> None:
             transitioned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             metadata JSONB DEFAULT '{}'::jsonb
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_status_transitions_case_id ON case_status_transitions(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_status_transitions_timestamp ON case_status_transitions(transitioned_at DESC)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_case_status_transitions_case_id ON case_status_transitions(case_id)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_case_status_transitions_timestamp ON case_status_transitions(transitioned_at DESC)"
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Table: case_tags
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS case_tags (
             tag_id SERIAL PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
@@ -328,15 +480,21 @@ def _upgrade_postgresql() -> None:
             CONSTRAINT case_tags_unique UNIQUE (case_id, tag),
             CONSTRAINT case_tags_tag_not_empty CHECK (LENGTH(TRIM(tag)) > 0)
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_tags_case_id ON case_tags(case_id)"))
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_case_tags_case_id ON case_tags(case_id)")
+    )
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_case_tags_tag ON case_tags(tag)"))
 
     # -------------------------------------------------------------------------
     # Table: agent_tool_calls
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS agent_tool_calls (
             call_id VARCHAR(20) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
@@ -352,17 +510,37 @@ def _upgrade_postgresql() -> None:
             CONSTRAINT agent_tool_calls_tool_name_not_empty CHECK (LENGTH(TRIM(tool_name)) > 0),
             CONSTRAINT agent_tool_calls_status_valid CHECK (status IN ('pending', 'running', 'success', 'error'))
         )
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_case_id ON agent_tool_calls(case_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_tool_name ON agent_tool_calls(tool_name)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_status ON agent_tool_calls(status)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_started_at ON agent_tool_calls(started_at DESC)"))
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_case_id ON agent_tool_calls(case_id)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_tool_name ON agent_tool_calls(tool_name)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_status ON agent_tool_calls(status)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_started_at ON agent_tool_calls(started_at DESC)"
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Function: update_updated_at_column
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE OR REPLACE FUNCTION update_updated_at_column()
         RETURNS TRIGGER AS $$
         BEGIN
@@ -370,37 +548,53 @@ def _upgrade_postgresql() -> None:
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql
-    """))
+    """
+        )
+    )
 
     # Triggers for updated_at
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DROP TRIGGER IF EXISTS cases_update_updated_at ON cases;
         CREATE TRIGGER cases_update_updated_at
             BEFORE UPDATE ON cases
             FOR EACH ROW
             EXECUTE FUNCTION update_updated_at_column()
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DROP TRIGGER IF EXISTS hypotheses_update_updated_at ON hypotheses;
         CREATE TRIGGER hypotheses_update_updated_at
             BEFORE UPDATE ON hypotheses
             FOR EACH ROW
             EXECUTE FUNCTION update_updated_at_column()
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         DROP TRIGGER IF EXISTS solutions_update_updated_at ON solutions;
         CREATE TRIGGER solutions_update_updated_at
             BEFORE UPDATE ON solutions
             FOR EACH ROW
             EXECUTE FUNCTION update_updated_at_column()
-    """))
+    """
+        )
+    )
 
     # -------------------------------------------------------------------------
     # Views
     # -------------------------------------------------------------------------
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE OR REPLACE VIEW case_overview AS
         SELECT
             c.case_id,
@@ -421,9 +615,13 @@ def _upgrade_postgresql() -> None:
         LEFT JOIN case_messages m ON c.case_id = m.case_id
         LEFT JOIN uploaded_files f ON c.case_id = f.case_id
         GROUP BY c.case_id, c.user_id, c.title, c.status, c.created_at, c.updated_at
-    """))
+    """
+        )
+    )
 
-    conn.execute(text("""
+    conn.execute(
+        text(
+            """
         CREATE OR REPLACE VIEW active_hypotheses AS
         SELECT
             h.hypothesis_id,
@@ -438,7 +636,9 @@ def _upgrade_postgresql() -> None:
         JOIN cases c ON h.case_id = c.case_id
         WHERE h.status IN ('proposed', 'testing')
         ORDER BY h.confidence_score DESC NULLS LAST, h.proposed_at DESC
-    """))
+    """
+        )
+    )
 
 
 def _downgrade_postgresql() -> None:
@@ -450,9 +650,17 @@ def _downgrade_postgresql() -> None:
     conn.execute(text("DROP VIEW IF EXISTS case_overview CASCADE"))
 
     # Drop triggers
-    conn.execute(text("DROP TRIGGER IF EXISTS cases_update_updated_at ON cases CASCADE"))
-    conn.execute(text("DROP TRIGGER IF EXISTS hypotheses_update_updated_at ON hypotheses CASCADE"))
-    conn.execute(text("DROP TRIGGER IF EXISTS solutions_update_updated_at ON solutions CASCADE"))
+    conn.execute(
+        text("DROP TRIGGER IF EXISTS cases_update_updated_at ON cases CASCADE")
+    )
+    conn.execute(
+        text(
+            "DROP TRIGGER IF EXISTS hypotheses_update_updated_at ON hypotheses CASCADE"
+        )
+    )
+    conn.execute(
+        text("DROP TRIGGER IF EXISTS solutions_update_updated_at ON solutions CASCADE")
+    )
 
     # Drop function
     conn.execute(text("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE"))
@@ -481,6 +689,7 @@ def _downgrade_postgresql() -> None:
 # SQLite Implementation (Development)
 # =============================================================================
 
+
 def _upgrade_sqlite() -> None:
     """Create SQLite schema for development (simplified, without PostgreSQL features)."""
 
@@ -491,18 +700,28 @@ def _upgrade_sqlite() -> None:
         sa.Column("user_id", sa.String(255), nullable=False),
         sa.Column("title", sa.String(200), nullable=False),
         sa.Column("status", sa.String(50), nullable=False, server_default="consulting"),
-        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("consulting", sa.Text, nullable=False, server_default='{}'),
+        sa.Column(
+            "created_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column("consulting", sa.Text, nullable=False, server_default="{}"),
         sa.Column("problem_verification", sa.Text),
         sa.Column("working_conclusion", sa.Text),
         sa.Column("root_cause_conclusion", sa.Text),
         sa.Column("path_selection", sa.Text),
         sa.Column("degraded_mode", sa.Text),
         sa.Column("escalation_state", sa.Text),
-        sa.Column("documentation", sa.Text, server_default='{}'),
-        sa.Column("progress", sa.Text, server_default='{}'),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column("documentation", sa.Text, server_default="{}"),
+        sa.Column("progress", sa.Text, server_default="{}"),
+        sa.Column("metadata", sa.Text, server_default="{}"),
         sa.Column("org_id", sa.String(20)),
         sa.Column("team_id", sa.String(20)),
     )
@@ -515,15 +734,25 @@ def _upgrade_sqlite() -> None:
     op.create_table(
         "evidence",
         sa.Column("evidence_id", sa.String(15), primary_key=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("category", sa.String(50), nullable=False),
         sa.Column("summary", sa.String(500), nullable=False),
         sa.Column("preprocessed_content", sa.Text, nullable=False),
         sa.Column("content_ref", sa.String(1000)),
         sa.Column("file_size", sa.Integer),
         sa.Column("filename", sa.String(255)),
-        sa.Column("upload_timestamp", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column(
+            "upload_timestamp",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
     op.create_index("idx_evidence_case_id", "evidence", ["case_id"])
@@ -533,16 +762,31 @@ def _upgrade_sqlite() -> None:
     op.create_table(
         "hypotheses",
         sa.Column("hypothesis_id", sa.String(15), primary_key=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("description", sa.Text, nullable=False),
         sa.Column("status", sa.String(20), nullable=False, server_default="proposed"),
         sa.Column("confidence_score", sa.Numeric(3, 2)),
         sa.Column("supporting_evidence_ids", sa.Text),
         sa.Column("validation_result", sa.Text),
         sa.Column("validation_timestamp", sa.DateTime),
-        sa.Column("proposed_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column(
+            "proposed_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
     op.create_index("idx_hypotheses_case_id", "hypotheses", ["case_id"])
@@ -552,7 +796,12 @@ def _upgrade_sqlite() -> None:
     op.create_table(
         "solutions",
         sa.Column("solution_id", sa.String(15), primary_key=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("description", sa.Text, nullable=False),
         sa.Column("status", sa.String(20), nullable=False, server_default="proposed"),
         sa.Column("implementation_steps", sa.Text),
@@ -560,68 +809,129 @@ def _upgrade_sqlite() -> None:
         sa.Column("estimated_effort", sa.String(50)),
         sa.Column("verification_result", sa.Text),
         sa.Column("verification_timestamp", sa.DateTime),
-        sa.Column("proposed_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
+        sa.Column(
+            "proposed_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
         sa.Column("implemented_at", sa.DateTime),
-        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column(
+            "updated_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
     op.create_index("idx_solutions_case_id", "solutions", ["case_id"])
     op.create_index("idx_solutions_status", "solutions", ["status"])
 
-    # Table: case_messages
+    # Table: case_messages (per case-schema.md §4.7)
     op.create_table(
         "case_messages",
         sa.Column("message_id", sa.String(20), primary_key=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("turn_number", sa.Integer, nullable=False, server_default="0"),
         sa.Column("role", sa.String(20), nullable=False),
         sa.Column("content", sa.Text, nullable=False),
-        sa.Column("timestamp", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column(
+            "created_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column("token_count", sa.Integer),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
-    op.create_index("idx_case_messages_case_id", "case_messages", ["case_id"])
-    op.create_index("idx_case_messages_timestamp", "case_messages", ["timestamp"])
+    op.create_index(
+        "idx_case_messages_case_turn", "case_messages", ["case_id", "turn_number"]
+    )
+    op.create_index("idx_case_messages_created_at", "case_messages", ["created_at"])
 
-    # Table: uploaded_files
+    # Table: uploaded_files (per case-schema.md §4.6)
     op.create_table(
         "uploaded_files",
         sa.Column("file_id", sa.String(15), primary_key=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("filename", sa.String(255), nullable=False),
-        sa.Column("file_size", sa.Integer, nullable=False),
-        sa.Column("content_type", sa.String(100)),
-        sa.Column("storage_path", sa.String(1000)),
-        sa.Column("processing_status", sa.String(20), nullable=False, server_default="pending"),
-        sa.Column("processing_error", sa.Text),
-        sa.Column("uploaded_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("processed_at", sa.DateTime),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column("size_bytes", sa.Integer, nullable=False),
+        sa.Column("data_type", sa.String(50), nullable=False, server_default="other"),
+        sa.Column("uploaded_at_turn", sa.Integer, nullable=False, server_default="0"),
+        sa.Column(
+            "uploaded_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column(
+            "source_type", sa.String(50), nullable=False, server_default="file_upload"
+        ),
+        sa.Column("content_ref", sa.String(1000)),
+        sa.Column("preprocessing_summary", sa.Text),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
     op.create_index("idx_uploaded_files_case_id", "uploaded_files", ["case_id"])
+    op.create_index(
+        "idx_uploaded_files_turn", "uploaded_files", ["case_id", "uploaded_at_turn"]
+    )
 
     # Table: case_status_transitions
     op.create_table(
         "case_status_transitions",
         sa.Column("transition_id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("from_status", sa.String(50)),
         sa.Column("to_status", sa.String(50), nullable=False),
         sa.Column("reason", sa.Text),
-        sa.Column("transitioned_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column(
+            "transitioned_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
-    op.create_index("idx_case_status_transitions_case_id", "case_status_transitions", ["case_id"])
+    op.create_index(
+        "idx_case_status_transitions_case_id", "case_status_transitions", ["case_id"]
+    )
 
     # Table: case_tags
     op.create_table(
         "case_tags",
         sa.Column("tag_id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("tag", sa.String(50), nullable=False),
-        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
+        sa.Column(
+            "created_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
         sa.UniqueConstraint("case_id", "tag", name="case_tags_unique"),
     )
 
@@ -632,16 +942,26 @@ def _upgrade_sqlite() -> None:
     op.create_table(
         "agent_tool_calls",
         sa.Column("call_id", sa.String(20), primary_key=True),
-        sa.Column("case_id", sa.String(17), sa.ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "case_id",
+            sa.String(17),
+            sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("tool_name", sa.String(100), nullable=False),
         sa.Column("tool_input", sa.Text, nullable=False),
         sa.Column("tool_output", sa.Text),
         sa.Column("status", sa.String(20), nullable=False, server_default="pending"),
         sa.Column("error_message", sa.Text),
         sa.Column("duration_ms", sa.Integer),
-        sa.Column("started_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
+        sa.Column(
+            "started_at",
+            sa.DateTime,
+            nullable=False,
+            server_default=sa.func.current_timestamp(),
+        ),
         sa.Column("completed_at", sa.DateTime),
-        sa.Column("metadata", sa.Text, server_default='{}'),
+        sa.Column("metadata", sa.Text, server_default="{}"),
     )
 
     op.create_index("idx_agent_tool_calls_case_id", "agent_tool_calls", ["case_id"])

@@ -214,12 +214,15 @@ class SQLiteCaseRepository(CaseRepository):
         return solutions
 
     async def _load_uploaded_files(self, case_id: str) -> list[dict]:
-        """Load uploaded files for a case."""
+        """Load uploaded files for a case.
+
+        Schema per design spec (case-schema.md §4.6):
+        - size_bytes, data_type, content_ref, uploaded_at_turn, source_type, preprocessing_summary
+        """
         query = text(
             """
-            SELECT file_id, filename, size_bytes, data_type,
-                   uploaded_at_turn, uploaded_at, source_type,
-                   content_ref, preprocessing_summary
+            SELECT file_id, filename, size_bytes, data_type, uploaded_at_turn,
+                   uploaded_at, source_type, content_ref, preprocessing_summary, metadata
             FROM uploaded_files
             WHERE case_id = :case_id
         """
@@ -227,65 +230,75 @@ class SQLiteCaseRepository(CaseRepository):
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
+        if not rows:
+            return []
+
+        columns = list(result.keys())
         files = []
         for row in rows:
-            # Map production schema to domain model fields
-            metadata = row[8]
-            if isinstance(metadata, str):
-                import json
-
-                metadata = json.loads(metadata) if metadata else {}
-
+            row_dict = dict(zip(columns, row))
             files.append(
                 {
-                    "file_id": row[0],
-                    "filename": row[1],
-                    "size_bytes": row[2],  # file_size → size_bytes
-                    "data_type": row[3] or "unknown",  # content_type → data_type
-                    "uploaded_at_turn": 0,  # Not in production schema, default to 0
-                    "uploaded_at": row[4],
-                    "source_type": (
-                        metadata.get("source_type", "file_upload")
-                        if metadata
-                        else "file_upload"
-                    ),
-                    "content_ref": row[5],  # storage_path → content_ref
-                    "preprocessing_summary": row[7]
-                    or "",  # processing_error as summary fallback
+                    "file_id": row_dict.get("file_id"),
+                    "filename": row_dict.get("filename"),
+                    "size_bytes": row_dict.get("size_bytes", 0),
+                    "data_type": row_dict.get("data_type", "other"),
+                    "uploaded_at_turn": row_dict.get("uploaded_at_turn", 0),
+                    "uploaded_at": row_dict.get("uploaded_at"),
+                    "source_type": row_dict.get("source_type", "file_upload"),
+                    "content_ref": row_dict.get("content_ref", ""),
+                    "preprocessing_summary": row_dict.get("preprocessing_summary", ""),
                 }
             )
         return files
 
     async def _load_messages(self, case_id: str) -> list[dict]:
-        """Load messages for a case from case_messages table."""
+        """Load messages for a case from case_messages table.
+
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+        """
         query = text(
             """
-            SELECT message_id, role, content, created_at, timestamp, metadata
+            SELECT message_id, turn_number, role, content, created_at, token_count, metadata
             FROM case_messages
             WHERE case_id = :case_id
-            ORDER BY timestamp ASC
+            ORDER BY created_at ASC
         """
         )
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
+        if not rows:
+            return []
+
+        columns = list(result.keys())
         messages = []
         for row in rows:
-            # Use created_at if available, fall back to timestamp
-            msg_timestamp = row[3] if row[3] else row[4]
+            row_dict = dict(zip(columns, row))
+
+            msg_timestamp = row_dict.get("created_at")
             if msg_timestamp:
                 if isinstance(msg_timestamp, str):
                     msg_timestamp = msg_timestamp.replace(" ", "T")
                 elif hasattr(msg_timestamp, "isoformat"):
                     msg_timestamp = msg_timestamp.isoformat()
 
+            metadata = row_dict.get("metadata")
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata) if metadata else {}
+            elif metadata is None:
+                metadata = {}
+
             messages.append(
                 {
-                    "message_id": row[0],
-                    "role": row[1],
-                    "content": row[2],
+                    "message_id": row_dict.get("message_id"),
+                    "turn_number": row_dict.get("turn_number", 0),
+                    "role": row_dict.get("role"),
+                    "content": row_dict.get("content"),
                     "created_at": msg_timestamp,
-                    "metadata": json.loads(row[5]) if row[5] else {},
+                    "token_count": row_dict.get("token_count"),
+                    "metadata": metadata,
                 }
             )
         return messages
@@ -458,15 +471,25 @@ class SQLiteCaseRepository(CaseRepository):
     # ========================================================================
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
-        """Add message to case_messages table."""
+        """Add message to case_messages table.
+
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+        """
         try:
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
+            # Accept both 'timestamp' (legacy) and 'created_at' (design spec)
+            created_at = (
+                message_dict.get("created_at")
+                or message_dict.get("timestamp")
+                or datetime.now(UTC)
+            )
 
             # SQLite-compatible: no ::jsonb type cast
             query = text(
                 """
-                INSERT INTO case_messages (message_id, case_id, role, content, metadata)
-                VALUES (:message_id, :case_id, :role, :content, :metadata)
+                INSERT INTO case_messages (message_id, case_id, turn_number, role, content, created_at, token_count, metadata)
+                VALUES (:message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata)
             """
             )
 
@@ -475,8 +498,11 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": message_id,
                     "case_id": case_id,
+                    "turn_number": message_dict.get("turn_number", 0),
                     "role": message_dict.get("role", "user"),
                     "content": message_dict.get("content", ""),
+                    "created_at": created_at,
+                    "token_count": message_dict.get("token_count"),
                     "metadata": json.dumps(message_dict.get("metadata", {})),
                 },
             )
@@ -492,14 +518,18 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
     ) -> builtins.list[dict]:
-        """Get messages for case with pagination."""
+        """Get messages for case with pagination.
+
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+        """
         try:
             query = text(
                 """
-                SELECT message_id, role, content, created_at, metadata
+                SELECT message_id, turn_number, role, content, created_at, token_count, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
-                ORDER BY timestamp ASC
+                ORDER BY created_at ASC
                 LIMIT :limit OFFSET :offset
             """
             )
@@ -510,12 +540,12 @@ class SQLiteCaseRepository(CaseRepository):
 
             messages = []
             for row in result.fetchall():
-                metadata = row[4]
+                metadata = row[6]
                 if isinstance(metadata, str):
                     metadata = json.loads(metadata) if metadata else {}
 
                 # SQLite returns timestamps as strings, parse them if needed
-                created_at = row[3]
+                created_at = row[4]
                 if created_at:
                     if isinstance(created_at, str):
                         # Parse ISO format timestamp string
@@ -531,9 +561,11 @@ class SQLiteCaseRepository(CaseRepository):
                 messages.append(
                     {
                         "message_id": row[0],
-                        "role": row[1],
-                        "content": row[2],
+                        "turn_number": row[1],
+                        "role": row[2],
+                        "content": row[3],
                         "created_at": created_at,
+                        "token_count": row[5],
                         "metadata": metadata,
                     }
                 )
@@ -571,9 +603,14 @@ class SQLiteCaseRepository(CaseRepository):
             ) from e
 
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
-        """Compute analytics for case from normalized tables."""
+        """Compute analytics for case from normalized tables.
+
+        Handles schema variations by computing file size separately using
+        schema-compatible _load_uploaded_files method.
+        """
         try:
             # SQLite-compatible: Use separate COUNT queries instead of FILTER
+            # Note: file size computed separately for schema compatibility
             query = text(
                 """
                 SELECT
@@ -582,8 +619,7 @@ class SQLiteCaseRepository(CaseRepository):
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id) as solution_count,
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id AND status = 'implemented') as implemented_solutions,
                     (SELECT COUNT(*) FROM case_messages WHERE case_id = :case_id) as message_count,
-                    (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count,
-                    (SELECT COALESCE(SUM(size_bytes), 0) FROM uploaded_files WHERE case_id = :case_id) as total_file_size
+                    (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count
             """
             )
 
@@ -601,8 +637,17 @@ class SQLiteCaseRepository(CaseRepository):
                 "implemented_solutions": row[3] or 0,
                 "message_count": row[4] or 0,
                 "file_count": row[5] or 0,
-                "total_file_size": row[6] or 0,
+                "total_file_size": 0,
             }
+
+            # Compute total file size using schema-compatible method
+            try:
+                files = await self._load_uploaded_files(case_id)
+                analytics["total_file_size"] = sum(
+                    f.get("size_bytes", 0) or 0 for f in files
+                )
+            except Exception:
+                pass  # File size will remain 0
 
             # Load evidence count
             try:
@@ -1027,7 +1072,8 @@ class SQLiteCaseRepository(CaseRepository):
     ) -> None:
         """Upsert case messages (SQLite-compatible).
 
-        Messages are dicts with keys: message_id, role, content, timestamp, metadata
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
         """
         # Get IDs of messages that should exist
         current_ids = [
@@ -1050,7 +1096,7 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.execute(delete_query, params)
 
         # Upsert each message
-        for msg in messages_list:
+        for idx, msg in enumerate(messages_list):
             # Skip if no message_id (shouldn't happen, but be safe)
             if not msg.get("message_id"):
                 continue
@@ -1058,14 +1104,16 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO case_messages (
-                    message_id, case_id, role, content, timestamp, metadata
+                    message_id, case_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :role, :content, :timestamp, :metadata
+                    :message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
+                    turn_number = EXCLUDED.turn_number,
                     role = EXCLUDED.role,
                     content = EXCLUDED.content,
-                    timestamp = EXCLUDED.timestamp,
+                    created_at = EXCLUDED.created_at,
+                    token_count = EXCLUDED.token_count,
                     metadata = EXCLUDED.metadata
             """
             )
@@ -1075,11 +1123,11 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": msg.get("message_id"),
                     "case_id": case_id,
+                    "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
-                    "timestamp": msg.get("created_at")
-                    or msg.get("timestamp")
-                    or datetime.now(UTC),
+                    "created_at": msg.get("created_at") or datetime.now(UTC),
+                    "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),
                 },
             )
