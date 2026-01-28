@@ -256,6 +256,37 @@ class RedisSessionStore(ISessionStore):
             # Don't mark connection as unhealthy for cleanup operations
             # Just log and continue
 
+    async def increment_counter(self, key: str, ttl: Optional[int] = None) -> int:
+        """
+        Increment an atomic counter.
+
+        Args:
+            key: Counter identifier
+            ttl: Time to live in seconds (optional)
+
+        Returns:
+            The new value of the counter after incrementing
+        """
+        await self._ensure_client()
+        if not self._connection_healthy or not self.redis_client:
+            raise ConnectionError("Redis connection not available")
+
+        try:
+            full_key = f"{self.prefix}{key}"
+            value = await self.redis_client.incr(full_key)
+
+            if ttl and value == 1:
+                await self.redis_client.expire(full_key, ttl)
+
+            return value
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(f"Redis increment operation failed for key {key}: {e}")
+            self._connection_healthy = False
+            raise ConnectionError(f"Redis operation failed: {e}")
+
     # High-level session management methods (required by SessionService)
 
     async def create_session(self, user_id: Optional[str] = None) -> SessionContext:

@@ -401,6 +401,38 @@ class SQLiteCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(f"Failed to list cases: {e}") from e
 
+            return cases, total_count
+
+        except Exception as e:
+            raise RepositoryException(f"Failed to list cases: {e}") from e
+
+    async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
+        """
+        Count cases created by a user on a specific date using SQLite date function.
+        """
+        try:
+            # Ensure date string YYYY-MM-DD
+            if hasattr(date, "strftime"):
+                date_str = date.strftime("%Y-%m-%d")
+            else:
+                date_str = str(date)
+
+            query = text(
+                """
+                SELECT COUNT(*)
+                FROM cases
+                WHERE user_id = :user_id
+                AND date(created_at) = :date_str
+                """
+            )
+            result = await self.db.execute(
+                query, {"user_id": user_id, "date_str": date_str}
+            )
+            return result.scalar() or 0
+
+        except Exception as e:
+            raise RepositoryException(f"Failed to count user cases: {e}") from e
+
     async def delete(self, case_id: str) -> bool:
         """Delete case by ID."""
         try:

@@ -799,18 +799,32 @@ class ISessionStore(ABC):
 
             >>> session_id = await session_store.find_by_user_and_client("user_123", "client_456")
             >>> if session_id:
-                # Resume existing session
-                session = await session_store.get(session_id)
-            else:
-                # Create new session for this client
-                new_session = await create_new_session(user_id, client_id)
+                # Resume session
 
         Note:
-            Returns None for expired or invalid client indexes.
-            Client indexes automatically expire with their associated sessions.
-            This operation should be fast and not require full session data retrieval.
+            Returns None if the index entry has expired, even if session exists.
+            This relies on the separate client index mechanism.
         """
         pass
+
+    @abstractmethod
+    async def increment_counter(self, key: str, ttl: Optional[int] = None) -> int:
+        """Increment an atomic counter.
+
+        This method provides atomic increment operations for generating
+        sequential IDs or limiting rates. It guarantees uniqueness even
+        under high concurrency.
+
+        Args:
+            key: Counter identifier.
+            ttl: Time to live in seconds. If provided, sets expiration
+                 only if the key is new.
+
+        Returns:
+            The new value of the counter after incrementing.
+        """
+        pass
+
 
     @abstractmethod
     async def index_session_by_client(

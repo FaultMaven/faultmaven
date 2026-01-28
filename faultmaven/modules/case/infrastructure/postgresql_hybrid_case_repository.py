@@ -368,6 +368,34 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         except Exception as e:
             raise RepositoryException(f"Failed to list cases: {e}") from e
 
+    async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
+        """
+        Count cases created by a user on a specific date using PostgreSQL date casting.
+        """
+        try:
+            # Ensure date object or string YYYY-MM-DD
+            # PostgreSQL driver (asyncpg) handles date objects correctly
+            date_val = date
+
+            query = text(
+                """
+                SELECT COUNT(*)
+                FROM cases
+                WHERE user_id = :user_id
+                AND created_at::date = :date
+                """
+            )
+            result = await self.db.execute(
+                query, {"user_id": user_id, "date": date_val}
+            )
+            return result.scalar() or 0
+
+        except Exception as e:
+            raise RepositoryException(f"Failed to count user cases: {e}") from e
+
+        except Exception as e:
+            raise RepositoryException(f"Failed to list cases: {e}") from e
+
     async def delete(self, case_id: str) -> bool:
         """
         Delete case by ID (cascades to normalized tables via FK constraints).

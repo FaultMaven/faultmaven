@@ -112,6 +112,23 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
+        """
+        Count cases created by a user on a specific date.
+
+        Args:
+            user_id: User identifier
+            date: Date to count cases for (date object or YYYY-MM-DD string)
+
+        Returns:
+            Number of cases created on that date
+
+        Raises:
+            RepositoryException: If query fails
+        """
+        pass
+
+    @abstractmethod
     async def delete(self, case_id: str) -> bool:
         """
         Delete case by ID.
@@ -433,6 +450,32 @@ class InMemoryCaseRepository(CaseRepository):
         paginated = filtered[offset : offset + limit]
 
         return paginated, total_count
+
+    async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
+        """Count cases for a user on a specific date in memory."""
+        from datetime import date as date_type
+        from datetime import datetime
+
+        target_date = date
+        if isinstance(target_date, str):
+            try:
+                target_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+            except ValueError:
+                # Handle ISO format if needed, or fallback
+                pass
+
+        count = 0
+        for case in self._cases.values():
+            if case.user_id != user_id:
+                continue
+            
+            # Ensure we compare dates properly
+            case_date = case.created_at.date() if isinstance(case.created_at, datetime) else case.created_at
+            
+            if case_date == target_date:
+                count += 1
+                
+        return count
 
     async def delete(self, case_id: str) -> bool:
         """Delete case from memory."""

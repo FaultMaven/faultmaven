@@ -259,6 +259,7 @@ The SaaS edition runs the Core in a distributed, production-grade configuration.
 | **Knowledge Tiers** | Personal Only | **Global + Team + Personal** |
 | **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
 | **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
+| **Session Persistence** | **Ephemeral** (In-Memory, resets on restart) | **Persistent** (Redis, saved across sessions) |
 | **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
 
 **Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)

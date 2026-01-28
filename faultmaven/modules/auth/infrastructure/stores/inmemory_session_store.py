@@ -22,6 +22,7 @@ class InMemorySessionStore(ISessionStore):
         """Initialize in-memory session store with Python dicts"""
         self._sessions: Dict[str, Dict] = {}  # session_id -> session_data
         self._client_index: Dict[str, str] = {}  # "user_id:client_id" -> session_id
+        self._counters: Dict[str, int] = {}  # key -> count
         self._ttls: Dict[str, datetime] = {}  # session_id -> expiration_time
         self._lock = asyncio.Lock()  # For thread-safe operations
 
@@ -180,6 +181,34 @@ class InMemorySessionStore(ISessionStore):
             index_key = f"{user_id}:{client_id}"
             if index_key in self._client_index:
                 del self._client_index[index_key]
+
+    async def increment_counter(self, key: str, ttl: Optional[int] = None) -> int:
+        """
+        Increment an atomic counter.
+
+        Args:
+            key: Counter identifier
+            ttl: Time to live in seconds (optional)
+
+        Returns:
+            The new value of the counter after incrementing
+        """
+        async with self._lock:
+            # Check expiration
+            if key in self._ttls and datetime.now(timezone.utc) > self._ttls[key]:
+                if key in self._counters:
+                    del self._counters[key]
+                if key in self._ttls:
+                    del self._ttls[key]
+
+            current_value = self._counters.get(key, 0)
+            new_value = current_value + 1
+            self._counters[key] = new_value
+
+            if ttl and new_value == 1:
+                self._ttls[key] = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+
+            return new_value
 
     async def get_session(self, session_id: str) -> Optional[SessionContext]:
         """
@@ -344,6 +373,10 @@ class InMemorySessionStore(ISessionStore):
         # Remove session data
         if key in self._sessions:
             del self._sessions[key]
+
+        # Remove counter data
+        if key in self._counters:
+            del self._counters[key]
 
         # Remove TTL
         if key in self._ttls:

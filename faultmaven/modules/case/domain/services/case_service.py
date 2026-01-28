@@ -126,21 +126,46 @@ class CaseService(BaseService, ICaseService):
                     f"User has reached maximum case limit ({self.max_cases_per_user})"
                 )
 
-            # Auto-generate title if not provided (API spec: Case-MMDD-N)
+            # Auto-generate title if not provided (Format: Case-YYMMDD-N)
             if not title or not title.strip():
-                # Format: Case-MMDD-N (e.g., Case-1106-1, Case-1106-2)
-                # Sequence counter resets daily
+                # Format: Case-YYMMDD-N (e.g., Case-260128-1)
+                # Sequence counter resets daily via key expiration/change
                 now = datetime.now(timezone.utc)
-                date_suffix = now.strftime("%m%d")  # MMDD format
+                date_str = now.strftime("%y%m%d")  # YYMMDD (Year-safe)
 
-                # Count today's cases for this user to get sequence number
-                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                today_cases = [
-                    c for c in user_cases_list if c.created_at >= today_start
-                ]
-                sequence = len(today_cases) + 1
+                sequence = 0
 
-                title = f"Case-{date_suffix}-{sequence}"
+                # 1. Try Atomic Counter via Session Store (Redis/Memory)
+                # This guarantees uniqueness even with high concurrency
+                if self.session_store:
+                    try:
+                        # Key format: case_seq:{user_id}:{YYMMDD}
+                        # e.g., case_seq:user123:260128
+                        seq_key = f"case_seq:{owner_id.strip()}:{date_str}"
+                        
+                        # Use increment_counter from ISessionStore
+                        # Retention 48h (allows inspecting yesterday's keys if needed)
+                        sequence = await self.session_store.increment_counter(
+                            seq_key, ttl=172800
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to increment atomic counter: {e}")
+                        # Fallthrough to DB fallback
+
+                # 2. Fallback: Database Count (if atomic counter failed)
+                # Less performant and has potential race conditions, but robust backup
+                if sequence == 0:
+                    try:
+                        db_count = await self.repository.count_user_cases_on_date(
+                            owner_id.strip(), now.date()
+                        )
+                        sequence = db_count + 1
+                    except Exception as e:
+                        self.logger.error(f"Failed to count cases in DB fallback: {e}")
+                        # Last resort: random ID to prevent crash, though ugly
+                        sequence = uuid.uuid4().int % 10000
+
+                title = f"Case-{date_str}-{sequence}"
                 self.logger.debug(f"Auto-generated title: {title}")
             else:
                 title = title.strip()
