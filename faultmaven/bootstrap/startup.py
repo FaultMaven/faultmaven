@@ -46,7 +46,7 @@ async def bootstrap_application(container: Any) -> None:
         async def startup_event():
             await bootstrap_application(container)
     """
-    logger.debug("Starting application bootstrap")
+    logger.info("Starting application bootstrap")
 
     # ============================================================
     # Step 1: Initialize Data Layer
@@ -56,9 +56,10 @@ async def bootstrap_application(container: Any) -> None:
         from faultmaven.bootstrap.data_init import initialize_data_layer
 
         await initialize_data_layer(container)
+        logger.info("Data layer initialization successful")
     except Exception as e:
         # Log but don't fail - the app can still work with manual setup
-        logger.warning(f"Data layer initialization had issues: {e}")
+        logger.warning(f"Data layer initialization had issues: {e}", exc_info=True)
 
     # ============================================================
     # Step 2: Ensure Default Organization (Single-Tenant Mode)
@@ -73,11 +74,10 @@ async def bootstrap_application(container: Any) -> None:
 
         # Single-tenant mode: Ensure default organization exists
         if isinstance(tenant_provider, SingleTenantProvider):
-            # Silent operation in local mode - use debug level to avoid user-visible output
-            logger.debug("Single-tenant mode: Ensuring default organization exists")
+            logger.info("Single-tenant mode: Ensuring default organization exists")
             try:
                 default_org = await tenant_provider.ensure_default_organization_exists()
-                logger.debug(
+                logger.info(
                     f"Default organization ready: {default_org.name} "
                     f"(ID: {default_org.org_id}, Tier: {default_org.plan_tier.value})"
                 )
@@ -85,6 +85,6 @@ async def bootstrap_application(container: Any) -> None:
                 logger.error(f"Failed to create default organization: {e}")
                 raise
         else:
-            logger.debug("Multi-tenant mode: No default organization created")
+            logger.info("Multi-tenant mode: No default organization created")
 
-    logger.debug("Application bootstrap complete")
+    logger.info("Application bootstrap complete")

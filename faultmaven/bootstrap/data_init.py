@@ -126,9 +126,9 @@ def run_alembic_migrations() -> bool:
         alembic_cfg = Config(str(alembic_ini))
 
         # Run migrations
-        logger.debug(f"Running Alembic migrations (config: {alembic_ini})...")
+        logger.info(f"Running Alembic migrations (config: {alembic_ini})...")
         command.upgrade(alembic_cfg, "head")
-        logger.debug("Alembic migrations complete")
+        logger.info("Alembic migrations complete")
         return True
 
     except ImportError:
@@ -162,22 +162,26 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         - Safe to call multiple times (idempotent)
     """
     try:
+        logger.info("Checking for default admin user...")
+
         # Get user store from container
         user_store = container.get_user_store()
         if not user_store:
-            logger.debug("User store not available - skipping admin creation")
+            logger.warning("User store not available - skipping admin creation")
             return None
+
+        logger.info(f"User store type: {type(user_store).__name__}")
 
         # Check if any users exist
         existing_user = await user_store.get_user_by_username(DEFAULT_ADMIN_USERNAME)
         if existing_user:
-            logger.debug(f"Admin user '{DEFAULT_ADMIN_USERNAME}' already exists")
+            logger.info(f"Admin user '{DEFAULT_ADMIN_USERNAME}' already exists")
             return None
 
         # Also check by email
         existing_by_email = await user_store.get_user_by_email(DEFAULT_ADMIN_EMAIL)
         if existing_by_email:
-            logger.debug(f"User with email '{DEFAULT_ADMIN_EMAIL}' already exists")
+            logger.info(f"User with email '{DEFAULT_ADMIN_EMAIL}' already exists")
             return None
 
         # Create default admin user
@@ -187,10 +191,12 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
             email=DEFAULT_ADMIN_EMAIL,
             display_name=DEFAULT_ADMIN_DISPLAY_NAME,
         )
+        logger.info(f"User created with ID: {user.user_id}")
 
         # Set admin roles
         user.roles = ["user", "admin"]
         user = await user_store.update_user(user)
+        logger.info(f"Admin roles assigned: {user.roles}")
 
         logger.info(f"Default admin account created: {user.username} ({user.email})")
         logger.info(
@@ -200,7 +206,7 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         return user
 
     except Exception as e:
-        logger.warning(f"Could not create default admin: {e}")
+        logger.warning(f"Could not create default admin: {e}", exc_info=True)
         return None
 
 
@@ -218,7 +224,7 @@ async def initialize_data_layer(container: Any) -> None:
     This function is idempotent and safe to call on every startup.
     It only performs setup actions that are needed.
     """
-    logger.debug("Initializing data layer...")
+    logger.info("Initializing data layer...")
 
     # Step 1: Ensure data directories exist
     ensure_data_directories()
@@ -228,6 +234,10 @@ async def initialize_data_layer(container: Any) -> None:
     run_alembic_migrations()
 
     # Step 3: Create default admin user if needed
-    await ensure_default_admin_exists(container)
+    admin_user = await ensure_default_admin_exists(container)
+    if admin_user:
+        logger.info(f"Default admin user ready: {admin_user.username}")
+    else:
+        logger.info("Default admin user check complete (already exists or skipped)")
 
-    logger.debug("Data layer initialization complete")
+    logger.info("Data layer initialization complete")
