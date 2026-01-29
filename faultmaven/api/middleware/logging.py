@@ -249,17 +249,21 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # 3. Check request body for POST/PUT/PATCH requests
             if request.method in ["POST", "PUT", "PATCH"]:
-                try:
-                    # Use request.json() which handles body parsing correctly without consuming the stream
-                    # This is the proper FastAPI way to access request body
-                    data = await request.json()
-                    if isinstance(data, dict) and (
-                        session_id := data.get("session_id")
-                    ):
-                        return session_id
-                except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-                    # Invalid JSON, encoding, or empty body - continue without session context
-                    pass
+                # Optimization: Only parse JSON if content-type is application/json
+                # This prevents buffering large file uploads (multipart/form-data) into memory
+                content_type = request.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    try:
+                        # Use request.json() which handles body parsing correctly without consuming the stream
+                        # This is the proper FastAPI way to access request body
+                        data = await request.json()
+                        if isinstance(data, dict) and (
+                            session_id := data.get("session_id")
+                        ):
+                            return session_id
+                    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                        # Invalid JSON, encoding, or empty body - continue without session context
+                        pass
 
         except Exception as e:
             # Log error but don't fail the request
@@ -294,19 +298,24 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # Check request body for POST/PUT/PATCH requests
             if request.method in ["POST", "PUT", "PATCH"]:
-                try:
-                    # Use request.json() which handles body parsing correctly without consuming the stream
-                    data = await request.json()
-                    if isinstance(data, dict) and (case_id := data.get("case_id")):
-                        return case_id
-                    # Legacy investigation_id support
-                    if isinstance(data, dict) and (
-                        legacy_id := data.get("investigation_id")
-                    ):
-                        return legacy_id
-                except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-                    # Invalid JSON, encoding, or empty body - continue without case context
-                    pass
+                # Optimization: Only parse JSON if content-type is application/json
+                # This prevents buffering large file uploads (multipart/form-data) into memory
+                content_type = request.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    try:
+                        # Use request.json() which handles body parsing correctly without consuming the stream
+                        data = await request.json()
+                        
+                        if isinstance(data, dict):
+                            if case_id := data.get("case_id"):
+                                return case_id
+                            # Legacy investigation_id support
+                            if legacy_id := data.get("investigation_id"):
+                                return legacy_id
+                                
+                    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                        # Invalid JSON, encoding, or empty body - continue without case context
+                        pass
 
         except Exception as e:
             logger.warning(f"Failed to extract case_id: {e}")

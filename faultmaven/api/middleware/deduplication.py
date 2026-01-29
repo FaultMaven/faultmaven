@@ -184,6 +184,8 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             if not self.settings.fail_open_on_redis_error:
                 raise
 
+        return False
+
     def _should_skip(self, request: Request) -> bool:
         """Check if request should skip deduplication"""
 
@@ -201,6 +203,14 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         # Skip static content
         if request.url.path.startswith("/static"):
+            return True
+
+        # Skip POST /api/v1/cases - handled by IdempotencyMiddleware with correct CaseSummary schema
+        if request.method == "POST" and request.url.path == "/api/v1/cases":
+            return True
+
+        # Skip POST /api/v1/sessions - handled by IdempotencyMiddleware
+        if request.method == "POST" and request.url.path == "/api/v1/sessions":
             return True
 
         # Skip certain content types

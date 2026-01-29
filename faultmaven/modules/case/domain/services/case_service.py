@@ -133,37 +133,36 @@ class CaseService(BaseService, ICaseService):
                 now = datetime.now(timezone.utc)
                 date_str = now.strftime("%y%m%d")  # YYMMDD (Year-safe)
 
-                sequence = 0
-
-                # 1. Try Atomic Counter via Session Store (Redis/Memory)
-                # This guarantees uniqueness even with high concurrency
+                # 1. Get Redis Counter (Atomic, High Performance)
+                redis_seq = 0
                 if self.session_store:
                     try:
                         # Key format: case_seq:{user_id}:{YYMMDD}
-                        # e.g., case_seq:user123:260128
                         seq_key = f"case_seq:{owner_id.strip()}:{date_str}"
-                        
-                        # Use increment_counter from ISessionStore
-                        # Retention 48h (allows inspecting yesterday's keys if needed)
-                        sequence = await self.session_store.increment_counter(
+                        redis_seq = await self.session_store.increment_counter(
                             seq_key, ttl=172800
                         )
                     except Exception as e:
-                        self.logger.warning(f"Failed to increment atomic counter: {e}")
-                        # Fallthrough to DB fallback
+                        self.logger.warning(f"Failed to increment atomic counter (Redis): {e}")
 
-                # 2. Fallback: Database Count (if atomic counter failed)
-                # Less performant and has potential race conditions, but robust backup
+                # 2. Get Database Count (Persistence, Robustness)
+                # Always check DB to ensure we don't duplicate if Redis was reset (e.g. restart)
+                db_count = 0
+                try:
+                    db_count = await self.repository.count_user_cases_on_date(
+                        owner_id.strip(), now.date()
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to count cases in DB: {e}")
+
+                # 3. Hybrid Strategy: Max of both
+                # - If Redis is fresh (0) but DB has 5 cases, we start at 6.
+                # - If Redis is ahead (10) but DB has 5 (lag), we use 10.
+                sequence = max(redis_seq, db_count + 1)
+                
+                # Fallback safeguard
                 if sequence == 0:
-                    try:
-                        db_count = await self.repository.count_user_cases_on_date(
-                            owner_id.strip(), now.date()
-                        )
-                        sequence = db_count + 1
-                    except Exception as e:
-                        self.logger.error(f"Failed to count cases in DB fallback: {e}")
-                        # Last resort: random ID to prevent crash, though ugly
-                        sequence = uuid.uuid4().int % 10000
+                    sequence = 1
 
                 title = f"Case-{date_str}-{sequence}"
                 self.logger.debug(f"Auto-generated title: {title}")
@@ -712,7 +711,20 @@ class CaseService(BaseService, ICaseService):
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary
 
-            summaries = [CaseSummary.from_case(case) for case in cases_list]
+            # DEBUG: Log the types we are working with
+            if cases_list:
+                self.logger.debug(f"DEBUG_CASE_LIST: Found {len(cases_list)} cases. First type: {type(cases_list[0])}")
+
+            summaries = []
+            for case in cases_list:
+                try:
+                    summaries.append(CaseSummary.from_case(case))
+                except Exception as e:
+                    self.logger.error(f"Failed to convert case {case.case_id} to summary: {e}")
+                    # Continue best effort? Or fail? Best effort for list
+            
+            if summaries:
+                 self.logger.debug(f"DEBUG_CASE_SUMMARIES: Returning {len(summaries)} summaries. First type: {type(summaries[0])}")
 
             return summaries
 

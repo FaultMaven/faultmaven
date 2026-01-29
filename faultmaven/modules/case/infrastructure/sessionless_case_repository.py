@@ -237,6 +237,12 @@ class SessionlessCaseRepository(CaseRepository):
             repo = _get_repository_for_session(session)
             return await repo.cleanup_expired(max_age_days, batch_size)
 
+    async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
+        """Count cases created by user on a specific date."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.count_user_cases_on_date(user_id, date)
+
     # ============================================================
     # Report Operations
     # ============================================================
