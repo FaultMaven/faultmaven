@@ -547,21 +547,25 @@ def get_lead_investigator_prompt(
     )
 
     if investigation_strategy == InvestigationStrategy.ACTIVE_INCIDENT:
-        prompt_parts.append("""
+        prompt_parts.append(
+            """
 **Active Incident Mode**: Prioritize speed and mitigation over thoroughness.
 - Accept 70% confidence for proceeding
 - Focus on practical evidence
 - Can skip phases if critical urgency
 - Offer thorough post-mortem after mitigation
-""")
+"""
+        )
     else:  # POST_MORTEM
-        prompt_parts.append("""
+        prompt_parts.append(
+            """
 **Post-Mortem Mode**: Prioritize thoroughness and complete understanding.
 - Require 85%+ confidence before concluding
 - Gather comprehensive evidence
 - Never skip phases
 - Mandatory documentation at end
-""")
+"""
+        )
 
     # Add OODA guidance for current phase (weighted step emphasis + explicit declaration)
     prompt_parts.append(f"\n{get_complete_ooda_prompt(current_phase)}")
@@ -573,7 +577,8 @@ def get_lead_investigator_prompt(
         stall_type = stall_info.get("stall_type", "unknown")
         stall_severity = stall_info.get("severity", "moderate")
 
-        prompt_parts.append(f"""
+        prompt_parts.append(
+            f"""
 # ⚠️ STALL DETECTED - TRANSPARENCY REQUIRED
 
 **Current Status**: Investigation is stalled ({iterations_stalled} iterations without progress)
@@ -596,11 +601,13 @@ To resume the investigation and find the solution, I need [X]. Until then, I can
 guidance but cannot definitively resolve this issue."
 
 **After {iterations_stalled} stalled iterations, user needs to understand investigation is blocked.**
-""")
+"""
+        )
 
     # Add current phase context
     phase_info = PHASE_PROMPTS.get(current_phase, {})
-    prompt_parts.append(f"""
+    prompt_parts.append(
+        f"""
 # Current Phase: {current_phase.name.replace('_', ' ').title()} (Phase {current_phase.value})
 
 **Objective**: {phase_info.get('objective', '')}
@@ -613,15 +620,18 @@ guidance but cannot definitively resolve this issue."
 **Completion Criteria**: {phase_info.get('completion_criteria', '')}
 
 **Expected Iterations**: {phase_info.get('typical_iterations', '')}
-""")
+"""
+    )
 
     # Add investigation state summary
     if investigation_state:
-        prompt_parts.append(f"""
+        prompt_parts.append(
+            f"""
 # Investigation State
 
 {_format_investigation_state(investigation_state)}
-""")
+"""
+        )
 
     # Add conversation history
     if conversation_history:
@@ -630,7 +640,8 @@ guidance but cannot definitively resolve this issue."
     # Add current query
     prompt_parts.append(f"\n# User Input\n\n{user_query}")
 
-    prompt_parts.append("""
+    prompt_parts.append(
+        """
 # Your Response
 
 As Lead Investigator, respond with:
@@ -640,7 +651,8 @@ As Lead Investigator, respond with:
 4. **Provide** clear instructions on how to get it
 
 Keep the investigation moving forward.
-""")
+"""
+    )
 
     return "\n".join(prompt_parts)
 
