@@ -143,7 +143,9 @@ class CaseService(BaseService, ICaseService):
                             seq_key, ttl=172800
                         )
                     except Exception as e:
-                        self.logger.warning(f"Failed to increment atomic counter (Redis): {e}")
+                        self.logger.warning(
+                            f"Failed to increment atomic counter (Redis): {e}"
+                        )
 
                 # 2. Get Database Count (Persistence, Robustness)
                 # Always check DB to ensure we don't duplicate if Redis was reset (e.g. restart)
@@ -159,7 +161,7 @@ class CaseService(BaseService, ICaseService):
                 # - If Redis is fresh (0) but DB has 5 cases, we start at 6.
                 # - If Redis is ahead (10) but DB has 5 (lag), we use 10.
                 sequence = max(redis_seq, db_count + 1)
-                
+
                 # Fallback safeguard
                 if sequence == 0:
                     sequence = 1
@@ -713,18 +715,24 @@ class CaseService(BaseService, ICaseService):
 
             # DEBUG: Log the types we are working with
             if cases_list:
-                self.logger.debug(f"DEBUG_CASE_LIST: Found {len(cases_list)} cases. First type: {type(cases_list[0])}")
+                self.logger.debug(
+                    f"DEBUG_CASE_LIST: Found {len(cases_list)} cases. First type: {type(cases_list[0])}"
+                )
 
             summaries = []
             for case in cases_list:
                 try:
                     summaries.append(CaseSummary.from_case(case))
                 except Exception as e:
-                    self.logger.error(f"Failed to convert case {case.case_id} to summary: {e}")
+                    self.logger.error(
+                        f"Failed to convert case {case.case_id} to summary: {e}"
+                    )
                     # Continue best effort? Or fail? Best effort for list
-            
+
             if summaries:
-                 self.logger.debug(f"DEBUG_CASE_SUMMARIES: Returning {len(summaries)} summaries. First type: {type(summaries[0])}")
+                self.logger.debug(
+                    f"DEBUG_CASE_SUMMARIES: Returning {len(summaries)} summaries. First type: {type(summaries[0])}"
+                )
 
             return summaries
 

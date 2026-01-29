@@ -266,8 +266,12 @@ async def get_document(
 async def get_document_snippet(
     document_id: str,
     line_start: int = Query(default=1, ge=1, description="Starting line number"),
-    line_end: Optional[int] = Query(default=None, ge=1, description="Ending line number"),
-    max_lines: int = Query(default=5, ge=1, le=50, description="Maximum lines to return"),
+    line_end: Optional[int] = Query(
+        default=None, ge=1, description="Ending line number"
+    ),
+    max_lines: int = Query(
+        default=5, ge=1, le=50, description="Maximum lines to return"
+    ),
     query_string: Optional[str] = Query(
         default=None, description="Query for semantic snippet extraction"
     ),
@@ -324,7 +328,9 @@ async def get_document_snippet(
                     relevance_score = search_result.get("relevance_score")
                 else:
                     # Fallback to line-based extraction
-                    snippet = "\n".join(lines[line_start - 1 : line_start - 1 + max_lines])
+                    snippet = "\n".join(
+                        lines[line_start - 1 : line_start - 1 + max_lines]
+                    )
             except Exception as semantic_error:
                 logger.warning(
                     f"Semantic snippet extraction failed, falling back to line-based: {semantic_error}"
@@ -983,9 +989,7 @@ async def reject_suggestion(
     try:
         rejection_reason = request_body.get("rejection_reason")
         if not rejection_reason:
-            raise HTTPException(
-                status_code=400, detail="rejection_reason is required"
-            )
+            raise HTTPException(status_code=400, detail="rejection_reason is required")
 
         review_notes = request_body.get("review_notes")
 

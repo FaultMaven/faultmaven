@@ -364,7 +364,9 @@ async def create_case(
     Returns CaseSummary with basic case info and milestone progress.
     """
     correlation_id = str(uuid.uuid4())
-    print(f"DEBUG: create_case entered! Request title: {request.title}, User: {current_user.user_id if current_user else 'None'}")
+    print(
+        f"DEBUG: create_case entered! Request title: {request.title}, User: {current_user.user_id if current_user else 'None'}"
+    )
     case_service = check_case_service_available(case_service)
 
     try:
@@ -485,22 +487,22 @@ async def list_cases(
         case_summaries = await case_service.list_user_cases(
             current_user.user_id, filters
         )
-        
+
         # DEFENSIVE: Ensure we actually have CaseSummary objects (validation check)
         from faultmaven.models.api_models import CaseSummary
         from faultmaven.modules.case.domain.models import Case as CaseEntity
-        
+
         validated_summaries = []
         for item in case_summaries:
             if isinstance(item, CaseSummary):
                 validated_summaries.append(item)
-            elif hasattr(item, "case_id"): # Duck typing for Case entity
+            elif hasattr(item, "case_id"):  # Duck typing for Case entity
                 # logger.warning(f"Unexpected Case entity in list_cases response, converting: {item.case_id}")
                 validated_summaries.append(CaseSummary.from_case(item))
             else:
                 # logger.error(f"Unknown item type in list_cases: {type(item)}")
                 pass
-                
+
         case_summaries = validated_summaries
 
         # Build response
@@ -3333,7 +3335,9 @@ async def extract_knowledge_from_case(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Knowledge extraction failed for case {case_id}: {e}", exc_info=True)
+        logger.error(
+            f"Knowledge extraction failed for case {case_id}: {e}", exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Knowledge extraction failed: {str(e)}",

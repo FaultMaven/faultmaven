@@ -214,7 +214,11 @@ Format as Markdown with these sections:
                     max_tokens=2000,
                     temperature=0.3,
                 )
-                return response.get("content", "") if isinstance(response, dict) else str(response)
+                return (
+                    response.get("content", "")
+                    if isinstance(response, dict)
+                    else str(response)
+                )
             except Exception as e:
                 self.logger.warning(f"LLM generation failed: {e}")
 
@@ -251,11 +255,18 @@ Format as Markdown with these sections:
             title = case_title
             # Remove incident-specific prefixes
             prefixes_to_remove = [
-                "Incident:", "Alert:", "Issue:", "[P1]", "[P2]", "[P3]", "[SEV1]", "[SEV2]"
+                "Incident:",
+                "Alert:",
+                "Issue:",
+                "[P1]",
+                "[P2]",
+                "[P3]",
+                "[SEV1]",
+                "[SEV2]",
             ]
             for prefix in prefixes_to_remove:
                 if title.startswith(prefix):
-                    title = title[len(prefix):].strip()
+                    title = title[len(prefix) :].strip()
             return f"Troubleshooting: {title}"
 
         return "Troubleshooting Guide"
@@ -274,7 +285,9 @@ Format as Markdown with these sections:
         if self._sanitizer:
             try:
                 # Scan content for PII
-                content_to_scan = f"{suggestion.suggested_title}\n\n{suggestion.suggested_content}"
+                content_to_scan = (
+                    f"{suggestion.suggested_title}\n\n{suggestion.suggested_content}"
+                )
                 sanitized = self._sanitizer.sanitize(content_to_scan)
 
                 # If content was modified, PII was found
@@ -341,7 +354,9 @@ Format as Markdown with these sections:
 
         # Apply filters
         if organization_id:
-            suggestions = [s for s in suggestions if s.organization_id == organization_id]
+            suggestions = [
+                s for s in suggestions if s.organization_id == organization_id
+            ]
 
         if status:
             suggestions = [s for s in suggestions if s.status.value == status]
@@ -558,14 +573,18 @@ Format as Markdown with these sections:
                 "pii_scan_status": suggestion.pii_scan_status.value,
                 "pii_scan_result": suggestion.pii_scan_result,
                 "pii_remediated_by": suggestion.pii_remediated_by,
-                "pii_remediated_at": to_json_compatible(suggestion.pii_remediated_at)
-                if suggestion.pii_remediated_at
-                else None,
+                "pii_remediated_at": (
+                    to_json_compatible(suggestion.pii_remediated_at)
+                    if suggestion.pii_remediated_at
+                    else None
+                ),
                 "lineage": lineage,
                 "reviewed_by": suggestion.reviewed_by,
-                "reviewed_at": to_json_compatible(suggestion.reviewed_at)
-                if suggestion.reviewed_at
-                else None,
+                "reviewed_at": (
+                    to_json_compatible(suggestion.reviewed_at)
+                    if suggestion.reviewed_at
+                    else None
+                ),
                 "review_notes": suggestion.review_notes,
                 "rejection_reason": suggestion.rejection_reason,
                 "knowledge_item_id": suggestion.knowledge_item_id,

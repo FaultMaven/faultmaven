@@ -1314,9 +1314,7 @@ class KnowledgeSuggestionModel(Base):
     # Suggested content
     suggested_title = Column(String(512), nullable=False)
     suggested_content = Column(Text, nullable=False)
-    suggested_type = Column(
-        String(64), nullable=False, default="troubleshooting_guide"
-    )
+    suggested_type = Column(String(64), nullable=False, default="troubleshooting_guide")
 
     # Extraction metadata
     extracted_by = Column(String(64), nullable=False, index=True)

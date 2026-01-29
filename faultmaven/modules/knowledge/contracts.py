@@ -72,7 +72,9 @@ class ISuggestionService(Protocol):
         """Extract knowledge from a case into a suggestion."""
         ...
 
-    async def get_suggestion(self, suggestion_id: str) -> Optional["KnowledgeSuggestion"]:
+    async def get_suggestion(
+        self, suggestion_id: str
+    ) -> Optional["KnowledgeSuggestion"]:
         """Get a suggestion by ID."""
         ...
 
@@ -120,7 +122,6 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
     PIIScanStatus,
     SuggestionStatus,
 )
-
 
 # ============================================================
 # Note: Knowledge module uses infrastructure/vector/ for vector store

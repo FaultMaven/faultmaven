@@ -113,8 +113,12 @@ class Source(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
     # Verification status for trust badges
-    verification_status: Optional[Literal["verified", "community", "experimental"]] = None
-    verification_reason: Optional[str] = None  # Tooltip text (e.g., "Reviewed by admin")
+    verification_status: Optional[Literal["verified", "community", "experimental"]] = (
+        None
+    )
+    verification_reason: Optional[str] = (
+        None  # Tooltip text (e.g., "Reviewed by admin")
+    )
 
 
 class PlanStep(BaseModel):

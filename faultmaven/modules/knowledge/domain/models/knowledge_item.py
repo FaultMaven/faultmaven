@@ -100,8 +100,12 @@ class KnowledgeItem:
     language: str = "en"
 
     # Verification status
-    verification_level: int = 0  # VerificationLevel enum value (0=experimental, 1=community, 2=admin_verified)
-    verification_reason: Optional[str] = None  # Why this level? (e.g., "Reviewed by admin on 2026-01-15")
+    verification_level: int = (
+        0  # VerificationLevel enum value (0=experimental, 1=community, 2=admin_verified)
+    )
+    verification_reason: Optional[str] = (
+        None  # Why this level? (e.g., "Reviewed by admin on 2026-01-15")
+    )
     verified_by: Optional[str] = None  # User ID who verified
     verified_at: Optional[datetime] = None  # When verification occurred
 
