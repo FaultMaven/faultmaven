@@ -468,13 +468,17 @@ class InMemoryCaseRepository(CaseRepository):
         for case in self._cases.values():
             if case.user_id != user_id:
                 continue
-            
+
             # Ensure we compare dates properly
-            case_date = case.created_at.date() if isinstance(case.created_at, datetime) else case.created_at
-            
+            case_date = (
+                case.created_at.date()
+                if isinstance(case.created_at, datetime)
+                else case.created_at
+            )
+
             if case_date == target_date:
                 count += 1
-                
+
         return count
 
     async def delete(self, case_id: str) -> bool:

@@ -364,7 +364,9 @@ async def create_case(
     Returns CaseSummary with basic case info and milestone progress.
     """
     correlation_id = str(uuid.uuid4())
-    print(f"DEBUG: create_case entered! Request title: {request.title}, User: {current_user.user_id if current_user else 'None'}")
+    print(
+        f"DEBUG: create_case entered! Request title: {request.title}, User: {current_user.user_id if current_user else 'None'}"
+    )
     case_service = check_case_service_available(case_service)
 
     try:
@@ -485,22 +487,22 @@ async def list_cases(
         case_summaries = await case_service.list_user_cases(
             current_user.user_id, filters
         )
-        
+
         # DEFENSIVE: Ensure we actually have CaseSummary objects (validation check)
         from faultmaven.models.api_models import CaseSummary
         from faultmaven.modules.case.domain.models import Case as CaseEntity
-        
+
         validated_summaries = []
         for item in case_summaries:
             if isinstance(item, CaseSummary):
                 validated_summaries.append(item)
-            elif hasattr(item, "case_id"): # Duck typing for Case entity
+            elif hasattr(item, "case_id"):  # Duck typing for Case entity
                 # logger.warning(f"Unexpected Case entity in list_cases response, converting: {item.case_id}")
                 validated_summaries.append(CaseSummary.from_case(item))
             else:
                 # logger.error(f"Unknown item type in list_cases: {type(item)}")
                 pass
-                
+
         case_summaries = validated_summaries
 
         # Build response
@@ -3231,6 +3233,114 @@ async def check_case_access(
         logger.error(f"Error checking access for case {case_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
+
+
+# ============================================================
+# Knowledge Extraction Endpoint
+# ============================================================
+
+
+@router.post(
+    "/{case_id}/extract-knowledge",
+    response_model=Dict[str, Any],
+    summary="Extract Knowledge from Case",
+    description="Extract reusable knowledge from a case into a suggestion for the knowledge base.",
+    status_code=status.HTTP_201_CREATED,
+)
+@trace("api_extract_knowledge")
+async def extract_knowledge_from_case(
+    case_id: str = Path(..., description="Case ID to extract knowledge from"),
+    request_body: Optional[Dict[str, Any]] = Body(default=None),
+    request: Request = None,
+    case_service: ICaseService = Depends(get_case_service),
+    current_user: UserDTO = Depends(require_authentication),
+) -> Dict[str, Any]:
+    """
+    Extract knowledge from a case conversation into a suggestion.
+
+    This endpoint uses LLM to analyze the case's messages and evidence,
+    then generates a reusable knowledge article (runbook, troubleshooting guide).
+
+    The suggestion is automatically scanned for PII and placed in a
+    "pending_review" state for admin approval in the Dashboard Review Inbox.
+
+    Args:
+        case_id: Case to extract knowledge from
+        request_body: Optional configuration:
+            - include_messages: Include case conversation (default: true)
+            - include_evidence: Include evidence summaries (default: true)
+            - title_suggestion: Optional title for the suggestion
+
+    Returns:
+        KnowledgeExtractionResponse with suggestion details
+    """
+    from faultmaven.models.api import KnowledgeExtractionResponse
+    from faultmaven.utils.serialization import to_json_compatible
+
+    try:
+        # Verify case exists and user has access
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        # Parse request body
+        include_messages = True
+        include_evidence = True
+        title_suggestion = None
+        if request_body:
+            include_messages = request_body.get("include_messages", True)
+            include_evidence = request_body.get("include_evidence", True)
+            title_suggestion = request_body.get("title_suggestion")
+
+        # Get suggestion service from app state
+        suggestion_service = None
+        if request and hasattr(request.app, "state"):
+            suggestion_service = getattr(request.app.state, "suggestion_service", None)
+
+        if not suggestion_service:
+            # Create a temporary service for extraction
+            from faultmaven.modules.knowledge.domain.services.suggestion_service import (
+                SuggestionService,
+            )
+
+            suggestion_service = SuggestionService()
+
+        # Extract knowledge
+        suggestion = await suggestion_service.extract_knowledge_from_case(
+            case_id=case_id,
+            organization_id=getattr(case, "organization_id", "default"),
+            extracted_by=current_user.user_id,
+            include_messages=include_messages,
+            include_evidence=include_evidence,
+            title_suggestion=title_suggestion,
+        )
+
+        # Build response
+        return {
+            "suggestion_id": suggestion.suggestion_id,
+            "case_id": case_id,
+            "status": suggestion.status.value,
+            "suggested_title": suggestion.suggested_title,
+            "suggested_content": suggestion.suggested_content,
+            "pii_scan_status": suggestion.pii_scan_status.value,
+            "extracted_from": {
+                "case_title": suggestion.source_case_title,
+                "message_count": suggestion.message_count,
+                "evidence_count": suggestion.evidence_count,
+            },
+            "created_at": to_json_compatible(suggestion.created_at),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Knowledge extraction failed for case {case_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Knowledge extraction failed: {str(e)}",
         )
 
 

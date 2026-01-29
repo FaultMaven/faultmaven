@@ -305,14 +305,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                     try:
                         # Use request.json() which handles body parsing correctly without consuming the stream
                         data = await request.json()
-                        
+
                         if isinstance(data, dict):
                             if case_id := data.get("case_id"):
                                 return case_id
                             # Legacy investigation_id support
                             if legacy_id := data.get("investigation_id"):
                                 return legacy_id
-                                
+
                     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
                         # Invalid JSON, encoding, or empty body - continue without case context
                         pass

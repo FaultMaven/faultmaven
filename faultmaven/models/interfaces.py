@@ -825,7 +825,6 @@ class ISessionStore(ABC):
         """
         pass
 
-
     @abstractmethod
     async def index_session_by_client(
         self, user_id: str, client_id: str, session_id: str, ttl: int

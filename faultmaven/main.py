@@ -349,8 +349,10 @@ async def lifespan(app: FastAPI):
             await bootstrap_application(container)
             logger.debug("✅ Application bootstrap complete")
         except Exception as e:
-            logger.critical(f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}")
-            # FAIL FAST: Re-raise to stop startup. 
+            logger.critical(
+                f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}"
+            )
+            # FAIL FAST: Re-raise to stop startup.
             # A broken bootstrap means DB or critical directories are missing.
             raise RuntimeError(f"Critical bootstrap failure: {e}") from e
 

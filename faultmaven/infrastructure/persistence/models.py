@@ -1216,6 +1216,15 @@ class KnowledgeItemModel(Base):
     author = Column(String(255), nullable=True)
     language = Column(String(8), nullable=False, default="en")
 
+    # Verification status (0=experimental, 1=community, 2=admin_verified)
+    verification_level = Column(Integer, nullable=False, default=0, index=True)
+    verification_reason = Column(String(512), nullable=True)
+    verified_by = Column(String(64), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Lineage tracking (for suggestions that became knowledge items)
+    source_suggestion_id = Column(String(64), nullable=True, index=True)
+
     # Usage tracking
     view_count = Column(Integer, nullable=False, default=0)
     helpful_count = Column(Integer, nullable=False, default=0)
@@ -1258,6 +1267,10 @@ class KnowledgeItemModel(Base):
         CheckConstraint(
             "embedding_version >= 1", name="knowledge_items_embedding_version_check"
         ),
+        CheckConstraint(
+            "verification_level >= 0 AND verification_level <= 2",
+            name="knowledge_items_verification_level_check",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -1266,4 +1279,112 @@ class KnowledgeItemModel(Base):
             f"title={self.title}, "
             f"item_type={self.item_type}, "
             f"is_published={self.is_published})>"
+        )
+
+
+# ============================================================
+# Knowledge Suggestion Model
+# ============================================================
+
+
+class KnowledgeSuggestionModel(Base):
+    """Knowledge suggestion extracted from a case, pending review.
+
+    Represents knowledge that was extracted from an incident case
+    and is awaiting admin review before being added to the knowledge base.
+
+    PII Scanning: All suggestions must pass PII scanning before review (HITL).
+    Lineage: Links back to source case and forward to created KnowledgeItem.
+    """
+
+    __tablename__ = "knowledge_suggestions"
+
+    # Primary Key
+    suggestion_id = Column(String(64), primary_key=True)
+
+    # Organization and Case scope
+    organization_id = Column(String(64), nullable=False, index=True)
+    case_id = Column(String(64), nullable=False, index=True)
+
+    # Status
+    status = Column(
+        String(32), nullable=False, default="pending_review", index=True
+    )  # pending_review, approved, rejected, draft
+
+    # Suggested content
+    suggested_title = Column(String(512), nullable=False)
+    suggested_content = Column(Text, nullable=False)
+    suggested_type = Column(String(64), nullable=False, default="troubleshooting_guide")
+
+    # Extraction metadata
+    extracted_by = Column(String(64), nullable=False, index=True)
+    extracted_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    include_messages = Column(Boolean, nullable=False, default=True)
+    include_evidence = Column(Boolean, nullable=False, default=True)
+
+    # PII scanning (HITL requirement)
+    pii_scan_status = Column(
+        String(32), nullable=False, default="not_scanned", index=True
+    )  # not_scanned, scanning, clean, pii_detected, remediated, scan_failed
+    pii_scan_result = Column(Text, nullable=True)  # JSON
+    pii_remediated_by = Column(String(64), nullable=True)
+    pii_remediated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Lineage (for Review Inbox footer)
+    source_case_title = Column(String(512), nullable=True)
+    message_count = Column(Integer, nullable=False, default=0)
+    evidence_count = Column(Integer, nullable=False, default=0)
+
+    # Review metadata
+    reviewed_by = Column(String(64), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    review_notes = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+
+    # Bidirectional link to KnowledgeItem (when approved)
+    knowledge_item_id = Column(String(64), nullable=True, index=True)
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Metadata (JSON)
+    suggestion_metadata = Column("metadata", Text, default="{}")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending_review', 'approved', 'rejected', 'draft')",
+            name="knowledge_suggestions_status_check",
+        ),
+        CheckConstraint(
+            "pii_scan_status IN ('not_scanned', 'scanning', 'clean', "
+            "'pii_detected', 'remediated', 'scan_failed')",
+            name="knowledge_suggestions_pii_scan_status_check",
+        ),
+        CheckConstraint(
+            "message_count >= 0", name="knowledge_suggestions_message_count_check"
+        ),
+        CheckConstraint(
+            "evidence_count >= 0", name="knowledge_suggestions_evidence_count_check"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<KnowledgeSuggestionModel(suggestion_id={self.suggestion_id}, "
+            f"case_id={self.case_id}, "
+            f"status={self.status}, "
+            f"pii_scan_status={self.pii_scan_status})>"
         )

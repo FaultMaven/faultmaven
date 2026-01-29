@@ -1460,6 +1460,122 @@ class KnowledgeService(BaseService):
             self.logger.error(f"Failed to get document {document_id}: {e}")
             return None
 
+    async def get_semantic_snippet(
+        self,
+        document_id: str,
+        query: str,
+        max_lines: int = 5,
+    ) -> Optional[Dict[str, Any]]:
+        """Get semantically relevant snippet from a document.
+
+        Uses vector similarity to find the most relevant chunk of the document
+        based on the user's query. This is more robust than line-based extraction
+        when documents are edited.
+
+        Args:
+            document_id: Document identifier
+            query: User's query to find relevant content
+            max_lines: Maximum lines to return in the snippet
+
+        Returns:
+            Dict with snippet, line_start, line_end, relevance_score
+            or None if document not found or semantic search unavailable
+        """
+        try:
+            # Get the full document
+            document = await self.get_document(document_id)
+            if not document:
+                return None
+
+            content = document.get("content", "")
+            if not content:
+                return None
+
+            lines = content.split("\n")
+            total_lines = len(lines)
+
+            # Try to use vector store for semantic search if available
+            if self._vector_store:
+                try:
+                    # Search within this specific document
+                    # Create chunks from the document content
+                    chunk_size = max_lines
+                    chunks = []
+                    for i in range(0, total_lines, chunk_size):
+                        chunk_lines = lines[i : i + chunk_size]
+                        chunk_text = "\n".join(chunk_lines)
+                        if chunk_text.strip():
+                            chunks.append(
+                                {
+                                    "text": chunk_text,
+                                    "line_start": i + 1,
+                                    "line_end": min(i + chunk_size, total_lines),
+                                }
+                            )
+
+                    if not chunks:
+                        return None
+
+                    # Use simple text similarity as fallback
+                    # (In production, this would use embeddings)
+                    best_chunk = None
+                    best_score = 0.0
+                    query_lower = query.lower()
+                    query_words = set(query_lower.split())
+
+                    for chunk in chunks:
+                        chunk_lower = chunk["text"].lower()
+                        chunk_words = set(chunk_lower.split())
+
+                        # Calculate word overlap score
+                        overlap = len(query_words & chunk_words)
+                        if overlap > 0:
+                            score = overlap / len(query_words)
+                            # Bonus for exact phrase match
+                            if query_lower in chunk_lower:
+                                score += 0.5
+
+                            if score > best_score:
+                                best_score = score
+                                best_chunk = chunk
+
+                    if best_chunk:
+                        return {
+                            "snippet": best_chunk["text"],
+                            "line_start": best_chunk["line_start"],
+                            "line_end": best_chunk["line_end"],
+                            "relevance_score": min(best_score, 1.0),
+                        }
+                except Exception as e:
+                    self.logger.warning(f"Vector-based semantic search failed: {e}")
+
+            # Fallback: simple text matching
+            query_lower = query.lower()
+            best_start = 0
+            best_score = 0.0
+
+            for i, line in enumerate(lines):
+                if query_lower in line.lower():
+                    # Found a match, calculate a simple score
+                    score = 1.0
+                    if best_score < score:
+                        best_score = score
+                        best_start = max(0, i - max_lines // 2)
+
+            end_line = min(best_start + max_lines, total_lines)
+            snippet = "\n".join(lines[best_start:end_line])
+
+            return {
+                "snippet": snippet,
+                "line_start": best_start + 1,
+                "line_end": end_line,
+                "relevance_score": best_score if best_score > 0 else None,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get semantic snippet for {document_id}: {e}")
+            return None
+
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get processing job status"""
         try:

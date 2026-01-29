@@ -136,7 +136,9 @@ def run_alembic_migrations() -> bool:
             logger.info("Alembic migrations complete")
             return True
         else:
-            raise RuntimeError(f"Alembic migration failed with exit code {result.returncode}: {result.stderr}")
+            raise RuntimeError(
+                f"Alembic migration failed with exit code {result.returncode}: {result.stderr}"
+            )
 
     except subprocess.TimeoutExpired:
         raise RuntimeError("Alembic migration timed out after 60 seconds")

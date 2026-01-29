@@ -9,10 +9,13 @@ Following the design in module-organization-design.md:
 """
 
 from abc import ABC
-from typing import TYPE_CHECKING, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
     from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
+    from faultmaven.modules.knowledge.domain.models.suggestion import (
+        KnowledgeSuggestion,
+    )
 
 
 # ============================================================
@@ -35,6 +38,16 @@ class IKnowledgeService(Protocol):
         """Delete a document from the knowledge base."""
         ...
 
+    async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific document by ID."""
+        ...
+
+    async def get_semantic_snippet(
+        self, document_id: str, query: str, max_lines: int = 5
+    ) -> Optional[Dict[str, Any]]:
+        """Get semantically relevant snippet from a document."""
+        ...
+
 
 class IKnowledgeQuery(Protocol):
     """Read-only knowledge query interface."""
@@ -43,6 +56,72 @@ class IKnowledgeQuery(Protocol):
         """Perform semantic search (read-only)."""
         ...
 
+
+class ISuggestionService(Protocol):
+    """Service interface for Knowledge Suggestion management."""
+
+    async def extract_knowledge_from_case(
+        self,
+        case_id: str,
+        organization_id: str,
+        extracted_by: str,
+        include_messages: bool = True,
+        include_evidence: bool = True,
+        title_suggestion: Optional[str] = None,
+    ) -> "KnowledgeSuggestion":
+        """Extract knowledge from a case into a suggestion."""
+        ...
+
+    async def get_suggestion(
+        self, suggestion_id: str
+    ) -> Optional["KnowledgeSuggestion"]:
+        """Get a suggestion by ID."""
+        ...
+
+    async def list_suggestions(
+        self,
+        organization_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """List suggestions with filtering."""
+        ...
+
+    async def approve_suggestion(
+        self,
+        suggestion_id: str,
+        reviewed_by: str,
+        review_notes: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Approve a suggestion and create a knowledge item."""
+        ...
+
+    async def reject_suggestion(
+        self,
+        suggestion_id: str,
+        reviewed_by: str,
+        rejection_reason: str,
+        review_notes: Optional[str] = None,
+    ) -> bool:
+        """Reject a suggestion."""
+        ...
+
+
+# ============================================================
+# DTOs for cross-module communication
+# ============================================================
+
+
+# Re-export enums for external use
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    KnowledgeItemType,
+    VerificationLevel,
+)
+from faultmaven.modules.knowledge.domain.models.suggestion import (
+    PIIScanStatus,
+    SuggestionStatus,
+)
 
 # ============================================================
 # Note: Knowledge module uses infrastructure/vector/ for vector store
