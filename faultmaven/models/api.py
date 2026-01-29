@@ -112,6 +112,10 @@ class Source(BaseModel):
     confidence: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
 
+    # Verification status for trust badges
+    verification_status: Optional[Literal["verified", "community", "experimental"]] = None
+    verification_reason: Optional[str] = None  # Tooltip text (e.g., "Reviewed by admin")
+
 
 class PlanStep(BaseModel):
     """Represents one step in a multi-step plan."""
@@ -470,6 +474,165 @@ class KnowledgeBaseDocument(BaseModel):
     created_at: str
     updated_at: str
     metadata: Optional[Dict[str, Any]] = None
+
+    # Verification status (0=experimental, 1=community, 2=admin_verified)
+    verification_level: int = 0
+    verification_status: Optional[Literal["verified", "community", "experimental"]] = (
+        "experimental"
+    )
+    verification_reason: Optional[str] = None
+
+    # Lineage tracking
+    source_suggestion_id: Optional[str] = None  # Link to originating suggestion
+
+
+class DocumentSnippetResponse(BaseModel):
+    """Response model for document snippet (hover card preview).
+
+    Supports both line-based and semantic snippet extraction.
+    """
+
+    document_id: str
+    title: str
+    snippet: str
+    line_range: Optional[tuple[int, int]] = None  # (start, end) line numbers
+    total_lines: int
+    document_type: str
+    verification_status: Literal["verified", "community", "experimental"] = (
+        "experimental"
+    )
+    verification_level: int = 0
+
+    # Semantic context (when query_string is provided)
+    relevance_score: Optional[float] = None  # How relevant is this snippet to the query
+
+
+# --- Knowledge Suggestion Models ---
+
+
+class SuggestionLineage(BaseModel):
+    """Lineage information for knowledge suggestions.
+
+    Displayed in Review Inbox footer:
+    "Extracted from Case #402 (prod-db-latency) • 2h ago"
+    """
+
+    case_id: str
+    case_title: str
+    extracted_by: str  # Email or username
+    extracted_at: str  # UTC ISO 8601
+
+
+class KnowledgeSuggestionSummary(BaseModel):
+    """Summary view of a knowledge suggestion for list endpoints."""
+
+    suggestion_id: str
+    title: str
+    content_preview: str  # First ~200 chars
+    status: Literal["pending_review", "approved", "rejected", "draft"]
+    verification_status: str = "experimental"  # Always experimental until approved
+    pii_scan_status: Literal[
+        "not_scanned", "scanning", "clean", "pii_detected", "remediated", "scan_failed"
+    ]
+    suggested_type: str
+    created_at: str
+    lineage: SuggestionLineage
+
+
+class KnowledgeSuggestionDetail(BaseModel):
+    """Full detail view of a knowledge suggestion."""
+
+    suggestion_id: str
+    organization_id: str
+    case_id: str
+    status: Literal["pending_review", "approved", "rejected", "draft"]
+
+    # Content
+    suggested_title: str
+    suggested_content: str
+    suggested_type: str
+
+    # Extraction info
+    extracted_by: str
+    extracted_at: str
+    include_messages: bool
+    include_evidence: bool
+
+    # PII scanning
+    pii_scan_status: Literal[
+        "not_scanned", "scanning", "clean", "pii_detected", "remediated", "scan_failed"
+    ]
+    pii_scan_result: Optional[Dict[str, Any]] = None
+    pii_remediated_by: Optional[str] = None
+    pii_remediated_at: Optional[str] = None
+
+    # Lineage
+    lineage: SuggestionLineage
+
+    # Review
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    review_notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+    # Bidirectional link
+    knowledge_item_id: Optional[str] = None
+
+    # Timestamps
+    created_at: str
+    updated_at: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class SuggestionListResponse(BaseModel):
+    """Paginated list of knowledge suggestions."""
+
+    suggestions: List[KnowledgeSuggestionSummary]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class KnowledgeExtractionRequest(BaseModel):
+    """Request body for extracting knowledge from a case."""
+
+    include_messages: bool = True
+    include_evidence: bool = True
+    title_suggestion: Optional[str] = None
+
+
+class KnowledgeExtractionResponse(BaseModel):
+    """Response from knowledge extraction endpoint."""
+
+    suggestion_id: str
+    case_id: str
+    status: str = "pending_review"
+    suggested_title: str
+    suggested_content: str
+    pii_scan_status: str
+    extracted_from: Dict[str, Any]  # case_title, message_count, evidence_count
+    created_at: str
+
+
+class SuggestionApproveRequest(BaseModel):
+    """Request body for approving a suggestion."""
+
+    review_notes: Optional[str] = None
+
+
+class SuggestionRejectRequest(BaseModel):
+    """Request body for rejecting a suggestion."""
+
+    rejection_reason: str
+    review_notes: Optional[str] = None
+
+
+class SuggestionUpdateRequest(BaseModel):
+    """Request body for updating a suggestion's content."""
+
+    title: Optional[str] = None
+    content: Optional[str] = None
+    suggested_type: Optional[str] = None
 
 
 class StandardErrorResponse(BaseModel):

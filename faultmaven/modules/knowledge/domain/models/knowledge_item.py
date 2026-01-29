@@ -9,11 +9,27 @@ Design Reference: TASK-009 Knowledge Item Repository Pattern
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, Dict, List, Optional
 
 # OpenAI text-embedding-3-small produces 1536-dimensional vectors
 EMBEDDING_DIMENSIONS = 1536
+
+
+class VerificationLevel(IntEnum):
+    """Verification levels for knowledge items.
+
+    Higher values indicate more trust and visibility in search results.
+
+    Levels:
+        EXPERIMENTAL (0): AI-generated or unreviewed content
+        COMMUNITY (1): Peer-reviewed or community-validated content
+        ADMIN_VERIFIED (2): Admin-verified, gold standard content
+    """
+
+    EXPERIMENTAL = 0
+    COMMUNITY = 1
+    ADMIN_VERIFIED = 2
 
 
 class KnowledgeItemType(str, Enum):
@@ -83,6 +99,15 @@ class KnowledgeItem:
     author: Optional[str] = None
     language: str = "en"
 
+    # Verification status
+    verification_level: int = 0  # VerificationLevel enum value (0=experimental, 1=community, 2=admin_verified)
+    verification_reason: Optional[str] = None  # Why this level? (e.g., "Reviewed by admin on 2026-01-15")
+    verified_by: Optional[str] = None  # User ID who verified
+    verified_at: Optional[datetime] = None  # When verification occurred
+
+    # Lineage tracking (for suggestions that became knowledge items)
+    source_suggestion_id: Optional[str] = None  # Link back to original suggestion
+
     # Usage tracking
     view_count: int = 0
     helpful_count: int = 0
@@ -108,6 +133,12 @@ class KnowledgeItem:
         if not isinstance(self.item_type, KnowledgeItemType):
             raise ValueError(
                 f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"
+            )
+
+        # Validate verification level (0=experimental, 1=community, 2=admin_verified)
+        if self.verification_level < 0 or self.verification_level > 2:
+            raise ValueError(
+                f"verification_level must be 0, 1, or 2, got {self.verification_level}"
             )
 
         # Validate counts
@@ -166,6 +197,53 @@ class KnowledgeItem:
         if total_feedback == 0:
             return 0.5
         return self.helpful_count / total_feedback
+
+    def get_verification_status(self) -> str:
+        """Get verification status as a string for API responses.
+
+        Returns:
+            'verified' if admin_verified (level 2)
+            'community' if community reviewed (level 1)
+            'experimental' for unverified content (level 0)
+        """
+        if self.verification_level >= VerificationLevel.ADMIN_VERIFIED:
+            return "verified"
+        elif self.verification_level >= VerificationLevel.COMMUNITY:
+            return "community"
+        return "experimental"
+
+    def set_verification(
+        self,
+        level: int,
+        reason: str,
+        verified_by: str,
+    ) -> None:
+        """Set verification status for this item.
+
+        Args:
+            level: Verification level (0=experimental, 1=community, 2=admin_verified)
+            reason: Reason for this verification level
+            verified_by: User ID who performed the verification
+
+        Raises:
+            ValueError: If level is not 0, 1, or 2
+        """
+        if level < 0 or level > 2:
+            raise ValueError(f"verification_level must be 0, 1, or 2, got {level}")
+
+        self.verification_level = level
+        self.verification_reason = reason
+        self.verified_by = verified_by
+        self.verified_at = datetime.now(timezone.utc)
+        self.touch()
+
+    def is_verified(self) -> bool:
+        """Check if item is admin-verified (gold standard).
+
+        Returns:
+            True if verification_level is ADMIN_VERIFIED (2).
+        """
+        return self.verification_level >= VerificationLevel.ADMIN_VERIFIED
 
     def has_embedding(self) -> bool:
         """Check if item has an embedding vector.
