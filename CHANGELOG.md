@@ -26,6 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CRITICAL**: Storage infrastructure gaps causing data loss (Commits 52bfb854, b434152a, ecaafed7)
+  - **Message Persistence**: Fixed PostgreSQL repositories missing `_upsert_messages()` call
+    - All conversation messages now persist correctly across application restarts
+    - Messages stored in normalized `case_messages` table
+  - **Missing Case Fields**: Added 9 critical fields to PostgreSQL repository
+    - `organization_id` - Multi-tenancy security restored
+    - `description` - Problem descriptions now saved
+    - `closure_reason`, `investigation_strategy` - Case metadata preserved
+    - `current_turn`, `turns_without_progress` - Turn tracking restored
+    - `last_activity_at`, `resolved_at`, `closed_at` - Timestamp tracking complete
+  - **Missing Repository Methods**: Added 6 methods to infrastructure PostgreSQL repository
+    - Report CRUD operations: `add_report()`, `get_report()`, `get_reports()`, `update_report()`, `delete_report()`
+    - Rate limiting: `count_user_cases_on_date()`
+  - PostgreSQL repositories now have full parity with SQLite repository
+  - All tests passing: 29 unit tests, 8 SQLite integration tests, 6 Alembic migration tests
+- **TEST**: Alembic migration test expectations (Commit 67d615a5)
+  - Updated for migration 013_verification_suggestions (knowledge_suggestions table)
+  - Fixed database path handling to use absolute paths
 - **CRITICAL**: Email uniqueness not enforced in database (Security Bug)
   - Added explicit UNIQUE constraint on users.email (case-insensitive)
   - InMemoryUserRepository now stores deep copies to prevent mutable reference bugs
