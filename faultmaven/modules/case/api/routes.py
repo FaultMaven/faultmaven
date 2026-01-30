@@ -1697,7 +1697,9 @@ async def submit_case_query(
                 )
 
         # 5. Add query to case history (tracks message_count)
-        await case_service.add_case_query(case_id, message_text, current_user.user_id)
+        # 5. Add query to case history (tracks message_count)
+        # REMOVED: Redundant call. InvestigationService.process_turn handles message addition.
+        # await case_service.add_case_query(case_id, message_text, current_user.user_id)
 
         # 6. Process turn with MilestoneEngine (with 35s timeout)
         try:

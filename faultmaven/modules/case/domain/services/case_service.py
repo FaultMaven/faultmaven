@@ -346,17 +346,40 @@ class CaseService(BaseService, ICaseService):
 
             # Ensure message belongs to this case
             message.case_id = case_id
+            
+            message_role = getattr(message, "role", "system")
+
+            # Deduplication: Check if identical to last message
+            # This fixes Issue 1: Duplicate Questions When Chat History is Reloaded
+            if case.messages and len(case.messages) > 0:
+                last_msg = case.messages[-1]
+                # Check for identical content and role
+                if (last_msg.get("role") == message_role and 
+                    last_msg.get("content") == message.content):
+                    self.logger.warning(
+                        f"Skipping duplicate message for case {case_id} (content hash match)",
+                        extra={"case_id": case_id, "message_id": message.message_id}
+                    )
+                    return True
+
+            # Increment turn number for new user messages
+            # This fixes Issue 3: Turn number for each turn is always 1
+            if message_role == "user":
+                case.current_turn += 1
+                # Persist the new turn number
+                # Note: We must save the case to persist the turn update before adding the message
+                await self.repository.save(case)
 
             # Convert CaseMessage to dict format for storage (per case-storage-design.md spec)
             message_dict = {
                 "message_id": message.message_id,
                 "case_id": case_id,
                 "author_id": message.author_id,
-                "role": getattr(message, "role", "system"),
+                "role": message_role,
                 "message_type": (
-                    message.message_type.value
-                    if hasattr(message.message_type, "value")
-                    else str(message.message_type)
+                    getattr(message, "message_type", None).value
+                    if getattr(message, "message_type", None) and hasattr(getattr(message, "message_type", None), "value")
+                    else str(getattr(message, "message_type", "user_query" if message_role == "user" else "system_event"))
                 ),
                 "content": message.content,
                 "created_at": (
@@ -999,38 +1022,29 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Case ID and query text are required")
 
         try:
-            # Get the case to verify it exists
-            case = await self.repository.get(case_id)
-            if not case:
-                raise ValidationException(f"Case {case_id} not found")
-
-            # Create user message and add to conversation (FIXED IMPLEMENTATION)
-            from uuid import uuid4
-
+            # Create CaseMessage object
             # Per case-storage-design.md Section 4.7, use "created_at"
-            user_message = {
-                "message_id": f"msg_{uuid4().hex[:12]}",
-                "turn_number": case.current_turn + 1,  # Next turn
-                "role": "user",
-                "message_type": "user_query",  # MessageType enum value
-                "content": query_text.strip(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "author_id": user_id,
-                "token_count": None,
-                "metadata": {},
-            }
-
-            case.messages.append(user_message)
-            case.message_count += 1
-            case.last_activity_at = datetime.now(timezone.utc)
-
-            # Save updated case with message
-            await self.repository.save(case)
-
-            self.logger.debug(
-                f"Added user message to case {case_id}, message_count now {case.message_count}"
+            msg = CaseMessage(
+                message_id=f"msg_{uuid4().hex[:12]}",
+                case_id=case_id,
+                turn_number=0,  # Will be set correctly by add_message_to_case based on current turn
+                role="user",
+                # Note: message_type relies on dynamic assignment or fallback in add_message_to_case
+                content=query_text.strip(),
+                created_at=datetime.now(timezone.utc),
+                author_id=user_id,
+                metadata={},
             )
-            return True
+            # Explicitly set message_type attribute for add_message_to_case logic
+            msg.message_type = "user_query"
+
+            # Use centralized method which handles turn numbering, deduplication, and persistence
+            success = await self.add_message_to_case(case_id, msg)
+            
+            if success:
+                self.logger.debug(f"Added user query to case {case_id}")
+            
+            return success
 
         except ValidationException:
             raise

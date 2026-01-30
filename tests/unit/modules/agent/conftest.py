@@ -143,7 +143,7 @@ class MockMilestoneEngine:
         """
         # Update case state - increment turn (user message was already added at turn current_turn + 1)
         # Note: The service expects the engine to increment current_turn
-        case.current_turn += 1
+        # case.current_turn += 1
         case.updated_at = datetime.now(timezone.utc)
 
         # Return the same case object - real engine returns the mutated case

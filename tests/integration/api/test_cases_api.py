@@ -98,6 +98,10 @@ def mock_case_summary():
         total_milestones=8,
         is_stuck=False,
         is_terminal=False,
+        description="Test Case Description",
+        resolved_at=None,
+        closed_at=None,
+        closure_reason=None,
     )
 
 

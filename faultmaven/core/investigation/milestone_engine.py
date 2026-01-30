@@ -145,7 +145,7 @@ class MilestoneEngine:
             MilestoneEngineError: If processing fails
         """
         logger.info(
-            f"Processing turn {case.current_turn + 1} for case {case.case_id} "
+            f"Processing turn {case.current_turn} for case {case.case_id} "
             f"(status: {case.status})"
         )
 
@@ -169,8 +169,8 @@ class MilestoneEngine:
                 attachments=attachments,
             )
 
-            # Step 5: Increment turn counter
-            updated_case.current_turn += 1
+            # Step 5: (Turn counter already incremented in InvestigationService)
+            # updated_case.current_turn += 1
 
             # Step 6: Record turn progress
             turn_record = self._create_turn_record(
@@ -301,7 +301,7 @@ class MilestoneEngine:
         return f"""You are FaultMaven, an AI troubleshooting copilot. The user is exploring a problem.
 
 Status: CONSULTING (pre-investigation)
-Turn: {case.current_turn + 1}
+Turn: {case.current_turn}
 
 User Message:
 {user_message}
@@ -378,7 +378,7 @@ Progress: {len(progress.completed_milestones)}/8 milestones complete
 Status: INVESTIGATING
 Case: {case.title}
 Description: {case.description}
-Turn: {case.current_turn + 1}
+Turn: {case.current_turn}
 
 {milestones_status}
 
@@ -474,7 +474,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                     uploaded_file = self._create_uploaded_file_from_attachment(
                         case=case,
                         attachment=attachment,
-                        turn_number=case.current_turn + 1,
+                        turn_number=case.current_turn,
                     )
                     case.uploaded_files.append(uploaded_file)
                     files_uploaded.append(uploaded_file.file_id)
@@ -528,7 +528,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                     uploaded_file = self._create_uploaded_file_from_attachment(
                         case=case,
                         attachment=attachment,
-                        turn_number=case.current_turn + 1,
+                        turn_number=case.current_turn,
                     )
                     case.uploaded_files.append(uploaded_file)
 
@@ -536,7 +536,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                     evidence = self._create_evidence_from_attachment(
                         case=case,
                         attachment=attachment,
-                        turn_number=case.current_turn + 1,
+                        turn_number=case.current_turn,
                     )
                     case.evidence.append(evidence)
                     evidence_added.append(evidence.evidence_id)

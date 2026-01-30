@@ -98,10 +98,13 @@ class InvestigationService(BaseService):
             from datetime import datetime, timezone
             from uuid import uuid4
 
+            # Increment turn number
+            case.current_turn += 1
+
             # Per case-storage-design.md Section 4.7, use "timestamp" not "created_at"
             user_message_obj = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
-                "turn_number": case.current_turn + 1,  # Next turn
+                "turn_number": case.current_turn,
                 "role": "user",
                 "message_type": "user_query",
                 "content": request.message,
@@ -117,6 +120,9 @@ class InvestigationService(BaseService):
             }
             case.messages.append(user_message_obj)
             case.message_count += 1
+            
+            # Persist user message and new turn number immediately
+            await self.repository.save(case)
 
             # 4. Process turn via MilestoneEngine
             # Engine handles:

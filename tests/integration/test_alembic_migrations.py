@@ -150,8 +150,8 @@ class TestAlembicMigrationInfrastructure:
 
         # Verify revision ID matches the latest migration (013_verification_suggestions)
         assert (
-            revision == "013_verification_suggestions"
-        ), f"Expected revision 013_verification_suggestions (current head), got {revision}"
+            revision == "014_drop_message_constraint"
+        ), f"Expected revision 014_drop_message_constraint (current head), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -171,14 +171,14 @@ class TestAlembicMigrationInfrastructure:
         # Verify table count decreases (migration 013 added knowledge_suggestions table)
         tables_after = get_tables(TEST_DB)
         assert (
-            len(tables_after) == 18
-        ), f"Expected 18 tables after rollback, got {len(tables_after)}: {tables_after}"
+            len(tables_after) == 19
+        ), f"Expected 19 tables after rollback, got {len(tables_after)}: {tables_after}"
 
         # Verify revision moved back one step
         revision = get_current_revision(database_url)
         assert (
-            revision == "012_fix_schema_inconsistencies"
-        ), f"Expected revision 012_fix_schema_inconsistencies after rollback, got {revision}"
+            revision == "013_verification_suggestions"
+        ), f"Expected revision 013_verification_suggestions after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -203,7 +203,7 @@ class TestAlembicMigrationInfrastructure:
 
         # Verify revision
         revision = get_current_revision(database_url)
-        assert revision == "013_verification_suggestions"
+        assert revision == "014_drop_message_constraint"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
