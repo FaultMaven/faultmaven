@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 
 # Test database path
-TEST_DB = "test_migration.db"
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 
 @pytest.fixture(scope="function")
@@ -43,7 +43,7 @@ def clean_database():
 @pytest.fixture(scope="function")
 def database_url():
     """Provide test database URL."""
-    return f"sqlite:///./{TEST_DB}"
+    return f"sqlite:///{TEST_DB}"
 
 
 def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
@@ -125,6 +125,7 @@ class TestAlembicMigrationInfrastructure:
             "hypotheses",
             "investigation_sessions",
             "knowledge_items",
+            "knowledge_suggestions",  # Added in migration 013
             "sessions",
             "solutions",
             "standalone_evidence",
@@ -147,10 +148,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (012_fix_schema_inconsistencies)
+        # Verify revision ID matches the latest migration (013_verification_suggestions)
         assert (
-            revision == "012_fix_schema_inconsistencies"
-        ), f"Expected revision 012_fix_schema_inconsistencies (current head), got {revision}"
+            revision == "013_verification_suggestions"
+        ), f"Expected revision 013_verification_suggestions (current head), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -160,14 +161,14 @@ class TestAlembicMigrationInfrastructure:
         # Verify tables exist
         tables_before = get_tables(TEST_DB)
         assert (
-            len(tables_before) == 18
-        ), f"Expected 18 tables initially, got {len(tables_before)}"
+            len(tables_before) == 19
+        ), f"Expected 19 tables initially, got {len(tables_before)}"
 
-        # Rollback one migration (012 -> 011)
+        # Rollback one migration (013 -> 012)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify table count remains same (migration 012 modified columns, didn't add tables)
+        # Verify table count decreases (migration 013 added knowledge_suggestions table)
         tables_after = get_tables(TEST_DB)
         assert (
             len(tables_after) == 18
@@ -176,8 +177,8 @@ class TestAlembicMigrationInfrastructure:
         # Verify revision moved back one step
         revision = get_current_revision(database_url)
         assert (
-            revision == "011_add_standalone_evidence"
-        ), f"Expected revision 011_add_standalone_evidence after rollback, got {revision}"
+            revision == "012_fix_schema_inconsistencies"
+        ), f"Expected revision 012_fix_schema_inconsistencies after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -194,15 +195,15 @@ class TestAlembicMigrationInfrastructure:
         # Verify tables restored
         tables = get_tables(TEST_DB)
         assert (
-            len(tables) == 18
-        ), f"Expected 18 tables after re-application, got {len(tables)}"
+            len(tables) == 19
+        ), f"Expected 19 tables after re-application, got {len(tables)}"
         assert (
-            "standalone_evidence" in tables
-        ), "standalone_evidence table should be restored"
+            "knowledge_suggestions" in tables
+        ), "knowledge_suggestions table should be restored"
 
         # Verify revision
         revision = get_current_revision(database_url)
-        assert revision == "012_fix_schema_inconsistencies"
+        assert revision == "013_verification_suggestions"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
