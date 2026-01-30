@@ -885,21 +885,34 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO cases (
-                    case_id, user_id, title, status, created_at, updated_at,
+                    case_id, user_id, organization_id, title, description, investigation_strategy,
+                    status, closure_reason, current_turn, turns_without_progress,
+                    created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     consulting, problem_verification, working_conclusion,
                     root_cause_conclusion, path_selection, degraded_mode,
                     escalation_state, documentation, progress, metadata
                 ) VALUES (
-                    :case_id, :user_id, :title, :status, :created_at, :updated_at,
+                    :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
+                    :status, :closure_reason, :current_turn, :turns_without_progress,
+                    :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :consulting::jsonb, :problem_verification::jsonb, :working_conclusion::jsonb,
                     :root_cause_conclusion::jsonb, :path_selection::jsonb, :degraded_mode::jsonb,
                     :escalation_state::jsonb, :documentation::jsonb, :progress::jsonb, :metadata::jsonb
                 )
                 ON CONFLICT (case_id) DO UPDATE SET
                     user_id = EXCLUDED.user_id,
+                    organization_id = EXCLUDED.organization_id,
                     title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    investigation_strategy = EXCLUDED.investigation_strategy,
                     status = EXCLUDED.status,
+                    closure_reason = EXCLUDED.closure_reason,
+                    current_turn = EXCLUDED.current_turn,
+                    turns_without_progress = EXCLUDED.turns_without_progress,
                     updated_at = EXCLUDED.updated_at,
+                    last_activity_at = EXCLUDED.last_activity_at,
+                    resolved_at = EXCLUDED.resolved_at,
+                    closed_at = EXCLUDED.closed_at,
                     consulting = EXCLUDED.consulting,
                     problem_verification = EXCLUDED.problem_verification,
                     working_conclusion = EXCLUDED.working_conclusion,
@@ -917,21 +930,34 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO cases (
-                    case_id, user_id, title, status, created_at, updated_at,
+                    case_id, user_id, organization_id, title, description, investigation_strategy,
+                    status, closure_reason, current_turn, turns_without_progress,
+                    created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     consulting, problem_verification, working_conclusion,
                     root_cause_conclusion, path_selection, degraded_mode,
                     escalation_state, documentation, progress, metadata
                 ) VALUES (
-                    :case_id, :user_id, :title, :status, :created_at, :updated_at,
+                    :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
+                    :status, :closure_reason, :current_turn, :turns_without_progress,
+                    :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :consulting, :problem_verification, :working_conclusion,
                     :root_cause_conclusion, :path_selection, :degraded_mode,
                     :escalation_state, :documentation, :progress, :metadata
                 )
                 ON CONFLICT (case_id) DO UPDATE SET
                     user_id = EXCLUDED.user_id,
+                    organization_id = EXCLUDED.organization_id,
                     title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    investigation_strategy = EXCLUDED.investigation_strategy,
                     status = EXCLUDED.status,
+                    closure_reason = EXCLUDED.closure_reason,
+                    current_turn = EXCLUDED.current_turn,
+                    turns_without_progress = EXCLUDED.turns_without_progress,
                     updated_at = EXCLUDED.updated_at,
+                    last_activity_at = EXCLUDED.last_activity_at,
+                    resolved_at = EXCLUDED.resolved_at,
+                    closed_at = EXCLUDED.closed_at,
                     consulting = EXCLUDED.consulting,
                     problem_verification = EXCLUDED.problem_verification,
                     working_conclusion = EXCLUDED.working_conclusion,
@@ -950,10 +976,19 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             {
                 "case_id": case.case_id,
                 "user_id": case.user_id,
+                "organization_id": case.organization_id,
                 "title": case.title,
+                "description": case.description,
+                "investigation_strategy": case.investigation_strategy.value,
                 "status": case.status.value,
+                "closure_reason": case.closure_reason,
+                "current_turn": case.current_turn,
+                "turns_without_progress": case.turns_without_progress,
                 "created_at": case.created_at,
                 "updated_at": case.updated_at,
+                "last_activity_at": case.last_activity_at,
+                "resolved_at": case.resolved_at,
+                "closed_at": case.closed_at,
                 "consulting": json.dumps(case.consulting.model_dump()),
                 "problem_verification": (
                     json.dumps(case.problem_verification.model_dump())
