@@ -293,6 +293,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Cancel Execution Api V1 Cases  Case Id  Sessions  Session
                   Id  Executions  Execution Id  Cancel Post
         '422':
@@ -513,6 +514,7 @@ paths:
           content:
             application/json:
               schema:
+                additionalProperties: true
                 type: object
                 title: Response Dev List Users Api V1 Auth Dev List Users Get
   /api/v1/auth/dev-delete-user/{username}:
@@ -544,6 +546,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Dev Delete User Api V1 Auth Dev Delete User  Username  Delete
         '422':
           description: Validation Error
@@ -1057,6 +1060,7 @@ paths:
             schema:
               anyOf:
               - type: object
+                additionalProperties: true
               - type: 'null'
               description: Optional request parameters
               title: Request Body
@@ -1150,6 +1154,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Get Case Analytics Api V1 Cases  Case Id  Analytics
                   Get
         '422':
@@ -1292,6 +1297,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Create Case For Session Api V1 Cases Sessions  Session
                   Id  Case Post
         '422':
@@ -1340,6 +1346,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Resume Case In Session Api V1 Cases Sessions  Session
                   Id  Resume  Case Id  Post
         '422':
@@ -1478,6 +1485,7 @@ paths:
           content:
             application/json:
               schema:
+                additionalProperties: true
                 type: object
                 title: Response Get Case Service Health Api V1 Cases Health Get
   /api/v1/cases/{case_id}/data:
@@ -1622,6 +1630,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Get Case Data Api V1 Cases  Case Id  Data  Data Id  Get
         '422':
           description: Validation Error
@@ -1744,6 +1753,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: true
               title: Request Body
       responses:
         '200':
@@ -1889,6 +1899,7 @@ paths:
             schema:
               anyOf:
               - type: object
+                additionalProperties: true
               - type: 'null'
               title: Request Body
       responses:
@@ -2150,6 +2161,7 @@ paths:
                 type: array
                 items:
                   type: object
+                  additionalProperties: true
                 title: Response Get Case Participants Api V1 Cases  Case Id  Participants
                   Get
         '422':
@@ -2193,6 +2205,56 @@ paths:
                   type: boolean
                 title: Response Check Case Access Api V1 Cases  Case Id  Access Check
                   Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/extract-knowledge:
+    post:
+      tags:
+      - cases
+      summary: Extract Knowledge from Case
+      description: Extract reusable knowledge from a case into a suggestion for the
+        knowledge base.
+      operationId: extract_knowledge_from_case_api_v1_cases__case_id__extract_knowledge_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: Case ID to extract knowledge from
+          title: Case Id
+        description: Case ID to extract knowledge from
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Request Body
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Extract Knowledge From Case Api V1 Cases  Case Id  Extract
+                  Knowledge Post
         '422':
           description: Validation Error
           content:
@@ -2928,6 +2990,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Upload Document Api V1 Knowledge Documents Post
         '422':
           description: Validation Error
@@ -2982,6 +3045,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response List Documents Api V1 Knowledge Documents Get
         '422':
           description: Validation Error
@@ -3075,6 +3139,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: true
               title: Update Data
       responses:
         '200':
@@ -3083,8 +3148,87 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Update Document Api V1 Knowledge Documents  Document
                   Id  Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/documents/{document_id}/snippet:
+    get:
+      tags:
+      - knowledge_base
+      summary: Get Document Snippet
+      description: "Get a snippet/preview of a knowledge base document for hover cards.\n\
+        \nSupports two modes:\n1. **Line-based extraction**: Extract lines from line_start\
+        \ to line_end (or max_lines)\n2. **Semantic extraction**: If query_string\
+        \ is provided, returns the most relevant\n   snippet based on vector similarity\
+        \ (more robust than line numbers after edits)\n\nArgs:\n    document_id: Document\
+        \ identifier\n    line_start: Starting line number (1-indexed, default: 1)\n\
+        \    line_end: Ending line number (optional, computed from max_lines if not\
+        \ provided)\n    max_lines: Maximum lines to return (default: 5, max: 50)\n\
+        \    query_string: Query for semantic snippet extraction (optional)\n\nReturns:\n\
+        \    Document snippet with verification status for badge display"
+      operationId: get_document_snippet_api_v1_knowledge_documents__document_id__snippet_get
+      parameters:
+      - name: document_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Document Id
+      - name: line_start
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          description: Starting line number
+          default: 1
+          title: Line Start
+        description: Starting line number
+      - name: line_end
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          description: Ending line number
+          title: Line End
+        description: Ending line number
+      - name: max_lines
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          description: Maximum lines to return
+          default: 5
+          title: Max Lines
+        description: Maximum lines to return
+      - name: query_string
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Query for semantic snippet extraction
+          title: Query String
+        description: Query for semantic snippet extraction
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentSnippetResponse'
         '422':
           description: Validation Error
           content:
@@ -3113,6 +3257,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Get Job Status Api V1 Knowledge Jobs  Job Id  Get
         '422':
           description: Validation Error
@@ -3140,6 +3285,7 @@ paths:
           content:
             application/json:
               schema:
+                additionalProperties: true
                 type: object
                 title: Response Search Documents Api V1 Knowledge Search Post
         '422':
@@ -3186,6 +3332,7 @@ paths:
           content:
             application/json:
               schema:
+                additionalProperties: true
                 type: object
                 title: Response Fulltext Search Documents Api V1 Knowledge Documents
                   Search Post
@@ -3217,6 +3364,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: true
               title: Request
       responses:
         '200':
@@ -3225,6 +3373,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Bulk Update Documents Api V1 Knowledge Documents Bulk
                   Update Post
         '422':
@@ -3267,6 +3416,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 title: Response Bulk Delete Documents Api V1 Knowledge Documents Bulk
                   Delete Post
         '422':
@@ -3288,6 +3438,7 @@ paths:
           content:
             application/json:
               schema:
+                additionalProperties: true
                 type: object
                 title: Response Get Knowledge Stats Api V1 Knowledge Stats Get
   /api/v1/knowledge/analytics/search:
@@ -3303,9 +3454,310 @@ paths:
           content:
             application/json:
               schema:
+                additionalProperties: true
                 type: object
                 title: Response Get Search Analytics Api V1 Knowledge Analytics Search
                   Get
+  /api/v1/knowledge/suggestions:
+    get:
+      tags:
+      - knowledge_base
+      summary: List Suggestions
+      description: "List knowledge suggestions with optional filtering.\n\nReturns\
+        \ suggestions extracted from cases that are pending review.\nIncludes lineage\
+        \ information for each suggestion (source case, extractor, timestamp).\n\n\
+        Args:\n    status: Filter by status (pending_review, approved, rejected)\n\
+        \    limit: Maximum suggestions to return (default: 20)\n    offset: Pagination\
+        \ offset (default: 0)\n\nReturns:\n    SuggestionListResponse with paginated\
+        \ suggestions"
+      operationId: list_suggestions_api_v1_knowledge_suggestions_get
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Filter by status: pending_review, approved, rejected'
+          title: Status
+        description: 'Filter by status: pending_review, approved, rejected'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Maximum items to return
+          default: 20
+          title: Limit
+        description: Maximum items to return
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Pagination offset
+          default: 0
+          title: Offset
+        description: Pagination offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Suggestions Api V1 Knowledge Suggestions Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/suggestions/{suggestion_id}:
+    get:
+      tags:
+      - knowledge_base
+      summary: Get Suggestion
+      description: "Get a specific knowledge suggestion by ID.\n\nReturns full suggestion\
+        \ details including content, PII scan status,\nand lineage information.\n\n\
+        Args:\n    suggestion_id: Suggestion identifier\n\nReturns:\n    KnowledgeSuggestionDetail"
+      operationId: get_suggestion_api_v1_knowledge_suggestions__suggestion_id__get
+      parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Suggestion Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Suggestion Api V1 Knowledge Suggestions  Suggestion
+                  Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - knowledge_base
+      summary: Update Suggestion
+      description: "Update a suggestion's content.\n\nAllows editing the suggested\
+        \ title, content, or type before approval.\nContent changes trigger a new\
+        \ PII scan.\n\nArgs:\n    suggestion_id: Suggestion to update\n    update_data:\
+        \ Fields to update (title, content, suggested_type)\n\nReturns:\n    Updated\
+        \ suggestion details"
+      operationId: update_suggestion_api_v1_knowledge_suggestions__suggestion_id__put
+      parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Suggestion Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Update Data
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Suggestion Api V1 Knowledge Suggestions  Suggestion
+                  Id  Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/suggestions/{suggestion_id}/approve:
+    post:
+      tags:
+      - knowledge_base
+      summary: Approve Suggestion
+      description: "Approve a suggestion and create a knowledge item.\n\nValidates\
+        \ that PII scan is complete and clean/remediated before approval.\nCreates\
+        \ a new KnowledgeItem with verification_level=2 (admin verified).\nEstablishes\
+        \ bidirectional link between suggestion and knowledge item.\n\nArgs:\n   \
+        \ suggestion_id: Suggestion to approve\n    request_body: Optional review\
+        \ notes\n\nReturns:\n    Approval result with new knowledge_item_id"
+      operationId: approve_suggestion_api_v1_knowledge_suggestions__suggestion_id__approve_post
+      parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Suggestion Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Request Body
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Approve Suggestion Api V1 Knowledge Suggestions  Suggestion
+                  Id  Approve Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/suggestions/{suggestion_id}/reject:
+    post:
+      tags:
+      - knowledge_base
+      summary: Reject Suggestion
+      description: "Reject a suggestion.\n\nMarks the suggestion as rejected with\
+        \ the provided reason.\n\nArgs:\n    suggestion_id: Suggestion to reject\n\
+        \    request_body: Must include rejection_reason, optional review_notes\n\n\
+        Returns:\n    Rejection confirmation"
+      operationId: reject_suggestion_api_v1_knowledge_suggestions__suggestion_id__reject_post
+      parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Suggestion Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Request Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reject Suggestion Api V1 Knowledge Suggestions  Suggestion
+                  Id  Reject Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/suggestions/{suggestion_id}/remediate-pii:
+    post:
+      tags:
+      - knowledge_base
+      summary: Remediate Pii
+      description: "Mark PII as remediated after manual review.\n\nCalled when an\
+        \ admin has manually reviewed and cleaned up\nPII-flagged content. Allows\
+        \ the suggestion to proceed to approval.\n\nArgs:\n    suggestion_id: Suggestion\
+        \ with PII to remediate\n\nReturns:\n    Updated suggestion with remediated\
+        \ status"
+      operationId: remediate_pii_api_v1_knowledge_suggestions__suggestion_id__remediate_pii_post
+      parameters:
+      - name: suggestion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Suggestion Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Remediate Pii Api V1 Knowledge Suggestions  Suggestion
+                  Id  Remediate Pii Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/organizations:
     post:
       tags:
@@ -4461,6 +4913,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: true
               title: Updates
       responses:
         '200':
@@ -4741,6 +5194,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: true
               title: Search Params
       responses:
         '200':
@@ -5652,7 +6106,8 @@ components:
           default: troubleshooting
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
         client_id:
@@ -6131,6 +6586,7 @@ components:
         attachments:
           anyOf:
           - items:
+              additionalProperties: true
               type: object
             type: array
           - type: 'null'
@@ -6204,8 +6660,6 @@ components:
           description: Full report content in Markdown format
         format:
           type: string
-          enum:
-          - markdown
           const: markdown
           title: Format
           description: Report format
@@ -6385,8 +6839,6 @@ components:
           description: Case identifier
         status:
           type: string
-          enum:
-          - consulting
           const: consulting
           title: Status
           description: Always 'consulting' for this response type
@@ -6443,8 +6895,6 @@ components:
           description: Case identifier
         status:
           type: string
-          enum:
-          - investigating
           const: investigating
           title: Status
           description: Always 'investigating' for this response type
@@ -6538,8 +6988,6 @@ components:
           description: Case identifier
         status:
           type: string
-          enum:
-          - resolved
           const: resolved
           title: Status
           description: Always 'resolved' for this response type
@@ -6651,7 +7099,8 @@ components:
           default: 0
         problem_confirmation:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Problem Confirmation
           description: Problem type and severity guess
@@ -6679,8 +7128,6 @@ components:
       properties:
         schema_version:
           type: string
-          enum:
-          - 3.1.0
           const: 3.1.0
           title: Schema Version
           default: 3.1.0
@@ -6716,7 +7163,8 @@ components:
           description: Conversational AI analysis of the uploaded data
         classification:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Classification
           description: Classification confidence and metadata
@@ -6820,6 +7268,62 @@ components:
         display_name: John Doe
         email: john.doe@faultmaven.local
         username: john.doe
+    DocumentSnippetResponse:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+        title:
+          type: string
+          title: Title
+        snippet:
+          type: string
+          title: Snippet
+        line_range:
+          anyOf:
+          - prefixItems:
+            - type: integer
+            - type: integer
+            type: array
+            maxItems: 2
+            minItems: 2
+          - type: 'null'
+          title: Line Range
+        total_lines:
+          type: integer
+          title: Total Lines
+        document_type:
+          type: string
+          title: Document Type
+        verification_status:
+          type: string
+          enum:
+          - verified
+          - community
+          - experimental
+          title: Verification Status
+          default: experimental
+        verification_level:
+          type: integer
+          title: Verification Level
+          default: 0
+        relevance_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Relevance Score
+      type: object
+      required:
+      - document_id
+      - title
+      - snippet
+      - total_lines
+      - document_type
+      title: DocumentSnippetResponse
+      description: 'Response model for document snippet (hover card preview).
+
+
+        Supports both line-based and semantic snippet extraction.'
     EvidenceArtifact:
       properties:
         evidence_id:
@@ -6864,7 +7368,8 @@ components:
           title: Updated At
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
         description:
@@ -7309,9 +7814,34 @@ components:
           title: Updated At
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
+        verification_level:
+          type: integer
+          title: Verification Level
+          default: 0
+        verification_status:
+          anyOf:
+          - type: string
+            enum:
+            - verified
+            - community
+            - experimental
+          - type: 'null'
+          title: Verification Status
+          default: experimental
+        verification_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Verification Reason
+        source_suggestion_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Suggestion Id
       type: object
       required:
       - document_id
@@ -7385,7 +7915,9 @@ components:
           title: Email
           description: Email of user to invite
         role:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Role
           description: Role to assign (member, admin)
           default: member
@@ -7557,7 +8089,8 @@ components:
           description: Number of tokens in content
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
           description: Sources, tools used, etc.
@@ -7646,7 +8179,9 @@ components:
           title: Description
           description: Organization description
         plan_tier:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Plan Tier
           description: Subscription plan tier
           default: free
@@ -7743,6 +8278,7 @@ components:
           - type: 'null'
           title: Owner User Id
         settings:
+          additionalProperties: true
           type: object
           title: Settings
         created_at:
@@ -7987,6 +8523,7 @@ components:
           type: array
           title: Available For Generation
         runbook_recommendation:
+          additionalProperties: true
           type: object
           title: Runbook Recommendation
       type: object
@@ -8036,7 +8573,8 @@ components:
           title: Linked To Closure
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -8228,7 +8766,8 @@ components:
           description: Origin of runbook
         case_context:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Case Context
           description: Case investigation context (incident-driven only)
@@ -8308,7 +8847,8 @@ components:
           description: Filter by tags (comma-separated)
         filters:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Filters
           description: Advanced filters for search
@@ -8353,7 +8893,8 @@ components:
           title: Token Budget Limit
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -8363,8 +8904,6 @@ components:
       properties:
         schema_version:
           type: string
-          enum:
-          - 3.1.0
           const: 3.1.0
           title: Schema Version
           default: 3.1.0
@@ -8394,7 +8933,8 @@ components:
           title: Expires At
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
         session_resumed:
@@ -8456,7 +8996,8 @@ components:
           title: Token Budget Limit
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -8491,6 +9032,7 @@ components:
           type: object
           title: Features
         settings:
+          additionalProperties: true
           type: object
           title: Settings
       type: object
@@ -8536,6 +9078,7 @@ components:
           type: string
           title: Organization Id
         settings:
+          additionalProperties: true
           type: object
           title: Settings
         updated_at:
@@ -8586,9 +9129,24 @@ components:
           title: Confidence
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
+        verification_status:
+          anyOf:
+          - type: string
+            enum:
+            - verified
+            - community
+            - experimental
+          - type: 'null'
+          title: Verification Status
+        verification_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Verification Reason
       type: object
       required:
       - type
@@ -8721,6 +9279,7 @@ components:
           - type: 'null'
           title: Description
         settings:
+          additionalProperties: true
           type: object
           title: Settings
         created_at:
@@ -8760,7 +9319,8 @@ components:
           description: Updated description
         settings:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Settings
           description: Team settings
@@ -8831,6 +9391,7 @@ components:
           type: string
           title: Tool Name
         arguments:
+          additionalProperties: true
           type: object
           title: Arguments
         result:
@@ -8932,7 +9493,8 @@ components:
           description: AI-generated summary (1-2 sentences)
         source_metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Source Metadata
           description: Additional metadata for page injections
@@ -9060,7 +9622,8 @@ components:
           description: AI-generated summary (1-2 sentences)
         source_metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Source Metadata
           description: Additional metadata for page injections
@@ -9338,6 +9901,7 @@ components:
           title: Cases
         messages:
           items:
+            additionalProperties: true
             type: object
           type: array
           title: Messages
@@ -9361,17 +9925,20 @@ components:
           title: Loading State
         memory_context:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Memory Context
         planning_state:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Planning State
         investigation_progress:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Investigation Progress
           description: OODA investigation progress (phase, iteration, hypotheses)
