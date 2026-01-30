@@ -463,9 +463,7 @@ class CaseMessageModel(Base):
             "LENGTH(TRIM(content)) > 0", name="case_messages_content_not_empty"
         ),
         CheckConstraint("turn_number >= 0", name="case_messages_turn_nonnegative"),
-        # Unique constraint prevents duplicate turn sequences in conversation history
-        UniqueConstraint("case_id", "turn_number", name="uq_case_messages_case_turn"),
-        # Index for turn-based retrieval
+        # Index for turn-based retrieval (multiple messages can share same turn_number)
         Index("idx_case_messages_case_turn", "case_id", "turn_number"),
         # Composite index for efficient ORDER BY created_at queries
         Index("idx_case_messages_case_created", "case_id", "created_at"),
