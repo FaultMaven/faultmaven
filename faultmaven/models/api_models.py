@@ -78,12 +78,16 @@ class CaseSummary(BaseModel):
 
     case_id: str
     title: str
+    description: str
     status: CaseStatus
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
+    resolved_at: Optional[datetime]
+    closed_at: Optional[datetime]
     user_id: str
     organization_id: str
+    closure_reason: Optional[str]
 
     # Progress indicators
     current_turn: int
@@ -100,12 +104,16 @@ class CaseSummary(BaseModel):
         return cls(
             case_id=case.case_id,
             title=case.title,
+            description=case.description,
             status=case.status,
             created_at=case.created_at,
             updated_at=case.updated_at,
             last_activity_at=case.last_activity_at,
+            resolved_at=case.resolved_at,
+            closed_at=case.closed_at,
             user_id=case.user_id,
             organization_id=case.organization_id,
+            closure_reason=case.closure_reason,
             current_turn=case.current_turn,
             milestones_completed=len(case.progress.completed_milestones),
             total_milestones=8,
@@ -129,6 +137,7 @@ class CaseDetail(BaseModel):
 
     user_id: str
     organization_id: str
+    closure_reason: Optional[str]
 
     # Progress
     current_turn: int
@@ -166,6 +175,7 @@ class CaseDetail(BaseModel):
             closed_at=case.closed_at,
             user_id=case.user_id,
             organization_id=case.organization_id,
+            closure_reason=case.closure_reason,
             current_turn=case.current_turn,
             turns_without_progress=case.turns_without_progress,
             current_stage=case.current_stage,
