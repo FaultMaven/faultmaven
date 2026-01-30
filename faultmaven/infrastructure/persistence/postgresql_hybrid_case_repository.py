@@ -115,7 +115,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 # 5. Upsert uploaded_files (normalized table)
                 await self._upsert_uploaded_files(case.case_id, case.uploaded_files)
 
-                # 6. Append status transitions (append-only)
+                # 6. Upsert messages (normalized table)
+                await self._upsert_messages(case.case_id, case.messages)
+
+                # 7. Append status transitions (append-only)
                 if case.status_history:
                     await self._append_status_transitions(
                         case.case_id, case.status_history
@@ -1110,6 +1113,75 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "content_ref": file.content_ref,
                     "preprocessing_summary": file.preprocessing_summary,
                     "metadata": json.dumps({}),
+                },
+            )
+
+    async def _upsert_messages(
+        self, case_id: str, messages_list: List[Dict[str, Any]]
+    ) -> None:
+        """Upsert case messages (PostgreSQL-optimized).
+
+        Schema per design spec (case-schema.md §4.7):
+        - message_id, turn_number, role, content, created_at, token_count, metadata
+
+        Strategy:
+        1. Delete messages not in current list (maintain sync with domain model)
+        2. Upsert each message (INSERT ... ON CONFLICT DO UPDATE)
+
+        Note: PostgreSQL uses != ALL(array) for exclusion queries (more efficient than NOT IN)
+        """
+        # Get IDs of messages that should exist
+        current_ids = [
+            msg.get("message_id") for msg in messages_list if msg.get("message_id")
+        ]
+
+        if current_ids:
+            # Delete messages not in current list (PostgreSQL array syntax)
+            delete_query = text(
+                """
+                DELETE FROM case_messages
+                WHERE case_id = :case_id
+                AND message_id != ALL(:current_ids)
+            """
+            )
+            await self.db.execute(
+                delete_query, {"case_id": case_id, "current_ids": current_ids}
+            )
+
+        # Upsert each message
+        for idx, msg in enumerate(messages_list):
+            # Skip if no message_id (shouldn't happen, but be safe)
+            if not msg.get("message_id"):
+                continue
+
+            query = text(
+                """
+                INSERT INTO case_messages (
+                    message_id, case_id, turn_number, role, content, created_at, token_count, metadata
+                ) VALUES (
+                    :message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata::jsonb
+                )
+                ON CONFLICT (message_id) DO UPDATE SET
+                    turn_number = EXCLUDED.turn_number,
+                    role = EXCLUDED.role,
+                    content = EXCLUDED.content,
+                    created_at = EXCLUDED.created_at,
+                    token_count = EXCLUDED.token_count,
+                    metadata = EXCLUDED.metadata
+            """
+            )
+
+            await self.db.execute(
+                query,
+                {
+                    "message_id": msg.get("message_id"),
+                    "case_id": case_id,
+                    "turn_number": msg.get("turn_number", idx),
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", ""),
+                    "created_at": msg.get("created_at") or datetime.now(timezone.utc),
+                    "token_count": msg.get("token_count"),
+                    "metadata": json.dumps(msg.get("metadata", {})),
                 },
             )
 
