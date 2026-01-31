@@ -722,7 +722,7 @@ def _get_hypothesis_validation_instructions(case: Case) -> str:
 
 2. **Evaluate Evidence Against ALL Hypotheses**
    - When user provides evidence, evaluate it against ALL active hypotheses
-   - Determine stance: STRONGLY_SUPPORTS | SUPPORTS | CONTRADICTS | STRONGLY_CONTRADICTS
+   - Determine stance: SUPPORTS | NEUTRAL | REFUTES
    - Update hypothesis likelihood based on evidence
 
 3. **Identify Root Cause**
@@ -885,7 +885,7 @@ GENERAL INSTRUCTIONS (Apply to All Stages)
 
 When evaluating causal evidence:
 - For EACH hypothesis, determine:
-  * stance: STRONGLY_SUPPORTS | SUPPORTS | NEUTRAL | CONTRADICTS | STRONGLY_CONTRADICTS | IRRELEVANT
+  * stance: SUPPORTS | NEUTRAL | REFUTES (with stance_confidence 0.0-1.0)
   * reasoning: Why this evidence has this stance for THIS hypothesis
   * completeness: How well this evidence tests THIS hypothesis (0.0-1.0)
 - ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses!

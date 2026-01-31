@@ -236,10 +236,12 @@ case.closure_reason = "escalated"
 
 ### Investigation Paths
 
-| Path | Flow | Use When |
-|------|------|----------|
-| `MITIGATION_FIRST` | 1→4→2→3→4 | ONGOING + HIGH/CRITICAL urgency |
-| `ROOT_CAUSE` | 1→2→3→4 | HISTORICAL + LOW/MEDIUM urgency |
+Both paths follow **linear stage progression**: 1 → 2 → 3 → 4
+
+| Path | Mitigation | Use When |
+|------|------------|----------|
+| `MITIGATION_FIRST` | Available as tool during stages 1-2 | ONGOING + HIGH/CRITICAL urgency |
+| `ROOT_CAUSE` | After RCA complete | HISTORICAL + LOW/MEDIUM urgency |
 | `USER_CHOICE` | User decides | Ambiguous cases |
 
 ### Milestones
@@ -249,4 +251,12 @@ case.closure_reason = "escalated"
 | Verification | `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified` |
 | Investigation | `root_cause_identified` |
 | Resolution | `solution_proposed`, `solution_applied`, `solution_verified` |
-| Path-Specific | `mitigation_applied` (MITIGATION_FIRST only) |
+| Mitigation | `mitigation_applied` (opportunistic, during stages 1-2) |
+
+### Evidence Stances
+
+| Stance | Meaning | Use With |
+|--------|---------|----------|
+| `SUPPORTS` | Evidence supports hypothesis | `stance_confidence` 0.0-1.0 |
+| `REFUTES` | Evidence contradicts hypothesis | `stance_confidence` 0.0-1.0 |
+| `NEUTRAL` | Evidence neither supports nor refutes | — |

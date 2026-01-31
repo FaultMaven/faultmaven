@@ -524,25 +524,28 @@ def determine_investigation_path(
 
 ### 2.3 Path Impact on Investigation
 
-**Path (a): MITIGATION_FIRST (1-4-2-3-4)**:
+**Both paths follow LINEAR stage progression: 1 → 2 → 3 → 4**
 
-Key Change: **No longer "mitigation only" - returns to full RCA after mitigation**
+The difference is WHEN mitigation is applied, not the stage flow.
+
+---
+
+**Path (a): MITIGATION_FIRST**
+
+Mitigation is a **tool available during early stages**, not a stage jump.
 
 - **Stage 1: Symptom Verification**
   - Verify where and when problem is happening
   - Assess urgency and temporal state
-  - Path selection: MITIGATION_FIRST chosen due to ONGOING + HIGH/CRITICAL urgency
-  - Next: Skip directly to stage 4
-
-- **Stage 4: Quick Mitigation (First Visit)**
-  - Apply correlation-based temporary fix
-  - Stop immediate impact and restore service
-  - Mark `mitigation_applied = True`
-  - Next: Return to stage 2 for RCA
+  - **If correlation strong** (e.g., error started 2 min after deploy):
+    - Apply quick mitigation (rollback, restart, etc.)
+    - Mark `mitigation_applied = True`
+    - Service stabilized, pressure reduced
+  - Next: Stage 2
 
 - **Stage 2: Hypothesis Formulation**
   - Generate theories about root cause
-  - Now that service is restored, can take time for thorough analysis
+  - Service is now stable, can take time for thorough analysis
   - May use systematic exploration when cause unclear
   - Next: Stage 3
 
@@ -550,23 +553,25 @@ Key Change: **No longer "mitigation only" - returns to full RCA after mitigation
   - Test hypotheses with diagnostic evidence
   - Identify root cause with confidence
   - Mark `root_cause_identified = True`
-  - Next: Stage 4 (second visit)
+  - Next: Stage 4
 
-- **Stage 4: Permanent Solution (Second Visit)**
+- **Stage 4: Solution**
   - Apply evidence-based permanent fix
   - Address root cause to prevent recurrence
   - Verify effectiveness
   - Case transitions to RESOLVED
 
-**Milestones**: `symptom_verified` → `mitigation_applied` → `root_cause_identified` → `solution_applied` → `solution_verified`
+**Milestones**: `symptom_verified` → `mitigation_applied` (during 1-2) → `root_cause_identified` → `solution_applied` → `solution_verified`
 
-**Path (b): ROOT_CAUSE (1-2-3-4)**:
+---
 
-Traditional RCA path - thorough investigation from start
+**Path (b): ROOT_CAUSE**
+
+Traditional RCA path - thorough investigation from start.
 
 - **Stage 1: Symptom Verification**
   - Verify where and when (historical problem or low urgency)
-  - Path selection: ROOT_CAUSE chosen
+  - No immediate mitigation needed (no active impact)
   - Next: Stage 2
 
 - **Stage 2: Hypothesis Formulation**
@@ -585,11 +590,16 @@ Traditional RCA path - thorough investigation from start
 
 **Milestones**: `symptom_verified` → `root_cause_identified` → `solution_applied` → `solution_verified`
 
+---
+
 **Key Differences**:
-- **MITIGATION_FIRST**: Stage 4 visited TWICE (quick mitigation, then permanent fix), stages 2-3 done AFTER mitigation
-- **ROOT_CAUSE**: Stage 4 visited ONCE (permanent fix), stages 2-3-4 done sequentially
-- **MITIGATION_FIRST**: Uses `mitigation_applied` field to track the return path
-- **ROOT_CAUSE**: Traditional linear progression through all 4 stages
+
+| Aspect | MITIGATION_FIRST | ROOT_CAUSE |
+|--------|------------------|------------|
+| Stage flow | Linear: 1 → 2 → 3 → 4 | Linear: 1 → 2 → 3 → 4 |
+| Mitigation timing | During stages 1-2 (opportunistic) | Not applied (or only if urgent) |
+| Pressure | Reduced early (service stable) | Full pressure until resolution |
+| Use case | ONGOING + HIGH/CRITICAL | HISTORICAL + LOW/MEDIUM |
 
 ---
 

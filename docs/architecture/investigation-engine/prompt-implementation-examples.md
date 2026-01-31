@@ -437,12 +437,15 @@ class MilestoneUpdates(BaseModel):
 
 
 class EvidenceStance(str, Enum):
-    """How evidence relates to hypothesis"""
-    STRONGLY_SUPPORTS = "strongly_supports"
+    """
+    How evidence relates to hypothesis.
+
+    Simplified 3-state enum for LLM consistency.
+    Use stance_confidence (0.0-1.0) for granularity.
+    """
     SUPPORTS = "supports"
     NEUTRAL = "neutral"
     REFUTES = "refutes"
-    STRONGLY_REFUTES = "strongly_refutes"
 
 
 class EvidenceToAdd(BaseModel):
@@ -451,6 +454,16 @@ class EvidenceToAdd(BaseModel):
     analysis: Optional[str] = Field(default=None, max_length=2000)
     tests_hypothesis_id: Optional[str] = None
     stance: Optional[EvidenceStance] = None
+    stance_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Confidence in stance (0.0-1.0)"
+    )
+    category_override: Optional[str] = Field(
+        default=None,
+        description="LLM-suggested category override (SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE, RESOLUTION_EVIDENCE)"
+    )
 
 
 class EvidenceRequestToAdd(BaseModel):

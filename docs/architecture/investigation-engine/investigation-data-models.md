@@ -139,22 +139,24 @@ class InvestigationProgress(BaseModel):
     )
 
     # ============================================================
-    # Path-Specific Tracking
+    # Mitigation Tracking (Available During Any Stage)
     # ============================================================
     mitigation_applied: bool = Field(
         default=False,
         description="""
-        MITIGATION_FIRST path: Quick mitigation applied (stage 1 → 4 complete).
+        Quick mitigation applied to stop immediate impact.
 
-        Used to track progress in MITIGATION_FIRST path (1-4-2-3-4):
-        - Stage 1: Symptom verified
-        - Stage 4: Quick mitigation applied (mitigation_applied = True)
-        - Stage 2: Return to hypothesis formulation for RCA
-        - Stage 3: Hypothesis validation
-        - Stage 4: Permanent solution applied (solution_applied = True)
+        Mitigation is a TOOL available during diagnosis, not a stage jump.
+        Both paths follow linear progression: 1 → 2 → 3 → 4
 
-        When True: Agent should return to stage 2 for full RCA
-        When False: Either ROOT_CAUSE path, or MITIGATION_FIRST hasn't applied mitigation yet
+        MITIGATION_FIRST path:
+        - Mitigation applied opportunistically during stages 1-2 when
+          correlation is strong enough (e.g., recent deployment + error timing)
+        - Investigation continues to root cause for permanent fix
+
+        ROOT_CAUSE path:
+        - Mitigation typically not applied until root cause confirmed
+        - May still apply mitigation if situation becomes urgent
 
         Note: Different from solution_applied - mitigation is quick correlation-based fix,
         solution is comprehensive permanent fix after RCA.
@@ -211,9 +213,12 @@ class InvestigationStage(str, Enum):
     Investigation stage within INVESTIGATING phase (4 stages).
     Computed from milestones for optional progress detail.
 
-    Stage Progression (Path-Dependent):
-    - MITIGATION_FIRST: 1 → 4 → 2 → 3 → 4 (quick mitigation, then return for RCA)
-    - ROOT_CAUSE: 1 → 2 → 3 → 4 (traditional RCA)
+    Stage Progression (Linear for Both Paths):
+    1 → 2 → 3 → 4 (Verify → Hypothesize → Validate → Resolve)
+
+    Path Differences:
+    - MITIGATION_FIRST: Mitigation available as tool during stages 1-2
+    - ROOT_CAUSE: Full RCA before any fix applied
     """
     SYMPTOM_VERIFICATION = "symptom_verification"
     """Stage 1: Symptom verification (where and when)"""
@@ -301,25 +306,29 @@ class TurnOutcome(str, Enum):
 ```python
 class InvestigationPath(str, Enum):
     """
-    Investigation routing based on temporal state and urgency (4-stage workflow).
+    Investigation routing based on temporal state and urgency.
 
-    Two paths based on urgency:
-    - MITIGATION_FIRST: 1-4-2-3-4 (quick mitigation, then RCA)
-    - ROOT_CAUSE: 1-2-3-4 (traditional RCA)
+    Both paths follow LINEAR stage progression: 1 → 2 → 3 → 4
+    (Verify → Hypothesize → Validate → Resolve)
+
+    The difference is WHEN mitigation is applied:
+    - MITIGATION_FIRST: Mitigation available as tool during stages 1-2
+    - ROOT_CAUSE: Full RCA before any fix applied
     """
     MITIGATION_FIRST = "mitigation_first"
     """
-    Mitigation-first path (updated from "mitigation only").
+    Mitigation-first path.
 
-    Stage Flow: 1 → 4 → 2 → 3 → 4
-    - Stage 1: Verify symptom (where/when)
-    - Stage 4: Apply quick mitigation (correlation-based fix)
-    - Stage 2: Formulate hypotheses (why)
-    - Stage 3: Validate hypothesis (why really)
-    - Stage 4: Apply permanent solution (how)
+    Stage Flow: 1 → 2 → 3 → 4 (linear, same as ROOT_CAUSE)
+
+    Key Difference: Mitigation is available as a TOOL during early stages.
+    - Stage 1: Verify symptom + apply mitigation if correlation strong
+    - Stage 2: Continue formulating hypotheses (service now stable)
+    - Stage 3: Validate hypothesis for root cause
+    - Stage 4: Apply permanent solution
 
     Use When: ONGOING + HIGH/CRITICAL urgency
-    Key Change: No longer "mitigation only" - returns to RCA after initial mitigation
+    Benefit: Stops bleeding quickly while still pursuing full RCA
     """
 
     ROOT_CAUSE = "root_cause"
@@ -333,6 +342,7 @@ class InvestigationPath(str, Enum):
     - Stage 4: Apply solution (how)
 
     Use When: HISTORICAL + LOW/MEDIUM urgency
+    Benefit: Thorough investigation without pressure
     """
 
     USER_CHOICE = "user_choice"
@@ -1174,23 +1184,41 @@ class Evidence(BaseModel):
     """
     Evidence with purpose-driven categorization.
 
-    NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
-    System categorizes based on:
+    Category Determination (with LLM override):
+    1. LLM may suggest category_override based on contextual analysis
+    2. System applies default rules if no override provided
+    3. LLM override is respected when provided (LLM has context awareness)
+
+    Default system rules (when no override):
     - Which milestones are incomplete (if symptom not verified → SYMPTOM_EVIDENCE)
     - Hypothesis linkage (if tests_hypothesis_id set → CAUSAL_EVIDENCE)
     - Solution state (if solution proposed → RESOLUTION_EVIDENCE)
 
-    LLM provides: summary, analysis, tests_hypothesis_id, stance
-    System infers: category, advances_milestones
+    LLM provides: summary, analysis, tests_hypothesis_id, stance, stance_confidence, category_override
+    System infers: category (respecting override), advances_milestones
     """
 
     evidence_id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:12]}")
 
     # ============================================================
-    # Purpose Classification (SYSTEM-INFERRED)
+    # Purpose Classification
     # ============================================================
     category: EvidenceCategory = Field(
-        description="System-inferred category based on investigation context"
+        description="Final category (system-inferred or LLM-overridden)"
+    )
+
+    category_override: Optional[EvidenceCategory] = Field(
+        default=None,
+        description="""
+        LLM-suggested category override.
+
+        Use when LLM's contextual analysis identifies that evidence serves
+        a different purpose than system rules would infer. For example:
+        - Error log that CONTAINS causal config values → CAUSAL_EVIDENCE
+        - Metrics that SHOW symptom but REVEAL cause → CAUSAL_EVIDENCE
+
+        When set, system respects this override over default rules.
+        """
     )
 
     primary_purpose: str = Field(
@@ -1209,6 +1237,20 @@ class Evidence(BaseModel):
     # Hypothesis linkage (for CAUSAL_EVIDENCE)
     tests_hypothesis_id: Optional[str] = None
     stance: Optional[EvidenceStance] = None
+    stance_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="""
+        Confidence in the stance assessment (0.0-1.0).
+
+        Use this for granularity instead of STRONGLY_SUPPORTS vs SUPPORTS.
+        - 0.9+ : Very strong support/refutation
+        - 0.7-0.9: Moderate support/refutation
+        - 0.5-0.7: Weak support/refutation
+        - <0.5: Consider using NEUTRAL stance instead
+        """
+    )
 
     # Milestone advancement
     advances_milestones: List[str] = Field(default_factory=list)
@@ -1238,11 +1280,20 @@ class EvidenceForm(str, Enum):
     USER_INPUT = "user_input"
 
 class EvidenceStance(str, Enum):
-    STRONGLY_SUPPORTS = "strongly_supports"
+    """
+    Simplified 3-state stance for LLM consistency.
+
+    Use stance_confidence (0.0-1.0) for granularity instead of
+    STRONGLY_SUPPORTS vs SUPPORTS distinctions, which LLMs score inconsistently.
+    """
     SUPPORTS = "supports"
+    """Evidence supports the hypothesis"""
+
+    REFUTES = "refutes"
+    """Evidence contradicts the hypothesis"""
+
     NEUTRAL = "neutral"
-    CONTRADICTS = "contradicts"
-    STRONGLY_CONTRADICTS = "strongly_contradicts"
+    """Evidence neither supports nor refutes"""
 ```
 
 ---

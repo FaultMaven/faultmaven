@@ -1094,7 +1094,7 @@ GENERAL INSTRUCTIONS (Apply to All Stages)
 
 When evaluating causal evidence:
 - For EACH hypothesis, determine:
-  * stance: STRONGLY_SUPPORTS | SUPPORTS | NEUTRAL | CONTRADICTS | STRONGLY_CONTRADICTS | IRRELEVANT
+  * stance: SUPPORTS | NEUTRAL | REFUTES (with stance_confidence 0.0-1.0)
   * reasoning: Why this evidence has this stance for THIS hypothesis
   * completeness: How well this evidence tests THIS hypothesis (0.0-1.0)
 - ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses!
@@ -2064,7 +2064,7 @@ def determine_milestone_advancement(
         # Check if hypothesis validated
         if evidence.tests_hypothesis_id:
             hypothesis = case.hypotheses.get(evidence.tests_hypothesis_id)
-            if hypothesis and evidence.stance == EvidenceStance.STRONGLY_SUPPORTS:
+            if hypothesis and evidence.stance == EvidenceStance.SUPPORTS:
                 if not case.progress.root_cause_identified:
                     milestones.append("root_cause_identified")
     
