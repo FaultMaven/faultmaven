@@ -80,21 +80,21 @@ The Agent module maintains **three separate services** with clear separation of 
 #### 2. InvestigationOrchestrator (Mid-Level)
 - **Responsibility**: Workflow state, phase transitions, hypothesis tracking
 - **Size**: 911 LOC
-- **Dependencies**: OODA engine, milestone engine, AgentOrchestrationService
+- **Dependencies**: Milestone engine, AgentOrchestrationService
 - **Key Operations**:
-  - Manage investigation phases (Observe, Orient, Decide, Act)
+  - Manage investigation stages (Understanding, Diagnosing, Resolving)
   - Track hypotheses and working conclusions
-  - Coordinate phase transitions
+  - Coordinate status transitions
   - Maintain investigation state
 
 #### 3. InvestigationService (High-Level)
-- **Responsibility**: Milestone tracking, OODA coordination, progress management
+- **Responsibility**: Milestone tracking, milestone coordination, progress management
 - **Size**: 369 LOC
 - **Dependencies**: InvestigationOrchestrator, case service
 - **Key Operations**:
   - Track investigation milestones
   - Monitor investigation progress
-  - Coordinate OODA loops
+  - Coordinate investigation milestones
   - Generate investigation summaries
 
 ### Tools (11 Tools)
@@ -125,7 +125,7 @@ The Agent module maintains **three separate services** with clear separation of 
 
 | Module/Layer | Usage | Files |
 |--------------|-------|-------|
-| **core/investigation/** | OODA loop, phases, strategies, milestone engine | 7 files (shared infrastructure) |
+| **core/investigation/** | Milestone engine, hypothesis manager | Shared infrastructure |
 | **infrastructure/llm/** | LLM provider abstractions | OpenAI, Anthropic, etc. |
 | **integrations/llm_client.py** | LLM client wrapper | LLM operations |
 | **modules/case/** | Case context for investigations | `Case` model, `CaseRepository` |
@@ -160,7 +160,6 @@ The Agent module maintains **three separate services** with clear separation of 
 
 ```python
 # Agent services import from existing location
-from faultmaven.core.investigation.ooda_engine import OODAEngine
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 ```
 
@@ -344,7 +343,7 @@ from faultmaven.services import AgentOrchestrationService
 - 11 tool files + 1 config + 3 kb_configs
 
 **What Did NOT Move** (Shared Infrastructure):
-- `core/investigation/` (7 files) - OODA, milestones, phases
+- `core/investigation/` - Milestone engine, hypothesis manager
 - `infrastructure/llm/` - LLM providers
 - `integrations/llm_client.py` - LLM client
 

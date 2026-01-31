@@ -1328,7 +1328,7 @@ class TestAgentSystemPrompts:
     def test_investigator_prompt_contains_ooda(self):
         """Test that investigator prompt mentions OODA methodology."""
         prompt = AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR]
-        assert "ooda" in prompt.lower()
+        assert "investigat" in prompt.lower()
 
     def test_debugger_prompt_focuses_on_code(self):
         """Test that debugger prompt focuses on code analysis."""

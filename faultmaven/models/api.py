@@ -10,13 +10,12 @@ from faultmaven.utils.serialization import to_json_compatible
 
 # Import for type annotations (avoid circular imports)
 if TYPE_CHECKING:
-    # SuggestedAction moved to agentic.py (used by OODA framework)
     from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
 # Import evidence-centric models
 from faultmaven.models.llm_schemas import EvidenceRequestToAdd as EvidenceRequest
-from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
 from faultmaven.modules.case.domain.models import CaseStatus as EvidenceCaseStatus
+from faultmaven.modules.case.domain.models import InvestigationStrategy
 
 # --- Enumerations for Explicit Contracts ---
 
@@ -180,10 +179,10 @@ class ViewState(BaseModel):
     memory_context: Optional[Dict[str, Any]] = None  # Agent memory context
     planning_state: Optional[Dict[str, Any]] = None  # Agent planning state
 
-    # OODA Framework Progress (v3.2.0)
+    # Investigation Progress
     investigation_progress: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="OODA investigation progress (phase, iteration, hypotheses)",
+        description="Investigation progress (milestones, evidence, hypotheses)",
     )
 
 

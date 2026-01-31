@@ -252,60 +252,6 @@ class TestEdgeCases:
         assert properties["metadata"]["type"] == "object"
 
 
-class TestRealWorldModels:
-    """Test conversion of actual OODA response models"""
-
-    def test_ooda_response_model(self):
-        """Test converting OODAResponse model"""
-        from faultmaven.models.responses import OODAResponse
-
-        result = pydantic_to_openai_function(OODAResponse)
-
-        assert result["name"] == "OODAResponse"
-        properties = result["parameters"]["properties"]
-        assert "answer" in properties
-        assert "clarifying_questions" in properties
-        assert "suggested_actions" in properties
-        assert "answer" in result["parameters"]["required"]
-
-    def test_consultant_response_model(self):
-        """Test converting ConsultantResponse model"""
-        from faultmaven.models.responses import ConsultantResponse
-
-        result = pydantic_to_openai_function(ConsultantResponse)
-
-        assert result["name"] == "ConsultantResponse"
-        properties = result["parameters"]["properties"]
-        assert "answer" in properties
-        assert "problem_detected" in properties
-        assert "severity" in properties
-
-    def test_lead_investigator_response_model(self):
-        """Test converting LeadInvestigatorResponse model"""
-        from faultmaven.models.responses import LeadInvestigatorResponse
-
-        result = pydantic_to_openai_function(LeadInvestigatorResponse)
-
-        assert result["name"] == "LeadInvestigatorResponse"
-        properties = result["parameters"]["properties"]
-        assert "answer" in properties
-        assert "evidence_request" in properties
-        assert "phase_complete" in properties
-
-
-class TestSchemaDefinitions:
-    """Test handling of $defs in schemas"""
-
-    def test_model_with_nested_definitions(self):
-        """Test that $defs are preserved"""
-        from faultmaven.models.responses import LeadInvestigatorResponse
-
-        result = pydantic_to_openai_function(LeadInvestigatorResponse)
-
-        # Check if $defs are present (for nested models)
-        parameters = result["parameters"]
-        # Pydantic may include $defs for nested models
-        # This test verifies the conversion doesn't break with nested structures
 
 
 class TestFunctionNaming:

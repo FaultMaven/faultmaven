@@ -30,12 +30,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from faultmaven.modules.agent.domain.models.investigation import (
-    EngagementMode,
-    InvestigationPhase,
-    InvestigationStrategy,
-    OODAStep,
-)
+from faultmaven.modules.case.domain.models import CaseStatus, InvestigationStrategy
 
 # Core Agentic Data Models
 
@@ -85,7 +80,7 @@ class AgentExecutionState(BaseModel):
 
     session_id: str
     agent_id: str = "faultmaven-agent"
-    current_phase: InvestigationPhase = InvestigationPhase.INTAKE
+    current_phase: CaseStatus = CaseStatus.INQUIRY
     execution_context: Dict[str, Any] = Field(default_factory=dict)
     plan_stack: List[Dict[str, Any]] = Field(default_factory=list)
     observation_buffer: List[Dict[str, Any]] = Field(default_factory=list)
@@ -179,7 +174,7 @@ class ObservationData(BaseModel):
 
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
-    phase: InvestigationPhase
+    phase: CaseStatus
     source: str
     observation_type: str
     data: Dict[str, Any] = Field(default_factory=dict)
@@ -546,7 +541,7 @@ class AgenticLangGraphState(BaseModel):
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
     # Agentic execution state
-    current_phase: InvestigationPhase = InvestigationPhase.INTAKE
+    current_phase: CaseStatus = CaseStatus.INQUIRY
     execution_state: Optional[AgentExecutionState] = None
     conversation_memory: Optional[ConversationMemory] = None
 
@@ -1020,7 +1015,7 @@ class ExecutionStep(BaseModel):
 
 
 class SuggestedAction(BaseModel):
-    """Suggested action for user (used by OODA framework)"""
+    """Suggested action for user"""
 
     action_type: str
     description: str
@@ -1030,10 +1025,9 @@ class SuggestedAction(BaseModel):
 
 
 class StructuredLLMResponse(BaseModel):
-    """Structured response from LLM for OODA framework compatibility
+    """Structured response from LLM
 
-    This is an internal format used by the OODA orchestrator to maintain
-    compatibility with the legacy doctor/patient system.
+    Internal format for structured data from LLM responses.
     """
 
     answer: str

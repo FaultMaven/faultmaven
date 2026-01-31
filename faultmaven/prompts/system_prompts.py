@@ -18,11 +18,19 @@ BRIEF_METHODOLOGY = """For troubleshooting: 1) Scope impact 2) Timeline 3) Hypot
 
 # Detailed Methodology (for complex troubleshooting - 180 tokens)
 DETAILED_METHODOLOGY = """For complex troubleshooting, follow 5 phases:
+0. Knowledge Pre-Check - search KB and assess semantic urgency (business impact)
 1. Define Blast Radius - scope, impact, affected systems, when started
 2. Establish Timeline - last known good, recent changes, correlated events
 3. Formulate Hypotheses - potential causes ranked by likelihood
 4. Validate - test with logs, metrics, config checks
 5. Propose Solution - immediate fix, root cause, verification, prevention"""
+
+TOOL_CONSTRAINTS = """
+When tools return no results:
+- Do NOT say "I searched the KB but found nothing"
+- Instead, proceed to the next logical step silently
+- Only mention tool results when they're actionable
+"""
 
 # Tiered System Prompts - Conditional Loading
 

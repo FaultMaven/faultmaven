@@ -702,26 +702,22 @@ class UrgencyLevel(str, Enum):
 
     CRITICAL = "critical"
     """
-    Severe production impact.
-    Examples: Total outage, data loss, security breach
+    Complete unavailability, data corruption risk, security breach
     """
 
     HIGH = "high"
     """
-    Significant impact but not total failure.
-    Examples: Degraded performance, partial outage, many users affected
+    Significant degradation, >10% users affected, SLA at risk
     """
 
     MEDIUM = "medium"
     """
-    Moderate impact.
-    Examples: Minor performance issues, small user subset affected
+    Partial degradation, <10% users affected
     """
 
     LOW = "low"
     """
-    Minimal impact.
-    Examples: Edge case bugs, cosmetic issues, very few users
+    Cosmetic issues, workaround available
     """
 
     UNKNOWN = "unknown"
@@ -771,6 +767,31 @@ class ProblemConfirmation(BaseModel):
         if v not in allowed:
             raise ValueError(f"severity_guess must be one of: {allowed}")
         return v
+
+
+class KnowledgeResolution(BaseModel):
+    """Records instant resolution via KB match during INQUIRY phase."""
+    match_id: str                # ID of case/runbook that solved it
+    match_type: str              # "past_case" | "runbook" | "documentation"
+    solution_applied: str        # What user actually did
+    user_confirmation: str       # User's message confirming fix
+    resolution_turn: int         # Turn when confirmed
+
+
+class PreliminaryUrgency(BaseModel):
+    """Early urgency assessment using semantic business impact."""
+    level: UrgencyLevel
+    impact_assessment: str       # Free-text business impact description
+    assessed_at_turn: int
+
+
+class KnowledgeMatch(BaseModel):
+    """Records a potential KB match during INQUIRY."""
+    match_id: str
+    match_type: str              # "past_case" | "runbook" | "documentation"
+    relevance_score: float       # 0.0-1.0
+    summary: str
+    potential_solution: Optional[str] = None
 
 
 class InquiryData(BaseModel):
@@ -832,6 +853,18 @@ class InquiryData(BaseModel):
 
     inquiry_turns: int = Field(
         default=0, ge=0, description="Number of turns spent in INQUIRY status"
+    )
+
+    knowledge_matches: List[KnowledgeMatch] = Field(
+        default_factory=list, description="Potential solutions found in KB"
+    )
+
+    knowledge_resolution: Optional[KnowledgeResolution] = Field(
+        default=None, description="Resolution details if fixed via KB match"
+    )
+
+    preliminary_urgency: Optional[PreliminaryUrgency] = Field(
+        default=None, description="Early urgency assessment"
     )
 
     @model_validator(mode="after")

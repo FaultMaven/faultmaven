@@ -14,13 +14,14 @@ Status Flow:
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from faultmaven.modules.case.domain.models import CaseStatus
+from faultmaven.modules.case.domain.models import CaseStatus, KnowledgeResolution
 from faultmaven.utils.serialization import to_json_compatible
 
 # Allowed user transitions (via UI)
 ALLOWED_TRANSITIONS = {
     CaseStatus.INQUIRY: [
         CaseStatus.INVESTIGATING,  # "Start investigation"
+        CaseStatus.RESOLVED,  # NEW: Fast-Track via KB match
         CaseStatus.CLOSED,  # "Close without investigating"
     ],
     CaseStatus.INVESTIGATING: [
@@ -41,6 +42,11 @@ STATUS_CHANGE_MESSAGES = {
         CaseStatus.INQUIRY,
         CaseStatus.INVESTIGATING,
     ): "I want to start a formal investigation to find the root cause.",
+    # INQUIRY → RESOLVED (Fast-Track)
+    (
+        CaseStatus.INQUIRY,
+        CaseStatus.RESOLVED,
+    ): "The issue was resolved using a known solution from the knowledge base.",
     # INQUIRY → CLOSED
     (
         CaseStatus.INQUIRY,
@@ -174,3 +180,20 @@ class CaseStatusManager:
     def get_allowed_transitions(current_status: CaseStatus) -> list[CaseStatus]:
         """Get list of allowed transitions from current status"""
         return ALLOWED_TRANSITIONS.get(current_status, [])
+
+    @staticmethod
+    def build_fast_track_record(
+        knowledge_resolution: KnowledgeResolution,
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """Build audit record for Fast-Track resolution."""
+        now = datetime.now(timezone.utc)
+        return {
+            "from_status": CaseStatus.INQUIRY.value,
+            "to_status": CaseStatus.RESOLVED.value,
+            "changed_at": to_json_compatible(now),
+            "changed_by": user_id,
+            "auto": True,
+            "reason": f"Knowledge Base Resolution: {knowledge_resolution.match_type} ({knowledge_resolution.match_id})",
+            "resolution_details": knowledge_resolution.model_dump(),
+        }

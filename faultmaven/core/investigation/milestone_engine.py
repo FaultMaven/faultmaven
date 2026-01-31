@@ -1,18 +1,18 @@
-"""Milestone-Based Investigation Engine
+"""Data-Driven and Opportunistic Investigation Engine
 
-This module implements the new milestone-based investigation system that replaces
-the old OODA framework. Instead of rigid phase orchestration, this engine completes
-milestones opportunistically based on data availability.
+This module implements the data-driven investigation system that replaces
+legacy process-based frameworks. Instead of rigid phase orchestration, this engine 
+completes milestones opportunistically based on data availability.
 
-Key Differences from OODA:
-- NO phase transitions - milestones complete when data is available
-- NO sequential constraints - multiple milestones can complete in one turn
-- Status-based prompt generation instead of phase-based
-- Progress tracked via InvestigationProgress, not phase transitions
+Key Design Principles:
+- Process-Agnostic: No rigid phase transitions - milestones complete when data is available
+- Opportunistic: Multiple milestones can complete in one turn
+- Data-Driven Context: Status-based prompt generation based on available data
+- Progress tracked via InvestigationProgress
 
 Design Reference:
 - docs/architecture/milestone-based-investigation-framework.md
-- docs/architecture/prompt-implementation-examples.md
+
 
 Architecture:
 - Process turn → Generate status-based prompt → Invoke LLM → Process response
@@ -69,9 +69,9 @@ logger = logging.getLogger(__name__)
 
 class MilestoneEngine:
     """
-    Milestone-based investigation engine.
+    Data-Driven and Opportunistic Investigation Engine.
 
-    Replaces the old OODA engine with a simpler, more flexible approach where
+    Replaces legacy process-based engines with a simpler, more flexible approach where
     the agent completes milestones opportunistically based on available data.
 
     Responsibilities:
@@ -307,6 +307,8 @@ User Message:
 {user_message}
 
 Your Task:
+0. Search Knowledge Base (KB) for similar past cases or runbooks
+0.5. Assess preliminary urgency (CRITICAL/HIGH/MEDIUM/LOW) based on business impact
 1. Understand the user's problem
 2. Ask clarifying questions if needed
 3. Propose a clear, specific problem statement
@@ -400,9 +402,10 @@ If the user provides comprehensive data (logs, metrics, etc.), analyze it thorou
 4. Propose solution if root cause is known
 
 Key Principles:
-- Milestones complete opportunistically (not sequentially)
-- Use evidence to advance investigation
-- Generate hypotheses only when root cause is unclear
+- Data-Driven Progress: Milestones complete opportunistically based on evidence (not sequentially)
+- Opportunistic Discovery: Use evidence to verify facts and finding root cause directly if possible
+- Hypothesis Generation: Only generate hypotheses when root cause is unclear from data
+- SINGLE-SHOT VALIDATION: If evidence strongly implies root cause, generate hypothesis directly as VALIDATED
 - Focus on solving the problem efficiently
 
 Respond with your analysis and next steps."""
@@ -503,6 +506,10 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                 and case.inquiry.decided_to_investigate
             ):
                 await self._transition_to_investigating(case)
+                status_transitioned = True
+            
+            # Check for Fast-Track Resolution (INQUIRY -> RESOLVED)
+            if self._check_fast_track_resolution(case):
                 status_transitioned = True
 
             metadata = {
@@ -645,6 +652,21 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                 f"Case {case.case_id} automatically transitioned to RESOLVED "
                 f"(solution verified)"
             )
+
+    def _check_fast_track_resolution(self, case: Case) -> bool:
+        """Check if case can be Fast-Track resolved via KB match."""
+        if case.inquiry.knowledge_resolution:
+            case.status = CaseStatus.RESOLVED
+            case.resolved_at = datetime.now(timezone.utc)
+            case.closure_reason = "fast_track_kb_match"
+            
+            # Log transition
+            logger.info(
+                f"Case {case.case_id} Fast-Track resolved via KB match: "
+                f"{case.inquiry.knowledge_resolution.match_id}"
+            )
+            return True
+        return False
 
     def _enter_degraded_mode(
         self, case: Case, mode_type: str, reason: Optional[str] = None
