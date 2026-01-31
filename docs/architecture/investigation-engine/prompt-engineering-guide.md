@@ -2,11 +2,11 @@
 
 ## Executive Summary
 
-This document defines FaultMaven's complete prompt engineering architecture for the milestone-based investigation framework. It provides strategic philosophy, tactical templates, and implementation guidance for building AI-powered troubleshooting conversations that feel natural while maintaining diagnostic rigor.
+This document defines FaultMaven's complete prompt engineering architecture for the opportunistic investigation framework. It provides strategic philosophy, tactical templates, and implementation guidance for building AI-powered troubleshooting conversations that feel natural while maintaining diagnostic rigor.
 
 **Key Capabilities**:
-- **Milestone-based prompts** - Opportunistic task completion, no rigid phases
-- **Three-template system** - CONSULTING → INVESTIGATING → TERMINAL
+- **Opportunistic prompts** - Opportunistic task completion, no rigid phases
+- **Three-template system** - INQUIRY → INVESTIGATING → TERMINAL
 - **LLM as form-filler** - Structured state updates + natural conversation
 - **Adaptive instructions** - Stage-aware guidance within single template
 - **Working conclusion tracking** - Continuous investigation with transparent confidence
@@ -23,7 +23,7 @@ This document defines FaultMaven's complete prompt engineering architecture for 
 
 1. [Design Philosophy](#1-design-philosophy)
 2. [Core Architecture](#2-core-architecture)
-3. [Template 1: CONSULTING](#3-template-1-consulting)
+3. [Template 1: INQUIRY](#3-template-1-inquiry)
 4. [Template 2: INVESTIGATING](#4-template-2-investigating)
 5. [Template 3: TERMINAL](#5-template-3-terminal)
 6. [LLM vs System Responsibilities](#6-llm-vs-system-responsibilities)
@@ -42,9 +42,9 @@ FaultMaven maintains **structured diagnostic methodology** while presenting **na
 
 | Medical Concept | FaultMaven Implementation | Prompting Technique |
 |----------------|---------------------------|---------------------|
-| **Doctor meets patient** | Consultant Mode (CONSULTING) | Reactive prompts, detect problem signals |
+| **Doctor meets patient** | Consultant Mode (INQUIRY) | Reactive prompts, detect problem signals |
 | **Doctor leads diagnosis** | Lead Investigator (INVESTIGATING) | Proactive prompts, evidence requests |
-| **Structured procedure** | Milestone-based investigation | Track completion, not position |
+| **Structured procedure** | Opportunistic investigation | Track completion, not position |
 | **Order lab tests** | Evidence request generation | Specific, actionable requests |
 | **Analyze results** | Evidence processing | LLM analyzes, system categorizes |
 | **Make diagnosis** | Root cause identification | Direct or hypothesis-driven |
@@ -128,7 +128,7 @@ Why: Faster, cheaper, more coherent. Single LLM maintains conversation context.
 # Never pretend higher confidence than evidence supports
 ```
 
-### 1.3 The Milestone-Based Philosophy
+### 1.3 The Opportunistic Philosophy
 
 **Core Insight**: Investigation is **data-driven and opportunistic**, not phase-constrained.
 
@@ -217,7 +217,7 @@ connections properly, so the pool fills up over ~2 hours of uptime."
 
 ```
 ┌──────────────┐
-│  CONSULTING  │ ─── Template #1: ConsultingResponse
+│  INQUIRY  │ ─── Template #1: InquiryResponse
 └──────┬───────┘     Purpose: Explore problem, get commitment
        │             Frequency: ~10% of turns
        │             Complexity: Low
@@ -244,12 +244,12 @@ connections properly, so the pool fills up over ~2 hours of uptime."
        │                      │   TERMINAL   │    │   TERMINAL   │     Frequency: ~5% of turns
        │                      └──────────────┘    └──────────────┘     Complexity: Low
        │                                                  ▲
-       └──(consulting-only)──────────────────────────────┘
+       └──(inquiry-only)──────────────────────────────┘
 ```
 
 **Why 3 Templates?**
 
-1. **CONSULTING** - Pre-investigation (simple schema, light prompts)
+1. **INQUIRY** - Pre-investigation (simple schema, light prompts)
 2. **INVESTIGATING** - Active investigation (complex schema, adaptive prompts)
 3. **TERMINAL** - Post-investigation (read-only, documentation focus)
 
@@ -311,7 +311,7 @@ class BaseResponse(BaseModel):
 
 **Three state update schemas**:
 
-1. **ConsultingStateUpdate** - Simple (problem understanding, quick suggestions)
+1. **InquiryStateUpdate** - Simple (problem understanding, quick suggestions)
 2. **InvestigationStateUpdate** - Complex (milestones, evidence, hypotheses, solutions)
 3. **TerminalStateUpdate** - Minimal (documentation only)
 
@@ -349,7 +349,7 @@ def build_prompt(case: Case, user_message: str) -> str:
 
 ---
 
-## 3. Template 1: CONSULTING
+## 3. Template 1: INQUIRY
 
 ### 3.1 Purpose & Scope
 
@@ -366,17 +366,17 @@ def build_prompt(case: Case, user_message: str) -> str:
 ### 3.2 LLM Output Schema
 
 ```python
-class ConsultingResponse(BaseModel):
-    """Response during CONSULTING status"""
+class InquiryResponse(BaseModel):
+    """Response during INQUIRY status"""
     
     agent_response: str = Field(
         description="Natural language response to user"
     )
     
-    state_updates: ConsultingStateUpdate
+    state_updates: InquiryStateUpdate
 
-class ConsultingStateUpdate(BaseModel):
-    """What LLM can update during CONSULTING"""
+class InquiryStateUpdate(BaseModel):
+    """What LLM can update during INQUIRY"""
     
     # Problem understanding
     problem_confirmation: Optional[ProblemConfirmation] = None
@@ -403,11 +403,11 @@ class ProblemConfirmation(BaseModel):
 ### 3.3 Prompt Template
 
 ```python
-CONSULTING_TEMPLATE = """
+INQUIRY_TEMPLATE = """
 You are FaultMaven, an SRE troubleshooting copilot.
 
 ═══════════════════════════════════════════════════════════
-STATUS: CONSULTING (Pre-Investigation)
+STATUS: INQUIRY (Pre-Investigation)
 ═══════════════════════════════════════════════════════════
 
 Turn: {case.current_turn}
@@ -415,13 +415,13 @@ Turn: {case.current_turn}
 CONVERSATION HISTORY (last 5-10 turns):
 {recent_conversation_context}
 
-{if case.consulting.proposed_problem_statement}
+{if case.inquiry.proposed_problem_statement}
 YOUR PROPOSED PROBLEM STATEMENT:
-"{case.consulting.proposed_problem_statement}"
+"{case.inquiry.proposed_problem_statement}"
 
-Confirmation Status: {case.consulting.problem_statement_confirmed ? "✅ Confirmed" : "⏳ Awaiting user confirmation"}
+Confirmation Status: {case.inquiry.problem_statement_confirmed ? "✅ Confirmed" : "⏳ Awaiting user confirmation"}
 
-{if not case.consulting.problem_statement_confirmed}
+{if not case.inquiry.problem_statement_confirmed}
 NOTE: User has NOT confirmed yet. They may:
 - Agree completely → System sets confirmed = True  
 - Suggest revisions → UPDATE proposed_problem_statement based on their feedback
@@ -519,7 +519,7 @@ KEY PRINCIPLES
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════
 
-Return JSON matching ConsultingResponse schema:
+Return JSON matching InquiryResponse schema:
 
 {
   "agent_response": "<your natural response to user>",
@@ -596,8 +596,8 @@ LLM Response:
 }
 
 # System detects user confirmed AND agreed to investigate:
-# - case.consulting.problem_statement_confirmed = True
-# - case.consulting.decided_to_investigate = True
+# - case.inquiry.problem_statement_confirmed = True
+# - case.inquiry.decided_to_investigate = True
 # → Triggers transition to INVESTIGATING
 ```
 
@@ -624,7 +624,7 @@ LLM Response:
   }
 }
 
-# Stay in CONSULTING - don't force investigation
+# Stay in INQUIRY - don't force investigation
 ```
 
 **No Problem Detected**:
@@ -1094,7 +1094,7 @@ GENERAL INSTRUCTIONS (Apply to All Stages)
 
 When evaluating causal evidence:
 - For EACH hypothesis, determine:
-  * stance: STRONGLY_SUPPORTS | SUPPORTS | NEUTRAL | CONTRADICTS | STRONGLY_CONTRADICTS | IRRELEVANT
+  * stance: SUPPORTS | NEUTRAL | REFUTES (with stance_confidence 0.0-1.0)
   * reasoning: Why this evidence has this stance for THIS hypothesis
   * completeness: How well this evidence tests THIS hypothesis (0.0-1.0)
 - ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses!
@@ -2064,7 +2064,7 @@ def determine_milestone_advancement(
         # Check if hypothesis validated
         if evidence.tests_hypothesis_id:
             hypothesis = case.hypotheses.get(evidence.tests_hypothesis_id)
-            if hypothesis and evidence.stance == EvidenceStance.STRONGLY_SUPPORTS:
+            if hypothesis and evidence.stance == EvidenceStance.SUPPORTS:
                 if not case.progress.root_cause_identified:
                     milestones.append("root_cause_identified")
     
@@ -2255,22 +2255,22 @@ Before deploying prompts, verify:
 #### Unit Tests (Per Template)
 
 ```python
-def test_consulting_template():
-    """Test CONSULTING template produces valid schema"""
+def test_inquiry_template():
+    """Test INQUIRY template produces valid schema"""
     
-    case = create_test_case(status=CaseStatus.CONSULTING)
+    case = create_test_case(status=CaseStatus.INQUIRY)
     user_message = "API is slow"
     
-    prompt = build_consulting_prompt(case, user_message)
+    prompt = build_inquiry_prompt(case, user_message)
     
     # Mock LLM response
     llm_output = mock_llm_generate(prompt)
     
     # Validate schema
-    response = ConsultingResponse(**llm_output)
+    response = InquiryResponse(**llm_output)
     
     assert response.agent_response
-    assert isinstance(response.state_updates, ConsultingStateUpdate)
+    assert isinstance(response.state_updates, InquiryStateUpdate)
 
 def test_investigating_template_symptom_verification_stage():
     """Test INVESTIGATING template at Symptom Verification stage"""

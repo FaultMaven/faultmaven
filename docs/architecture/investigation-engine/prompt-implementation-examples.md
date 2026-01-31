@@ -38,7 +38,7 @@ app/
 │   │   └── schemas.py          # Response schemas
 │   ├── processors/
 │   │   ├── __init__.py
-│   │   ├── consulting.py       # CONSULTING response processor
+│   │   ├── inquiry.py       # INQUIRY response processor
 │   │   ├── investigating.py    # INVESTIGATING response processor
 │   │   └── terminal.py         # TERMINAL response processor
 │   └── state/
@@ -88,12 +88,12 @@ from app.models import Case, CaseStatus
 from app.agent.prompts.builder import build_prompt, get_prompt_metadata
 from app.agent.llm.client import LLMClient
 from app.agent.llm.schemas import (
-    ConsultingResponse,
+    InquiryResponse,
     InvestigationResponse,
     TerminalResponse
 )
 from app.agent.processors import (
-    ConsultingProcessor,
+    InquiryProcessor,
     InvestigatingProcessor,
     TerminalProcessor
 )
@@ -130,7 +130,7 @@ class FaultMavenAgent:
         
         # Response processors by status
         self.processors = {
-            CaseStatus.CONSULTING: ConsultingProcessor(state_manager),
+            CaseStatus.INQUIRY: InquiryProcessor(state_manager),
             CaseStatus.INVESTIGATING: InvestigatingProcessor(state_manager),
             CaseStatus.RESOLVED: TerminalProcessor(state_manager),
             CaseStatus.CLOSED: TerminalProcessor(state_manager),
@@ -232,7 +232,7 @@ class FaultMavenAgent:
         """Get appropriate response schema for status"""
         
         schema_map = {
-            CaseStatus.CONSULTING: ConsultingResponse,
+            CaseStatus.INQUIRY: InquiryResponse,
             CaseStatus.INVESTIGATING: InvestigationResponse,
             CaseStatus.RESOLVED: TerminalResponse,
             CaseStatus.CLOSED: TerminalResponse,
@@ -379,7 +379,7 @@ from enum import Enum
 
 
 # ============================================================================
-# CONSULTING Response Schema
+# INQUIRY Response Schema
 # ============================================================================
 
 class ProblemConfirmation(BaseModel):
@@ -393,17 +393,17 @@ class ProblemConfirmation(BaseModel):
     preliminary_guidance: Optional[str] = None
 
 
-class ConsultingStateUpdate(BaseModel):
-    """State updates during CONSULTING"""
+class InquiryStateUpdate(BaseModel):
+    """State updates during INQUIRY"""
     problem_confirmation: Optional[ProblemConfirmation] = None
     proposed_problem_statement: Optional[str] = None
     quick_suggestions: List[str] = Field(default_factory=list)
 
 
-class ConsultingResponse(BaseModel):
-    """Complete response for CONSULTING status"""
+class InquiryResponse(BaseModel):
+    """Complete response for INQUIRY status"""
     agent_response: str = Field(description="Natural language response")
-    state_updates: ConsultingStateUpdate
+    state_updates: InquiryStateUpdate
 
 
 # ============================================================================
@@ -437,12 +437,15 @@ class MilestoneUpdates(BaseModel):
 
 
 class EvidenceStance(str, Enum):
-    """How evidence relates to hypothesis"""
-    STRONGLY_SUPPORTS = "strongly_supports"
+    """
+    How evidence relates to hypothesis.
+
+    Simplified 3-state enum for LLM consistency.
+    Use stance_confidence (0.0-1.0) for granularity.
+    """
     SUPPORTS = "supports"
     NEUTRAL = "neutral"
     REFUTES = "refutes"
-    STRONGLY_REFUTES = "strongly_refutes"
 
 
 class EvidenceToAdd(BaseModel):
@@ -451,6 +454,16 @@ class EvidenceToAdd(BaseModel):
     analysis: Optional[str] = Field(default=None, max_length=2000)
     tests_hypothesis_id: Optional[str] = None
     stance: Optional[EvidenceStance] = None
+    stance_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Confidence in stance (0.0-1.0)"
+    )
+    category_override: Optional[str] = Field(
+        default=None,
+        description="LLM-suggested category override (SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE, RESOLUTION_EVIDENCE)"
+    )
 
 
 class EvidenceRequestToAdd(BaseModel):
@@ -571,13 +584,13 @@ class TerminalResponse(BaseModel):
 
 ## 4. Response Processing
 
-### 4.1 Consulting Processor
+### 4.1 Inquiry Processor
 
 ```python
-# app/agent/processors/consulting.py
+# app/agent/processors/inquiry.py
 
 """
-CONSULTING Response Processor
+INQUIRY Response Processor
 
 Processes LLM responses during consultation phase.
 """
@@ -586,16 +599,16 @@ import logging
 from typing import Dict, Any, Tuple
 from datetime import datetime, timezone
 
-from app.models import Case, CaseStatus, ConsultingData
-from app.agent.llm.schemas import ConsultingResponse
+from app.models import Case, CaseStatus, InquiryData
+from app.agent.llm.schemas import InquiryResponse
 from app.agent.state.manager import StateManager
 
 logger = logging.getLogger(__name__)
 
 
-class ConsultingProcessor:
+class InquiryProcessor:
     """
-    Process CONSULTING responses and update case state.
+    Process INQUIRY responses and update case state.
     
     Responsibilities:
     - Update problem confirmation
@@ -612,11 +625,11 @@ class ConsultingProcessor:
         self,
         case: Case,
         user_message: str,
-        llm_response: ConsultingResponse,
+        llm_response: InquiryResponse,
         attachments: list = None
     ) -> Tuple[Case, Dict[str, Any]]:
         """
-        Process consulting response and update case.
+        Process inquiry response and update case.
         
         Args:
             case: Current case
@@ -632,39 +645,39 @@ class ConsultingProcessor:
         
         # Update problem confirmation
         if state_updates.problem_confirmation:
-            case.consulting.problem_confirmation = state_updates.problem_confirmation
+            case.inquiry.problem_confirmation = state_updates.problem_confirmation
         
         # Update proposed problem statement
         if state_updates.proposed_problem_statement:
-            case.consulting.proposed_problem_statement = state_updates.proposed_problem_statement
+            case.inquiry.proposed_problem_statement = state_updates.proposed_problem_statement
         
         # Update quick suggestions
         if state_updates.quick_suggestions:
-            case.consulting.quick_suggestions = state_updates.quick_suggestions
+            case.inquiry.quick_suggestions = state_updates.quick_suggestions
         
         # Detect user confirmation signals
         confirmation_signals = ["yes", "correct", "that's right", "accurate", "exactly"]
         if any(signal in user_message.lower() for signal in confirmation_signals):
-            if case.consulting.proposed_problem_statement:
-                case.consulting.problem_statement_confirmed = True
+            if case.inquiry.proposed_problem_statement:
+                case.inquiry.problem_statement_confirmed = True
         
         # Detect user decision to investigate
         investigation_signals = ["investigate", "go ahead", "proceed", "start", "please help"]
         if any(signal in user_message.lower() for signal in investigation_signals):
-            if case.consulting.problem_statement_confirmed:
-                case.consulting.decided_to_investigate = True
+            if case.inquiry.problem_statement_confirmed:
+                case.inquiry.decided_to_investigate = True
         
         # Check if should transition to INVESTIGATING
-        if (case.consulting.problem_statement_confirmed and 
-            case.consulting.decided_to_investigate):
+        if (case.inquiry.problem_statement_confirmed and 
+            case.inquiry.decided_to_investigate):
             
             # Transition to INVESTIGATING
             await self.state_manager.transition_to_investigating(case)
         
         # Build metadata
         metadata = {
-            "problem_confirmed": case.consulting.problem_statement_confirmed,
-            "investigation_decided": case.consulting.decided_to_investigate,
+            "problem_confirmed": case.inquiry.problem_statement_confirmed,
+            "investigation_decided": case.inquiry.decided_to_investigate,
             "status_transitioned": case.status == CaseStatus.INVESTIGATING
         }
         
@@ -1196,12 +1209,12 @@ Response Processors
 Export all processors.
 """
 
-from app.agent.processors.consulting import ConsultingProcessor
+from app.agent.processors.inquiry import InquiryProcessor
 from app.agent.processors.investigating import InvestigatingProcessor
 from app.agent.processors.terminal import TerminalProcessor
 
 __all__ = [
-    "ConsultingProcessor",
+    "InquiryProcessor",
     "InvestigatingProcessor",
     "TerminalProcessor",
 ]
@@ -1258,12 +1271,12 @@ class StateManager:
     
     async def transition_to_investigating(self, case: Case):
         """
-        Transition case from CONSULTING to INVESTIGATING.
+        Transition case from INQUIRY to INVESTIGATING.
         
         Creates initial investigation structures.
         """
         
-        if case.status != CaseStatus.CONSULTING:
+        if case.status != CaseStatus.INQUIRY:
             raise ValueError(f"Cannot transition from {case.status} to INVESTIGATING")
         
         # Change status
@@ -1275,7 +1288,7 @@ class StateManager:
         # Initialize problem verification with confirmed statement
         from app.models import ProblemVerification
         case.problem_verification = ProblemVerification(
-            symptom_statement=case.consulting.proposed_problem_statement
+            symptom_statement=case.inquiry.proposed_problem_statement
         )
         
         # Initialize empty collections
@@ -1772,7 +1785,7 @@ Complete usage examples for FaultMaven Agent.
 """
 
 import asyncio
-from app.models import Case, CaseStatus, ConsultingData
+from app.models import Case, CaseStatus, InquiryData
 from app.agent.core import FaultMavenAgent
 from app.agent.llm.client import LLMClient
 from app.agent.state.manager import StateManager
@@ -1790,13 +1803,13 @@ async def example_complete_investigation():
     state_manager = StateManager(case_repo)
     agent = FaultMavenAgent(llm_client, state_manager)
     
-    # Turn 1: Initial problem description (CONSULTING)
+    # Turn 1: Initial problem description (INQUIRY)
     case = Case(
         case_id="case_001",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         current_turn=0,
         user_id="user_123",
-        consulting=ConsultingData()  # Starts empty - LLM fills via conversation
+        inquiry=InquiryData()  # Starts empty - LLM fills via conversation
     )
     
     result = await agent.process_turn(
@@ -2266,11 +2279,11 @@ You now have the **COMPLETE implementation** with all necessary code:
 **Part 1**: Strategic Guide
 - Design philosophy
 - Prompt engineering principles
-- Milestone-based approach
+- Opportunistic approach
 - LLM vs System responsibilities
 
 **Part 2**: Prompt Templates
-- CONSULTING template (ready to use)
+- INQUIRY template (ready to use)
 - INVESTIGATING template with adaptive instructions (ready to use)
 - TERMINAL template (ready to use)
 - All helper functions
@@ -2279,7 +2292,7 @@ You now have the **COMPLETE implementation** with all necessary code:
 - Agent core (`core.py`)
 - LLM client (`llm/client.py`)
 - Response schemas (`llm/schemas.py`)
-- All processors (consulting, investigating, terminal)
+- All processors (inquiry, investigating, terminal)
 - State manager with transitions
 - Error handling with retry logic
 - Complete test suite
@@ -2301,7 +2314,7 @@ faultmaven/
 │   │   │   ├── client.py              ✅
 │   │   │   └── schemas.py             ✅
 │   │   ├── processors/
-│   │   │   ├── consulting.py          ✅
+│   │   │   ├── inquiry.py          ✅
 │   │   │   ├── investigating.py       ✅
 │   │   │   └── terminal.py            ✅
 │   │   └── state/

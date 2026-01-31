@@ -199,14 +199,21 @@ Most troubleshooting knowledge is lost once the incident is closed. FaultMaven t
 - **Grow with Incidents:** As you troubleshoot, the AI learns. When a case is resolved, FaultMaven extracts the successful steps and root cause to automatically update the knowledge base.
 - **Result:** Your static documentation becomes a dynamic, self-improving engine. The solution to today's incident becomes the automated fix for tomorrow's.
 
-### 4. AI-Powered Investigation Framework
+### 4. Opportunistic Investigation Framework
 
-FaultMaven uses a 7-phase investigation lifecycle based on the **OODA Loop** (Observe, Orient, Decide, Act) with integrated engines:
+FaultMaven uses an **opportunistic investigation** approach where the agent completes tasks based on data availability rather than following rigid sequential phases.
 
-- **MemoryManager** - Hot/warm/cold memory tiers to maintain context across long investigations and reduce token usage.
+**Core Principles:**
+- **Milestone-based progress** - Track what's completed, not what phase you're in. Complete multiple milestones in one turn when data allows.
+- **Linear stage flow** - Both investigation paths (MITIGATION_FIRST, ROOT_CAUSE) follow 1→2→3→4 progression.
+- **Mitigation as a tool** - Quick fixes available during early stages without disrupting the investigation flow.
+
+**Case Lifecycle:** `INQUIRY` → `INVESTIGATING` → `RESOLVED` / `CLOSED`
+
+**Key Components:**
+- **MilestoneEngine** - Tracks verification, investigation, and resolution milestones opportunistically.
 - **WorkingConclusionGenerator** - Continuous progress tracking to prevent circular reasoning.
-- **PhaseOrchestrator** - Intelligent phase progression with loop-back detection.
-- **OODAEngine** - Adaptive investigation intensity (light/medium/full).
+- **MemoryManager** - Hot/warm/cold memory tiers to maintain context across long investigations.
 
 ### 5. Flexible Multi-LLM Support
 

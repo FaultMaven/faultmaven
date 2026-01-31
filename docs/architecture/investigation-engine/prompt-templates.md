@@ -9,7 +9,7 @@ This document provides the **complete, production-ready prompt templates** as Py
 ## Table of Contents
 
 1. [Template Module Structure](#1-template-module-structure)
-2. [CONSULTING Template](#2-consulting-template)
+2. [INQUIRY Template](#2-inquiry-template)
 3. [INVESTIGATING Template](#3-investigating-template)
 4. [TERMINAL Template](#4-terminal-template)
 5. [Helper Functions](#5-helper-functions)
@@ -25,11 +25,11 @@ This document provides the **complete, production-ready prompt templates** as Py
 """
 FaultMaven Prompt Templates v2.0
 
-This module contains all prompt templates for the milestone-based
+This module contains all prompt templates for the opportunistic
 investigation framework.
 
 Templates:
-- CONSULTING: Pre-investigation exploration
+- INQUIRY: Pre-investigation exploration
 - INVESTIGATING: Active investigation (adaptive by stage)
 - TERMINAL: Post-investigation documentation
 """
@@ -49,17 +49,17 @@ CASE_MODEL_VERSION = "v2.0"
 
 ---
 
-## 2. CONSULTING Template
+## 2. INQUIRY Template
 
 ```python
 # prompts/templates.py (continued)
 
-def build_consulting_prompt(case: Case, user_message: str) -> str:
+def build_inquiry_prompt(case: Case, user_message: str) -> str:
     """
-    Build CONSULTING template for pre-investigation exploration.
+    Build INQUIRY template for pre-investigation exploration.
     
     Args:
-        case: Case in CONSULTING status
+        case: Case in INQUIRY status
         user_message: Current user message
         
     Returns:
@@ -68,11 +68,11 @@ def build_consulting_prompt(case: Case, user_message: str) -> str:
     
     # Get previous problem statement if exists
     previous_statement_section = ""
-    if case.consulting.proposed_problem_statement:
-        confirmed_status = "✅ Confirmed" if case.consulting.problem_statement_confirmed else "⏳ Awaiting user confirmation"
+    if case.inquiry.proposed_problem_statement:
+        confirmed_status = "✅ Confirmed" if case.inquiry.problem_statement_confirmed else "⏳ Awaiting user confirmation"
         
         revision_note = ""
-        if not case.consulting.problem_statement_confirmed:
+        if not case.inquiry.problem_statement_confirmed:
             revision_note = """
 NOTE: User has NOT confirmed yet. They may:
 - Agree completely → System sets confirmed = True
@@ -82,7 +82,7 @@ NOTE: User has NOT confirmed yet. They may:
         
         previous_statement_section = f"""
 YOUR PROPOSED PROBLEM STATEMENT:
-"{case.consulting.proposed_problem_statement}"
+"{case.inquiry.proposed_problem_statement}"
 
 Confirmation Status: {confirmed_status}
 {revision_note}"""
@@ -94,7 +94,7 @@ Confirmation Status: {confirmed_status}
 You are FaultMaven, an SRE troubleshooting copilot.
 
 ═══════════════════════════════════════════════════════════
-STATUS: CONSULTING (Pre-Investigation)
+STATUS: INQUIRY (Pre-Investigation)
 ═══════════════════════════════════════════════════════════
 
 Turn: {case.current_turn}
@@ -136,7 +136,7 @@ Follow this progression based on conversation state:
 │ IF NO PROBLEM SIGNAL:                                  │
 │ → Just answer user's question                          │
 │ → Don't create proposed_problem_statement              │
-│ → Can stay in CONSULTING indefinitely (pure Q&A)       │
+│ → Can stay in INQUIRY indefinitely (pure Q&A)       │
 │                                                         │
 │ IF PROBLEM SIGNAL DETECTED:                            │
 │ → Proceed to Step A (formalization)                    │
@@ -300,7 +300,7 @@ CONVERSATION STYLE
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════
 
-Return JSON matching ConsultingResponse schema:
+Return JSON matching InquiryResponse schema:
 
 {{
   "agent_response": "<your natural, conversational response to user>",
@@ -722,7 +722,7 @@ def _get_hypothesis_validation_instructions(case: Case) -> str:
 
 2. **Evaluate Evidence Against ALL Hypotheses**
    - When user provides evidence, evaluate it against ALL active hypotheses
-   - Determine stance: STRONGLY_SUPPORTS | SUPPORTS | CONTRADICTS | STRONGLY_CONTRADICTS
+   - Determine stance: SUPPORTS | NEUTRAL | REFUTES
    - Update hypothesis likelihood based on evidence
 
 3. **Identify Root Cause**
@@ -885,7 +885,7 @@ GENERAL INSTRUCTIONS (Apply to All Stages)
 
 When evaluating causal evidence:
 - For EACH hypothesis, determine:
-  * stance: STRONGLY_SUPPORTS | SUPPORTS | NEUTRAL | CONTRADICTS | STRONGLY_CONTRADICTS | IRRELEVANT
+  * stance: SUPPORTS | NEUTRAL | REFUTES (with stance_confidence 0.0-1.0)
   * reasoning: Why this evidence has this stance for THIS hypothesis
   * completeness: How well this evidence tests THIS hypothesis (0.0-1.0)
 - ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses!
@@ -1304,7 +1304,7 @@ Main entry point: build_prompt(case, user_message)
 
 from app.models import Case, CaseStatus
 from prompts.templates import (
-    build_consulting_prompt,
+    build_inquiry_prompt,
     build_investigating_prompt,
     build_terminal_prompt
 )
@@ -1325,8 +1325,8 @@ def build_prompt(case: Case, user_message: str) -> str:
         ValueError: If case status is invalid
     """
     
-    if case.status == CaseStatus.CONSULTING:
-        return build_consulting_prompt(case, user_message)
+    if case.status == CaseStatus.INQUIRY:
+        return build_inquiry_prompt(case, user_message)
     
     elif case.status == CaseStatus.INVESTIGATING:
         return build_investigating_prompt(case, user_message)
@@ -1353,8 +1353,8 @@ def get_prompt_metadata(case: Case) -> Dict[str, str]:
 def _get_template_name(status: CaseStatus) -> str:
     """Get template name for status"""
     
-    if status == CaseStatus.CONSULTING:
-        return "CONSULTING"
+    if status == CaseStatus.INQUIRY:
+        return "INQUIRY"
     elif status == CaseStatus.INVESTIGATING:
         return "INVESTIGATING"
     elif status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
@@ -1367,7 +1367,7 @@ def _get_template_name(status: CaseStatus) -> str:
 
 ## 6. Rendered Examples
 
-### Example 1: CONSULTING Template (Rendered)
+### Example 1: INQUIRY Template (Rendered)
 
 ```
 <!-- Prompt Version: 2.0.0 -->
@@ -1377,7 +1377,7 @@ def _get_template_name(status: CaseStatus) -> str:
 You are FaultMaven, an SRE troubleshooting copilot.
 
 ═══════════════════════════════════════════════════════════
-STATUS: CONSULTING (Pre-Investigation)
+STATUS: INQUIRY (Pre-Investigation)
 ═══════════════════════════════════════════════════════════
 
 Turn: 2
@@ -1552,15 +1552,15 @@ YOUR TASK
 ## Usage Examples
 
 ```python
-# Example 1: Building CONSULTING prompt
+# Example 1: Building INQUIRY prompt
 from app.models import Case, CaseStatus
 from prompts.builder import build_prompt
 
 case = Case(
     case_id="case_123",
-    status=CaseStatus.CONSULTING,
+    status=CaseStatus.INQUIRY,
     current_turn=2,
-    consulting=ConsultingData(
+    inquiry=InquiryData(
         # initial_description removed - violates LLM/System-only principle
         # Conversation history provided in prompt context instead
         proposed_problem_statement=None,
@@ -1571,7 +1571,7 @@ case = Case(
 user_message = "It's timing out sometimes, like 10% of requests fail"
 
 prompt = build_prompt(case, user_message)
-# Returns: Complete CONSULTING template with variables filled in
+# Returns: Complete INQUIRY template with variables filled in
 
 
 # Example 2: Building INVESTIGATING prompt (Understanding stage)
