@@ -22,6 +22,7 @@ from faultmaven.modules.case.contracts import (
     CaseSeverity,
     CaseStatus,
     EvidenceArtifactType,
+    InvestigationProgress,
 )
 
 # ============================================================
@@ -59,6 +60,7 @@ class CaseResponse(BaseModel):
     description: str
     severity: CaseSeverity
     status: CaseStatus
+    progress: Optional[InvestigationProgress] = None
     assigned_to: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -107,6 +109,7 @@ class CaseResponse(BaseModel):
             description=case.description,
             severity=case_severity,
             status=case.status,
+            progress=getattr(case, "progress", None),
             assigned_to=getattr(case, "assigned_to", None),
             created_at=case.created_at,
             updated_at=case.updated_at,

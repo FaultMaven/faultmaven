@@ -27,7 +27,7 @@ FaultMaven implements a sophisticated clean architecture pattern with dependency
 - **User-Owned Cases**: Cases owned by users, not sessions - enables long-term tracking and multi-session continuity
 - **MilestoneEngine**: Core investigation orchestrator with opportunistic task completion
 - **Turn-Based Progress Tracking**: Milestone completions with workflow progression detection and loopback prevention
-- **Dual Engagement Modes**: Consultant Mode (CONSULTING status) and Lead Investigator (INVESTIGATING status) for natural interaction
+- **Dual Engagement Modes**: Consultant Mode (INQUIRY status) and Lead Investigator (INVESTIGATING status) for natural interaction
 - **Hypothesis Management**: Opportunistic capture + systematic generation with confidence tracking
 - **Evidence-Centric Troubleshooting**: Structured evidence collection with platform-specific extractors
 - **Interface-Based Dependencies**: Clean architecture with dependency injection and interface compliance
@@ -207,7 +207,7 @@ flowchart TB
 **Purpose**: Business logic orchestration and transaction management
 
 **Components**:
-- **Case Service**: Case lifecycle management and state transitions (CONSULTING → INVESTIGATING → RESOLVED/CLOSED)
+- **Case Service**: Case lifecycle management and state transitions (INQUIRY → INVESTIGATING → RESOLVED/CLOSED)
 - **Investigation Service**: Milestone-based investigation orchestration with MilestoneEngine integration
 - **Case Status Manager**: Case status state machine with transition validation
 - **Data Service**: File upload and data processing coordination with platform-specific extractors
@@ -270,7 +270,7 @@ flowchart TB
 - `faultmaven/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
 - `faultmaven/prompts/` - Prompt engineering (investigation/, phase prompts)
 
-**Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (CONSULTING/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for complete methodology.
+**Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for complete methodology.
 
 **Knowledge Base Architecture**: FaultMaven implements **three completely separate vector storage systems** with distinct purposes, lifecycles, and ownership models:
 - **User Knowledge Base** (per-user permanent storage) - Personal runbooks and procedures
@@ -527,7 +527,7 @@ sequenceDiagram
 - **Evidence Collection**: Platform-specific extractors for logs, metrics, configs
 - **Hypothesis Management**: Dual-mode (opportunistic capture + systematic generation)
 - **Workflow Progression**: Loopback detection prevents circular conversations
-- **Case Status Transitions**: CONSULTING → INVESTIGATING → RESOLVED/CLOSED
+- **Case Status Transitions**: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 
 See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for detailed investigation flow scenarios.
 

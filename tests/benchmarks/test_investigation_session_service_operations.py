@@ -117,7 +117,7 @@ async def sample_case(case_repo) -> Case:
         organization_id=create_test_org_id(),
         title="Benchmark Test Case",
         description="Case for performance benchmarks",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     return await case_repo.save(case)
@@ -202,7 +202,7 @@ class TestCreateSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Benchmark Case {i}",
                 description="",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
             )
             await case_repo.save(case)
 
@@ -312,7 +312,7 @@ class TestPauseResumeSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Pause Test Case {i}",
                 description="",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
             )
             await case_repo.save(case)
 
@@ -349,7 +349,7 @@ class TestPauseResumeSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Resume Test Case {i}",
                 description="",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
             )
             await case_repo.save(case)
 
@@ -398,7 +398,7 @@ class TestCompleteSessionBenchmarks:
                 organization_id=sample_case.organization_id,
                 title=f"Complete Test Case {i}",
                 description="",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
             )
             await case_repo.save(case)
 

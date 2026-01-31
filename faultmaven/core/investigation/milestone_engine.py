@@ -31,7 +31,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     ConfidenceLevel,
-    ConsultingData,
+    InquiryData,
     DegradedMode,
     DegradedModeType,
     Evidence,
@@ -75,7 +75,7 @@ class MilestoneEngine:
     the agent completes milestones opportunistically based on available data.
 
     Responsibilities:
-    - Generate prompts based on case status (CONSULTING, INVESTIGATING, RESOLVED)
+    - Generate prompts based on case status (INQUIRY, INVESTIGATING, RESOLVED)
     - Invoke LLM with appropriate schema
     - Process LLM responses and update case state
     - Track milestone completion and turn progress
@@ -275,7 +275,7 @@ class MilestoneEngine:
         Build status-appropriate prompt for LLM.
 
         Generates different prompts based on case status:
-        - CONSULTING: Problem understanding and confirmation
+        - INQUIRY: Problem understanding and confirmation
         - INVESTIGATING: Milestone-based investigation
         - RESOLVED/CLOSED: Documentation and retrospective
 
@@ -287,8 +287,8 @@ class MilestoneEngine:
         Returns:
             Complete prompt string
         """
-        if case.status == CaseStatus.CONSULTING:
-            return self._build_consulting_prompt(case, user_message)
+        if case.status == CaseStatus.INQUIRY:
+            return self._build_inquiry_prompt(case, user_message)
         elif case.status == CaseStatus.INVESTIGATING:
             return self._build_investigating_prompt(case, user_message, attachments)
         elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
@@ -296,11 +296,11 @@ class MilestoneEngine:
         else:
             raise MilestoneEngineError(f"Unknown case status: {case.status}")
 
-    def _build_consulting_prompt(self, case: Case, user_message: str) -> str:
-        """Build prompt for CONSULTING status."""
+    def _build_inquiry_prompt(self, case: Case, user_message: str) -> str:
+        """Build prompt for INQUIRY status."""
         return f"""You are FaultMaven, an AI troubleshooting copilot. The user is exploring a problem.
 
-Status: CONSULTING (pre-investigation)
+Status: INQUIRY (pre-investigation)
 Turn: {case.current_turn}
 
 User Message:
@@ -314,9 +314,9 @@ Your Task:
 5. Determine if formal investigation is needed
 
 Current Context:
-- Proposed Problem Statement: {case.consulting.proposed_problem_statement or "Not yet defined"}
-- Problem Confirmed: {case.consulting.problem_statement_confirmed}
-- Decided to Investigate: {case.consulting.decided_to_investigate}
+- Proposed Problem Statement: {case.inquiry.proposed_problem_statement or "Not yet defined"}
+- Problem Confirmed: {case.inquiry.problem_statement_confirmed}
+- Decided to Investigate: {case.inquiry.decided_to_investigate}
 
 Respond naturally and helpfully. If you have enough information, propose a clear problem statement.
 If the user confirms it and wants to investigate, let them know you're ready to start."""
@@ -465,8 +465,8 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         solutions_proposed = []
 
         # Process based on status
-        if case.status == CaseStatus.CONSULTING:
-            # Track uploaded files (files can be uploaded during CONSULTING)
+        if case.status == CaseStatus.INQUIRY:
+            # Track uploaded files (files can be uploaded during INQUIRY)
             # NOTE: Files are NOT evidence yet - evidence is created during INVESTIGATING phase
             files_uploaded = []
             if attachments:
@@ -481,9 +481,9 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
 
             # Check for problem statement confirmation
             if "yes" in user_message.lower() or "correct" in user_message.lower():
-                if case.consulting.proposed_problem_statement:
-                    case.consulting.problem_statement_confirmed = True
-                    case.consulting.problem_statement_confirmed_at = datetime.now(
+                if case.inquiry.proposed_problem_statement:
+                    case.inquiry.problem_statement_confirmed = True
+                    case.inquiry.problem_statement_confirmed_at = datetime.now(
                         timezone.utc
                     )
 
@@ -492,21 +492,21 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                 "investigate" in user_message.lower()
                 or "go ahead" in user_message.lower()
             ):
-                if case.consulting.problem_statement_confirmed:
-                    case.consulting.decided_to_investigate = True
-                    case.consulting.decision_made_at = datetime.now(timezone.utc)
+                if case.inquiry.problem_statement_confirmed:
+                    case.inquiry.decided_to_investigate = True
+                    case.inquiry.decision_made_at = datetime.now(timezone.utc)
 
             # Check if should transition to INVESTIGATING
             status_transitioned = False
             if (
-                case.consulting.problem_statement_confirmed
-                and case.consulting.decided_to_investigate
+                case.inquiry.problem_statement_confirmed
+                and case.inquiry.decided_to_investigate
             ):
                 await self._transition_to_investigating(case)
                 status_transitioned = True
 
             metadata = {
-                "progress_made": case.consulting.problem_statement_confirmed
+                "progress_made": case.inquiry.problem_statement_confirmed
                 or len(files_uploaded) > 0,
                 "outcome": (
                     TurnOutcome.DATA_PROVIDED
@@ -597,7 +597,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
 
     async def _transition_to_investigating(self, case: Case) -> None:
         """
-        Transition case from CONSULTING to INVESTIGATING.
+        Transition case from INQUIRY to INVESTIGATING.
 
         This creates the initial investigation structures and copies the
         confirmed problem statement to the case description.
@@ -608,8 +608,8 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         case.status = CaseStatus.INVESTIGATING
 
         # Copy confirmed problem statement to description
-        if case.consulting.proposed_problem_statement:
-            case.description = case.consulting.proposed_problem_statement
+        if case.inquiry.proposed_problem_statement:
+            case.description = case.inquiry.proposed_problem_statement
 
         # Initialize investigation progress
         case.progress = InvestigationProgress()

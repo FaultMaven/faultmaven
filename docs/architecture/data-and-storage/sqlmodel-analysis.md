@@ -202,7 +202,7 @@ async def add_report(self, report: CaseReport) -> CaseReport:
 query = text("""
     SELECT * FROM cases
     WHERE (progress->>'symptom_verified')::boolean = TRUE
-      AND (consulting->>'quick_suggestions') @> '["Check logs"]'::jsonb
+      AND (inquiry->>'quick_suggestions') @> '["Check logs"]'::jsonb
 """)
 ```
 **Pros**: Native PostgreSQL JSONB operators, flexible queries  
@@ -217,7 +217,7 @@ result = await self.db.execute(
         Case.progress['symptom_verified'].astext.cast(Boolean) == True
     )
     .where(
-        Case.consulting['quick_suggestions'].contains(['Check logs'])
+        Case.inquiry['quick_suggestions'].contains(['Check logs'])
     )
 )
 ```

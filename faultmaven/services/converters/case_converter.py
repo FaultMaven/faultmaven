@@ -51,7 +51,7 @@ class CaseConverter:
             status=(
                 case_entity.status.value
                 if hasattr(case_entity.status, "value")
-                else str(getattr(case_entity, "status", "consulting"))
+                else str(getattr(case_entity, "status", "inquiry"))
             ),
             priority=(
                 case_entity.priority.value

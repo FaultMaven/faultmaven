@@ -37,7 +37,7 @@ from faultmaven.modules.case.contracts import (
     CaseReport,
     CaseStatus,
     CaseStatusTransition,
-    ConsultingData,
+    InquiryData,
     DegradedMode,
     DocumentationData,
     EscalationState,
@@ -70,7 +70,7 @@ class SQLiteCaseRepository(CaseRepository):
 
     Design Philosophy:
     - Normalize what you query (evidence, hypotheses, solutions, messages)
-    - Embed what you don't (consulting, conclusions, progress)
+    - Embed what you don't (inquiry, conclusions, progress)
     - Use SQLite-compatible SQL syntax throughout
     """
 
@@ -741,13 +741,13 @@ class SQLiteCaseRepository(CaseRepository):
             INSERT INTO cases (
                 case_id, user_id, organization_id, title, description, investigation_strategy,
                 status, created_at, updated_at, last_activity_at,
-                consulting, problem_verification, working_conclusion,
+                inquiry, problem_verification, working_conclusion,
                 root_cause_conclusion, path_selection, degraded_mode,
                 escalation_state, documentation, progress, metadata
             ) VALUES (
                 :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
                 :status, :created_at, :updated_at, :last_activity_at,
-                :consulting, :problem_verification, :working_conclusion,
+                :inquiry, :problem_verification, :working_conclusion,
                 :root_cause_conclusion, :path_selection, :degraded_mode,
                 :escalation_state, :documentation, :progress, :metadata
             )
@@ -760,7 +760,7 @@ class SQLiteCaseRepository(CaseRepository):
                 status = EXCLUDED.status,
                 updated_at = EXCLUDED.updated_at,
                 last_activity_at = EXCLUDED.last_activity_at,
-                consulting = EXCLUDED.consulting,
+                inquiry = EXCLUDED.inquiry,
                 problem_verification = EXCLUDED.problem_verification,
                 working_conclusion = EXCLUDED.working_conclusion,
                 root_cause_conclusion = EXCLUDED.root_cause_conclusion,
@@ -786,7 +786,7 @@ class SQLiteCaseRepository(CaseRepository):
                 "created_at": case.created_at,
                 "updated_at": case.updated_at,
                 "last_activity_at": case.last_activity_at,
-                "consulting": json.dumps(to_json_compatible(case.consulting.model_dump())),
+                "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
                 "problem_verification": (
                     json.dumps(to_json_compatible(case.problem_verification.model_dump()))
                     if case.problem_verification
@@ -1214,10 +1214,10 @@ class SQLiteCaseRepository(CaseRepository):
     ) -> Case:
         """Reconstruct Case domain object from database row."""
         # Parse JSON columns
-        consulting = (
-            ConsultingData(**json.loads(row.consulting))
-            if row.consulting
-            else ConsultingData()
+        inquiry = (
+            InquiryData(**json.loads(row.inquiry))
+            if row.inquiry
+            else InquiryData()
         )
         problem_verification = (
             ProblemVerification(**json.loads(row.problem_verification))
@@ -1294,7 +1294,7 @@ class SQLiteCaseRepository(CaseRepository):
             "message_count": metadata.get("message_count", 0),
             "turn_history": [],
             "path_selection": path_selection,
-            "consulting": consulting,
+            "inquiry": inquiry,
             "problem_verification": problem_verification,
             "uploaded_files": uploaded_files,
             "evidence": [],  # Loaded separately

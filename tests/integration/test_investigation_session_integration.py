@@ -41,7 +41,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, ConsultingData
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InquiryData
 from tests.utils import generate_case_id, generate_session_id
 
 # ============================================================
@@ -126,7 +126,7 @@ async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
         title="Investigation Session Integration Test Case",
         description="Testing investigation session management",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -297,7 +297,7 @@ async def test_cascade_delete_case_to_sessions(
         title="CASCADE Delete Test Case",
         description="Testing CASCADE delete",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -359,7 +359,7 @@ async def test_four_level_cascade_delete_chain(
         title="Four-Level CASCADE Test",
         description="Testing full cascade chain",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -586,7 +586,7 @@ async def test_list_sessions_by_user_pagination(
             title=f"Pagination Test Case {i}",
             description="Testing pagination",
             status=CaseStatus.INVESTIGATING,
-            consulting=ConsultingData(
+            inquiry=InquiryData(
                 proposed_problem_statement="Test problem statement",
                 problem_statement_confirmed=True,
                 decided_to_investigate=True,

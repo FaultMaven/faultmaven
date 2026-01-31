@@ -251,7 +251,7 @@ class AgentResponse(BaseModel):
         description="Current investigation approach (speed vs depth)",
     )
     case_status: EvidenceCaseStatus = Field(
-        default=EvidenceCaseStatus.CONSULTING,
+        default=EvidenceCaseStatus.INQUIRY,
         description="Current case investigation state",
     )
 
@@ -352,8 +352,8 @@ class Case(BaseModel):
     case_id: str  # Match frontend expectations
     title: str
     description: Optional[str] = None
-    status: Literal["consulting", "investigating", "resolved", "closed"] = (
-        "consulting"  # Valid CaseStatus values
+    status: Literal["inquiry", "investigating", "resolved", "closed"] = (
+        "inquiry"  # Valid CaseStatus values
     )
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     created_at: str = Field(

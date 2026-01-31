@@ -182,7 +182,7 @@ class SQLiteCaseRepository(CaseRepository):
 
 | Feature          | PostgreSQL                   | SQLite                          |
 |------------------|------------------------------|---------------------------------|
-| Type Casts       | `:consulting::jsonb`         | Plain parameter binding         |
+| Type Casts       | `:inquiry::jsonb`         | Plain parameter binding         |
 | JSON Functions   | `jsonb_build_object()`       | Separate queries + Python dict  |
 | Aggregates       | `FILTER (WHERE ...)`         | `CASE WHEN ... END`             |
 | Full-Text Search | `to_tsvector`, `ts_rank`     | `LIKE '%term%'`                 |
@@ -242,7 +242,7 @@ class Case(BaseModel):
     # ============================================================
     # Status & Lifecycle
     # ============================================================
-    status: CaseStatus              # consulting | investigating | resolved | closed
+    status: CaseStatus              # inquiry | investigating | resolved | closed
     status_history: List[CaseStatusTransition]
     closure_reason: Optional[str]
 
@@ -264,7 +264,7 @@ class Case(BaseModel):
     # ============================================================
     # Context Data (LOW CARDINALITY - Embedded Storage)
     # ============================================================
-    consulting: ConsultingData              # PostgreSQL: JSONB
+    inquiry: InquiryData              # PostgreSQL: JSONB
     problem_verification: Optional[ProblemVerification]  # PostgreSQL: JSONB
     working_conclusion: Optional[WorkingConclusion]      # PostgreSQL: JSONB
     root_cause_conclusion: Optional[RootCauseConclusion]  # PostgreSQL: JSONB
@@ -328,7 +328,7 @@ CREATE TABLE cases (
     -- ============================================================
     -- Status & Lifecycle
     -- ============================================================
-    status VARCHAR(20) NOT NULL DEFAULT 'consulting',
+    status VARCHAR(20) NOT NULL DEFAULT 'inquiry',
     closure_reason VARCHAR(100),
     investigation_strategy VARCHAR(20) DEFAULT 'post_mortem',
 
@@ -350,7 +350,7 @@ CREATE TABLE cases (
     -- ============================================================
     -- Low-Cardinality Complex Data (JSONB)
     -- ============================================================
-    consulting JSONB NOT NULL DEFAULT '{}'::jsonb,
+    inquiry JSONB NOT NULL DEFAULT '{}'::jsonb,
     problem_verification JSONB,
     working_conclusion JSONB,
     root_cause_conclusion JSONB,
@@ -364,12 +364,12 @@ CREATE TABLE cases (
     -- Constraints
     -- ============================================================
     CONSTRAINT cases_status_check
-        CHECK (status IN ('consulting', 'investigating', 'resolved', 'closed')),
+        CHECK (status IN ('inquiry', 'investigating', 'resolved', 'closed')),
 
     CONSTRAINT cases_closure_reason_check
         CHECK (
             closure_reason IS NULL OR
-            closure_reason IN ('resolved', 'abandoned', 'escalated', 'consulting_only', 'duplicate', 'other')
+            closure_reason IN ('resolved', 'abandoned', 'escalated', 'inquiry_only', 'duplicate', 'other')
         ),
 
     CONSTRAINT cases_strategy_check
@@ -713,8 +713,8 @@ CREATE TABLE case_status_transitions (
 
     CONSTRAINT status_transitions_status_check
         CHECK (
-            from_status IN ('consulting', 'investigating', 'resolved', 'closed') AND
-            to_status IN ('consulting', 'investigating', 'resolved', 'closed')
+            from_status IN ('inquiry', 'investigating', 'resolved', 'closed') AND
+            to_status IN ('inquiry', 'investigating', 'resolved', 'closed')
         )
 );
 
@@ -878,7 +878,7 @@ We denormalize (JSONB) when:
 | **Messages** | Very Many (20-500+) | Temporal queries | ✅ **Table** | Very high volume, pagination |
 | **Uploaded Files** | Many (5-50) | List, filter by phase | ✅ **Table** | Metadata queries |
 | **Status Transitions** | Few (3-10) | Audit trail | ✅ **Table** | Temporal analysis |
-| **Consulting Data** | One (1) | Never filtered | ❌ **JSONB** | Always with case, flexible |
+| **Inquiry Data** | One (1) | Never filtered | ❌ **JSONB** | Always with case, flexible |
 | **Problem Verification** | Zero-One (0-1) | Rarely queried | ❌ **JSONB** | Optional, flexible |
 | **Conclusions** | Zero-Two (0-2) | Never filtered | ❌ **JSONB** | Terminal states only |
 | **Path Selection** | Zero-One (0-1) | Rare filter | ❌ **JSONB** | Small, rarely queried |
@@ -893,7 +893,7 @@ We denormalize (JSONB) when:
 ```sql
 -- Too many JOINs kills performance
 SELECT * FROM cases c
-  LEFT JOIN consulting co ON c.case_id = co.case_id
+  LEFT JOIN inquiry co ON c.case_id = co.case_id
   LEFT JOIN problem_verification pv ON c.case_id = pv.case_id
   LEFT JOIN working_conclusion wc ON c.case_id = wc.case_id
   LEFT JOIN root_cause_conclusion rc ON c.case_id = rc.case_id
@@ -1288,7 +1288,7 @@ This design provides:
 **What's Different from Legacy**:
 - **11 tables** (not 1) → Better filtering and search performance
 - **Normalized evidence/hypotheses** → Row-level locking, concurrent writes
-- **JSONB for flexible data** → Consulting, conclusions, progress tracking
+- **JSONB for flexible data** → Inquiry, conclusions, progress tracking
 - **Full-text search indexes** → Fast case and evidence search
 - **No lost updates** → Database ACID guarantees
 

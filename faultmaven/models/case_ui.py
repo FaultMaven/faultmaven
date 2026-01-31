@@ -1,7 +1,7 @@
 """Phase-adaptive UI response models for milestone-based investigation.
 
 These models provide optimized responses for the browser extension UI based on case status.
-Each status (CONSULTING, INVESTIGATING, RESOLVED) returns a different response schema
+Each status (INQUIRY, INVESTIGATING, RESOLVED) returns a different response schema
 with fields relevant to that phase of the investigation.
 
 This eliminates the need for multiple API calls to assemble UI state.
@@ -24,8 +24,8 @@ from faultmaven.modules.case.domain.models import (
 # ============================================================
 
 
-class UserRequestSummary(BaseModel):
-    """Summary of user's initial request during CONSULTING phase."""
+class InquiryRequestSummary(BaseModel):
+    """Summary of user's initial request during INQUIRY phase."""
 
     original_message: str = Field(
         description="User's original problem description", max_length=1000
@@ -42,8 +42,8 @@ class UserRequestSummary(BaseModel):
     )
 
 
-class ClarifyingQuestion(BaseModel):
-    """A question the agent needs answered during CONSULTING."""
+class InquiryQuestion(BaseModel):
+    """A question the agent needs answered during INQUIRY."""
 
     question_id: str = Field(description="Unique question identifier")
 
@@ -212,8 +212,8 @@ class ReportAvailability(BaseModel):
     )
 
 
-class ConsultingResponseData(BaseModel):
-    """Nested consulting data for CONSULTING phase response."""
+class InquiryResponseData(BaseModel):
+    """Nested inquiry data for INQUIRY phase response."""
 
     proposed_problem_statement: Optional[str] = Field(
         default=None,
@@ -230,10 +230,10 @@ class ConsultingResponseData(BaseModel):
         description="Whether agent has enough info to start investigation",
     )
 
-    consultation_turns: int = Field(
+    inquiry_turns: int = Field(
         default=0,
         ge=0,
-        description="Number of conversation turns during consulting phase",
+        description="Number of conversation turns during inquiry phase",
     )
 
     problem_confirmation: Optional[Dict] = Field(
@@ -324,9 +324,9 @@ class ProblemVerificationData(BaseModel):
 # ============================================================
 
 
-class CaseUIResponse_Consulting(BaseModel):
+class CaseUIResponse_Inquiry(BaseModel):
     """
-    UI response for CONSULTING phase.
+    UI response for INQUIRY phase.
 
     Focus: Understanding the problem, asking clarifying questions.
     User hasn't committed to full investigation yet.
@@ -334,9 +334,9 @@ class CaseUIResponse_Consulting(BaseModel):
 
     case_id: str = Field(description="Case identifier")
 
-    status: Literal[CaseStatus.CONSULTING] = Field(
-        default=CaseStatus.CONSULTING,
-        description="Always 'consulting' for this response type",
+    status: Literal[CaseStatus.INQUIRY] = Field(
+        default=CaseStatus.INQUIRY,
+        description="Always 'inquiry' for this response type",
     )
 
     title: str = Field(description="Case title", max_length=200)
@@ -350,10 +350,10 @@ class CaseUIResponse_Consulting(BaseModel):
     uploaded_files_count: int = Field(ge=0, description="Total files uploaded")
 
     # ============================================================
-    # Consulting-Specific Fields (Nested)
+    # Inquiry-Specific Fields (Nested)
     # ============================================================
-    consulting: ConsultingResponseData = Field(
-        description="Nested consulting phase data"
+    inquiry: InquiryResponseData = Field(
+        description="Nested inquiry phase data"
     )
 
 
@@ -479,7 +479,7 @@ class CaseUIResponse_Resolved(BaseModel):
 
 CaseUIResponse = Annotated[
     Union[
-        CaseUIResponse_Consulting, CaseUIResponse_Investigating, CaseUIResponse_Resolved
+        CaseUIResponse_Inquiry, CaseUIResponse_Investigating, CaseUIResponse_Resolved
     ],
     Field(discriminator="status"),
 ]
@@ -487,7 +487,7 @@ CaseUIResponse = Annotated[
 Phase-adaptive case response for UI.
 
 The API returns different response schemas based on case status:
-- CONSULTING → CaseUIResponse_Consulting
+- INQUIRY → CaseUIResponse_Inquiry
 - INVESTIGATING → CaseUIResponse_Investigating
 - RESOLVED → CaseUIResponse_Resolved
 

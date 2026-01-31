@@ -48,7 +48,7 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    ConsultingData,
+    InquiryData,
     DegradedMode,
     DocumentationData,
     EscalationState,
@@ -306,7 +306,7 @@ class DatabaseCaseRepository(CaseRepository):
             # Build filter conditions
             search_condition = or_(
                 CaseModel.title.ilike(search_pattern),
-                CaseModel.consulting.ilike(search_pattern),
+                CaseModel.inquiry.ilike(search_pattern),
             )
 
             conditions = [search_condition]
@@ -879,9 +879,9 @@ class DatabaseCaseRepository(CaseRepository):
     def _case_to_model(self, case: Case) -> CaseModel:
         """Convert Case domain model to CaseModel ORM model."""
         # Serialize complex fields to JSON (use mode='json' to serialize datetime objects)
-        consulting_json = (
-            json.dumps(case.consulting.model_dump(mode="json"))
-            if case.consulting
+        inquiry_json = (
+            json.dumps(case.inquiry.model_dump(mode="json"))
+            if case.inquiry
             else "{}"
         )
         progress_json = (
@@ -954,7 +954,7 @@ class DatabaseCaseRepository(CaseRepository):
             status=case.status.value,
             created_at=case.created_at,
             updated_at=case.updated_at,
-            consulting=consulting_json,
+            inquiry=inquiry_json,
             problem_verification=problem_verification_json,
             working_conclusion=working_conclusion_json,
             root_cause_conclusion=root_cause_conclusion_json,
@@ -974,7 +974,7 @@ class DatabaseCaseRepository(CaseRepository):
     def _model_to_case(self, model: CaseModel) -> Case:
         """Convert CaseModel ORM model to Case domain model."""
         # Parse JSONB fields
-        consulting = self._parse_consulting(model.consulting)
+        inquiry = self._parse_inquiry(model.inquiry)
         progress = self._parse_progress(model.progress)
         documentation = self._parse_documentation(model.documentation)
         metadata = self._parse_json(model.case_metadata, {})
@@ -1035,7 +1035,7 @@ class DatabaseCaseRepository(CaseRepository):
                         from_status=(
                             CaseStatus(t.from_status)
                             if t.from_status
-                            else CaseStatus.CONSULTING
+                            else CaseStatus.INQUIRY
                         ),
                         to_status=CaseStatus(t.to_status),
                         triggered_at=t.transitioned_at,
@@ -1072,7 +1072,7 @@ class DatabaseCaseRepository(CaseRepository):
             message_count=message_count,
             path_selection=path_selection,
             investigation_strategy=investigation_strategy,
-            consulting=consulting,
+            inquiry=inquiry,
             problem_verification=problem_verification,
             uploaded_files=uploaded_files,
             evidence=evidence,
@@ -1123,13 +1123,13 @@ class DatabaseCaseRepository(CaseRepository):
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
-    def _parse_consulting(self, value: Optional[str]) -> ConsultingData:
-        """Parse ConsultingData from JSON."""
+    def _parse_inquiry(self, value: Optional[str]) -> InquiryData:
+        """Parse InquiryData from JSON."""
         data = self._parse_json(value, {})
         try:
-            return ConsultingData(**data)
+            return InquiryData(**data)
         except Exception:
-            return ConsultingData()
+            return InquiryData()
 
     def _parse_progress(self, value: Optional[str]) -> InvestigationProgress:
         """Parse InvestigationProgress from JSON."""

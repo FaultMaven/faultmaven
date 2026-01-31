@@ -6,7 +6,7 @@ PURPOSE: Agent is ready to move forward → detects trigger conditions → seeks
 vs. User manually changes status via UI (different flow)
 
 Three scenarios:
-1. Start Investigation (CONSULTING → INVESTIGATING)
+1. Start Investigation (INQUIRY → INVESTIGATING)
 2. Mark Complete (INVESTIGATING → RESOLVED)
 3. Suggest Escalation (INVESTIGATING → CLOSED)
 """

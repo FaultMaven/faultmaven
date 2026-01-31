@@ -77,13 +77,13 @@ async def create_test_schema(session: AsyncSession):
             title TEXT NOT NULL,
             description TEXT DEFAULT '',
             investigation_strategy TEXT DEFAULT 'post_mortem',
-            status TEXT NOT NULL DEFAULT 'consulting',
+            status TEXT NOT NULL DEFAULT 'inquiry',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_activity_at TIMESTAMP,
             resolved_at TIMESTAMP,
             closed_at TIMESTAMP,
-            consulting TEXT,
+            inquiry TEXT,
             problem_verification TEXT,
             working_conclusion TEXT,
             root_cause_conclusion TEXT,
@@ -293,12 +293,12 @@ class TestSQLiteCaseRepository:
         Expected error BEFORE fix:
             sqlite3.ProgrammingError: Incorrect number of bindings supplied.
             The current statement uses 16, and there are 6 supplied.
-            [SQL: INSERT INTO cases (...) VALUES (..., :consulting::jsonb, ...)]
+            [SQL: INSERT INTO cases (...) VALUES (..., :inquiry::jsonb, ...)]
         """
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -316,8 +316,8 @@ class TestSQLiteCaseRepository:
             user_id="test_user_123",
             organization_id="test_org_123",
             title="Test Case for SQLite Compatibility",
-            status=CaseStatus.CONSULTING,
-            consulting=ConsultingData(),
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -348,7 +348,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -365,8 +365,8 @@ class TestSQLiteCaseRepository:
             user_id="test_user_456",
             organization_id="test_org_456",
             title="Retrieval Test Case",
-            status=CaseStatus.CONSULTING,
-            consulting=ConsultingData(),
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -392,7 +392,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -415,8 +415,8 @@ class TestSQLiteCaseRepository:
                 user_id="search_user",
                 organization_id="search_org",
                 title=title,
-                status=CaseStatus.CONSULTING,
-                consulting=ConsultingData(),
+                status=CaseStatus.INQUIRY,
+                inquiry=InquiryData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
                 created_at=datetime.now(timezone.utc),
@@ -438,7 +438,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -457,8 +457,8 @@ class TestSQLiteCaseRepository:
                 user_id=user_id,
                 organization_id=org_id,
                 title=f"List Test Case {i}",
-                status=CaseStatus.CONSULTING,
-                consulting=ConsultingData(),
+                status=CaseStatus.INQUIRY,
+                inquiry=InquiryData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
                 created_at=datetime.now(timezone.utc),
@@ -476,7 +476,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -493,8 +493,8 @@ class TestSQLiteCaseRepository:
             user_id="msg_user",
             organization_id="msg_org",
             title="Message Test Case",
-            status=CaseStatus.CONSULTING,
-            consulting=ConsultingData(),
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -507,6 +507,7 @@ class TestSQLiteCaseRepository:
             case_id,
             {
                 "role": "user",
+                "current_phase": "inquiry",
                 "content": "This is a test message",
                 "metadata": {"source": "test"},
             },
@@ -524,7 +525,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -541,8 +542,8 @@ class TestSQLiteCaseRepository:
             user_id="analytics_user",
             organization_id="analytics_org",
             title="Analytics Test Case",
-            status=CaseStatus.CONSULTING,
-            consulting=ConsultingData(),
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),
@@ -562,7 +563,7 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            ConsultingData,
+            InquiryData,
             DocumentationData,
             InvestigationProgress,
         )
@@ -579,8 +580,8 @@ class TestSQLiteCaseRepository:
             user_id="delete_user",
             organization_id="delete_org",
             title="Delete Test Case",
-            status=CaseStatus.CONSULTING,
-            consulting=ConsultingData(),
+            status=CaseStatus.INQUIRY,
+            inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
             created_at=datetime.now(timezone.utc),

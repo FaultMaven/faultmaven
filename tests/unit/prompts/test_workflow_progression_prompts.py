@@ -1,7 +1,7 @@
 """Tests for Workflow Progression Prompts (v3.0)
 
 Tests agent-initiated workflow progression confirmations:
-1. Start Investigation (CONSULTING → INVESTIGATING)
+1. Start Investigation (INQUIRY → INVESTIGATING)
 2. Mark Complete (INVESTIGATING → RESOLVED)
 3. Suggest Escalation (INVESTIGATING → CLOSED)
 
@@ -92,7 +92,7 @@ class TestStartInvestigationResponseParsing:
         "response,expected_decision",
         [
             ("not yet", "decline"),
-            ("keep consulting", "decline"),
+            ("keep inquiry", "decline"),
             ("no", "decline"),
             ("continue", "decline"),
             ("just questions", "decline"),
@@ -147,7 +147,7 @@ class TestStartInvestigationClarification:
         clarification = get_start_investigation_clarification(attempt=1)
         assert "not sure" in clarification.lower()
         assert "start investigation" in clarification.lower()
-        assert "keep consulting" in clarification.lower()
+        assert "keep inquiry" in clarification.lower()
 
     def test_second_attempt_more_explicit(self):
         """Test second attempt is more explicit"""
@@ -158,7 +158,7 @@ class TestStartInvestigationClarification:
     def test_third_attempt_graceful_fallback(self):
         """Test third attempt gives up gracefully"""
         clarification = get_start_investigation_clarification(attempt=3)
-        assert "continue in consulting mode" in clarification.lower()
+        assert "continue in inquiry mode" in clarification.lower()
         assert "haven't received" in clarification.lower()
 
 
@@ -366,7 +366,7 @@ class TestWorkflowTransitionConfirmation:
             {},
         )
 
-        assert "Continuing in Consulting Mode" in confirmation
+        assert "Continuing in Inquiry Mode" in confirmation
 
     def test_more_verification_confirmation(self):
         """Test confirmation for more verification"""

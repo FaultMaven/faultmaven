@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    ConsultingData,
+    InquiryData,
     InvestigationProgress,
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
@@ -43,10 +43,10 @@ async def test_upsert_case_detects_sqlite_dialect():
         user_id=str(uuid4()),
         organization_id=str(uuid4()),
         title="Test Case",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             initial_question="Test question",
             clarifications=[],
             user_context={},
@@ -54,7 +54,7 @@ async def test_upsert_case_detects_sqlite_dialect():
         progress=InvestigationProgress(
             total_turns=0,
             investigation_depth=0,
-            current_phase="consulting",
+            current_phase="inquiry",
             phase_confidence=0.0,
         ),
     )
@@ -72,8 +72,8 @@ async def test_upsert_case_detects_sqlite_dialect():
         "::jsonb" not in sql_text
     ), "SQLite SQL should not contain PostgreSQL ::jsonb type casts"
     assert (
-        ":consulting, :problem_verification" in sql_text
-        or "consulting, problem_verification" in sql_text
+        ":inquiry, :problem_verification" in sql_text
+        or "inquiry, problem_verification" in sql_text
     )
 
 
@@ -97,10 +97,10 @@ async def test_upsert_case_detects_postgresql_dialect():
         user_id=str(uuid4()),
         organization_id=str(uuid4()),
         title="Test Case",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             initial_question="Test question",
             clarifications=[],
             user_context={},
@@ -108,7 +108,7 @@ async def test_upsert_case_detects_postgresql_dialect():
         progress=InvestigationProgress(
             total_turns=0,
             investigation_depth=0,
-            current_phase="consulting",
+            current_phase="inquiry",
             phase_confidence=0.0,
         ),
     )
@@ -143,10 +143,10 @@ async def test_upsert_case_defaults_to_sqlite_when_no_bind():
         user_id=str(uuid4()),
         organization_id=str(uuid4()),
         title="Test Case",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             initial_question="Test question",
             clarifications=[],
             user_context={},
@@ -154,7 +154,7 @@ async def test_upsert_case_defaults_to_sqlite_when_no_bind():
         progress=InvestigationProgress(
             total_turns=0,
             investigation_depth=0,
-            current_phase="consulting",
+            current_phase="inquiry",
             phase_confidence=0.0,
         ),
     )

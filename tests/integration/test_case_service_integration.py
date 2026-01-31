@@ -199,7 +199,7 @@ class TestCaseLifecycle:
         )
 
         assert case is not None
-        assert case.status == CaseStatus.CONSULTING
+        assert case.status == CaseStatus.INQUIRY
 
         # Step 2: Retrieve case
         retrieved = await case_service.get_case(case.case_id, org_id)
@@ -217,14 +217,14 @@ class TestCaseLifecycle:
             },
         )
 
-        # Now set consulting fields required for INVESTIGATING status
+        # Now set inquiry fields required for INVESTIGATING status
         # We need to access the case directly from the repository to modify nested fields
         case_from_repo = await case_service.case_repo.get(case.case_id)
-        case_from_repo.consulting.proposed_problem_statement = (
+        case_from_repo.inquiry.proposed_problem_statement = (
             "Database queries are taking 10x longer than normal"
         )
-        case_from_repo.consulting.problem_statement_confirmed = True
-        case_from_repo.consulting.decided_to_investigate = True
+        case_from_repo.inquiry.problem_statement_confirmed = True
+        case_from_repo.inquiry.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
 
         # Finally transition to INVESTIGATING status
@@ -274,7 +274,7 @@ class TestCaseLifecycle:
         # Reopen case when issue reoccurs
         reopened = await case_service.reopen_case(case.case_id, org_id)
 
-        assert reopened.status == CaseStatus.CONSULTING
+        assert reopened.status == CaseStatus.INQUIRY
         assert reopened.resolved_at is None
 
     @pytest.mark.asyncio
@@ -555,8 +555,8 @@ class TestCaseStateTransitions:
     """Test case status transitions."""
 
     @pytest.mark.asyncio
-    async def test_transition_consulting_to_investigating(self, case_service):
-        """Test transition from CONSULTING to INVESTIGATING."""
+    async def test_transition_inquiry_to_investigating(self, case_service):
+        """Test transition from INQUIRY to INVESTIGATING."""
         org_id = create_test_org_id()
         user_id = create_test_user_id()
 
@@ -568,15 +568,15 @@ class TestCaseStateTransitions:
             severity=CaseSeverity.LOW,
         )
 
-        assert case.status == CaseStatus.CONSULTING
+        assert case.status == CaseStatus.INQUIRY
 
-        # Set consulting fields required for INVESTIGATING status
+        # Set inquiry fields required for INVESTIGATING status
         case_from_repo = await case_service.case_repo.get(case.case_id)
-        case_from_repo.consulting.proposed_problem_statement = (
+        case_from_repo.inquiry.proposed_problem_statement = (
             "Test problem description"
         )
-        case_from_repo.consulting.problem_statement_confirmed = True
-        case_from_repo.consulting.decided_to_investigate = True
+        case_from_repo.inquiry.problem_statement_confirmed = True
+        case_from_repo.inquiry.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
 
         updated = await case_service.update_case(
@@ -601,13 +601,13 @@ class TestCaseStateTransitions:
             severity=CaseSeverity.LOW,
         )
 
-        # Set consulting fields required for INVESTIGATING status
+        # Set inquiry fields required for INVESTIGATING status
         case_from_repo = await case_service.case_repo.get(case.case_id)
-        case_from_repo.consulting.proposed_problem_statement = (
+        case_from_repo.inquiry.proposed_problem_statement = (
             "Test problem description"
         )
-        case_from_repo.consulting.problem_statement_confirmed = True
-        case_from_repo.consulting.decided_to_investigate = True
+        case_from_repo.inquiry.problem_statement_confirmed = True
+        case_from_repo.inquiry.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
 
         await case_service.update_case(

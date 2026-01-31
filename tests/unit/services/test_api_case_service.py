@@ -72,7 +72,7 @@ def sample_case():
         organization_id="org_456",
         title="Test Case",
         description="Test case description",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 
@@ -94,7 +94,7 @@ class TestCreateCase:
             organization_id="org_1",
             title="New Case",
             description="Description",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
         )
 
         result = await case_service.create_case(
@@ -349,7 +349,7 @@ class TestUpdateCase:
     async def test_update_case_updates_status(
         self, case_service, mock_case_repo, sample_case
     ):
-        """Updating status to INVESTIGATING without required consulting confirmations should fail."""
+        """Updating status to INVESTIGATING without required inquiry confirmations should fail."""
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.save.side_effect = lambda case: case
         with pytest.raises(ValidationException):
@@ -513,10 +513,10 @@ class TestListCases:
         """Test list_cases filters by status."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
-        await case_service.list_cases("org_456", status=CaseStatus.CONSULTING)
+        await case_service.list_cases("org_456", status=CaseStatus.INQUIRY)
 
         call_kwargs = mock_case_repo.list.call_args[1]
-        assert call_kwargs["status"] == CaseStatus.CONSULTING
+        assert call_kwargs["status"] == CaseStatus.INQUIRY
 
     @pytest.mark.asyncio
     async def test_list_cases_respects_limit(self, case_service, mock_case_repo):
@@ -785,7 +785,7 @@ class TestReopenCase:
             sample_case.organization_id,
         )
 
-        assert result.status == CaseStatus.CONSULTING
+        assert result.status == CaseStatus.INQUIRY
         assert result.resolved_at is None
 
     @pytest.mark.asyncio
@@ -814,7 +814,7 @@ class TestReopenCase:
         self, case_service, mock_case_repo, sample_case
     ):
         """Test that reopening non-closed case raises ConflictError."""
-        sample_case.status = CaseStatus.CONSULTING
+        sample_case.status = CaseStatus.INQUIRY
         mock_case_repo.get.return_value = sample_case
 
         with pytest.raises(ConflictError) as exc_info:
@@ -866,7 +866,7 @@ class TestGetCaseStatistics:
         result = await case_service.get_case_statistics("org_456")
 
         assert "by_status" in result
-        assert "consulting" in result["by_status"]
+        assert "inquiry" in result["by_status"]
 
     @pytest.mark.asyncio
     async def test_get_statistics_returns_avg_resolution_time(

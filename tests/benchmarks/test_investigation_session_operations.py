@@ -83,7 +83,7 @@ async def benchmark_case(case_repository: DatabaseCaseRepository) -> Case:
         organization_id="benchmark-org-001",
         title="Benchmark Session Case",
         description="Case for benchmarking investigation session operations",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     return await case_repository.save(case)
@@ -166,7 +166,7 @@ class TestSessionCreationPerformance:
                 organization_id="benchmark-org-001",
                 title=f"Batch Benchmark Case {i}",
                 description="For batch session creation benchmark",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
             )
             saved = await case_repository.save(case)
             cases.append(saved)
@@ -334,7 +334,7 @@ class TestSessionRetrievalPerformance:
                 organization_id="benchmark-org-001",
                 title=f"User Benchmark Case {i}",
                 description="For user list benchmark",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
             )
             saved = await case_repository.save(case)
 

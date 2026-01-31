@@ -1144,7 +1144,7 @@ class DIContainer(BaseDIContainer):
                     description=description or "",
                     user_id=final_user_id,
                     organization_id=final_org_id,
-                    status=CaseStatus.CONSULTING,
+                    status=CaseStatus.INQUIRY,
                     message_count=message_count,
                 )
 
@@ -1225,7 +1225,7 @@ class DIContainer(BaseDIContainer):
                         case
                         for case in session_cases
                         if case.status
-                        in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]
+                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     session_cases = [
@@ -1278,7 +1278,7 @@ class DIContainer(BaseDIContainer):
                         case
                         for case in session_cases
                         if case.status
-                        in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]
+                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     session_cases = [
@@ -1408,7 +1408,7 @@ class DIContainer(BaseDIContainer):
                         case
                         for case in user_cases
                         if case.status
-                        in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]
+                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     user_cases = [
@@ -1491,7 +1491,7 @@ class DIContainer(BaseDIContainer):
                         case
                         for case in user_cases
                         if case.status
-                        in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]
+                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     user_cases = [
@@ -1775,7 +1775,7 @@ class DIContainer(BaseDIContainer):
                     if status_value:
                         # Validate status before setting
                         valid_statuses = {
-                            "consulting",
+                            "inquiry",
                             "investigating",
                             "resolved",
                             "closed",

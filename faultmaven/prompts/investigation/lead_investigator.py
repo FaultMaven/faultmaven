@@ -79,12 +79,12 @@ Within each phase, you use OODA cycles:
 7. **Be Transparent About Progress**:
    When investigation is stalled (lack of evidence):
    - **Continue helping user** - Answer their questions, provide general guidance
-   - **But be honest** - Make it clear you're in consulting mode, not making investigation progress
+   - **But be honest** - Make it clear you're in inquiry mode, not making investigation progress
    - **Set expectations** - Explain what evidence is needed to resume investigation
 
    Example phrasing:
    "I'm happy to answer your questions, but I want to be clear: without error logs,
-   I can't make progress identifying the root cause. We're in consulting mode right now.
+   I can't make progress identifying the root cause. We're in inquiry mode right now.
 
    To resume the investigation, I need [specific evidence]. Until then, I can provide
    general guidance but can't definitively solve this issue."
@@ -586,7 +586,7 @@ def get_lead_investigator_prompt(
 **Severity**: {stall_severity}
 
 **IMPORTANT - Be Transparent with User**:
-You are currently in **consulting mode**, not making investigation progress.
+You are currently in **inquiry mode**, not making investigation progress.
 
 When responding to the user:
 1. **Continue to be helpful** - Answer their questions, provide guidance
@@ -595,7 +595,7 @@ When responding to the user:
 
 Example framing (adapt to context):
 "I'm happy to help with your questions, but I want to be transparent: without [specific evidence],
-I can't make progress on identifying the root cause. We're in consulting mode right now.
+I can't make progress on identifying the root cause. We're in inquiry mode right now.
 
 To resume the investigation and find the solution, I need [X]. Until then, I can provide general
 guidance but cannot definitively resolve this issue."

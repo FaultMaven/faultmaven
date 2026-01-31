@@ -28,7 +28,7 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    ConsultingData,
+    InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
 )
@@ -78,7 +78,7 @@ def sample_case() -> Case:
         organization_id="test-org-001",
         title="Test Case - API Slowness",
         description="API experiencing high latency",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 
@@ -86,12 +86,12 @@ def sample_case() -> Case:
 @pytest.fixture
 def sample_case_with_data() -> Case:
     """Create a case with more data for testing."""
-    # Create ConsultingData with all required fields for INVESTIGATING status
-    consulting = ConsultingData()
-    consulting.proposed_problem_statement = "API experiencing high latency and errors"
-    consulting.problem_statement_confirmed = True
-    consulting.decided_to_investigate = True
-    consulting.quick_suggestions = ["Check logs", "Verify deployment"]
+    # Create InquiryData with all required fields for INVESTIGATING status
+    inquiry = InquiryData()
+    inquiry.proposed_problem_statement = "API experiencing high latency and errors"
+    inquiry.problem_statement_confirmed = True
+    inquiry.decided_to_investigate = True
+    inquiry.quick_suggestions = ["Check logs", "Verify deployment"]
 
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
@@ -101,7 +101,7 @@ def sample_case_with_data() -> Case:
         description="API experiencing high latency and errors",
         status=CaseStatus.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
-        consulting=consulting,
+        inquiry=inquiry,
     )
     case.progress.symptom_verified = True
     case.progress.scope_assessed = True
@@ -127,7 +127,7 @@ async def test_create_case(repository: DatabaseCaseRepository, sample_case: Case
     assert saved_case.case_id == sample_case.case_id
     assert saved_case.title == sample_case.title
     assert saved_case.user_id == sample_case.user_id
-    assert saved_case.status == CaseStatus.CONSULTING
+    assert saved_case.status == CaseStatus.INQUIRY
 
 
 @pytest.mark.asyncio
@@ -168,12 +168,12 @@ async def test_update_case(repository: DatabaseCaseRepository, sample_case: Case
     # Modify the case
     sample_case.title = "Updated Title"
     sample_case.description = "API slowness investigation"
-    # Create new ConsultingData with all required fields for INVESTIGATING status
-    consulting = ConsultingData()
-    consulting.proposed_problem_statement = "API slowness investigation"
-    consulting.problem_statement_confirmed = True
-    consulting.decided_to_investigate = True
-    sample_case.consulting = consulting
+    # Create new InquiryData with all required fields for INVESTIGATING status
+    inquiry = InquiryData()
+    inquiry.proposed_problem_statement = "API slowness investigation"
+    inquiry.problem_statement_confirmed = True
+    inquiry.decided_to_investigate = True
+    sample_case.inquiry = inquiry
     sample_case.status = CaseStatus.INVESTIGATING
     sample_case.current_turn = 5
 
@@ -264,16 +264,16 @@ async def test_list_cases_by_status(repository: DatabaseCaseRepository):
 
     # Create cases with different statuses
     for status in [
-        CaseStatus.CONSULTING,
-        CaseStatus.CONSULTING,
+        CaseStatus.INQUIRY,
+        CaseStatus.INQUIRY,
         CaseStatus.INVESTIGATING,
     ]:
         if status == CaseStatus.INVESTIGATING:
-            # Create ConsultingData with all required fields for INVESTIGATING status
-            consulting = ConsultingData()
-            consulting.proposed_problem_statement = "Test problem statement"
-            consulting.problem_statement_confirmed = True
-            consulting.decided_to_investigate = True
+            # Create InquiryData with all required fields for INVESTIGATING status
+            inquiry = InquiryData()
+            inquiry.proposed_problem_statement = "Test problem statement"
+            inquiry.problem_statement_confirmed = True
+            inquiry.decided_to_investigate = True
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
@@ -281,7 +281,7 @@ async def test_list_cases_by_status(repository: DatabaseCaseRepository):
                 title=f"Test Case - {status.value}",
                 description="Test problem statement",
                 status=status,
-                consulting=consulting,
+                inquiry=inquiry,
             )
         else:
             case = Case(
@@ -294,12 +294,12 @@ async def test_list_cases_by_status(repository: DatabaseCaseRepository):
         await repository.save(case)
 
     # Act
-    cases, total = await repository.list(user_id=user_id, status=CaseStatus.CONSULTING)
+    cases, total = await repository.list(user_id=user_id, status=CaseStatus.INQUIRY)
 
     # Assert
     assert len(cases) == 2
     assert total == 2
-    assert all(c.status == CaseStatus.CONSULTING for c in cases)
+    assert all(c.status == CaseStatus.INQUIRY for c in cases)
 
 
 @pytest.mark.asyncio
@@ -465,7 +465,7 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
     from faultmaven.modules.case.domain.models import CaseStatusTransition
 
     transition = CaseStatusTransition(
-        from_status=CaseStatus.CONSULTING,
+        from_status=CaseStatus.INQUIRY,
         to_status=CaseStatus.INVESTIGATING,
         triggered_by="test-user",
         reason="Starting investigation",
@@ -473,11 +473,11 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
     sample_case.status_history.append(transition)
     # Set required fields for INVESTIGATING status
     sample_case.description = "Starting formal investigation"
-    consulting = ConsultingData()
-    consulting.proposed_problem_statement = "Starting formal investigation"
-    consulting.problem_statement_confirmed = True
-    consulting.decided_to_investigate = True
-    sample_case.consulting = consulting
+    inquiry = InquiryData()
+    inquiry.proposed_problem_statement = "Starting formal investigation"
+    inquiry.problem_statement_confirmed = True
+    inquiry.decided_to_investigate = True
+    sample_case.inquiry = inquiry
     sample_case.status = CaseStatus.INVESTIGATING
 
     # Act
@@ -713,8 +713,8 @@ async def test_case_data_integrity(
         retrieved.investigation_strategy == sample_case_with_data.investigation_strategy
     )
 
-    # Verify consulting data preserved
-    assert retrieved.consulting.quick_suggestions == ["Check logs", "Verify deployment"]
+    # Verify inquiry data preserved
+    assert retrieved.inquiry.quick_suggestions == ["Check logs", "Verify deployment"]
 
     # Verify progress preserved
     assert retrieved.progress.symptom_verified is True
@@ -742,12 +742,12 @@ async def test_case_lifecycle(repository: DatabaseCaseRepository):
     # Update
     case.title = "Updated Lifecycle Case"
     case.description = "Updated case description for investigation"
-    # Create ConsultingData with all required fields for INVESTIGATING status
-    consulting = ConsultingData()
-    consulting.proposed_problem_statement = "Updated case description for investigation"
-    consulting.problem_statement_confirmed = True
-    consulting.decided_to_investigate = True
-    case.consulting = consulting
+    # Create InquiryData with all required fields for INVESTIGATING status
+    inquiry = InquiryData()
+    inquiry.proposed_problem_statement = "Updated case description for investigation"
+    inquiry.problem_statement_confirmed = True
+    inquiry.decided_to_investigate = True
+    case.inquiry = inquiry
     case.status = CaseStatus.INVESTIGATING
     await repository.save(case)
 
@@ -847,16 +847,16 @@ class TestClosedAtTimestampHandling:
         """Cleanup should NOT delete active cases regardless of timestamps."""
         now = datetime.now(timezone.utc)
 
-        # Create an active consulting case
+        # Create an active inquiry case
         created_at = now - timedelta(days=101)
         updated_at = now - timedelta(days=100)
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
             user_id="test-user-001",
             organization_id="test-org-001",
-            title="Active Consulting Case",
+            title="Active Inquiry Case",
             description="Active case",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=created_at,
             updated_at=updated_at,
         )

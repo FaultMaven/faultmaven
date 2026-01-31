@@ -250,7 +250,7 @@ curl -X POST http://localhost:8090/api/v1/cases \
 {
   "case_id": "case_abc123xyz...",
   "title": "Test migration case",
-  "status": "consulting",
+  "status": "inquiry",
   "created_at": "2025-01-09T12:00:00Z"
 }
 ```

@@ -6,9 +6,9 @@ Design Principle:
 - Terminal states (RESOLVED, CLOSED) cannot be changed
 
 Status Flow:
-    CONSULTING ─────┬──────► INVESTIGATING ─────┬──────► RESOLVED (terminal)
-                    │                            │
-                    └───────────────────────────┴──────► CLOSED (terminal)
+    INQUIRY ─────┬──────► INVESTIGATING ─────┬──────► RESOLVED (terminal)
+                │                            │
+                └───────────────────────────┴──────► CLOSED (terminal)
 """
 
 from datetime import datetime, timezone
@@ -19,7 +19,7 @@ from faultmaven.utils.serialization import to_json_compatible
 
 # Allowed user transitions (via UI)
 ALLOWED_TRANSITIONS = {
-    CaseStatus.CONSULTING: [
+    CaseStatus.INQUIRY: [
         CaseStatus.INVESTIGATING,  # "Start investigation"
         CaseStatus.CLOSED,  # "Close without investigating"
     ],
@@ -36,14 +36,14 @@ ALLOWED_TRANSITIONS = {
 # Map: (old_status, new_status) → agent message
 # These messages are sent to agent as if user typed them
 STATUS_CHANGE_MESSAGES = {
-    # CONSULTING → INVESTIGATING
+    # INQUIRY → INVESTIGATING
     (
-        CaseStatus.CONSULTING,
+        CaseStatus.INQUIRY,
         CaseStatus.INVESTIGATING,
     ): "I want to start a formal investigation to find the root cause.",
-    # CONSULTING → CLOSED
+    # INQUIRY → CLOSED
     (
-        CaseStatus.CONSULTING,
+        CaseStatus.INQUIRY,
         CaseStatus.CLOSED,
     ): "Close this case. I don't need further investigation.",
     # INVESTIGATING → RESOLVED

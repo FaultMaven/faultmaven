@@ -400,7 +400,7 @@
   "test_case_service_integration.py::TestCaseLifecycle::test_case_lifecycle_with_assignment",
   "test_case_service_integration.py::TestCaseStateTransitions::test_cannot_close_already_closed_case",
   "test_case_service_integration.py::TestCaseStateTransitions::test_cannot_reopen_non_closed_case",
-  "test_case_service_integration.py::TestCaseStateTransitions::test_transition_consulting_to_investigating",
+  "test_case_service_integration.py::TestCaseStateTransitions::test_transition_inquiry_to_investigating",
   "test_case_service_integration.py::TestCaseStateTransitions::test_transition_investigating_to_resolved",
   "test_case_service_integration.py::TestConcurrentOperations::test_concurrent_case_creation",
   "test_case_service_integration.py::TestConcurrentOperations::test_concurrent_updates_same_case",

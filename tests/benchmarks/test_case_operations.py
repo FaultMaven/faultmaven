@@ -49,7 +49,7 @@ class TestCaseCreationPerformance:
             organization_id="benchmark-org-001",
             title="Benchmark Test Case",
             description="Performance benchmark for case creation",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             investigation_strategy=InvestigationStrategy.POST_MORTEM,
         )
 
@@ -82,7 +82,7 @@ class TestCaseCreationPerformance:
                 organization_id="benchmark-org-001",
                 title=f"Benchmark Case {i}",
                 description=f"Case {i} for throughput testing",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
             for i in range(num_cases)
@@ -124,7 +124,7 @@ class TestCaseRetrievalPerformance:
             organization_id="benchmark-org-001",
             title="Test Case for Retrieval",
             description="For retrieval benchmark",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             investigation_strategy=InvestigationStrategy.POST_MORTEM,
         )
         await case_repository.save(case)
@@ -158,7 +158,7 @@ class TestCaseRetrievalPerformance:
                 organization_id="benchmark-org-001",
                 title=f"List Test Case {i}",
                 description=f"Test case {i}",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
             await case_repository.save(case)
@@ -203,7 +203,7 @@ class TestCaseUpdatePerformance:
             organization_id="benchmark-org-001",
             title="Original Title",
             description="Original description",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             investigation_strategy=InvestigationStrategy.POST_MORTEM,
         )
         await case_repository.save(case)
@@ -249,7 +249,7 @@ class TestCaseSearchPerformance:
                     organization_id="benchmark-org-001",
                     title=f"{term.capitalize()} Issue {j}",
                     description=f"A {term} related problem requiring investigation",
-                    status=CaseStatus.CONSULTING,
+                    status=CaseStatus.INQUIRY,
                     investigation_strategy=InvestigationStrategy.POST_MORTEM,
                 )
                 await case_repository.save(case)

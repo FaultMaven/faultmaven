@@ -559,7 +559,7 @@ def sample_case():
         description="A sample case for testing case persistence features",
         user_id="test-user-456",
         organization_id="test-org-123",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
     )
 
 
@@ -608,7 +608,7 @@ def sample_case_summary():
     return CaseSummary(
         case_id="case_test12345678",
         title="Test Case Summary",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         user_id="test-user-456",
         organization_id="test-org-123",
         created_at=datetime.now(timezone.utc),
@@ -731,7 +731,7 @@ def multiple_cases():
             description=f"Description for test case {i+1}",
             user_id=f"test-user-{i+1}",
             organization_id="test-org-123",
-            status=CaseStatus.CONSULTING if i % 2 == 0 else CaseStatus.INVESTIGATING,
+            status=CaseStatus.INQUIRY if i % 2 == 0 else CaseStatus.INVESTIGATING,
         )
         cases.append(case)
 

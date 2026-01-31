@@ -14,7 +14,7 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    ConsultingData,
+    InquiryData,
     DegradedMode,
     DocumentationData,
     EscalationState,
@@ -1365,7 +1365,7 @@ class PostgreSQLCaseRepository(CaseRepository):
             ),
             "investigation_strategy": case.investigation_strategy.value,
             # Problem context
-            "consulting": json.dumps(case.consulting.model_dump()),
+            "inquiry": json.dumps(case.inquiry.model_dump()),
             "problem_verification": (
                 json.dumps(case.problem_verification.model_dump())
                 if case.problem_verification
@@ -1417,7 +1417,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 case_id, user_id, organization_id, title, description, status,
                 status_history, closure_reason, progress, current_turn,
                 turns_without_progress, turn_history, path_selection,
-                investigation_strategy, consulting, problem_verification,
+                investigation_strategy, inquiry, problem_verification,
                 uploaded_files, evidence, hypotheses, solutions, working_conclusion,
                 root_cause_conclusion, degraded_mode, escalation_state,
                 documentation, created_at, updated_at, last_activity_at,
@@ -1426,7 +1426,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 :case_id, :user_id, :organization_id, :title, :description, :status,
                 :status_history, :closure_reason, :progress, :current_turn,
                 :turns_without_progress, :turn_history, :path_selection,
-                :investigation_strategy, :consulting, :problem_verification,
+                :investigation_strategy, :inquiry, :problem_verification,
                 :uploaded_files, :evidence, :hypotheses, :solutions, :working_conclusion,
                 :root_cause_conclusion, :degraded_mode, :escalation_state,
                 :documentation, :created_at, :updated_at, :last_activity_at,
@@ -1444,7 +1444,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 turn_history = EXCLUDED.turn_history,
                 path_selection = EXCLUDED.path_selection,
                 investigation_strategy = EXCLUDED.investigation_strategy,
-                consulting = EXCLUDED.consulting,
+                inquiry = EXCLUDED.inquiry,
                 problem_verification = EXCLUDED.problem_verification,
                 uploaded_files = EXCLUDED.uploaded_files,
                 evidence = EXCLUDED.evidence,
@@ -1770,10 +1770,10 @@ class PostgreSQLCaseRepository(CaseRepository):
         # 1. Old migrations before field was added
         # 2. Manual database modifications
         # 3. Database schema defaults not matching Pydantic defaults
-        consulting = (
-            ConsultingData(**json.loads(row.consulting))
-            if row.consulting
-            else ConsultingData()  # Use Pydantic default
+        inquiry = (
+            InquiryData(**json.loads(row.inquiry))
+            if row.inquiry
+            else InquiryData()  # Use Pydantic default
         )
         documentation = (
             DocumentationData(**json.loads(row.documentation))
@@ -1830,7 +1830,7 @@ class PostgreSQLCaseRepository(CaseRepository):
             turn_history=turn_history,
             path_selection=path_selection,
             investigation_strategy=row.investigation_strategy,
-            consulting=consulting,
+            inquiry=inquiry,
             problem_verification=problem_verification,
             uploaded_files=uploaded_files,
             evidence=evidence,

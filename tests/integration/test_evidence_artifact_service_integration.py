@@ -149,7 +149,7 @@ async def sample_case(case_repository) -> Case:
         organization_id="org_integration_test",
         title="Integration Test Case",
         description="Case for testing evidence service integration",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     await case_repository.save(case)

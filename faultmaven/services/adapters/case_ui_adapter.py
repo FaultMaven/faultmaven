@@ -1,7 +1,7 @@
 """Phase-adaptive case response adapter for UI optimization.
 
 This module transforms internal Case domain models into UI-optimized responses
-based on case status (CONSULTING, INVESTIGATING, RESOLVED).
+based on case status (INQUIRY, INVESTIGATING, RESOLVED).
 
 Purpose:
 - Eliminate multiple API calls to assemble UI state
@@ -25,11 +25,12 @@ if TYPE_CHECKING:
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
 from faultmaven.models.case_ui import (
     CaseUIResponse,
-    CaseUIResponse_Consulting,
+    CaseUIResponse,
+    CaseUIResponse_Inquiry,
     CaseUIResponse_Investigating,
     CaseUIResponse_Resolved,
-    ClarifyingQuestion,
-    ConsultingResponseData,
+    InquiryQuestion,
+    InquiryResponseData,
     EvidenceSummary,
     HypothesisSummary,
     ImpactData,
@@ -41,14 +42,14 @@ from faultmaven.models.case_ui import (
     RootCauseSummary,
     SolutionSummary,
     TemporalStateData,
-    UserRequestSummary,
+    InquiryRequestSummary,
     VerificationStatus,
     WorkingConclusionSummary,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    ConsultingData,
+    InquiryData,
     HypothesisStatus,
     InvestigationPath,
 )
@@ -61,13 +62,13 @@ def transform_case_for_ui(case: Case) -> CaseUIResponse:
         case: Internal Case domain model
 
     Returns:
-        Phase-specific UI response (Consulting, Investigating, or Resolved)
+        Phase-specific UI response (Inquiry, Investigating, or Resolved)
 
     Raises:
         ValueError: If case status is unsupported (CLOSED without RESOLVED)
     """
-    if case.status == CaseStatus.CONSULTING:
-        return _transform_consulting(case)
+    if case.status == CaseStatus.INQUIRY:
+        return _transform_inquiry(case)
     elif case.status == CaseStatus.INVESTIGATING:
         return _transform_investigating(case)
     elif case.status == CaseStatus.RESOLVED:
@@ -137,8 +138,8 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
     urgency_level = "unknown"
     severity = None
 
-    if case.consulting and case.consulting.problem_confirmation:
-        severity = case.consulting.problem_confirmation.severity_guess or "medium"
+    if case.inquiry and case.inquiry.problem_confirmation:
+        severity = case.inquiry.problem_confirmation.severity_guess or "medium"
 
     # Extract temporal state from evidence timeline
     temporal_state = None
@@ -212,48 +213,48 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
 # ============================================================
 
 
-def _transform_consulting(case: Case) -> CaseUIResponse_Consulting:
-    """Transform case into CONSULTING phase UI response."""
+def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
+    """Transform case into INQUIRY phase UI response."""
 
-    # Defensive: Ensure consulting object exists (should never be None from repository)
+    # Defensive: Ensure inquiry object exists (should never be None from repository)
     # If somehow None, initialize with default to satisfy API contract requirement
-    if case.consulting is None:
-        # ConsultingData imported from contracts at module level
-        case.consulting = ConsultingData()
+    if case.inquiry is None:
+        # InquiryData imported from contracts at module level
+        case.inquiry = InquiryData()
 
-    # Build nested consulting data
-    consulting_data = ConsultingResponseData(
-        proposed_problem_statement=case.consulting.proposed_problem_statement,
-        problem_statement_confirmed=case.consulting.problem_statement_confirmed,
-        decided_to_investigate=case.consulting.decided_to_investigate,
-        consultation_turns=case.consulting.consultation_turns,
+    # Build nested inquiry data
+    inquiry_data = InquiryResponseData(
+        proposed_problem_statement=case.inquiry.proposed_problem_statement,
+        problem_statement_confirmed=case.inquiry.problem_statement_confirmed,
+        decided_to_investigate=case.inquiry.decided_to_investigate,
+        inquiry_turns=case.inquiry.inquiry_turns,
         problem_confirmation=(
             {
                 "problem_type": (
-                    case.consulting.problem_confirmation.problem_type
-                    if case.consulting.problem_confirmation
+                    case.inquiry.problem_confirmation.problem_type
+                    if case.inquiry.problem_confirmation
                     else None
                 ),
                 "severity_guess": (
-                    case.consulting.problem_confirmation.severity_guess
-                    if case.consulting.problem_confirmation
+                    case.inquiry.problem_confirmation.severity_guess
+                    if case.inquiry.problem_confirmation
                     else "unknown"
                 ),
             }
-            if case.consulting.problem_confirmation
+            if case.inquiry.problem_confirmation
             else None
         ),
     )
 
-    return CaseUIResponse_Consulting(
+    return CaseUIResponse_Inquiry(
         case_id=case.case_id,
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         title=case.title,
         current_turn=case.current_turn,
         created_at=case.created_at,
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
-        consulting=consulting_data,
+        inquiry=inquiry_data,
     )
 
 

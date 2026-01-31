@@ -255,9 +255,9 @@ class InvestigationService(BaseService):
         self, case_id: str, user_id: str, confirmed_description: str
     ) -> Case:
         """
-        Transition case from CONSULTING to INVESTIGATING.
+        Transition case from INQUIRY to INVESTIGATING.
 
-        Called when user confirms the problem statement during consulting phase.
+        Called when user confirms the problem statement during inquiry phase.
 
         Args:
             case_id: Case identifier
@@ -285,25 +285,25 @@ class InvestigationService(BaseService):
                 )
 
             # Validate current status
-            if case.status != CaseStatus.CONSULTING:
+            if case.status != CaseStatus.INQUIRY:
                 raise ServiceException(
                     f"Cannot transition to INVESTIGATING: case is in {case.status.value} status"
                 )
 
-            # Ensure consulting data is properly set for INVESTIGATING transition
-            if not case.consulting.proposed_problem_statement:
+            # Ensure inquiry data is properly set for INVESTIGATING transition
+            if not case.inquiry.proposed_problem_statement:
                 # Use confirmed_description as the problem statement
-                case.consulting.proposed_problem_statement = confirmed_description
+                case.inquiry.proposed_problem_statement = confirmed_description
 
-            if not case.consulting.problem_statement_confirmed:
-                case.consulting.problem_statement_confirmed = True
-                case.consulting.problem_statement_confirmed_at = datetime.now(
+            if not case.inquiry.problem_statement_confirmed:
+                case.inquiry.problem_statement_confirmed = True
+                case.inquiry.problem_statement_confirmed_at = datetime.now(
                     timezone.utc
                 )
 
-            if not case.consulting.decided_to_investigate:
-                case.consulting.decided_to_investigate = True
-                case.consulting.decision_made_at = datetime.now(timezone.utc)
+            if not case.inquiry.decided_to_investigate:
+                case.inquiry.decided_to_investigate = True
+                case.inquiry.decision_made_at = datetime.now(timezone.utc)
 
             # Update case
             case.description = confirmed_description
@@ -336,7 +336,7 @@ class InvestigationService(BaseService):
             case_id: Case identifier
             user_id: User making the request
             closure_reason: Why the case is being closed
-                (resolved | abandoned | escalated | consulting_only | duplicate | other)
+                (resolved | abandoned | escalated | inquiry_only | duplicate | other)
 
         Returns:
             Updated case

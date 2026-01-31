@@ -68,7 +68,7 @@ You are ALWAYS investigating (no mode switching), but with acknowledged limitati
    - Communicate this cap transparently to user
    - Example: "Based on available evidence, I assess this at {confidence_cap*100:.0f}% confidence (degraded mode cap)"
 
-2. **Continue Investigation**: Do NOT switch to "consulting mode" - remain investigating with transparency
+2. **Continue Investigation**: Do NOT switch to "inquiry mode" - remain investigating with transparency
    - Keep analyzing evidence as it arrives
    - Update working conclusion every turn
    - Maintain hypothesis tracking

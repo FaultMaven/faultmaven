@@ -348,7 +348,7 @@ ICaseService = _ICaseService  # Re-export with same name
 class CaseStatusDTO(str, Enum):
     """Public case status enum for cross-module use."""
 
-    CONSULTING = "consulting"
+    INQUIRY = "inquiry"
     INVESTIGATING = "investigating"
     DOCUMENTING = "documenting"
     RESOLVED = "resolved"
@@ -384,7 +384,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     CaseStatus,
     CaseStatusTransition,
     ConfidenceLevel,
-    ConsultingData,
+    InquiryData,
     DegradedMode,
     DegradedModeType,
     DocumentationData,
@@ -482,7 +482,7 @@ __all__ = [
     "CaseStatus",
     "CaseStatusTransition",
     "ConfidenceLevel",
-    "ConsultingData",
+    "InquiryData",
     "DegradedMode",
     "DegradedModeType",
     "DocumentationData",

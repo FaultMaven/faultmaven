@@ -326,24 +326,24 @@ class TestInvestigationServiceTransitionToInvestigating:
         )
 
     @pytest.fixture
-    def consulting_case(self):
-        """Create a case in CONSULTING status."""
+    def inquiry_case(self):
+        """Create a case in INQUIRY status."""
         return create_sample_case(
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
         )
 
     @pytest.mark.asyncio
     async def test_transition_to_investigating_success(
-        self, service, mock_case_repository, consulting_case, sample_user_id
+        self, service, mock_case_repository, inquiry_case, sample_user_id
     ):
         """Test successful transition to INVESTIGATING."""
         # Pre-populate repository
-        consulting_case.user_id = sample_user_id
-        await mock_case_repository.save(consulting_case)
+        inquiry_case.user_id = sample_user_id
+        await mock_case_repository.save(inquiry_case)
 
         confirmed_description = "Confirmed problem description"
         updated_case = await service.transition_to_investigating(
-            case_id=consulting_case.case_id,
+            case_id=inquiry_case.case_id,
             user_id=sample_user_id,
             confirmed_description=confirmed_description,
         )
@@ -368,16 +368,16 @@ class TestInvestigationServiceTransitionToInvestigating:
 
     @pytest.mark.asyncio
     async def test_transition_to_investigating_permission_denied(
-        self, service, mock_case_repository, consulting_case
+        self, service, mock_case_repository, inquiry_case
     ):
         """Test transition with unauthorized user."""
         # Pre-populate repository
-        await mock_case_repository.save(consulting_case)
+        await mock_case_repository.save(inquiry_case)
         unauthorized_user_id = str(uuid4())
 
         with pytest.raises(PermissionDeniedException, match="not authorized"):
             await service.transition_to_investigating(
-                case_id=consulting_case.case_id,
+                case_id=inquiry_case.case_id,
                 user_id=unauthorized_user_id,
                 confirmed_description="Test description",
             )
@@ -386,21 +386,21 @@ class TestInvestigationServiceTransitionToInvestigating:
     async def test_transition_to_investigating_invalid_status(
         self, service, mock_case_repository, sample_case, sample_user_id
     ):
-        """Test transition from non-CONSULTING status."""
-        # Pre-populate repository with case in INVESTIGATING status (cannot transition from non-CONSULTING)
+        """Test transition from non-INQUIRY status."""
+        # Pre-populate repository with case in INVESTIGATING status (cannot transition from non-INQUIRY)
         # INVESTIGATING status requires: confirmed problem statement, decided to investigate, and description
         from datetime import datetime, timezone
 
         sample_case.user_id = sample_user_id
         sample_case.description = "Test description"  # Required for INVESTIGATING
-        # Set up consulting data required for INVESTIGATING status
-        sample_case.consulting.proposed_problem_statement = "Test problem statement"
-        sample_case.consulting.problem_statement_confirmed = True
-        sample_case.consulting.problem_statement_confirmed_at = datetime.now(
+        # Set up inquiry data required for INVESTIGATING status
+        sample_case.inquiry.proposed_problem_statement = "Test problem statement"
+        sample_case.inquiry.problem_statement_confirmed = True
+        sample_case.inquiry.problem_statement_confirmed_at = datetime.now(
             timezone.utc
         )
-        sample_case.consulting.decided_to_investigate = True
-        sample_case.consulting.decision_made_at = datetime.now(timezone.utc)
+        sample_case.inquiry.decided_to_investigate = True
+        sample_case.inquiry.decision_made_at = datetime.now(timezone.utc)
 
         # Now set status to INVESTIGATING (all requirements are met)
         sample_case.status = CaseStatus.INVESTIGATING
@@ -413,10 +413,10 @@ class TestInvestigationServiceTransitionToInvestigating:
             stored_case.status == CaseStatus.INVESTIGATING
         ), f"Case status should be INVESTIGATING, got {stored_case.status}"
         assert (
-            stored_case.status != CaseStatus.CONSULTING
-        ), "Case should NOT be in CONSULTING status for this test"
+            stored_case.status != CaseStatus.INQUIRY
+        ), "Case should NOT be in INQUIRY status for this test"
 
-        # The service should raise ServiceException when trying to transition from non-CONSULTING status
+        # The service should raise ServiceException when trying to transition from non-INQUIRY status
         with pytest.raises(ServiceException) as exc_info:
             await service.transition_to_investigating(
                 case_id=sample_case.case_id,

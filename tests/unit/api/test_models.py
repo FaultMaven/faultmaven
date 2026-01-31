@@ -190,7 +190,7 @@ class TestCaseResponse:
             title="Test Case",
             description="Description",
             severity=CaseSeverity.HIGH,
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             assigned_to="user_assigned",
             created_at=now,
             updated_at=now,
@@ -200,7 +200,7 @@ class TestCaseResponse:
         )
         assert response.case_id == "case_123"
         assert response.severity == CaseSeverity.HIGH
-        assert response.status == CaseStatus.CONSULTING
+        assert response.status == CaseStatus.INQUIRY
 
     def test_case_response_from_domain(self):
         """Test creating response from domain model."""
@@ -218,6 +218,7 @@ class TestCaseResponse:
         mock_case.resolution = None
         mock_case.problem_verification = None
         mock_case.closure_reason = None
+        mock_case.progress = None
         mock_case.metadata = None
 
         response = CaseResponse.from_domain(mock_case, severity=CaseSeverity.MEDIUM)
@@ -233,7 +234,7 @@ class TestCaseResponse:
         mock_case.user_id = "user_789"
         mock_case.title = "Test Case"
         mock_case.description = "Description"
-        mock_case.status = CaseStatus.CONSULTING
+        mock_case.status = CaseStatus.INQUIRY
         mock_case.assigned_to = None
         mock_case.created_at = datetime.now(timezone.utc)
         mock_case.updated_at = datetime.now(timezone.utc)
@@ -241,6 +242,7 @@ class TestCaseResponse:
         mock_case.resolution = None
         mock_case.problem_verification = None
         mock_case.closure_reason = None
+        mock_case.progress = None
         mock_case.metadata = None
 
         response = CaseResponse.from_domain(mock_case)
@@ -260,7 +262,7 @@ class TestCaseListResponse:
             title="Test Case",
             description="Description",
             severity=CaseSeverity.LOW,
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=now,
             updated_at=now,
         )

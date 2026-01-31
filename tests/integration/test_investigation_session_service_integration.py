@@ -152,7 +152,7 @@ async def sample_case(case_repo) -> Case:
         organization_id=f"org_{uuid4().hex[:8]}",
         title="Test Case",
         description="Test case for session testing",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     # InMemoryCaseRepository uses save() to persist cases
@@ -1049,7 +1049,7 @@ class TestOrganizationIsolation:
             organization_id=org_a,
             title="Org A Case",
             description="",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
         )
         case_a = await case_repo.save(case_a)
 
@@ -1059,7 +1059,7 @@ class TestOrganizationIsolation:
             organization_id=org_b,
             title="Org B Case",
             description="",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
         )
         case_b = await case_repo.save(case_b)
 

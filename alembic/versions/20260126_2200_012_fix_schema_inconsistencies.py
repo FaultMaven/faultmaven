@@ -137,7 +137,7 @@ def upgrade() -> None:
                 title TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 investigation_strategy TEXT DEFAULT 'post_mortem',
-                status TEXT NOT NULL DEFAULT 'consulting',
+                status TEXT NOT NULL DEFAULT 'inquiry',
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_activity_at TIMESTAMP,
@@ -151,7 +151,7 @@ def upgrade() -> None:
                 degraded_mode TEXT,
                 escalation_state TEXT,
                 documentation TEXT DEFAULT '{"summary": "", "timeline": [], "lessons_learned": []}',
-                progress TEXT DEFAULT '{"current_phase": "consulting", "completion_percentage": 0, "milestones": []}',
+                progress TEXT DEFAULT '{"current_phase": "inquiry", "completion_percentage": 0, "milestones": []}',
                 metadata TEXT DEFAULT '{}',
                 team_id TEXT,
                 CHECK (LENGTH(TRIM(title)) > 0),
@@ -162,6 +162,7 @@ def upgrade() -> None:
         )
 
         # 2. Copy data from old table, mapping org_id to organization_id
+        # and inquiry to consulting (SQLite baseline used 'inquiry')
         conn.execute(
             text(
                 """
@@ -174,7 +175,7 @@ def upgrade() -> None:
             )
             SELECT
                 case_id, user_id, COALESCE(org_id, 'default_org'), title, status,
-                created_at, updated_at, consulting, problem_verification,
+                created_at, updated_at, inquiry, problem_verification,
                 working_conclusion, root_cause_conclusion, path_selection,
                 degraded_mode, escalation_state, documentation, progress,
                 metadata, team_id
@@ -249,7 +250,7 @@ def downgrade() -> None:
                 case_id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'consulting',
+                status TEXT NOT NULL DEFAULT 'inquiry',
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 consulting TEXT NOT NULL DEFAULT '{"initial_description": "", "context": {}, "user_goals": []}',
@@ -260,7 +261,7 @@ def downgrade() -> None:
                 degraded_mode TEXT,
                 escalation_state TEXT,
                 documentation TEXT DEFAULT '{"summary": "", "timeline": [], "lessons_learned": []}',
-                progress TEXT DEFAULT '{"current_phase": "consulting", "completion_percentage": 0, "milestones": []}',
+                progress TEXT DEFAULT '{"current_phase": "inquiry", "completion_percentage": 0, "milestones": []}',
                 metadata TEXT DEFAULT '{}',
                 org_id TEXT,
                 team_id TEXT

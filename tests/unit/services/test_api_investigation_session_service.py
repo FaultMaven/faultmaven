@@ -82,7 +82,7 @@ def sample_case():
         organization_id="org_456",
         title="Test Case",
         description="Test case description",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 

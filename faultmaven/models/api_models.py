@@ -39,7 +39,7 @@ class CaseCreateRequest(BaseModel):
 
     initial_message: Optional[str] = Field(
         default=None,
-        description="First user message (for CONSULTING phase)",
+        description="First user message (for INQUIRY phase)",
         max_length=4000,
     )
 
@@ -543,7 +543,7 @@ class UploadedFileDetails(UploadedFileMetadata):
 
     @classmethod
     def from_uploaded_file(cls, uploaded_file, case_id: str) -> "UploadedFileDetails":
-        """Convert UploadedFile to UploadedFileDetails (CONSULTING phase - no hypotheses yet)."""
+        """Convert UploadedFile to UploadedFileDetails (INQUIRY phase - no hypotheses yet)."""
         # Start with base metadata
         base = UploadedFileMetadata.from_uploaded_file(uploaded_file)
 
@@ -554,13 +554,13 @@ class UploadedFileDetails(UploadedFileMetadata):
                 if uploaded_file.preprocessing_summary
                 else []
             ),
-            relevance=None,  # No analysis yet in CONSULTING phase
+            relevance=None,  # No analysis yet in INQUIRY phase
         )
 
         return cls(
             **base.model_dump(),
             full_analysis=full_analysis,
-            hypothesis_relationships=None,  # No hypotheses in CONSULTING phase
+            hypothesis_relationships=None,  # No hypotheses in INQUIRY phase
         )
 
     @classmethod

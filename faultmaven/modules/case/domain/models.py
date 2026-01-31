@@ -5,7 +5,7 @@ based on the Investigation Architecture Specification v2.0.
 
 Key Models:
 - Case: Root case entity with milestone-based progress tracking
-- CaseStatus: Lifecycle status (CONSULTING → INVESTIGATING → RESOLVED/CLOSED)
+- CaseStatus: Lifecycle status (INQUIRY -> INVESTIGATING -> RESOLVED/CLOSED)
 - InvestigationProgress: 8 milestones tracking verification, diagnosis, and resolution
 - ProblemVerification: Consolidated symptom, scope, timeline, and changes data
 - Evidence: Categorized evidence collection with hypothesis evaluation
@@ -37,14 +37,14 @@ class CaseStatus(str, Enum):
     Case lifecycle status.
 
     Lifecycle Flow:
-      CONSULTING → INVESTIGATING → RESOLVED (terminal)
-                                 → CLOSED (terminal)
-               ↘ CLOSED (terminal)
+      INQUIRY -> INVESTIGATING -> RESOLVED (terminal)
+                                 -> CLOSED (terminal)
+               -> CLOSED (terminal)
 
     Terminal States: RESOLVED, CLOSED (no further transitions)
     """
 
-    CONSULTING = "consulting"
+    INQUIRY = "inquiry"
     """
     Pre-investigation exploration.
 
@@ -90,8 +90,8 @@ class CaseStatus(str, Enum):
 
     Characteristics:
     - Investigation abandoned/escalated
-    - OR consulting-only (no investigation)
-    - closure_reason = "abandoned" | "escalated" | "consulting_only" | "duplicate" | "other"
+    - OR inquiry-only (no investigation)
+    - closure_reason = "abandoned" | "escalated" | "inquiry_only" | "duplicate" | "other"
     - No further transitions allowed
 
     State: Terminal (permanent)
@@ -105,7 +105,7 @@ class CaseStatus(str, Enum):
     @property
     def is_active(self) -> bool:
         """Check if case is active (not terminal)"""
-        return self in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]
+        return self in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
 
 
 class CaseSeverity(str, Enum):
@@ -183,7 +183,7 @@ class CaseStatusTransition(BaseModel):
         """Ensure transition is valid"""
         if not is_valid_transition(self.from_status, self.to_status):
             raise ValueError(
-                f"Invalid transition: {self.from_status} → {self.to_status}"
+                f"Invalid transition: {self.from_status} -> {self.to_status}"
             )
         return self
 
@@ -196,18 +196,18 @@ def is_valid_transition(from_status: CaseStatus, to_status: CaseStatus) -> bool:
     Validate status transition.
 
     Valid Transitions:
-    - CONSULTING → INVESTIGATING
-    - CONSULTING → CLOSED
-    - INVESTIGATING → RESOLVED
-    - INVESTIGATING → CLOSED
+    - INQUIRY -> INVESTIGATING
+    - INQUIRY -> CLOSED
+    - INVESTIGATING -> RESOLVED
+    - INVESTIGATING -> CLOSED
 
     Invalid:
-    - RESOLVED → * (terminal)
-    - CLOSED → * (terminal)
-    - INVESTIGATING → CONSULTING (no backward)
+    - RESOLVED -> * (terminal)
+    - CLOSED -> * (terminal)
+    - INVESTIGATING -> INQUIRY (no backward)
     """
     valid_transitions = {
-        CaseStatus.CONSULTING: [CaseStatus.INVESTIGATING, CaseStatus.CLOSED],
+        CaseStatus.INQUIRY: [CaseStatus.INVESTIGATING, CaseStatus.CLOSED],
         CaseStatus.INVESTIGATING: [CaseStatus.RESOLVED, CaseStatus.CLOSED],
         CaseStatus.RESOLVED: [],  # Terminal
         CaseStatus.CLOSED: [],  # Terminal
@@ -340,10 +340,13 @@ class InvestigationProgress(BaseModel):
         default=False, description="Solution or mitigation has been proposed"
     )
 
-    solution_applied: bool = Field(
+    resolution_applied: bool = Field(
         default=False, description="Solution has been applied by user"
     )
 
+    # Alias for backward compatibility if needed, but primary is resolution_applied
+    # We map this to resolution_applied in validation if needed
+    
     solution_verified: bool = Field(
         default=False,
         description="Solution effectiveness verified (error rate decreased, metrics improved)",
@@ -355,17 +358,17 @@ class InvestigationProgress(BaseModel):
     mitigation_applied: bool = Field(
         default=False,
         description="""
-        MITIGATION_FIRST path: Quick mitigation applied (stage 1 → 4 complete).
+        MITIGATION_FIRST path: Quick mitigation applied (stage 1 -> 4 complete).
 
         Used to track progress in MITIGATION_FIRST path (1-4-2-3-4):
         - Stage 1: Symptom verified
         - Stage 4: Quick mitigation applied (mitigation_applied = True)
         - Stage 2: Return to hypothesis formulation for RCA
         - Stage 3: Hypothesis validation
-        - Stage 4: Permanent solution applied (solution_applied = True)
+        - Stage 4: Permanent solution applied (resolution_applied = True)
 
         When True: Agent should return to stage 2 (hypothesis formulation) for full RCA
-        When False: Either ROOT_CAUSE path, or MITIGATION_FIRST hasn't applied mitigation yet
+        When False: Either ROOT_CAUSE path, or MITIGATION_FIRST has not applied mitigation yet
 
         Note: Different from solution_applied - mitigation is quick correlation-based fix,
         solution is comprehensive permanent fix after RCA.
@@ -407,12 +410,13 @@ class InvestigationProgress(BaseModel):
         - MITIGATION_FIRST path may be in stage 4 (mitigation) before stage 2 (RCA)
         - Tracking this requires additional path context beyond just milestones
         """
+
         # SOLUTION (Stage 4): Any solution work
-        if self.solution_proposed or self.solution_applied or self.solution_verified:
+        if self.solution_proposed or self.resolution_applied or self.solution_verified:
             return InvestigationStage.SOLUTION
 
         # HYPOTHESIS_VALIDATION (Stage 3): Root cause identified or being validated
-        # (If root_cause_identified=True, we're past validation, but haven't proposed solution yet)
+        # (If root_cause_identified=True, we're past validation, but have not proposed solution yet)
         if self.root_cause_identified:
             return InvestigationStage.HYPOTHESIS_VALIDATION
 
@@ -443,7 +447,7 @@ class InvestigationProgress(BaseModel):
     def resolution_complete(self) -> bool:
         """Check if resolution milestones completed"""
         return (
-            self.solution_proposed and self.solution_applied and self.solution_verified
+            self.solution_proposed and self.resolution_applied and self.solution_verified
         )
 
     @property
@@ -459,7 +463,7 @@ class InvestigationProgress(BaseModel):
             self.changes_identified,
             self.root_cause_identified,
             self.solution_proposed,
-            self.solution_applied,
+            self.resolution_applied,
             self.solution_verified,
         ]
         completed = sum(milestones)
@@ -476,7 +480,7 @@ class InvestigationProgress(BaseModel):
             "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
-            "solution_applied": self.solution_applied,
+            "resolution_applied": self.resolution_applied,
             "solution_verified": self.solution_verified,
         }
         return [name for name, completed in milestone_map.items() if completed]
@@ -491,9 +495,10 @@ class InvestigationProgress(BaseModel):
             "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
-            "solution_applied": self.solution_applied,
+            "resolution_applied": self.resolution_applied,
             "solution_verified": self.solution_verified,
         }
+
         return [name for name, completed in milestone_map.items() if not completed]
 
     # ============================================================
@@ -537,7 +542,7 @@ class InvestigationProgress(BaseModel):
     def solution_ordering(self):
         """Ensure solutions are applied in order"""
         proposed = self.solution_proposed
-        applied = self.solution_applied
+        applied = self.resolution_applied
         verified = self.solution_verified
 
         if applied and not proposed:
@@ -558,8 +563,8 @@ class InvestigationStage(str, Enum):
     Only relevant when case status = INVESTIGATING.
 
     Stage Progression (Path-Dependent):
-    - MITIGATION_FIRST: 1 → 4 → 2 → 3 → 4 (quick mitigation, then return for RCA)
-    - ROOT_CAUSE: 1 → 2 → 3 → 4 (traditional RCA)
+    - MITIGATION_FIRST: 1 -> 4 -> 2 -> 3 -> 4 (quick mitigation, then return for RCA)
+    - ROOT_CAUSE: 1 -> 2 -> 3 -> 4 (traditional RCA)
 
     Stage determines the investigation focus based on what has been completed:
     - Stage 1: Where and when (symptom verification)
@@ -572,7 +577,7 @@ class InvestigationStage(str, Enum):
     """
     Stage 1: Symptom verification (where and when).
 
-    Focus: Understanding what's happening and when it started
+    Focus: Understanding what is happening and when it started
     Milestones: symptom_verified, scope_assessed, timeline_established, changes_identified
 
     Agent Actions:
@@ -690,9 +695,9 @@ class UrgencyLevel(str, Enum):
     Urgency classification for path routing.
 
     Used with TemporalState to determine investigation path:
-    - ONGOING + HIGH/CRITICAL → MITIGATION
-    - HISTORICAL + LOW/MEDIUM → ROOT_CAUSE
-    - Other combinations → USER_CHOICE
+    - ONGOING + HIGH/CRITICAL -> MITIGATION
+    - HISTORICAL + LOW/MEDIUM -> ROOT_CAUSE
+    - Other combinations -> USER_CHOICE
     """
 
     CRITICAL = "critical"
@@ -727,7 +732,7 @@ class UrgencyLevel(str, Enum):
 
 class ProblemConfirmation(BaseModel):
     """
-    Agent's initial problem understanding during consulting.
+    Agents initial problem understanding during inquiry.
     """
 
     problem_type: str = Field(
@@ -768,14 +773,14 @@ class ProblemConfirmation(BaseModel):
         return v
 
 
-class ConsultingData(BaseModel):
+class InquiryData(BaseModel):
     """
-    Pre-investigation CONSULTING status data.
+    Pre-investigation INQUIRY status data.
     Captures early problem exploration before formal investigation commitment.
     """
 
     problem_confirmation: Optional[ProblemConfirmation] = Field(
-        default=None, description="Agent's initial understanding of the problem"
+        default=None, description="Agent initial understanding of the problem"
     )
 
     # ============================================================
@@ -784,7 +789,7 @@ class ConsultingData(BaseModel):
     proposed_problem_statement: Optional[str] = Field(
         default=None,
         description="""
-        Agent's formalized problem statement (clear, specific, actionable) - ITERATIVE REFINEMENT pattern.
+        Agent formalized problem statement (clear, specific, actionable) - ITERATIVE REFINEMENT pattern.
 
         UI Display:
         - When None: Display "To be defined" or blank (no problem detected yet)
@@ -814,7 +819,7 @@ class ConsultingData(BaseModel):
     # ============================================================
     quick_suggestions: List[str] = Field(
         default_factory=list,
-        description="Quick fixes or guidance provided during consulting",
+        description="Quick fixes or guidance provided during inquiry",
     )
 
     decided_to_investigate: bool = Field(
@@ -825,19 +830,19 @@ class ConsultingData(BaseModel):
         default=None, description="When user decided to investigate (or not)"
     )
 
-    consultation_turns: int = Field(
-        default=0, ge=0, description="Number of turns spent in CONSULTING status"
+    inquiry_turns: int = Field(
+        default=0, ge=0, description="Number of turns spent in INQUIRY status"
     )
 
     @model_validator(mode="after")
-    def validate_problem_statement_immutability(self) -> "ConsultingData":
+    def validate_problem_statement_immutability(self) -> "InquiryData":
         """
         Enforce immutability of proposed_problem_statement once confirmed.
 
         Spec Reference: Case Data Model Design lines 966-996
         Rule: proposed_problem_statement becomes IMMUTABLE after problem_statement_confirmed = True
         """
-        # This validator runs after field assignment, so we can't prevent the mutation
+        # This validator runs after field assignment, so we cannot prevent the mutation
         # directly. Instead, we validate the final state is consistent.
         # The immutability should be enforced at the service layer by not allowing
         # updates to this field when confirmed=True.
@@ -854,7 +859,7 @@ class ConsultingData(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_decision_consistency(self) -> "ConsultingData":
+    def validate_decision_consistency(self) -> "InquiryData":
         """Validate investigation decision consistency."""
         if self.decided_to_investigate and not self.decision_made_at:
             # Auto-set decision timestamp if missing
@@ -1190,8 +1195,8 @@ class EvidenceCategory(str, Enum):
 
     OTHER = "other"
     """
-    Evidence that doesn't fit standard categories.
-    May be useful contextually but doesn't directly advance milestones.
+    Evidence that does not fit standard categories.
+    May be useful contextually but does not directly advance milestones.
 
     Examples:
     - Background documentation
@@ -1234,23 +1239,14 @@ class EvidenceStance(str, Enum):
     One evidence can have different stances for different hypotheses.
     """
 
-    STRONGLY_SUPPORTS = "strongly_supports"
-    """Evidence strongly confirms hypothesis (→ VALIDATED)"""
-
     SUPPORTS = "supports"
-    """Evidence somewhat supports hypothesis (increase confidence)"""
+    """Evidence supports hypothesis (increase confidence)"""
 
     NEUTRAL = "neutral"
     """Evidence neither supports nor contradicts"""
 
-    CONTRADICTS = "contradicts"
-    """Evidence somewhat contradicts hypothesis (decrease confidence)"""
-
-    STRONGLY_CONTRADICTS = "strongly_contradicts"
-    """Evidence strongly refutes hypothesis (→ REFUTED)"""
-
-    IRRELEVANT = "irrelevant"
-    """Evidence is not related to this hypothesis (no link created in hypothesis_evidence table)"""
+    REFUTES = "refutes"
+    """Evidence contradicts hypothesis (decrease confidence)"""
 
 
 # =============================================================================
@@ -1263,10 +1259,10 @@ class UploadedFile(BaseModel):
     Raw file metadata for files uploaded to a case.
 
     Key Distinction:
-    - UploadedFile: Raw file metadata, exists in ANY case phase (CONSULTING or INVESTIGATING)
+    - UploadedFile: Raw file metadata, exists in ANY case phase (INQUIRY or INVESTIGATING)
     - Evidence: Investigation-linked data derived from files, ONLY exists in INVESTIGATING phase
 
-    Files uploaded during CONSULTING are tracked here but do NOT become evidence until
+    Files uploaded during INQUIRY are tracked here but do NOT become evidence until
     the case transitions to INVESTIGATING and hypotheses are formulated.
     """
 
@@ -1324,9 +1320,9 @@ class Evidence(BaseModel):
 
     NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
     System categorizes based on:
-    - Which milestones are incomplete (if symptom not verified → SYMPTOM_EVIDENCE)
-    - Hypothesis evaluation results (if creates hypothesis_evidence links → CAUSAL_EVIDENCE)
-    - Solution state (if solution proposed → RESOLUTION_EVIDENCE)
+    - Which milestones are incomplete (if symptom not verified -> SYMPTOM_EVIDENCE)
+    - Hypothesis evaluation results (if creates hypothesis_evidence links -> CAUSAL_EVIDENCE)
+    - Solution state (if solution proposed -> RESOLUTION_EVIDENCE)
 
     LLM provides: summary, analysis
     LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
@@ -1368,14 +1364,14 @@ class Evidence(BaseModel):
         Contains only the high-signal portions extracted from raw files.
 
         Examples:
-        - Logs: Crime scene extraction (±200 lines around errors)
+        - Logs: Crime scene extraction (approx. 200 lines around errors)
         - Metrics: Anomaly detection results with statistical analysis
         - Config: Parsed configuration with secrets redacted
         - Code: AST-extracted functions and classes
         - Text: LLM-generated summary
         - Images: Vision model description
 
-        Size: Typically 5-50KB (compressed from larger raw files).
+        Size: Typically 5 to 50 KB (compressed from larger raw files).
         Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
 
         This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
@@ -1409,7 +1405,7 @@ class Evidence(BaseModel):
 
     analysis: Optional[str] = Field(
         default=None,
-        description="Agent's analysis of this evidence and its significance to the investigation",
+        description="Agent analysis of this evidence and its significance to the investigation",
         max_length=2000,
     )
 
@@ -1457,7 +1453,7 @@ class HypothesisCategory(str, Enum):
     Hypothesis categories for anchoring detection.
 
     If agent tests 4+ hypotheses in same category without validation,
-    it's "anchored" and should try different category.
+    it is "anchored" and should try different category.
     """
 
     CODE = "code"
@@ -1485,7 +1481,7 @@ class HypothesisCategory(str, Enum):
     """Human errors, operational mistakes"""
 
     OTHER = "other"
-    """Doesn't fit above categories"""
+    """Does not fit above categories"""
 
 
 class HypothesisStatus(str, Enum):
@@ -1534,13 +1530,13 @@ class HypothesisGenerationMode(str, Enum):
     OPPORTUNISTIC = "opportunistic"
     """
     Generated from strong correlation or obvious clue.
-    Example: Deploy immediately preceded errors → hypothesis: "Bug in new deploy"
+    Example: Deploy immediately preceded errors -> hypothesis: "Bug in new deploy"
     """
 
     SYSTEMATIC = "systematic"
     """
     Generated methodically when root cause unclear.
-    Example: Generic slowness → generate hypotheses for common causes
+    Example: Generic slowness -> generate hypotheses for common causes
     """
 
     FORCED_ALTERNATIVE = "forced_alternative"
@@ -1555,9 +1551,9 @@ class HypothesisEvidenceLink(BaseModel):
     Many-to-many relationship between hypothesis and evidence.
 
     ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses:
-    - Evidence "Pool at 95%" → STRONGLY_SUPPORTS "pool exhausted" hypothesis
-    - Evidence "Pool at 95%" → REFUTES "network latency" hypothesis
-    - Evidence "Pool at 95%" → IRRELEVANT to "memory leak" hypothesis
+    - Evidence "Pool at 95%" -> STRONGLY_SUPPORTS "pool exhausted" hypothesis
+    - Evidence "Pool at 95%" -> REFUTES "network latency" hypothesis
+    - Evidence "Pool at 95%" -> IRRELEVANT to "memory leak" hypothesis
 
     Stored in hypothesis_evidence junction table.
     LLM evaluates evidence against ALL active hypotheses after submission.
@@ -1578,7 +1574,7 @@ class HypothesisEvidenceLink(BaseModel):
     completeness: float = Field(
         ge=0.0,
         le=1.0,
-        description="How well this evidence tests THIS hypothesis (0.0 = doesn't test, 1.0 = fully tests)",
+        description="How well this evidence tests THIS hypothesis (0.0 = does not test, 1.0 = fully tests)",
     )
 
     analyzed_at: datetime = Field(
@@ -1673,21 +1669,21 @@ class Hypothesis(BaseModel):
     @property
     def supporting_evidence(self) -> List[str]:
         """Get evidence IDs that support this hypothesis"""
+
         return [
             evidence_id
             for evidence_id, link in self.evidence_links.items()
-            if link.stance
-            in [EvidenceStance.STRONGLY_SUPPORTS, EvidenceStance.SUPPORTS]
+            if link.stance == EvidenceStance.SUPPORTS
         ]
 
     @property
     def refuting_evidence(self) -> List[str]:
         """Get evidence IDs that refute this hypothesis"""
+
         return [
             evidence_id
             for evidence_id, link in self.evidence_links.items()
-            if link.stance
-            in [EvidenceStance.CONTRADICTS, EvidenceStance.STRONGLY_CONTRADICTS]
+            if link.stance == EvidenceStance.REFUTES
         ]
 
     @property
@@ -1739,7 +1735,7 @@ class SolutionType(str, Enum):
     """Fix data corruption or inconsistency"""
 
     OTHER = "other"
-    """Doesn't fit above categories"""
+    """Does not fit above categories"""
 
 
 class Solution(BaseModel):
@@ -1894,8 +1890,8 @@ class TurnOutcome(str, Enum):
 
     DATA_NOT_PROVIDED = "data_not_provided"
     """
-    Agent requested data, user didn't provide.
-    LLM uses this when user didn't address request.
+    Agent requested data, user did not provide.
+    LLM uses this when user did not address request.
     System tracks pattern - if 3+ consecutive, triggers degraded mode.
     """
 
@@ -1917,7 +1913,7 @@ class TurnOutcome(str, Enum):
 
     OTHER = "other"
     """
-    Doesn't fit standard outcomes.
+    Does not fit standard outcomes.
     """
 
 
@@ -1977,11 +1973,11 @@ class TurnProgress(BaseModel):
     # User Interaction
     # ============================================================
     user_message_summary: Optional[str] = Field(
-        default=None, description="Summary of user's message", max_length=500
+        default=None, description="Summary of user message", max_length=500
     )
 
     agent_response_summary: Optional[str] = Field(
-        default=None, description="Summary of agent's response", max_length=500
+        default=None, description="Summary of agent response", max_length=500
     )
 
     # ============================================================
@@ -2016,26 +2012,26 @@ def determine_investigation_path(
     Determine investigation path from temporal state and urgency.
 
     Path Selection Matrix:
-    ┌──────────────┬───────────────────────┬────────────────────────┐
-    │ Temporal     │ Urgency               │ Path                   │
-    ├──────────────┼───────────────────────┼────────────────────────┤
-    │ ONGOING      │ CRITICAL/HIGH         │ MITIGATION_FIRST       │
-    │ ONGOING      │ MEDIUM                │ USER_CHOICE            │
-    │ ONGOING      │ LOW                   │ ROOT_CAUSE             │
-    │ HISTORICAL   │ CRITICAL/HIGH         │ USER_CHOICE (unusual)  │
-    │ HISTORICAL   │ MEDIUM/LOW            │ ROOT_CAUSE             │
-    └──────────────┴───────────────────────┴────────────────────────┘
+    +--------------+-----------------------+------------------------+
+    | Temporal     | Urgency               | Path                   |
+    +--------------+-----------------------+------------------------+
+    | ONGOING      | CRITICAL/HIGH         | MITIGATION_FIRST       |
+    | ONGOING      | MEDIUM                | USER_CHOICE            |
+    | ONGOING      | LOW                   | ROOT_CAUSE             |
+    | HISTORICAL   | CRITICAL/HIGH         | USER_CHOICE (unusual)  |
+    | HISTORICAL   | MEDIUM/LOW            | ROOT_CAUSE             |
+    +--------------+-----------------------+------------------------+
 
     Logic:
-    - ONGOING + HIGH/CRITICAL urgency → MITIGATION_FIRST
+    - ONGOING + HIGH/CRITICAL urgency -> MITIGATION_FIRST
       * Problem is happening NOW, users affected
       * Need quick mitigation, then return for RCA
 
-    - HISTORICAL + LOW/MEDIUM urgency → ROOT_CAUSE
+    - HISTORICAL + LOW/MEDIUM urgency -> ROOT_CAUSE
       * Problem happened before (not ongoing)
       * No immediate pressure, can do thorough RCA
 
-    - Ambiguous cases → USER_CHOICE
+    - Ambiguous cases -> USER_CHOICE
       * ONGOING + MEDIUM: Could go either way
       * HISTORICAL + HIGH: Unusual but possible (e.g., "it happened before and might happen again")
 
@@ -2049,23 +2045,25 @@ def determine_investigation_path(
     # ONGOING problem
     if temporal_state == TemporalState.ONGOING:
         if urgency_level in [UrgencyLevel.CRITICAL, UrgencyLevel.HIGH]:
-            # Happening now + urgent → Quick mitigation first
+            # Happening now + urgent -> Quick mitigation first
             return InvestigationPath.MITIGATION_FIRST
-        elif urgency_level == UrgencyLevel.MEDIUM:
-            # Happening now but medium urgency → Let user decide
+
+        if urgency_level == UrgencyLevel.MEDIUM:
+            # Happening now but medium urgency -> Let user decide
             return InvestigationPath.USER_CHOICE
+
         else:  # LOW or UNKNOWN
-            # Happening now but low urgency → Can do thorough RCA
+            # Happening now but low urgency -> Can do thorough RCA
             return InvestigationPath.ROOT_CAUSE
 
     # HISTORICAL problem
     else:  # TemporalState.HISTORICAL
         if urgency_level in [UrgencyLevel.CRITICAL, UrgencyLevel.HIGH]:
-            # Historical but high urgency → Unusual, let user decide
+            # Historical but high urgency -> Unusual, let user decide
             # (Could be "this happened before and we must prevent it")
             return InvestigationPath.USER_CHOICE
         else:  # MEDIUM, LOW, or UNKNOWN
-            # Historical + low urgency → Classic post-mortem
+            # Historical + low urgency -> Classic post-mortem
             return InvestigationPath.ROOT_CAUSE
 
 
@@ -2073,7 +2071,7 @@ class InvestigationPath(str, Enum):
     """
     Investigation routing strategy (4-stage workflow).
 
-    IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state × urgency_level).
+    IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
     LLM provides inputs (temporal_state, urgency_level) during verification.
     System calls determine_investigation_path() to select path deterministically.
 
@@ -2093,11 +2091,11 @@ class InvestigationPath(str, Enum):
     Mitigation-first path (updated from "mitigation only").
 
     Characteristics:
-    - Apply quick mitigation based on correlation (stage 1 → 4)
-    - THEN return to stage 2 for full RCA (stage 4 → 2 → 3 → 4)
+    - Apply quick mitigation based on correlation (stage 1 -> 4)
+    - THEN return to stage 2 for full RCA (stage 4 -> 2 -> 3 -> 4)
     - Urgency priority with comprehensive investigation after mitigation
 
-    Stage Flow: 1 → 4 → 2 → 3 → 4
+    Stage Flow: 1 -> 4 -> 2 -> 3 -> 4
     - Stage 1: Verify symptom (where/when)
     - Stage 4: Apply quick mitigation (correlation-based fix)
     - Stage 2: Formulate hypotheses (why)
@@ -2121,7 +2119,7 @@ class InvestigationPath(str, Enum):
     - Deep root cause analysis before solution
     - Systematic hypothesis testing
 
-    Stage Flow: 1 → 2 → 3 → 4
+    Stage Flow: 1 -> 2 -> 3 -> 4
     - Stage 1: Verify symptom (where/when)
     - Stage 2: Formulate hypotheses (why)
     - Stage 3: Validate hypothesis (why really)
@@ -2143,7 +2141,7 @@ class InvestigationPath(str, Enum):
     - Present options to user
     - User makes strategic decision
 
-    Use When: Ambiguous temporal_state × urgency combinations
+    Use When: Ambiguous temporal_state x urgency combinations
     - ONGOING + MEDIUM urgency
     - HISTORICAL + HIGH urgency (unusual but possible)
     """
@@ -2154,7 +2152,7 @@ class PathSelection(BaseModel):
     Path selection details.
     Records how investigation path was chosen.
 
-    IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state × urgency_level).
+    IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
     LLM provides inputs (temporal_state, urgency_level) during verification.
     System calls determine_investigation_path() to select path deterministically.
     LLM does NOT choose the path directly!
@@ -2235,7 +2233,7 @@ class ConfidenceLevel(str, Enum):
     VERIFIED = "verified"
     """
     Evidence-backed certainty.
-    Score: ≥ 0.9
+    Score: >= 0.9
     """
 
     @staticmethod
@@ -2253,7 +2251,7 @@ class ConfidenceLevel(str, Enum):
 
 class WorkingConclusion(BaseModel):
     """
-    Agent's current best understanding of the problem.
+    Agent current best understanding of the problem.
     Updated iteratively as investigation progresses.
 
     Less authoritative than RootCauseConclusion.
@@ -2359,7 +2357,7 @@ class RootCauseConclusion(BaseModel):
             expected_level = ConfidenceLevel.from_score(score)
             if level != expected_level:
                 raise ValueError(
-                    f"confidence_level {level} doesn't match score {score} (expected {expected_level})"
+                    f"confidence_level {level} does not match score {score} (expected {expected_level})"
                 )
 
         return self
@@ -2394,12 +2392,12 @@ class DegradedModeType(str, Enum):
     EXTERNAL_DEPENDENCY = "external_dependency"
     """
     Waiting on external team/person.
-    Outside agent's control.
+    Outside agent control.
     """
 
     OTHER = "other"
     """
-    Doesn't fit standard degradation reasons.
+    Does not fit standard degradation reasons.
     """
 
 
@@ -2463,7 +2461,7 @@ class EscalationType(str, Enum):
     EXPERTISE_REQUIRED = "expertise_required"
     """
     Requires specialized domain expertise.
-    Beyond agent's knowledge.
+    Beyond agent knowledge.
     """
 
     PERMISSIONS_REQUIRED = "permissions_required"
@@ -2491,7 +2489,7 @@ class EscalationType(str, Enum):
 
     OTHER = "other"
     """
-    Doesn't fit standard escalation reasons.
+    Does not fit standard escalation reasons.
     """
 
 
@@ -2569,14 +2567,20 @@ class DocumentType(str, Enum):
     """Timeline visualization of events"""
 
     EVIDENCE_BUNDLE = "evidence_bundle"
-    """Compiled evidence package"""
+    """
+    Compiled evidence package.
+    """
 
     OTHER = "other"
-    """Doesn't fit standard document types"""
+    """
+    Does not fit standard document types.
+    """
 
 
 class GeneratedDocument(BaseModel):
-    """A generated document artifact"""
+    """
+    A generated document artifact.
+    """
 
     document_id: str = Field(
         default_factory=lambda: f"doc_{uuid4().hex[:12]}",
@@ -2609,7 +2613,9 @@ class GeneratedDocument(BaseModel):
     @field_validator("format")
     @classmethod
     def valid_format(cls, v):
-        """Validate format"""
+        """
+        Validate format.
+        """
         allowed = ["markdown", "pdf", "html", "json", "txt", "other"]
         if v not in allowed:
             raise ValueError(f"format must be one of: {allowed}")
@@ -2716,7 +2722,7 @@ class Case(BaseModel):
         Confirmed problem description - canonical, user-facing, displayed prominently in UI.
 
         Lifecycle:
-        1. Empty initially during CONSULTING (while agent formalizes problem)
+        1. Empty initially during INQUIRY (while agent formalizes problem)
         2. Set when user confirms proposed_problem_statement and decides to investigate
         3. Immutable after status becomes INVESTIGATING (provides stable reference)
         4. Used for UI display, search, and documentation
@@ -2731,7 +2737,7 @@ class Case(BaseModel):
     # Status (PRIMARY - User-Facing Lifecycle)
     # ============================================================
     status: CaseStatus = Field(
-        default=CaseStatus.CONSULTING, description="Current lifecycle status"
+        default=CaseStatus.INQUIRY, description="Current lifecycle status"
     )
 
     status_history: List[CaseStatusTransition] = Field(
@@ -2740,7 +2746,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="Why case was closed: resolved | abandoned | escalated | consulting_only | duplicate | other",
+        description="Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other",
         max_length=100,
     )
 
@@ -2818,9 +2824,9 @@ class Case(BaseModel):
     # ============================================================
     # Problem Context
     # ============================================================
-    consulting: ConsultingData = Field(
-        default_factory=ConsultingData,
-        description="Pre-investigation CONSULTING status data",
+    inquiry: InquiryData = Field(
+        default_factory=InquiryData,
+        description="Pre-investigation INQUIRY status data",
     )
 
     problem_verification: Optional[ProblemVerification] = Field(
@@ -2836,7 +2842,7 @@ class Case(BaseModel):
         description="""
         All files uploaded to this case (raw file metadata).
 
-        Files can be uploaded at ANY phase (CONSULTING or INVESTIGATING).
+        Files can be uploaded at ANY phase (INQUIRY or INVESTIGATING).
         Evidence is DERIVED from uploaded files after analysis during INVESTIGATING phase.
 
         Difference from evidence:
@@ -2862,7 +2868,7 @@ class Case(BaseModel):
     # ============================================================
     working_conclusion: Optional[WorkingConclusion] = Field(
         default=None,
-        description="Agent's current best understanding (updated iteratively)",
+        description="Agent current best understanding (updated iteratively)",
     )
 
     root_cause_conclusion: Optional[RootCauseConclusion] = Field(
@@ -3080,7 +3086,7 @@ class Case(BaseModel):
                 "resolved",
                 "abandoned",
                 "escalated",
-                "consulting_only",
+                "inquiry_only",
                 "duplicate",
                 "other",
             ]
@@ -3216,12 +3222,12 @@ class Case(BaseModel):
                 raise ValueError("INVESTIGATING status requires non-empty description")
 
             # Must have confirmed problem statement and decision to investigate
-            if not self.consulting.problem_statement_confirmed:
+            if not self.inquiry.problem_statement_confirmed:
                 raise ValueError(
                     "INVESTIGATING status requires confirmed problem statement"
                 )
 
-            if not self.consulting.decided_to_investigate:
+            if not self.inquiry.decided_to_investigate:
                 raise ValueError(
                     "INVESTIGATING status requires investigation commitment"
                 )

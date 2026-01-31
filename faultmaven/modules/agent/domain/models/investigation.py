@@ -869,8 +869,8 @@ class InvestigationLifecycle(BaseModel):
 
     # Case status (from case-lifecycle-management.md)
     case_status: str = Field(
-        default="consulting",
-        description="Case lifecycle status (consulting|investigating|resolved|closed)",
+        default="inquiry",
+        description="Case lifecycle status (inquiry|investigating|resolved|closed)",
     )
     urgency_level: str = Field(
         default="medium", description="low, medium, high, critical"

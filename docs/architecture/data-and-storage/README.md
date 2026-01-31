@@ -30,7 +30,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
   - Audit trail
 
 - **[schemas/case-schema.md](./schemas/case-schema.md)** - Complete case data model (10 PostgreSQL tables)
-  - Investigation lifecycle (CONSULTING → INVESTIGATING → RESOLVED → CLOSED)
+  - Investigation lifecycle (INQUIRY → INVESTIGATING → RESOLVED → CLOSED)
   - Conversation history and context
   - Evidence and hypotheses tracking
   - Status transitions and audit trail

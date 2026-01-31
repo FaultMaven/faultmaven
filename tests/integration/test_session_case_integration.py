@@ -141,7 +141,7 @@ async def test_session_case_lifecycle(
         organization_id="test-org",
         title="Lifecycle Test Case",
         description="Testing session-case lifecycle",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
     )
     await case_repository.save_with_session(case, session_id=session.session_id)
 
@@ -238,9 +238,9 @@ async def test_multiple_cases_per_session(
     # Create cases with different statuses
     # INVESTIGATING requires description to be set
     statuses = [
-        CaseStatus.CONSULTING,
+        CaseStatus.INQUIRY,
         CaseStatus.INVESTIGATING,
-        CaseStatus.CONSULTING,
+        CaseStatus.INQUIRY,
     ]
 
     for i, status in enumerate(statuses):
@@ -252,10 +252,10 @@ async def test_multiple_cases_per_session(
             "status": status,
         }
 
-        # INVESTIGATING requires description, proposed_problem_statement, and consulting flags
+        # INVESTIGATING requires description, proposed_problem_statement, and inquiry flags
         if status == CaseStatus.INVESTIGATING:
             case_data["description"] = f"Description for Multi Case {i}"
-            case_data["consulting"] = {
+            case_data["inquiry"] = {
                 "proposed_problem_statement": f"Problem statement for Multi Case {i}",
                 "problem_statement_confirmed": True,
                 "decided_to_investigate": True,
@@ -274,7 +274,7 @@ async def test_multiple_cases_per_session(
 
     # Verify different statuses
     status_values = [c.status for c in cases]
-    assert CaseStatus.CONSULTING in status_values
+    assert CaseStatus.INQUIRY in status_values
     assert CaseStatus.INVESTIGATING in status_values
 
 
@@ -501,15 +501,15 @@ async def test_case_status_updates_with_session(
         organization_id="test-org",
         title="Status Update Test",
         description="Initial description for investigation",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
     )
     await case_repository.save_with_session(case, session_id=session.session_id)
 
     # Act - Update case status through normal save
-    # INVESTIGATING requires description, proposed_problem_statement, and consulting flags to be set
-    case.consulting.proposed_problem_statement = "Confirmed problem statement"
-    case.consulting.problem_statement_confirmed = True
-    case.consulting.decided_to_investigate = True
+    # INVESTIGATING requires description, proposed_problem_statement, and inquiry flags to be set
+    case.inquiry.proposed_problem_statement = "Confirmed problem statement"
+    case.inquiry.problem_statement_confirmed = True
+    case.inquiry.decided_to_investigate = True
     case.status = CaseStatus.INVESTIGATING
     await case_repository.save(case)
 

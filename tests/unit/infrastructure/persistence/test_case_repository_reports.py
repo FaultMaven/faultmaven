@@ -81,7 +81,7 @@ async def async_engine():
                 last_activity_at TEXT,
                 resolved_at TEXT,
                 closed_at TEXT,
-                consulting TEXT DEFAULT '{}',
+                inquiry TEXT DEFAULT '{}',
                 problem_verification TEXT,
                 working_conclusion TEXT,
                 root_cause_conclusion TEXT,

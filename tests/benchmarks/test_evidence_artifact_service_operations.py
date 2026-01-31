@@ -137,7 +137,7 @@ async def benchmark_case(case_repository) -> Case:
         organization_id="benchmark-org-001",
         title="Benchmark Evidence Case",
         description="Case for benchmarking evidence service operations",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
     return await case_repository.save(case)

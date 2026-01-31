@@ -80,7 +80,7 @@ class TestMemoryUsage:
                 title=f"Memory Test Case {i}" * 5,  # ~100 bytes title
                 description="x"
                 * 1900,  # ~1.9KB description per case (under 2000 char limit)
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
             await case_repository.save(case)
@@ -123,7 +123,7 @@ class TestMemoryUsage:
                 organization_id="memory-efficiency-org",
                 title=f"Efficiency Test Case {i}",
                 description=f"Test case {i} for memory efficiency testing",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
             await case_repository.save(case)
@@ -139,7 +139,7 @@ class TestMemoryUsage:
                 organization_id="memory-efficiency-org",
                 title=f"Efficiency Test Case {i}",
                 description=f"Test case {i} for memory efficiency testing",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
             await case_repository.save(case)
@@ -185,7 +185,7 @@ class TestMemoryUsage:
                     organization_id="gc-test-org",
                     title=f"GC Test Case {batch}-{i}",
                     description="y" * 1000,
-                    status=CaseStatus.CONSULTING,
+                    status=CaseStatus.INQUIRY,
                     investigation_strategy=InvestigationStrategy.POST_MORTEM,
                 )
                 for i in range(20)

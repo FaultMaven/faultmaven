@@ -111,7 +111,7 @@ def sample_case():
         organization_id="org_test000",
         title="API Error Investigation",
         description="Investigating 500 errors in production API",
-        status=CaseStatus.CONSULTING,  # Use CONSULTING to avoid validation requirements
+        status=CaseStatus.INQUIRY,  # Use INQUIRY to avoid validation requirements
     )
 
 

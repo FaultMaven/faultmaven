@@ -48,7 +48,7 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    ConsultingData,
+    InquiryData,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
@@ -133,7 +133,7 @@ def sample_case_with_evidence() -> Case:
         title="Case with Evidence",
         description="Testing evidence linking",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -169,7 +169,7 @@ def sample_case_with_hypotheses() -> Case:
         title="Case with Hypotheses",
         description="Testing hypothesis tracking",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -218,17 +218,17 @@ async def test_full_case_lifecycle(db_repository: DatabaseCaseRepository):
     retrieved = await db_repository.get(case.case_id)
     assert retrieved is not None
     assert retrieved.title == "Full Lifecycle Test"
-    assert retrieved.status == CaseStatus.CONSULTING
+    assert retrieved.status == CaseStatus.INQUIRY
 
     # Step 3: Update case
     case.title = "Updated Lifecycle Test"
     # INVESTIGATING requires confirmed problem statement and decision - SET BEFORE STATUS CHANGE
-    case.consulting.problem_statement_confirmed = True
-    case.consulting.decided_to_investigate = True
-    case.consulting.proposed_problem_statement = "Test problem statement"
+    case.inquiry.problem_statement_confirmed = True
+    case.inquiry.decided_to_investigate = True
+    case.inquiry.proposed_problem_statement = "Test problem statement"
     case.status = CaseStatus.INVESTIGATING
     case.current_turn = 5
-    case.consulting.quick_suggestions = ["Check database", "Review logs"]
+    case.inquiry.quick_suggestions = ["Check database", "Review logs"]
 
     updated = await db_repository.save(case)
     assert updated.title == "Updated Lifecycle Test"
@@ -342,7 +342,7 @@ async def test_hypothesis_validation_flow(db_repository: DatabaseCaseRepository)
         title="Hypothesis Validation Test",
         description="Testing hypothesis validation flow",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
@@ -566,12 +566,12 @@ async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
         description="Testing all fields",
         status=CaseStatus.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
-        consulting=ConsultingData(
+        inquiry=InquiryData(
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
             quick_suggestions=["Check logs", "Restart service"],
-            consultation_turns=3,
+            inquiry_turns=3,
         ),
     )
 
@@ -595,8 +595,8 @@ async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
     assert retrieved.title == "Complex Case Test"
     assert retrieved.status == CaseStatus.INVESTIGATING
     assert retrieved.investigation_strategy == InvestigationStrategy.ACTIVE_INCIDENT
-    assert retrieved.consulting.quick_suggestions == ["Check logs", "Restart service"]
-    assert retrieved.consulting.consultation_turns == 3
+    assert retrieved.inquiry.quick_suggestions == ["Check logs", "Restart service"]
+    assert retrieved.inquiry.inquiry_turns == 3
     assert retrieved.progress.symptom_verified is True
     assert retrieved.progress.scope_assessed is True
     assert retrieved.progress.timeline_established is True

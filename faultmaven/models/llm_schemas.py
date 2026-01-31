@@ -149,13 +149,13 @@ class WorkingConclusionUpdate(BaseModel):
 
 
 # ============================================================
-# CONSULTING Response Schema
+# INQUIRY Response Schema
 # ============================================================
 
 
-class ConsultingStateUpdate(BaseModel):
+class InquiryStateUpdate(BaseModel):
     """
-    State updates for CONSULTING status.
+    State updates for INQUIRY status.
 
     Focuses on problem formalization and decision to investigate.
     """
@@ -194,9 +194,9 @@ class ConsultingStateUpdate(BaseModel):
     )
 
 
-class ConsultingResponse(BaseModel):
+class InquiryResponse(BaseModel):
     """
-    LLM response for CONSULTING status.
+    LLM response for INQUIRY status.
 
     Used when case is in pre-investigation exploration mode.
     Agent is helping user understand if they should investigate.
@@ -206,7 +206,7 @@ class ConsultingResponse(BaseModel):
         description="Natural language response to user", max_length=4000
     )
 
-    state_update: ConsultingStateUpdate = Field(
+    state_update: InquiryStateUpdate = Field(
         description="State changes for this turn"
     )
 
@@ -368,7 +368,7 @@ class TerminalResponse(BaseModel):
             "resolved",
             "abandoned",
             "escalated",
-            "consulting_only",
+            "inquiry_only",
             "duplicate",
             "other",
         ]
@@ -407,7 +407,7 @@ def get_response_schema_for_status(status: str) -> type[BaseModel]:
     Get appropriate response schema for case status.
 
     Args:
-        status: Case status (consulting, investigating, resolved, closed)
+        status: Case status (inquiry, investigating, resolved, closed)
 
     Returns:
         Response schema class
@@ -415,7 +415,7 @@ def get_response_schema_for_status(status: str) -> type[BaseModel]:
     from faultmaven.modules.case.domain.models import CaseStatus
 
     schema_map = {
-        CaseStatus.CONSULTING: ConsultingResponse,
+        CaseStatus.INQUIRY: InquiryResponse,
         CaseStatus.INVESTIGATING: InvestigationResponse,
         CaseStatus.RESOLVED: TerminalResponse,
         CaseStatus.CLOSED: TerminalResponse,

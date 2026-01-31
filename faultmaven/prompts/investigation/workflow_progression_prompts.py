@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.modules.agent.domain.models.investigation import InvestigationState
 
 # =============================================================================
-# Scenario 1: Start Systematic Investigation (CONSULTING → INVESTIGATING)
+# Scenario 1: Start Systematic Investigation (INQUIRY → INVESTIGATING)
 # =============================================================================
 
 
@@ -92,7 +92,7 @@ I'm ready to start the systematic investigation process.
 
 **Type one of:**
 - **"start investigation"** or **"let's do it"** → I'll begin structured troubleshooting
-- **"not yet"** or **"keep consulting"** → I'll continue answering questions as they come up
+- **"not yet"** or **"keep inquiry"** → I'll continue answering questions as they come up
 - **"tell me more"** → I can explain the investigation process in detail
 
 Or just tell me what you're thinking in your own words.
@@ -118,11 +118,11 @@ Could you clarify?
 
 **Choose one:**
 - **"start investigation"** - Begin 7-phase structured troubleshooting (45-65 min)
-- **"keep consulting"** - Continue answering questions as they come up
+- **"keep inquiry"** - Continue answering questions as they come up
 
 Or let me know what you're thinking. For example:
 - "Let's figure out the root cause" → start investigation
-- "Just need some quick answers" → keep consulting
+- "Just need some quick answers" → keep inquiry
 """
 
     elif attempt == 2:
@@ -131,7 +131,7 @@ Or let me know what you're thinking. For example:
 
 Please type one of these:
 - Type **"start investigation"** if you want structured troubleshooting
-- Type **"keep consulting"** if you want to continue Q&A mode
+- Type **"keep inquiry"** if you want to continue Q&A mode
 
 Just copy and paste one of those phrases so I know how to help you best.
 """
@@ -140,7 +140,7 @@ Just copy and paste one of those phrases so I know how to help you best.
         # Attempt 3: Give up gracefully
         return """I haven't received a clear decision after multiple attempts.
 
-I'll **continue in consulting mode** and keep answering your questions as they come up.
+I'll **continue in inquiry mode** and keep answering your questions as they come up.
 
 If you'd like to start a systematic investigation later, just say:
 "Start the investigation"
@@ -180,10 +180,9 @@ def parse_start_investigation_response(user_response: str) -> tuple[str, bool]:
         "do it",
     ]
 
-    # Decline/continue consulting keywords
     decline_keywords = [
         "not yet",
-        "keep consulting",
+        "keep inquiry",
         "no",
         "continue",
         "just questions",
@@ -614,7 +613,7 @@ Investigation documentation generated. Good luck with the escalation!
 """
 
     elif transition_type == "declined_investigation":
-        return """✅ **Continuing in Consulting Mode**
+        return """✅ **Continuing in Inquiry Mode**
 
 No problem! I'll keep answering questions as they come up.
 

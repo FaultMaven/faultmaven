@@ -3,7 +3,7 @@
 -- Updated: 2026-01-27 (aligned with authoritative case-schema.md v3.2)
 -- Description: Production-ready PostgreSQL schema with hybrid normalization
 --              Normalized tables for high-cardinality data (evidence, hypotheses, solutions)
---              JSONB columns for low-cardinality flexible data (consulting, conclusions)
+--              JSONB columns for low-cardinality flexible data (inquiry, conclusions)
 --
 -- Design Reference: docs/architecture/data-and-storage/schemas/case-schema.md (authoritative)
 
@@ -19,7 +19,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ============================================================================
 
 CREATE TYPE case_status AS ENUM (
-    'consulting',
+    'inquiry',
     'problem_verification',
     'root_cause_analysis',
     'solution_implementation',
@@ -74,12 +74,12 @@ CREATE TABLE cases (
     -- Core Attributes
     user_id VARCHAR(255) NOT NULL,
     title VARCHAR(200) NOT NULL,
-    status case_status NOT NULL DEFAULT 'consulting',
+    status case_status NOT NULL DEFAULT 'inquiry',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Phase: Consulting (JSONB - low cardinality, flexible)
-    consulting JSONB NOT NULL DEFAULT '{
+    -- Phase: Inquiry (JSONB - low cardinality, flexible)
+    inquiry JSONB NOT NULL DEFAULT '{
         "initial_description": "",
         "context": {},
         "user_goals": []
@@ -112,7 +112,7 @@ CREATE TABLE cases (
 
     -- Progress Tracking (JSONB)
     progress JSONB DEFAULT '{
-        "current_phase": "consulting",
+        "current_phase": "inquiry",
         "completion_percentage": 0,
         "milestones": []
     }'::jsonb,
@@ -132,7 +132,7 @@ CREATE INDEX idx_cases_created_at ON cases(created_at DESC);
 CREATE INDEX idx_cases_updated_at ON cases(updated_at DESC);
 
 -- GIN index for JSONB queries
-CREATE INDEX idx_cases_consulting_gin ON cases USING GIN (consulting);
+CREATE INDEX idx_cases_inquiry_gin ON cases USING GIN (inquiry);
 CREATE INDEX idx_cases_problem_verification_gin ON cases USING GIN (problem_verification);
 CREATE INDEX idx_cases_metadata_gin ON cases USING GIN (metadata);
 
@@ -552,7 +552,7 @@ COMMENT ON TABLE case_status_transitions IS 'Audit trail of case status changes'
 COMMENT ON TABLE case_tags IS 'User-defined tags for case categorization';
 COMMENT ON TABLE agent_tool_calls IS 'Agent tool execution audit trail for observability';
 
-COMMENT ON COLUMN cases.consulting IS 'JSONB: {initial_description, context, user_goals} - consulting phase data';
+COMMENT ON COLUMN cases.inquiry IS 'JSONB: {initial_description, context, user_goals} - inquiry phase data';
 COMMENT ON COLUMN cases.problem_verification IS 'JSONB: {blast_radius, timeline, symptoms} - problem verification phase';
 COMMENT ON COLUMN cases.working_conclusion IS 'JSONB: {current_hypothesis, evidence_summary} - working conclusions';
 COMMENT ON COLUMN cases.root_cause_conclusion IS 'JSONB: {root_cause, validation_evidence} - final root cause';

@@ -98,7 +98,7 @@ class SessionModel(Base):
 class CaseStatusEnum(str, enum.Enum):
     """Case lifecycle status."""
 
-    CONSULTING = "consulting"
+    INQUIRY = "inquiry"
     PROBLEM_VERIFICATION = "problem_verification"
     ROOT_CAUSE_ANALYSIS = "root_cause_analysis"
     SOLUTION_IMPLEMENTATION = "solution_implementation"
@@ -186,7 +186,7 @@ class CaseModel(Base):
     # Required Fields
     user_id = Column(String(255), nullable=False, index=True)
     title = Column(String(200), nullable=False)
-    status = Column(String(50), nullable=False, default="consulting", index=True)
+    status = Column(String(50), nullable=False, default="inquiry", index=True)
 
     # Timestamps
     created_at = Column(
@@ -200,7 +200,7 @@ class CaseModel(Base):
     )
 
     # JSONB Columns (flexible data)
-    consulting = Column(
+    inquiry = Column(
         Text, nullable=False, default="{}"
     )  # JSON as TEXT for SQLite compat
     problem_verification = Column(Text)

@@ -89,7 +89,7 @@ def _upgrade_postgresql() -> None:
             """
         DO $$ BEGIN
             CREATE TYPE case_status AS ENUM (
-                'consulting', 'problem_verification', 'root_cause_analysis',
+                'inquiry', 'problem_verification', 'root_cause_analysis',
                 'solution_implementation', 'resolved', 'closed', 'archived'
             );
         EXCEPTION WHEN duplicate_object THEN NULL;
@@ -172,7 +172,7 @@ def _upgrade_postgresql() -> None:
             case_id VARCHAR(17) PRIMARY KEY,
             user_id VARCHAR(255) NOT NULL,
             title VARCHAR(200) NOT NULL,
-            status case_status NOT NULL DEFAULT 'consulting',
+            status case_status NOT NULL DEFAULT 'inquiry',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             consulting JSONB NOT NULL DEFAULT '{"initial_description": "", "context": {}, "user_goals": []}'::jsonb,
@@ -183,7 +183,7 @@ def _upgrade_postgresql() -> None:
             degraded_mode JSONB DEFAULT NULL,
             escalation_state JSONB DEFAULT NULL,
             documentation JSONB DEFAULT '{"summary": "", "timeline": [], "lessons_learned": []}'::jsonb,
-            progress JSONB DEFAULT '{"current_phase": "consulting", "completion_percentage": 0, "milestones": []}'::jsonb,
+            progress JSONB DEFAULT '{"current_phase": "inquiry", "completion_percentage": 0, "milestones": []}'::jsonb,
             metadata JSONB DEFAULT '{}'::jsonb,
             org_id VARCHAR(20),
             team_id VARCHAR(20),
@@ -699,7 +699,7 @@ def _upgrade_sqlite() -> None:
         sa.Column("case_id", sa.String(17), primary_key=True),
         sa.Column("user_id", sa.String(255), nullable=False),
         sa.Column("title", sa.String(200), nullable=False),
-        sa.Column("status", sa.String(50), nullable=False, server_default="consulting"),
+        sa.Column("status", sa.String(50), nullable=False, server_default="inquiry"),
         sa.Column(
             "created_at",
             sa.DateTime,
@@ -712,7 +712,7 @@ def _upgrade_sqlite() -> None:
             nullable=False,
             server_default=sa.func.current_timestamp(),
         ),
-        sa.Column("consulting", sa.Text, nullable=False, server_default="{}"),
+        sa.Column("inquiry", sa.Text, nullable=False, server_default="{}"),
         sa.Column("problem_verification", sa.Text),
         sa.Column("working_conclusion", sa.Text),
         sa.Column("root_cause_conclusion", sa.Text),

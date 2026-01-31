@@ -101,7 +101,7 @@ class TestUploadedFileSchemaConsistency:
             title="Test Case",
             user_id="user_123",  # Changed from owner_id
             organization_id="org_123",  # Added required field
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -229,7 +229,7 @@ class TestRepositoryArchitecture:
             title="User 1 Case",
             user_id="user_001",  # Required field, not owner_id
             organization_id="org_001",  # Required field
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -240,7 +240,7 @@ class TestRepositoryArchitecture:
             title="User 2 Case",
             user_id="user_002",  # Required field, not owner_id
             organization_id="org_002",  # Required field
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -341,7 +341,7 @@ class TestDatabaseSchemaIntegration:
             case_id="case_integration_001",
             title="Integration Test",
             owner_id="user_integration_001",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],
@@ -394,7 +394,7 @@ class TestDatabaseSchemaIntegration:
             case_id="case_integration_002",
             title="NULL Fields Test",
             owner_id="user_integration_002",
-            status=CaseStatus.CONSULTING,
+            status=CaseStatus.INQUIRY,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             messages=[],

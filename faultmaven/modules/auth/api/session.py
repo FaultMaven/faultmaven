@@ -222,7 +222,7 @@ class SessionRestoreRequest(BaseModel):
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T10:00:00Z",
                                 "expires_at": "2025-01-15T13:00:00Z",
-                                "status": "consulting",
+                                "status": "inquiry",
                                 "session_type": "troubleshooting",
                                 "session_resumed": False,
                                 "timeout_minutes": 180,
@@ -237,7 +237,7 @@ class SessionRestoreRequest(BaseModel):
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T09:30:00Z",
                                 "expires_at": "2025-01-15T14:30:00Z",
-                                "status": "consulting",
+                                "status": "inquiry",
                                 "session_type": "troubleshooting",
                                 "session_resumed": True,
                                 "timeout_minutes": 300,
@@ -548,7 +548,7 @@ async def list_sessions(
                     "last_activity": _safe_datetime_to_utc_string(
                         session.last_activity
                     ),
-                    "status": "consulting",
+                    "status": "inquiry",
                     "session_type": session_type_val,
                     "data_uploads_count": len(session.data_uploads),
                     "case_history_count": len(session.case_history),
@@ -863,7 +863,7 @@ async def session_heartbeat(
 
         return {
             "session_id": session_id,
-            "status": "consulting",
+            "status": "inquiry",
             "last_activity": last_activity,
             "message": "Session heartbeat updated",
         }

@@ -273,7 +273,7 @@ CREATE TABLE cases (
     user_id TEXT NOT NULL,
 
     -- Lifecycle
-    status TEXT NOT NULL,  -- consulting, investigating, resolved, closed
+    status TEXT NOT NULL,  -- inquiry, investigating, resolved, closed
     closure_reason TEXT,
 
     -- Problem Definition
@@ -284,7 +284,7 @@ CREATE TABLE cases (
     current_phase TEXT,
     investigation_strategy TEXT,
     investigation_progress JSONB,  -- Milestone tracking
-    consulting_data JSONB,          -- Pre-investigation context
+    inquiry_data JSONB,          -- Pre-investigation context
     problem_verification JSONB,     -- Consolidated symptoms/scope
     working_conclusion JSONB,       -- Current hypothesis synthesis
     root_cause_conclusion JSONB,    -- Final diagnosis

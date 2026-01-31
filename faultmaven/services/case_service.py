@@ -164,7 +164,7 @@ class APICaseService(BaseService):
                 organization_id=resolved_org_id.strip(),
                 title=title.strip(),
                 description=description.strip() if description else "",
-                status=CaseStatus.CONSULTING,
+                status=CaseStatus.INQUIRY,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
 
@@ -740,7 +740,7 @@ class APICaseService(BaseService):
             organization_id: Organization for authorization
 
         Returns:
-            Updated case with status=CONSULTING or INVESTIGATING
+            Updated case with status=INQUIRY or INVESTIGATING
 
         Raises:
             NotFoundError: If case not found
@@ -771,7 +771,7 @@ class APICaseService(BaseService):
             # which require timestamps and status to be consistent
             updated_case = case.model_copy(
                 update={
-                    "status": CaseStatus.CONSULTING,
+                    "status": CaseStatus.INQUIRY,
                     "resolved_at": None,
                     "closed_at": None,
                     "closure_reason": None,
@@ -808,7 +808,7 @@ class APICaseService(BaseService):
         Returns:
             Statistics including:
             - total_cases
-            - by_status (consulting, investigating, resolved, closed)
+            - by_status (inquiry, investigating, resolved, closed)
             - by_severity (low, medium, high, critical)
             - avg_resolution_time
             - unassigned_count
@@ -846,8 +846,8 @@ class APICaseService(BaseService):
                     ).total_seconds()
                     resolution_times.append(resolution_time)
 
-                # Count unassigned (cases in CONSULTING without progress)
-                if case.status == CaseStatus.CONSULTING and case.current_turn == 0:
+                # Count unassigned (cases in INQUIRY without progress)
+                if case.status == CaseStatus.INQUIRY and case.current_turn == 0:
                     unassigned_count += 1
 
             # Calculate average resolution time

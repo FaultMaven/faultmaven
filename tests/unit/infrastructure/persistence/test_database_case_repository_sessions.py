@@ -96,7 +96,7 @@ def sample_case() -> Case:
         organization_id="test-org-001",
         title="Test Case - Session Integration",
         description="Testing session-case linking",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
 

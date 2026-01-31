@@ -57,7 +57,7 @@ def mock_case():
     mock.user_id = "user_789"
     mock.title = "Test Case"
     mock.description = "Test Description"
-    mock.status = CaseStatus.CONSULTING
+    mock.status = CaseStatus.INQUIRY
     mock.created_at = datetime.now(timezone.utc)
     mock.updated_at = datetime.now(timezone.utc)
     # Optional fields - must be explicit to avoid MagicMock being returned
@@ -69,7 +69,7 @@ def mock_case():
     mock.severity = CaseSeverity.MEDIUM  # Used by from_domain
 
     # Investigation stage and progress (v2.0)
-    mock.current_stage = None  # None for CONSULTING status (only set for INVESTIGATING)
+    mock.current_stage = None  # None for INQUIRY status (only set for INVESTIGATING)
     mock_progress = MagicMock()
     mock_progress.completed_milestones = []
     mock_progress.pending_milestones = ["M1", "M2", "M3"]
@@ -87,7 +87,7 @@ def mock_case_summary():
     return CaseSummary(
         case_id="case_123abc",
         title="Test Case",
-        status=CaseStatus.CONSULTING,
+        status=CaseStatus.INQUIRY,
         created_at=now,
         updated_at=now,
         last_activity_at=now,
@@ -444,7 +444,7 @@ class TestListCases:
         mock_case_service.list_user_cases.return_value = [mock_case_summary]
 
         response = await client.get(
-            "/api/v1/cases?status=consulting",
+            "/api/v1/cases?status=inquiry",
             headers=headers,
         )
 
@@ -457,7 +457,7 @@ class TestListCases:
             if len(call_args[0]) > 1
             else call_args.kwargs.get("filters")
         )
-        assert filters.status == CaseStatus.CONSULTING
+        assert filters.status == CaseStatus.INQUIRY
 
     async def test_list_cases_with_severity_filter(
         self, client, mock_case_service, mock_case_summary, headers

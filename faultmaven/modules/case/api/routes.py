@@ -359,7 +359,7 @@ async def create_case(
     Create a new troubleshooting case (v2.0 milestone-based)
 
     Creates a new case with milestone-based investigation tracking.
-    Initial status is CONSULTING (problem definition phase).
+    Initial status is INQUIRY (problem definition phase).
 
     Returns CaseSummary with basic case info and milestone progress.
     """
@@ -628,7 +628,7 @@ async def get_case_ui(
     Get phase-adaptive UI-optimized case response.
 
     Returns different response schemas based on case status:
-    - CONSULTING: Focus on problem understanding, clarifying questions
+    - INQUIRY: Focus on problem understanding, clarifying questions
     - INVESTIGATING: Milestone progress, hypotheses, evidence, working conclusion
     - RESOLVED: Root cause, solution, verification, resolution summary
 
@@ -2773,8 +2773,8 @@ async def get_uploaded_file_details(
                 status_code=404, detail=f"File {file_id} not found in case {case_id}"
             )
 
-        # In CONSULTING phase: return uploaded file details without hypothesis relationships
-        if case.status == CaseStatus.CONSULTING:
+        # In INQUIRY phase: return uploaded file details without hypothesis relationships
+        if case.status == CaseStatus.INQUIRY:
             return UploadedFileDetails.from_uploaded_file(
                 uploaded_file=uploaded_file, case_id=case_id
             )

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 def create_sample_case(
     case_id: Optional[str] = None,
     user_id: Optional[str] = None,
-    status: CaseStatus = CaseStatus.CONSULTING,
+    status: CaseStatus = CaseStatus.INQUIRY,
     current_turn: int = 0,
     message_count: int = 0,
 ) -> Case:
@@ -35,7 +35,7 @@ def create_sample_case(
     now = datetime.now(timezone.utc)
 
     # Create case with all required fields
-    # Case model has default_factory for progress, consulting, etc., so they're auto-initialized
+    # Case model has default_factory for progress, inquiry, etc., so they're auto-initialized
     # Required fields: case_id, user_id, organization_id, title, created_at, updated_at, last_activity_at
     case = Case(
         case_id=case_id,
@@ -51,7 +51,7 @@ def create_sample_case(
         last_activity_at=now,  # Required field
         messages=[],  # Empty list to start
     )
-    # Progress, consulting, evidence, hypotheses, solutions, etc. are created by default_factory
+    # Progress, inquiry, evidence, hypotheses, solutions, etc. are created by default_factory
     # No need to manually set them
 
     return case

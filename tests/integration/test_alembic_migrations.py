@@ -148,10 +148,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (013_verification_suggestions)
+        # Verify revision ID matches the latest migration (015_rename_consulting_to_inquiry)
         assert (
-            revision == "014_drop_message_constraint"
-        ), f"Expected revision 014_drop_message_constraint (current head), got {revision}"
+            revision == "015_rename_consulting_to_inquiry"
+        ), f"Expected revision 015_rename_consulting_to_inquiry (current head), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -177,8 +177,8 @@ class TestAlembicMigrationInfrastructure:
         # Verify revision moved back one step
         revision = get_current_revision(database_url)
         assert (
-            revision == "013_verification_suggestions"
-        ), f"Expected revision 013_verification_suggestions after rollback, got {revision}"
+            revision == "014_drop_message_constraint"
+        ), f"Expected revision 014_drop_message_constraint after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -203,7 +203,7 @@ class TestAlembicMigrationInfrastructure:
 
         # Verify revision
         revision = get_current_revision(database_url)
-        assert revision == "014_drop_message_constraint"
+        assert revision == "015_rename_consulting_to_inquiry"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
