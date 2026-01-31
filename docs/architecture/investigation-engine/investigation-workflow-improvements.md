@@ -1,9 +1,10 @@
 # Investigation Workflow Improvements
 
-**Version**: 1.0
+**Version**: 1.1
 **Date**: 2026-01-31
-**Status**: Proposal
+**Status**: Proposal (Revised)
 **Author**: Architecture Review
+**Revision Notes**: Addressed feedback on audit trail preservation, semantic urgency detection, and context-aware effort estimation
 
 ---
 
@@ -179,7 +180,7 @@ INQUIRY FLOW (Enhanced):
 
 ### 3.2 Early Urgency Assessment and Preliminary Path Signal
 
-**Proposed Change**: Assess urgency during INQUIRY, not just after verification.
+**Proposed Change**: Assess urgency during INQUIRY using semantic business impact definitions, not keyword matching.
 
 ```python
 class InquiryData(BaseModel):
@@ -193,17 +194,14 @@ class InquiryData(BaseModel):
         Used to signal potential MITIGATION_FIRST path before
         full verification completes.
 
-        LLM assesses from keywords like:
-        - "production is down" → CRITICAL
-        - "users are complaining" → HIGH
-        - "noticed yesterday" → LOW (historical)
+        LLM assesses based on BUSINESS IMPACT, not keywords.
         """
     )
 
 class PreliminaryUrgency(BaseModel):
     level: UrgencyLevel  # CRITICAL | HIGH | MEDIUM | LOW
     is_ongoing: bool     # True if problem appears active
-    urgency_signals: List[str]  # Keywords that triggered assessment
+    impact_assessment: str  # Brief description of business impact
     mitigation_hint: Optional[str]  # Quick mitigation if obvious
 ```
 
@@ -212,67 +210,115 @@ class PreliminaryUrgency(BaseModel):
 ```
 **Step 0.5: URGENCY PRE-ASSESSMENT** (Check Every Turn)
 
-Scan user's message for urgency indicators:
+Assess urgency based on BUSINESS IMPACT described by the user:
 
-🔴 CRITICAL signals: "down", "outage", "can't access", "data loss"
-🟠 HIGH signals: "affecting users", "production", "urgent", "ASAP"
-🟡 MEDIUM signals: "intermittent", "slow", "degraded"
-🟢 LOW signals: "noticed yesterday", "happened last week", "historical"
+🔴 CRITICAL - Complete service unavailability or data loss/corruption
+   • Users cannot access the system at all
+   • Data is being lost or corrupted
+   • Security breach in progress
+   • Revenue-generating functionality completely blocked
 
-IF CRITICAL/HIGH + ONGOING detected:
-→ Set preliminary_urgency with level and is_ongoing
-→ If obvious mitigation (rollback recent deploy): mention in response
-→ Offer: "This sounds urgent. Should I focus on quick mitigation first?"
+🟠 HIGH - Significant degradation affecting most users
+   • Core functionality severely impaired
+   • Large portion of users experiencing failures
+   • SLA breach imminent or occurring
+   • Customer-facing impact with complaints
+
+🟡 MEDIUM - Partial degradation or intermittent issues
+   • Some users affected, workarounds possible
+   • Non-critical features unavailable
+   • Performance degraded but functional
+   • Internal-only impact
+
+🟢 LOW - Minor issues or historical investigation
+   • Cosmetic issues, no functional impact
+   • Problem occurred in the past (post-mortem)
+   • Affects only development/staging
+   • User is investigating proactively
+
+ALSO ASSESS: Is this ONGOING (happening now) or HISTORICAL (happened in past)?
+
+IF CRITICAL/HIGH + ONGOING:
+→ Set preliminary_urgency with level and impact_assessment
+→ If obvious quick mitigation exists: mention in response
+→ Offer: "This sounds like it's actively impacting users. Should I focus
+   on quick mitigation first, then investigate root cause after?"
 
 This enables faster path selection without waiting for full verification.
 ```
 
 ### 3.3 Evidence Prioritization Framework
 
-**Proposed Change**: Guide evidence requests by effort and diagnostic value.
+**Proposed Change**: Guide evidence requests by diagnostic value, with context-aware effort consideration.
+
+**Key Design Decision**: Effort estimation should NOT be hardcoded (e.g., "logs = low effort").
+What's easy in one organization may require tickets and approvals in another. Instead:
+
+1. **Prioritize by diagnostic value first** (what's most likely to reveal root cause)
+2. **Prefer data sources the user has already demonstrated access to**
+3. **Always offer alternatives** when requesting potentially difficult data
+4. **Let user indicate effort** rather than assuming
 
 ```
-EVIDENCE PRIORITIZATION MATRIX:
+EVIDENCE PRIORITIZATION PRINCIPLES:
 
-┌─────────────────┬───────────────────┬─────────────────────┐
-│ Diagnostic Value │ Low User Effort   │ High User Effort    │
-├─────────────────┼───────────────────┼─────────────────────┤
-│ HIGH            │ ✅ Request First   │ 🔄 Request if needed │
-│ (Likely to show │ Examples:         │ Examples:           │
-│ root cause)     │ • Error logs      │ • Production DB     │
-│                 │ • Recent deploys  │   access            │
-│                 │ • Basic metrics   │ • Heap dumps        │
-├─────────────────┼───────────────────┼─────────────────────┤
-│ MEDIUM          │ 🔄 Request second │ ⏳ Request last     │
-│ (Helps narrow   │ Examples:         │ Examples:           │
-│ down)           │ • Config files    │ • Profiling data    │
-│                 │ • Service status  │ • Network traces    │
-├─────────────────┼───────────────────┼─────────────────────┤
-│ LOW             │ ⚠️ Usually skip   │ ❌ Avoid unless     │
-│ (Nice to have)  │                   │ stuck               │
-└─────────────────┴───────────────────┴─────────────────────┘
+**Priority 1: Diagnostic Value** (What's most likely to reveal root cause?)
 
-EVIDENCE REQUEST GUIDANCE:
+HIGH VALUE evidence (request first):
+• Error logs/stack traces - Direct indicators of what failed
+• Timeline correlation data - What changed before failure?
+• Metrics at failure time - Quantifiable symptoms
 
-When requesting evidence, always:
-1. Start with HIGH value + LOW effort items
-2. Offer alternatives: "If you can't access X, Y would also help"
-3. Explain WHY: "Error logs will show whether this is a code bug or config issue"
-4. Estimate effort: "This usually takes ~2 minutes to retrieve"
+MEDIUM VALUE evidence (request if high value inconclusive):
+• Configuration files - Could reveal misconfigurations
+• Service dependencies - Could reveal cascade failures
+• Historical patterns - Could reveal recurring issues
+
+LOW VALUE evidence (request only if stuck):
+• General system health - Rarely diagnostic for specific issues
+• Unrelated service logs - Fishing expedition
+
+**Priority 2: User Context Awareness**
+
+PREFER data the user has already shown access to:
+• If user mentioned "I checked the dashboard" → Request dashboard data
+• If user pasted a log snippet → Request more from same log
+• If user mentioned a specific tool → Use that tool's outputs
+
+AVOID assuming access:
+❌ "Run this kubectl command" (user may not have cluster access)
+✅ "Do you have access to view pod logs? If so, [command].
+    If not, a dashboard screenshot would also help."
+
+**Priority 3: Always Offer Alternatives**
+
+When requesting evidence that might be difficult:
+
+"To diagnose this, the most useful would be [PRIMARY REQUEST].
+If that's difficult to obtain, [ALTERNATIVE] would also help narrow it down."
 ```
 
-### 3.4 Hypothesis Decision Criteria
+**Implementation Note**: User/organization profiles could include `easy_access_data_types`
+to inform evidence prioritization, but this is optional. The default should be to ask
+rather than assume.
+
+### 3.4 Root Cause Identification Patterns
 
 **Proposed Change**: Replace arbitrary 70/30 guideline with explicit decision criteria.
+Use "Single-Shot Validation" pattern to preserve audit trail even when root cause is obvious.
+
+**Key Design Decision**: Never skip hypothesis creation. Even when root cause is obvious,
+create the hypothesis record to maintain full audit trail (Evidence → Hypothesis → Resolution).
+The speed gain comes from validating in the same turn, not from skipping structured records.
 
 ```
 ROOT CAUSE IDENTIFICATION - DECISION TREE:
 
 ┌─────────────────────────────────────────────────────────┐
-│ Can you identify root cause DIRECTLY from evidence?     │
+│ Is root cause OBVIOUS from current evidence?            │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│ DIRECT IDENTIFICATION criteria (ALL must be true):      │
+│ SINGLE-SHOT VALIDATION criteria (ALL must be true):     │
 │                                                         │
 │ □ Single clear error/exception pointing to specific     │
 │   code/config/resource                                  │
@@ -285,22 +331,48 @@ ROOT CAUSE IDENTIFICATION - DECISION TREE:
 │                                                         │
 │ □ No conflicting evidence suggesting other causes       │
 │                                                         │
-│ IF ALL TRUE → Use DIRECT IDENTIFICATION                 │
-│   - Set root_cause_identified = True                    │
-│   - Set root_cause_method = "direct_analysis"           │
-│   - Skip hypothesis generation                          │
+│ IF ALL TRUE → Use SINGLE-SHOT VALIDATION                │
+│   In ONE turn, do ALL of the following:                 │
+│   1. Create hypothesis (hypotheses_to_add)              │
+│      - statement: The identified root cause             │
+│      - category: Appropriate HypothesisCategory         │
+│      - initial_likelihood: 0.90+ (high confidence)      │
+│   2. Link evidence (hypothesis_evidence_links)          │
+│      - Link existing evidence to hypothesis             │
+│      - stance: SUPPORTS with high confidence            │
+│   3. Mark hypothesis VALIDATED                          │
+│      - status: VALIDATED                                │
+│   4. Set root_cause_identified = True                   │
+│   5. Fill root_cause_conclusion                         │
+│      - root_cause_method: "single_shot_validation"      │
 │                                                         │
-│ IF ANY FALSE → Use HYPOTHESIS TESTING                   │
+│   Result: Full audit trail preserved, same speed as     │
+│   skipping hypothesis generation                        │
+│                                                         │
+│ IF ANY FALSE → Use MULTI-HYPOTHESIS TESTING             │
 │   - Generate 2-4 hypotheses across DIFFERENT categories │
 │   - Ensure at least 2 different HypothesisCategory      │
 │   - Request diagnostic evidence to differentiate        │
+│   - Validate/refute based on evidence over turns        │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
+
+AUDIT TRAIL RATIONALE:
+
+The hypothesis record serves as structured documentation of WHY the agent
+concluded the root cause. Without it, you have a "magic answer" that can't
+be programmatically audited later. The single-shot pattern provides:
+
+• Traceability: Evidence → Hypothesis → Root Cause → Solution
+• Accountability: Explicit reasoning in hypothesis statement
+• Learning: Hypothesis records feed the knowledge base
+• Validation: Post-incident review can verify reasoning
 ```
 
 ### 3.5 Proactive Tool Usage
 
-**Proposed Change**: Add explicit tool consideration to each stage.
+**Proposed Change**: Add explicit tool consideration to each stage, with negative constraints
+to prevent noise when tools return no results.
 
 ```
 TOOL USAGE CHECKLIST (Check Before Requesting User Data):
@@ -329,24 +401,174 @@ GOLDEN RULE: Check tools BEFORE asking user for data you might
 already have access to through knowledge base or documentation.
 ```
 
+**CRITICAL: Negative Constraints (What NOT to Do)**
+
+```
+TOOL RESULT HANDLING - SILENCE ON FAILURE:
+
+When tool searches return NO RESULTS or LOW CONFIDENCE (<50%):
+
+❌ DON'T say: "I checked the knowledge base but found nothing relevant."
+❌ DON'T say: "I searched for similar cases but couldn't find any."
+❌ DON'T say: "Unfortunately, our documentation doesn't cover this."
+
+These statements:
+• Add noise without value
+• Reduce user confidence in the system
+• Waste conversation turns
+
+✅ DO: Proceed silently to the next step (investigation, evidence request)
+✅ DO: Only mention tool results when they ARE helpful
+
+EXCEPTION: If user EXPLICITLY asks "Have you seen this before?" or
+"Is this a known issue?", then you MAY say you found no matches.
+
+EXAMPLE:
+
+Tool search returns: 0 results, confidence 0.2
+
+BAD Response:
+"I searched our knowledge base but couldn't find similar cases.
+Let me start by understanding your environment..."
+
+GOOD Response:
+"Let me start by understanding your environment. Can you share..."
+(Tool failure not mentioned - proceeds to investigation)
+```
+
+### 3.6 Fast-Track State Transitions (Instant Resolution Path)
+
+**Gap Addressed**: The Knowledge Pre-Check (Section 3.1) allows offering a solution
+during INQUIRY, but the state transition for "instant resolution" wasn't defined.
+
+**Proposed Change**: Define explicit state transition for when knowledge base match
+resolves the issue without formal investigation.
+
+```
+FAST-TRACK RESOLUTION PATH:
+
+┌─────────────────────────────────────────────────────────┐
+│ INQUIRY → RESOLVED (Skipping INVESTIGATING)             │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│ Trigger: Knowledge base match + User confirms fix works │
+│                                                         │
+│ Flow:                                                   │
+│ 1. INQUIRY: KB search finds high-confidence match       │
+│ 2. INQUIRY: Agent offers known solution to user         │
+│ 3. INQUIRY: User tries solution, confirms "Yes, fixed!" │
+│ 4. System: Transition directly to RESOLVED              │
+│                                                         │
+│ Required State Updates (in final INQUIRY turn):         │
+│ • knowledge_resolution: {                               │
+│     match_id: "<case_id or runbook_id>",                │
+│     solution_applied: "<what user did>",                │
+│     user_confirmation: "<user's confirmation message>"  │
+│   }                                                     │
+│ • case_status: RESOLVED                                 │
+│ • closure_reason: "knowledge_base_resolution"           │
+│ • time_to_resolution: <turn count> (typically 1-2)      │
+│                                                         │
+│ What Gets Skipped:                                      │
+│ • INVESTIGATING status entirely                         │
+│ • Formal hypothesis generation                          │
+│ • Evidence collection beyond KB match                   │
+│ • Solution proposal stage                               │
+│                                                         │
+│ What Gets Preserved:                                    │
+│ • Full conversation history                             │
+│ • Knowledge match reference (for learning/attribution)  │
+│ • Resolution timestamp and metrics                      │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+
+METRICS IMPLICATIONS:
+
+Cases resolved via Fast-Track should be tracked separately:
+• time_to_resolution: Extremely low (1-2 turns)
+• resolution_type: "knowledge_base" vs "investigation"
+• knowledge_attribution: Which KB item resolved it
+
+This keeps investigation metrics clean while highlighting KB value.
+```
+
+**Schema Addition**:
+
+```python
+class KnowledgeResolution(BaseModel):
+    """Records instant resolution via knowledge base match."""
+
+    match_id: str = Field(
+        description="ID of the case or runbook that provided the solution"
+    )
+    match_type: str = Field(
+        description="past_case | runbook | documentation"
+    )
+    solution_applied: str = Field(
+        description="What the user actually did based on the suggestion"
+    )
+    user_confirmation: str = Field(
+        description="User's message confirming the fix worked"
+    )
+    resolution_turn: int = Field(
+        description="Turn number when resolution was confirmed"
+    )
+```
+
+**State Transition Logic** (system-side):
+
+```python
+def process_inquiry_response(case: Case, response: InquiryResponse) -> Case:
+    """Process INQUIRY response, potentially fast-tracking to RESOLVED."""
+
+    # Check for fast-track resolution
+    if response.state_updates.knowledge_resolution:
+        kr = response.state_updates.knowledge_resolution
+
+        # Validate we have confirmation
+        if kr.user_confirmation and kr.solution_applied:
+            # Fast-track to RESOLVED
+            case.status = CaseStatus.RESOLVED
+            case.closure_reason = "knowledge_base_resolution"
+            case.closed_at = datetime.now(timezone.utc)
+            case.knowledge_resolution = kr
+
+            # Calculate time to resolution
+            case.time_to_resolution = calculate_resolution_time(case)
+
+            # Do NOT enter INVESTIGATING at all
+            return case
+
+    # Normal INQUIRY processing continues...
+    return process_normal_inquiry(case, response)
+```
+
 ---
 
 ## 4. Prompt Engineering Improvements
 
-### 4.1 Tiered Prompt System
+### 4.1 Tiered Prompt System with Dynamic Token Budgeting
 
 **Problem**: Current INVESTIGATING prompt is ~3000+ tokens every turn.
 
-**Solution**: Split into core instructions (always included) and expanded sections (included when relevant).
+**Solution**: Split into core instructions (always included) and expanded sections (included when relevant),
+with dynamic budgeting based on user message size.
 
 ```python
 def build_investigating_prompt(case: Case, user_message: str) -> str:
     """
-    Tiered prompt system:
+    Tiered prompt system with dynamic budgeting:
     - CORE: ~800 tokens (always included)
     - STAGE-SPECIFIC: ~400 tokens (based on current stage)
     - EXPANDED: ~500 tokens (included only when relevant)
+
+    Dynamic budgeting adjusts based on user_message length to prevent
+    context window overflow.
     """
+
+    # Calculate available budget
+    user_message_tokens = estimate_tokens(user_message)
+    budget = calculate_prompt_budget(user_message_tokens)
 
     sections = []
 
@@ -359,21 +581,93 @@ def build_investigating_prompt(case: Case, user_message: str) -> str:
     # STAGE-SPECIFIC (only current stage)
     sections.append(build_stage_instructions(case.progress.current_stage))
 
-    # EXPANDED SECTIONS (conditional)
-    if case.degraded_mode:
-        sections.append(build_degraded_mode_section(case))
+    # EXPANDED SECTIONS (conditional, budget-aware)
+    if budget.allows_expanded:
+        if case.degraded_mode:
+            sections.append(build_degraded_mode_section(case))
 
-    if case.hypotheses and len(case.hypotheses) > 0:
-        sections.append(build_hypothesis_evaluation_guidance())
+        if case.hypotheses and len(case.hypotheses) > 0:
+            sections.append(build_hypothesis_evaluation_guidance())
 
-    if case.progress.solution_proposed and not case.progress.solution_verified:
-        sections.append(build_verification_guidance())
+        if case.progress.solution_proposed and not case.progress.solution_verified:
+            sections.append(build_verification_guidance())
 
     # OUTPUT FORMAT (always included, condensed)
     sections.append(build_output_format_condensed())
 
     return "\n\n".join(sections)
 ```
+
+**Dynamic Token Budgeting**:
+
+```python
+@dataclass
+class PromptBudget:
+    """Dynamic budget based on user message size."""
+
+    total_context_limit: int = 8000  # Conservative limit for response room
+    core_budget: int = 800
+    stage_budget: int = 400
+    output_format_budget: int = 200
+    allows_expanded: bool = True
+
+
+def calculate_prompt_budget(user_message_tokens: int) -> PromptBudget:
+    """
+    Calculate available prompt budget based on user message size.
+
+    When user pastes a large log file (e.g., 2000+ tokens), we need to
+    collapse expanded sections to prevent context window overflow.
+    """
+
+    budget = PromptBudget()
+
+    # Reserved space for: user message + system prompt + response
+    used_tokens = user_message_tokens + budget.core_budget + budget.stage_budget + budget.output_format_budget
+
+    # If user message is large, disable expanded sections
+    if user_message_tokens > 1500:
+        budget.allows_expanded = False
+
+    # If extremely large, use minimal prompt
+    if user_message_tokens > 3000:
+        budget.core_budget = 400  # Use ultra-condensed core
+        budget.stage_budget = 200  # Use minimal stage instructions
+
+    return budget
+
+
+# Thresholds for prompt tier selection
+PROMPT_TIERS = {
+    "full": {
+        "max_user_tokens": 1000,
+        "core": "full",
+        "stage": "full",
+        "expanded": True
+    },
+    "standard": {
+        "max_user_tokens": 2000,
+        "core": "full",
+        "stage": "full",
+        "expanded": False  # Skip expanded sections
+    },
+    "minimal": {
+        "max_user_tokens": float("inf"),
+        "core": "condensed",
+        "stage": "condensed",
+        "expanded": False
+    }
+}
+```
+
+**Rationale**: When a user pastes a 2000-token error log, the system should automatically
+use a more condensed prompt to leave room for:
+1. The full user message in context
+2. Adequate response generation space
+3. Safety margin for the model
+
+This prevents context window errors and ensures the model focuses on the evidence
+rather than lengthy instructions it's seen many times before.
 
 ### 4.2 Condensed Core Instructions
 
