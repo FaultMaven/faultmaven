@@ -85,11 +85,31 @@ Investigation stage answers: **"What's the agent doing right now?"**
 
 **Note**: The 4-stage internal execution layer (SYMPTOM_VERIFICATION → HYPOTHESIS_FORMULATION → HYPOTHESIS_VALIDATION → SOLUTION) maps to the 3-stage user-facing layer. This is intentional state abstraction - users don't need to know the micro-step the agent is on.
 
-**4. Hypotheses are Optional Exploration Paths**
+**4. Hypotheses are Optional Exploration Paths (Single-Shot Validation)**
 
 Agent may:
-- Identify root cause directly from evidence (no hypotheses needed)
+- Identify root cause directly from evidence using **Single-Shot Validation**
 - OR generate hypotheses for systematic exploration (when cause unclear)
+
+**Single-Shot Validation Pattern** (preserves audit trail):
+When root cause is obvious, agent completes ALL of these in ONE turn:
+1. CREATE hypothesis with statement = identified root cause
+2. LINK evidence with stance = SUPPORTS
+3. SET hypothesis status = VALIDATED
+4. SET root_cause_identified = True
+
+This preserves the full audit trail (Evidence → Hypothesis → Resolution) while
+achieving the same speed as skipping hypothesis generation.
+
+**5. Knowledge Pre-Check Enables Fast-Track Resolution**
+
+Before formal investigation, agent searches knowledge base for:
+- Similar past cases (pattern matching)
+- Relevant runbooks
+- Known issues for affected services
+
+If high-confidence match found (>70%), agent offers known solution first.
+If user confirms it works → Case goes directly from INQUIRY to RESOLVED (Fast-Track)
 
 ---
 
@@ -233,6 +253,14 @@ case.closure_reason = "escalated"
 | `INVESTIGATING` | Active formal investigation | No |
 | `RESOLVED` | Closed WITH solution | Yes |
 | `CLOSED` | Closed WITHOUT solution | Yes |
+
+### Resolution Paths
+
+| Path | Description | Transitions |
+|------|-------------|-------------|
+| **Standard** | Full investigation | INQUIRY → INVESTIGATING → RESOLVED |
+| **Fast-Track** | Known issue from KB | INQUIRY → RESOLVED (skips INVESTIGATING) |
+| **Abandoned** | No solution found | INQUIRY/INVESTIGATING → CLOSED |
 
 ### Investigation Paths
 

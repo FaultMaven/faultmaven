@@ -358,8 +358,11 @@ def build_prompt(case: Case, user_message: str) -> str:
 **Characteristics**:
 - Reactive (follow user's lead)
 - Lightweight (simple schema)
+- **Knowledge Pre-Check** (search KB before investigation)
+- **Semantic Urgency Assessment** (business impact, not keywords)
 - Problem statement confirmation (critical step)
 - Transition trigger (decided_to_investigate)
+- **Fast-Track Resolution** (INQUIRY → RESOLVED if KB match works)
 
 **Frequency**: ~10% of turns (2-5 turns per case on average)
 
@@ -377,16 +380,34 @@ class InquiryResponse(BaseModel):
 
 class InquiryStateUpdate(BaseModel):
     """What LLM can update during INQUIRY"""
-    
+
     # Problem understanding
     problem_confirmation: Optional[ProblemConfirmation] = None
-    
+
     # Problem statement formalization (CRITICAL!)
     proposed_problem_statement: Optional[str] = Field(
         default=None,
         description="Clear, specific problem statement for user confirmation"
     )
-    
+
+    # NEW: Early urgency assessment (semantic, not keyword-based)
+    preliminary_urgency: Optional[PreliminaryUrgency] = Field(
+        default=None,
+        description="Early urgency assessment based on business impact"
+    )
+
+    # NEW: Knowledge base match for Fast-Track
+    knowledge_match: Optional[KnowledgeMatch] = Field(
+        default=None,
+        description="High-confidence KB match for potential instant resolution"
+    )
+
+    # NEW: Knowledge resolution (triggers Fast-Track to RESOLVED)
+    knowledge_resolution: Optional[KnowledgeResolution] = Field(
+        default=None,
+        description="Set when KB match solution confirmed working"
+    )
+
     # Quick help
     quick_suggestions: List[str] = Field(
         default_factory=list,
@@ -398,6 +419,27 @@ class ProblemConfirmation(BaseModel):
     problem_type: str  # error | slowness | unavailability | data_issue | other
     severity_guess: str  # critical | high | medium | low | unknown
     preliminary_guidance: Optional[str] = None
+
+class PreliminaryUrgency(BaseModel):
+    """Early urgency signal based on BUSINESS IMPACT (not keywords)"""
+    level: str  # CRITICAL | HIGH | MEDIUM | LOW
+    is_ongoing: bool  # True if problem appears active NOW
+    impact_assessment: str  # Brief description of business impact
+    mitigation_hint: Optional[str] = None  # Quick mitigation if obvious
+
+class KnowledgeMatch(BaseModel):
+    """Knowledge base match for potential instant resolution"""
+    match_type: str  # past_case | runbook | documentation
+    match_confidence: float  # 0.0 - 1.0
+    match_summary: str  # Brief description of what matched
+    suggested_solution: Optional[str] = None  # Quick fix from match
+
+class KnowledgeResolution(BaseModel):
+    """Records instant resolution via KB match (triggers Fast-Track)"""
+    match_id: str  # ID of case/runbook that solved it
+    match_type: str  # past_case | runbook | documentation
+    solution_applied: str  # What user actually did
+    user_confirmation: str  # User's message confirming fix worked
 ```
 
 ### 3.3 Prompt Template
@@ -444,7 +486,41 @@ YOUR TASK
 
 2. **Problem Detection & Formalization Workflow**:
 
-   **Step 0: DETECT PROBLEM SIGNALS (Check Every Turn)**
+   **Step 0: KNOWLEDGE PRE-CHECK** (Before Asking Questions)
+
+   When user describes any symptom, FIRST search knowledge base:
+   - Search for similar past cases (symptom keywords, error messages)
+   - Check if same service had recent issues
+   - Look for relevant runbook entries
+
+   IF HIGH-CONFIDENCE MATCH (>70%):
+   → Set knowledge_match in state_updates
+   → In response: "This looks similar to [past case]. The solution was [X].
+      Would you like to try that first?"
+
+   IF user confirms KB solution worked:
+   → Set knowledge_resolution (triggers Fast-Track: INQUIRY → RESOLVED)
+
+   IF NO/LOW-CONFIDENCE MATCH:
+   → Proceed silently to Step 0.5 (don't mention "I found nothing")
+
+   **Step 0.5: URGENCY PRE-ASSESSMENT** (Semantic, Not Keywords)
+
+   Assess urgency based on BUSINESS IMPACT, not keyword matching:
+
+   🔴 CRITICAL - Complete service unavailability or data loss/corruption
+   🟠 HIGH - Significant degradation affecting most users
+   🟡 MEDIUM - Partial degradation or intermittent issues
+   🟢 LOW - Minor issues or historical investigation
+
+   Also assess: Is this ONGOING (happening now) or HISTORICAL (past)?
+
+   If CRITICAL/HIGH + ONGOING:
+   → Set preliminary_urgency with level and impact_assessment
+   → Offer: "This sounds like it's actively impacting users. Should I focus
+      on quick mitigation first, then investigate root cause after?"
+
+   **Step 1: DETECT PROBLEM SIGNALS (Check Every Turn)**
    - Problem signals: errors, failures, slowness, outages, user asks "Help me fix..."
    - No problem signals: general questions, informational queries, configuration help
    - IF NO PROBLEM SIGNAL: Just answer question, done. Don't create proposed_problem_statement.
@@ -945,24 +1021,39 @@ def get_hypothesis_formulation_instructions(case: Case) -> str:
 
 **ROOT CAUSE IDENTIFICATION - Decision Tree:**
 
-**Option A: DIRECT IDENTIFICATION** (if root cause obvious from evidence)
+**Option A: SINGLE-SHOT VALIDATION** (if root cause obvious from evidence)
 
-   ✅ Use when:
-   - Clear error message pointing to specific cause
-   - Strong correlation with recent change (deployment → errors)
-   - Logs show definitive root cause
+   ✅ Use when ALL of these are true:
+   - Single clear error pointing to specific cause
+   - Strong timing correlation (change → error within minutes)
+   - Mechanism is understandable (you can explain HOW)
+   - No conflicting evidence
 
    Example: "Deployment at 14:10, NullPointerException at 14:15 = deployment bug"
 
-   Actions:
-   → Set: root_cause_identified = True
-   → Fill: root_cause_conclusion
-   → Specify: root_cause_method = "direct_analysis"
+   **CRITICAL: Preserve audit trail by creating hypothesis record!**
 
-**Option B: HYPOTHESIS TESTING** (if root cause unclear)
+   In ONE turn, do ALL of the following:
+   1. CREATE hypothesis (hypotheses_to_add)
+      - statement: The identified root cause
+      - category: Appropriate HypothesisCategory
+      - initial_likelihood: 0.90+ (high confidence)
+   2. LINK evidence (hypothesis_evidence_links)
+      - Link existing evidence to hypothesis
+      - stance: SUPPORTS with high confidence
+   3. SET hypothesis status = VALIDATED
+   4. SET root_cause_identified = True
+   5. SET root_cause_method = "single_shot_validation"
 
-   ✅ Use when:
+   **Why not skip hypothesis?** The hypothesis record serves as structured
+   documentation of WHY you concluded the root cause. Without it, you have
+   a "magic answer" that can't be audited later.
+
+**Option B: MULTI-HYPOTHESIS TESTING** (if root cause unclear)
+
+   ✅ Use when ANY of the above is false:
    - Multiple possible causes
+   - Weak timing correlation
    - Symptoms could match several theories
    - Need diagnostic data to differentiate
 
@@ -970,15 +1061,19 @@ def get_hypothesis_formulation_instructions(case: Case) -> str:
 
    Actions:
    → Generate: hypotheses_to_add (2-4 hypotheses)
-   → When user provides evidence: Evaluate against ALL hypotheses (hypothesis_evidence_links)
+   → Ensure diversity: At least 2 different HypothesisCategory
+   → When user provides evidence: Evaluate against ALL hypotheses
    → Update hypothesis.status based on evidence: TESTING → VALIDATED/REFUTED
 
-**GUIDELINE:**
-- 70% of cases should identify root cause directly (no hypotheses needed)
-- 30% of cases need hypothesis testing (unclear diagnosis)
-- **When in doubt: Try direct identification first, hypotheses if stuck**
+**TOOL CHECK** (before requesting user data):
+□ Search KB for this error message / symptom pattern
+□ Check documentation for known issues with affected service
+□ If tools return no results → Proceed silently (don't mention "found nothing")
 
-**IMPORTANT: Don't generate hypotheses if root cause is obvious!**
+**Evidence Request Format:**
+"To diagnose this, the most useful would be [PRIMARY].
+If that's difficult to obtain, [ALTERNATIVE] would also help.
+Why: [diagnostic value]"
 """
 ```
 
