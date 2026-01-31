@@ -133,12 +133,61 @@ def close_from_inquiry(case: Case, user_id: str):
     # TERMINAL - no further transitions
 ```
 
+#### INQUIRY → RESOLVED (Terminal, Fast-Track)
+
+**Trigger**: Knowledge base match resolves issue without formal investigation
+
+This "Fast-Track" path allows instant resolution when the knowledge base contains
+a high-confidence match for the user's problem and the user confirms the solution worked.
+
+```python
+class KnowledgeResolution(BaseModel):
+    """Records instant resolution via knowledge base match."""
+    match_id: str                # ID of case/runbook that solved it
+    match_type: str              # "past_case" | "runbook" | "documentation"
+    solution_applied: str        # What user actually did
+    user_confirmation: str       # User's message confirming fix
+    resolution_turn: int         # Turn when confirmed
+
+def fast_track_resolution(case: Case, knowledge_resolution: KnowledgeResolution):
+    """
+    Fast-Track: INQUIRY → RESOLVED (skipping INVESTIGATING)
+
+    Conditions:
+    1. Knowledge base search found high-confidence match (>70%)
+    2. Agent offered known solution to user
+    3. User tried solution and confirmed it worked
+    """
+    case.status = CaseStatus.RESOLVED
+    case.resolved_at = datetime.now(timezone.utc)
+    case.closed_at = datetime.now(timezone.utc)
+    case.closure_reason = "knowledge_base_resolution"
+    case.knowledge_resolution = knowledge_resolution
+    # TERMINAL - no further transitions
+```
+
+**Flow**:
+```
+1. INQUIRY: Agent searches KB, finds high-confidence match
+2. INQUIRY: Agent says "This looks similar to [past case]. Solution was [X]."
+3. INQUIRY: User tries solution, confirms "Yes, that fixed it!"
+4. System: Transition directly to RESOLVED (skip INVESTIGATING)
+```
+
+**Metrics Implications**:
+- `time_to_resolution`: Extremely low (1-2 turns)
+- `resolution_type`: "knowledge_base" (vs "investigation")
+- `knowledge_attribution`: Which KB item resolved it
+
+This keeps investigation metrics clean while highlighting KB value.
+
 ### 1.3 Valid Transitions Summary
 
 ```python
 VALID_TRANSITIONS = {
     CaseStatus.INQUIRY: [
-        CaseStatus.INVESTIGATING,  # Start investigation
+        CaseStatus.INVESTIGATING,  # Start formal investigation
+        CaseStatus.RESOLVED,        # Fast-Track: KB match resolved issue
         CaseStatus.CLOSED           # Inquiry-only, no investigation
     ],
     CaseStatus.INVESTIGATING: [
@@ -148,6 +197,44 @@ VALID_TRANSITIONS = {
     CaseStatus.RESOLVED: [],        # TERMINAL - no transitions
     CaseStatus.CLOSED: []           # TERMINAL - no transitions
 }
+```
+
+**Transition Diagram** (updated with Fast-Track):
+
+```
+┌──────────────┐
+│    INQUIRY   │
+│              │
+│ Exploring    │
+└──────┬───────┘
+       │
+       ├─────(User decides to investigate)───────┐
+       │                                         │
+       ├─────(KB match + user confirms)──────────┼────────────┐
+       │     [FAST-TRACK]                        │            │
+       │                                         ▼            │
+       │                             ┌────────────────────┐   │
+       │                             │   INVESTIGATING    │   │
+       │                             │                    │   │
+       │                             │ Verification       │   │
+       │                             │ Investigation      │   │
+       │                             │ Resolution         │   │
+       │                             └─────────┬──────────┘   │
+       │                                       │              │
+       │                             ┌─────────┴──────────┐   │
+       │                             │                    │   │
+       │                  (solution_verified)   (no solution) │
+       │                             │                    │   │
+       │                             ▼                    ▼   │
+       │                     ┌──────────────┐    ┌──────────────┐
+       │                     │   RESOLVED   │◄───┘              │
+       │                     │              │                   │
+       │                     │ TERMINAL     │    ┌──────────────┐
+       │                     │ With solution│    │    CLOSED    │
+       │                     └──────────────┘    │              │
+       │                                         │  TERMINAL    │
+       └──(inquiry-only)─────────────────────────► No solution  │
+                                                 └──────────────┘
 ```
 
 ### 1.4 Milestone Progression
@@ -468,6 +555,40 @@ All manual status changes use **existing endpoints** - no new APIs required:
 ---
 
 ## 2. Path Selection & Routing
+
+### 2.0 Preliminary Urgency Assessment (During INQUIRY)
+
+**Purpose**: Enable faster path hints before formal investigation starts.
+
+During INQUIRY, agent assesses urgency based on **business impact** (semantic), not keywords:
+
+```python
+class PreliminaryUrgency(BaseModel):
+    """Early urgency signal for faster path selection."""
+    level: UrgencyLevel        # CRITICAL | HIGH | MEDIUM | LOW
+    is_ongoing: bool           # True if problem appears active NOW
+    impact_assessment: str     # Brief description of business impact
+    mitigation_hint: Optional[str]  # Quick mitigation if obvious
+
+# Semantic urgency definitions (NOT keyword-based):
+URGENCY_DEFINITIONS = {
+    "CRITICAL": "Complete service unavailability or data loss/corruption",
+    "HIGH": "Significant degradation affecting most users",
+    "MEDIUM": "Partial degradation or intermittent issues",
+    "LOW": "Minor issues or historical investigation"
+}
+```
+
+**Why Semantic, Not Keywords**:
+- ❌ Keyword-based: "not down" might trigger CRITICAL due to word "down"
+- ✅ Semantic: LLM assesses actual business impact from context
+
+**Early Path Hint** (during INQUIRY):
+If CRITICAL/HIGH + ONGOING detected, agent offers:
+> "This sounds like it's actively impacting users. Should I focus on quick
+> mitigation first, then investigate root cause after?"
+
+This accelerates path selection without waiting for full verification.
 
 ### 2.1 Path Selection Matrix
 

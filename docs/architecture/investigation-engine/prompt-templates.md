@@ -124,7 +124,49 @@ colleague who understands SRE/DevOps contexts.
 Follow this progression based on conversation state:
 
 ┌─────────────────────────────────────────────────────────┐
-│ Step 0: DETECT PROBLEM SIGNALS (Check Every Turn)      │
+│ Step 0: KNOWLEDGE PRE-CHECK (Before Asking Questions)  │
+├─────────────────────────────────────────────────────────┤
+│ When user describes any symptom, FIRST search KB:      │
+│                                                         │
+│ • Search for similar past cases (symptom keywords)      │
+│ • Check if same service had recent issues               │
+│ • Look for relevant runbook entries                     │
+│                                                         │
+│ IF HIGH-CONFIDENCE MATCH (>70%):                       │
+│ → Set knowledge_match in state_updates                  │
+│ → In response: "This looks similar to [past case].     │
+│    The solution was [X]. Would you like to try that?"  │
+│                                                         │
+│ IF user confirms KB solution worked:                   │
+│ → Set knowledge_resolution (triggers Fast-Track)       │
+│ → System transitions directly: INQUIRY → RESOLVED      │
+│                                                         │
+│ IF NO/LOW-CONFIDENCE MATCH:                            │
+│ → Proceed silently to Step 0.5                         │
+│ → DON'T say "I found nothing in KB" (adds noise)       │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ Step 0.5: URGENCY PRE-ASSESSMENT (Semantic)            │
+├─────────────────────────────────────────────────────────┤
+│ Assess urgency based on BUSINESS IMPACT, not keywords: │
+│                                                         │
+│ 🔴 CRITICAL - Complete service unavailability or       │
+│               data loss/corruption                      │
+│ 🟠 HIGH - Significant degradation affecting most users │
+│ 🟡 MEDIUM - Partial degradation or intermittent issues │
+│ 🟢 LOW - Minor issues or historical investigation      │
+│                                                         │
+│ Also assess: ONGOING (now) or HISTORICAL (past)?       │
+│                                                         │
+│ IF CRITICAL/HIGH + ONGOING:                            │
+│ → Set preliminary_urgency with level & impact_assessment│
+│ → Offer: "This sounds like it's actively impacting     │
+│    users. Should I focus on quick mitigation first?"   │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ Step 1: DETECT PROBLEM SIGNALS (Check Every Turn)      │
 ├─────────────────────────────────────────────────────────┤
 │ Check user's message for problem indicators:           │
 │                                                         │
@@ -136,7 +178,7 @@ Follow this progression based on conversation state:
 │ IF NO PROBLEM SIGNAL:                                  │
 │ → Just answer user's question                          │
 │ → Don't create proposed_problem_statement              │
-│ → Can stay in INQUIRY indefinitely (pure Q&A)       │
+│ → Can stay in INQUIRY indefinitely (pure Q&A)          │
 │                                                         │
 │ IF PROBLEM SIGNAL DETECTED:                            │
 │ → Proceed to Step A (formalization)                    │
@@ -642,37 +684,47 @@ def _get_hypothesis_formulation_instructions(case: Case) -> str:
 **ROOT CAUSE IDENTIFICATION - Decision Tree:**
 
 ┌─────────────────────────────────────────────────────────┐
-│ OPTION A: DIRECT IDENTIFICATION                         │
+│ OPTION A: SINGLE-SHOT VALIDATION                        │
 │ (if root cause obvious from evidence)                   │
 ├─────────────────────────────────────────────────────────┤
-│ ✅ Use when:                                            │
-│ • Clear error message points to specific cause          │
-│ • Strong correlation with recent change                 │
-│   (deployment at 14:10 → errors at 14:15)              │
-│ • Logs show definitive root cause                       │
-│ • Timeline + evidence clearly indicate cause            │
+│ ✅ Use when ALL of these are true:                      │
+│ • Single clear error pointing to specific cause         │
+│ • Strong timing correlation (change → error in minutes) │
+│ • Mechanism is understandable (you can explain HOW)     │
+│ • No conflicting evidence                               │
 │                                                         │
 │ Example:                                                │
 │ "Deployment at 14:10, NullPointerException at 14:15,   │
 │  rollback fixes = Deployment bug (95% confidence)"     │
 │                                                         │
-│ Actions:                                                │
-│ → Set: root_cause_identified = True                     │
-│ → Fill: root_cause_conclusion                           │
-│ → Specify: root_cause_method = "direct_analysis"       │
+│ **CRITICAL: Preserve audit trail!**                     │
 │                                                         │
-│ Skip hypothesis generation entirely!                    │
+│ In ONE turn, do ALL of the following:                   │
+│ 1. CREATE hypothesis (hypotheses_to_add)                │
+│    - statement: The identified root cause               │
+│    - category: Appropriate HypothesisCategory           │
+│    - initial_likelihood: 0.90+ (high confidence)        │
+│ 2. LINK evidence (hypothesis_evidence_links)            │
+│    - Link existing evidence to hypothesis               │
+│    - stance: SUPPORTS with high confidence              │
+│ 3. SET hypothesis status = VALIDATED                    │
+│ 4. SET root_cause_identified = True                     │
+│ 5. SET root_cause_method = "single_shot_validation"     │
+│                                                         │
+│ **Why not skip?** Hypothesis record = audit trail       │
+│ Without it, you have a "magic answer" that can't be     │
+│ verified later.                                         │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│ OPTION B: HYPOTHESIS TESTING                            │
+│ OPTION B: MULTI-HYPOTHESIS TESTING                      │
 │ (if root cause unclear)                                 │
 ├─────────────────────────────────────────────────────────┤
-│ ✅ Use when:                                            │
+│ ✅ Use when ANY of the above is false:                  │
 │ • Multiple possible causes                              │
+│ • Weak timing correlation                               │
 │ • Symptoms could match several theories                 │
 │ • Need diagnostic data to differentiate                 │
-│ • No strong correlation with single cause               │
 │                                                         │
 │ Example:                                                │
 │ "Timeout errors started 2h after uptime consistently.   │
@@ -684,19 +736,21 @@ def _get_hypothesis_formulation_instructions(case: Case) -> str:
 │                                                         │
 │ Actions:                                                │
 │ → Generate: hypotheses_to_add (2-4 theories)            │
+│ → Ensure diversity: At least 2 different categories     │
 │ → When user provides evidence: Evaluate against ALL     │
 │             active hypotheses (hypothesis_evidence_links)│
 │ → Update hypothesis.status: TESTING → VALIDATED/REFUTED │
 └─────────────────────────────────────────────────────────┘
 
-**Guidelines:**
-• 70% of cases should identify root cause DIRECTLY (no hypotheses)
-• 30% of cases need hypothesis testing (unclear diagnosis)
-• **Try direct identification FIRST**
-• Use hypotheses ONLY if stuck or ambiguous
-• Don't generate hypotheses to "look thorough"
+**TOOL CHECK** (before requesting user data):
+□ Search KB for this error message / symptom pattern
+□ Check documentation for known issues with affected service
+□ If tools return no results → Proceed silently (don't mention failure)
 
-**IMPORTANT: Don't generate hypotheses if root cause is obvious!**"""
+**Evidence Request Format:**
+"To diagnose this, the most useful would be [PRIMARY].
+If that's difficult to obtain, [ALTERNATIVE] would also help.
+Why: [diagnostic value]""""
 
 
 def _get_hypothesis_validation_instructions(case: Case) -> str:
