@@ -97,9 +97,6 @@ class InvestigationProgress(BaseModel):
         description="Recent changes identified"
     )
 
-    # NOTE: temporal_state moved to ProblemVerification (where it logically belongs)
-    # It's determined during verification, not a milestone itself
-
     # ============================================================
     # Investigation Milestones
     # ============================================================
