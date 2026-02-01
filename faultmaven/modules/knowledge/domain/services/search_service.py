@@ -512,7 +512,7 @@ class KnowledgeSearchService(BaseService):
                     texts
                 )
             except Exception as e:
-                logger.error(f"Failed to generate batch embeddings: {e}")
+                logger.error(f"Failed to generate batch embeddings: {e}", exc_info=True)
                 failed += len(batch)
                 failed_items.extend([item.item_id for item in batch])
                 continue
@@ -547,7 +547,7 @@ class KnowledgeSearchService(BaseService):
                     )
                     succeeded += 1
                 except Exception as e:
-                    logger.error(f"Failed to index item {item.item_id}: {e}")
+                    logger.error(f"Failed to index item {item.item_id}: {e}", exc_info=True)
                     failed += 1
                     failed_items.append(item.item_id)
 
@@ -556,7 +556,7 @@ class KnowledgeSearchService(BaseService):
                 try:
                     await self.vector_store.add_items_batch(vector_store_items)
                 except Exception as e:
-                    logger.error(f"Failed to add batch to vector store: {e}")
+                    logger.error(f"Failed to add batch to vector store: {e}", exc_info=True)
                     # Items are already in repo, just log the error
 
         self.log_metric(

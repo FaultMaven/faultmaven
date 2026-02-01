@@ -513,7 +513,7 @@ class AgentOrchestrationService(BaseService):
                 execution.mark_failed(error_message)
                 await self.case_repo.update_agent_execution(execution)
         except Exception as e:
-            logger.error(f"Failed to mark execution as failed: {e}")
+            logger.error(f"Failed to mark execution as failed: {e}", exc_info=True)
 
     # ============================================================
     # Context Building

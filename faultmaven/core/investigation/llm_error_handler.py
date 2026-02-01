@@ -168,6 +168,12 @@ class LLMErrorHandler:
             )
 
         # Unknown error - try fallback first, then fail
+        # Log full error details for debugging
+        logger.error(
+            f"Unknown LLM error (retry {retry_count}): {type(error).__name__}: {str(error)}",
+            exc_info=True
+        )
+
         if retry_count == 0:
             return ErrorResult(
                 action=ErrorAction.USE_FALLBACK_PROMPT,
@@ -179,7 +185,7 @@ class LLMErrorHandler:
 
         return ErrorResult(
             action=ErrorAction.FAIL,
-            message=f"LLM error: {str(error)[:200]}",
+            message=f"LLM error: {type(error).__name__}: {str(error)[:200]}",
             error_code="UNKNOWN_ERROR",
             retry_count=retry_count,
         )

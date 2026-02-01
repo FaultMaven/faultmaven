@@ -138,12 +138,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             return response
 
         except Exception as e:
-            self.logger.error(f"❌ LLM Router: All providers failed: {e}")
-            self.logger.error(f"❌ LLM Router: Exception type: {type(e)}")
-            import traceback
-
             self.logger.error(
-                f"❌ LLM Router: Full traceback: {traceback.format_exc()}"
+                f"❌ LLM Router: All providers failed: {type(e).__name__}: {e}",
+                exc_info=True
             )
             raise
 

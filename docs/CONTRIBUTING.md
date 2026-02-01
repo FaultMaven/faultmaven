@@ -73,6 +73,7 @@ To get started with local development for the `faultmaven` monolith:
 
 2.  **Make Your Changes:** Write your code and any accompanying tests.
     * **Coding Style:** Please follow the **Black** code style. We use `flake8` for linting.
+    * **Error Logging:** All error logging MUST include `exc_info=True` or use `logger.exception()`. See [Logging Policy](operations/monitoring/logging-policy.md#error-logging-standards) for details.
     * **Commit Messages:** Please follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. For example: `feat: Add new data classifier for TOML files`.
 
 3.  **Run Tests:** Ensure all tests still pass after your changes.
