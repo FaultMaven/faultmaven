@@ -17,6 +17,7 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     Hypothesis,
     HypothesisCategory,
+    HypothesisGenerationMode,
     HypothesisStatus,
     InquiryData,
     InvestigationMomentum,
@@ -44,7 +45,7 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
-            thread_id="thread_123",
+            proposed_problem_statement="Test symptom",
         ),
         progress=InvestigationProgress(),
         turns_without_progress=0,
@@ -57,16 +58,35 @@ def create_hypothesis(
     status: HypothesisStatus = HypothesisStatus.ACTIVE,
     likelihood: float = 0.5,
     supporting_evidence: list = None,
+    generated_at_turn: int = 1,
 ) -> Hypothesis:
     """Helper to create a hypothesis."""
-    return Hypothesis(
+    hyp = Hypothesis(
         hypothesis_id=hyp_id,
         statement=statement,
         category=HypothesisCategory.CODE,
         status=status,
         likelihood=likelihood,
-        supporting_evidence=supporting_evidence or [],
+        generated_at_turn=generated_at_turn,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        rationale="Test hypothesis",
     )
+    # Add supporting evidence via evidence_links if provided
+    if supporting_evidence:
+        from faultmaven.modules.case.contracts import (
+            EvidenceStance,
+            HypothesisEvidenceLink,
+        )
+
+        for ev_id in supporting_evidence:
+            hyp.evidence_links[ev_id] = HypothesisEvidenceLink(
+                hypothesis_id=hyp_id,
+                evidence_id=ev_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="Test supporting evidence",
+                stance_confidence=0.8,
+            )
+    return hyp
 
 
 def create_turn(
@@ -100,11 +120,11 @@ class TestWorkingConclusionGeneration:
     def test_generates_conclusion_from_best_hypothesis(self, base_case):
         """Should generate conclusion from highest likelihood hypothesis."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1", "Low likelihood", HypothesisStatus.ACTIVE, 0.3
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001", "Low likelihood", HypothesisStatus.ACTIVE, 0.3
             ),
-            "hyp_2": create_hypothesis(
-                "hyp_2",
+            "hyp_000000000002": create_hypothesis(
+                "hyp_000000000002",
                 "High likelihood",
                 HypothesisStatus.ACTIVE,
                 0.8,
@@ -131,8 +151,8 @@ class TestWorkingConclusionGeneration:
     def test_includes_supporting_evidence_ids(self, base_case):
         """Should include supporting evidence IDs."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1",
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
                 "Test",
                 HypothesisStatus.ACTIVE,
                 0.7,
@@ -147,8 +167,8 @@ class TestWorkingConclusionGeneration:
     def test_generates_caveats_for_low_confidence(self, base_case):
         """Should generate caveats for low confidence hypotheses."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1", "Low confidence", HypothesisStatus.ACTIVE, 0.3
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001", "Low confidence", HypothesisStatus.ACTIVE, 0.3
             ),
         }
 
@@ -218,8 +238,8 @@ class TestEvidenceCompleteness:
     def test_calculates_completeness_from_evidence(self, base_case):
         """Should calculate completeness from supporting evidence count."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1",
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
                 "Test",
                 HypothesisStatus.ACTIVE,
                 0.5,

@@ -3,6 +3,8 @@
 Tests state consistency validation for milestone-based investigation.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from faultmaven.core.investigation.state_validator import (
@@ -19,6 +21,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
+    HypothesisGenerationMode,
     HypothesisStatus,
     InquiryData,
     InvestigationProgress,
@@ -48,7 +51,6 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
-            thread_id="thread_123",
             proposed_problem_statement="Test symptom",
         ),
         progress=InvestigationProgress(),
@@ -107,10 +109,16 @@ class TestStatusConsistency:
 
     def test_resolved_without_solution_verified(self, validator, base_case):
         """RESOLVED status requires solution_verified milestone."""
-        base_case.status = CaseStatus.RESOLVED
-        base_case.progress.solution_verified = False
+        # Update status and resolved_at together to pass Pydantic validation
+        resolved_case = base_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+            }
+        )
+        resolved_case.progress.solution_verified = False
 
-        issues = validator._validate_status_consistency(base_case)
+        issues = validator._validate_status_consistency(resolved_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
         assert len(errors) == 1
@@ -118,10 +126,16 @@ class TestStatusConsistency:
 
     def test_resolved_with_solution_verified(self, validator, base_case):
         """RESOLVED with solution_verified should be valid."""
-        base_case.status = CaseStatus.RESOLVED
-        base_case.progress.solution_verified = True
+        # Update status and resolved_at together to pass Pydantic validation
+        resolved_case = base_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+            }
+        )
+        resolved_case.progress.solution_verified = True
 
-        issues = validator._validate_status_consistency(base_case)
+        issues = validator._validate_status_consistency(resolved_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
         assert len(errors) == 0
@@ -142,15 +156,29 @@ class TestHypothesisStates:
 
     def test_validated_with_insufficient_evidence(self, validator, base_case):
         """VALIDATED hypothesis should have at least 2 supporting evidence."""
-        base_case.hypotheses = {
-            "hyp_123456789012": Hypothesis(
-                hypothesis_id="hyp_123456789012",
-                statement="Test hypothesis",
-                category=HypothesisCategory.CODE,
-                status=HypothesisStatus.VALIDATED,
-                supporting_evidence=["ev_1"],  # Only 1 evidence
-            )
-        }
+        from faultmaven.modules.case.contracts import (
+            EvidenceStance,
+            HypothesisEvidenceLink,
+        )
+
+        hyp = Hypothesis(
+            hypothesis_id="hyp_123456789012",
+            statement="Test hypothesis",
+            category=HypothesisCategory.CODE,
+            status=HypothesisStatus.VALIDATED,
+            generated_at_turn=1,
+            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+            rationale="Test hypothesis",
+        )
+        # Add only 1 supporting evidence
+        hyp.evidence_links["ev_1"] = HypothesisEvidenceLink(
+            hypothesis_id="hyp_123456789012",
+            evidence_id="ev_1",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="Test evidence",
+            stance_confidence=0.8,
+        )
+        base_case.hypotheses = {"hyp_123456789012": hyp}
 
         issues = validator._validate_hypothesis_states(base_case)
         warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
@@ -159,15 +187,17 @@ class TestHypothesisStates:
 
     def test_refuted_without_refuting_evidence(self, validator, base_case):
         """REFUTED hypothesis should have refuting evidence."""
-        base_case.hypotheses = {
-            "hyp_123456789012": Hypothesis(
-                hypothesis_id="hyp_123456789012",
-                statement="Test hypothesis",
-                category=HypothesisCategory.CODE,
-                status=HypothesisStatus.REFUTED,
-                refuting_evidence=[],
-            )
-        }
+        hyp = Hypothesis(
+            hypothesis_id="hyp_123456789012",
+            statement="Test hypothesis",
+            category=HypothesisCategory.CODE,
+            status=HypothesisStatus.REFUTED,
+            generated_at_turn=1,
+            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+            rationale="Test hypothesis",
+        )
+        # No refuting evidence added
+        base_case.hypotheses = {"hyp_123456789012": hyp}
 
         issues = validator._validate_hypothesis_states(base_case)
         warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
@@ -182,6 +212,9 @@ class TestHypothesisStates:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis",
                 likelihood=0.1,
             )
         }
@@ -197,16 +230,30 @@ class TestEvidenceLinks:
 
     def test_dangling_supporting_evidence(self, validator, base_case):
         """Hypothesis referencing non-existent evidence should warn."""
+        from faultmaven.modules.case.contracts import (
+            EvidenceStance,
+            HypothesisEvidenceLink,
+        )
+
         base_case.evidence = []
-        base_case.hypotheses = {
-            "hyp_123456789012": Hypothesis(
-                hypothesis_id="hyp_123456789012",
-                statement="Test hypothesis",
-                category=HypothesisCategory.CODE,
-                status=HypothesisStatus.ACTIVE,
-                supporting_evidence=["ev_nonexistent"],
-            )
-        }
+        hyp = Hypothesis(
+            hypothesis_id="hyp_123456789012",
+            statement="Test hypothesis",
+            category=HypothesisCategory.CODE,
+            status=HypothesisStatus.ACTIVE,
+            generated_at_turn=1,
+            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+            rationale="Test hypothesis",
+        )
+        # Reference non-existent evidence
+        hyp.evidence_links["ev_nonexistent"] = HypothesisEvidenceLink(
+            hypothesis_id="hyp_123456789012",
+            evidence_id="ev_nonexistent",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="Test evidence",
+            stance_confidence=0.8,
+        )
+        base_case.hypotheses = {"hyp_123456789012": hyp}
 
         issues = validator._validate_evidence_links(base_case)
         warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
@@ -215,16 +262,30 @@ class TestEvidenceLinks:
 
     def test_new_index_references_allowed(self, validator, base_case):
         """new_index_N references should be skipped (created same turn)."""
+        from faultmaven.modules.case.contracts import (
+            EvidenceStance,
+            HypothesisEvidenceLink,
+        )
+
         base_case.evidence = []
-        base_case.hypotheses = {
-            "hyp_123456789012": Hypothesis(
-                hypothesis_id="hyp_123456789012",
-                statement="Test hypothesis",
-                category=HypothesisCategory.CODE,
-                status=HypothesisStatus.ACTIVE,
-                supporting_evidence=["new_index_0"],
-            )
-        }
+        hyp = Hypothesis(
+            hypothesis_id="hyp_123456789012",
+            statement="Test hypothesis",
+            category=HypothesisCategory.CODE,
+            status=HypothesisStatus.ACTIVE,
+            generated_at_turn=1,
+            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+            rationale="Test hypothesis",
+        )
+        # Reference new_index (created same turn)
+        hyp.evidence_links["new_index_0"] = HypothesisEvidenceLink(
+            hypothesis_id="hyp_123456789012",
+            evidence_id="new_index_0",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="Test evidence",
+            stance_confidence=0.8,
+        )
+        base_case.hypotheses = {"hyp_123456789012": hyp}
 
         issues = validator._validate_evidence_links(base_case)
 
@@ -237,15 +298,22 @@ class TestLikelihoodBounds:
 
     def test_hypothesis_likelihood_out_of_bounds(self, validator, base_case):
         """Likelihood outside [0, 1] should error."""
-        base_case.hypotheses = {
-            "hyp_123456789012": Hypothesis(
-                hypothesis_id="hyp_123456789012",
-                statement="Test hypothesis",
-                category=HypothesisCategory.CODE,
-                status=HypothesisStatus.ACTIVE,
-                likelihood=1.5,  # Out of bounds
-            )
-        }
+        # Note: Pydantic validates likelihood bounds at model level (ge=0.0, le=1.0)
+        # This test verifies StateValidator also catches bounds violations
+        # We create a valid hypothesis and then directly modify the field to bypass validation
+        hyp = Hypothesis(
+            hypothesis_id="hyp_123456789012",
+            statement="Test hypothesis",
+            category=HypothesisCategory.CODE,
+            status=HypothesisStatus.ACTIVE,
+            generated_at_turn=1,
+            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+            rationale="Test hypothesis",
+            likelihood=0.5,
+        )
+        # Bypass Pydantic validation by using object.__setattr__
+        object.__setattr__(hyp, "likelihood", 1.5)
+        base_case.hypotheses = {"hyp_123456789012": hyp}
 
         issues = validator._validate_likelihood_bounds(base_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
@@ -261,6 +329,9 @@ class TestLikelihoodBounds:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis",
                 likelihood=0.75,
             )
         }
