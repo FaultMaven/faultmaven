@@ -10,10 +10,51 @@ This document defines the core data models used in FaultMaven's opportunistic in
 
 ## Table of Contents
 
-1. [Core Data Models](#1-core-data-models)
-2. [Evidence Model](#2-evidence-model)
-3. [Hypothesis Workflow](#3-hypothesis-workflow)
-4. [Degraded Mode](#4-degraded-mode)
+1. [Field Naming Conventions](#field-naming-conventions)
+2. [Core Data Models](#1-core-data-models)
+3. [Evidence Model](#2-evidence-model)
+4. [Hypothesis Workflow](#3-hypothesis-workflow)
+5. [Degraded Mode](#4-degraded-mode)
+
+---
+
+## Field Naming Conventions
+
+To ensure consistency across the codebase, use these standard field names:
+
+### Probability/Confidence Fields
+
+| Field Name | Type | Range | Used For |
+|------------|------|-------|----------|
+| `likelihood` | `float` | 0.0-1.0 | Numeric probability score (primary field) |
+| `confidence_level` | `ConfidenceLevel` | enum | Categorical confidence (derived from `likelihood`) |
+
+**Conversion Rules** (implemented in `ConfidenceLevel.from_score()`):
+- `likelihood < 0.5` → `SPECULATION`
+- `likelihood 0.5-0.69` → `PROBABLE`
+- `likelihood 0.7-0.89` → `CONFIDENT`
+- `likelihood ≥ 0.9` → `VERIFIED`
+
+### Where Applied
+
+| Model | Primary Field | Derived Field |
+|-------|---------------|---------------|
+| `Hypothesis` | `likelihood: float` | - |
+| `InvestigationProgress` | `root_cause_likelihood: float` | - |
+| `RootCauseConclusion` | `likelihood: float` | `confidence_level: ConfidenceLevel` |
+| `WorkingConclusion` | `likelihood: float` | - |
+| `Evidence` (in hypothesis links) | `stance_confidence: float` | - |
+
+### Deprecated Names (Do Not Use)
+
+These field names are deprecated and should not be used in new code:
+
+| Deprecated | Replace With |
+|------------|--------------|
+| `confidence` | `likelihood` |
+| `confidence_score` | `likelihood` |
+| `root_cause_confidence` | `root_cause_likelihood` |
+| `completeness` | `stance_confidence` |
 
 ---
 
@@ -105,11 +146,11 @@ class InvestigationProgress(BaseModel):
         description="Root cause determined"
     )
 
-    root_cause_confidence: float = Field(
+    root_cause_likelihood: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Confidence in root cause (0.0-1.0)"
+        description="Likelihood of root cause identification (0.0-1.0)"
     )
 
     root_cause_method: Optional[str] = Field(
@@ -168,16 +209,48 @@ class InvestigationProgress(BaseModel):
         """
         Compute investigation stage from milestones.
         For optional progress detail, not workflow control.
+
+        Returns one of the 4 InvestigationStage enum values:
+        - SYMPTOM_VERIFICATION: Initial verification (where/when)
+        - HYPOTHESIS_FORMULATION: Generating theories (why)
+        - HYPOTHESIS_VALIDATION: Testing theories (why really)
+        - SOLUTION: Applying fix (how)
         """
+        # Stage 4: Solution phase
         if (self.solution_proposed or
             self.solution_applied or
             self.solution_verified):
-            return InvestigationStage.RESOLVING
+            return InvestigationStage.SOLUTION
 
-        if self.symptom_verified and not self.root_cause_identified:
-            return InvestigationStage.DIAGNOSING
+        # Stage 3: Hypothesis validation (root cause being identified)
+        if self.root_cause_identified:
+            return InvestigationStage.HYPOTHESIS_VALIDATION
 
-        return InvestigationStage.UNDERSTANDING
+        # Stage 2: Hypothesis formulation (symptom verified, exploring cause)
+        if self.symptom_verified:
+            return InvestigationStage.HYPOTHESIS_FORMULATION
+
+        # Stage 1: Symptom verification (initial state)
+        return InvestigationStage.SYMPTOM_VERIFICATION
+
+    @property
+    def stage_display_name(self) -> str:
+        """
+        User-facing stage name for UI display.
+
+        Maps internal 4-stage system to 3 user-friendly names:
+        - SYMPTOM_VERIFICATION → "Understanding"
+        - HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION → "Diagnosing"
+        - SOLUTION → "Resolving"
+        """
+        stage = self.current_stage
+        if stage == InvestigationStage.SYMPTOM_VERIFICATION:
+            return "Understanding"
+        elif stage in (InvestigationStage.HYPOTHESIS_FORMULATION,
+                      InvestigationStage.HYPOTHESIS_VALIDATION):
+            return "Diagnosing"
+        else:  # SOLUTION
+            return "Resolving"
 
     @property
     def verification_complete(self) -> bool:
@@ -926,13 +999,16 @@ class RootCauseConclusion(BaseModel):
         description="Definitive statement of root cause"
     )
 
-    confidence_level: ConfidenceLevel
-
-    confidence_score: float = Field(
+    likelihood: float = Field(
         ge=0.0,
         le=1.0,
         description="Numeric confidence score (0.0-1.0)"
     )
+
+    @property
+    def confidence_level(self) -> ConfidenceLevel:
+        """Categorical confidence level derived from likelihood."""
+        return ConfidenceLevel.from_score(self.likelihood)
 
     mechanism: str = Field(
         description="How this root cause produced the symptom"

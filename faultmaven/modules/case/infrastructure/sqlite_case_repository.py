@@ -28,7 +28,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import uuid4
 
-from faultmaven.utils.serialization import to_json_compatible
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,12 +36,12 @@ from faultmaven.modules.case.contracts import (
     CaseReport,
     CaseStatus,
     CaseStatusTransition,
-    InquiryData,
     DegradedMode,
     DocumentationData,
     EscalationState,
     Evidence,
     Hypothesis,
+    InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
     PathSelection,
@@ -56,6 +55,7 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
     pass
@@ -797,7 +797,9 @@ class SQLiteCaseRepository(CaseRepository):
                 "last_activity_at": case.last_activity_at,
                 "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
                 "problem_verification": (
-                    json.dumps(to_json_compatible(case.problem_verification.model_dump()))
+                    json.dumps(
+                        to_json_compatible(case.problem_verification.model_dump())
+                    )
                     if case.problem_verification
                     else None
                 ),
@@ -807,7 +809,9 @@ class SQLiteCaseRepository(CaseRepository):
                     else None
                 ),
                 "root_cause_conclusion": (
-                    json.dumps(to_json_compatible(case.root_cause_conclusion.model_dump()))
+                    json.dumps(
+                        to_json_compatible(case.root_cause_conclusion.model_dump())
+                    )
                     if case.root_cause_conclusion
                     else None
                 ),
@@ -826,16 +830,28 @@ class SQLiteCaseRepository(CaseRepository):
                     if case.escalation_state
                     else None
                 ),
-                "documentation": json.dumps(to_json_compatible(case.documentation.model_dump())),
+                "documentation": json.dumps(
+                    to_json_compatible(case.documentation.model_dump())
+                ),
                 "progress": json.dumps(to_json_compatible(case.progress.model_dump())),
-                "metadata": json.dumps({
-                    "current_turn": case.current_turn,
-                    "turns_without_progress": case.turns_without_progress,
-                    "message_count": case.message_count,
-                    "closure_reason": case.closure_reason,
-                    "closed_at": to_json_compatible(case.closed_at) if case.closed_at else None,
-                    "resolved_at": to_json_compatible(case.resolved_at) if hasattr(case, "resolved_at") and case.resolved_at else None
-                }),
+                "metadata": json.dumps(
+                    {
+                        "current_turn": case.current_turn,
+                        "turns_without_progress": case.turns_without_progress,
+                        "message_count": case.message_count,
+                        "closure_reason": case.closure_reason,
+                        "closed_at": (
+                            to_json_compatible(case.closed_at)
+                            if case.closed_at
+                            else None
+                        ),
+                        "resolved_at": (
+                            to_json_compatible(case.resolved_at)
+                            if hasattr(case, "resolved_at") and case.resolved_at
+                            else None
+                        ),
+                    }
+                ),
             },
         )
 
@@ -1224,9 +1240,7 @@ class SQLiteCaseRepository(CaseRepository):
         """Reconstruct Case domain object from database row."""
         # Parse JSON columns
         inquiry = (
-            InquiryData(**json.loads(row.inquiry))
-            if row.inquiry
-            else InquiryData()
+            InquiryData(**json.loads(row.inquiry)) if row.inquiry else InquiryData()
         )
         problem_verification = (
             ProblemVerification(**json.loads(row.problem_verification))
@@ -1286,7 +1300,7 @@ class SQLiteCaseRepository(CaseRepository):
 
         # Parse metadata to extract stored fields
         metadata = json.loads(row.metadata) if row.metadata else {}
-        
+
         # Build case_data dict conditionally to allow Pydantic to apply field defaults
         # Only include optional fields if they have actual values from database
         case_data = {
@@ -1335,13 +1349,17 @@ class SQLiteCaseRepository(CaseRepository):
             case_data["last_activity_at"] = row.last_activity_at
 
         # Extract dates from metadata if not on row
-        resolved_at_val = metadata.get("resolved_at") or (row.resolved_at if hasattr(row, "resolved_at") else None)
+        resolved_at_val = metadata.get("resolved_at") or (
+            row.resolved_at if hasattr(row, "resolved_at") else None
+        )
         if resolved_at_val:
-             case_data["resolved_at"] = resolved_at_val
+            case_data["resolved_at"] = resolved_at_val
 
-        closed_at_val = metadata.get("closed_at") or (row.closed_at if hasattr(row, "closed_at") else None)
+        closed_at_val = metadata.get("closed_at") or (
+            row.closed_at if hasattr(row, "closed_at") else None
+        )
         if closed_at_val:
-             case_data["closed_at"] = closed_at_val
+            case_data["closed_at"] = closed_at_val
 
         return Case(**case_data)
 

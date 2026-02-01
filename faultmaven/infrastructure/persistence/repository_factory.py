@@ -65,10 +65,10 @@ STORAGE_TYPE_DATABASE = "database"
 # Singleton in-memory repositories (for consistency across calls)
 _inmemory_repository: InMemoryCaseRepository | None = None
 _inmemory_session_repository: InMemorySessionRepository | None = None
-_inmemory_evidence_artifact_repository: InMemoryEvidenceArtifactRepository | None = (
-    None
-)
-_inmemory_investigation_session_repository: InMemoryInvestigationSessionRepository | None = None
+_inmemory_evidence_artifact_repository: InMemoryEvidenceArtifactRepository | None = None
+_inmemory_investigation_session_repository: (
+    InMemoryInvestigationSessionRepository | None
+) = None
 _inmemory_knowledge_item_repository: Any | None = None
 
 
@@ -889,6 +889,7 @@ def get_knowledge_item_repository(
         DatabaseKnowledgeItemRepository,
         InMemoryKnowledgeItemRepository,
     )
+
     """
     Get a knowledge item repository instance based on configuration.
 
@@ -940,6 +941,7 @@ async def get_knowledge_item_repository_async(
         DatabaseKnowledgeItemRepository,
         InMemoryKnowledgeItemRepository,
     )
+
     """
     Get a knowledge item repository with automatic session management.
 
@@ -998,6 +1000,7 @@ def get_inmemory_knowledge_item_repository() -> Any:
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
         InMemoryKnowledgeItemRepository,
     )
+
     """
     Get or create the singleton in-memory knowledge item repository.
 

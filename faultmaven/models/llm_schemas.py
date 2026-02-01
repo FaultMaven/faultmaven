@@ -206,9 +206,7 @@ class InquiryResponse(BaseModel):
         description="Natural language response to user", max_length=4000
     )
 
-    state_update: InquiryStateUpdate = Field(
-        description="State changes for this turn"
-    )
+    state_update: InquiryStateUpdate = Field(description="State changes for this turn")
 
     suggested_action: Optional[str] = Field(
         default=None, description="What user should do next", max_length=500

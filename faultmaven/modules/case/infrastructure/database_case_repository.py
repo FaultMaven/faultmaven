@@ -44,12 +44,12 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    InquiryData,
     DegradedMode,
     DocumentationData,
     EscalationState,
     Evidence,
     Hypothesis,
+    InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
     PathSelection,
@@ -867,9 +867,7 @@ class DatabaseCaseRepository(CaseRepository):
     def _case_to_model(self, case: Case) -> CaseModel:
         """Convert Case domain model to CaseModel ORM model."""
         # Serialize complex fields to JSON
-        inquiry_json = (
-            json.dumps(case.inquiry.model_dump()) if case.inquiry else "{}"
-        )
+        inquiry_json = json.dumps(case.inquiry.model_dump()) if case.inquiry else "{}"
         progress_json = (
             json.dumps(case.progress.model_dump()) if case.progress else "{}"
         )

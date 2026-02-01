@@ -1,4 +1,5 @@
 import pytest
+
 from faultmaven.modules.case.contracts import (
     InvestigationPath,
     ProblemVerification,

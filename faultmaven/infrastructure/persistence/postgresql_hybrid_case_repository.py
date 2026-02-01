@@ -31,12 +31,12 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    InquiryData,
     DegradedMode,
     DocumentationData,
     EscalationState,
     Evidence,
     Hypothesis,
+    InquiryData,
     InvestigationProgress,
     PathSelection,
     ProblemVerification,
@@ -45,6 +45,10 @@ from faultmaven.modules.case.domain.models import (
     TurnProgress,
     UploadedFile,
     WorkingConclusion,
+)
+from faultmaven.modules.case.domain.owned_models.report import (
+    CaseReport,
+    ReportType,
 )
 
 
@@ -1239,9 +1243,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         # Parse JSONB columns
         inquiry = (
-            InquiryData(**json.loads(row.inquiry))
-            if row.inquiry
-            else InquiryData()
+            InquiryData(**json.loads(row.inquiry)) if row.inquiry else InquiryData()
         )
         problem_verification = (
             ProblemVerification(**json.loads(row.problem_verification))

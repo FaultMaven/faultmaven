@@ -120,7 +120,7 @@ class InvestigationService(BaseService):
             }
             case.messages.append(user_message_obj)
             case.message_count += 1
-            
+
             # Persist user message and new turn number immediately
             await self.repository.save(case)
 
@@ -297,9 +297,7 @@ class InvestigationService(BaseService):
 
             if not case.inquiry.problem_statement_confirmed:
                 case.inquiry.problem_statement_confirmed = True
-                case.inquiry.problem_statement_confirmed_at = datetime.now(
-                    timezone.utc
-                )
+                case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
 
             if not case.inquiry.decided_to_investigate:
                 case.inquiry.decided_to_investigate = True
@@ -313,7 +311,10 @@ class InvestigationService(BaseService):
             from faultmaven.modules.case.domain.services.investigation_router import (
                 determine_investigation_path,
             )
-            case.path_selection = determine_investigation_path(case.problem_verification)
+
+            case.path_selection = determine_investigation_path(
+                case.problem_verification
+            )
             self.logger.info(
                 f"Selected investigation path: {case.path_selection.path} "
                 f"(reason: {case.path_selection.rationale})"

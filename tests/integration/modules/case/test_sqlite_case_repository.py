@@ -306,8 +306,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -356,8 +356,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -400,8 +400,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -446,8 +446,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -484,8 +484,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -533,8 +533,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
@@ -571,8 +571,8 @@ class TestSQLiteCaseRepository:
         from faultmaven.modules.case.domain.models import (
             Case,
             CaseStatus,
-            InquiryData,
             DocumentationData,
+            InquiryData,
             InvestigationProgress,
         )
         from faultmaven.modules.case.infrastructure.sqlite_case_repository import (

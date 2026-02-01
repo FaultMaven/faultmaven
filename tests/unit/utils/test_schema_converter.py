@@ -252,8 +252,6 @@ class TestEdgeCases:
         assert properties["metadata"]["type"] == "object"
 
 
-
-
 class TestFunctionNaming:
     """Test function naming conventions"""
 

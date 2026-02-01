@@ -340,13 +340,10 @@ class InvestigationProgress(BaseModel):
         default=False, description="Solution or mitigation has been proposed"
     )
 
-    resolution_applied: bool = Field(
+    solution_applied: bool = Field(
         default=False, description="Solution has been applied by user"
     )
 
-    # Alias for backward compatibility if needed, but primary is resolution_applied
-    # We map this to resolution_applied in validation if needed
-    
     solution_verified: bool = Field(
         default=False,
         description="Solution effectiveness verified (error rate decreased, metrics improved)",
@@ -365,7 +362,7 @@ class InvestigationProgress(BaseModel):
         - Stage 4: Quick mitigation applied (mitigation_applied = True)
         - Stage 2: Return to hypothesis formulation for RCA
         - Stage 3: Hypothesis validation
-        - Stage 4: Permanent solution applied (resolution_applied = True)
+        - Stage 4: Permanent solution applied (solution_applied = True)
 
         When True: Agent should return to stage 2 (hypothesis formulation) for full RCA
         When False: Either ROOT_CAUSE path, or MITIGATION_FIRST has not applied mitigation yet
@@ -412,7 +409,7 @@ class InvestigationProgress(BaseModel):
         """
 
         # SOLUTION (Stage 4): Any solution work
-        if self.solution_proposed or self.resolution_applied or self.solution_verified:
+        if self.solution_proposed or self.solution_applied or self.solution_verified:
             return InvestigationStage.SOLUTION
 
         # HYPOTHESIS_VALIDATION (Stage 3): Root cause identified or being validated
@@ -427,6 +424,27 @@ class InvestigationProgress(BaseModel):
 
         # SYMPTOM_VERIFICATION (Stage 1): Initial verification
         return InvestigationStage.SYMPTOM_VERIFICATION
+
+    @property
+    def stage_display_name(self) -> str:
+        """
+        User-facing stage name for UI display.
+
+        Maps internal 4-stage system to 3 user-friendly names:
+        - SYMPTOM_VERIFICATION → "Understanding"
+        - HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION → "Diagnosing"
+        - SOLUTION → "Resolving"
+        """
+        stage = self.current_stage
+        if stage == InvestigationStage.SYMPTOM_VERIFICATION:
+            return "Understanding"
+        elif stage in (
+            InvestigationStage.HYPOTHESIS_FORMULATION,
+            InvestigationStage.HYPOTHESIS_VALIDATION,
+        ):
+            return "Diagnosing"
+        else:  # SOLUTION
+            return "Resolving"
 
     @property
     def verification_complete(self) -> bool:
@@ -447,7 +465,7 @@ class InvestigationProgress(BaseModel):
     def resolution_complete(self) -> bool:
         """Check if resolution milestones completed"""
         return (
-            self.solution_proposed and self.resolution_applied and self.solution_verified
+            self.solution_proposed and self.solution_applied and self.solution_verified
         )
 
     @property
@@ -463,7 +481,7 @@ class InvestigationProgress(BaseModel):
             self.changes_identified,
             self.root_cause_identified,
             self.solution_proposed,
-            self.resolution_applied,
+            self.solution_applied,
             self.solution_verified,
         ]
         completed = sum(milestones)
@@ -480,7 +498,7 @@ class InvestigationProgress(BaseModel):
             "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
-            "resolution_applied": self.resolution_applied,
+            "solution_applied": self.solution_applied,
             "solution_verified": self.solution_verified,
         }
         return [name for name, completed in milestone_map.items() if completed]
@@ -495,7 +513,7 @@ class InvestigationProgress(BaseModel):
             "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
-            "resolution_applied": self.resolution_applied,
+            "solution_applied": self.solution_applied,
             "solution_verified": self.solution_verified,
         }
 
@@ -542,7 +560,7 @@ class InvestigationProgress(BaseModel):
     def solution_ordering(self):
         """Ensure solutions are applied in order"""
         proposed = self.solution_proposed
-        applied = self.resolution_applied
+        applied = self.solution_applied
         verified = self.solution_verified
 
         if applied and not proposed:
@@ -771,25 +789,28 @@ class ProblemConfirmation(BaseModel):
 
 class KnowledgeResolution(BaseModel):
     """Records instant resolution via KB match during INQUIRY phase."""
-    match_id: str                # ID of case/runbook that solved it
-    match_type: str              # "past_case" | "runbook" | "documentation"
-    solution_applied: str        # What user actually did
-    user_confirmation: str       # User's message confirming fix
-    resolution_turn: int         # Turn when confirmed
+
+    match_id: str  # ID of case/runbook that solved it
+    match_type: str  # "past_case" | "runbook" | "documentation"
+    solution_applied: str  # What user actually did
+    user_confirmation: str  # User's message confirming fix
+    resolution_turn: int  # Turn when confirmed
 
 
 class PreliminaryUrgency(BaseModel):
     """Early urgency assessment using semantic business impact."""
+
     level: UrgencyLevel
-    impact_assessment: str       # Free-text business impact description
+    impact_assessment: str  # Free-text business impact description
     assessed_at_turn: int
 
 
 class KnowledgeMatch(BaseModel):
     """Records a potential KB match during INQUIRY."""
+
     match_id: str
-    match_type: str              # "past_case" | "runbook" | "documentation"
-    relevance_score: float       # 0.0-1.0
+    match_type: str  # "past_case" | "runbook" | "documentation"
+    relevance_score: float  # 0.0-1.0
     summary: str
     potential_solution: Optional[str] = None
 
@@ -1604,10 +1625,10 @@ class HypothesisEvidenceLink(BaseModel):
         description="LLM's explanation of the relationship", max_length=1000
     )
 
-    completeness: float = Field(
+    stance_confidence: float = Field(
         ge=0.0,
         le=1.0,
-        description="How well this evidence tests THIS hypothesis (0.0 = does not test, 1.0 = fully tests)",
+        description="Confidence in the stance assessment (0.0-1.0). Use for granularity instead of STRONGLY_ variants.",
     )
 
     analyzed_at: datetime = Field(
@@ -1973,6 +1994,39 @@ class TurnOutcome(str, Enum):
     """
 
 
+class InvestigationMomentum(str, Enum):
+    """
+    Investigation momentum indicator for progress tracking.
+
+    Used to signal overall investigation health and guide agent behavior.
+    Calculated from recent progress patterns (evidence collection, hypothesis updates).
+    """
+
+    HIGH = "high"
+    """
+    Evidence flowing, hypotheses being tested, confidence increasing.
+    Investigation progressing well.
+    """
+
+    MODERATE = "moderate"
+    """
+    Some progress being made, investigation moving forward.
+    Default state when enough data to assess.
+    """
+
+    LOW = "low"
+    """
+    Little progress recently, confidence plateaued.
+    May need different approach or more data.
+    """
+
+    BLOCKED = "blocked"
+    """
+    Critical evidence unavailable, investigation stalled.
+    Likely to enter degraded mode if continues.
+    """
+
+
 class TurnProgress(BaseModel):
     """
     Record of what happened in one turn.
@@ -2043,6 +2097,37 @@ class TurnProgress(BaseModel):
         default=None,
         description="Instruction or error from system to agent (e.g., 'Invalid evidence ID')",
         max_length=1000,
+    )
+
+    # ============================================================
+    # Progress Metrics (populated by WorkingConclusionGenerator)
+    # ============================================================
+    momentum: Optional[InvestigationMomentum] = Field(
+        default=None,
+        description="Investigation momentum indicator for this turn",
+    )
+
+    blocked_reasons: List[str] = Field(
+        default_factory=list,
+        description="Reasons why investigation is blocked or progressing slowly",
+    )
+
+    next_steps: List[str] = Field(
+        default_factory=list,
+        description="Suggested next steps for the investigation",
+    )
+
+    # ============================================================
+    # Observability Fields (for stagnation and validation tracking)
+    # ============================================================
+    stagnation_detected: Optional[str] = Field(
+        default=None,
+        description="Stagnation type detected this turn: no_progress, hypothesis_anchoring, action_loop, hypothesis_deadlock",
+    )
+
+    validation_repairs: List[str] = Field(
+        default_factory=list,
+        description="State repairs made by StateValidator this turn (e.g., 'Fixed milestone ordering')",
     )
 
     # ============================================================
@@ -3006,6 +3091,18 @@ class Case(BaseModel):
         Returns True if 3+ consecutive turns without progress.
         """
         return self.turns_without_progress >= 3
+
+    @property
+    def current_momentum(self) -> Optional[InvestigationMomentum]:
+        """
+        Get momentum from the most recent turn for real-time dashboard display.
+
+        Returns the momentum value from the latest turn in turn_history,
+        or None if no turns recorded yet.
+        """
+        if not self.turn_history:
+            return None
+        return self.turn_history[-1].momentum
 
     @property
     def is_terminal(self) -> bool:

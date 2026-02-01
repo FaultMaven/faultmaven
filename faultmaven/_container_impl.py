@@ -1224,8 +1224,7 @@ class DIContainer(BaseDIContainer):
                     session_cases = [
                         case
                         for case in session_cases
-                        if case.status
-                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     session_cases = [
@@ -1277,8 +1276,7 @@ class DIContainer(BaseDIContainer):
                     session_cases = [
                         case
                         for case in session_cases
-                        if case.status
-                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     session_cases = [
@@ -1407,8 +1405,7 @@ class DIContainer(BaseDIContainer):
                     user_cases = [
                         case
                         for case in user_cases
-                        if case.status
-                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     user_cases = [
@@ -1490,8 +1487,7 @@ class DIContainer(BaseDIContainer):
                     user_cases = [
                         case
                         for case in user_cases
-                        if case.status
-                        in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+                        if case.status in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
                     ]
                     # Exclude empty cases by default
                     user_cases = [

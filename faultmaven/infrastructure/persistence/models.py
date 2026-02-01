@@ -346,7 +346,9 @@ class HypothesisModel(Base):
 
     # Evidence Relationships (Many-to-Many via JSONB for simplicity in hybrid model,
     # or junction table. We'll stick to JSONB in the 'evidence_links' field to match Domain)
-    evidence_links = Column(Text, default="{}")  # JSON mapping of evidence_id -> details
+    evidence_links = Column(
+        Text, default="{}"
+    )  # JSON mapping of evidence_id -> details
 
     # Timestamps
     tested_at = Column(DateTime(timezone=True))

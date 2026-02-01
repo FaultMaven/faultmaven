@@ -40,7 +40,6 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisStatus,
-
 )
 
 logger = logging.getLogger(__name__)
@@ -69,8 +68,16 @@ class HypothesisManager:
 
         Returns 0.0 when there is no linked evidence.
         """
-        supporting = sum(1 for link in hypothesis.evidence_links.values() if link.stance == EvidenceStance.SUPPORTS)
-        refuting = sum(1 for link in hypothesis.evidence_links.values() if link.stance == EvidenceStance.REFUTES)
+        supporting = sum(
+            1
+            for link in hypothesis.evidence_links.values()
+            if link.stance == EvidenceStance.SUPPORTS
+        )
+        refuting = sum(
+            1
+            for link in hypothesis.evidence_links.values()
+            if link.stance == EvidenceStance.REFUTES
+        )
         total = supporting + refuting
         return (supporting / total) if total > 0 else 0.0
 
@@ -118,28 +125,30 @@ class HypothesisManager:
     ) -> Hypothesis:
         """Create hypothesis already in VALIDATED state (Single-Shot Validation)."""
         if likelihood < 0.7:
-             raise ValueError("Validated hypothesis requires likelihood >= 0.7")
+            raise ValueError("Validated hypothesis requires likelihood >= 0.7")
         if len(supporting_evidence_ids) < 2:
-             raise ValueError("Validated hypothesis requires at least 2 supporting evidence items")
-             
+            raise ValueError(
+                "Validated hypothesis requires at least 2 supporting evidence items"
+            )
+
         hypothesis = self.create_hypothesis(
             statement=statement,
             category=category,
             initial_likelihood=likelihood,
             current_turn=current_turn,
             status=HypothesisStatus.VALIDATED,
-            generation_mode=HypothesisGenerationMode.SYSTEMATIC
+            generation_mode=HypothesisGenerationMode.SYSTEMATIC,
         )
-        
+
         # Manually link evidence
         for ev_id in supporting_evidence_ids:
             self.link_evidence(hypothesis, ev_id, True, current_turn)
-        
+
         self.logger.info(
             f"Created VALIDATED hypothesis {hypothesis.hypothesis_id}: "
             f"{statement[:50]}... (likelihood={likelihood:.2f})"
         )
-        
+
         return hypothesis
 
     def link_evidence(
@@ -149,18 +158,18 @@ class HypothesisManager:
         supports: bool,
         turn: int,
         reasoning: str = "Linked by agent",
-        completeness: float = 1.0,
+        stance_confidence: float = 1.0,
     ) -> None:
         """Link evidence to hypothesis."""
         stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
-        
+
         if evidence_id not in hypothesis.evidence_links:
             link = HypothesisEvidenceLink(
                 hypothesis_id=hypothesis.hypothesis_id,
                 evidence_id=evidence_id,
                 stance=stance,
                 reasoning=reasoning,
-                completeness=completeness
+                stance_confidence=stance_confidence,
             )
             hypothesis.evidence_links[evidence_id] = link
             self.logger.info(
@@ -294,8 +303,16 @@ class HypothesisManager:
             # Only active hypotheses can be auto-transitioned
             return
 
-        supporting_count = sum(1 for link in hypothesis.evidence_links.values() if link.stance == EvidenceStance.SUPPORTS)
-        refuting_count = sum(1 for link in hypothesis.evidence_links.values() if link.stance == EvidenceStance.REFUTES)
+        supporting_count = sum(
+            1
+            for link in hypothesis.evidence_links.values()
+            if link.stance == EvidenceStance.SUPPORTS
+        )
+        refuting_count = sum(
+            1
+            for link in hypothesis.evidence_links.values()
+            if link.stance == EvidenceStance.REFUTES
+        )
 
         # Check for validation
         if hypothesis.likelihood >= 0.70 and supporting_count >= 2:
@@ -328,7 +345,7 @@ class HypothesisManager:
             and hypothesis.status != HypothesisStatus.RETIRED
         ):
             hypothesis.status = HypothesisStatus.RETIRED
-            hypothesis.rationale = "Low confidence after testing" # Mapped retirement_reason to rationale or logging
+            hypothesis.rationale = "Low confidence after testing"  # Mapped retirement_reason to rationale or logging
             self.logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)"
             )
@@ -387,7 +404,7 @@ class HypothesisManager:
                     evidence_id=ev_id,
                     stance=EvidenceStance.REFUTES,
                     reasoning=reason,
-                    completeness=1.0
+                    completeness=1.0,
                 )
         hypothesis.retirement_reason = reason
         hypothesis.last_updated_turn = current_turn
@@ -398,8 +415,6 @@ class HypothesisManager:
         )
 
         return hypothesis
-
-
 
     def detect_anchoring(
         self,
