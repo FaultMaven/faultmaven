@@ -100,23 +100,54 @@ def pydantic_to_openai_tools(
 
 
 def create_response_format_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
-    """Create response_format for JSON mode with schema
+    """Create response_format for JSON mode with strict schema enforcement
 
-    OpenAI supports structured outputs via response_format parameter.
-    This creates the format expected by GPT-4 and later models.
+    Creates OpenAI-compatible structured output format with strict: True.
+    This enforces exact schema adherence, preventing field name variations,
+    type mismatches, and LLM hallucinations.
+
+    IMPORTANT: This uses json_schema mode (NOT json_object), which:
+    - Guarantees field names match schema exactly
+    - Prevents type mismatches and validation errors
+    - Requires no prompt engineering ("respond with JSON")
+    - Supports Pydantic models with Optional fields
 
     Args:
-        model: Pydantic model class
+        model: Pydantic BaseModel class defining the response structure
 
     Returns:
-        Response format dict for OpenAI API
+        Response format dict in OpenAI json_schema format:
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "ModelName",
+                "strict": True,
+                "schema": {...}  # Full Pydantic JSON schema
+            }
+        }
+
+    Raises:
+        None - Pydantic v2 handles optional fields correctly with anyOf pattern
 
     Example:
-        >>> response_format = create_response_format_json_schema(ConsultantResponse)
+        >>> from faultmaven.core.investigation.schemas import InquiryResponse
+        >>> response_format = create_response_format_json_schema(InquiryResponse)
         >>> response = await llm_provider.generate(
-        ...     prompt=prompt,
+        ...     prompt="User reports login is down",
+        ...     max_tokens=4000,
         ...     response_format=response_format
         ... )
+        >>> result = InquiryResponse.model_validate_json(response.content)
+
+    Notes:
+        - Pydantic v2 automatically generates strict-mode compatible schemas
+        - Optional fields use anyOf: [type, null] pattern (not 'default' keyword)
+        - Compatible with OpenAI, Groq, and other OpenAI-compatible APIs
+        - See docs/development/structured-output-guide.md for full details
+
+    References:
+        - https://platform.openai.com/docs/guides/structured-outputs
+        - docs/development/structured-output-guide.md
     """
     schema = model.model_json_schema()
 
