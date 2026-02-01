@@ -28,7 +28,7 @@ def create_sample_case(
     message_count: int = 0,
 ) -> Case:
     """Create a sample Case for testing."""
-    from faultmaven.modules.case.domain.models import InvestigationProgress
+    from faultmaven.modules.case.domain.models import InvestigationProgress, ProblemVerification, TemporalState, UrgencyLevel
 
     case_id = case_id or f"case_{uuid4().hex[:12]}"
     user_id = user_id or str(uuid4())
@@ -44,6 +44,12 @@ def create_sample_case(
         title="Test Case",
         description="Test case description",
         status=status,
+        problem_verification=ProblemVerification(
+            symptom_statement="Server verification test",
+            severity="HIGH",
+            temporal_state=TemporalState.ONGOING,
+            urgency_level=UrgencyLevel.HIGH,
+        ),
         current_turn=current_turn,
         message_count=message_count,
         created_at=now,
