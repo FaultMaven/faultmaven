@@ -58,12 +58,14 @@ faultmaven/
 │   └── report/             # Report generation (uses Case repository)
 │
 ├── core/                   # Core investigation engine
-│   ├── investigation/      # OODA framework, milestone engine
-│   │   ├── ooda_engine.py
-│   │   ├── milestone_engine.py
-│   │   ├── hypothesis_manager.py
-│   │   ├── memory_manager.py
-│   │   └── strategy_selector.py
+│   ├── investigation/      # Milestone-based investigation framework
+│   │   ├── milestone_engine.py      # Main investigation orchestrator (process_turn)
+│   │   ├── hypothesis_manager.py    # Hypothesis lifecycle & confidence scoring
+│   │   ├── schemas.py               # Pydantic schemas for structured LLM output
+│   │   ├── working_conclusion_generator.py  # Progress metrics (partially integrated)
+│   │   └── prompts/                 # Prompt templates and context building
+│   │       ├── templates.py         # INQUIRY/INVESTIGATING/TERMINAL templates
+│   │       └── context_builder.py   # Token-aware context assembly
 │   ├── knowledge/          # Knowledge ingestion and retrieval
 │   ├── preprocessing/      # Data preprocessor
 │   ├── processing/         # Log analyzer, pattern learner
@@ -614,15 +616,30 @@ alembic downgrade -1
 
 ## Key Patterns
 
-### Investigation Framework (OODA Loop)
+### Investigation Framework (Milestone-Based)
 
-The investigation engine uses OODA (Observe, Orient, Decide, Act):
-- **Observe** - Data collection and evidence analysis
-- **Orient** - Context building with knowledge base
-- **Decide** - Hypothesis generation using AI
-- **Act** - Tool execution and refinement
+The investigation engine uses a **data-driven, milestone-based** approach:
 
-Implemented in `core/investigation/ooda_engine.py`.
+**Status Lifecycle:** INQUIRY → INVESTIGATING → RESOLVED/CLOSED
+
+**Investigation Stages (within INVESTIGATING):**
+1. **SYMPTOM_VERIFICATION** - Verify symptoms, assess scope, establish timeline
+2. **HYPOTHESIS_FORMULATION** - Generate likely theories based on evidence
+3. **HYPOTHESIS_VALIDATION** - Test hypotheses with evidence linking
+4. **SOLUTION** - Propose and verify fixes
+
+**Key Characteristics:**
+- **Opportunistic completion** - Multiple milestones can complete in a single turn
+- **Data-driven transitions** - Status changes when evidence thresholds are met
+- **Hypothesis lifecycle** - CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED
+- **Confidence decay** - Stagnant hypotheses decay via `0.85^iterations` formula
+- **Anchoring detection** - Prevents fixation on weak theories
+
+**9 Progress Milestones:**
+`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`,
+`root_cause_identified`, `solution_proposed`, `solution_applied`, `solution_verified`, `mitigation_applied`
+
+Implemented in `core/investigation/milestone_engine.py` with hypothesis management in `hypothesis_manager.py`.
 
 ### Dependency Injection
 
@@ -766,7 +783,7 @@ docs/
 │   ├── core-architecture/      # Module design, DI, service patterns
 │   ├── data-and-storage/       # Database schemas, vector storage
 │   ├── data-processing/        # Data classification, preprocessing
-│   ├── investigation-engine/   # OODA, milestones, prompts
+│   ├── investigation-engine/   # Milestone framework, hypothesis management, prompts
 │   ├── knowledge-and-ai/       # RAG, vector operations
 │   ├── security/               # IAM design, PII handling
 │   ├── specifications/         # Formal specs (sessions, config, errors)
