@@ -3,26 +3,27 @@
 Tests stagnation detection and recovery for investigation engine.
 """
 
-import pytest
 from datetime import datetime, timezone
 
+import pytest
+
 from faultmaven.core.investigation.stagnation_detector import (
-    StagnationDetector,
-    StagnationBreaker,
-    StagnationType,
     BreakoutAction,
+    StagnationBreaker,
+    StagnationDetector,
+    StagnationType,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    InvestigationProgress,
     Hypothesis,
-    HypothesisStatus,
     HypothesisCategory,
-    TurnProgress,
-    TurnOutcome,
+    HypothesisStatus,
     InquiryData,
+    InvestigationProgress,
     ProblemVerification,
+    TurnOutcome,
+    TurnProgress,
 )
 
 
@@ -178,8 +179,7 @@ class TestActionLoopDetection:
         """Should detect action loop when same actions repeated."""
         # Create 5 turns with identical actions
         base_case.turn_history = [
-            create_turn(i, actions=["analyzed", "verified"])
-            for i in range(5)
+            create_turn(i, actions=["analyzed", "verified"]) for i in range(5)
         ]
 
         result = detector.detect_stagnation(base_case)
@@ -196,8 +196,7 @@ class TestActionLoopDetection:
             ["proposed"],
         ]
         base_case.turn_history = [
-            create_turn(i, actions=actions_list[i])
-            for i in range(5)
+            create_turn(i, actions=actions_list[i]) for i in range(5)
         ]
 
         result = detector.detect_stagnation(base_case)
@@ -275,7 +274,9 @@ class TestStagnationBreaker:
             for i in range(4)
         }
 
-        action = breaker.break_stagnation(base_case, StagnationType.HYPOTHESIS_ANCHORING)
+        action = breaker.break_stagnation(
+            base_case, StagnationType.HYPOTHESIS_ANCHORING
+        )
 
         assert action.action == "force_alternative_category"
         assert "code" in action.message.lower()

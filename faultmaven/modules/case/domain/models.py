@@ -343,7 +343,7 @@ class InvestigationProgress(BaseModel):
     solution_applied: bool = Field(
         default=False, description="Solution has been applied by user"
     )
-    
+
     solution_verified: bool = Field(
         default=False,
         description="Solution effectiveness verified (error rate decreased, metrics improved)",
@@ -438,8 +438,10 @@ class InvestigationProgress(BaseModel):
         stage = self.current_stage
         if stage == InvestigationStage.SYMPTOM_VERIFICATION:
             return "Understanding"
-        elif stage in (InvestigationStage.HYPOTHESIS_FORMULATION,
-                      InvestigationStage.HYPOTHESIS_VALIDATION):
+        elif stage in (
+            InvestigationStage.HYPOTHESIS_FORMULATION,
+            InvestigationStage.HYPOTHESIS_VALIDATION,
+        ):
             return "Diagnosing"
         else:  # SOLUTION
             return "Resolving"
@@ -787,25 +789,28 @@ class ProblemConfirmation(BaseModel):
 
 class KnowledgeResolution(BaseModel):
     """Records instant resolution via KB match during INQUIRY phase."""
-    match_id: str                # ID of case/runbook that solved it
-    match_type: str              # "past_case" | "runbook" | "documentation"
-    solution_applied: str        # What user actually did
-    user_confirmation: str       # User's message confirming fix
-    resolution_turn: int         # Turn when confirmed
+
+    match_id: str  # ID of case/runbook that solved it
+    match_type: str  # "past_case" | "runbook" | "documentation"
+    solution_applied: str  # What user actually did
+    user_confirmation: str  # User's message confirming fix
+    resolution_turn: int  # Turn when confirmed
 
 
 class PreliminaryUrgency(BaseModel):
     """Early urgency assessment using semantic business impact."""
+
     level: UrgencyLevel
-    impact_assessment: str       # Free-text business impact description
+    impact_assessment: str  # Free-text business impact description
     assessed_at_turn: int
 
 
 class KnowledgeMatch(BaseModel):
     """Records a potential KB match during INQUIRY."""
+
     match_id: str
-    match_type: str              # "past_case" | "runbook" | "documentation"
-    relevance_score: float       # 0.0-1.0
+    match_type: str  # "past_case" | "runbook" | "documentation"
+    relevance_score: float  # 0.0-1.0
     summary: str
     potential_solution: Optional[str] = None
 
@@ -1405,8 +1410,7 @@ class Evidence(BaseModel):
         max_length=500,
     )
 
-    preprocessed_content: str = Field(
-        description="""
+    preprocessed_content: str = Field(description="""
         Extracted relevant diagnostic information from preprocessing pipeline.
 
         This is what the agent uses for hypothesis evaluation and evidence analysis.
@@ -1424,8 +1428,7 @@ class Evidence(BaseModel):
         Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
 
         This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-        """
-    )
+        """)
 
     content_ref: Optional[str] = Field(
         default=None,
@@ -1437,13 +1440,11 @@ class Evidence(BaseModel):
         ge=0, description="Size of original raw file in bytes"
     )
 
-    preprocessing_method: str = Field(
-        description="""
+    preprocessing_method: str = Field(description="""
         Preprocessing method used to extract preprocessed_content from raw file.
         Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
         ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-        """
-    )
+        """)
 
     compression_ratio: Optional[float] = Field(
         default=None,

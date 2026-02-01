@@ -14,8 +14,8 @@ Key Features:
 - Evidence completeness per hypothesis
 """
 
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from faultmaven.modules.case.contracts import (
@@ -101,9 +101,7 @@ def generate_working_conclusion(
     total_evidence = len(case.evidence)
 
     # Generate caveats
-    caveats = _generate_caveats(
-        best_hypothesis, evidence_completeness, case
-    )
+    caveats = _generate_caveats(best_hypothesis, evidence_completeness, case)
 
     # Determine if can proceed with solution (≥70% likelihood)
     can_proceed = best_hypothesis.likelihood >= 0.70
@@ -112,7 +110,7 @@ def generate_working_conclusion(
         statement=best_hypothesis.statement,
         likelihood=best_hypothesis.likelihood,
         reasoning=f"Based on {supporting_count} supporting evidence items "
-                  f"with {evidence_completeness * 100:.0f}% evidence completeness.",
+        f"with {evidence_completeness * 100:.0f}% evidence completeness.",
         supporting_evidence_ids=list(best_hypothesis.supporting_evidence),
         caveats=caveats,
         updated_at=datetime.now(timezone.utc),
@@ -157,9 +155,7 @@ def calculate_progress_metrics(
     active_count = len(active_hypotheses)
 
     # Get highest hypothesis likelihood
-    highest_likelihood = max(
-        (h.likelihood for h in active_hypotheses), default=0.0
-    )
+    highest_likelihood = max((h.likelihood for h in active_hypotheses), default=0.0)
 
     # Generate next steps
     next_steps = _generate_next_steps(case, momentum, evidence_completeness)
@@ -204,7 +200,10 @@ def _calculate_hypothesis_evidence_completeness(
 ) -> float:
     """Calculate evidence completeness for a single hypothesis."""
     # Check evidence requirements if defined
-    if hasattr(hypothesis, 'evidence_requirements') and hypothesis.evidence_requirements:
+    if (
+        hasattr(hypothesis, "evidence_requirements")
+        and hypothesis.evidence_requirements
+    ):
         required = len(hypothesis.evidence_requirements)
         obtained = len(hypothesis.supporting_evidence)
         return min(obtained / required, 1.0) if required > 0 else 1.0
@@ -225,8 +224,7 @@ def _calculate_overall_evidence_completeness(
         return 0.0
 
     completeness_scores = [
-        _calculate_hypothesis_evidence_completeness(h, case)
-        for h in active_hypotheses
+        _calculate_hypothesis_evidence_completeness(h, case) for h in active_hypotheses
     ]
 
     return sum(completeness_scores) / len(completeness_scores)
@@ -301,7 +299,7 @@ def _generate_caveats(
         caveats.append("Moderate confidence - not yet validated")
 
     # Refuting evidence caveats
-    if hasattr(hypothesis, 'refuting_evidence') and hypothesis.refuting_evidence:
+    if hasattr(hypothesis, "refuting_evidence") and hypothesis.refuting_evidence:
         caveats.append(
             f"{len(hypothesis.refuting_evidence)} evidence items contradict this hypothesis"
         )
@@ -393,7 +391,7 @@ def _create_early_stage_conclusion(
 ) -> WorkingConclusion:
     """Create working conclusion for early stages (before hypotheses)."""
     progress = case.progress
-    stage = progress.current_stage if hasattr(progress, 'current_stage') else None
+    stage = progress.current_stage if hasattr(progress, "current_stage") else None
 
     # Generate statement based on current stage
     if not progress.symptom_verified:

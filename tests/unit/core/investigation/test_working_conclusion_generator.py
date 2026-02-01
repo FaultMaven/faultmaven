@@ -3,26 +3,27 @@
 Tests progress metrics and working conclusion generation.
 """
 
-import pytest
 from datetime import datetime, timezone
 
+import pytest
+
 from faultmaven.core.investigation.working_conclusion_generator import (
-    generate_working_conclusion,
-    calculate_progress_metrics,
     ProgressMetrics,
+    calculate_progress_metrics,
+    generate_working_conclusion,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    InvestigationMomentum,
     Hypothesis,
-    HypothesisStatus,
     HypothesisCategory,
-    TurnProgress,
-    TurnOutcome,
+    HypothesisStatus,
     InquiryData,
+    InvestigationMomentum,
+    InvestigationProgress,
     ProblemVerification,
+    TurnOutcome,
+    TurnProgress,
 )
 
 
@@ -83,7 +84,9 @@ def create_turn(
         hypotheses_generated=[],
         hypotheses_validated=hypotheses_validated or [],
         solutions_proposed=[],
-        progress_made=bool(milestones_completed or evidence_added or hypotheses_validated),
+        progress_made=bool(
+            milestones_completed or evidence_added or hypotheses_validated
+        ),
         actions_taken=["analyzed"],
         outcome=TurnOutcome.CONVERSATION,
         user_message_summary="test",
@@ -101,8 +104,11 @@ class TestWorkingConclusionGeneration:
                 "hyp_1", "Low likelihood", HypothesisStatus.ACTIVE, 0.3
             ),
             "hyp_2": create_hypothesis(
-                "hyp_2", "High likelihood", HypothesisStatus.ACTIVE, 0.8,
-                supporting_evidence=["ev_1", "ev_2"]
+                "hyp_2",
+                "High likelihood",
+                HypothesisStatus.ACTIVE,
+                0.8,
+                supporting_evidence=["ev_1", "ev_2"],
             ),
         }
 
@@ -126,8 +132,11 @@ class TestWorkingConclusionGeneration:
         """Should include supporting evidence IDs."""
         base_case.hypotheses = {
             "hyp_1": create_hypothesis(
-                "hyp_1", "Test", HypothesisStatus.ACTIVE, 0.7,
-                supporting_evidence=["ev_1", "ev_2", "ev_3"]
+                "hyp_1",
+                "Test",
+                HypothesisStatus.ACTIVE,
+                0.7,
+                supporting_evidence=["ev_1", "ev_2", "ev_3"],
             ),
         }
 
@@ -210,8 +219,11 @@ class TestEvidenceCompleteness:
         """Should calculate completeness from supporting evidence count."""
         base_case.hypotheses = {
             "hyp_1": create_hypothesis(
-                "hyp_1", "Test", HypothesisStatus.ACTIVE, 0.5,
-                supporting_evidence=["ev_1", "ev_2"]  # 2 out of typical 3
+                "hyp_1",
+                "Test",
+                HypothesisStatus.ACTIVE,
+                0.5,
+                supporting_evidence=["ev_1", "ev_2"],  # 2 out of typical 3
             ),
         }
 

@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 class StagnationType(str, Enum):
     """Types of investigation stagnation."""
+
     NO_PROGRESS = "no_progress"
     HYPOTHESIS_ANCHORING = "hypothesis_anchoring"
     ACTION_LOOP = "action_loop"
@@ -47,6 +48,7 @@ class StagnationType(str, Enum):
 @dataclass
 class BreakoutAction:
     """Action to break out of stagnation."""
+
     action: str
     message: str
     prompt_injection: Optional[str] = None
@@ -64,7 +66,7 @@ class StagnationDetector:
         self,
         no_progress_threshold: int = 3,
         category_anchoring_threshold: int = 4,
-        action_loop_threshold: int = 5
+        action_loop_threshold: int = 5,
     ):
         """
         Initialize stagnation detector with thresholds.
@@ -131,8 +133,15 @@ class StagnationDetector:
         category_counts: dict[str, int] = {}
 
         for hypothesis in case.hypotheses.values():
-            if hypothesis.status in (HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE):
-                cat = hypothesis.category.value if hasattr(hypothesis.category, 'value') else str(hypothesis.category)
+            if hypothesis.status in (
+                HypothesisStatus.REFUTED,
+                HypothesisStatus.INCONCLUSIVE,
+            ):
+                cat = (
+                    hypothesis.category.value
+                    if hasattr(hypothesis.category, "value")
+                    else str(hypothesis.category)
+                )
                 category_counts[cat] = category_counts.get(cat, 0) + 1
 
         for category, count in category_counts.items():
@@ -160,10 +169,9 @@ class StagnationDetector:
         if len(case.turn_history) < self.action_loop_threshold:
             return False
 
-        recent_turns = case.turn_history[-self.action_loop_threshold:]
+        recent_turns = case.turn_history[-self.action_loop_threshold :]
         action_sequences = [
-            tuple(t.actions_taken) if t.actions_taken else ()
-            for t in recent_turns
+            tuple(t.actions_taken) if t.actions_taken else () for t in recent_turns
         ]
 
         # Filter out empty sequences
@@ -199,8 +207,7 @@ class StagnationDetector:
             return False
 
         all_inconclusive = all(
-            h.status == HypothesisStatus.INCONCLUSIVE
-            for h in case.hypotheses.values()
+            h.status == HypothesisStatus.INCONCLUSIVE for h in case.hypotheses.values()
         )
 
         if all_inconclusive:
@@ -224,16 +231,26 @@ class StagnationDetector:
         # Count failed hypotheses by category
         category_failures: dict[str, int] = {}
         for hypothesis in case.hypotheses.values():
-            if hypothesis.status in (HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE):
-                cat = hypothesis.category.value if hasattr(hypothesis.category, 'value') else str(hypothesis.category)
+            if hypothesis.status in (
+                HypothesisStatus.REFUTED,
+                HypothesisStatus.INCONCLUSIVE,
+            ):
+                cat = (
+                    hypothesis.category.value
+                    if hasattr(hypothesis.category, "value")
+                    else str(hypothesis.category)
+                )
                 category_failures[cat] = category_failures.get(cat, 0) + 1
 
         # Find max category failure count
-        max_category_failures = max(category_failures.values()) if category_failures else 0
+        max_category_failures = (
+            max(category_failures.values()) if category_failures else 0
+        )
 
         # Count inconclusive hypotheses
         inconclusive_count = sum(
-            1 for h in case.hypotheses.values()
+            1
+            for h in case.hypotheses.values()
             if h.status == HypothesisStatus.INCONCLUSIVE
         )
 
@@ -256,14 +273,18 @@ class StagnationBreaker:
 
     # All hypothesis categories for suggesting alternatives
     ALL_CATEGORIES: List[str] = [
-        "code", "config", "environment", "network",
-        "data", "hardware", "external", "human"
+        "code",
+        "config",
+        "environment",
+        "network",
+        "data",
+        "hardware",
+        "external",
+        "human",
     ]
 
     def break_stagnation(
-        self,
-        case: Case,
-        stagnation_type: StagnationType
+        self, case: Case, stagnation_type: StagnationType
     ) -> BreakoutAction:
         """
         Determine action to break out of stagnation.
@@ -304,16 +325,16 @@ class StagnationBreaker:
                 attempted_actions=[
                     f"Processed {case.current_turn} turns",
                     f"Collected {len(case.evidence)} evidence items",
-                    f"Generated {len(case.hypotheses)} hypotheses"
-                ]
+                    f"Generated {len(case.hypotheses)} hypotheses",
+                ],
             )
 
         return BreakoutAction(
             action="enter_degraded_mode",
             message="Investigation not progressing. Offering alternative approaches.",
             prompt_injection="The investigation has not made progress in several turns. "
-                           "Ask the user for clarification or additional information. "
-                           "Consider offering to escalate or try a different approach."
+            "Ask the user for clarification or additional information. "
+            "Consider offering to escalate or try a different approach.",
         )
 
     def _handle_anchoring(self, case: Case) -> BreakoutAction:
@@ -329,8 +350,8 @@ class StagnationBreaker:
             action="force_alternative_category",
             message=f"Tested many '{anchored_category}' hypotheses. Exploring other categories.",
             prompt_injection=f"IMPORTANT: Do NOT propose hypotheses in '{anchored_category}' category. "
-                           f"This category has been explored extensively without success. "
-                           f"Try different categories like: {alternatives}"
+            f"This category has been explored extensively without success. "
+            f"Try different categories like: {alternatives}",
         )
 
     def _handle_action_loop(self, case: Case) -> BreakoutAction:
@@ -343,8 +364,8 @@ class StagnationBreaker:
             action="request_user_input",
             message="Investigation appears stuck in a loop. Requesting user guidance.",
             prompt_injection="The investigation is repeating the same actions without progress. "
-                           "Ask the user for additional context or suggest a completely different approach. "
-                           "Consider whether the problem statement needs refinement."
+            "Ask the user for additional context or suggest a completely different approach. "
+            "Consider whether the problem statement needs refinement.",
         )
 
     def _handle_deadlock(self, case: Case) -> BreakoutAction:
@@ -364,8 +385,8 @@ class StagnationBreaker:
             action="reset_hypotheses",
             message=f"All hypotheses inconclusive. Retired {retired_count} hypotheses for fresh start.",
             prompt_injection="All previous hypotheses were inconclusive and have been retired. "
-                           "Generate completely new hypotheses based on available evidence. "
-                           "Consider exploring different root cause categories or perspectives."
+            "Generate completely new hypotheses based on available evidence. "
+            "Consider exploring different root cause categories or perspectives.",
         )
 
     def _find_anchored_category(self, case: Case) -> str:
@@ -373,8 +394,15 @@ class StagnationBreaker:
         category_counts: dict[str, int] = {}
 
         for hypothesis in case.hypotheses.values():
-            if hypothesis.status in (HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE):
-                cat = hypothesis.category.value if hasattr(hypothesis.category, 'value') else str(hypothesis.category)
+            if hypothesis.status in (
+                HypothesisStatus.REFUTED,
+                HypothesisStatus.INCONCLUSIVE,
+            ):
+                cat = (
+                    hypothesis.category.value
+                    if hasattr(hypothesis.category, "value")
+                    else str(hypothesis.category)
+                )
                 category_counts[cat] = category_counts.get(cat, 0) + 1
 
         if not category_counts:
@@ -385,7 +413,8 @@ class StagnationBreaker:
     def _suggest_categories(self, exclude_category: str) -> str:
         """Suggest alternative categories to explore."""
         alternatives = [
-            cat for cat in self.ALL_CATEGORIES
+            cat
+            for cat in self.ALL_CATEGORIES
             if cat.lower() != exclude_category.lower()
         ]
         return ", ".join(alternatives[:4])  # Top 4 alternatives

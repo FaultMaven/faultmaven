@@ -19,16 +19,16 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
 
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    HypothesisStatus,
     EvidenceStance,
+    HypothesisStatus,
+    InvestigationProgress,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,14 +36,16 @@ logger = logging.getLogger(__name__)
 
 class ValidationSeverity(str, Enum):
     """Severity of validation issues."""
-    WARNING = "warning"      # Non-blocking, log only
-    ERROR = "error"          # Blocking, requires correction
-    CRITICAL = "critical"    # Severe inconsistency
+
+    WARNING = "warning"  # Non-blocking, log only
+    ERROR = "error"  # Blocking, requires correction
+    CRITICAL = "critical"  # Severe inconsistency
 
 
 @dataclass
 class ValidationIssue:
     """Single validation issue."""
+
     code: str
     message: str
     severity: ValidationSeverity
@@ -86,8 +88,7 @@ class StateValidator:
         return issues
 
     def _validate_milestone_ordering(
-        self,
-        progress: InvestigationProgress
+        self, progress: InvestigationProgress
     ) -> List[ValidationIssue]:
         """
         Validate milestone dependencies are respected.
@@ -102,36 +103,42 @@ class StateValidator:
 
         # solution_verified requires solution_proposed
         if progress.solution_verified and not progress.solution_proposed:
-            issues.append(ValidationIssue(
-                code="MILESTONE_ORDER_001",
-                message="solution_verified=True but solution_proposed=False",
-                severity=ValidationSeverity.ERROR,
-                field="progress.solution_verified",
-                suggested_fix="Set solution_proposed=True or reset solution_verified=False"
-            ))
+            issues.append(
+                ValidationIssue(
+                    code="MILESTONE_ORDER_001",
+                    message="solution_verified=True but solution_proposed=False",
+                    severity=ValidationSeverity.ERROR,
+                    field="progress.solution_verified",
+                    suggested_fix="Set solution_proposed=True or reset solution_verified=False",
+                )
+            )
 
         # solution_applied requires solution_proposed
-        if hasattr(progress, 'solution_applied') and progress.solution_applied:
+        if hasattr(progress, "solution_applied") and progress.solution_applied:
             if not progress.solution_proposed:
-                issues.append(ValidationIssue(
-                    code="MILESTONE_ORDER_002",
-                    message="solution_applied=True but solution_proposed=False",
-                    severity=ValidationSeverity.ERROR,
-                    field="progress.solution_applied",
-                    suggested_fix="Set solution_proposed=True"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        code="MILESTONE_ORDER_002",
+                        message="solution_applied=True but solution_proposed=False",
+                        severity=ValidationSeverity.ERROR,
+                        field="progress.solution_applied",
+                        suggested_fix="Set solution_proposed=True",
+                    )
+                )
 
         # root_cause_identified should have likelihood
         if progress.root_cause_identified:
-            likelihood = getattr(progress, 'root_cause_likelihood', None)
+            likelihood = getattr(progress, "root_cause_likelihood", None)
             if likelihood is None or likelihood == 0.0:
-                issues.append(ValidationIssue(
-                    code="MILESTONE_INCOMPLETE_001",
-                    message="root_cause_identified=True but root_cause_likelihood is not set",
-                    severity=ValidationSeverity.WARNING,
-                    field="progress.root_cause_likelihood",
-                    suggested_fix="Set root_cause_likelihood to confidence value"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        code="MILESTONE_INCOMPLETE_001",
+                        message="root_cause_identified=True but root_cause_likelihood is not set",
+                        severity=ValidationSeverity.WARNING,
+                        field="progress.root_cause_likelihood",
+                        suggested_fix="Set root_cause_likelihood to confidence value",
+                    )
+                )
 
         return issues
 
@@ -146,37 +153,43 @@ class StateValidator:
 
         # RESOLVED requires solution_verified
         if case.status == CaseStatus.RESOLVED and not case.progress.solution_verified:
-            issues.append(ValidationIssue(
-                code="STATUS_MISMATCH_001",
-                message="Status is RESOLVED but solution_verified=False",
-                severity=ValidationSeverity.ERROR,
-                field="status",
-                suggested_fix="Set solution_verified=True or change status to INVESTIGATING"
-            ))
+            issues.append(
+                ValidationIssue(
+                    code="STATUS_MISMATCH_001",
+                    message="Status is RESOLVED but solution_verified=False",
+                    severity=ValidationSeverity.ERROR,
+                    field="status",
+                    suggested_fix="Set solution_verified=True or change status to INVESTIGATING",
+                )
+            )
 
         # INVESTIGATING should have problem_statement
         if case.status == CaseStatus.INVESTIGATING:
             has_statement = (
-                case.problem_verification and
-                case.problem_verification.symptom_statement
+                case.problem_verification
+                and case.problem_verification.symptom_statement
             )
             if not has_statement:
-                issues.append(ValidationIssue(
-                    code="STATUS_MISMATCH_002",
-                    message="Status is INVESTIGATING but symptom_statement is empty",
-                    severity=ValidationSeverity.WARNING,
-                    field="problem_verification.symptom_statement"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        code="STATUS_MISMATCH_002",
+                        message="Status is INVESTIGATING but symptom_statement is empty",
+                        severity=ValidationSeverity.WARNING,
+                        field="problem_verification.symptom_statement",
+                    )
+                )
 
         # Terminal states should have closure metadata
         if case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
             if not case.closed_at:
-                issues.append(ValidationIssue(
-                    code="STATUS_METADATA_001",
-                    message=f"Status is {case.status.value} but closed_at is not set",
-                    severity=ValidationSeverity.WARNING,
-                    field="closed_at"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        code="STATUS_METADATA_001",
+                        message=f"Status is {case.status.value} but closed_at is not set",
+                        severity=ValidationSeverity.WARNING,
+                        field="closed_at",
+                    )
+                )
 
         return issues
 
@@ -194,35 +207,44 @@ class StateValidator:
             if hypothesis.status == HypothesisStatus.VALIDATED:
                 supporting_count = len(hypothesis.supporting_evidence)
                 if supporting_count < 2:
-                    issues.append(ValidationIssue(
-                        code="HYPOTHESIS_STATE_001",
-                        message=f"Hypothesis {hyp_id} is VALIDATED with only {supporting_count} supporting evidence",
-                        severity=ValidationSeverity.WARNING,
-                        field=f"hypotheses.{hyp_id}",
-                        suggested_fix="Require at least 2 supporting evidence items"
-                    ))
+                    issues.append(
+                        ValidationIssue(
+                            code="HYPOTHESIS_STATE_001",
+                            message=f"Hypothesis {hyp_id} is VALIDATED with only {supporting_count} supporting evidence",
+                            severity=ValidationSeverity.WARNING,
+                            field=f"hypotheses.{hyp_id}",
+                            suggested_fix="Require at least 2 supporting evidence items",
+                        )
+                    )
 
             # REFUTED should have refuting evidence
             if hypothesis.status == HypothesisStatus.REFUTED:
                 refuting_count = len(hypothesis.refuting_evidence)
                 if refuting_count < 1:
-                    issues.append(ValidationIssue(
-                        code="HYPOTHESIS_STATE_002",
-                        message=f"Hypothesis {hyp_id} is REFUTED with no refuting evidence",
-                        severity=ValidationSeverity.WARNING,
-                        field=f"hypotheses.{hyp_id}",
-                        suggested_fix="Add refuting evidence or change status"
-                    ))
+                    issues.append(
+                        ValidationIssue(
+                            code="HYPOTHESIS_STATE_002",
+                            message=f"Hypothesis {hyp_id} is REFUTED with no refuting evidence",
+                            severity=ValidationSeverity.WARNING,
+                            field=f"hypotheses.{hyp_id}",
+                            suggested_fix="Add refuting evidence or change status",
+                        )
+                    )
 
             # ACTIVE hypotheses with very low likelihood should be warned
-            if hypothesis.status == HypothesisStatus.ACTIVE and hypothesis.likelihood < 0.2:
-                issues.append(ValidationIssue(
-                    code="HYPOTHESIS_STATE_003",
-                    message=f"Hypothesis {hyp_id} is ACTIVE with very low likelihood ({hypothesis.likelihood:.2f})",
-                    severity=ValidationSeverity.WARNING,
-                    field=f"hypotheses.{hyp_id}.likelihood",
-                    suggested_fix="Consider retiring hypotheses with likelihood < 0.2"
-                ))
+            if (
+                hypothesis.status == HypothesisStatus.ACTIVE
+                and hypothesis.likelihood < 0.2
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="HYPOTHESIS_STATE_003",
+                        message=f"Hypothesis {hyp_id} is ACTIVE with very low likelihood ({hypothesis.likelihood:.2f})",
+                        severity=ValidationSeverity.WARNING,
+                        field=f"hypotheses.{hyp_id}.likelihood",
+                        suggested_fix="Consider retiring hypotheses with likelihood < 0.2",
+                    )
+                )
 
         return issues
 
@@ -242,37 +264,43 @@ class StateValidator:
                 if ev_id.startswith("new_index_"):
                     continue
                 if ev_id not in evidence_ids:
-                    issues.append(ValidationIssue(
-                        code="LINK_DANGLING_001",
-                        message=f"Hypothesis {hyp_id} references non-existent supporting evidence {ev_id}",
-                        severity=ValidationSeverity.WARNING,
-                        field=f"hypotheses.{hyp_id}.supporting_evidence"
-                    ))
+                    issues.append(
+                        ValidationIssue(
+                            code="LINK_DANGLING_001",
+                            message=f"Hypothesis {hyp_id} references non-existent supporting evidence {ev_id}",
+                            severity=ValidationSeverity.WARNING,
+                            field=f"hypotheses.{hyp_id}.supporting_evidence",
+                        )
+                    )
 
             # Check refuting evidence
             for ev_id in hypothesis.refuting_evidence:
                 if ev_id.startswith("new_index_"):
                     continue
                 if ev_id not in evidence_ids:
-                    issues.append(ValidationIssue(
-                        code="LINK_DANGLING_002",
-                        message=f"Hypothesis {hyp_id} references non-existent refuting evidence {ev_id}",
-                        severity=ValidationSeverity.WARNING,
-                        field=f"hypotheses.{hyp_id}.refuting_evidence"
-                    ))
+                    issues.append(
+                        ValidationIssue(
+                            code="LINK_DANGLING_002",
+                            message=f"Hypothesis {hyp_id} references non-existent refuting evidence {ev_id}",
+                            severity=ValidationSeverity.WARNING,
+                            field=f"hypotheses.{hyp_id}.refuting_evidence",
+                        )
+                    )
 
             # Check evidence_links if present
-            if hasattr(hypothesis, 'evidence_links') and hypothesis.evidence_links:
+            if hasattr(hypothesis, "evidence_links") and hypothesis.evidence_links:
                 for ev_ref in hypothesis.evidence_links.keys():
                     if ev_ref.startswith("new_index_"):
                         continue
                     if ev_ref not in evidence_ids:
-                        issues.append(ValidationIssue(
-                            code="LINK_DANGLING_003",
-                            message=f"Hypothesis {hyp_id} links to non-existent evidence {ev_ref}",
-                            severity=ValidationSeverity.WARNING,
-                            field=f"hypotheses.{hyp_id}.evidence_links"
-                        ))
+                        issues.append(
+                            ValidationIssue(
+                                code="LINK_DANGLING_003",
+                                message=f"Hypothesis {hyp_id} links to non-existent evidence {ev_ref}",
+                                severity=ValidationSeverity.WARNING,
+                                field=f"hypotheses.{hyp_id}.evidence_links",
+                            )
+                        )
 
         return issues
 
@@ -285,33 +313,42 @@ class StateValidator:
         # Check hypothesis likelihoods
         for hyp_id, hypothesis in case.hypotheses.items():
             if hypothesis.likelihood < 0.0 or hypothesis.likelihood > 1.0:
-                issues.append(ValidationIssue(
-                    code="BOUNDS_001",
-                    message=f"Hypothesis {hyp_id} likelihood {hypothesis.likelihood} outside [0,1]",
-                    severity=ValidationSeverity.ERROR,
-                    field=f"hypotheses.{hyp_id}.likelihood"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        code="BOUNDS_001",
+                        message=f"Hypothesis {hyp_id} likelihood {hypothesis.likelihood} outside [0,1]",
+                        severity=ValidationSeverity.ERROR,
+                        field=f"hypotheses.{hyp_id}.likelihood",
+                    )
+                )
 
         # Check root_cause_likelihood
         if case.progress.root_cause_likelihood is not None:
-            if case.progress.root_cause_likelihood < 0.0 or case.progress.root_cause_likelihood > 1.0:
-                issues.append(ValidationIssue(
-                    code="BOUNDS_002",
-                    message=f"root_cause_likelihood {case.progress.root_cause_likelihood} outside [0,1]",
-                    severity=ValidationSeverity.ERROR,
-                    field="progress.root_cause_likelihood"
-                ))
+            if (
+                case.progress.root_cause_likelihood < 0.0
+                or case.progress.root_cause_likelihood > 1.0
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="BOUNDS_002",
+                        message=f"root_cause_likelihood {case.progress.root_cause_likelihood} outside [0,1]",
+                        severity=ValidationSeverity.ERROR,
+                        field="progress.root_cause_likelihood",
+                    )
+                )
 
         # Check working_conclusion likelihood if present
         if case.working_conclusion:
-            likelihood = getattr(case.working_conclusion, 'likelihood', None)
+            likelihood = getattr(case.working_conclusion, "likelihood", None)
             if likelihood is not None and (likelihood < 0.0 or likelihood > 1.0):
-                issues.append(ValidationIssue(
-                    code="BOUNDS_003",
-                    message=f"working_conclusion likelihood {likelihood} outside [0,1]",
-                    severity=ValidationSeverity.ERROR,
-                    field="working_conclusion.likelihood"
-                ))
+                issues.append(
+                    ValidationIssue(
+                        code="BOUNDS_003",
+                        message=f"working_conclusion likelihood {likelihood} outside [0,1]",
+                        severity=ValidationSeverity.ERROR,
+                        field="working_conclusion.likelihood",
+                    )
+                )
 
         return issues
 
@@ -329,7 +366,8 @@ class StateValidator:
         """
         issues = self.validate_case(case)
         blocking = [
-            i for i in issues
+            i
+            for i in issues
             if i.severity in (ValidationSeverity.ERROR, ValidationSeverity.CRITICAL)
         ]
         return len(blocking) == 0, issues

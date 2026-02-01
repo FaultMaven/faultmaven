@@ -23,11 +23,12 @@ from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class ErrorAction(str, Enum):
     """Actions to take after error handling."""
+
     RETRY = "retry"
     USE_FALLBACK_PROMPT = "use_fallback_prompt"
     COMPRESS_MEMORY = "compress_memory"
@@ -38,6 +39,7 @@ class ErrorAction(str, Enum):
 @dataclass
 class RetryConfig:
     """Configuration for LLM retry behavior."""
+
     max_retries: int = 3
     base_delay_seconds: float = 2.0
     max_delay_seconds: float = 30.0
@@ -59,6 +61,7 @@ class RetryConfig:
 @dataclass
 class ErrorResult:
     """Result of error handling."""
+
     action: ErrorAction
     message: str
     error_code: Optional[str] = None
@@ -89,23 +92,27 @@ class LLMErrorHandler:
     def is_auth_error(self, error: Exception) -> bool:
         """Check if error is authentication-related."""
         error_str = str(error).lower()
-        return any(pattern in error_str for pattern in ("auth", "api key", "unauthorized", "401", "403"))
+        return any(
+            pattern in error_str
+            for pattern in ("auth", "api key", "unauthorized", "401", "403")
+        )
 
     def is_token_limit_error(self, error: Exception) -> bool:
         """Check if error is related to token limits."""
         error_str = str(error).lower()
-        return any(pattern in error_str for pattern in ("token", "context length", "too long", "max_tokens"))
+        return any(
+            pattern in error_str
+            for pattern in ("token", "context length", "too long", "max_tokens")
+        )
 
     def calculate_delay(self, retry_count: int) -> float:
         """Calculate delay for next retry using exponential backoff."""
-        delay = self.config.base_delay_seconds * (self.config.exponential_base ** retry_count)
+        delay = self.config.base_delay_seconds * (
+            self.config.exponential_base**retry_count
+        )
         return min(delay, self.config.max_delay_seconds)
 
-    async def handle_error(
-        self,
-        error: Exception,
-        retry_count: int = 0
-    ) -> ErrorResult:
+    async def handle_error(self, error: Exception, retry_count: int = 0) -> ErrorResult:
         """
         Handle LLM API error with appropriate recovery.
 
@@ -126,7 +133,7 @@ class LLMErrorHandler:
             return ErrorResult(
                 action=ErrorAction.ESCALATE,
                 message="System configuration error. Please contact support.",
-                error_code="AUTH_FAILED"
+                error_code="AUTH_FAILED",
             )
 
         # Check for token limit errors
@@ -135,7 +142,7 @@ class LLMErrorHandler:
                 action=ErrorAction.COMPRESS_MEMORY,
                 message="Context too large. Compressing conversation history...",
                 error_code="TOKEN_LIMIT",
-                should_use_fallback=True
+                should_use_fallback=True,
             )
 
         # Check for retryable errors
@@ -145,17 +152,19 @@ class LLMErrorHandler:
                     action=ErrorAction.FAIL,
                     message="LLM service temporarily unavailable. Please try again in a few minutes.",
                     error_code="RETRY_EXHAUSTED",
-                    retry_count=retry_count
+                    retry_count=retry_count,
                 )
 
             delay = self.calculate_delay(retry_count)
-            logger.info(f"Retryable error, waiting {delay:.1f}s before retry {retry_count + 1}/{self.config.max_retries}")
+            logger.info(
+                f"Retryable error, waiting {delay:.1f}s before retry {retry_count + 1}/{self.config.max_retries}"
+            )
             await asyncio.sleep(delay)
 
             return ErrorResult(
                 action=ErrorAction.RETRY,
                 message=f"Transient error. Retrying ({retry_count + 1}/{self.config.max_retries})...",
-                retry_count=retry_count + 1
+                retry_count=retry_count + 1,
             )
 
         # Unknown error - try fallback first, then fail
@@ -165,14 +174,14 @@ class LLMErrorHandler:
                 message="Error occurred. Trying simplified prompt...",
                 error_code="UNKNOWN_ERROR",
                 should_use_fallback=True,
-                retry_count=1
+                retry_count=1,
             )
 
         return ErrorResult(
             action=ErrorAction.FAIL,
             message=f"LLM error: {str(error)[:200]}",
             error_code="UNKNOWN_ERROR",
-            retry_count=retry_count
+            retry_count=retry_count,
         )
 
     async def with_retry(
@@ -205,7 +214,10 @@ class LLMErrorHandler:
                     retry_count = error_result.retry_count
                     continue
 
-                elif error_result.action == ErrorAction.USE_FALLBACK_PROMPT and on_fallback:
+                elif (
+                    error_result.action == ErrorAction.USE_FALLBACK_PROMPT
+                    and on_fallback
+                ):
                     logger.info("Attempting fallback operation...")
                     try:
                         result = await on_fallback()

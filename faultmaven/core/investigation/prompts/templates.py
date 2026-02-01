@@ -6,9 +6,12 @@ This module defines the core templates for FaultMaven's THREE-TEMPLATE system:
 3. TERMINAL: Documentation and summary.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
+
+from faultmaven.core.investigation.prompts.context_builder import (
+    build_investigation_context,
+)
 from faultmaven.modules.case.contracts import Case, CaseStatus, InvestigationStage
-from faultmaven.core.investigation.prompts.context_builder import build_investigation_context
 
 # =============================================================================
 # INQUIRY TEMPLATE
@@ -102,7 +105,7 @@ Focus: RESOLUTION
 - Root cause identified. Now propose and verify a permanent fix.
 - Ensure the fix addresses the mechanism of failure, not just the symptom.
 - Verify effectiveness after the user applies the solution.
-"""
+""",
 }
 
 # =============================================================================
@@ -176,16 +179,21 @@ def get_fallback_prompt_for_case(
 ) -> str:
     """Build simplified fallback prompt for token limit or error recovery."""
 
-    problem_summary = case.description or case.inquiry.proposed_problem_statement or "Not defined"
+    problem_summary = (
+        case.description or case.inquiry.proposed_problem_statement or "Not defined"
+    )
 
     if case.status == CaseStatus.INQUIRY:
         return FALLBACK_INQUIRY_TEMPLATE.format(
-            problem_summary=problem_summary[:200],
-            user_message=user_message[:500]
+            problem_summary=problem_summary[:200], user_message=user_message[:500]
         )
 
     elif case.status == CaseStatus.INVESTIGATING:
-        stage = case.progress.stage_display_name if hasattr(case.progress, 'stage_display_name') else "Unknown"
+        stage = (
+            case.progress.stage_display_name
+            if hasattr(case.progress, "stage_display_name")
+            else "Unknown"
+        )
         milestones = []
         if case.progress.symptom_verified:
             milestones.append("symptom_verified")
@@ -203,16 +211,20 @@ def get_fallback_prompt_for_case(
             problem_summary=problem_summary[:200],
             milestones_summary=", ".join(milestones) if milestones else "None yet",
             hypotheses_summary="; ".join(hypotheses) if hypotheses else "None yet",
-            user_message=user_message[:500]
+            user_message=user_message[:500],
         )
 
     else:  # TERMINAL
-        resolution = "Solution verified" if case.progress.solution_verified else case.closure_reason or "Closed"
+        resolution = (
+            "Solution verified"
+            if case.progress.solution_verified
+            else case.closure_reason or "Closed"
+        )
         return FALLBACK_TERMINAL_TEMPLATE.format(
             status=case.status.value,
             problem_summary=problem_summary[:200],
             resolution_summary=resolution,
-            user_message=user_message[:500]
+            user_message=user_message[:500],
         )
 
 
@@ -220,34 +232,35 @@ def get_fallback_prompt_for_case(
 # BUILDER FUNCTIONS
 # =============================================================================
 
+
 def get_prompt_for_case(
-    case: Case,
-    user_message: str,
-    kb_results: Optional[List[Dict[str, Any]]] = None
+    case: Case, user_message: str, kb_results: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """Build the final prompt based on case status and stage."""
-    
+
     ctx = build_investigation_context(case, user_message, kb_results)
-    
+
     if case.status == CaseStatus.INQUIRY:
         return INQUIRY_TEMPLATE.format(**ctx)
-    
+
     elif case.status == CaseStatus.INVESTIGATING:
         stage = case.current_stage or InvestigationStage.SYMPTOM_VERIFICATION
-        adaptive_instr = STAGE_INSTRUCTIONS.get(stage, STAGE_INSTRUCTIONS[InvestigationStage.SYMPTOM_VERIFICATION])
-        
+        adaptive_instr = STAGE_INSTRUCTIONS.get(
+            stage, STAGE_INSTRUCTIONS[InvestigationStage.SYMPTOM_VERIFICATION]
+        )
+
         # Add a note if it's MITIGATION_FIRST
         if case.path_selection and case.path_selection.path == "mitigation_first":
-            adaptive_instr = "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n" + adaptive_instr
-            
-        return INVESTIGATION_BASE.format(
-            adaptive_instructions=adaptive_instr,
-            **ctx
-        )
-    
-    else: # TERMINAL (RESOLVED/CLOSED)
+            adaptive_instr = (
+                "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n"
+                + adaptive_instr
+            )
+
+        return INVESTIGATION_BASE.format(adaptive_instructions=adaptive_instr, **ctx)
+
+    else:  # TERMINAL (RESOLVED/CLOSED)
         return TERMINAL_TEMPLATE.format(
             status_upper=case.status.value.upper(),
             status_lower=case.status.value,
-            **ctx
+            **ctx,
         )

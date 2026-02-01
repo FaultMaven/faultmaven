@@ -3,15 +3,16 @@
 Tests retry logic and error recovery for LLM API calls.
 """
 
-import pytest
 import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
+
 from faultmaven.core.investigation.llm_error_handler import (
-    LLMErrorHandler,
-    RetryConfig,
     ErrorAction,
     ErrorResult,
+    LLMErrorHandler,
+    RetryConfig,
 )
 
 
@@ -171,8 +172,7 @@ class TestWithRetry:
         fallback_op = AsyncMock(return_value="fallback_result")
 
         result, error = await fast_handler.with_retry(
-            operation=main_op,
-            on_fallback=fallback_op
+            operation=main_op, on_fallback=fallback_op
         )
 
         assert result == "fallback_result"

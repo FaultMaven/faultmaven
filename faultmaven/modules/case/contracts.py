@@ -361,7 +361,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     CaseStatus,
     CaseStatusTransition,
     ConfidenceLevel,
-    InquiryData,
     DegradedMode,
     DegradedModeType,
     DocumentationData,
@@ -379,6 +378,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisStatus,
+    InquiryData,
     InvestigationMomentum,
     InvestigationPath,
     InvestigationProgress,
@@ -438,7 +438,6 @@ __all__ = [
     "AgentToolCall",
     "AgentExecution",
     # Investigation models from Agent module (shared for investigation coordination)
-
     # Case domain models (backward compatibility)
     "Case",
     "CaseSeverity",

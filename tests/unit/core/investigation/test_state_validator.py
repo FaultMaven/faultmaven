@@ -4,23 +4,24 @@ Tests state consistency validation for milestone-based investigation.
 """
 
 import pytest
+
 from faultmaven.core.investigation.state_validator import (
     StateValidator,
-    ValidationSeverity,
     ValidationIssue,
+    ValidationSeverity,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    Hypothesis,
-    HypothesisStatus,
-    HypothesisCategory,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
     EvidenceSourceType,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisStatus,
     InquiryData,
+    InvestigationProgress,
     ProblemVerification,
 )
 
@@ -48,7 +49,7 @@ def base_case():
             problem_statement_confirmed=True,
             decided_to_investigate=True,
             thread_id="thread_123",
-            proposed_problem_statement="Test symptom"
+            proposed_problem_statement="Test symptom",
         ),
         progress=InvestigationProgress(),
     )
