@@ -28,7 +28,12 @@ def create_sample_case(
     message_count: int = 0,
 ) -> Case:
     """Create a sample Case for testing."""
-    from faultmaven.modules.case.domain.models import InvestigationProgress, ProblemVerification, TemporalState, UrgencyLevel
+    from faultmaven.modules.case.domain.models import (
+        InvestigationProgress,
+        ProblemVerification,
+        TemporalState,
+        UrgencyLevel,
+    )
 
     case_id = case_id or f"case_{uuid4().hex[:12]}"
     user_id = user_id or str(uuid4())

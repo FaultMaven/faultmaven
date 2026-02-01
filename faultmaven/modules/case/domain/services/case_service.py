@@ -346,7 +346,7 @@ class CaseService(BaseService, ICaseService):
 
             # Ensure message belongs to this case
             message.case_id = case_id
-            
+
             message_role = getattr(message, "role", "system")
 
             # Deduplication: Check if identical to last message
@@ -354,11 +354,13 @@ class CaseService(BaseService, ICaseService):
             if case.messages and len(case.messages) > 0:
                 last_msg = case.messages[-1]
                 # Check for identical content and role
-                if (last_msg.get("role") == message_role and 
-                    last_msg.get("content") == message.content):
+                if (
+                    last_msg.get("role") == message_role
+                    and last_msg.get("content") == message.content
+                ):
                     self.logger.warning(
                         f"Skipping duplicate message for case {case_id} (content hash match)",
-                        extra={"case_id": case_id, "message_id": message.message_id}
+                        extra={"case_id": case_id, "message_id": message.message_id},
                     )
                     return True
 
@@ -378,8 +380,15 @@ class CaseService(BaseService, ICaseService):
                 "role": message_role,
                 "message_type": (
                     getattr(message, "message_type", None).value
-                    if getattr(message, "message_type", None) and hasattr(getattr(message, "message_type", None), "value")
-                    else str(getattr(message, "message_type", "user_query" if message_role == "user" else "system_event"))
+                    if getattr(message, "message_type", None)
+                    and hasattr(getattr(message, "message_type", None), "value")
+                    else str(
+                        getattr(
+                            message,
+                            "message_type",
+                            "user_query" if message_role == "user" else "system_event",
+                        )
+                    )
                 ),
                 "content": message.content,
                 "created_at": (
@@ -1040,10 +1049,10 @@ class CaseService(BaseService, ICaseService):
 
             # Use centralized method which handles turn numbering, deduplication, and persistence
             success = await self.add_message_to_case(case_id, msg)
-            
+
             if success:
                 self.logger.debug(f"Added user query to case {case_id}")
-            
+
             return success
 
         except ValidationException:

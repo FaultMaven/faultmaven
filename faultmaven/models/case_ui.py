@@ -352,9 +352,7 @@ class CaseUIResponse_Inquiry(BaseModel):
     # ============================================================
     # Inquiry-Specific Fields (Nested)
     # ============================================================
-    inquiry: InquiryResponseData = Field(
-        description="Nested inquiry phase data"
-    )
+    inquiry: InquiryResponseData = Field(description="Nested inquiry phase data")
 
 
 class CaseUIResponse_Investigating(BaseModel):

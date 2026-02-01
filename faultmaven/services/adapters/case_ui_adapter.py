@@ -25,15 +25,15 @@ if TYPE_CHECKING:
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
 from faultmaven.models.case_ui import (
     CaseUIResponse,
-    CaseUIResponse,
     CaseUIResponse_Inquiry,
     CaseUIResponse_Investigating,
     CaseUIResponse_Resolved,
-    InquiryQuestion,
-    InquiryResponseData,
     EvidenceSummary,
     HypothesisSummary,
     ImpactData,
+    InquiryQuestion,
+    InquiryRequestSummary,
+    InquiryResponseData,
     InvestigationProgressSummary,
     InvestigationStrategyData,
     ProblemVerificationData,
@@ -42,15 +42,14 @@ from faultmaven.models.case_ui import (
     RootCauseSummary,
     SolutionSummary,
     TemporalStateData,
-    InquiryRequestSummary,
     VerificationStatus,
     WorkingConclusionSummary,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    InquiryData,
     HypothesisStatus,
+    InquiryData,
     InvestigationPath,
 )
 
