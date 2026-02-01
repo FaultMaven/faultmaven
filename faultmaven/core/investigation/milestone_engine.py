@@ -520,7 +520,7 @@ class MilestoneEngine:
                 "root_cause_identified",
                 "mitigation_applied",
                 "solution_proposed",
-                "resolution_applied",
+                "solution_applied",
                 "solution_verified",
             ]
             for field in milestone_fields:

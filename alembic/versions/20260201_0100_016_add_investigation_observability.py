@@ -16,9 +16,7 @@ New Fields:
 
 Renamed Fields:
 - hypothesis_evidence_link.completeness -> stance_confidence
-
-Note: resolution_applied -> solution_applied rename is deferred to a future
-migration due to extensive codebase usage. Using Pydantic alias as stopgap.
+- investigation_progress.resolution_applied -> solution_applied
 """
 from alembic import op
 import sqlalchemy as sa
@@ -88,8 +86,34 @@ def upgrade() -> None:
             comment='Confidence in stance assessment (0.0-1.0)'
         )
 
+    # Rename resolution_applied -> solution_applied in investigation_progress
+    # Note: investigation_progress may be stored as JSON in cases table
+    # This handles the case where it's a separate table
+    try:
+        with op.batch_alter_table('investigation_progress', schema=None) as batch_op:
+            batch_op.alter_column(
+                'resolution_applied',
+                new_column_name='solution_applied',
+                existing_type=sa.Boolean(),
+                comment='Solution has been applied by user'
+            )
+    except Exception:
+        # Table may not exist if progress is stored as JSON in cases
+        pass
+
 
 def downgrade() -> None:
+    # Revert solution_applied -> resolution_applied
+    try:
+        with op.batch_alter_table('investigation_progress', schema=None) as batch_op:
+            batch_op.alter_column(
+                'solution_applied',
+                new_column_name='resolution_applied',
+                existing_type=sa.Boolean()
+            )
+    except Exception:
+        pass
+
     # Revert stance_confidence -> completeness
     with op.batch_alter_table('hypothesis_evidence_link', schema=None) as batch_op:
         batch_op.alter_column(

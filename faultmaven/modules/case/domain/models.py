@@ -340,12 +340,9 @@ class InvestigationProgress(BaseModel):
         default=False, description="Solution or mitigation has been proposed"
     )
 
-    resolution_applied: bool = Field(
+    solution_applied: bool = Field(
         default=False, description="Solution has been applied by user"
     )
-
-    # Alias for backward compatibility if needed, but primary is resolution_applied
-    # We map this to resolution_applied in validation if needed
     
     solution_verified: bool = Field(
         default=False,
@@ -365,7 +362,7 @@ class InvestigationProgress(BaseModel):
         - Stage 4: Quick mitigation applied (mitigation_applied = True)
         - Stage 2: Return to hypothesis formulation for RCA
         - Stage 3: Hypothesis validation
-        - Stage 4: Permanent solution applied (resolution_applied = True)
+        - Stage 4: Permanent solution applied (solution_applied = True)
 
         When True: Agent should return to stage 2 (hypothesis formulation) for full RCA
         When False: Either ROOT_CAUSE path, or MITIGATION_FIRST has not applied mitigation yet
@@ -412,7 +409,7 @@ class InvestigationProgress(BaseModel):
         """
 
         # SOLUTION (Stage 4): Any solution work
-        if self.solution_proposed or self.resolution_applied or self.solution_verified:
+        if self.solution_proposed or self.solution_applied or self.solution_verified:
             return InvestigationStage.SOLUTION
 
         # HYPOTHESIS_VALIDATION (Stage 3): Root cause identified or being validated
@@ -466,7 +463,7 @@ class InvestigationProgress(BaseModel):
     def resolution_complete(self) -> bool:
         """Check if resolution milestones completed"""
         return (
-            self.solution_proposed and self.resolution_applied and self.solution_verified
+            self.solution_proposed and self.solution_applied and self.solution_verified
         )
 
     @property
@@ -482,7 +479,7 @@ class InvestigationProgress(BaseModel):
             self.changes_identified,
             self.root_cause_identified,
             self.solution_proposed,
-            self.resolution_applied,
+            self.solution_applied,
             self.solution_verified,
         ]
         completed = sum(milestones)
@@ -499,7 +496,7 @@ class InvestigationProgress(BaseModel):
             "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
-            "resolution_applied": self.resolution_applied,
+            "solution_applied": self.solution_applied,
             "solution_verified": self.solution_verified,
         }
         return [name for name, completed in milestone_map.items() if completed]
@@ -514,7 +511,7 @@ class InvestigationProgress(BaseModel):
             "changes_identified": self.changes_identified,
             "root_cause_identified": self.root_cause_identified,
             "solution_proposed": self.solution_proposed,
-            "resolution_applied": self.resolution_applied,
+            "solution_applied": self.solution_applied,
             "solution_verified": self.solution_verified,
         }
 
@@ -561,7 +558,7 @@ class InvestigationProgress(BaseModel):
     def solution_ordering(self):
         """Ensure solutions are applied in order"""
         proposed = self.solution_proposed
-        applied = self.resolution_applied
+        applied = self.solution_applied
         verified = self.solution_verified
 
         if applied and not proposed:
