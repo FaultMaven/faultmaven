@@ -48,7 +48,6 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
-            thread_id="thread_123",
             proposed_problem_statement="Test symptom",
         ),
         progress=InvestigationProgress(),
@@ -148,6 +147,7 @@ class TestHypothesisStates:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.VALIDATED,
+                generated_at_turn=1,
                 supporting_evidence=["ev_1"],  # Only 1 evidence
             )
         }
@@ -165,6 +165,7 @@ class TestHypothesisStates:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.REFUTED,
+                generated_at_turn=1,
                 refuting_evidence=[],
             )
         }
@@ -182,6 +183,7 @@ class TestHypothesisStates:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
                 likelihood=0.1,
             )
         }
@@ -204,6 +206,7 @@ class TestEvidenceLinks:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
                 supporting_evidence=["ev_nonexistent"],
             )
         }
@@ -222,6 +225,7 @@ class TestEvidenceLinks:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
                 supporting_evidence=["new_index_0"],
             )
         }
@@ -237,15 +241,15 @@ class TestLikelihoodBounds:
 
     def test_hypothesis_likelihood_out_of_bounds(self, validator, base_case):
         """Likelihood outside [0, 1] should error."""
-        base_case.hypotheses = {
-            "hyp_123456789012": Hypothesis(
-                hypothesis_id="hyp_123456789012",
-                statement="Test hypothesis",
-                category=HypothesisCategory.CODE,
-                status=HypothesisStatus.ACTIVE,
-                likelihood=1.5,  # Out of bounds
-            )
-        }
+        # Note: Pydantic validates likelihood bounds at model level (ge=0.0, le=1.0)
+        # This test verifies StateValidator also catches bounds violations
+        # We use a mock/patched Hypothesis to bypass Pydantic validation
+        from unittest.mock import MagicMock
+
+        mock_hyp = MagicMock()
+        mock_hyp.likelihood = 1.5  # Out of bounds
+        mock_hyp.initial_likelihood = 0.5
+        base_case.hypotheses = {"hyp_123456789012": mock_hyp}
 
         issues = validator._validate_likelihood_bounds(base_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
@@ -261,6 +265,7 @@ class TestLikelihoodBounds:
                 statement="Test hypothesis",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
                 likelihood=0.75,
             )
         }

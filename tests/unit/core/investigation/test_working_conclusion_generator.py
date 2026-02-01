@@ -44,7 +44,6 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
-            thread_id="thread_123",
         ),
         progress=InvestigationProgress(),
         turns_without_progress=0,
@@ -57,6 +56,7 @@ def create_hypothesis(
     status: HypothesisStatus = HypothesisStatus.ACTIVE,
     likelihood: float = 0.5,
     supporting_evidence: list = None,
+    generated_at_turn: int = 1,
 ) -> Hypothesis:
     """Helper to create a hypothesis."""
     return Hypothesis(
@@ -65,6 +65,7 @@ def create_hypothesis(
         category=HypothesisCategory.CODE,
         status=status,
         likelihood=likelihood,
+        generated_at_turn=generated_at_turn,
         supporting_evidence=supporting_evidence or [],
     )
 
@@ -100,11 +101,11 @@ class TestWorkingConclusionGeneration:
     def test_generates_conclusion_from_best_hypothesis(self, base_case):
         """Should generate conclusion from highest likelihood hypothesis."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1", "Low likelihood", HypothesisStatus.ACTIVE, 0.3
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001", "Low likelihood", HypothesisStatus.ACTIVE, 0.3
             ),
-            "hyp_2": create_hypothesis(
-                "hyp_2",
+            "hyp_000000000002": create_hypothesis(
+                "hyp_000000000002",
                 "High likelihood",
                 HypothesisStatus.ACTIVE,
                 0.8,
@@ -131,8 +132,8 @@ class TestWorkingConclusionGeneration:
     def test_includes_supporting_evidence_ids(self, base_case):
         """Should include supporting evidence IDs."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1",
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
                 "Test",
                 HypothesisStatus.ACTIVE,
                 0.7,
@@ -147,8 +148,8 @@ class TestWorkingConclusionGeneration:
     def test_generates_caveats_for_low_confidence(self, base_case):
         """Should generate caveats for low confidence hypotheses."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1", "Low confidence", HypothesisStatus.ACTIVE, 0.3
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001", "Low confidence", HypothesisStatus.ACTIVE, 0.3
             ),
         }
 
@@ -218,8 +219,8 @@ class TestEvidenceCompleteness:
     def test_calculates_completeness_from_evidence(self, base_case):
         """Should calculate completeness from supporting evidence count."""
         base_case.hypotheses = {
-            "hyp_1": create_hypothesis(
-                "hyp_1",
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
                 "Test",
                 HypothesisStatus.ACTIVE,
                 0.5,

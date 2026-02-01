@@ -54,7 +54,6 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
-            thread_id="thread_123",
         ),
         progress=InvestigationProgress(),
         turns_without_progress=0,
@@ -119,11 +118,12 @@ class TestHypothesisAnchoringDetection:
     def test_anchoring_detected_in_same_category(self, detector, base_case):
         """Should detect anchoring when 4+ failed hypotheses in same category."""
         base_case.hypotheses = {
-            f"hyp_{i}": Hypothesis(
-                hypothesis_id=f"hyp_{i}",
+            f"hyp_{i:012x}": Hypothesis(
+                hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Code hypothesis {i}",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.REFUTED,
+                generated_at_turn=1,
             )
             for i in range(4)
         }
@@ -141,11 +141,12 @@ class TestHypothesisAnchoringDetection:
             HypothesisCategory.DATA,
         ]
         base_case.hypotheses = {
-            f"hyp_{i}": Hypothesis(
-                hypothesis_id=f"hyp_{i}",
+            f"hyp_{i:012x}": Hypothesis(
+                hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
                 category=categories[i],
                 status=HypothesisStatus.REFUTED,
+                generated_at_turn=1,
             )
             for i in range(4)
         }
@@ -158,11 +159,12 @@ class TestHypothesisAnchoringDetection:
     def test_active_hypotheses_not_counted(self, detector, base_case):
         """ACTIVE hypotheses should not count toward anchoring."""
         base_case.hypotheses = {
-            f"hyp_{i}": Hypothesis(
-                hypothesis_id=f"hyp_{i}",
+            f"hyp_{i:012x}": Hypothesis(
+                hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Code hypothesis {i}",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
+                generated_at_turn=1,
             )
             for i in range(5)
         }
@@ -211,11 +213,12 @@ class TestHypothesisDeadlockDetection:
     def test_deadlock_all_inconclusive(self, detector, base_case):
         """Should detect deadlock when all hypotheses are inconclusive."""
         base_case.hypotheses = {
-            f"hyp_{i}": Hypothesis(
-                hypothesis_id=f"hyp_{i}",
+            f"hyp_{i:012x}": Hypothesis(
+                hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
+                generated_at_turn=1,
             )
             for i in range(4)
         }
@@ -227,23 +230,26 @@ class TestHypothesisDeadlockDetection:
     def test_no_deadlock_with_active_hypotheses(self, detector, base_case):
         """Should not detect deadlock if some hypotheses are active."""
         base_case.hypotheses = {
-            "hyp_1": Hypothesis(
-                hypothesis_id="hyp_1",
+            "hyp_000000000001": Hypothesis(
+                hypothesis_id="hyp_000000000001",
                 statement="Hypothesis 1",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
+                generated_at_turn=1,
             ),
-            "hyp_2": Hypothesis(
-                hypothesis_id="hyp_2",
+            "hyp_000000000002": Hypothesis(
+                hypothesis_id="hyp_000000000002",
                 statement="Hypothesis 2",
                 category=HypothesisCategory.CONFIG,
                 status=HypothesisStatus.INCONCLUSIVE,
+                generated_at_turn=1,
             ),
-            "hyp_3": Hypothesis(
-                hypothesis_id="hyp_3",
+            "hyp_000000000003": Hypothesis(
+                hypothesis_id="hyp_000000000003",
                 statement="Hypothesis 3",
                 category=HypothesisCategory.NETWORK,
                 status=HypothesisStatus.ACTIVE,  # Not inconclusive
+                generated_at_turn=1,
             ),
         }
 
@@ -265,11 +271,12 @@ class TestStagnationBreaker:
     def test_anchoring_forces_alternative_category(self, breaker, base_case):
         """HYPOTHESIS_ANCHORING should force alternative category."""
         base_case.hypotheses = {
-            f"hyp_{i}": Hypothesis(
-                hypothesis_id=f"hyp_{i}",
+            f"hyp_{i:012x}": Hypothesis(
+                hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Code hypothesis {i}",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.REFUTED,
+                generated_at_turn=1,
             )
             for i in range(4)
         }
@@ -291,11 +298,12 @@ class TestStagnationBreaker:
     def test_deadlock_retires_hypotheses(self, breaker, base_case):
         """HYPOTHESIS_DEADLOCK should retire inconclusive hypotheses."""
         base_case.hypotheses = {
-            f"hyp_{i}": Hypothesis(
-                hypothesis_id=f"hyp_{i}",
+            f"hyp_{i:012x}": Hypothesis(
+                hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
+                generated_at_turn=1,
             )
             for i in range(3)
         }
@@ -315,11 +323,12 @@ class TestStagnationSummary:
         """Summary should include relevant metrics."""
         base_case.turns_without_progress = 2
         base_case.hypotheses = {
-            "hyp_1": Hypothesis(
-                hypothesis_id="hyp_1",
+            "hyp_000000000001": Hypothesis(
+                hypothesis_id="hyp_000000000001",
                 statement="Hypothesis 1",
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
+                generated_at_turn=1,
             ),
         }
 
