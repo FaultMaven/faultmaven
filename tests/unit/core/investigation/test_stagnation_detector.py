@@ -220,11 +220,18 @@ class TestHypothesisDeadlockDetection:
 
     def test_deadlock_all_inconclusive(self, detector, base_case):
         """Should detect deadlock when all hypotheses are inconclusive."""
+        # Use different categories to avoid triggering anchoring detection
+        categories = [
+            HypothesisCategory.CODE,
+            HypothesisCategory.CONFIG,
+            HypothesisCategory.NETWORK,
+            HypothesisCategory.DATA,
+        ]
         base_case.hypotheses = {
             f"hyp_{i:012x}": Hypothesis(
                 hypothesis_id=f"hyp_{i:012x}",
                 statement=f"Hypothesis {i}",
-                category=HypothesisCategory.CODE,
+                category=categories[i],
                 status=HypothesisStatus.INCONCLUSIVE,
                 generated_at_turn=1,
                 generation_mode=HypothesisGenerationMode.SYSTEMATIC,

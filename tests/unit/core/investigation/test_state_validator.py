@@ -109,11 +109,16 @@ class TestStatusConsistency:
 
     def test_resolved_without_solution_verified(self, validator, base_case):
         """RESOLVED status requires solution_verified milestone."""
-        base_case.status = CaseStatus.RESOLVED
-        base_case.resolved_at = datetime.now(timezone.utc)
-        base_case.progress.solution_verified = False
+        # Update status and resolved_at together to pass Pydantic validation
+        resolved_case = base_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+            }
+        )
+        resolved_case.progress.solution_verified = False
 
-        issues = validator._validate_status_consistency(base_case)
+        issues = validator._validate_status_consistency(resolved_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
         assert len(errors) == 1
@@ -121,11 +126,16 @@ class TestStatusConsistency:
 
     def test_resolved_with_solution_verified(self, validator, base_case):
         """RESOLVED with solution_verified should be valid."""
-        base_case.status = CaseStatus.RESOLVED
-        base_case.resolved_at = datetime.now(timezone.utc)
-        base_case.progress.solution_verified = True
+        # Update status and resolved_at together to pass Pydantic validation
+        resolved_case = base_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+            }
+        )
+        resolved_case.progress.solution_verified = True
 
-        issues = validator._validate_status_consistency(base_case)
+        issues = validator._validate_status_consistency(resolved_case)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
         assert len(errors) == 0
@@ -162,7 +172,11 @@ class TestHypothesisStates:
         )
         # Add only 1 supporting evidence
         hyp.evidence_links["ev_1"] = HypothesisEvidenceLink(
-            stance=EvidenceStance.SUPPORTS, stance_confidence=0.8
+            hypothesis_id="hyp_123456789012",
+            evidence_id="ev_1",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="Test evidence",
+            stance_confidence=0.8,
         )
         base_case.hypotheses = {"hyp_123456789012": hyp}
 
@@ -233,7 +247,11 @@ class TestEvidenceLinks:
         )
         # Reference non-existent evidence
         hyp.evidence_links["ev_nonexistent"] = HypothesisEvidenceLink(
-            stance=EvidenceStance.SUPPORTS, stance_confidence=0.8
+            hypothesis_id="hyp_123456789012",
+            evidence_id="ev_nonexistent",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="Test evidence",
+            stance_confidence=0.8,
         )
         base_case.hypotheses = {"hyp_123456789012": hyp}
 
@@ -261,7 +279,11 @@ class TestEvidenceLinks:
         )
         # Reference new_index (created same turn)
         hyp.evidence_links["new_index_0"] = HypothesisEvidenceLink(
-            stance=EvidenceStance.SUPPORTS, stance_confidence=0.8
+            hypothesis_id="hyp_123456789012",
+            evidence_id="new_index_0",
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="Test evidence",
+            stance_confidence=0.8,
         )
         base_case.hypotheses = {"hyp_123456789012": hyp}
 
