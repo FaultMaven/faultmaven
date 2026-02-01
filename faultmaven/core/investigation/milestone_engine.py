@@ -38,6 +38,7 @@ from faultmaven.core.investigation.schemas import (
     TerminalResponse,
     get_schema_for_stage,
 )
+from faultmaven.utils.schema_converter import create_response_format_json_schema
 from faultmaven.core.investigation.stagnation_detector import (
     StagnationBreaker,
     StagnationDetector,
@@ -386,8 +387,8 @@ class MilestoneEngine:
         Returns:
             Instantiated Pydantic model
         """
-        # Get JSON schema
-        json_schema = schema_model.model_json_schema()
+        # Create proper json_schema response format
+        response_format = create_response_format_json_schema(schema_model)
 
         # Define the LLM operation for retry
         async def llm_operation():
@@ -395,7 +396,7 @@ class MilestoneEngine:
                 prompt=prompt,
                 max_tokens=4000,
                 temperature=0.2,  # Lower temperature for structured output
-                response_format={"type": "json_object", "schema": json_schema},
+                response_format=response_format,
             )
             content = response if isinstance(response, str) else response.content
             return schema_model.model_validate_json(content)
