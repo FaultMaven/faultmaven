@@ -390,10 +390,19 @@ class MilestoneEngine:
         # Create proper json_schema response format
         response_format = create_response_format_json_schema(schema_model)
 
+        # Add JSON instruction for json_object fallback mode
+        # Some models don't support strict json_schema and will fall back to json_object
+        # which requires explicit JSON instruction in the prompt
+        json_instruction = (
+            "\n\nIMPORTANT: You MUST respond with valid JSON matching the schema. "
+            "Do not include any text before or after the JSON."
+        )
+        prompt_with_json_hint = f"{prompt}{json_instruction}"
+
         # Define the LLM operation for retry
         async def llm_operation():
             response = await self.llm_provider.generate(
-                prompt=prompt,
+                prompt=prompt_with_json_hint,
                 max_tokens=4000,
                 temperature=0.2,  # Lower temperature for structured output
                 response_format=response_format,

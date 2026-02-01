@@ -25,6 +25,13 @@ class GroqProvider(BaseLLMProvider):
     using their custom LPU hardware. The API is OpenAI-compatible.
     """
 
+    # Models that support json_schema with strict: True
+    # Source: https://console.groq.com/docs/structured-outputs (2025-02-01)
+    STRICT_JSON_SCHEMA_MODELS = {
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+    }
+
     @property
     def provider_name(self) -> str:
         return "groq"
@@ -85,7 +92,19 @@ class GroqProvider(BaseLLMProvider):
 
         # Add response format if specified in kwargs
         if "response_format" in kwargs:
-            payload["response_format"] = kwargs.pop("response_format")
+            response_format = kwargs.pop("response_format")
+
+            # Check if model supports json_schema with strict: True
+            if response_format.get("type") == "json_schema":
+                if effective_model not in self.STRICT_JSON_SCHEMA_MODELS:
+                    # Model doesn't support strict json_schema, fall back to json_object
+                    self.logger.warning(
+                        f"Model {effective_model} does not support json_schema with strict:true. "
+                        f"Falling back to json_object mode. Supported models: {self.STRICT_JSON_SCHEMA_MODELS}"
+                    )
+                    response_format = {"type": "json_object"}
+
+            payload["response_format"] = response_format
 
         # Add any additional kwargs
         payload.update(kwargs)
