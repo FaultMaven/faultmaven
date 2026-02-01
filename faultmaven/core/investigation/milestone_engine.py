@@ -246,13 +246,16 @@ class MilestoneEngine:
 
             # Step 5.7: Validate state consistency
             is_valid, validation_issues = self.state_validator.is_valid(case_updated)
+            validation_repairs: list[str] = []
             if validation_issues:
-                # Log validation issues
+                # Log validation issues and collect repairs
                 for issue in validation_issues:
                     if issue.severity == ValidationSeverity.ERROR:
                         logger.warning(
                             f"State validation error: {issue.code} - {issue.message}"
                         )
+                        if issue.suggested_fix:
+                            validation_repairs.append(f"{issue.code}: {issue.suggested_fix}")
                     elif issue.severity == ValidationSeverity.WARNING:
                         logger.debug(
                             f"State validation warning: {issue.code} - {issue.message}"
@@ -261,6 +264,29 @@ class MilestoneEngine:
                     {"code": i.code, "message": i.message, "severity": i.severity.value}
                     for i in validation_issues
                 ]
+
+            # Step 5.8: Update progress tracking (before stagnation check)
+            if metadata.get("progress_made", False):
+                case_updated.turns_without_progress = 0
+            else:
+                case_updated.turns_without_progress += 1
+
+            # Step 5.9: Check for stagnation (before recording turn)
+            stagnation_type = self.stagnation_detector.detect_stagnation(case_updated)
+            stagnation_str: str | None = None
+            if stagnation_type and case_updated.degraded_mode is None:
+                stagnation_str = stagnation_type.value
+                # Get breakout action and apply it
+                breakout_action = self.stagnation_breaker.break_stagnation(
+                    case_updated, stagnation_type
+                )
+                metadata["stagnation_type"] = stagnation_type.value
+                metadata["breakout_action"] = breakout_action.action
+                metadata["breakout_prompt_injection"] = breakout_action.prompt_injection
+                logger.info(
+                    f"Stagnation detected: {stagnation_type.value}. "
+                    f"Action: {breakout_action.action}"
+                )
 
             # Step 6: Record turn progress
             turn_record = self._create_turn_record(
@@ -278,31 +304,12 @@ class MilestoneEngine:
                 momentum=progress_metrics.investigation_momentum,
                 blocked_reasons=progress_metrics.blocked_reasons,
                 next_steps=progress_metrics.next_steps,
+                stagnation_detected=stagnation_str,
+                validation_repairs=validation_repairs,
             )
             case_updated.turn_history.append(turn_record)
 
-            # Step 7: Update progress tracking
-            if metadata.get("progress_made", False):
-                case_updated.turns_without_progress = 0
-            else:
-                case_updated.turns_without_progress += 1
-
-            # Step 8: Check for stagnation and degraded mode
-            stagnation_type = self.stagnation_detector.detect_stagnation(case_updated)
-            if stagnation_type and case_updated.degraded_mode is None:
-                # Get breakout action and apply it
-                breakout_action = self.stagnation_breaker.break_stagnation(
-                    case_updated, stagnation_type
-                )
-                metadata["stagnation_type"] = stagnation_type.value
-                metadata["breakout_action"] = breakout_action.action
-                metadata["breakout_prompt_injection"] = breakout_action.prompt_injection
-                logger.info(
-                    f"Stagnation detected: {stagnation_type.value}. "
-                    f"Action: {breakout_action.action}"
-                )
-
-            # Step 10: Save case (only if changes made, but turn history always updates)
+            # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
             case_updated.last_activity_at = datetime.now(UTC)
             await self.repository.save(case_updated)
@@ -910,6 +917,8 @@ class MilestoneEngine:
         momentum: InvestigationMomentum | None = None,
         blocked_reasons: list[str] | None = None,
         next_steps: list[str] | None = None,
+        stagnation_detected: str | None = None,
+        validation_repairs: list[str] | None = None,
     ) -> TurnProgress:
         """Create turn progress record."""
         return TurnProgress(
@@ -929,6 +938,8 @@ class MilestoneEngine:
             momentum=momentum,
             blocked_reasons=blocked_reasons or [],
             next_steps=next_steps or [],
+            stagnation_detected=stagnation_detected,
+            validation_repairs=validation_repairs or [],
         )
 
     def _extract_actions(self, agent_response: str) -> list[str]:

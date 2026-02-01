@@ -2116,6 +2116,19 @@ class TurnProgress(BaseModel):
     )
 
     # ============================================================
+    # Observability Fields (for stagnation and validation tracking)
+    # ============================================================
+    stagnation_detected: Optional[str] = Field(
+        default=None,
+        description="Stagnation type detected this turn: no_progress, hypothesis_anchoring, action_loop, hypothesis_deadlock",
+    )
+
+    validation_repairs: List[str] = Field(
+        default_factory=list,
+        description="State repairs made by StateValidator this turn (e.g., 'Fixed milestone ordering')",
+    )
+
+    # ============================================================
     # Computed Properties
     # ============================================================
     @property
@@ -3076,6 +3089,18 @@ class Case(BaseModel):
         Returns True if 3+ consecutive turns without progress.
         """
         return self.turns_without_progress >= 3
+
+    @property
+    def current_momentum(self) -> Optional[InvestigationMomentum]:
+        """
+        Get momentum from the most recent turn for real-time dashboard display.
+
+        Returns the momentum value from the latest turn in turn_history,
+        or None if no turns recorded yet.
+        """
+        if not self.turn_history:
+            return None
+        return self.turn_history[-1].momentum
 
     @property
     def is_terminal(self) -> bool:
