@@ -196,10 +196,11 @@ def is_valid_transition(from_status: CaseStatus, to_status: CaseStatus) -> bool:
     Validate status transition.
 
     Valid Transitions:
-    - INQUIRY -> INVESTIGATING
-    - INQUIRY -> CLOSED
-    - INVESTIGATING -> RESOLVED
-    - INVESTIGATING -> CLOSED
+    - INQUIRY -> INVESTIGATING (standard investigation start)
+    - INQUIRY -> RESOLVED (Fast-Track: KB match resolves issue)
+    - INQUIRY -> CLOSED (inquiry-only, no investigation)
+    - INVESTIGATING -> RESOLVED (solution verified)
+    - INVESTIGATING -> CLOSED (abandoned/escalated)
 
     Invalid:
     - RESOLVED -> * (terminal)
@@ -207,7 +208,11 @@ def is_valid_transition(from_status: CaseStatus, to_status: CaseStatus) -> bool:
     - INVESTIGATING -> INQUIRY (no backward)
     """
     valid_transitions = {
-        CaseStatus.INQUIRY: [CaseStatus.INVESTIGATING, CaseStatus.CLOSED],
+        CaseStatus.INQUIRY: [
+            CaseStatus.INVESTIGATING,
+            CaseStatus.RESOLVED,
+            CaseStatus.CLOSED,
+        ],
         CaseStatus.INVESTIGATING: [CaseStatus.RESOLVED, CaseStatus.CLOSED],
         CaseStatus.RESOLVED: [],  # Terminal
         CaseStatus.CLOSED: [],  # Terminal
@@ -473,6 +478,12 @@ class InvestigationProgress(BaseModel):
         """
         Overall progress percentage for UI display.
         Returns: 0.0 to 1.0
+
+        Includes 9 milestones:
+        - 4 verification milestones
+        - 1 investigation milestone (root_cause_identified)
+        - 3 resolution milestones
+        - 1 path-specific milestone (mitigation_applied for MITIGATION_FIRST path)
         """
         milestones = [
             self.symptom_verified,
@@ -483,6 +494,7 @@ class InvestigationProgress(BaseModel):
             self.solution_proposed,
             self.solution_applied,
             self.solution_verified,
+            self.mitigation_applied,  # 9th milestone for MITIGATION_FIRST path
         ]
         completed = sum(milestones)
         total = len(milestones)
@@ -500,6 +512,7 @@ class InvestigationProgress(BaseModel):
             "solution_proposed": self.solution_proposed,
             "solution_applied": self.solution_applied,
             "solution_verified": self.solution_verified,
+            "mitigation_applied": self.mitigation_applied,
         }
         return [name for name, completed in milestone_map.items() if completed]
 

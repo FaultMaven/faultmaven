@@ -955,10 +955,10 @@ class WorkingConclusion(BaseModel):
         description="Current conclusion statement"
     )
 
-    confidence: float = Field(
+    likelihood: float = Field(
         ge=0.0,
         le=1.0,
-        description="Confidence in this conclusion (0.0-1.0)"
+        description="Likelihood of this conclusion (0.0-1.0)"
     )
 
     reasoning: str = Field(
