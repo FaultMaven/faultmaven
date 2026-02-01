@@ -18,6 +18,7 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     Hypothesis,
     HypothesisCategory,
+    HypothesisGenerationMode,
     HypothesisStatus,
     InquiryData,
     InvestigationProgress,
@@ -54,6 +55,7 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
+            proposed_problem_statement="Test symptom",
         ),
         progress=InvestigationProgress(),
         turns_without_progress=0,
@@ -124,6 +126,8 @@ class TestHypothesisAnchoringDetection:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.REFUTED,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for anchoring detection",
             )
             for i in range(4)
         }
@@ -147,6 +151,8 @@ class TestHypothesisAnchoringDetection:
                 category=categories[i],
                 status=HypothesisStatus.REFUTED,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for diverse categories",
             )
             for i in range(4)
         }
@@ -165,6 +171,8 @@ class TestHypothesisAnchoringDetection:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.ACTIVE,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for active status",
             )
             for i in range(5)
         }
@@ -219,6 +227,8 @@ class TestHypothesisDeadlockDetection:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for deadlock detection",
             )
             for i in range(4)
         }
@@ -236,6 +246,8 @@ class TestHypothesisDeadlockDetection:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis 1",
             ),
             "hyp_000000000002": Hypothesis(
                 hypothesis_id="hyp_000000000002",
@@ -243,6 +255,8 @@ class TestHypothesisDeadlockDetection:
                 category=HypothesisCategory.CONFIG,
                 status=HypothesisStatus.INCONCLUSIVE,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis 2",
             ),
             "hyp_000000000003": Hypothesis(
                 hypothesis_id="hyp_000000000003",
@@ -250,6 +264,8 @@ class TestHypothesisDeadlockDetection:
                 category=HypothesisCategory.NETWORK,
                 status=HypothesisStatus.ACTIVE,  # Not inconclusive
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis 3",
             ),
         }
 
@@ -277,6 +293,8 @@ class TestStagnationBreaker:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.REFUTED,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for alternative category",
             )
             for i in range(4)
         }
@@ -304,6 +322,8 @@ class TestStagnationBreaker:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for retirement",
             )
             for i in range(3)
         }
@@ -329,6 +349,8 @@ class TestStagnationSummary:
                 category=HypothesisCategory.CODE,
                 status=HypothesisStatus.INCONCLUSIVE,
                 generated_at_turn=1,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                rationale="Test hypothesis for metrics",
             ),
         }
 

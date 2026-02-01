@@ -17,6 +17,7 @@ from faultmaven.modules.case.contracts import (
     CaseStatus,
     Hypothesis,
     HypothesisCategory,
+    HypothesisGenerationMode,
     HypothesisStatus,
     InquiryData,
     InvestigationMomentum,
@@ -44,6 +45,7 @@ def base_case():
         inquiry=InquiryData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
+            proposed_problem_statement="Test symptom",
         ),
         progress=InvestigationProgress(),
         turns_without_progress=0,
@@ -59,15 +61,29 @@ def create_hypothesis(
     generated_at_turn: int = 1,
 ) -> Hypothesis:
     """Helper to create a hypothesis."""
-    return Hypothesis(
+    hyp = Hypothesis(
         hypothesis_id=hyp_id,
         statement=statement,
         category=HypothesisCategory.CODE,
         status=status,
         likelihood=likelihood,
         generated_at_turn=generated_at_turn,
-        supporting_evidence=supporting_evidence or [],
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        rationale="Test hypothesis",
     )
+    # Add supporting evidence via evidence_links if provided
+    if supporting_evidence:
+        from faultmaven.modules.case.contracts import (
+            EvidenceStance,
+            HypothesisEvidenceLink,
+        )
+
+        for ev_id in supporting_evidence:
+            hyp.evidence_links[ev_id] = HypothesisEvidenceLink(
+                stance=EvidenceStance.SUPPORTS,
+                stance_confidence=0.8,
+            )
+    return hyp
 
 
 def create_turn(
