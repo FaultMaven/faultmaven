@@ -149,18 +149,18 @@ class HypothesisManager:
         supports: bool,
         turn: int,
         reasoning: str = "Linked by agent",
-        completeness: float = 1.0,
+        stance_confidence: float = 1.0,
     ) -> None:
         """Link evidence to hypothesis."""
         stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
-        
+
         if evidence_id not in hypothesis.evidence_links:
             link = HypothesisEvidenceLink(
                 hypothesis_id=hypothesis.hypothesis_id,
                 evidence_id=evidence_id,
                 stance=stance,
                 reasoning=reasoning,
-                completeness=completeness
+                stance_confidence=stance_confidence
             )
             hypothesis.evidence_links[evidence_id] = link
             self.logger.info(

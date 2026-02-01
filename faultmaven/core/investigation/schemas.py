@@ -113,7 +113,7 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
     evidence_id_ref: str = Field(description="Evidence ID or 'new_index_N' if created this turn")
     stance: EvidenceStance
     reasoning: str
-    completeness: float = Field(default=1.0, ge=0.0, le=1.0)
+    stance_confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Confidence in the stance assessment (0.0-1.0)")
 
 class WorkingConclusionUpdate(BaseModel):
     """Current working theory of the case."""

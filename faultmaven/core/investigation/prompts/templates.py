@@ -131,6 +131,92 @@ YOUR TASK:
 """
 
 # =============================================================================
+# FALLBACK TEMPLATES (Simplified for token limits or errors)
+# =============================================================================
+
+FALLBACK_INQUIRY_TEMPLATE = """You are FaultMaven, a troubleshooting assistant.
+
+STATUS: INQUIRY
+
+PROBLEM: {problem_summary}
+
+USER: {user_message}
+
+Respond helpfully. If detecting a problem, propose a problem statement for confirmation.
+"""
+
+FALLBACK_INVESTIGATION_TEMPLATE = """You are FaultMaven investigating an issue.
+
+STATUS: INVESTIGATING
+STAGE: {stage}
+PROBLEM: {problem_summary}
+
+MILESTONES COMPLETED: {milestones_summary}
+HYPOTHESES: {hypotheses_summary}
+
+USER: {user_message}
+
+Continue investigation. Focus on the most critical next step.
+"""
+
+FALLBACK_TERMINAL_TEMPLATE = """You are FaultMaven. Case is {status}.
+
+PROBLEM: {problem_summary}
+RESOLUTION: {resolution_summary}
+
+USER: {user_message}
+
+Answer questions about the findings. Do not reopen investigation.
+"""
+
+
+def get_fallback_prompt_for_case(
+    case: Case,
+    user_message: str,
+) -> str:
+    """Build simplified fallback prompt for token limit or error recovery."""
+
+    problem_summary = case.description or case.inquiry.proposed_problem_statement or "Not defined"
+
+    if case.status == CaseStatus.INQUIRY:
+        return FALLBACK_INQUIRY_TEMPLATE.format(
+            problem_summary=problem_summary[:200],
+            user_message=user_message[:500]
+        )
+
+    elif case.status == CaseStatus.INVESTIGATING:
+        stage = case.progress.stage_display_name if hasattr(case.progress, 'stage_display_name') else "Unknown"
+        milestones = []
+        if case.progress.symptom_verified:
+            milestones.append("symptom_verified")
+        if case.progress.root_cause_identified:
+            milestones.append("root_cause_identified")
+        if case.progress.solution_proposed:
+            milestones.append("solution_proposed")
+
+        hypotheses = []
+        for h in list(case.hypotheses.values())[:3]:
+            hypotheses.append(f"{h.statement[:50]} ({h.status.value})")
+
+        return FALLBACK_INVESTIGATION_TEMPLATE.format(
+            stage=stage,
+            problem_summary=problem_summary[:200],
+            milestones_summary=", ".join(milestones) if milestones else "None yet",
+            hypotheses_summary="; ".join(hypotheses) if hypotheses else "None yet",
+            user_message=user_message[:500]
+        )
+
+    else:  # TERMINAL
+        resolution = "Solution verified" if case.progress.solution_verified else case.closure_reason or "Closed"
+        return FALLBACK_TERMINAL_TEMPLATE.format(
+            status=case.status.value,
+            problem_summary=problem_summary[:200],
+            resolution_summary=resolution,
+            user_message=user_message[:500]
+        )
+
+
+# =============================================================================
 # BUILDER FUNCTIONS
 # =============================================================================
 

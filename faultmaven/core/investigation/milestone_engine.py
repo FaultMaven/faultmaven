@@ -28,6 +28,24 @@ from uuid import uuid4
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+from faultmaven.core.investigation.working_conclusion_generator import (
+    calculate_progress_metrics,
+    generate_working_conclusion,
+    ProgressMetrics,
+)
+from faultmaven.core.investigation.state_validator import (
+    StateValidator,
+    ValidationSeverity,
+)
+from faultmaven.core.investigation.stagnation_detector import (
+    StagnationDetector,
+    StagnationBreaker,
+    StagnationType,
+)
+from faultmaven.core.investigation.llm_error_handler import (
+    LLMErrorHandler,
+    ErrorAction,
+)
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
@@ -47,6 +65,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     HypothesisStatus,
+    InvestigationMomentum,
     InvestigationProgress,
     InvestigationStage,
     KnowledgeResolution,
@@ -109,6 +128,10 @@ class MilestoneEngine:
         self.knowledge_service = knowledge_service
         self.trace_enabled = trace_enabled
         self.hypothesis_manager = create_hypothesis_manager()
+        self.state_validator = StateValidator()
+        self.stagnation_detector = StagnationDetector()
+        self.stagnation_breaker = StagnationBreaker()
+        self.llm_error_handler = LLMErrorHandler()
 
         logger.info("MilestoneEngine initialized with structured output engine")
 
@@ -198,6 +221,47 @@ class MilestoneEngine:
             # This happens after transitions but before recording the turn
             self._perform_hypothesis_housekeeping(case_updated, metadata)
 
+            # Step 5.5: Calculate progress metrics
+            progress_metrics = calculate_progress_metrics(
+                case=case_updated,
+                current_turn=case_updated.current_turn
+            )
+            metadata["momentum"] = progress_metrics.investigation_momentum
+            metadata["blocked_reasons"] = progress_metrics.blocked_reasons
+            metadata["next_steps"] = progress_metrics.next_steps
+
+            # Step 5.6: Generate working conclusion if significant progress
+            if (
+                metadata.get("milestones_completed")
+                or progress_metrics.investigation_momentum == InvestigationMomentum.HIGH
+            ):
+                working_conclusion = generate_working_conclusion(
+                    case=case_updated,
+                    current_turn=case_updated.current_turn
+                )
+                case_updated.working_conclusion = working_conclusion
+                logger.info(
+                    f"Working conclusion updated: likelihood={working_conclusion.likelihood:.2f}"
+                )
+
+            # Step 5.7: Validate state consistency
+            is_valid, validation_issues = self.state_validator.is_valid(case_updated)
+            if validation_issues:
+                # Log validation issues
+                for issue in validation_issues:
+                    if issue.severity == ValidationSeverity.ERROR:
+                        logger.warning(
+                            f"State validation error: {issue.code} - {issue.message}"
+                        )
+                    elif issue.severity == ValidationSeverity.WARNING:
+                        logger.debug(
+                            f"State validation warning: {issue.code} - {issue.message}"
+                        )
+                metadata["validation_issues"] = [
+                    {"code": i.code, "message": i.message, "severity": i.severity.value}
+                    for i in validation_issues
+                ]
+
             # Step 6: Record turn progress
             turn_record = self._create_turn_record(
                 turn_number=case_updated.current_turn,
@@ -211,6 +275,9 @@ class MilestoneEngine:
                 user_message=user_message,
                 agent_response=response_obj.agent_response,
                 system_feedback=metadata.get("system_feedback"),
+                momentum=progress_metrics.investigation_momentum,
+                blocked_reasons=progress_metrics.blocked_reasons,
+                next_steps=progress_metrics.next_steps,
             )
             case_updated.turn_history.append(turn_record)
 
@@ -220,12 +287,20 @@ class MilestoneEngine:
             else:
                 case_updated.turns_without_progress += 1
 
-            # Step 8: Check degraded mode
-            if (
-                case_updated.turns_without_progress >= 3
-                and case_updated.degraded_mode is None
-            ):
-                self._enter_degraded_mode(case_updated, "no_progress")
+            # Step 8: Check for stagnation and degraded mode
+            stagnation_type = self.stagnation_detector.detect_stagnation(case_updated)
+            if stagnation_type and case_updated.degraded_mode is None:
+                # Get breakout action and apply it
+                breakout_action = self.stagnation_breaker.break_stagnation(
+                    case_updated, stagnation_type
+                )
+                metadata["stagnation_type"] = stagnation_type.value
+                metadata["breakout_action"] = breakout_action.action
+                metadata["breakout_prompt_injection"] = breakout_action.prompt_injection
+                logger.info(
+                    f"Stagnation detected: {stagnation_type.value}. "
+                    f"Action: {breakout_action.action}"
+                )
 
             # Step 10: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
@@ -251,6 +326,8 @@ class MilestoneEngine:
                         "status_transitioned", False
                     ),
                     "outcome": metadata.get("outcome", TurnOutcome.CONVERSATION),
+                    "momentum": metadata.get("momentum"),
+                    "next_steps": metadata.get("next_steps", []),
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
             }
@@ -305,25 +382,32 @@ class MilestoneEngine:
         # Get JSON schema
         json_schema = schema_model.model_json_schema()
 
-        # Provider-agnostic structured generation
-        # We pass response_format as per OpenAI spec, assuming implementations handle it
-        try:
+        # Define the LLM operation for retry
+        async def llm_operation():
             response = await self.llm_provider.generate(
                 prompt=prompt,
                 max_tokens=4000,
-                temperature=0.2, # Lower temperature for structured output
+                temperature=0.2,  # Lower temperature for structured output
                 response_format={"type": "json_object", "schema": json_schema}
             )
-
-            # Parse response
             content = response if isinstance(response, str) else response.content
             return schema_model.model_validate_json(content)
 
-        except Exception as e:
-            logger.error(f"Structured generation failed: {e}")
-            # Recovery: Try to parse JSON from text if strict mode failed?
-            # For now, re-raise to trigger fallback or error handling
-            raise MilestoneEngineError(f"Structured output generation failed: {e}") from e
+        # Execute with retry and error handling
+        result, error_result = await self.llm_error_handler.with_retry(
+            operation=llm_operation
+        )
+
+        if result is not None:
+            return result
+
+        # All retries exhausted or non-retryable error
+        if error_result:
+            error_msg = error_result.message
+            logger.error(f"Structured generation failed after retries: {error_msg}")
+            raise MilestoneEngineError(f"Structured output generation failed: {error_msg}")
+        else:
+            raise MilestoneEngineError("Structured output generation failed with unknown error")
 
     # =========================================================================
     # Response Processing
@@ -527,7 +611,7 @@ class MilestoneEngine:
                     link.stance == EvidenceStance.SUPPORTS,
                     case.current_turn,
                     reasoning=link.reasoning,
-                    completeness=link.completeness,
+                    stance_confidence=link.stance_confidence,
                 )
 
             if feedback:
@@ -823,6 +907,9 @@ class MilestoneEngine:
         user_message: str,
         agent_response: str,
         system_feedback: str | None = None,
+        momentum: InvestigationMomentum | None = None,
+        blocked_reasons: list[str] | None = None,
+        next_steps: list[str] | None = None,
     ) -> TurnProgress:
         """Create turn progress record."""
         return TurnProgress(
@@ -839,6 +926,9 @@ class MilestoneEngine:
             user_message_summary=self._summarize_text(user_message, 200),
             agent_response_summary=self._summarize_text(agent_response, 500),
             system_feedback=system_feedback,
+            momentum=momentum,
+            blocked_reasons=blocked_reasons or [],
+            next_steps=next_steps or [],
         )
 
     def _extract_actions(self, agent_response: str) -> list[str]:

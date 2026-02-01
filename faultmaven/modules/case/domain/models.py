@@ -429,6 +429,25 @@ class InvestigationProgress(BaseModel):
         return InvestigationStage.SYMPTOM_VERIFICATION
 
     @property
+    def stage_display_name(self) -> str:
+        """
+        User-facing stage name for UI display.
+
+        Maps internal 4-stage system to 3 user-friendly names:
+        - SYMPTOM_VERIFICATION → "Understanding"
+        - HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION → "Diagnosing"
+        - SOLUTION → "Resolving"
+        """
+        stage = self.current_stage
+        if stage == InvestigationStage.SYMPTOM_VERIFICATION:
+            return "Understanding"
+        elif stage in (InvestigationStage.HYPOTHESIS_FORMULATION,
+                      InvestigationStage.HYPOTHESIS_VALIDATION):
+            return "Diagnosing"
+        else:  # SOLUTION
+            return "Resolving"
+
+    @property
     def verification_complete(self) -> bool:
         """Check if all verification milestones completed"""
         return (
@@ -1604,10 +1623,10 @@ class HypothesisEvidenceLink(BaseModel):
         description="LLM's explanation of the relationship", max_length=1000
     )
 
-    completeness: float = Field(
+    stance_confidence: float = Field(
         ge=0.0,
         le=1.0,
-        description="How well this evidence tests THIS hypothesis (0.0 = does not test, 1.0 = fully tests)",
+        description="Confidence in the stance assessment (0.0-1.0). Use for granularity instead of STRONGLY_ variants.",
     )
 
     analyzed_at: datetime = Field(
@@ -1973,6 +1992,39 @@ class TurnOutcome(str, Enum):
     """
 
 
+class InvestigationMomentum(str, Enum):
+    """
+    Investigation momentum indicator for progress tracking.
+
+    Used to signal overall investigation health and guide agent behavior.
+    Calculated from recent progress patterns (evidence collection, hypothesis updates).
+    """
+
+    HIGH = "high"
+    """
+    Evidence flowing, hypotheses being tested, confidence increasing.
+    Investigation progressing well.
+    """
+
+    MODERATE = "moderate"
+    """
+    Some progress being made, investigation moving forward.
+    Default state when enough data to assess.
+    """
+
+    LOW = "low"
+    """
+    Little progress recently, confidence plateaued.
+    May need different approach or more data.
+    """
+
+    BLOCKED = "blocked"
+    """
+    Critical evidence unavailable, investigation stalled.
+    Likely to enter degraded mode if continues.
+    """
+
+
 class TurnProgress(BaseModel):
     """
     Record of what happened in one turn.
@@ -2043,6 +2095,24 @@ class TurnProgress(BaseModel):
         default=None,
         description="Instruction or error from system to agent (e.g., 'Invalid evidence ID')",
         max_length=1000,
+    )
+
+    # ============================================================
+    # Progress Metrics (populated by WorkingConclusionGenerator)
+    # ============================================================
+    momentum: Optional[InvestigationMomentum] = Field(
+        default=None,
+        description="Investigation momentum indicator for this turn",
+    )
+
+    blocked_reasons: List[str] = Field(
+        default_factory=list,
+        description="Reasons why investigation is blocked or progressing slowly",
+    )
+
+    next_steps: List[str] = Field(
+        default_factory=list,
+        description="Suggested next steps for the investigation",
     )
 
     # ============================================================
