@@ -50,181 +50,13 @@ def downgrade() -> None:
 
 
 def _upgrade_postgresql() -> None:
-    """PostgreSQL-specific upgrade."""
-    conn = op.get_bind()
+    """PostgreSQL-specific upgrade.
 
-    # -------------------------------------------------------------------------
-    # Hypotheses Table
-    # -------------------------------------------------------------------------
-
-    # Add organization_id column (nullable initially for backfill)
-    conn.execute(text("""
-        ALTER TABLE hypotheses
-        ADD COLUMN IF NOT EXISTS organization_id VARCHAR(20)
-    """))
-
-    # Add created_by column (nullable initially for backfill)
-    conn.execute(text("""
-        ALTER TABLE hypotheses
-        ADD COLUMN IF NOT EXISTS created_by VARCHAR(255)
-    """))
-
-    # Add updated_by column (always nullable)
-    conn.execute(text("""
-        ALTER TABLE hypotheses
-        ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255)
-    """))
-
-    # Backfill organization_id from cases.org_id
-    conn.execute(text("""
-        UPDATE hypotheses h
-        SET organization_id = c.org_id
-        FROM cases c
-        WHERE h.case_id = c.case_id
-        AND h.organization_id IS NULL
-    """))
-
-    # Backfill created_by with 'system' for existing records
-    conn.execute(text("""
-        UPDATE hypotheses
-        SET created_by = 'system'
-        WHERE created_by IS NULL
-    """))
-
-    # Make organization_id NOT NULL after backfill
-    conn.execute(text("""
-        ALTER TABLE hypotheses
-        ALTER COLUMN organization_id SET NOT NULL
-    """))
-
-    # Make created_by NOT NULL after backfill
-    conn.execute(text("""
-        ALTER TABLE hypotheses
-        ALTER COLUMN created_by SET NOT NULL
-    """))
-
-    # Add foreign key constraints (if organizations and users tables exist)
-    # Note: Using DO block to handle case where tables don't exist yet
-    conn.execute(text("""
-        DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users') THEN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.table_constraints
-                    WHERE constraint_name = 'fk_hypotheses_created_by_users'
-                ) THEN
-                    ALTER TABLE hypotheses
-                    ADD CONSTRAINT fk_hypotheses_created_by_users
-                    FOREIGN KEY (created_by) REFERENCES users(user_id);
-                END IF;
-
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.table_constraints
-                    WHERE constraint_name = 'fk_hypotheses_updated_by_users'
-                ) THEN
-                    ALTER TABLE hypotheses
-                    ADD CONSTRAINT fk_hypotheses_updated_by_users
-                    FOREIGN KEY (updated_by) REFERENCES users(user_id);
-                END IF;
-            END IF;
-        END $$;
-    """))
-
-    # Add indexes
-    conn.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_hypotheses_organization_id
-        ON hypotheses(organization_id)
-    """))
-
-    conn.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_hypotheses_created_by
-        ON hypotheses(created_by)
-    """))
-
-    # -------------------------------------------------------------------------
-    # Solutions Table
-    # -------------------------------------------------------------------------
-
-    # Add organization_id column (nullable initially for backfill)
-    conn.execute(text("""
-        ALTER TABLE solutions
-        ADD COLUMN IF NOT EXISTS organization_id VARCHAR(20)
-    """))
-
-    # Add created_by column (nullable initially for backfill)
-    conn.execute(text("""
-        ALTER TABLE solutions
-        ADD COLUMN IF NOT EXISTS created_by VARCHAR(255)
-    """))
-
-    # Add updated_by column (always nullable)
-    conn.execute(text("""
-        ALTER TABLE solutions
-        ADD COLUMN IF NOT EXISTS updated_by VARCHAR(255)
-    """))
-
-    # Backfill organization_id from cases.org_id
-    conn.execute(text("""
-        UPDATE solutions s
-        SET organization_id = c.org_id
-        FROM cases c
-        WHERE s.case_id = c.case_id
-        AND s.organization_id IS NULL
-    """))
-
-    # Backfill created_by with 'system' for existing records
-    conn.execute(text("""
-        UPDATE solutions
-        SET created_by = 'system'
-        WHERE created_by IS NULL
-    """))
-
-    # Make organization_id NOT NULL after backfill
-    conn.execute(text("""
-        ALTER TABLE solutions
-        ALTER COLUMN organization_id SET NOT NULL
-    """))
-
-    # Make created_by NOT NULL after backfill
-    conn.execute(text("""
-        ALTER TABLE solutions
-        ALTER COLUMN created_by SET NOT NULL
-    """))
-
-    # Add foreign key constraints (if users table exists)
-    conn.execute(text("""
-        DO $$ BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users') THEN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.table_constraints
-                    WHERE constraint_name = 'fk_solutions_created_by_users'
-                ) THEN
-                    ALTER TABLE solutions
-                    ADD CONSTRAINT fk_solutions_created_by_users
-                    FOREIGN KEY (created_by) REFERENCES users(user_id);
-                END IF;
-
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.table_constraints
-                    WHERE constraint_name = 'fk_solutions_updated_by_users'
-                ) THEN
-                    ALTER TABLE solutions
-                    ADD CONSTRAINT fk_solutions_updated_by_users
-                    FOREIGN KEY (updated_by) REFERENCES users(user_id);
-                END IF;
-            END IF;
-        END $$;
-    """))
-
-    # Add indexes
-    conn.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_solutions_organization_id
-        ON solutions(organization_id)
-    """))
-
-    conn.execute(text("""
-        CREATE INDEX IF NOT EXISTS idx_solutions_created_by
-        ON solutions(created_by)
-    """))
+    NOTE: Baseline migration (001) now creates hypotheses/solutions with all
+    multi-tenancy columns. This migration is a no-op for clean installs.
+    """
+    # No-op: baseline migration already includes these columns
+    pass
 
 
 def _downgrade_postgresql() -> None:
@@ -251,56 +83,13 @@ def _downgrade_postgresql() -> None:
 
 
 def _upgrade_sqlite() -> None:
-    """SQLite-specific upgrade."""
-    # SQLite doesn't support ADD COLUMN with constraints in one statement
-    # We'll add columns without constraints and backfill
+    """SQLite-specific upgrade.
 
-    # Hypotheses
-    op.add_column("hypotheses", sa.Column("organization_id", sa.String(20)))
-    op.add_column("hypotheses", sa.Column("created_by", sa.String(255)))
-    op.add_column("hypotheses", sa.Column("updated_by", sa.String(255)))
-
-    # Backfill from cases
-    conn = op.get_bind()
-    conn.execute(text("""
-        UPDATE hypotheses
-        SET organization_id = (
-            SELECT org_id FROM cases WHERE cases.case_id = hypotheses.case_id
-        )
-        WHERE organization_id IS NULL
-    """))
-
-    conn.execute(text("""
-        UPDATE hypotheses
-        SET created_by = 'system'
-        WHERE created_by IS NULL
-    """))
-
-    # Solutions
-    op.add_column("solutions", sa.Column("organization_id", sa.String(20)))
-    op.add_column("solutions", sa.Column("created_by", sa.String(255)))
-    op.add_column("solutions", sa.Column("updated_by", sa.String(255)))
-
-    # Backfill from cases
-    conn.execute(text("""
-        UPDATE solutions
-        SET organization_id = (
-            SELECT org_id FROM cases WHERE cases.case_id = solutions.case_id
-        )
-        WHERE organization_id IS NULL
-    """))
-
-    conn.execute(text("""
-        UPDATE solutions
-        SET created_by = 'system'
-        WHERE created_by IS NULL
-    """))
-
-    # Create indexes
-    op.create_index("idx_hypotheses_organization_id", "hypotheses", ["organization_id"])
-    op.create_index("idx_hypotheses_created_by", "hypotheses", ["created_by"])
-    op.create_index("idx_solutions_organization_id", "solutions", ["organization_id"])
-    op.create_index("idx_solutions_created_by", "solutions", ["created_by"])
+    NOTE: Baseline migration (001) now creates hypotheses/solutions with all
+    multi-tenancy columns. This migration is a no-op for clean installs.
+    """
+    # No-op: baseline migration already includes these columns
+    pass
 
 
 def _downgrade_sqlite() -> None:

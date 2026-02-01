@@ -215,7 +215,7 @@ class CaseModel(Base):
     case_metadata = Column("metadata", Text, default="{}")
 
     # Organization/Team
-    org_id = Column(String(20), index=True)
+    organization_id = Column(String(20), index=True)
     team_id = Column(String(20), index=True)
 
     # Session link (optional - cases can exist without sessions)

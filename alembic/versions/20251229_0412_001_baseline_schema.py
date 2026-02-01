@@ -185,7 +185,7 @@ def _upgrade_postgresql() -> None:
             documentation JSONB DEFAULT '{"summary": "", "timeline": [], "lessons_learned": []}'::jsonb,
             progress JSONB DEFAULT '{"current_phase": "inquiry", "completion_percentage": 0, "milestones": []}'::jsonb,
             metadata JSONB DEFAULT '{}'::jsonb,
-            org_id VARCHAR(20),
+            organization_id VARCHAR(20),
             team_id VARCHAR(20),
             CONSTRAINT cases_title_not_empty CHECK (LENGTH(TRIM(title)) > 0),
             CONSTRAINT cases_user_id_not_empty CHECK (LENGTH(TRIM(user_id)) > 0)
@@ -207,7 +207,7 @@ def _upgrade_postgresql() -> None:
             "CREATE INDEX IF NOT EXISTS idx_cases_updated_at ON cases(updated_at DESC)"
         )
     )
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_org_id ON cases(org_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_organization_id ON cases(organization_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cases_team_id ON cases(team_id)"))
     conn.execute(
         text(
@@ -275,17 +275,28 @@ def _upgrade_postgresql() -> None:
         CREATE TABLE IF NOT EXISTS hypotheses (
             hypothesis_id VARCHAR(15) PRIMARY KEY,
             case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
-            description TEXT NOT NULL,
-            status hypothesis_status NOT NULL DEFAULT 'proposed',
-            confidence_score DECIMAL(3,2),
-            supporting_evidence_ids TEXT[],
-            validation_result TEXT,
-            validation_timestamp TIMESTAMPTZ,
+            statement TEXT NOT NULL,
+            status hypothesis_status NOT NULL DEFAULT 'captured',
+            likelihood DECIMAL(3,2) DEFAULT 0.5,
+            initial_likelihood DECIMAL(3,2) DEFAULT 0.5,
+            last_updated_turn INTEGER DEFAULT 0,
+            last_progress_at_turn INTEGER DEFAULT 0,
+            iterations_without_progress INTEGER DEFAULT 0,
+            category VARCHAR(50) NOT NULL,
+            generation_mode VARCHAR(20) NOT NULL DEFAULT 'systematic',
+            rationale TEXT,
+            retirement_reason TEXT,
+            evidence_links TEXT DEFAULT '{}',
+            tested_at TIMESTAMPTZ,
+            concluded_at TIMESTAMPTZ,
             proposed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             metadata JSONB DEFAULT '{}'::jsonb,
-            CONSTRAINT hypotheses_description_not_empty CHECK (LENGTH(TRIM(description)) > 0),
-            CONSTRAINT hypotheses_confidence_range CHECK (confidence_score IS NULL OR (confidence_score >= 0 AND confidence_score <= 1))
+            organization_id VARCHAR(20) NOT NULL,
+            created_by VARCHAR(255) NOT NULL,
+            updated_by VARCHAR(255),
+            CONSTRAINT hypotheses_statement_not_empty CHECK (LENGTH(TRIM(statement)) > 0),
+            CONSTRAINT hypotheses_likelihood_range CHECK (likelihood IS NULL OR (likelihood >= 0 AND likelihood <= 1))
         )
     """
         )
@@ -298,13 +309,22 @@ def _upgrade_postgresql() -> None:
         text("CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON hypotheses(status)")
     )
     conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_hypotheses_category ON hypotheses(category)")
+    )
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_hypotheses_organization_id ON hypotheses(organization_id)")
+    )
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_hypotheses_created_by ON hypotheses(created_by)")
+    )
+    conn.execute(
         text(
             "CREATE INDEX IF NOT EXISTS idx_hypotheses_proposed_at ON hypotheses(proposed_at DESC)"
         )
     )
     conn.execute(
         text(
-            "CREATE INDEX IF NOT EXISTS idx_hypotheses_confidence_score ON hypotheses(confidence_score DESC NULLS LAST)"
+            "CREATE INDEX IF NOT EXISTS idx_hypotheses_likelihood ON hypotheses(likelihood DESC NULLS LAST)"
         )
     )
 
@@ -626,16 +646,16 @@ def _upgrade_postgresql() -> None:
         SELECT
             h.hypothesis_id,
             h.case_id,
-            h.description,
+            h.statement,
             h.status,
-            h.confidence_score,
+            h.likelihood,
             h.proposed_at,
             c.title AS case_title,
             c.status AS case_status
         FROM hypotheses h
         JOIN cases c ON h.case_id = c.case_id
         WHERE h.status IN ('proposed', 'testing')
-        ORDER BY h.confidence_score DESC NULLS LAST, h.proposed_at DESC
+        ORDER BY h.likelihood DESC NULLS LAST, h.proposed_at DESC
     """
         )
     )
@@ -722,7 +742,7 @@ def _upgrade_sqlite() -> None:
         sa.Column("documentation", sa.Text, server_default="{}"),
         sa.Column("progress", sa.Text, server_default="{}"),
         sa.Column("metadata", sa.Text, server_default="{}"),
-        sa.Column("org_id", sa.String(20)),
+        sa.Column("organization_id", sa.String(20)),
         sa.Column("team_id", sa.String(20)),
     )
 
@@ -768,12 +788,24 @@ def _upgrade_sqlite() -> None:
             sa.ForeignKey("cases.case_id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column("description", sa.Text, nullable=False),
-        sa.Column("status", sa.String(20), nullable=False, server_default="proposed"),
-        sa.Column("confidence_score", sa.Numeric(3, 2)),
-        sa.Column("supporting_evidence_ids", sa.Text),
-        sa.Column("validation_result", sa.Text),
-        sa.Column("validation_timestamp", sa.DateTime),
+        sa.Column("statement", sa.Text, nullable=False),
+        sa.Column("status", sa.String(20), nullable=False, server_default="captured"),
+        sa.Column("likelihood", sa.Numeric(3, 2), server_default="0.5"),
+        sa.Column("initial_likelihood", sa.Numeric(3, 2), server_default="0.5"),
+        # Tracking
+        sa.Column("last_updated_turn", sa.Integer, server_default="0"),
+        sa.Column("last_progress_at_turn", sa.Integer, server_default="0"),
+        sa.Column("iterations_without_progress", sa.Integer, server_default="0"),
+        # Categorization
+        sa.Column("category", sa.String(50), nullable=False),
+        sa.Column("generation_mode", sa.String(20), nullable=False, server_default="systematic"),
+        # Details
+        sa.Column("rationale", sa.Text),
+        sa.Column("retirement_reason", sa.Text),
+        sa.Column("evidence_links", sa.Text, server_default="{}"),
+        # Timestamps
+        sa.Column("tested_at", sa.DateTime),
+        sa.Column("concluded_at", sa.DateTime),
         sa.Column(
             "proposed_at",
             sa.DateTime,
@@ -787,10 +819,17 @@ def _upgrade_sqlite() -> None:
             server_default=sa.func.current_timestamp(),
         ),
         sa.Column("metadata", sa.Text, server_default="{}"),
+        # Multi-tenancy and audit
+        sa.Column("organization_id", sa.String(20), nullable=False),
+        sa.Column("created_by", sa.String(255), nullable=False),
+        sa.Column("updated_by", sa.String(255)),
     )
 
     op.create_index("idx_hypotheses_case_id", "hypotheses", ["case_id"])
     op.create_index("idx_hypotheses_status", "hypotheses", ["status"])
+    op.create_index("idx_hypotheses_category", "hypotheses", ["category"])
+    op.create_index("idx_hypotheses_organization_id", "hypotheses", ["organization_id"])
+    op.create_index("idx_hypotheses_created_by", "hypotheses", ["created_by"])
 
     # Table: solutions
     op.create_table(

@@ -748,14 +748,14 @@ class SQLiteCaseRepository(CaseRepository):
         query = text(
             """
             INSERT INTO cases (
-                case_id, user_id, organization_id, title, description, investigation_strategy,
-                status, created_at, updated_at, last_activity_at,
+                case_id, user_id, organization_id, title,
+                status, created_at, updated_at,
                 inquiry, problem_verification, working_conclusion,
                 root_cause_conclusion, path_selection, degraded_mode,
                 escalation_state, documentation, progress, metadata
             ) VALUES (
-                :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
-                :status, :created_at, :updated_at, :last_activity_at,
+                :case_id, :user_id, :organization_id, :title,
+                :status, :created_at, :updated_at,
                 :inquiry, :problem_verification, :working_conclusion,
                 :root_cause_conclusion, :path_selection, :degraded_mode,
                 :escalation_state, :documentation, :progress, :metadata
@@ -764,11 +764,8 @@ class SQLiteCaseRepository(CaseRepository):
                 user_id = EXCLUDED.user_id,
                 organization_id = EXCLUDED.organization_id,
                 title = EXCLUDED.title,
-                description = EXCLUDED.description,
-                investigation_strategy = EXCLUDED.investigation_strategy,
                 status = EXCLUDED.status,
                 updated_at = EXCLUDED.updated_at,
-                last_activity_at = EXCLUDED.last_activity_at,
                 inquiry = EXCLUDED.inquiry,
                 problem_verification = EXCLUDED.problem_verification,
                 working_conclusion = EXCLUDED.working_conclusion,
@@ -789,12 +786,9 @@ class SQLiteCaseRepository(CaseRepository):
                 "user_id": case.user_id,
                 "organization_id": case.organization_id,
                 "title": case.title,
-                "description": case.description,
-                "investigation_strategy": case.investigation_strategy.value,
                 "status": case.status.value,
                 "created_at": case.created_at,
                 "updated_at": case.updated_at,
-                "last_activity_at": case.last_activity_at,
                 "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
                 "problem_verification": (
                     json.dumps(

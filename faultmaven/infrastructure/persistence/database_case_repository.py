@@ -205,7 +205,7 @@ class DatabaseCaseRepository(CaseRepository):
             if user_id:
                 conditions.append(CaseModel.user_id == user_id)
             if organization_id:
-                conditions.append(CaseModel.org_id == organization_id)
+                conditions.append(CaseModel.organization_id == organization_id)
             if status:
                 conditions.append(CaseModel.status == status.value)
 
@@ -313,7 +313,7 @@ class DatabaseCaseRepository(CaseRepository):
             if user_id:
                 conditions.append(CaseModel.user_id == user_id)
             if organization_id:
-                conditions.append(CaseModel.org_id == organization_id)
+                conditions.append(CaseModel.organization_id == organization_id)
 
             # Count query
             count_stmt = (
@@ -962,7 +962,7 @@ class DatabaseCaseRepository(CaseRepository):
             documentation=documentation_json,
             progress=progress_json,
             case_metadata=json.dumps(metadata),
-            org_id=case.organization_id,
+            organization_id=case.organization_id,
         )
 
     # ========================================================================
@@ -1056,7 +1056,7 @@ class DatabaseCaseRepository(CaseRepository):
         return Case(
             case_id=model.case_id,
             user_id=model.user_id,
-            organization_id=model.org_id or "",
+            organization_id=model.organization_id or "",
             title=model.title,
             description=description,
             status=CaseStatus(model.status),

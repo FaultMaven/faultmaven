@@ -321,7 +321,7 @@ CREATE TABLE cases (
     -- ============================================================
     case_id VARCHAR(17) PRIMARY KEY,
     user_id VARCHAR(255) NOT NULL REFERENCES users(user_id),
-    organization_id VARCHAR(255) NOT NULL REFERENCES organizations(organization_id),
+    organization_id VARCHAR(20) NOT NULL REFERENCES organizations(organization_id),
     title VARCHAR(200) NOT NULL,
     description TEXT DEFAULT '',
 
