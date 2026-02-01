@@ -46,6 +46,10 @@ from faultmaven.modules.case.domain.models import (
     UploadedFile,
     WorkingConclusion,
 )
+from faultmaven.modules.case.domain.owned_models.report import (
+    CaseReport,
+    ReportType,
+)
 
 
 class PostgreSQLHybridCaseRepository(CaseRepository):

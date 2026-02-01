@@ -1034,7 +1034,7 @@ class CaseService(BaseService, ICaseService):
             # Create CaseMessage object
             # Per case-storage-design.md Section 4.7, use "created_at"
             msg = CaseMessage(
-                message_id=f"msg_{uuid4().hex[:12]}",
+                message_id=f"msg_{uuid.uuid4().hex[:12]}",
                 case_id=case_id,
                 turn_number=0,  # Will be set correctly by add_message_to_case based on current turn
                 role="user",
