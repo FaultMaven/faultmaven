@@ -21,6 +21,7 @@ Architecture:
 - Automatic status transitions (INVESTIGATING → RESOLVED)
 """
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -390,19 +391,28 @@ class MilestoneEngine:
         # Create proper json_schema response format
         response_format = create_response_format_json_schema(schema_model)
 
-        # Add JSON instruction for json_object fallback mode
-        # Some models don't support strict json_schema and will fall back to json_object
-        # which requires explicit JSON instruction in the prompt
+        # CRITICAL: Include schema in prompt for json_object fallback mode
+        # When providers don't support strict json_schema (e.g., Groq Llama-3.3),
+        # they fall back to json_object which DISCARDS the schema from response_format.
+        # We must include the schema in the prompt text itself to ensure the model
+        # knows what structure to generate.
+        schema_json = json.dumps(schema_model.model_json_schema(), indent=2)
         json_instruction = (
-            "\n\nIMPORTANT: You MUST respond with valid JSON matching the schema. "
-            "Do not include any text before or after the JSON."
+            "\n\n## RESPONSE FORMAT\n"
+            "You MUST respond with valid JSON matching this exact schema:\n\n"
+            f"```json\n{schema_json}\n```\n\n"
+            "IMPORTANT:\n"
+            "- Use the exact field names shown in the schema\n"
+            "- Do not add extra fields not in the schema\n"
+            "- Do not include any text before or after the JSON\n"
+            "- Ensure all required fields are present\n"
         )
-        prompt_with_json_hint = f"{prompt}{json_instruction}"
+        prompt_with_schema = f"{prompt}{json_instruction}"
 
         # Define the LLM operation for retry
         async def llm_operation():
             response = await self.llm_provider.generate(
-                prompt=prompt_with_json_hint,
+                prompt=prompt_with_schema,
                 max_tokens=4000,
                 temperature=0.2,  # Lower temperature for structured output
                 response_format=response_format,

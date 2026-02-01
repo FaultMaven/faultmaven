@@ -25,11 +25,20 @@ class GroqProvider(BaseLLMProvider):
     using their custom LPU hardware. The API is OpenAI-compatible.
     """
 
-    # Models that support json_schema with strict: True
-    # Source: https://console.groq.com/docs/structured-outputs (2025-02-01)
+    # Models that officially support strict: True (Structured Outputs)
+    # Source: https://console.groq.com/docs/structured-outputs (verified 2025-02-01)
+    #
+    # NOTE: Popular models like Llama-3.3-70b-versatile, Mixtral-8x7b, and
+    # Llama-3.1 variants currently support only "Best Effort" or json_object mode,
+    # NOT strict json_schema. FaultMaven automatically falls back to json_object
+    # for these models and includes the schema in the prompt text.
+    #
+    # For guaranteed field names and zero hallucinations, use one of these models:
     STRICT_JSON_SCHEMA_MODELS = {
         "openai/gpt-oss-20b",
         "openai/gpt-oss-120b",
+        # Add new models here as Groq updates support
+        # Check https://console.groq.com/docs/structured-outputs for latest list
     }
 
     @property
