@@ -152,9 +152,10 @@ class SQLiteCaseRepository(CaseRepository):
         """Load hypotheses for a case."""
         query = text(
             """
-            SELECT hypothesis_id, description, status, confidence_score,
-                   supporting_evidence_ids, validation_result, validation_timestamp,
-                   proposed_at, updated_at, metadata
+            SELECT hypothesis_id, statement, status, likelihood, initial_likelihood,
+                   last_updated_turn, last_progress_at_turn, iterations_without_progress,
+                   category, generation_mode, rationale, retirement_reason,
+                   evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata
             FROM hypotheses
             WHERE case_id = :case_id
         """
@@ -167,15 +168,23 @@ class SQLiteCaseRepository(CaseRepository):
             hypotheses.append(
                 {
                     "hypothesis_id": row[0],
-                    "description": row[1],
+                    "statement": row[1],
                     "status": row[2],
-                    "confidence_score": row[3],
-                    "supporting_evidence_ids": json.loads(row[4]) if row[4] else [],
-                    "validation_result": row[5],
-                    "validation_timestamp": row[6],
-                    "proposed_at": row[7],
-                    "updated_at": row[8],
-                    "metadata": json.loads(row[9]) if row[9] else {},
+                    "likelihood": row[3],
+                    "initial_likelihood": row[4],
+                    "last_updated_turn": row[5],
+                    "last_progress_at_turn": row[6],
+                    "iterations_without_progress": row[7],
+                    "category": row[8],
+                    "generation_mode": row[9],
+                    "rationale": row[10],
+                    "retirement_reason": row[11],
+                    "evidence_links": json.loads(row[12]) if row[12] else {},
+                    "tested_at": row[13],
+                    "concluded_at": row[14],
+                    "proposed_at": row[15],
+                    "updated_at": row[16],
+                    "metadata": json.loads(row[17]) if row[17] else {},
                 }
             )
         return hypotheses
@@ -910,21 +919,26 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, description, status, confidence_score,
-                    supporting_evidence_ids, validation_result, validation_timestamp,
-                    proposed_at, updated_at, metadata
+                    hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
+                    last_updated_turn, last_progress_at_turn, iterations_without_progress,
+                    category, generation_mode, rationale, retirement_reason, evidence_links,
+                    tested_at, concluded_at, proposed_at, updated_at, metadata
                 ) VALUES (
-                    :hypothesis_id, :case_id, :description, :status, :confidence_score,
-                    :supporting_evidence_ids, :validation_result, :validation_timestamp,
-                    :proposed_at, :updated_at, :metadata
+                    :hypothesis_id, :case_id, :statement, :status, :likelihood, :initial_likelihood,
+                    :last_updated_turn, :last_progress_at_turn, :iterations_without_progress,
+                    :category, :generation_mode, :rationale, :retirement_reason, :evidence_links,
+                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
-                    description = EXCLUDED.description,
+                    statement = EXCLUDED.statement,
                     status = EXCLUDED.status,
-                    confidence_score = EXCLUDED.confidence_score,
-                    supporting_evidence_ids = EXCLUDED.supporting_evidence_ids,
-                    validation_result = EXCLUDED.validation_result,
-                    validation_timestamp = EXCLUDED.validation_timestamp,
+                    likelihood = EXCLUDED.likelihood,
+                    last_updated_turn = EXCLUDED.last_updated_turn,
+                    last_progress_at_turn = EXCLUDED.last_progress_at_turn,
+                    iterations_without_progress = EXCLUDED.iterations_without_progress,
+                    retirement_reason = EXCLUDED.retirement_reason,
+                    evidence_links = EXCLUDED.evidence_links,
+                    concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
             """
@@ -935,31 +949,26 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "case_id": case_id,
-                    "description": hypothesis.hypothesis,
-                    "status": "proposed",
-                    "confidence_score": (
-                        hypothesis.confidence
-                        if hasattr(hypothesis, "confidence")
-                        else None
+                    "statement": hypothesis.statement,
+                    "status": hypothesis.status.value,
+                    "likelihood": hypothesis.likelihood,
+                    "initial_likelihood": hypothesis.initial_likelihood,
+                    "last_updated_turn": hypothesis.last_updated_turn,
+                    "last_progress_at_turn": hypothesis.last_progress_at_turn,
+                    "iterations_without_progress": hypothesis.iterations_without_progress,
+                    "category": hypothesis.category.value,
+                    "generation_mode": hypothesis.generation_mode.value,
+                    "rationale": hypothesis.rationale,
+                    "retirement_reason": hypothesis.retirement_reason,
+                    "evidence_links": json.dumps(
+                        {
+                            eid: link.model_dump()
+                            for eid, link in hypothesis.evidence_links.items()
+                        }
                     ),
-                    "supporting_evidence_ids": json.dumps(
-                        hypothesis.evidence if hasattr(hypothesis, "evidence") else []
-                    ),
-                    "validation_result": (
-                        hypothesis.validation_result
-                        if hasattr(hypothesis, "validation_result")
-                        else None
-                    ),
-                    "validation_timestamp": (
-                        hypothesis.validated_at
-                        if hasattr(hypothesis, "validated_at")
-                        else None
-                    ),
-                    "proposed_at": (
-                        hypothesis.proposed_at
-                        if hasattr(hypothesis, "proposed_at")
-                        else datetime.now(UTC)
-                    ),
+                    "tested_at": hypothesis.tested_at,
+                    "concluded_at": hypothesis.concluded_at,
+                    "proposed_at": hypothesis.proposed_at or datetime.now(UTC),
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
                 },

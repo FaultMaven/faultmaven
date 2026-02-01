@@ -82,24 +82,29 @@ class HypothesisManager:
         current_turn: int,
         generation_mode: HypothesisGenerationMode = HypothesisGenerationMode.SYSTEMATIC,
         status: HypothesisStatus = HypothesisStatus.ACTIVE,
+        rationale: Optional[str] = None,
     ) -> Hypothesis:
         """Create new hypothesis"""
-        return Hypothesis(
+        hypothesis = Hypothesis(
             statement=statement,
             category=category,
             likelihood=initial_likelihood,
+            initial_likelihood=initial_likelihood,
             status=status,
             generation_mode=generation_mode,
             generated_at_turn=current_turn,
+            last_updated_turn=current_turn,
+            last_progress_at_turn=current_turn,
             evidence_links={},
-            rationale=triggering_observation or "Initial hypothesis",
+            rationale=rationale or "Initial hypothesis",
         )
 
         self.logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (category={category}, likelihood={initial_likelihood}, "
-            f"mode={generation_mode.value}, status={status.value})"
+            f"{statement[:50]}... (category={category}, likelihood={initial_likelihood}, turn={current_turn})"
         )
+
+        return hypothesis
 
         return hypothesis
 
@@ -107,20 +112,20 @@ class HypothesisManager:
         self,
         statement: str,
         category: str,
-        confidence: float,
+        likelihood: float,
         supporting_evidence_ids: List[str],
         current_turn: int,
     ) -> Hypothesis:
         """Create hypothesis already in VALIDATED state (Single-Shot Validation)."""
-        if confidence < 0.7:
-             raise ValueError("Validated hypothesis requires confidence >= 0.7")
+        if likelihood < 0.7:
+             raise ValueError("Validated hypothesis requires likelihood >= 0.7")
         if len(supporting_evidence_ids) < 2:
              raise ValueError("Validated hypothesis requires at least 2 supporting evidence items")
              
         hypothesis = self.create_hypothesis(
             statement=statement,
             category=category,
-            initial_likelihood=confidence,
+            initial_likelihood=likelihood,
             current_turn=current_turn,
             status=HypothesisStatus.VALIDATED,
             generation_mode=HypothesisGenerationMode.SYSTEMATIC
@@ -132,7 +137,7 @@ class HypothesisManager:
         
         self.logger.info(
             f"Created VALIDATED hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (confidence={confidence:.2f})"
+            f"{statement[:50]}... (likelihood={likelihood:.2f})"
         )
         
         return hypothesis
@@ -143,6 +148,8 @@ class HypothesisManager:
         evidence_id: str,
         supports: bool,
         turn: int,
+        reasoning: str = "Linked by agent",
+        completeness: float = 1.0,
     ) -> None:
         """Link evidence to hypothesis."""
         stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
@@ -152,8 +159,8 @@ class HypothesisManager:
                 hypothesis_id=hypothesis.hypothesis_id,
                 evidence_id=evidence_id,
                 stance=stance,
-                reasoning="Linked by agent",
-                completeness=1.0 if supports else 0.0 # simplified logic
+                reasoning=reasoning,
+                completeness=completeness
             )
             hypothesis.evidence_links[evidence_id] = link
             self.logger.info(
@@ -164,17 +171,17 @@ class HypothesisManager:
                 },
             )
 
-        # Update confidence after linking evidence
-        self.update_confidence_from_evidence(hypothesis, turn)
+        # Update likelihood after linking evidence
+        self.update_likelihood_from_evidence(hypothesis, turn)
 
-    def update_confidence_from_evidence(
+    def update_likelihood_from_evidence(
         self,
         hypothesis: Hypothesis,
         turn: int,
     ) -> None:
-        """Update hypothesis confidence based on evidence accumulation
+        """Update hypothesis likelihood based on evidence accumulation
 
-        Confidence formula:
+        Likelihood formula:
         - Start with initial_likelihood
         - Add 0.15 per supporting evidence
         - Subtract 0.20 per refuting evidence
@@ -184,48 +191,39 @@ class HypothesisManager:
             hypothesis: Hypothesis to update
             turn: Current turn number
         """
-        # Updated confidence
-        supporting_count = sum(1 for link in hypothesis.evidence_links.values() if link.stance == EvidenceStance.SUPPORTS)
-        refuting_count = sum(1 for link in hypothesis.evidence_links.values() if link.stance == EvidenceStance.REFUTES)
+        old_likelihood = hypothesis.likelihood
 
-        # Calculate new confidence (simplified logic based on original) - initial_likelihood is not available, using current
-        # Note: Ideally we should store initial_likelihood in metadata if needed for recalculation
-        # For now, we adjust from current likelihood or assume it's cumulative?
-        # The original code reset from initial_likelihood. New model doesn't have it.
-        # We will apply delta to current likelihood, but need to be careful not to double count.
-        # Better: Since we can't reproduce exact formula without initial_likelihood, we will just CLAMP.
-        # Actually, let's assume likelihood is current state and we don't auto-recalc from scratch in this method 
-        # unless we track history.
-        
-        # But wait, create_hypothesis sets likelihood.
-        # We will assume calling update_confidence_from_evidence is meant to APPLY the delta of NEW evidence?
-        # No, the original code recalculated from scratch: `new_confidence = hypothesis.initial_likelihood + ...`
-        
-        # Since we lost initial_likelihood, we will just use current likelihood + small delta for *this* turn's new evidence?
-        # Or better: We assume the agent sets confidence via `record_hypothesis_test` or direct update.
-        # This method `update_confidence_from_evidence` was called by `link_evidence`.
-        
-        # Let's simple-increment:
-        # If we just linked evidence, we should nudge confidence.
-        
-        # TODO: Refine confidence scoring model in future refinement.
-        pass
-        
-        # For now, we will NOT auto-recalculate confidence here to avoid drifting without base.
-        # The Agent determines confidence.
-        
+        supporting_count = sum(
+            1
+            for link in hypothesis.evidence_links.values()
+            if link.stance == EvidenceStance.SUPPORTS
+        )
+        refuting_count = sum(
+            1
+            for link in hypothesis.evidence_links.values()
+            if link.stance == EvidenceStance.REFUTES
+        )
+
+        # Baseline is initial_likelihood. Accumulate deltas.
+        new_likelihood = (
+            hypothesis.initial_likelihood
+            + (0.15 * supporting_count)
+            - (0.20 * refuting_count)
+        )
+        new_likelihood = max(0.0, min(1.0, new_likelihood))
+
+        hypothesis.likelihood = new_likelihood
         hypothesis.last_updated_turn = turn
-        # hypothesis.confidence_trajectory.append((turn, new_confidence)) # Trajectory removed from model
 
         # Check if this represents progress
-        if abs(new_confidence - old_confidence) >= 0.05:  # 5% threshold
+        if abs(new_likelihood - old_likelihood) >= 0.05:  # 5% threshold
             hypothesis.last_progress_at_turn = turn
             hypothesis.iterations_without_progress = 0
         else:
             hypothesis.iterations_without_progress += 1
 
         self.logger.info(
-            f"Updated hypothesis confidence: {old_confidence:.2f} → {new_confidence:.2f}",
+            f"Updated hypothesis likelihood: {old_likelihood:.2f} -> {new_likelihood:.2f}",
             extra={
                 "hypothesis_id": hypothesis.hypothesis_id,
                 "evidence_ratio": self.calculate_evidence_ratio(hypothesis),
@@ -235,20 +233,20 @@ class HypothesisManager:
         # Check if hypothesis should transition status
         self._check_status_transition(hypothesis, turn)
 
-    def update_hypothesis_confidence(
+    def update_hypothesis_likelihood(
         self,
         hypothesis: Hypothesis,
         new_likelihood: float,
         current_turn: int,
         reason: str,
     ) -> Hypothesis:
-        """Update hypothesis confidence manually (for test results)
+        """Update hypothesis likelihood manually (for test results)
 
         Args:
             hypothesis: Hypothesis to update
-            new_likelihood: New confidence level (0.0 to 1.0)
+            new_likelihood: New likelihood level (0.0 to 1.0)
             current_turn: Current conversation turn
-            reason: Reason for confidence change
+            reason: Reason for likelihood change
 
         Returns:
             Updated hypothesis
@@ -261,7 +259,7 @@ class HypothesisManager:
             # hypothesis.last_progress_at_turn = current_turn # Removed from model
             # hypothesis.iterations_without_progress = 0 # Removed from model
             self.logger.info(
-                f"Hypothesis {hypothesis.hypothesis_id} confidence updated: "
+                f"Hypothesis {hypothesis.hypothesis_id} likelihood updated: "
                 f"{old_likelihood:.2f} → {new_likelihood:.2f} ({reason})"
             )
         else:
@@ -285,8 +283,8 @@ class HypothesisManager:
         """Check if hypothesis should transition to VALIDATED or REFUTED
 
         Transition criteria:
-        - VALIDATED: confidence >= 0.70 and at least 2 supporting evidence
-        - REFUTED: confidence <= 0.20 and at least 2 refuting evidence
+        - VALIDATED: likelihood >= 0.70 and at least 2 supporting evidence
+        - REFUTED: likelihood <= 0.20 and at least 2 refuting evidence
 
         Args:
             hypothesis: Hypothesis to check
@@ -306,7 +304,7 @@ class HypothesisManager:
                 f"Hypothesis VALIDATED: {hypothesis.statement}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
-                    "confidence": hypothesis.likelihood,
+                    "likelihood": hypothesis.likelihood,
                     "supporting_evidence": supporting_count,
                 },
             )
@@ -319,7 +317,7 @@ class HypothesisManager:
                 f"Hypothesis REFUTED: {hypothesis.statement}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
-                    "confidence": hypothesis.likelihood,
+                    "likelihood": hypothesis.likelihood,
                     "refuting_evidence": refuting_count,
                 },
             )
@@ -332,16 +330,33 @@ class HypothesisManager:
             hypothesis.status = HypothesisStatus.RETIRED
             hypothesis.rationale = "Low confidence after testing" # Mapped retirement_reason to rationale or logging
             self.logger.info(
-                f"Hypothesis {hypothesis.hypothesis_id} RETIRED (confidence < 30%)"
+                f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)"
             )
 
-    def apply_confidence_decay(
+    def apply_likelihood_decay(
         self,
         hypothesis: Hypothesis,
         current_turn: int,
     ) -> Hypothesis:
-        """Apply confidence decay to stagnant hypothesis"""
-        # Removed iterations_without_progress from model, so decay is disabled for now/needs new logic
+        """Apply likelihood decay to stagnant hypothesis
+
+        Likelihood decay formula: base * 0.85^iterations_without_progress
+        """
+        if (
+            hypothesis.status == HypothesisStatus.ACTIVE
+            and hypothesis.iterations_without_progress > 0
+        ):
+            old_likelihood = hypothesis.likelihood
+            # Apply decay factor
+            decay_factor = 0.85**hypothesis.iterations_without_progress
+            hypothesis.likelihood = max(0.1, hypothesis.likelihood * decay_factor)
+
+            self.logger.info(
+                f"Applied likelihood decay to hypothesis {hypothesis.hypothesis_id}: "
+                f"{old_likelihood:.2f} -> {hypothesis.likelihood:.2f} "
+                f"(stagnant for {hypothesis.iterations_without_progress} turns)"
+            )
+
         return hypothesis
 
     def refute_hypothesis(
@@ -374,7 +389,7 @@ class HypothesisManager:
                     reasoning=reason,
                     completeness=1.0
                 )
-        # hypothesis.retirement_reason = reason # Not in model
+        hypothesis.retirement_reason = reason
         hypothesis.last_updated_turn = current_turn
 
         self.logger.info(
@@ -701,12 +716,12 @@ def create_hypothesis_manager() -> HypothesisManager:
 
 
 def rank_hypotheses_by_likelihood(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
-    """Sort hypotheses by confidence (descending)
+    """Sort hypotheses by likelihood (descending)
 
     Args:
         hypotheses: List of hypotheses to sort
 
     Returns:
-        Sorted list with highest confidence first
+        Sorted list with highest likelihood first
     """
     return sorted(hypotheses, key=lambda h: h.likelihood, reverse=True)

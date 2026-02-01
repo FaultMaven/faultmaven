@@ -164,7 +164,7 @@ class TestUploadedDataModel:
         assert data.upload_timestamp == "2024-01-01T12:00:00Z"
         assert data.processing_status == ProcessingStatus.COMPLETED
         assert data.processing_summary is None
-        assert data.confidence_score is None
+        assert data.likelihood is None
 
     def test_uploaded_data_required_fields(self):
         """Test UploadedData required fields validation."""
@@ -242,11 +242,11 @@ class TestUploadedDataModel:
             upload_timestamp="2024-01-01T12:00:00Z",
             processing_status=ProcessingStatus.COMPLETED,
             processing_summary="Successfully parsed configuration",
-            confidence_score=0.95,
+            likelihood=0.95,
         )
 
         assert data.processing_summary == "Successfully parsed configuration"
-        assert data.confidence_score == 0.95
+        assert data.likelihood == 0.95
 
 
 class TestViewStateModel:

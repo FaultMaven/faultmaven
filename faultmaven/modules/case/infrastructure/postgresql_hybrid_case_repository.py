@@ -173,12 +173,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     COALESCE(
                         json_agg(DISTINCT jsonb_build_object(
                             'hypothesis_id', h.hypothesis_id,
-                            'description', h.description,
+                            'statement', h.statement,
                             'status', h.status,
-                            'confidence_score', h.confidence_score,
-                            'supporting_evidence_ids', h.supporting_evidence_ids,
-                            'validation_result', h.validation_result,
-                            'validation_timestamp', h.validation_timestamp,
+                            'likelihood', h.likelihood,
+                            'initial_likelihood', h.initial_likelihood,
+                            'category', h.category,
+                            'evidence_links', h.evidence_links,
+                            'last_updated_turn', h.last_updated_turn,
+                            'iterations_without_progress', h.iterations_without_progress,
                             'proposed_at', h.proposed_at,
                             'updated_at', h.updated_at,
                             'metadata', h.metadata
@@ -1103,21 +1105,26 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, description, status, confidence_score,
-                    supporting_evidence_ids, validation_result, validation_timestamp,
-                    proposed_at, updated_at, metadata
+                    hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
+                    last_updated_turn, last_progress_at_turn, iterations_without_progress,
+                    category, generation_mode, rationale, retirement_reason,
+                    evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata
                 ) VALUES (
-                    :hypothesis_id, :case_id, :description, :status, :confidence_score,
-                    :supporting_evidence_ids, :validation_result, :validation_timestamp,
-                    :proposed_at, :updated_at, :metadata::jsonb
+                    :hypothesis_id, :case_id, :statement, :status, :likelihood, :initial_likelihood,
+                    :last_updated_turn, :last_progress_at_turn, :iterations_without_progress,
+                    :category, :generation_mode, :rationale, :retirement_reason,
+                    :evidence_links::jsonb, :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
-                    description = EXCLUDED.description,
+                    statement = EXCLUDED.statement,
                     status = EXCLUDED.status,
-                    confidence_score = EXCLUDED.confidence_score,
-                    supporting_evidence_ids = EXCLUDED.supporting_evidence_ids,
-                    validation_result = EXCLUDED.validation_result,
-                    validation_timestamp = EXCLUDED.validation_timestamp,
+                    likelihood = EXCLUDED.likelihood,
+                    last_updated_turn = EXCLUDED.last_updated_turn,
+                    last_progress_at_turn = EXCLUDED.last_progress_at_turn,
+                    iterations_without_progress = EXCLUDED.iterations_without_progress,
+                    retirement_reason = EXCLUDED.retirement_reason,
+                    evidence_links = EXCLUDED.evidence_links,
+                    concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
             """
@@ -1128,33 +1135,28 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "case_id": case_id,
-                    "description": hypothesis.hypothesis,
-                    "status": "proposed",  # Default status
-                    "confidence_score": (
-                        hypothesis.confidence
-                        if hasattr(hypothesis, "confidence")
-                        else None
+                    "statement": hypothesis.statement,
+                    "status": hypothesis.status.value,
+                    "likelihood": hypothesis.likelihood,
+                    "initial_likelihood": hypothesis.initial_likelihood,
+                    "last_updated_turn": hypothesis.last_updated_turn,
+                    "last_progress_at_turn": hypothesis.last_progress_at_turn,
+                    "iterations_without_progress": hypothesis.iterations_without_progress,
+                    "category": hypothesis.category.value,
+                    "generation_mode": hypothesis.generation_mode.value,
+                    "rationale": hypothesis.rationale,
+                    "retirement_reason": hypothesis.retirement_reason,
+                    "evidence_links": json.dumps(
+                        {
+                            eid: link.model_dump()
+                            for eid, link in hypothesis.evidence_links.items()
+                        }
                     ),
-                    "supporting_evidence_ids": (
-                        hypothesis.evidence if hasattr(hypothesis, "evidence") else []
-                    ),
-                    "validation_result": (
-                        hypothesis.validation_result
-                        if hasattr(hypothesis, "validation_result")
-                        else None
-                    ),
-                    "validation_timestamp": (
-                        hypothesis.validated_at
-                        if hasattr(hypothesis, "validated_at")
-                        else None
-                    ),
-                    "proposed_at": (
-                        hypothesis.proposed_at
-                        if hasattr(hypothesis, "proposed_at")
-                        else datetime.now(timezone.utc)
-                    ),
+                    "tested_at": hypothesis.tested_at,
+                    "concluded_at": hypothesis.concluded_at,
+                    "proposed_at": hypothesis.proposed_at or datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
-                    "metadata": json.dumps({}),
+                    "metadata": json.dumps(hypothesis.metadata),
                 },
             )
 

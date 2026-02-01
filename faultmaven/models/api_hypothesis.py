@@ -24,21 +24,21 @@ class HypothesisCreateRequest(BaseModel):
         None,
         min_length=5,
         max_length=200,
-        description="Short hypothesis title (optional, derived from description if not provided)",
+        description="Short hypothesis title (optional, derived from statement if not provided)",
     )
 
-    description: str = Field(
+    statement: str = Field(
         ...,
         min_length=10,
         max_length=5000,
-        description="Hypothesis description - what we think caused the problem",
+        description="Hypothesis statement - what we think caused the problem",
     )
 
-    confidence_score: Optional[Decimal] = Field(
+    likelihood: Optional[Decimal] = Field(
         None,
         ge=0.0,
         le=1.0,
-        description="Initial confidence score (0.00-1.00). Optional, can be set later.",
+        description="Initial likelihood score (0.00-1.00). Optional, can be set later.",
     )
 
     supporting_evidence_ids: List[str] = Field(
@@ -55,8 +55,8 @@ class HypothesisCreateRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "title": "Database connection pool exhausted",
-                "description": "Database connection timeout due to network latency spikes between app and DB server",
-                "confidence_score": 0.7,
+                "statement": "Database connection timeout due to network latency spikes between app and DB server",
+                "likelihood": 0.7,
                 "supporting_evidence_ids": ["e1234567890ab"],
                 "metadata": {
                     "source": "manual",
@@ -76,23 +76,23 @@ class HypothesisUpdateRequest(BaseModel):
         description="Updated hypothesis title",
     )
 
-    description: Optional[str] = Field(
+    statement: Optional[str] = Field(
         None,
         min_length=10,
         max_length=5000,
-        description="Updated hypothesis description",
+        description="Updated hypothesis statement",
     )
 
     status: Optional[str] = Field(
         None,
-        description="Status: proposed, testing, validated, invalidated, deferred",
+        description="Status: captured, active, validated, refuted, inconclusive, retired",
     )
 
-    confidence: Optional[float] = Field(
+    likelihood: Optional[float] = Field(
         None,
         ge=0.0,
         le=1.0,
-        description="Updated confidence score (0.00-1.00)",
+        description="Updated likelihood score (0.00-1.00)",
     )
 
     evidence_supporting: Optional[List[str]] = Field(
@@ -116,19 +116,19 @@ class HypothesisUpdateRequest(BaseModel):
         description="Updated metadata",
     )
 
-    @field_validator("confidence")
+    @field_validator("likelihood")
     @classmethod
-    def validate_confidence(cls, v):
-        """Validate confidence score range."""
+    def validate_likelihood(cls, v):
+        """Validate likelihood score range."""
         if v is not None and (v < 0 or v > 1):
-            raise ValueError("Confidence score must be between 0.00 and 1.00")
+            raise ValueError("Likelihood score must be between 0.00 and 1.00")
         return v
 
     class Config:
         json_schema_extra = {
             "example": {
                 "status": "validated",
-                "confidence_score": 0.95,
+                "likelihood": 0.95,
                 "validation_result": "Network trace confirmed 250ms average latency to DB server. Validated via tcpdump analysis.",
             }
         }
@@ -137,11 +137,11 @@ class HypothesisUpdateRequest(BaseModel):
 class HypothesisValidateRequest(BaseModel):
     """Request model for validating a hypothesis."""
 
-    confidence_score: Decimal = Field(
+    likelihood: Decimal = Field(
         ...,
         ge=0.0,
         le=1.0,
-        description="Validation confidence score (0.00-1.00)",
+        description="Validation likelihood score (0.00-1.00)",
     )
 
     validation_method: str = Field(
@@ -163,18 +163,18 @@ class HypothesisValidateRequest(BaseModel):
         description="Evidence IDs that validate this hypothesis",
     )
 
-    @field_validator("confidence_score")
+    @field_validator("likelihood")
     @classmethod
-    def validate_confidence(cls, v):
-        """Validate confidence score range."""
+    def validate_likelihood(cls, v):
+        """Validate likelihood score range."""
         if v is not None and (v < 0 or v > 1):
-            raise ValueError("Confidence score must be between 0.00 and 1.00")
+            raise ValueError("Likelihood score must be between 0.00 and 1.00")
         return v
 
     class Config:
         json_schema_extra = {
             "example": {
-                "confidence_score": 0.92,
+                "likelihood": 0.92,
                 "validation_method": "Network performance analysis (tcpdump + iperf3)",
                 "validation_result": "Confirmed average 250ms RTT to DB server. Packet loss 0.2% during peak hours. Validates network latency hypothesis.",
                 "supporting_evidence_ids": ["e1234567890ab", "e2345678901bc"],
@@ -187,16 +187,20 @@ class HypothesisResponse(BaseModel):
 
     hypothesis_id: str = Field(..., description="Unique hypothesis identifier")
     case_id: str = Field(..., description="Associated case identifier")
-    description: str = Field(..., description="Hypothesis description")
+    statement: str = Field(..., description="Hypothesis statement")
     status: str = Field(..., description="Current status")
-    confidence_score: Optional[float] = Field(
-        None, description="Confidence score (0.00-1.00)"
+    likelihood: Optional[float] = Field(
+        None, description="Likelihood score (0.00-1.00)"
     )
-    supporting_evidence_ids: List[str] = Field(
-        ..., description="Supporting evidence IDs"
+    initial_likelihood: Optional[float] = Field(
+        None, description="Initial likelihood score"
     )
-    validation_result: Optional[str] = Field(None, description="Validation result")
-    validation_timestamp: Optional[datetime] = Field(None, description="When validated")
+    category: str = Field(..., description="Hypothesis category")
+    evidence_links: Dict[str, Dict] = Field(
+        default_factory=dict, description="Evidence relationships"
+    )
+    last_updated_turn: int = Field(default=0)
+    iterations_without_progress: int = Field(default=0)
     proposed_at: datetime = Field(..., description="When proposed")
     updated_at: datetime = Field(..., description="Last updated")
     created_by: str = Field(..., description="User who created this hypothesis")
@@ -205,27 +209,29 @@ class HypothesisResponse(BaseModel):
 
     @classmethod
     def from_dict(cls, data: Dict) -> "HypothesisResponse":
-        """Create HypothesisResponse from dictionary (repository layer).
-
-        Use from_domain() instead for domain objects. This method is for
-        direct dictionary sources (e.g., database results).
-        """
+        """Create HypothesisResponse from dictionary."""
         return cls(
             hypothesis_id=data.get("hypothesis_id"),
             case_id=data.get("case_id"),
-            description=data.get("description"),
+            statement=data.get("statement"),
             status=data.get("status"),
-            confidence_score=(
-                float(data.get("confidence_score"))
-                if data.get("confidence_score") is not None
+            likelihood=(
+                float(data.get("likelihood"))
+                if data.get("likelihood") is not None
                 else None
             ),
-            supporting_evidence_ids=data.get("supporting_evidence_ids", []),
-            validation_result=data.get("validation_result"),
-            validation_timestamp=data.get("validation_timestamp"),
+            initial_likelihood=(
+                float(data.get("initial_likelihood"))
+                if data.get("initial_likelihood") is not None
+                else None
+            ),
+            category=data.get("category", "other"),
+            evidence_links=data.get("evidence_links", {}),
+            last_updated_turn=data.get("last_updated_turn", 0),
+            iterations_without_progress=data.get("iterations_without_progress", 0),
             proposed_at=data.get("proposed_at"),
             updated_at=data.get("updated_at"),
-            created_by=data.get("created_by"),
+            created_by=data.get("created_by", "SYSTEM"),
             updated_by=data.get("updated_by"),
             metadata=data.get("metadata", {}),
         )

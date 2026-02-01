@@ -328,12 +328,29 @@ class HypothesisModel(Base):
         nullable=False,
         index=True,
     )
-    description = Column(Text, nullable=False)
-    status = Column(String(20), nullable=False, default="proposed", index=True)
-    confidence_score = Column(Numeric(3, 2))
-    supporting_evidence_ids = Column(Text)  # JSON array as TEXT
-    validation_result = Column(Text)
-    validation_timestamp = Column(DateTime(timezone=True))
+    statement = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="captured", index=True)
+    likelihood = Column(Numeric(3, 2), default=0.5)
+    initial_likelihood = Column(Numeric(3, 2), default=0.5)
+
+    # Tracking
+    last_updated_turn = Column(Integer, default=0)
+    last_progress_at_turn = Column(Integer, default=0)
+    iterations_without_progress = Column(Integer, default=0)
+
+    category = Column(String(50), nullable=False, index=True)
+    generation_mode = Column(String(20), nullable=False, default="systematic")
+
+    rationale = Column(Text)
+    retirement_reason = Column(Text)
+
+    # Evidence Relationships (Many-to-Many via JSONB for simplicity in hybrid model,
+    # or junction table. We'll stick to JSONB in the 'evidence_links' field to match Domain)
+    evidence_links = Column(Text, default="{}")  # JSON mapping of evidence_id -> details
+
+    # Timestamps
+    tested_at = Column(DateTime(timezone=True))
+    concluded_at = Column(DateTime(timezone=True))
     proposed_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -355,11 +372,11 @@ class HypothesisModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "LENGTH(TRIM(description)) > 0", name="hypotheses_description_not_empty"
+            "LENGTH(TRIM(statement)) > 0", name="hypotheses_statement_not_empty"
         ),
         CheckConstraint(
-            "confidence_score IS NULL OR (confidence_score >= 0 AND confidence_score <= 1)",
-            name="hypotheses_confidence_range",
+            "likelihood IS NULL OR (likelihood >= 0 AND likelihood <= 1)",
+            name="hypotheses_likelihood_range",
         ),
     )
 

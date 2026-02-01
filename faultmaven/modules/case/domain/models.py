@@ -321,11 +321,11 @@ class InvestigationProgress(BaseModel):
         description="Root cause determined (directly or via hypothesis validation)",
     )
 
-    root_cause_confidence: float = Field(
+    root_cause_likelihood: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Confidence in root cause identification (0.0 = unknown, 1.0 = certain)",
+        description="Likelihood in root cause identification (0.0 = unknown, 1.0 = certain)",
     )
 
     root_cause_method: Optional[str] = Field(
@@ -523,13 +523,13 @@ class InvestigationProgress(BaseModel):
     def root_cause_consistency(self):
         """Ensure root cause fields are consistent"""
         identified = self.root_cause_identified
-        confidence = self.root_cause_confidence
+        likelihood = self.root_cause_likelihood
         method = self.root_cause_method
 
         if identified:
-            if confidence == 0.0:
+            if likelihood == 0.0:
                 raise ValueError(
-                    "root_cause_confidence must be > 0 when root_cause_identified=True"
+                    "root_cause_likelihood must be > 0 when root_cause_identified=True"
                 )
             if method is None:
                 raise ValueError(
@@ -1652,6 +1652,13 @@ class Hypothesis(BaseModel):
         description="Estimated likelihood this hypothesis is correct (0.0-1.0)",
     )
 
+    initial_likelihood: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Original likelihood when hypothesis was generated",
+    )
+
     # ============================================================
     # Evidence Relationships (Many-to-Many)
     # ============================================================
@@ -1677,8 +1684,24 @@ class Hypothesis(BaseModel):
         ge=0, description="Turn number when hypothesis was generated"
     )
 
+    last_updated_turn: int = Field(
+        default=0, ge=0, description="Turn number when hypothesis was last updated"
+    )
+
+    last_progress_at_turn: int = Field(
+        default=0, ge=0, description="Turn number when hypothesis last showed progress"
+    )
+
+    iterations_without_progress: int = Field(
+        default=0, ge=0, description="Count of consecutive iterations without progress"
+    )
+
     generation_mode: HypothesisGenerationMode = Field(
         description="How hypothesis was generated"
+    )
+
+    retirement_reason: Optional[str] = Field(
+        default=None, description="Reason if hypothesis was retired"
     )
 
     rationale: str = Field(
@@ -2014,6 +2037,15 @@ class TurnProgress(BaseModel):
     )
 
     # ============================================================
+    # System Feedback (for iterative correction)
+    # ============================================================
+    system_feedback: Optional[str] = Field(
+        default=None,
+        description="Instruction or error from system to agent (e.g., 'Invalid evidence ID')",
+        max_length=1000,
+    )
+
+    # ============================================================
     # Computed Properties
     # ============================================================
     @property
@@ -2294,8 +2326,8 @@ class WorkingConclusion(BaseModel):
         description="Current conclusion statement", min_length=1, max_length=1000
     )
 
-    confidence: float = Field(
-        ge=0.0, le=1.0, description="Confidence in this conclusion (0.0-1.0)"
+    likelihood: float = Field(
+        ge=0.0, le=1.0, description="Likelihood of this conclusion (0.0-1.0)"
     )
 
     reasoning: str = Field(
@@ -2337,8 +2369,8 @@ class RootCauseConclusion(BaseModel):
         description="Categorical confidence level"
     )
 
-    confidence_score: float = Field(
-        ge=0.0, le=1.0, description="Numeric confidence score (0.0-1.0)"
+    likelihood: float = Field(
+        ge=0.0, le=1.0, description="Numeric likelihood score (0.0-1.0)"
     )
 
     mechanism: str = Field(
@@ -2382,15 +2414,15 @@ class RootCauseConclusion(BaseModel):
     # ============================================================
     @model_validator(mode="after")
     def confidence_consistency(self):
-        """Ensure confidence_level matches confidence_score"""
+        """Ensure confidence_level matches likelihood"""
         level = self.confidence_level
-        score = self.confidence_score
+        score = self.likelihood
 
         if level and score is not None:
             expected_level = ConfidenceLevel.from_score(score)
             if level != expected_level:
                 raise ValueError(
-                    f"confidence_level {level} does not match score {score} (expected {expected_level})"
+                    f"confidence_level {level} does not match likelihood {score} (expected {expected_level})"
                 )
 
         return self

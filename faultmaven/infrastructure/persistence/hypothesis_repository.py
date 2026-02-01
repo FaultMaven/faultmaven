@@ -61,11 +61,12 @@ class HypothesisRepository(ABC):
         self,
         case_id: str,
         organization_id: str,
-        description: str,
+        statement: str,
         created_by: str,
-        status: Optional[str] = "proposed",
-        confidence_score: Optional[Decimal] = None,
-        supporting_evidence_ids: Optional[List[str]] = None,
+        status: Optional[str] = "captured",
+        likelihood: Optional[Decimal] = None,
+        category: str = "other",
+        evidence_links: Optional[Dict] = None,
         metadata: Optional[Dict] = None,
     ) -> Hypothesis:
         """Create new hypothesis record.
@@ -73,11 +74,12 @@ class HypothesisRepository(ABC):
         Args:
             case_id: Case identifier
             organization_id: Organization identifier (multi-tenant isolation)
-            description: Hypothesis description
+            statement: Hypothesis statement
             created_by: User who created the hypothesis
-            status: Hypothesis status (proposed, testing, validated, invalidated, deferred)
-            confidence_score: Confidence score (0.00-1.00)
-            supporting_evidence_ids: List of evidence IDs supporting this hypothesis
+            status: Hypothesis status
+            likelihood: Likelihood score (0.00-1.00)
+            category: Hypothesis category
+            evidence_links: Dictionary of evidence_id -> details
             metadata: Additional metadata
 
         Returns:
@@ -135,11 +137,11 @@ class HypothesisRepository(ABC):
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        description: Optional[str] = None,
+        statement: Optional[str] = None,
         status: Optional[str] = None,
-        confidence_score: Optional[Decimal] = None,
-        supporting_evidence_ids: Optional[List[str]] = None,
-        validation_result: Optional[str] = None,
+        likelihood: Optional[Decimal] = None,
+        evidence_links: Optional[Dict] = None,
+        retirement_reason: Optional[str] = None,
         metadata: Optional[Dict] = None,
     ) -> Optional[Hypothesis]:
         """Update hypothesis fields.
@@ -148,11 +150,11 @@ class HypothesisRepository(ABC):
             hypothesis_id: Hypothesis identifier
             organization_id: Organization identifier (for multi-tenant isolation)
             updated_by: User performing the update
-            description: New description (if provided)
+            statement: New statement (if provided)
             status: New status (if provided)
-            confidence_score: New confidence score (if provided)
-            supporting_evidence_ids: New supporting evidence IDs (if provided)
-            validation_result: Validation result text (if provided)
+            likelihood: New likelihood score (if provided)
+            evidence_links: New evidence links (if provided)
+            retirement_reason: Reason for retirement (if applicable)
             metadata: New metadata (if provided)
 
         Returns:
@@ -217,11 +219,12 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         self,
         case_id: str,
         organization_id: str,
-        description: str,
+        statement: str,
         created_by: str,
-        status: Optional[str] = "proposed",
-        confidence_score: Optional[Decimal] = None,
-        supporting_evidence_ids: Optional[List[str]] = None,
+        status: Optional[str] = "captured",
+        likelihood: Optional[Decimal] = None,
+        category: str = "other",
+        evidence_links: Optional[Dict] = None,
         metadata: Optional[Dict] = None,
     ) -> Hypothesis:
         """Create new hypothesis in database."""
@@ -234,10 +237,12 @@ class DatabaseHypothesisRepository(HypothesisRepository):
                 hypothesis_id=hypothesis_id,
                 case_id=case_id,
                 organization_id=organization_id,
-                description=description,
-                status=status or "proposed",
-                confidence_score=confidence_score,
-                supporting_evidence_ids=json.dumps(supporting_evidence_ids or []),
+                statement=statement,
+                status=status or "captured",
+                likelihood=likelihood or Decimal("0.5"),
+                initial_likelihood=likelihood or Decimal("0.5"),
+                category=category,
+                evidence_links=json.dumps(evidence_links or {}),
                 hypothesis_metadata=json.dumps(metadata or {}),
                 created_by=created_by,
                 proposed_at=datetime.now(timezone.utc),
@@ -316,12 +321,12 @@ class DatabaseHypothesisRepository(HypothesisRepository):
             count_result = await self.session.execute(count_stmt)
             total_count = count_result.scalar()
 
-            # Get paginated results (ordered by confidence desc, then proposed_at desc)
+            # Get paginated results (ordered by likelihood desc, then proposed_at desc)
             stmt = (
                 select(HypothesisModel)
                 .where(and_(*conditions))
                 .order_by(
-                    HypothesisModel.confidence_score.desc().nullslast(),
+                    HypothesisModel.likelihood.desc().nullslast(),
                     HypothesisModel.proposed_at.desc(),
                 )
                 .limit(limit)
@@ -344,11 +349,11 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        description: Optional[str] = None,
+        statement: Optional[str] = None,
         status: Optional[str] = None,
-        confidence_score: Optional[Decimal] = None,
-        supporting_evidence_ids: Optional[List[str]] = None,
-        validation_result: Optional[str] = None,
+        likelihood: Optional[Decimal] = None,
+        evidence_links: Optional[Dict] = None,
+        retirement_reason: Optional[str] = None,
         metadata: Optional[Dict] = None,
     ) -> Optional[Hypothesis]:
         """Update hypothesis fields."""
@@ -368,23 +373,20 @@ class DatabaseHypothesisRepository(HypothesisRepository):
                 return None
 
             # Update fields
-            if description is not None:
-                hypothesis_model.description = description
+            if statement is not None:
+                hypothesis_model.statement = statement
 
             if status is not None:
                 hypothesis_model.status = status
 
-            if confidence_score is not None:
-                hypothesis_model.confidence_score = confidence_score
+            if likelihood is not None:
+                hypothesis_model.likelihood = likelihood
 
-            if supporting_evidence_ids is not None:
-                hypothesis_model.supporting_evidence_ids = json.dumps(
-                    supporting_evidence_ids
-                )
+            if evidence_links is not None:
+                hypothesis_model.evidence_links = json.dumps(evidence_links)
 
-            if validation_result is not None:
-                hypothesis_model.validation_result = validation_result
-                hypothesis_model.validation_timestamp = datetime.now(timezone.utc)
+            if retirement_reason is not None:
+                hypothesis_model.retirement_reason = retirement_reason
 
             if metadata is not None:
                 hypothesis_model.hypothesis_metadata = json.dumps(metadata)
@@ -456,17 +458,12 @@ class DatabaseHypothesisRepository(HypothesisRepository):
             raise HypothesisRepositoryException(f"Failed to count hypotheses: {e}")
 
     def _to_domain_model(self, hypothesis_model: HypothesisModel) -> Hypothesis:
-        """Convert ORM model to domain model.
-
-        Note: This is a simplified conversion. The full domain model in case.py
-        has many more fields. For TASK-026, we focus on the core fields needed
-        for hypothesis tracking via the API.
-        """
+        """Convert ORM model to domain model."""
         # Parse JSON fields
-        supporting_evidence_ids = (
-            json.loads(hypothesis_model.supporting_evidence_ids)
-            if hypothesis_model.supporting_evidence_ids
-            else []
+        evidence_links = (
+            json.loads(hypothesis_model.evidence_links)
+            if hypothesis_model.evidence_links
+            else {}
         )
 
         metadata_dict = (
@@ -475,22 +472,31 @@ class DatabaseHypothesisRepository(HypothesisRepository):
             else {}
         )
 
-        # Return simplified Hypothesis (Pydantic model compatible subset)
-        # Note: The full Hypothesis model in case.py requires more fields
-        # For API purposes, we'll create a compatible dict structure
         return {
             "hypothesis_id": hypothesis_model.hypothesis_id,
             "case_id": hypothesis_model.case_id,
-            "description": hypothesis_model.description,
+            "statement": hypothesis_model.statement,
             "status": hypothesis_model.status,
-            "confidence_score": (
-                float(hypothesis_model.confidence_score)
-                if hypothesis_model.confidence_score
+            "likelihood": (
+                float(hypothesis_model.likelihood)
+                if hypothesis_model.likelihood
                 else None
             ),
-            "supporting_evidence_ids": supporting_evidence_ids,
-            "validation_result": hypothesis_model.validation_result,
-            "validation_timestamp": hypothesis_model.validation_timestamp,
+            "initial_likelihood": (
+                float(hypothesis_model.initial_likelihood)
+                if hypothesis_model.initial_likelihood
+                else None
+            ),
+            "last_updated_turn": hypothesis_model.last_updated_turn,
+            "last_progress_at_turn": hypothesis_model.last_progress_at_turn,
+            "iterations_without_progress": hypothesis_model.iterations_without_progress,
+            "category": hypothesis_model.category,
+            "generation_mode": hypothesis_model.generation_mode,
+            "rationale": hypothesis_model.rationale,
+            "retirement_reason": hypothesis_model.retirement_reason,
+            "evidence_links": evidence_links,
+            "tested_at": hypothesis_model.tested_at,
+            "concluded_at": hypothesis_model.concluded_at,
             "proposed_at": hypothesis_model.proposed_at,
             "updated_at": hypothesis_model.updated_at,
             "organization_id": hypothesis_model.organization_id,
@@ -598,11 +604,11 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        description: Optional[str] = None,
+        statement: Optional[str] = None,
         status: Optional[str] = None,
-        confidence_score: Optional[Decimal] = None,
-        supporting_evidence_ids: Optional[List[str]] = None,
-        validation_result: Optional[str] = None,
+        likelihood: Optional[Decimal] = None,
+        evidence_links: Optional[Dict] = None,
+        retirement_reason: Optional[str] = None,
         metadata: Optional[Dict] = None,
     ) -> Optional[Hypothesis]:
         """Update hypothesis in memory."""
@@ -612,21 +618,20 @@ class InMemoryHypothesisRepository(HypothesisRepository):
             return None
 
         # Update fields
-        if description is not None:
-            hypothesis["description"] = description
+        if statement is not None:
+            hypothesis["statement"] = statement
 
         if status is not None:
             hypothesis["status"] = status
 
-        if confidence_score is not None:
-            hypothesis["confidence_score"] = float(confidence_score)
+        if likelihood is not None:
+            hypothesis["likelihood"] = float(likelihood)
 
-        if supporting_evidence_ids is not None:
-            hypothesis["supporting_evidence_ids"] = supporting_evidence_ids
+        if evidence_links is not None:
+            hypothesis["evidence_links"] = evidence_links
 
-        if validation_result is not None:
-            hypothesis["validation_result"] = validation_result
-            hypothesis["validation_timestamp"] = datetime.now(timezone.utc)
+        if retirement_reason is not None:
+            hypothesis["retirement_reason"] = retirement_reason
 
         if metadata is not None:
             hypothesis["metadata"] = metadata

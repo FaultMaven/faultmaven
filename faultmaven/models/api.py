@@ -136,7 +136,7 @@ class UploadedData(BaseModel):
     upload_timestamp: str  # UTC ISO 8601 format
     processing_status: ProcessingStatus
     processing_summary: Optional[str] = None
-    confidence_score: Optional[float] = None
+    likelihood: Optional[float] = None
 
 
 class AvailableAction(BaseModel):
@@ -235,7 +235,7 @@ class AgentResponse(BaseModel):
     response_type: ResponseType
     session_id: str  # Current authentication session
     case_id: Optional[str] = None
-    confidence_score: Optional[float] = None
+    likelihood: Optional[float] = None
     sources: List[Source] = Field(default_factory=list)
     next_action_hint: Optional[str] = None
     view_state: Optional[ViewState] = None
@@ -795,7 +795,7 @@ class SimpleAgentResponse(BaseModel):
     content: str
     session_id: str
     case_id: Optional[str] = None
-    confidence_score: Optional[float] = None
+    likelihood: Optional[float] = None
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     next_action_hint: Optional[str] = None
 

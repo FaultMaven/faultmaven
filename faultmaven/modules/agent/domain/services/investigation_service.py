@@ -309,6 +309,16 @@ class InvestigationService(BaseService):
             case.description = confirmed_description
             case.status = CaseStatus.INVESTIGATING
 
+            # Determine path selection
+            from faultmaven.modules.case.domain.services.investigation_router import (
+                determine_investigation_path,
+            )
+            case.path_selection = determine_investigation_path(case.problem_verification)
+            self.logger.info(
+                f"Selected investigation path: {case.path_selection.path} "
+                f"(reason: {case.path_selection.rationale})"
+            )
+
             # Save
             updated_case = await self.repository.save(case)
 

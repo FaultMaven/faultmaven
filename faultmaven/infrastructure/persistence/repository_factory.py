@@ -23,8 +23,9 @@ Usage:
 
 import logging
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,11 +52,8 @@ from faultmaven.modules.auth.infrastructure.repositories.session_repository impo
     InMemorySessionRepository,
     SessionRepository,
 )
-from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    DatabaseKnowledgeItemRepository,
-    InMemoryKnowledgeItemRepository,
-    KnowledgeItemRepository,
-)
+
+# Knowledge repository imports moved inside factory functions to avoid circular dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +63,13 @@ STORAGE_TYPE_INMEMORY = "inmemory"
 STORAGE_TYPE_DATABASE = "database"
 
 # Singleton in-memory repositories (for consistency across calls)
-_inmemory_repository: Optional[InMemoryCaseRepository] = None
-_inmemory_session_repository: Optional[InMemorySessionRepository] = None
-_inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = (
+_inmemory_repository: InMemoryCaseRepository | None = None
+_inmemory_session_repository: InMemorySessionRepository | None = None
+_inmemory_evidence_artifact_repository: InMemoryEvidenceArtifactRepository | None = (
     None
 )
-_inmemory_investigation_session_repository: Optional[
-    InMemoryInvestigationSessionRepository
-] = None
-_inmemory_knowledge_item_repository: Optional[InMemoryKnowledgeItemRepository] = None
+_inmemory_investigation_session_repository: InMemoryInvestigationSessionRepository | None = None
+_inmemory_knowledge_item_repository: Any | None = None
 
 
 def get_storage_type() -> str:
@@ -137,8 +133,8 @@ def get_session_storage_type() -> str:
 
 
 def get_case_repository(
-    storage_type: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
+    storage_type: str | None = None,
+    session: AsyncSession | None = None,
 ) -> CaseRepository:
     """
     Get a case repository instance based on configuration.
@@ -195,7 +191,7 @@ def get_case_repository(
 
 @asynccontextmanager
 async def get_case_repository_async(
-    storage_type: Optional[str] = None,
+    storage_type: str | None = None,
 ) -> AsyncGenerator[CaseRepository, None]:
     """
     Get a case repository with automatic session management.
@@ -240,7 +236,7 @@ async def get_case_repository_async(
 
 
 def create_case_repository(
-    session: Optional[AsyncSession] = None,
+    session: AsyncSession | None = None,
     force_inmemory: bool = False,
 ) -> CaseRepository:
     """
@@ -306,8 +302,8 @@ def get_inmemory_repository() -> InMemoryCaseRepository:
 
 
 def get_session_repository(
-    storage_type: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
+    storage_type: str | None = None,
+    session: AsyncSession | None = None,
 ) -> SessionRepository:
     """
     Get a session repository instance based on configuration.
@@ -352,7 +348,7 @@ def get_session_repository(
 
 @asynccontextmanager
 async def get_session_repository_async(
-    storage_type: Optional[str] = None,
+    storage_type: str | None = None,
 ) -> AsyncGenerator[SessionRepository, None]:
     """
     Get a session repository with automatic session management.
@@ -467,8 +463,8 @@ def get_evidence_artifact_storage_type() -> str:
 
 
 def get_evidence_artifact_repository(
-    storage_type: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
+    storage_type: str | None = None,
+    session: AsyncSession | None = None,
 ) -> EvidenceArtifactRepository:
     """
     Get an evidence artifact repository instance based on configuration.
@@ -521,7 +517,7 @@ def get_evidence_artifact_repository(
 
 @asynccontextmanager
 async def get_evidence_artifact_repository_async(
-    storage_type: Optional[str] = None,
+    storage_type: str | None = None,
 ) -> AsyncGenerator[EvidenceArtifactRepository, None]:
     """
     Get an evidence artifact repository with automatic session management.
@@ -702,8 +698,8 @@ def get_investigation_session_storage_type() -> str:
 
 
 def get_investigation_session_repository(
-    storage_type: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
+    storage_type: str | None = None,
+    session: AsyncSession | None = None,
 ) -> InvestigationSessionRepository:
     """
     Get an investigation session repository instance based on configuration.
@@ -752,7 +748,7 @@ def get_investigation_session_repository(
 
 @asynccontextmanager
 async def get_investigation_session_repository_async(
-    storage_type: Optional[str] = None,
+    storage_type: str | None = None,
 ) -> AsyncGenerator[InvestigationSessionRepository, None]:
     """
     Get an investigation session repository with automatic session management.
@@ -886,9 +882,13 @@ def get_knowledge_item_storage_type() -> str:
 
 
 def get_knowledge_item_repository(
-    storage_type: Optional[str] = None,
-    session: Optional[AsyncSession] = None,
-) -> KnowledgeItemRepository:
+    storage_type: str | None = None,
+    session: AsyncSession | None = None,
+) -> Any:
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+        DatabaseKnowledgeItemRepository,
+        InMemoryKnowledgeItemRepository,
+    )
     """
     Get a knowledge item repository instance based on configuration.
 
@@ -934,8 +934,12 @@ def get_knowledge_item_repository(
 
 @asynccontextmanager
 async def get_knowledge_item_repository_async(
-    storage_type: Optional[str] = None,
-) -> AsyncGenerator[KnowledgeItemRepository, None]:
+    storage_type: str | None = None,
+) -> AsyncGenerator[Any, None]:
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+        DatabaseKnowledgeItemRepository,
+        InMemoryKnowledgeItemRepository,
+    )
     """
     Get a knowledge item repository with automatic session management.
 
@@ -990,7 +994,10 @@ def reset_inmemory_knowledge_item_repository() -> None:
         logger.debug("Reset in-memory knowledge item repository singleton")
 
 
-def get_inmemory_knowledge_item_repository() -> InMemoryKnowledgeItemRepository:
+def get_inmemory_knowledge_item_repository() -> Any:
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+        InMemoryKnowledgeItemRepository,
+    )
     """
     Get or create the singleton in-memory knowledge item repository.
 
@@ -1005,9 +1012,7 @@ def get_inmemory_knowledge_item_repository() -> InMemoryKnowledgeItemRepository:
     return _inmemory_knowledge_item_repository
 
 
-async def get_knowledge_item_repository_dependency() -> (
-    AsyncGenerator[KnowledgeItemRepository, None]
-):
+async def get_knowledge_item_repository_dependency() -> Any:
     """
     FastAPI dependency for obtaining a knowledge item repository.
 
