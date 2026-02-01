@@ -137,13 +137,39 @@ except ValidationError as e:
 
 ### 4. Provider Compatibility
 
-**Tested Providers:**
-- ✅ OpenAI GPT-4o, GPT-4o-mini (full support)
-- ✅ Groq Llama-3.3-70b-versatile (full support)
-- ✅ Anthropic Claude (via function calling translation)
-- ⚠️ Local models: Varies by model architecture
+**OpenAI (Full Support):**
 
-**Check Model Support:**
+- ✅ GPT-4o, GPT-4o-mini, GPT-4o-2024-08-06+ (full json_schema support)
+- ✅ All models support `strict: True` with guaranteed schema adherence
+
+**Groq (Limited Support):**
+
+- ✅ **Strict mode supported:** `openai/gpt-oss-20b`, `openai/gpt-oss-120b` only
+- ⚠️ **Fallback to json_object:** `meta-llama/Llama-3.3-70b-versatile`, `mixtral-8x7b`, and all other Groq models
+- 🔄 **Auto-detection:** FaultMaven automatically falls back to json_object mode for unsupported models
+- 📝 **Requires prompt:** json_object mode needs "JSON" instruction (automatically added by FaultMaven)
+
+**Anthropic Claude:**
+
+- ✅ Via function calling translation (handled by provider)
+- ✅ Full schema enforcement through tool use
+
+**Local Models:**
+
+- ⚠️ Varies by model architecture
+- Most Ollama models: json_object mode only
+- Some fine-tuned models may support structured output
+
+**Capability Detection:**
+```python
+# FaultMaven automatically detects model capabilities
+# For Groq, this check happens in groq_provider.py:
+if model not in STRICT_JSON_SCHEMA_MODELS:
+    logger.warning(f"Falling back to json_object for {model}")
+    response_format = {"type": "json_object"}  # Automatic fallback
+```
+
+**Check Model Support Manually:**
 ```python
 # Test with simple schema first
 test_schema = create_response_format_json_schema(SimpleModel)
@@ -155,6 +181,16 @@ try:
 except Exception as e:
     logger.error(f"Provider doesn't support json_schema: {e}")
 ```
+
+**⚠️ Important Note:**
+
+If using **Groq with Llama-3.3-70b-versatile**, you will get json_object mode (not strict mode). This means:
+
+- Field names may vary (e.g., `likelihood` → `confidence`)
+- Validation errors possible if LLM invents new fields
+- Consider switching to `openai/gpt-oss-20b` for strict mode on Groq
+
+**Source:** [Groq Structured Outputs Docs](https://console.groq.com/docs/structured-outputs) (2025-02-01)
 
 ---
 
