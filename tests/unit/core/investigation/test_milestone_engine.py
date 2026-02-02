@@ -5,6 +5,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+    StructuredOutputMode,
+    StructuredOutputStrategy,
+)
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     Case,
@@ -25,6 +30,23 @@ class MockLLMProvider(ILLMProvider):
 
     async def generate_with_history(self, messages, **kwargs):
         return "{}"
+
+    def get_structured_output_strategy(self, schema):
+        """Mock implementation of capability system method"""
+        # Default to STRICT mode with json_schema for testing
+        return StructuredOutputStrategy(
+            capability=StructuredOutputCapability.STRICT,
+            mode=StructuredOutputMode.JSON_SCHEMA_STRICT,
+            include_schema_in_prompt=False,  # STRICT mode doesn't need schema in prompt
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "TestSchema",
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        )
 
 
 @pytest.fixture
