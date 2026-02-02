@@ -3510,37 +3510,61 @@ def repair_json_response(raw_response: str) -> Optional[dict]:
 
 ```python
 class RetryPolicy:
-    """Retry policy for LLM requests"""
+    """Retry policy for LLM requests with execution profiles"""
 
-    MAX_RETRIES = 3
-    BASE_DELAY = 1.0  # seconds
+    # Execution profiles for different contexts
+    PROFILES = {
+        "interactive": {
+            # Real-time chat - users expect fast responses
+            "max_retries": 2,
+            "base_delay": 0.5,
+            "max_delay": 10.0,  # Never wait more than 10s total
+            "timeout_ms": 30000,  # 30s request timeout
+        },
+        "background": {
+            # Async analysis - can tolerate longer waits
+            "max_retries": 4,
+            "base_delay": 2.0,
+            "max_delay": 60.0,
+            "timeout_ms": 120000,  # 2min request timeout
+        }
+    }
+
+    # Default to interactive for safety
+    DEFAULT_PROFILE = "interactive"
 
     RETRY_STRATEGIES = {
         "parse_error": {
             "action": "retry_with_stricter_prompt",
             "prompt_modifier": "Return ONLY valid JSON. No markdown, no explanation.",
-            "max_retries": 2
+            "max_retries_interactive": 1,  # Fail fast in chat
+            "max_retries_background": 2
         },
         "schema_violation": {
             "action": "retry_with_schema_reminder",
             "prompt_modifier": "Your previous response violated the schema. Key issues: {violations}",
-            "max_retries": 2
+            "max_retries_interactive": 1,
+            "max_retries_background": 2
         },
         "timeout": {
             "action": "retry_with_shorter_context",
             "context_reduction": 0.5,  # Reduce context by 50%
-            "max_retries": 2
+            "max_retries_interactive": 1,
+            "max_retries_background": 2
         },
         "rate_limit": {
             "action": "exponential_backoff",
-            "initial_delay": 2.0,
-            "max_delay": 60.0,
-            "max_retries": 4
+            "initial_delay": 1.0,
+            "max_delay_interactive": 5.0,   # Cap at 5s for chat
+            "max_delay_background": 60.0,   # Allow longer for batch
+            "max_retries_interactive": 2,
+            "max_retries_background": 4
         },
         "empty_response": {
             "action": "retry_with_explicit_request",
             "prompt_modifier": "You must provide a response. If uncertain, explain your uncertainty.",
-            "max_retries": 2
+            "max_retries_interactive": 1,
+            "max_retries_background": 2
         }
     }
 
@@ -3549,33 +3573,48 @@ class RetryPolicy:
         cls,
         llm_call: Callable,
         prompt: str,
-        schema: Type[BaseModel]
+        schema: Type[BaseModel],
+        profile: str = "interactive"  # "interactive" or "background"
     ) -> Tuple[Optional[BaseModel], List[str]]:
-        """Execute LLM call with retry logic"""
+        """Execute LLM call with retry logic based on execution profile"""
 
         errors = []
         current_prompt = prompt
 
-        for attempt in range(cls.MAX_RETRIES):
+        # Get profile settings (default to interactive for safety)
+        settings = cls.PROFILES.get(profile, cls.PROFILES[cls.DEFAULT_PROFILE])
+        max_retries = settings["max_retries"]
+        base_delay = settings["base_delay"]
+        max_delay = settings["max_delay"]
+
+        for attempt in range(max_retries):
             try:
-                response = await llm_call(current_prompt)
+                response = await asyncio.wait_for(
+                    llm_call(current_prompt),
+                    timeout=settings["timeout_ms"] / 1000
+                )
 
                 # Attempt to parse and validate
                 parsed = cls._parse_response(response, schema)
                 if parsed:
                     return parsed, errors
 
-                # Determine failure type and modify prompt
+                # Determine failure type and get profile-specific retry limit
                 failure_type = cls._detect_failure_type(response, schema)
                 strategy = cls.RETRY_STRATEGIES.get(failure_type, {})
+                strategy_max = strategy.get(f"max_retries_{profile}", 1)
+
+                if attempt >= strategy_max:
+                    errors.append(f"Attempt {attempt + 1}: {failure_type} (max retries for {profile})")
+                    break
 
                 if "prompt_modifier" in strategy:
                     current_prompt = f"{prompt}\n\n{strategy['prompt_modifier']}"
 
                 errors.append(f"Attempt {attempt + 1}: {failure_type}")
 
-                # Delay before retry
-                delay = cls.BASE_DELAY * (2 ** attempt)
+                # Delay before retry (capped by profile max_delay)
+                delay = min(base_delay * (2 ** attempt), max_delay)
                 await asyncio.sleep(delay)
 
             except asyncio.TimeoutError:
@@ -3675,7 +3714,9 @@ def sanitize_user_input(message: str) -> SanitizedInput:
     sanitized = re.sub(r'<(/?)(\w+)>', r'&lt;\1\2&gt;', sanitized)
 
     # Check 3: Limit message length
-    MAX_LENGTH = 50000
+    # 16,000 chars ≈ 4,000 tokens, leaving room for system prompt (~2.4k)
+    # and history (~2k) within 8k token budget
+    MAX_LENGTH = 16000
     if len(sanitized) > MAX_LENGTH:
         sanitized = sanitized[:MAX_LENGTH]
         warnings.append(f"Message truncated from {len(message)} to {MAX_LENGTH}")
