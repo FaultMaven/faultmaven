@@ -361,7 +361,7 @@ metrics.increment("structured_output.capability", tags={
 
 ## References
 
-- [Structured Output Guide](../development/structured-output-guide.md)
+- [Structured Output Guide](../../development/structured-output-guide.md)
 - [OpenAI Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs)
 - [Groq Structured Outputs](https://console.groq.com/docs/structured-outputs)
 - Source: `faultmaven/infrastructure/llm/structured_output_capability.py`

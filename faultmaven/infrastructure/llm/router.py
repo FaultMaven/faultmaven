@@ -64,6 +64,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         data_type: Optional[DataType] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -119,6 +120,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 temperature=temperature,
                 tools=tools,
                 tool_choice=tool_choice,
+                response_format=response_format,
                 confidence_threshold=self.confidence_threshold,
                 timeout=self.request_timeout,  # Configurable timeout from environment/settings
                 retries=1,  # Single retry for failed LLM calls
@@ -145,7 +147,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             raise
 
     @trace("llm_router_generate")
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """
         ILLMProvider interface implementation - delegates to route()
 
@@ -160,9 +162,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 - max_tokens: Maximum tokens to generate (default: 1000)
                 - temperature: Sampling temperature (default: 0.7)
                 - data_type: Type of data being processed (optional)
+                - response_format: Structured output format (optional)
+                - tools: Tool/function definitions (optional)
+                - tool_choice: Tool choice strategy (optional)
 
         Returns:
-            Generated text content as string
+            LLMResponse with generated content
 
         Raises:
             TypeError: If prompt is None
@@ -173,6 +178,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         max_tokens = kwargs.get("max_tokens", 1000)
         temperature = kwargs.get("temperature", 0.7)
         data_type = kwargs.get("data_type")
+        tools = kwargs.get("tools")
+        tool_choice = kwargs.get("tool_choice")
+        response_format = kwargs.get("response_format")
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -181,10 +189,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             data_type=data_type,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
         )
 
-        # Extract and return the text content from LLMResponse
-        return response.content
+        # Return the full LLMResponse (milestone_engine expects this)
+        return response
 
     def _sanitize_if_needed(self, prompt: str) -> str:
         """
@@ -226,3 +237,105 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     def get_provider_status(self):
         """Get status of all providers"""
         return self.registry.get_provider_status()
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ):
+        """
+        Get the structured output capability for the primary provider/model.
+
+        Delegates to the primary provider in the fallback chain.
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability level
+        """
+        from faultmaven.infrastructure.llm.structured_output_capability import (
+            StructuredOutputCapability,
+        )
+
+        # Ensure registry is initialized
+        self.registry._ensure_initialized()
+
+        # Get the primary provider (first in fallback chain)
+        fallback_chain = self.registry.get_fallback_chain()
+        if not fallback_chain:
+            self.logger.warning("No providers available for capability detection")
+            return StructuredOutputCapability.BEST_EFFORT
+
+        primary_provider_name = fallback_chain[0]
+        primary_provider = self.registry._providers.get(primary_provider_name)
+
+        if not primary_provider:
+            self.logger.warning(f"Primary provider {primary_provider_name} not found")
+            return StructuredOutputCapability.BEST_EFFORT
+
+        # Delegate to the primary provider
+        capability = primary_provider.get_structured_output_capability(model)
+
+        self.logger.debug(
+            f"Router delegating capability detection to {primary_provider_name}: "
+            f"{capability.value}"
+        )
+
+        return capability
+
+    def get_structured_output_strategy(
+        self, schema: Dict[str, Any], model: Optional[str] = None
+    ):
+        """
+        Get the appropriate structured output strategy for the primary provider/model.
+
+        Delegates to the primary provider in the fallback chain.
+
+        Args:
+            schema: Pydantic JSON schema
+            model: Model name (uses default if None)
+
+        Returns:
+            StructuredOutputStrategy with configuration
+        """
+        from faultmaven.infrastructure.llm.structured_output_capability import (
+            StructuredOutputStrategy,
+        )
+
+        # Ensure registry is initialized
+        self.registry._ensure_initialized()
+
+        # Get the primary provider (first in fallback chain)
+        fallback_chain = self.registry.get_fallback_chain()
+        if not fallback_chain:
+            self.logger.warning("No providers available for strategy creation")
+            # Return a safe default strategy
+            from faultmaven.infrastructure.llm.structured_output_capability import (
+                StructuredOutputCapability,
+                create_strategy_for_capability,
+            )
+            return create_strategy_for_capability(
+                StructuredOutputCapability.BEST_EFFORT, schema
+            )
+
+        primary_provider_name = fallback_chain[0]
+        primary_provider = self.registry._providers.get(primary_provider_name)
+
+        if not primary_provider:
+            self.logger.warning(f"Primary provider {primary_provider_name} not found")
+            from faultmaven.infrastructure.llm.structured_output_capability import (
+                StructuredOutputCapability,
+                create_strategy_for_capability,
+            )
+            return create_strategy_for_capability(
+                StructuredOutputCapability.BEST_EFFORT, schema
+            )
+
+        # Delegate to the primary provider
+        strategy = primary_provider.get_structured_output_strategy(schema, model)
+
+        self.logger.info(
+            f"Router delegating strategy creation to {primary_provider_name}: "
+            f"mode={strategy.mode.value}, include_schema_in_prompt={strategy.include_schema_in_prompt}"
+        )
+
+        return strategy

@@ -21,9 +21,10 @@ Documentation for FaultMaven contributors.
 
 ## Technical Reference
 
-| Document | Description |
-|----------|-------------|
-| [Token Estimation](./token-estimation.md) | LLM token counting |
+| Document                                                    | Description                                             |
+|-------------------------------------------------------------|---------------------------------------------------------|
+| [Token Estimation](./token-estimation.md)                   | LLM token counting                                      |
+| [Structured Output Guide](./structured-output-guide.md)     | LLM structured output implementation (json_schema mode) |
 
 ## Getting Started as a Contributor
 
