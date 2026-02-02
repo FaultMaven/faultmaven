@@ -10,6 +10,7 @@ Foundational architecture patterns and system design principles for FaultMaven.
 - **[Interface-Based Design](./interface-based-design.md)** - Interface segregation and dependency inversion patterns
 - **[Module Organization Design](./module-organization-design.md)** - Module structure and organization patterns
 - **[Service Patterns](./service-patterns.md)** - Service layer implementation patterns
+- **[Structured Output Capability System](./structured-output-capability-system.md)** - Provider-agnostic LLM structured output infrastructure
 - **[System Design Modules](./system-design-modules.md)** - High-level module architecture
 - **[Vertical vs Layer Structuring](./vertical-vs-layer-structuring-explained.md)** - Architectural structuring approaches
 

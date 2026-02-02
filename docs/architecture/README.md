@@ -39,7 +39,7 @@ Master index for all architecture documentation.
 |----------|---------|
 | **[Case and Session Concepts](case-and-session/case-and-session-concepts.md)** | Case vs Session distinction, multi-device support |
 | **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** | Vector database, RAG, knowledge retrieval |
-| **[Structured Output Capability System](knowledge-and-ai/structured-output-capability-system.md)** | Provider-agnostic LLM structured output handling |
+| **[Structured Output Capability System](core-architecture/structured-output-capability-system.md)** | Provider-agnostic LLM structured output handling |
 | **[Data Submission Design](data-processing/data-submission-design.md)** | File uploads and data handling |
 | **[Data Preprocessing Design](data-processing/data-preprocessing-design-specification.md)** | Data preprocessing pipeline |
 | **[QA Tools Design](knowledge-and-ai/qa-tools-design.md)** | Question answering tools and sub-agents |

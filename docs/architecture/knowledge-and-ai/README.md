@@ -7,7 +7,6 @@ Documentation for FaultMaven's knowledge management, vector search, and AI agent
 - **[Knowledge Base Architecture](./knowledge-base-architecture.md)** - Vector database, RAG, and knowledge retrieval architecture
 - **[QA Tools Design](./qa-tools-design.md)** - Question-answering tools and sub-agents
 - **[Vector Database Operations](./vector-database-operations.md)** - ChromaDB integration and vector search operations
-- **[Structured Output Capability System](./structured-output-capability-system.md)** - Provider-agnostic LLM structured output handling across all providers
 
 ## Purpose
 
