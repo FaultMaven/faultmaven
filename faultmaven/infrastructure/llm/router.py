@@ -142,7 +142,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         except Exception as e:
             self.logger.error(
                 f"❌ LLM Router: All providers failed: {type(e).__name__}: {e}",
-                exc_info=True
+                exc_info=True,
             )
             raise
 
@@ -238,9 +238,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         """Get status of all providers"""
         return self.registry.get_provider_status()
 
-    def get_structured_output_capability(
-        self, model: Optional[str] = None
-    ):
+    def get_structured_output_capability(self, model: Optional[str] = None):
         """
         Get the structured output capability for the primary provider/model.
 
@@ -313,6 +311,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 StructuredOutputCapability,
                 create_strategy_for_capability,
             )
+
             return create_strategy_for_capability(
                 StructuredOutputCapability.BEST_EFFORT, schema
             )
@@ -326,6 +325,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 StructuredOutputCapability,
                 create_strategy_for_capability,
             )
+
             return create_strategy_for_capability(
                 StructuredOutputCapability.BEST_EFFORT, schema
             )

@@ -125,14 +125,20 @@ class LocalLLMServiceManager:
                 logger.debug("Waiting for local LLM service to start...")
                 await asyncio.sleep(self.health_check_interval)
 
-            logger.error("Local LLM service failed to start within timeout period", exc_info=True)
+            logger.error(
+                "Local LLM service failed to start within timeout period", exc_info=True
+            )
             return False
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to start local LLM service: {e.stderr}", exc_info=True)
+            logger.error(
+                f"Failed to start local LLM service: {e.stderr}", exc_info=True
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error starting local LLM service: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error starting local LLM service: {e}", exc_info=True
+            )
             return False
 
     def stop_service(self) -> bool:
@@ -147,7 +153,9 @@ class LocalLLMServiceManager:
             logger.error(f"Failed to stop local LLM service: {e.stderr}", exc_info=True)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error stopping local LLM service: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error stopping local LLM service: {e}", exc_info=True
+            )
             return False
 
     def get_service_status(self) -> Dict[str, Any]:
@@ -185,7 +193,9 @@ class LocalLLMServiceManager:
             # Verify the fix actually worked by checking if warnings are gone
             status_result = self._run_script_command("status")
             if "[WARNING] Model mismatch detected" in status_result.stdout:
-                logger.error("❌ Model mismatch still exists after fix attempt", exc_info=True)
+                logger.error(
+                    "❌ Model mismatch still exists after fix attempt", exc_info=True
+                )
                 return False
             else:
                 logger.info("✅ Model consistency verified after fix")

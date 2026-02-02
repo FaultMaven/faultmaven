@@ -90,11 +90,13 @@ class AnthropicProvider(BaseLLMProvider):
             for tool in openai_tools:
                 if tool.get("type") == "function":
                     func = tool.get("function", {})
-                    anthropic_tools.append({
-                        "name": func.get("name"),
-                        "description": func.get("description", ""),
-                        "input_schema": func.get("parameters", {}),
-                    })
+                    anthropic_tools.append(
+                        {
+                            "name": func.get("name"),
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {}),
+                        }
+                    )
 
             if anthropic_tools:
                 request_body["tools"] = anthropic_tools

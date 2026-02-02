@@ -171,7 +171,7 @@ class LLMErrorHandler:
         # Log full error details for debugging
         logger.error(
             f"Unknown LLM error (retry {retry_count}): {type(error).__name__}: {str(error)}",
-            exc_info=True
+            exc_info=True,
         )
 
         if retry_count == 0:

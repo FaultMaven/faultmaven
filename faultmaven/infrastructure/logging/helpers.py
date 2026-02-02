@@ -10,10 +10,7 @@ from typing import Any, Dict, Optional
 
 
 def log_error_with_context(
-    logger: logging.Logger,
-    message: str,
-    error: Exception,
-    **context: Any
+    logger: logging.Logger, message: str, error: Exception, **context: Any
 ) -> None:
     """
     Standard error logging with full context and stack trace.
@@ -44,16 +41,12 @@ def log_error_with_context(
 
     # Log with full stack trace
     logger.error(
-        f"{message}: {type(error).__name__}: {error}",
-        exc_info=True,
-        extra=context
+        f"{message}: {type(error).__name__}: {error}", exc_info=True, extra=context
     )
 
 
 def log_warning_with_context(
-    logger: logging.Logger,
-    message: str,
-    **context: Any
+    logger: logging.Logger, message: str, **context: Any
 ) -> None:
     """
     Standard warning logging with structured context.
@@ -79,7 +72,7 @@ def log_operation_error(
     operation: str,
     error: Exception,
     entity_id: Optional[str] = None,
-    **context: Any
+    **context: Any,
 ) -> None:
     """
     Log an operation failure with standardized format.

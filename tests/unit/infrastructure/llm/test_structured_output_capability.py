@@ -48,9 +48,7 @@ class TestCapabilityDetection:
 
     def test_groq_gpt_oss_20b_strict_support(self):
         """Groq gpt-oss-20b should support STRICT mode"""
-        capability = get_capability_for_provider_and_model(
-            "groq", "openai/gpt-oss-20b"
-        )
+        capability = get_capability_for_provider_and_model("groq", "openai/gpt-oss-20b")
         assert capability == StructuredOutputCapability.STRICT
 
     def test_groq_gpt_oss_120b_strict_support(self):
@@ -69,9 +67,7 @@ class TestCapabilityDetection:
 
     def test_groq_mixtral_best_effort(self):
         """Groq Mixtral models should use BEST_EFFORT mode"""
-        capability = get_capability_for_provider_and_model(
-            "groq", "mixtral-8x7b-32768"
-        )
+        capability = get_capability_for_provider_and_model("groq", "mixtral-8x7b-32768")
         assert capability == StructuredOutputCapability.BEST_EFFORT
 
     def test_anthropic_function_calling(self):
@@ -108,14 +104,14 @@ class TestCapabilityDetection:
 
     def test_local_functionary_function_calling(self):
         """Local functionary models should use FUNCTION_CALLING"""
-        capability = get_capability_for_provider_and_model(
-            "local", "functionary-7b-v2"
-        )
+        capability = get_capability_for_provider_and_model("local", "functionary-7b-v2")
         assert capability == StructuredOutputCapability.FUNCTION_CALLING
 
     def test_local_hermes_function_calling(self):
         """Local Hermes models should use FUNCTION_CALLING"""
-        capability = get_capability_for_provider_and_model("local", "hermes-2-pro-llama")
+        capability = get_capability_for_provider_and_model(
+            "local", "hermes-2-pro-llama"
+        )
         assert capability == StructuredOutputCapability.FUNCTION_CALLING
 
     def test_unknown_provider_best_effort(self):
@@ -182,9 +178,7 @@ class TestStrategyCreation:
 
         assert strategy.capability == StructuredOutputCapability.NONE
         assert strategy.mode == StructuredOutputMode.PROMPT_ONLY
-        assert (
-            strategy.include_schema_in_prompt is True
-        )  # Only way to convey schema
+        assert strategy.include_schema_in_prompt is True  # Only way to convey schema
         assert strategy.response_format is None
 
 
@@ -253,9 +247,7 @@ class TestCapabilityEnums:
 
     def test_mode_enum_values(self):
         """Test that mode enum has expected values"""
-        assert (
-            StructuredOutputMode.JSON_SCHEMA_STRICT.value == "json_schema_strict"
-        )
+        assert StructuredOutputMode.JSON_SCHEMA_STRICT.value == "json_schema_strict"
         assert StructuredOutputMode.JSON_OBJECT.value == "json_object"
         assert StructuredOutputMode.FUNCTION_CALLING.value == "function_calling"
         assert StructuredOutputMode.PROMPT_ONLY.value == "prompt_only"

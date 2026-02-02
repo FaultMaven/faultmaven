@@ -584,8 +584,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         }
 
         # Upsert query
-        query = text(
-            """
+        query = text("""
             INSERT INTO cases (
                 case_id, user_id, organization_id, title, description, status,
                 status_history, closure_reason, progress, current_turn,
@@ -632,8 +631,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 last_activity_at = EXCLUDED.last_activity_at,
                 resolved_at = EXCLUDED.resolved_at,
                 closed_at = EXCLUDED.closed_at
-        """
-        )
+        """)
 
         await self.db.execute(query, case_data)
         await self.db.commit()
@@ -689,14 +687,12 @@ class PostgreSQLCaseRepository(CaseRepository):
         total_count = count_result.scalar()
 
         # Data query
-        data_query = text(
-            f"""
+        data_query = text(f"""
             SELECT * FROM cases
             WHERE {where_clause}
             ORDER BY last_activity_at DESC
             LIMIT :limit OFFSET :offset
-        """
-        )
+        """)
         result = await self.db.execute(data_query, params)
         rows = result.fetchall()
 
@@ -744,16 +740,14 @@ class PostgreSQLCaseRepository(CaseRepository):
         total_count = count_result.scalar()
 
         # Data query (order by relevance: title match > description match)
-        data_query = text(
-            f"""
+        data_query = text(f"""
             SELECT * FROM cases
             WHERE {where_clause}
             ORDER BY
                 CASE WHEN title ILIKE :query THEN 1 ELSE 2 END,
                 last_activity_at DESC
             LIMIT :limit
-        """
-        )
+        """)
         result = await self.db.execute(data_query, params)
         rows = result.fetchall()
 
@@ -766,15 +760,13 @@ class PostgreSQLCaseRepository(CaseRepository):
         from sqlalchemy import text
 
         # PostgreSQL: messages stored as JSONB array, use array_append
-        query = text(
-            """
+        query = text("""
             UPDATE cases
             SET messages = messages || :message::jsonb,
                 message_count = message_count + 1,
                 last_activity_at = :timestamp
             WHERE case_id = :case_id
-        """
-        )
+        """)
 
         result = await self.db.execute(
             query,
@@ -815,13 +807,11 @@ class PostgreSQLCaseRepository(CaseRepository):
         """Update last activity timestamp in PostgreSQL."""
         from sqlalchemy import text
 
-        query = text(
-            """
+        query = text("""
             UPDATE cases
             SET last_activity_at = :timestamp
             WHERE case_id = :case_id
-        """
-        )
+        """)
 
         result = await self.db.execute(
             query, {"case_id": case_id, "timestamp": datetime.now(timezone.utc)}
@@ -836,8 +826,7 @@ class PostgreSQLCaseRepository(CaseRepository):
 
         from faultmaven.utils.serialization import to_json_compatible
 
-        query = text(
-            """
+        query = text("""
             SELECT
                 case_id,
                 status,
@@ -858,8 +847,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 (escalation_state IS NOT NULL) as is_escalated
             FROM cases
             WHERE case_id = :case_id
-        """
-        )
+        """)
 
         result = await self.db.execute(query, {"case_id": case_id})
         row = result.fetchone()
@@ -902,8 +890,7 @@ class PostgreSQLCaseRepository(CaseRepository):
 
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
-        query = text(
-            """
+        query = text("""
             DELETE FROM cases
             WHERE status = 'closed'
             AND closed_at < :cutoff_date
@@ -912,8 +899,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 WHERE status = 'closed' AND closed_at < :cutoff_date
                 LIMIT :batch_size
             )
-        """
-        )
+        """)
 
         result = await self.db.execute(
             query, {"cutoff_date": cutoff_date, "batch_size": batch_size}
