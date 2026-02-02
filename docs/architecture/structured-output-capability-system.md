@@ -285,6 +285,44 @@ Different capability levels get different strategies with appropriate configurat
 ### 5. Fail-Safe Defaults
 Unknown providers default to `BEST_EFFORT` - always functional, never broken
 
+## Performance Considerations
+
+### Token Usage by Capability Mode
+
+Different capability modes have different token overhead:
+
+| Mode | Token Overhead | Schema Location | Best For |
+|------|----------------|-----------------|----------|
+| **STRICT** | Low | In `response_format` (not counted as input) | OpenAI, Groq strict models |
+| **BEST_EFFORT** | Medium | In prompt text (~5-10KB for complex schemas) | Most models |
+| **FUNCTION_CALLING** | **High** | In `tools` parameter (counted as input) | Anthropic Claude |
+| **NONE** | Medium | In prompt text only | Legacy models |
+
+**⚠️ FUNCTION_CALLING Token Impact:**
+
+- Tool definitions are included in **every request** as input tokens
+- Complex schemas can add 5-15KB per request
+- Monitor token usage carefully when using Anthropic with large schemas
+- Consider schema simplification for high-volume applications
+
+**Mitigation Strategies:**
+```python
+# 1. Simplify schemas for function calling
+class SimplifiedResponse(BaseModel):
+    """Use fewer fields for Anthropic to reduce token overhead"""
+    summary: str  # Instead of 10 detailed fields
+    data: dict    # Flexible structure if needed
+
+# 2. Monitor token usage
+response = await provider.generate(...)
+logger.info(f"Tokens used: {response.tokens_used}")
+if response.tokens_used > threshold:
+    alert_high_token_usage()
+
+# 3. Use caching where available
+# Some providers cache tool definitions across requests
+```
+
 ## Future Enhancements
 
 ### 1. Dynamic Capability Discovery
