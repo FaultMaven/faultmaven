@@ -115,10 +115,29 @@ if strategy.include_schema_in_prompt:
 else:
     final_prompt = prompt
 
-response = await self.llm_provider.generate(
-    prompt=final_prompt,
-    response_format=strategy.response_format,
-)
+# Apply strategy-specific parameters
+if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
+    # Use tools/function calling (Anthropic, etc.)
+    from faultmaven.utils.schema_converter import pydantic_to_openai_tools
+    generate_params = {
+        "prompt": final_prompt,
+        "tools": pydantic_to_openai_tools(schema_model),
+        "tool_choice": "required"
+    }
+else:
+    # Use response_format (OpenAI, Groq, etc.)
+    generate_params = {
+        "prompt": final_prompt,
+        "response_format": strategy.response_format
+    }
+
+response = await self.llm_provider.generate(**generate_params)
+
+# For function calling, extract from tool_calls
+if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
+    content = response.tool_calls[0].function.get("arguments", "{}")
+else:
+    content = response.content
 ```
 
 ```python
