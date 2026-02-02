@@ -39,6 +39,9 @@ from faultmaven.core.investigation.schemas import (
     TerminalResponse,
     get_schema_for_stage,
 )
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputMode,
+)
 from faultmaven.core.investigation.stagnation_detector import (
     StagnationBreaker,
     StagnationDetector,
@@ -419,13 +422,36 @@ class MilestoneEngine:
 
         # Define the LLM operation for retry
         async def llm_operation():
-            response = await self.llm_provider.generate(
-                prompt=final_prompt,
-                max_tokens=4000,
-                temperature=0.2,  # Lower temperature for structured output
-                response_format=strategy.response_format,
-            )
+            # Build generate parameters based on strategy mode
+            generate_params = {
+                "prompt": final_prompt,
+                "max_tokens": 4000,
+                "temperature": 0.2,  # Lower temperature for structured output
+            }
+
+            # Apply strategy-specific parameters
+            if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
+                # Use tools/function calling for structured output (Anthropic, etc.)
+                from faultmaven.utils.schema_converter import pydantic_to_openai_tools
+
+                generate_params["tools"] = pydantic_to_openai_tools(schema_model)
+                generate_params["tool_choice"] = "required"  # Force tool use
+                # Don't include response_format for function calling
+            else:
+                # Use response_format for JSON modes (STRICT, BEST_EFFORT, NONE)
+                if strategy.response_format:
+                    generate_params["response_format"] = strategy.response_format
+
+            response = await self.llm_provider.generate(**generate_params)
             content = response if isinstance(response, str) else response.content
+
+            # For function calling, extract from tool_calls
+            if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
+                # Parse response to handle tool_calls format
+                if hasattr(response, "tool_calls") and response.tool_calls:
+                    # Extract arguments from first tool call
+                    content = response.tool_calls[0].function.get("arguments", "{}")
+
             return schema_model.model_validate_json(content)
 
         # Execute with retry and error handling
