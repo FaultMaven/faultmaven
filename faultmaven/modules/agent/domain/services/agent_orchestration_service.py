@@ -380,6 +380,51 @@ class AgentOrchestrationService(BaseService):
             )
             await self.case_repo.update_agent_execution(execution)
 
+            # Step 8b: Save conversation to case.messages
+            # This ensures conversation history is available for future turns
+            try:
+                case = await self.case_repo.get(session.case_id)
+                if case:
+                    current_turn = case.current_turn + 1
+
+                    # Save user message
+                    await self.case_repo.add_message(
+                        session.case_id,
+                        {
+                            "role": "user",
+                            "content": user_message,
+                            "turn_number": current_turn,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                    # Save agent response
+                    await self.case_repo.add_message(
+                        session.case_id,
+                        {
+                            "role": "assistant",
+                            "content": final_response,
+                            "turn_number": current_turn,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                    logger.debug(
+                        f"Saved conversation turn {current_turn} to case.messages "
+                        f"for case {session.case_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"Could not save conversation: case {session.case_id} not found"
+                    )
+
+            except Exception as e:
+                # Don't fail the execution if message saving fails
+                logger.error(
+                    f"Failed to save conversation for case {session.case_id}: {e}",
+                    exc_info=True,
+                )
+
             # Step 9: Update session token usage
             total = total_tokens.get("input_tokens", 0) + total_tokens.get(
                 "output_tokens", 0
@@ -552,16 +597,27 @@ class AgentOrchestrationService(BaseService):
             agent_type, AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR]
         )
 
+        # Build state summary following Section 11.5 of prompt guide
+        state_summary = self._build_state_summary(case, session)
+
         # Add case context to system prompt
         case_context = f"""
 
-## Current Case
-- **Title**: {case.title}
-- **Description**: {case.description or 'No description provided'}
-- **Status**: {case.status.value if hasattr(case.status, 'value') else case.status}
+## Current Investigation
+
+<state_summary>
+{state_summary}
+</state_summary>
+
+## Session Context
 - **Session Goal**: {session.session_goal or 'No specific goal set'}
 """
         system_prompt += case_context
+
+        logger.debug(
+            f"Built agent context for case {session.case_id}: "
+            f"system_prompt length={len(system_prompt)} chars"
+        )
 
         # Get conversation history
         messages = await self._get_conversation_history(session.case_id)
@@ -595,35 +651,176 @@ class AgentOrchestrationService(BaseService):
         case_id: str,
         limit: int = 10,
     ) -> List[Message]:
-        """Get conversation history from previous executions.
+        """Get conversation history from case messages.
+
+        Following prompt engineering guide Section 11.5, we provide recent
+        conversation turns to maintain context while minimizing tokens.
 
         Args:
             case_id: Case ID
-            limit: Maximum number of previous executions to include
+            limit: Maximum number of turns to include (default 10 turns = 20 messages)
 
         Returns:
-            List of Messages representing conversation history
+            List of Messages representing recent conversation history
         """
         messages: List[Message] = []
 
         try:
-            executions, _ = await self.case_repo.list_agent_executions_by_case(case_id)
+            # Get case with full message history
+            case = await self.case_repo.get(case_id)
 
-            # Take most recent completed executions
-            completed = [
-                e for e in executions if e.status == ExecutionStatus.COMPLETED
-            ][-limit:]
+            if not case:
+                logger.warning(
+                    f"Case {case_id} not found when building conversation history"
+                )
+                return messages
 
-            for execution in completed:
-                if execution.prompt:
-                    messages.append(Message.user(execution.prompt))
-                if execution.response:
-                    messages.append(Message.assistant(execution.response))
+            # Use case.messages (the ACTUAL conversation)
+            if case.messages:
+                # Get recent messages (limit turns × 2 messages per turn)
+                max_messages = limit * 2
+                recent_messages = case.messages[-max_messages:]
+
+                logger.debug(
+                    f"Building conversation history for case {case_id}: "
+                    f"using {len(recent_messages)} of {len(case.messages)} total messages"
+                )
+
+                for msg in recent_messages:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    turn_number = msg.get("turn_number", "?")
+
+                    if not content:
+                        logger.debug(
+                            f"Skipping empty message at turn {turn_number} role={role}"
+                        )
+                        continue
+
+                    if role == "user":
+                        messages.append(Message.user(content))
+                    elif role == "assistant":
+                        messages.append(Message.assistant(content))
+                    else:
+                        logger.warning(
+                            f"Unknown message role '{role}' at turn {turn_number}, "
+                            f"treating as user message"
+                        )
+                        messages.append(Message.user(content))
+
+                logger.debug(
+                    f"Built conversation history: {len(messages)} messages for case {case_id}"
+                )
+
+            else:
+                logger.debug(
+                    f"No message history found for case {case_id}, starting fresh conversation"
+                )
 
         except Exception as e:
-            logger.warning(f"Failed to get conversation history: {e}")
+            logger.error(
+                f"Failed to get conversation history for case {case_id}: {e}",
+                exc_info=True,
+            )
 
         return messages
+
+    def _build_state_summary(
+        self,
+        case: Any,
+        session: InvestigationSession,
+    ) -> str:
+        """Build compact state summary following Section 11.5 of prompt guide.
+
+        Provides investigation context in ~100-200 tokens instead of full history.
+
+        Args:
+            case: Case object with investigation state
+            session: Current investigation session
+
+        Returns:
+            Compact state summary string
+        """
+        summary_parts = []
+
+        # Title and description
+        summary_parts.append(f"Title: {case.title}")
+        if case.description:
+            # Truncate long descriptions
+            desc = (
+                case.description[:200] + "..."
+                if len(case.description) > 200
+                else case.description
+            )
+            summary_parts.append(f"Description: {desc}")
+
+        # Problem verification (core investigation context)
+        if hasattr(case, "problem_verification") and case.problem_verification:
+            pv = case.problem_verification
+            if hasattr(pv, "symptom_statement") and pv.symptom_statement:
+                summary_parts.append(f"Investigation: {pv.symptom_statement}")
+
+            if hasattr(pv, "temporal_state") and pv.temporal_state:
+                temporal = (
+                    pv.temporal_state.value
+                    if hasattr(pv.temporal_state, "value")
+                    else str(pv.temporal_state)
+                )
+                summary_parts.append(f"Temporal State: {temporal}")
+
+            if hasattr(pv, "urgency_level") and pv.urgency_level:
+                urgency = (
+                    pv.urgency_level.value
+                    if hasattr(pv.urgency_level, "value")
+                    else str(pv.urgency_level)
+                )
+                summary_parts.append(f"Urgency: {urgency}")
+
+        # Status and progress
+        status_str = (
+            case.status.value if hasattr(case.status, "value") else str(case.status)
+        )
+        summary_parts.append(f"Status: {status_str}")
+
+        # Turn count
+        if hasattr(case, "current_turn"):
+            summary_parts.append(f"Turns: {case.current_turn} total")
+
+        # Evidence count
+        if hasattr(case, "evidence") and case.evidence:
+            summary_parts.append(f"Evidence: {len(case.evidence)} artifacts")
+
+        # Active hypotheses
+        if hasattr(case, "hypotheses") and case.hypotheses:
+            active_hypotheses = [
+                h
+                for h in case.hypotheses.values()
+                if hasattr(h, "status") and h.status != "retired"
+            ]
+            if active_hypotheses:
+                summary_parts.append(f"Hypotheses: {len(active_hypotheses)} active")
+
+                # Include top hypothesis if available
+                top_hypothesis = max(
+                    active_hypotheses,
+                    key=lambda h: getattr(h, "likelihood", 0),
+                    default=None,
+                )
+                if top_hypothesis and hasattr(top_hypothesis, "statement"):
+                    confidence = int(getattr(top_hypothesis, "likelihood", 0.5) * 100)
+                    statement = top_hypothesis.statement[:100]
+                    if len(top_hypothesis.statement) > 100:
+                        statement += "..."
+                    summary_parts.append(
+                        f"Leading Hypothesis: {statement} ({confidence}% confidence)"
+                    )
+
+        # Solutions
+        if hasattr(case, "solutions") and case.solutions:
+            summary_parts.append(f"Solutions: {len(case.solutions)} proposed")
+
+        # Join with newlines
+        return "\n".join(summary_parts)
 
     # ============================================================
     # LLM Execution with Streaming

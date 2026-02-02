@@ -201,6 +201,7 @@ scripts/config/local_*.sh
 
 # Documentation - local working files (not tracked)
 docs/_archive/
+docs/archive/
 docs/working/
 **/working/
 

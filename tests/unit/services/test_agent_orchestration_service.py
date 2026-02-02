@@ -615,23 +615,22 @@ class TestBuildAgentContext:
         sample_case,
     ):
         """Test that context includes previous conversation history."""
-        mock_case_repo.get.return_value = sample_case
-
-        previous_executions = [
-            AgentExecution(
-                execution_id="exec_1",
-                case_id=sample_case.case_id,
-                agent_type=AgentType.INVESTIGATOR,
-                agent_model="test-model",
-                status=ExecutionStatus.COMPLETED,
-                prompt="Previous question",
-                response="Previous answer",
-            ),
+        # Add previous conversation to case.messages (new approach)
+        sample_case.messages = [
+            {
+                "role": "user",
+                "content": "Previous question",
+                "turn_number": 1,
+                "timestamp": "2024-01-01T00:00:00Z",
+            },
+            {
+                "role": "assistant",
+                "content": "Previous answer",
+                "turn_number": 1,
+                "timestamp": "2024-01-01T00:00:01Z",
+            },
         ]
-        mock_case_repo.list_agent_executions_by_case.return_value = (
-            previous_executions,
-            1,
-        )
+        mock_case_repo.get.return_value = sample_case
 
         context = await orchestration_service._build_agent_context(
             session=sample_session,
@@ -639,8 +638,11 @@ class TestBuildAgentContext:
             agent_type=AgentType.INVESTIGATOR,
         )
 
-        # Should have user message plus previous conversation
-        assert len(context.messages) >= 2  # At least previous Q&A + new message
+        # Should have previous Q&A (2 messages) + current user message (1) = 3 total
+        assert len(context.messages) >= 3  # Previous Q&A + new message
+        # Verify previous conversation is included
+        assert any("Previous question" in msg.content for msg in context.messages)
+        assert any("Previous answer" in msg.content for msg in context.messages)
 
     @pytest.mark.asyncio
     async def test_build_context_uses_correct_agent_prompt(
@@ -728,6 +730,37 @@ class TestBuildAgentContext:
         # Should have just the new user message
         assert len(context.messages) == 1
         assert context.messages[0].content == "First message"
+
+    def test_build_state_summary(
+        self,
+        orchestration_service,
+        sample_case,
+        sample_session,
+    ):
+        """Test that state summary includes key investigation context."""
+        # Set up case with investigation state
+        from faultmaven.modules.case.contracts import ProblemVerification, TemporalState
+
+        sample_case.title = "Server Performance Issue"
+        sample_case.description = "Database queries are slow"
+        sample_case.current_turn = 5
+        sample_case.problem_verification = ProblemVerification(
+            symptom_statement="Database response time increased from 50ms to 500ms",
+            temporal_state=TemporalState.ONGOING,
+            severity="HIGH",
+        )
+
+        summary = orchestration_service._build_state_summary(
+            case=sample_case,
+            session=sample_session,
+        )
+
+        # Verify summary contains key information
+        assert "Server Performance Issue" in summary
+        assert "Database queries are slow" in summary
+        assert "Database response time increased" in summary
+        assert "Turns: 5 total" in summary
+        assert "inquiry" in summary.lower() or "investigating" in summary.lower()
 
 
 # =============================================================================

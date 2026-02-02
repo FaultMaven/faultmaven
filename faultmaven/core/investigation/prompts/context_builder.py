@@ -100,14 +100,48 @@ def build_investigation_context(
     else:
         hypothesis_str = ""
 
-    # 6. Conversation History (Prioritized)
-    # We take the last 5 turns in full, and older turns truncated
+    # 6. Conversation History
+    # Use full messages from case.messages for better context preservation
+    # Per Prompt Engineering Guide Section 11.5: Provide recent conversation
+    # with actual content, not just outcomes
     recent_history = ""
-    history_turns = case.turn_history[-10:]  # Take up to 10
-    for turn in history_turns:
-        recent_history += f"TURN {turn.turn_number} ({turn.outcome.value}):\n"
-        recent_history += f"USER: {turn.user_message_summary}\n"
-        recent_history += f"AGENT: {turn.agent_response_summary}\n\n"
+
+    if case.messages:
+        # Get recent messages (last 20 messages = ~10 turns)
+        # Limit to prevent excessive token usage in very long conversations
+        recent_messages = case.messages[-20:]
+
+        # Group messages by turn for readability
+        current_turn_num = None
+        for msg in recent_messages:
+            turn_num = msg.get("turn_number", "?")
+            role = msg.get("role", "unknown").upper()
+            content = msg.get("content", "")
+
+            if not content:
+                continue  # Skip empty messages
+
+            # Add turn header when starting a new turn
+            if turn_num != current_turn_num:
+                if current_turn_num is not None:
+                    recent_history += "\n"
+                recent_history += f"TURN {turn_num}:\n"
+                current_turn_num = turn_num
+
+            recent_history += f"{role}: {content}\n"
+
+    elif case.turn_history:
+        # Fallback: Use turn summaries if full messages unavailable
+        # This maintains backward compatibility with older cases
+        history_turns = case.turn_history[-10:]
+        for turn in history_turns:
+            if turn.user_message_summary or turn.agent_response_summary:
+                recent_history += f"TURN {turn.turn_number} ({turn.outcome.value}):\n"
+                if turn.user_message_summary:
+                    recent_history += f"USER: {turn.user_message_summary}\n"
+                if turn.agent_response_summary:
+                    recent_history += f"AGENT: {turn.agent_response_summary}\n"
+                recent_history += "\n"
 
     # 7. Knowledge Base Results
     kb_str = "KNOWLEDGE BASE SEARCH RESULTS:\n"
