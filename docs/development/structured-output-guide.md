@@ -4,6 +4,64 @@
 
 FaultMaven uses **json_schema mode** (OpenAI Structured Outputs) to enforce strict schema adherence when requesting structured data from LLMs. This guide documents critical implementation requirements and gotchas.
 
+FaultMaven implements a **provider-agnostic capability detection system** that automatically detects each provider's structured output capabilities and adjusts the prompt and API parameters accordingly. This ensures optimal results across OpenAI, Groq, Anthropic, local models, and other providers without hardcoded provider-specific logic.
+
+## Provider-Agnostic Capability System
+
+### Architecture
+
+FaultMaven uses a capability-based approach instead of hardcoded provider checks:
+
+```python
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+    get_capability_for_provider_and_model,
+)
+
+# Automatic capability detection
+capability = provider.get_structured_output_capability(model)
+
+# Returns one of:
+# - StructuredOutputCapability.STRICT          # json_schema with strict:true
+# - StructuredOutputCapability.BEST_EFFORT     # json_object mode
+# - StructuredOutputCapability.FUNCTION_CALLING # Tool calling pattern
+# - StructuredOutputCapability.NONE            # No API support
+```
+
+### How It Works
+
+1. **Detection**: `BaseLLMProvider.get_structured_output_capability()` checks the centralized capability registry
+2. **Strategy**: `get_structured_output_strategy()` creates a strategy with appropriate mode and configuration
+3. **Execution**: `milestone_engine` uses the strategy to:
+   - Conditionally include schema in prompt (for BEST_EFFORT/NONE modes)
+   - Use correct response_format (json_schema vs json_object)
+   - Apply provider-specific configurations
+
+### Benefits
+
+- **No Hardcoded Logic**: Adding new providers or models only requires updating the capability registry
+- **Graceful Degradation**: Automatically falls back to best available mode
+- **Consistent Behavior**: Same code path for all providers
+- **Easy Testing**: Mock capability levels to test different scenarios
+
+### Example: Multi-Provider Code
+
+```python
+# This code works identically for OpenAI, Groq, Anthropic, local models:
+schema = InquiryResponse.model_json_schema()
+strategy = provider.get_structured_output_strategy(schema)
+
+# Conditionally include schema in prompt based on capability
+if strategy.include_schema_in_prompt:
+    prompt = f"{prompt}\n\nSchema: {json.dumps(schema)}"
+
+# Use strategy-determined response_format
+response = await provider.generate(
+    prompt=prompt,
+    response_format=strategy.response_format
+)
+```
+
 ## Rule of Thumb: json_object vs json_schema
 
 | Feature | json_object (OLD) | json_schema (NEW) |

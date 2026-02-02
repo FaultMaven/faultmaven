@@ -23,23 +23,17 @@ class GroqProvider(BaseLLMProvider):
 
     Groq provides ultra-fast inference for Llama, Mixtral, and other models
     using their custom LPU hardware. The API is OpenAI-compatible.
-    """
 
-    # Models that officially support strict: True (Structured Outputs)
-    # Source: https://console.groq.com/docs/structured-outputs (verified 2025-02-01)
-    #
-    # NOTE: Popular models like Llama-3.3-70b-versatile, Mixtral-8x7b, and
-    # Llama-3.1 variants currently support only "Best Effort" or json_object mode,
-    # NOT strict json_schema. FaultMaven automatically falls back to json_object
-    # for these models and includes the schema in the prompt text.
-    #
-    # For guaranteed field names and zero hallucinations, use one of these models:
-    STRICT_JSON_SCHEMA_MODELS = {
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-        # Add new models here as Groq updates support
-        # Check https://console.groq.com/docs/structured-outputs for latest list
-    }
+    Structured Output Support:
+    - STRICT mode (json_schema with strict:true): Only openai/gpt-oss-20b and gpt-oss-120b
+    - BEST_EFFORT mode (json_object): All other models (Llama-3.3-70b, Mixtral, etc.)
+
+    The provider automatically detects capabilities and falls back to json_object mode
+    for models that don't support strict json_schema. When using json_object mode,
+    FaultMaven includes the schema in the prompt text to guide the model.
+
+    Source: https://console.groq.com/docs/structured-outputs (verified 2025-02-01)
+    """
 
     @property
     def provider_name(self) -> str:
@@ -100,16 +94,23 @@ class GroqProvider(BaseLLMProvider):
                 payload["tool_choice"] = tool_choice
 
         # Add response format if specified in kwargs
+        # The capability system in base.py handles detection and fallback
         if "response_format" in kwargs:
             response_format = kwargs.pop("response_format")
 
-            # Check if model supports json_schema with strict: True
+            # Use capability system to check if we need to fall back
+            # (Keep backward compatibility while transitioning to capability system)
             if response_format.get("type") == "json_schema":
-                if effective_model not in self.STRICT_JSON_SCHEMA_MODELS:
+                capability = self.get_structured_output_capability(effective_model)
+                from faultmaven.infrastructure.llm.structured_output_capability import (
+                    StructuredOutputCapability,
+                )
+
+                if capability != StructuredOutputCapability.STRICT:
                     # Model doesn't support strict json_schema, fall back to json_object
                     self.logger.warning(
-                        f"Model {effective_model} does not support json_schema with strict:true. "
-                        f"Falling back to json_object mode. Supported models: {self.STRICT_JSON_SCHEMA_MODELS}"
+                        f"Model {effective_model} has capability={capability.value}, "
+                        f"falling back to json_object mode"
                     )
                     response_format = {"type": "json_object"}
 

@@ -39,7 +39,6 @@ from faultmaven.core.investigation.schemas import (
     TerminalResponse,
     get_schema_for_stage,
 )
-from faultmaven.utils.schema_converter import create_response_format_json_schema
 from faultmaven.core.investigation.stagnation_detector import (
     StagnationBreaker,
     StagnationDetector,
@@ -379,7 +378,14 @@ class MilestoneEngine:
         self, prompt: str, schema_model: Any
     ) -> BaseInteractionResponse:
         """
-        Generate structured output from LLM.
+        Generate structured output from LLM using provider-agnostic capability system.
+
+        This method automatically detects the provider's structured output capabilities
+        and adjusts the prompt and response format accordingly:
+        - STRICT mode: Uses json_schema with strict:true (OpenAI GPT-4o, Groq gpt-oss)
+        - BEST_EFFORT mode: Uses json_object with schema in prompt (most models)
+        - FUNCTION_CALLING mode: Uses tool calling pattern (Anthropic Claude)
+        - NONE mode: Schema only in prompt, no API support (legacy models)
 
         Args:
             prompt: User prompt
@@ -388,34 +394,36 @@ class MilestoneEngine:
         Returns:
             Instantiated Pydantic model
         """
-        # Create proper json_schema response format
-        response_format = create_response_format_json_schema(schema_model)
+        # Get provider-specific structured output strategy
+        schema = schema_model.model_json_schema()
+        strategy = self.llm_provider.get_structured_output_strategy(schema)
 
-        # CRITICAL: Include schema in prompt for json_object fallback mode
-        # When providers don't support strict json_schema (e.g., Groq Llama-3.3),
-        # they fall back to json_object which DISCARDS the schema from response_format.
-        # We must include the schema in the prompt text itself to ensure the model
-        # knows what structure to generate.
-        schema_json = json.dumps(schema_model.model_json_schema(), indent=2)
-        json_instruction = (
-            "\n\n## RESPONSE FORMAT\n"
-            "You MUST respond with valid JSON matching this exact schema:\n\n"
-            f"```json\n{schema_json}\n```\n\n"
-            "IMPORTANT:\n"
-            "- Use the exact field names shown in the schema\n"
-            "- Do not add extra fields not in the schema\n"
-            "- Do not include any text before or after the JSON\n"
-            "- Ensure all required fields are present\n"
-        )
-        prompt_with_schema = f"{prompt}{json_instruction}"
+        # Conditionally include schema in prompt based on provider capability
+        if strategy.include_schema_in_prompt:
+            # Provider requires schema in prompt text (json_object or prompt_only modes)
+            schema_json = json.dumps(schema, indent=2)
+            json_instruction = (
+                "\n\n## RESPONSE FORMAT\n"
+                "You MUST respond with valid JSON matching this exact schema:\n\n"
+                f"```json\n{schema_json}\n```\n\n"
+                "IMPORTANT:\n"
+                "- Use the exact field names shown in the schema\n"
+                "- Do not add extra fields not in the schema\n"
+                "- Do not include any text before or after the JSON\n"
+                "- Ensure all required fields are present\n"
+            )
+            final_prompt = f"{prompt}{json_instruction}"
+        else:
+            # Provider supports strict json_schema - no need for schema in prompt
+            final_prompt = prompt
 
         # Define the LLM operation for retry
         async def llm_operation():
             response = await self.llm_provider.generate(
-                prompt=prompt_with_schema,
+                prompt=final_prompt,
                 max_tokens=4000,
                 temperature=0.2,  # Lower temperature for structured output
-                response_format=response_format,
+                response_format=strategy.response_format,
             )
             content = response if isinstance(response, str) else response.content
             return schema_model.model_validate_json(content)

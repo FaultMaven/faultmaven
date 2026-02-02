@@ -5,10 +5,19 @@ This module defines the abstract base class that all LLM providers must implemen
 ensuring consistent behavior and configuration across all provider implementations.
 """
 
+import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+# Import structured output capability system
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+    StructuredOutputStrategy,
+    create_strategy_for_capability,
+    get_capability_for_provider_and_model,
+)
 
 
 @dataclass
@@ -60,6 +69,7 @@ class BaseLLMProvider(ABC):
     def __init__(self, config: ProviderConfig):
         self.config = config
         self.start_time = None
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     @property
     @abstractmethod
@@ -136,3 +146,59 @@ class BaseLLMProvider(ABC):
             return self.config.models[0]
 
         raise ValueError(f"No valid model available for provider {self.provider_name}")
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Get the structured output capability for this provider/model.
+
+        This method determines what level of structured output support is available
+        for the given model. Providers can override this to provide custom logic,
+        or rely on the centralized capability registry.
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability level
+        """
+        effective_model = self.get_effective_model(model)
+        capability = get_capability_for_provider_and_model(
+            self.provider_name, effective_model
+        )
+
+        # Log capability for visibility
+        self.logger.debug(
+            f"Structured output capability for {self.provider_name}/{effective_model}: "
+            f"{capability.value}"
+        )
+
+        return capability
+
+    def get_structured_output_strategy(
+        self, schema: Dict[str, Any], model: Optional[str] = None
+    ) -> StructuredOutputStrategy:
+        """
+        Get the appropriate structured output strategy for this provider/model.
+
+        This method determines the best strategy for requesting structured output
+        based on the model's capabilities.
+
+        Args:
+            schema: Pydantic JSON schema
+            model: Model name (uses default if None)
+
+        Returns:
+            StructuredOutputStrategy with configuration
+        """
+        capability = self.get_structured_output_capability(model)
+        strategy = create_strategy_for_capability(capability, schema)
+
+        # Log strategy for debugging
+        self.logger.info(
+            f"Using structured output strategy for {self.provider_name}: "
+            f"mode={strategy.mode.value}, include_schema_in_prompt={strategy.include_schema_in_prompt}"
+        )
+
+        return strategy
