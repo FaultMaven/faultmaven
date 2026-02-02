@@ -450,7 +450,15 @@ class MilestoneEngine:
                 # Parse response to handle tool_calls format
                 if hasattr(response, "tool_calls") and response.tool_calls:
                     # Extract arguments from first tool call
-                    content = response.tool_calls[0].function.get("arguments", "{}")
+                    args = response.tool_calls[0].function.get("arguments", "{}")
+
+                    # arguments may be a string (most providers) or dict (some providers)
+                    if isinstance(args, dict):
+                        # Convert dict to JSON string for model_validate_json
+                        content = json.dumps(args)
+                    else:
+                        # Already a string
+                        content = args
 
             return schema_model.model_validate_json(content)
 

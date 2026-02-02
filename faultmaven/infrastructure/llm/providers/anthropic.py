@@ -81,6 +81,35 @@ class AnthropicProvider(BaseLLMProvider):
         if "stop_sequences" in kwargs:
             request_body["stop_sequences"] = kwargs["stop_sequences"]
 
+        # Handle tool/function calling (for structured output)
+        if "tools" in kwargs:
+            # Convert OpenAI-style tools to Anthropic format
+            openai_tools = kwargs["tools"]
+            anthropic_tools = []
+
+            for tool in openai_tools:
+                if tool.get("type") == "function":
+                    func = tool.get("function", {})
+                    anthropic_tools.append({
+                        "name": func.get("name"),
+                        "description": func.get("description", ""),
+                        "input_schema": func.get("parameters", {}),
+                    })
+
+            if anthropic_tools:
+                request_body["tools"] = anthropic_tools
+
+                # Handle tool_choice parameter
+                tool_choice = kwargs.get("tool_choice")
+                if tool_choice == "required":
+                    # Force tool use - use "any" type for Anthropic
+                    request_body["tool_choice"] = {"type": "any"}
+                elif tool_choice == "auto":
+                    request_body["tool_choice"] = {"type": "auto"}
+                elif isinstance(tool_choice, dict):
+                    # Already in Anthropic format
+                    request_body["tool_choice"] = tool_choice
+
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"
 
@@ -102,11 +131,32 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Extract content from Anthropic response format
         content = ""
+        tool_calls = None
+
         if "content" in response_data and response_data["content"]:
             # Anthropic returns content as a list of blocks
             for block in response_data["content"]:
                 if block.get("type") == "text":
                     content += block.get("text", "")
+                elif block.get("type") == "tool_use":
+                    # Convert Anthropic tool_use to OpenAI-style tool_calls
+                    if tool_calls is None:
+                        tool_calls = []
+
+                    # Import ToolCall here to avoid circular import
+                    from .base import ToolCall
+
+                    tool_calls.append(
+                        ToolCall(
+                            id=block.get("id", ""),
+                            type="function",
+                            function={
+                                "name": block.get("name", ""),
+                                # Anthropic returns input as dict, we need JSON string
+                                "arguments": json.dumps(block.get("input", {})),
+                            },
+                        )
+                    )
 
         # Calculate metrics
         response_time_ms = int((time.time() - start_time) * 1000)
@@ -123,6 +173,7 @@ class AnthropicProvider(BaseLLMProvider):
             tokens_used=tokens_used,
             response_time_ms=response_time_ms,
             cached=False,
+            tool_calls=tool_calls,  # Add tool_calls for function calling support
         )
 
     def _calculate_confidence(
