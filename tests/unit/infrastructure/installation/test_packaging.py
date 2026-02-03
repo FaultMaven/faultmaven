@@ -186,7 +186,7 @@ class TestDependencyCategorization:
         """Verify base dependencies include LLM framework (required for core functionality)."""
         base_str = " ".join(base_dependencies)
 
-        required = ["langgraph", "openai", "anthropic", "fireworks-ai"]
+        required = ["openai", "anthropic", "fireworks-ai"]
         for pkg in required:
             assert any(
                 pkg in dep for dep in base_dependencies

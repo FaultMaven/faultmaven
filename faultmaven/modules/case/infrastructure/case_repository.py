@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         CaseReport,
         ReportType,
     )
+    from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 
 # ============================================================
@@ -361,6 +362,49 @@ class CaseRepository(ABC):
         """
         pass
 
+    # Checkpoint Operations
+    @abstractmethod
+    async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
+        """
+        Create a new case checkpoint.
+
+        Args:
+            checkpoint: CaseCheckpoint domain object
+
+        Returns:
+            Created checkpoint
+
+        Raises:
+            RepositoryException: If creation fails
+        """
+        pass
+
+    @abstractmethod
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
+        """
+        Get a checkpoint by ID.
+
+        Args:
+            checkpoint_id: Checkpoint identifier
+
+        Returns:
+            CaseCheckpoint if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_checkpoints(self, case_id: str) -> List["CaseCheckpoint"]:
+        """
+        Get all checkpoints for a case.
+
+        Args:
+            case_id: Case identifier
+
+        Returns:
+            List of checkpoints ordered by turn_number
+        """
+        pass
+
     async def begin_transaction(self):
         """
         Begin a transaction context (optional feature).
@@ -404,7 +448,11 @@ class InMemoryCaseRepository(CaseRepository):
         self._agent_executions: Dict[str, Any] = (
             {}
         )  # execution_id -> AgentExecution (tool_calls stored separately)
+        self._agent_executions: Dict[str, Any] = (
+            {}
+        )  # execution_id -> AgentExecution (tool_calls stored separately)
         self._agent_tool_calls: Dict[str, Any] = {}  # tool_call_id -> AgentToolCall
+        self._checkpoints: Dict[str, Any] = {}  # checkpoint_id -> CaseCheckpoint
 
     async def save(self, case: Case) -> Case:
         """Save case to memory."""
@@ -725,6 +773,22 @@ class InMemoryCaseRepository(CaseRepository):
             del self._reports[report_id]
             return True
         return False
+
+    async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
+        """Create checkpoint in memory."""
+        self._checkpoints[checkpoint.checkpoint_id] = checkpoint
+        return checkpoint
+
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
+        """Get checkpoint from memory."""
+        return self._checkpoints.get(checkpoint_id)
+
+    async def get_checkpoints(self, case_id: str) -> List["CaseCheckpoint"]:
+        """Get checkpoints for case from memory."""
+        checkpoints = [cp for cp in self._checkpoints.values() if cp.case_id == case_id]
+        # Sort by turn number
+        checkpoints.sort(key=lambda x: x.turn_number)
+        return checkpoints
 
     # ============================================================
     # Standalone Evidence Operations (migrated from Evidence module)

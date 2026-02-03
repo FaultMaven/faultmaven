@@ -18,7 +18,10 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 ### Operations
 
-- **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns and recovery strategies
+### Operations
+ 
+ - **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, and Streaming
+ - **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns and recovery strategies
 
 ## Purpose
 

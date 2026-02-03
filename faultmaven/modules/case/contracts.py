@@ -71,6 +71,9 @@ from faultmaven.modules.case.domain.owned_models.report import (
     SimilarRunbook,
 )
 
+# Case-owned Checkpoint models (Case module owns checkpoints table)
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
+
 # ============================================================
 # Repository Contract
 # ============================================================
@@ -286,6 +289,19 @@ class ICaseRepository(Protocol):
         """Get the most recent agent execution for a case."""
         ...
 
+    # Checkpoint Operations
+    async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
+        """Create a new case checkpoint."""
+        ...
+
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
+        """Get a checkpoint by ID."""
+        ...
+
+    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
+        """Get all checkpoints for a case."""
+        ...
+
 
 # ============================================================
 # Service Contract
@@ -437,6 +453,8 @@ __all__ = [
     "AgentType",
     "AgentToolCall",
     "AgentExecution",
+    # Case-owned Checkpoint models
+    "CaseCheckpoint",
     # Investigation models from Agent module (shared for investigation coordination)
     # Case domain models (backward compatibility)
     "Case",

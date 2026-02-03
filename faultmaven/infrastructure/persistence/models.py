@@ -35,9 +35,11 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.types import JSON
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 
@@ -791,6 +793,68 @@ class AgentTypeEnum(str, enum.Enum):
     VALIDATOR = "validator"
     REPORTER = "reporter"
     CUSTOM = "custom"
+
+
+# ============================================================
+# Case Checkpoint Model (TASK-028)
+# ============================================================
+
+
+class CaseCheckpointModel(Base):
+    """
+    Immutable snapshot of a case at a specific turn.
+    Used for time-travel debugging, drift detection, and undo functionality.
+    """
+
+    __tablename__ = "case_checkpoints"
+
+    # Primary Key
+    checkpoint_id = Column(String(50), primary_key=True)
+
+    # Foreign Key to cases
+    case_id = Column(
+        String(17),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    turn_number = Column(Integer, nullable=False)
+
+    # Snapshot Data
+    case_snapshot = Column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False
+    )  # Full case state
+    snapshot_hash = Column(String(64), nullable=False)  # SHA256 for drift/dedup
+    trigger = Column(String(50), nullable=False)  # Reason for checkpoint
+
+    # Metadata
+    checkpoint_metadata = Column("metadata", Text, default="{}")
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+    # Relationships
+    case = relationship("CaseModel", backref="checkpoints")
+
+    __table_args__ = (
+        # Compound index for efficient turn-based retrieval
+        Index("ix_case_turn", "case_id", "turn_number"),
+        CheckConstraint(
+            "LENGTH(TRIM(snapshot_hash)) > 0", name="case_checkpoints_hash_not_empty"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CaseCheckpointModel(checkpoint_id={self.checkpoint_id}, "
+            f"case_id={self.case_id}, turn={self.turn_number})>"
+        )
 
 
 # ============================================================

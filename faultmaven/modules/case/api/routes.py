@@ -126,6 +126,11 @@ from faultmaven.utils.serialization import to_json_compatible
 # Create router
 router = APIRouter(prefix="/cases", tags=["cases"])
 
+# Include Replay Router
+from faultmaven.modules.case.api.replay import router as replay_router
+
+router.include_router(replay_router)
+
 # Set up logging
 logger = logging.getLogger(__name__)
 

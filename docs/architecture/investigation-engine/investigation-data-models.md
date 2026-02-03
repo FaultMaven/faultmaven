@@ -15,6 +15,7 @@ This document defines the core data models used in FaultMaven's opportunistic in
 3. [Evidence Model](#2-evidence-model)
 4. [Hypothesis Workflow](#3-hypothesis-workflow)
 5. [Degraded Mode](#4-degraded-mode)
+6. [Checkpointing Model](#5-checkpointing-model)
 
 ---
 

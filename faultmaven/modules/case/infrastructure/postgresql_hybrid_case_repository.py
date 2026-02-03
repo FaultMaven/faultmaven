@@ -48,6 +48,7 @@ from faultmaven.modules.case.domain.models import (
 
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 # TYPE_CHECKING imports not needed - models imported directly above
@@ -1944,6 +1945,118 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Get the most recent agent execution (PostgreSQL stub)."""
         raise NotImplementedError(
             "get_latest_agent_execution not yet implemented in PostgreSQLHybridCaseRepository"
+        )
+
+    # ========================================================================
+    # Checkpoint Operations (TASK-028)
+    # ========================================================================
+
+    async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
+        """Create a new case checkpoint (PostgreSQL)."""
+        from faultmaven.utils.serialization import to_json_compatible
+
+        try:
+            query = text("""
+                INSERT INTO case_checkpoints (
+                    checkpoint_id, case_id, turn_number, case_snapshot,
+                    snapshot_hash, trigger, created_at, metadata
+                ) VALUES (
+                    :checkpoint_id, :case_id, :turn_number, :case_snapshot::jsonb,
+                    :snapshot_hash, :trigger, :created_at::timestamptz, :metadata::jsonb
+                )
+            """)
+
+            await self.db.execute(
+                query,
+                {
+                    "checkpoint_id": checkpoint.checkpoint_id,
+                    "case_id": checkpoint.case_id,
+                    "turn_number": checkpoint.turn_number,
+                    "case_snapshot": json.dumps(
+                        to_json_compatible(checkpoint.case_snapshot)
+                    ),
+                    "snapshot_hash": checkpoint.snapshot_hash,
+                    "trigger": checkpoint.trigger,
+                    "created_at": checkpoint.created_at,
+                    "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
+                },
+            )
+            await self.db.commit()
+            return checkpoint
+
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to create checkpoint for case {checkpoint.case_id}: {e}"
+            ) from e
+
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
+        """Get a checkpoint by ID (PostgreSQL)."""
+        try:
+            query = text("""
+                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
+                       snapshot_hash, trigger, created_at, metadata
+                FROM case_checkpoints
+                WHERE checkpoint_id = :checkpoint_id
+            """)
+
+            result = await self.db.execute(query, {"checkpoint_id": checkpoint_id})
+            row = result.fetchone()
+
+            if not row:
+                return None
+
+            return self._row_to_case_checkpoint(row)
+
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to get checkpoint {checkpoint_id}: {e}"
+            ) from e
+
+    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
+        """Get all checkpoints for a case (PostgreSQL)."""
+        try:
+            query = text("""
+                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
+                       snapshot_hash, trigger, created_at, metadata
+                FROM case_checkpoints
+                WHERE case_id = :case_id
+                ORDER BY turn_number ASC
+            """)
+
+            result = await self.db.execute(query, {"case_id": case_id})
+            rows = result.fetchall()
+
+            return [self._row_to_case_checkpoint(row) for row in rows]
+
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to get checkpoints for case {case_id}: {e}"
+            ) from e
+
+    def _row_to_case_checkpoint(self, row: Any) -> CaseCheckpoint:
+        """Convert DB row to CaseCheckpoint domain model."""
+        snapshot_data = row.case_snapshot
+        if isinstance(snapshot_data, str):
+            snapshot_data = json.loads(snapshot_data)
+
+        metadata = row.metadata
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+
+        created_at = row.created_at
+        if created_at and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+
+        return CaseCheckpoint(
+            checkpoint_id=row.checkpoint_id,
+            case_id=row.case_id,
+            turn_number=row.turn_number,
+            case_snapshot=snapshot_data or {},
+            snapshot_hash=row.snapshot_hash,
+            trigger=row.trigger,
+            created_at=created_at,
+            metadata=metadata or {},
         )
 
 

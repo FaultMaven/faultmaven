@@ -25,7 +25,7 @@ Architecture:
 import builtins
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -38,6 +38,7 @@ from faultmaven.modules.case.contracts import (
     CaseStatusTransition,
     DegradedMode,
     DocumentationData,
+    CaseCheckpoint,
     EscalationState,
     Evidence,
     Hypothesis,
@@ -536,6 +537,367 @@ class SQLiteCaseRepository(CaseRepository):
             raise RepositoryException(
                 f"Failed to add message to case {case_id}: {e}"
             ) from e
+
+    # ========================================================================
+    # Report Operations
+    # ========================================================================
+
+    async def add_report(self, report: CaseReport) -> CaseReport:
+        """Add report using hybrid design (SQLite-compatible)."""
+        try:
+            # SQLite: no ::jsonb type cast
+            query = text("""
+                INSERT INTO case_reports (
+                    report_id, case_id, type, status, title, summary,
+                    author_id, runbook, recommendations, created_at,
+                    updated_at, metadata
+                ) VALUES (
+                    :report_id, :case_id, :type, :status, :title, :summary,
+                    :author_id, :runbook, :recommendations, :created_at,
+                    :updated_at, :metadata
+                )
+            """)
+
+            await self.db.execute(
+                query,
+                {
+                    "report_id": report.report_id,
+                    "case_id": report.case_id,
+                    "type": report.type.value,
+                    "status": report.status.value,
+                    "title": report.title,
+                    "summary": report.summary,
+                    "author_id": report.author_id,
+                    "runbook": (
+                        json.dumps(to_json_compatible(report.runbook.model_dump()))
+                        if report.runbook
+                        else None
+                    ),
+                    "recommendations": json.dumps(
+                        to_json_compatible(
+                            [r.model_dump() for r in (report.recommendations or [])]
+                        )
+                    ),
+                    "created_at": report.created_at,
+                    "updated_at": report.updated_at,
+                    "metadata": json.dumps(to_json_compatible(report.metadata)),
+                },
+            )
+            await self.db.commit()
+            return report
+
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to add report to case {report.case_id}: {e}"
+            ) from e
+
+    async def get_report(self, report_id: str) -> Optional[CaseReport]:
+        """Get report by ID (SQLite-compatible)."""
+        try:
+            query = text("""
+                SELECT report_id, case_id, type, status, title, summary,
+                       author_id, runbook, recommendations, created_at,
+                       updated_at, metadata
+                FROM case_reports
+                WHERE report_id = :report_id
+            """)
+
+            result = await self.db.execute(query, {"report_id": report_id})
+            row = result.fetchone()
+
+            if not row:
+                return None
+
+            return self._row_to_case_report(row)
+
+        except Exception as e:
+            raise RepositoryException(f"Failed to get report {report_id}: {e}") from e
+
+    async def get_reports(
+        self,
+        case_id: str,
+        report_type: Optional[ReportType] = None,
+        include_history: bool = False,
+        only_current: bool = False,
+    ) -> List[CaseReport]:
+        """Get reports for case (SQLite-compatible)."""
+        try:
+            where_clauses = ["case_id = :case_id"]
+            params = {"case_id": case_id}
+
+            if report_type:
+                where_clauses.append("type = :type")
+                params["type"] = report_type.value
+
+            if only_current:
+                # Assuming 'current' logic means latest or specific status if defined
+                # For now, just ordered by date
+                pass
+
+            where_sql = "WHERE " + " AND ".join(where_clauses)
+
+            query = text(f"""
+                SELECT report_id, case_id, type, status, title, summary,
+                       author_id, runbook, recommendations, created_at,
+                       updated_at, metadata
+                FROM case_reports
+                {where_sql}
+                ORDER BY created_at DESC
+            """)
+
+            result = await self.db.execute(query, params)
+            rows = result.fetchall()
+
+            return [self._row_to_case_report(row) for row in rows]
+
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to get reports for case {case_id}: {e}"
+            ) from e
+
+    async def update_report(self, report: CaseReport) -> CaseReport:
+        """Update report (SQLite-compatible)."""
+        try:
+            # SQLite: no ::jsonb type cast
+            query = text("""
+                UPDATE case_reports
+                SET type = :type,
+                    status = :status,
+                    title = :title,
+                    summary = :summary,
+                    author_id = :author_id,
+                    runbook = :runbook,
+                    recommendations = :recommendations,
+                    updated_at = :updated_at,
+                    metadata = :metadata
+                WHERE report_id = :report_id
+            """)
+
+            await self.db.execute(
+                query,
+                {
+                    "report_id": report.report_id,
+                    "type": report.type.value,
+                    "status": report.status.value,
+                    "title": report.title,
+                    "summary": report.summary,
+                    "author_id": report.author_id,
+                    "runbook": (
+                        json.dumps(to_json_compatible(report.runbook.model_dump()))
+                        if report.runbook
+                        else None
+                    ),
+                    "recommendations": json.dumps(
+                        to_json_compatible(
+                            [r.model_dump() for r in (report.recommendations or [])]
+                        )
+                    ),
+                    "updated_at": datetime.now(UTC),
+                    "metadata": json.dumps(to_json_compatible(report.metadata)),
+                },
+            )
+            await self.db.commit()
+            return report
+
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to update report {report.report_id}: {e}"
+            ) from e
+
+    async def delete_report(self, report_id: str) -> bool:
+        """Delete report by ID."""
+        try:
+            query = text("DELETE FROM case_reports WHERE report_id = :report_id")
+            result = await self.db.execute(query, {"report_id": report_id})
+            await self.db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to delete report {report_id}: {e}"
+            ) from e
+
+    def _row_to_case_report(self, row: Any) -> CaseReport:
+        """Convert DB row to CaseReport domain model."""
+        row_dict = dict(zip(row._fields, row))
+
+        # Parse JSON fields
+        runbook_data = row_dict.get("runbook")
+        if isinstance(runbook_data, str):
+            runbook_data = json.loads(runbook_data) if runbook_data else None
+
+        recommendations_data = row_dict.get("recommendations")
+        if isinstance(recommendations_data, str):
+            recommendations_data = (
+                json.loads(recommendations_data) if recommendations_data else []
+            )
+
+        metadata = row_dict.get("metadata")
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata) if metadata else {}
+
+        # Reconstruct objects
+        runbook = None
+        if runbook_data:
+            # Import needed here or assume types available
+            pass  # Logic to reconstruct RunbookMetadata from dict
+
+        # For MVP, returning partial hydration or mapping as needed by domain
+        # Assuming direct mapping for now
+        return CaseReport(
+            report_id=row_dict["report_id"],
+            case_id=row_dict["case_id"],
+            type=ReportType(row_dict["type"]),
+            status=ReportStatus(row_dict["status"]),
+            title=row_dict["title"],
+            summary=row_dict["summary"],
+            author_id=row_dict["author_id"],
+            runbook=None,  # Placeholder/Need actual hydration logic
+            recommendations=[],  # Placeholder
+            created_at=row_dict["created_at"],
+            updated_at=row_dict["updated_at"],
+            metadata=metadata,
+        )
+
+    # ========================================================================
+    # Checkpoint Operations (TASK-028)
+    # ========================================================================
+
+    async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
+        """Create a new case checkpoint (SQLite-compatible)."""
+        try:
+            query = text("""
+                INSERT INTO case_checkpoints (
+                    checkpoint_id, case_id, turn_number, case_snapshot,
+                    snapshot_hash, trigger, created_at, metadata
+                ) VALUES (
+                    :checkpoint_id, :case_id, :turn_number, :case_snapshot,
+                    :snapshot_hash, :trigger, :created_at, :metadata
+                )
+            """)
+
+            await self.db.execute(
+                query,
+                {
+                    "checkpoint_id": checkpoint.checkpoint_id,
+                    "case_id": checkpoint.case_id,
+                    "turn_number": checkpoint.turn_number,
+                    "case_snapshot": json.dumps(
+                        to_json_compatible(checkpoint.case_snapshot)
+                    ),
+                    "snapshot_hash": checkpoint.snapshot_hash,
+                    "trigger": checkpoint.trigger,
+                    "created_at": checkpoint.created_at,
+                    "metadata": json.dumps(to_json_compatible(checkpoint.metadata)),
+                },
+            )
+            await self.db.commit()
+            return checkpoint
+
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to create checkpoint for case {checkpoint.case_id}: {e}"
+            ) from e
+
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
+        """Get a checkpoint by ID (SQLite-compatible)."""
+        try:
+            query = text("""
+                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
+                       snapshot_hash, trigger, created_at, metadata
+                FROM case_checkpoints
+                WHERE checkpoint_id = :checkpoint_id
+            """)
+
+            result = await self.db.execute(query, {"checkpoint_id": checkpoint_id})
+            row = result.fetchone()
+
+            if not row:
+                return None
+
+            return self._row_to_case_checkpoint(row)
+
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to get checkpoint {checkpoint_id}: {e}"
+            ) from e
+
+    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
+        """Get all checkpoints for a case (SQLite-compatible)."""
+        try:
+            query = text("""
+                SELECT checkpoint_id, case_id, turn_number, case_snapshot,
+                       snapshot_hash, trigger, created_at, metadata
+                FROM case_checkpoints
+                WHERE case_id = :case_id
+                ORDER BY turn_number ASC
+            """)
+
+            result = await self.db.execute(query, {"case_id": case_id})
+            rows = result.fetchall()
+
+            return [self._row_to_case_checkpoint(row) for row in rows]
+
+        except Exception as e:
+            raise RepositoryException(
+                f"Failed to get checkpoints for case {case_id}: {e}"
+            ) from e
+
+    def _row_to_case_checkpoint(self, row: Any) -> CaseCheckpoint:
+        """Convert DB row to CaseCheckpoint domain model."""
+        # Handle dict-like access for Row objects
+        if hasattr(row, "_mapping"):
+            row_dict = dict(row._mapping)
+        else:
+            # Fallback for older SQLAlchemy versions or raw tuples
+            # Try to map by position if we know the query order, or check keys
+            try:
+                # If specific known columns
+                keys = [
+                    "checkpoint_id",
+                    "case_id",
+                    "turn_number",
+                    "case_snapshot",
+                    "snapshot_hash",
+                    "trigger",
+                    "created_at",
+                    "metadata",
+                ]
+                row_dict = dict(zip(keys, row))
+            except Exception:
+                # If row has keys/keys()
+                if hasattr(row, "keys"):
+                    row_dict = dict(zip(row.keys(), row))
+                else:
+                    raise Exception("Cannot map row to dictionary")
+
+        # Parse JSON fields
+        snapshot_data = row_dict.get("case_snapshot")
+        if isinstance(snapshot_data, str):
+            snapshot_data = json.loads(snapshot_data) if snapshot_data else {}
+
+        metadata = row_dict.get("metadata")
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata) if metadata else {}
+
+        # Handle timestamp
+        created_at = row_dict.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace(" ", "T"))
+
+        return CaseCheckpoint(
+            checkpoint_id=row_dict["checkpoint_id"],
+            case_id=row_dict["case_id"],
+            turn_number=row_dict["turn_number"],
+            case_snapshot=snapshot_data,
+            snapshot_hash=row_dict["snapshot_hash"],
+            trigger=row_dict["trigger"],
+            created_at=created_at,
+            metadata=metadata,
+        )
 
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0

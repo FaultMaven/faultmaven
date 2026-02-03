@@ -19,6 +19,7 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ from faultmaven.modules.agent.tools.base import (
     ToolContext,
 )
 from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
+from faultmaven.modules.case.contracts import CaseCheckpoint
 from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.services.base import BaseService
 
@@ -435,6 +437,52 @@ class AgentOrchestrationService(BaseService):
                 execution_id=execution_id,
                 token_usage=total,
             )
+
+            # Step 9b: Create checkpoint (fail-safe)
+            # We capture the state AFTER the turn is complete and messages are saved
+            if session and session.case_id:
+                try:
+                    # Re-fetch case to get latest state including new messages
+                    current_case = await self.case_repo.get(session.case_id)
+                    if current_case:
+                        # Serialize case for snapshot
+                        # model_dump is standard Pydantic v2, but using to_dict or similar depending on Case implementation
+                        # Assuming Pydantic BaseModel for Case
+                        case_snapshot = (
+                            current_case.model_dump()
+                            if hasattr(current_case, "model_dump")
+                            else current_case.__dict__
+                        )
+
+                        # Calculate hash for drift detection
+                        snapshot_json = (
+                            current_case.model_dump_json()
+                            if hasattr(current_case, "model_dump_json")
+                            else str(case_snapshot)
+                        )
+                        snapshot_hash = hashlib.sha256(
+                            snapshot_json.encode()
+                        ).hexdigest()
+
+                        checkpoint = CaseCheckpoint(
+                            checkpoint_id=f"{current_case.case_id}:turn:{current_case.current_turn}",
+                            case_id=current_case.case_id,
+                            turn_number=current_case.current_turn,
+                            case_snapshot=case_snapshot,
+                            snapshot_hash=snapshot_hash,
+                            trigger="turn_complete",
+                            created_at=datetime.now(timezone.utc),
+                        )
+
+                        await self.case_repo.create_checkpoint(checkpoint)
+                        logger.debug(
+                            f"Created checkpoint for case {current_case.case_id} turn {current_case.current_turn}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to create checkpoint for case {session.case_id}: {e}",
+                        exc_info=True,
+                    )
 
             # Step 10: Check if budget now exceeded and pause if needed
             budget_check = await self.session_service.check_budget_exceeded(

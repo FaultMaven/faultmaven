@@ -3,7 +3,7 @@
 **Version**: 3.2
 **Status**: Authoritative Standard
 **Supersedes**: case-data-model-design.md, db-design-specifications.md
-**Last Updated**: 2026-01-26
+**Last Updated**: 2026-02-02
 
 ---
 
@@ -293,7 +293,7 @@ class Case(BaseModel):
 
 ## 4. PostgreSQL Schema
 
-### 4.1 Table Design (11 Tables)
+### 4.1 Table Design (12 Tables)
 
 ```
 Core Tables (4):
@@ -309,6 +309,7 @@ High-Cardinality Tables (7):
 ├── uploaded_files     -- File metadata (many per case)
 ├── case_messages      -- Turn-by-turn messages (very high volume)
 ├── case_status_transitions  -- Audit trail (few per case)
+├── case_checkpoints   -- State snapshots (one per turn)
 └── reports            -- Generated reports (few per case, versioned)
 ```
 
@@ -725,7 +726,39 @@ CREATE INDEX idx_status_transitions_timestamp ON case_status_transitions(transit
 COMMENT ON TABLE case_status_transitions IS 'Audit trail of status changes';
 ```
 
-### 4.9 reports (High-Cardinality Table)
+### 4.9 case_checkpoints (High-Cardinality Table)
+
+```sql
+CREATE TABLE case_checkpoints (
+    checkpoint_id VARCHAR(50) PRIMARY KEY,      -- Format: {case_id}:turn:{turn_number}
+    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    turn_number INTEGER NOT NULL,
+
+    -- ============================================================
+    -- Snapshot Data
+    -- ============================================================
+    case_snapshot JSONB NOT NULL,               -- Complete case state representation
+    snapshot_hash VARCHAR(64) NOT NULL,         -- SHA256 hash for drift detection
+    trigger VARCHAR(50) NOT NULL,               -- reason (turn_complete, manual, etc.)
+
+    -- ============================================================
+    -- Metadata
+    -- ============================================================
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    metadata JSONB DEFAULT '{}'::jsonb,
+
+    CONSTRAINT case_checkpoints_hash_not_empty 
+        CHECK (LENGTH(TRIM(snapshot_hash)) > 0)
+);
+
+-- Indexes
+CREATE INDEX ix_case_turn ON case_checkpoints(case_id, turn_number);
+CREATE INDEX idx_checkpoints_created_at ON case_checkpoints(created_at DESC);
+
+COMMENT ON TABLE case_checkpoints IS 'Immutable snapshots of case state per turn/event';
+```
+
+### 4.10 reports (High-Cardinality Table)
 
 ```sql
 CREATE TABLE reports (
