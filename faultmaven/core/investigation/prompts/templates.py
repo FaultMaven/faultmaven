@@ -125,30 +125,151 @@ For minor issues that don't block progress, use evidence_quality_issues instead.
 # Adaptive instructions by stage
 STAGE_INSTRUCTIONS = {
     InvestigationStage.SYMPTOM_VERIFICATION: """
-Focus: VERIFICATION
-- Confirm the problem is real and ongoing.
-- Determine blast radius (services/users/regions affected).
-- Establish a timeline of when it started.
-- Check for recent changes (deployments, config changes).
-- If the issue is CRITICAL, look for quick mitigations immediately.
+**FOCUS: SYMPTOM_VERIFICATION** (Initial Verification)
+**Goal**: Confirm problem is real, understand context
+
+**Priority Actions:**
+1. ✅ Verify symptom with concrete evidence (logs, metrics, user reports)
+2. ✅ Assess scope (who/what affected, blast radius)
+3. ✅ Establish timeline (when started, when noticed, still ongoing?)
+4. ✅ Identify recent changes (deployments, configs, scaling events)
+5. ✅ Determine temporal_state (ONGOING vs HISTORICAL)
+6. ✅ Assess urgency_level (CRITICAL/HIGH/MEDIUM/LOW)
+
+**What to Fill Out:**
+- verification_updates: Complete ProblemVerification fields
+- milestones: Set verification milestones to True when verified
+- evidence_to_add: Add evidence objects for data user provided
+
+**IMPORTANT: You CAN jump ahead if user provides comprehensive data!**
+
+Example: If logs show obvious root cause → Set root_cause_identified = True
+Don't artificially constrain yourself to verification only.
+
+**Verification Completion:**
+When ALL verification milestones complete, system will:
+- Compute investigation path (MITIGATION_FIRST vs ROOT_CAUSE)
+- Auto-advance to HYPOTHESIS_FORMULATION stage (or SOLUTION for MITIGATION_FIRST)
+- Provide path-specific guidance
+
+Continue until verification milestones are complete.
 """,
     InvestigationStage.HYPOTHESIS_FORMULATION: """
-Focus: DIAGNOSIS (Formulation)
-- Verification is complete. Now generate likely theories (hypotheses).
-- Use evidence to support or refute theories.
-- Don't settle on one theory too early unless evidence is conclusive.
+**FOCUS: HYPOTHESIS GENERATION** (Finding Why)
+**Goal**: Generate theories about why the problem is happening
+
+✅ **VERIFICATION COMPLETE**
+
+**ROOT CAUSE IDENTIFICATION - Decision Tree:**
+
+**Option A: SINGLE-SHOT VALIDATION** (if root cause obvious from evidence)
+
+   ✅ Use when ALL of these are true:
+   - Single clear error pointing to specific cause
+   - Strong timing correlation (change → error within minutes)
+   - Mechanism is understandable (you can explain HOW)
+   - No conflicting evidence
+
+   Example: "Deployment at 14:10, NullPointerException at 14:15 = deployment bug"
+
+   **CRITICAL: Preserve audit trail by creating hypothesis record!**
+
+   In ONE turn, do ALL of the following:
+   1. CREATE hypothesis (hypotheses_to_add)
+      - statement: The identified root cause
+      - category: Appropriate HypothesisCategory
+      - initial_likelihood: 0.90+ (high confidence)
+   2. LINK evidence (hypothesis_evidence_links)
+      - Link existing evidence to hypothesis
+      - stance: SUPPORTS with high confidence
+   3. SET hypothesis status = VALIDATED
+   4. SET root_cause_identified = True
+   5. SET root_cause_method = "single_shot_validation"
+
+   **Why not skip hypothesis?** The hypothesis record serves as structured
+   documentation of WHY you concluded the root cause. Without it, you have
+   a "magic answer" that can't be audited later.
+
+**Option B: MULTI-HYPOTHESIS TESTING** (if root cause unclear)
+
+   ✅ Use when ANY of the above is false:
+   - Multiple possible causes
+   - Weak timing correlation
+   - Symptoms could match several theories
+   - Need diagnostic data to differentiate
+
+   Example: "Could be pool exhaustion OR memory leak OR query timeout"
+
+   Actions:
+   → Generate: hypotheses_to_add (2-4 hypotheses)
+   → Ensure diversity: At least 2 different HypothesisCategory
+   → When user provides evidence: Evaluate against ALL hypotheses
+   → Update hypothesis.status based on evidence: TESTING → VALIDATED/REFUTED
+
+**Evidence Request Format:**
+"To diagnose this, the most useful would be [PRIMARY].
+If that's difficult to obtain, [ALTERNATIVE] would also help.
+Why: [diagnostic value]"
 """,
     InvestigationStage.HYPOTHESIS_VALIDATION: """
-Focus: DIAGNOSIS (Validation)
-- You have lead hypotheses. Now test them rigorously.
-- Request specific logs, metrics, or traces to validate the target cause.
-- Identify the root cause with high confidence (~70%+).
+**FOCUS: HYPOTHESIS VALIDATION** (Testing Theories)
+**Goal**: Test and validate hypotheses to confirm root cause
+
+✅ **VERIFICATION COMPLETE**
+✅ **HYPOTHESES GENERATED**
+
+**Your Task:**
+- Evaluate new evidence against all active hypotheses
+- Update hypothesis status based on evidence (VALIDATED/REFUTED/TESTING)
+- Mark root_cause_identified = True when hypothesis validated with high confidence
+
+**Evidence Evaluation:**
+- Link evidence to specific hypotheses via hypothesis_evidence_links
+- Update hypothesis confidence scores based on supporting/contradicting evidence
+- Refute hypotheses that contradict evidence
+
+**Completion:**
+When hypothesis validated with sufficient confidence:
+→ Set root_cause_identified = True
+→ Fill root_cause_conclusion with validated hypothesis
+→ Advance to SOLUTION stage
 """,
     InvestigationStage.SOLUTION: """
-Focus: RESOLUTION
-- Root cause identified. Now propose and verify a permanent fix.
-- Ensure the fix addresses the mechanism of failure, not just the symptom.
-- Verify effectiveness after the user applies the solution.
+**FOCUS: SOLUTION** (Fixing the Problem)
+**Goal**: Apply solution and verify effectiveness
+
+✅ **VERIFICATION COMPLETE**
+✅ **ROOT CAUSE IDENTIFIED**
+
+**Solution Actions:**
+
+**1. Propose Solution:**
+
+   Path-specific guidance:
+   - **MITIGATION_FIRST path**: Quick fix first (immediate_action), then longterm_fix after RCA
+   - **ROOT_CAUSE path**: Comprehensive fix (longterm_fix + immediate_action)
+
+   Fill out: solutions_to_add
+
+**2. Guide Implementation:**
+   - Provide: implementation_steps (numbered list)
+   - Provide: commands (specific commands to run)
+   - Warn: risks (potential side effects, rollback plan)
+
+**3. Track Progress:**
+   - solution_proposed: Set to True when you propose solution
+   - solution_applied: Set to True when user confirms they applied it
+   - solution_verified: Set to True when you verify it worked
+
+**4. Verify Effectiveness:**
+   - Request: verification evidence (metrics, error rates, logs)
+   - Analyze: Did solution fix the problem?
+   - Compare: Before/after metrics
+
+**Completion:**
+When solution_verified = True:
+→ Case will auto-transition to RESOLVED
+→ Celebrate the fix! 🎉
 """,
 }
 
