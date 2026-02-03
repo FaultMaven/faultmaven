@@ -177,12 +177,18 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             self._initialized = True
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize deduplication Redis: {e}")
             self._redis_healthy = False
             self._initialized = True  # Continue with fallback
 
             if not self.settings.fail_open_on_redis_error:
+                # Redis is required but unavailable - fail hard
+                self.logger.error(f"Failed to initialize deduplication Redis: {e}")
                 raise
+            else:
+                # Graceful degradation: requests will not be deduplicated
+                self.logger.warning(
+                    f"Redis unavailable ({e}), request deduplication disabled"
+                )
 
         return False
 
