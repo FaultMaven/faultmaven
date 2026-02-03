@@ -925,12 +925,37 @@ async def generate_case_title(
             context_text = await case_service.get_case_conversation_context(
                 case_id, limit=10
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"Failed to get conversation context for case {case_id}, using fallback: {str(e)}",
+                extra={
+                    "case_id": case_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "correlation_id": correlation_id,
+                },
+            )
             context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
 
         # Smart context check: Only call LLM if we have sufficient message content
         # Extract meaningful user content from conversation
         user_message_content = _extract_user_signals_from_context(context_text)
+
+        # Debug logging for content extraction
+        logger.debug(
+            f"Title generation: extracted user signals",
+            extra={
+                "case_id": case_id,
+                "context_text_length": len(context_text) if context_text else 0,
+                "user_signals_length": (
+                    len(user_message_content) if user_message_content else 0
+                ),
+                "context_preview": context_text[:200] if context_text else None,
+                "user_signals_preview": (
+                    user_message_content[:100] if user_message_content else None
+                ),
+            },
+        )
 
         # Minimum content threshold for LLM-based title generation
         # Rationale: Require substantive conversation to generate meaningful titles
@@ -1169,11 +1194,13 @@ def _extract_user_signals_from_context(context_text: str) -> str:
             if len(user_messages) > 12:
                 user_messages = user_messages[-12:]
 
-    # Return the most recent user message (likely most relevant) with sanitization
+    # Return ALL user messages concatenated for accurate length measurement
+    # This ensures the threshold check considers total conversation depth,
+    # not just the last message (which could be short like "thanks")
     if user_messages:
-        # Take the most recent meaningful user message
-        raw_content = user_messages[-1]
-        return _sanitize_title_content(raw_content)
+        # Join all user messages with space separator
+        all_content = " ".join(user_messages)
+        return _sanitize_title_content(all_content)
 
     return ""
 
