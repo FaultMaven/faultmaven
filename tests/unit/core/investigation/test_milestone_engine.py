@@ -11,6 +11,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
@@ -95,10 +96,24 @@ class TestMilestoneEngine:
         """Test processing a turn in INVESTIGATING status"""
         engine = MilestoneEngine(mock_llm, mock_repo)
 
-        # Mock LLM response with structured output
+        # Mock LLM response with structured output (including internal_reasoning)
         mock_response_content = json.dumps(
             {
                 "agent_response": "I have verified the symptom.",
+                "internal_reasoning": {
+                    "evidence_analyzed": ["new_index_1"],
+                    "conclusions": [
+                        {
+                            "observation": "Symptom observed",
+                            "inference": "Problem confirmed",
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "milestone_justifications": {
+                        "symptom_verified": "Verified based on observed symptoms"
+                    },
+                    "uncertainties": [],
+                },
                 "state_updates": {
                     "milestones": {"symptom_verified": True},
                     "evidence_to_add": [],
@@ -175,3 +190,166 @@ class TestMilestoneEngine:
         metadata = result["metadata"]
         assert metadata["progress_made"] is False
         assert metadata["milestones_completed"] == []
+
+    @pytest.mark.asyncio
+    async def test_reasoning_validation_success(self, mock_llm, mock_repo, base_case):
+        """Test successful reasoning validation when milestone completed with justification"""
+        from faultmaven.core.investigation.milestone_engine import (
+            validate_reasoning_first,
+        )
+        from faultmaven.core.investigation.schemas import (
+            InternalReasoning,
+            InvestigationResponse_Verification,
+            ReasoningConclusion,
+        )
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            EvidenceForm,
+        )
+
+        # Add evidence to case
+        base_case.evidence.append(
+            Evidence(
+                evidence_id="ev_001122334455",
+                summary="Test evidence",
+                content_ref="test.log",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.LOG_FILE,
+                collected_at=datetime.now(timezone.utc),
+                collected_by="user_123",
+                primary_purpose="Testing",
+                preprocessed_content="Log content",
+                content_size_bytes=100,
+                preprocessing_method="manual",
+                form=EvidenceForm.USER_INPUT,
+                collected_at_turn=1,
+            )
+        )
+
+        # Create response with proper internal reasoning
+        response = InvestigationResponse_Verification(
+            agent_response="Symptom verified",
+            internal_reasoning=InternalReasoning(
+                evidence_analyzed=["ev_001122334455"],
+                conclusions=[
+                    ReasoningConclusion(
+                        observation="Errors in logs",
+                        inference="System is failing",
+                        confidence=0.9,
+                    )
+                ],
+                milestone_justifications={
+                    "symptom_verified": "Confirmed via ev_001122334455 showing errors"
+                },
+                uncertainties=[],
+            ),
+            state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+                milestones=MilestoneUpdates(symptom_verified=True),
+                outcome="milestone_completed",
+            ),
+        )
+
+        is_valid, errors = validate_reasoning_first(response, base_case)
+        assert is_valid
+        assert len(errors) == 0
+
+    @pytest.mark.asyncio
+    async def test_reasoning_validation_failure_no_justification(self, base_case):
+        """Test reasoning validation fails when milestone completed without justification"""
+        from faultmaven.core.investigation.milestone_engine import (
+            validate_reasoning_first,
+        )
+        from faultmaven.core.investigation.schemas import (
+            InvestigationResponse_Verification,
+            MilestoneUpdates,
+        )
+
+        # Create response with milestone but NO internal reasoning
+        response = InvestigationResponse_Verification(
+            agent_response="Symptom verified",
+            state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+                milestones=MilestoneUpdates(symptom_verified=True),
+                outcome="milestone_completed",
+            ),
+        )
+
+        is_valid, errors = validate_reasoning_first(response, base_case)
+        assert not is_valid
+        assert len(errors) > 0
+        assert "internal_reasoning" in errors[0].lower()
+
+    @pytest.mark.asyncio
+    async def test_blocker_detection_triggers_degraded_mode(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test that missing_critical_data triggers immediate degraded mode"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Mock LLM response with blocker detection
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "⚠️ Investigation limitations: Critical data is corrupted",
+                "state_updates": {
+                    "missing_critical_data": {
+                        "blocker_type": "data_corrupted",
+                        "description": "Logs missing timestamps",
+                        "what_was_expected": "Complete logs with timestamps",
+                        "what_was_found": "Logs without timestamps",
+                        "impact": "Cannot establish timeline",
+                        "suggested_alternatives": [
+                            "Request logs from different source"
+                        ],
+                        "triggers_degraded_mode": True,
+                    },
+                    "outcome": "conversation",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(base_case, "Check logs")
+
+        # Verify degraded mode entered
+        updated_case = result["case_updated"]
+        assert updated_case.degraded_mode is not None
+        assert updated_case.degraded_mode.is_active
+        assert updated_case.degraded_mode.mode_type.value == "data_blocker"
+        assert "Logs missing timestamps" in updated_case.degraded_mode.reason
+
+        metadata = result["metadata"]
+        # Degraded mode prevents progress
+        assert metadata["progress_made"] is False
+
+    @pytest.mark.asyncio
+    async def test_evidence_quality_issues_logged(self, mock_llm, mock_repo, base_case):
+        """Test that evidence quality issues are processed without error"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Mock LLM response with quality issues
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Found evidence but quality is limited",
+                "state_updates": {
+                    "evidence_quality_issues": [
+                        {
+                            "evidence_id": "ev_001122334455",
+                            "issue_type": "incomplete",
+                            "severity": "limiting",
+                            "description": "Partial log data",
+                            "workaround": "Use metrics as supplement",
+                        }
+                    ],
+                    "outcome": "conversation",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # Should process without error
+        result = await engine.process_turn(base_case, "Analyze evidence")
+
+        # Verify no exception raised and case is returned
+        assert result["case_updated"] is not None
+        assert result["agent_response"] == "Found evidence but quality is limited"

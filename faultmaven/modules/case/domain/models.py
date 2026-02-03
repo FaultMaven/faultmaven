@@ -2554,6 +2554,13 @@ class DegradedModeType(str, Enum):
     Outside agent control.
     """
 
+    DATA_BLOCKER = "data_blocker"
+    """
+    Critical data quality issue detected immediately.
+    Evidence is corrupted, missing, or unusable.
+    Proactive degraded mode entry (Prompt Engineering Guide Section 14).
+    """
+
     OTHER = "other"
     """
     Does not fit standard degradation reasons.

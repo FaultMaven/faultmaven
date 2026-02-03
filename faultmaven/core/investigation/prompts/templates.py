@@ -76,6 +76,50 @@ KEY PRINCIPLES:
 - Evidence requests should be specific and actionable.
 - Maintain a working conclusion at all times.
 - Sound like a helpful colleague, not a robot.
+
+CRITICAL: REASONING-FIRST REQUIREMENT
+When completing any milestone, you MUST provide internal_reasoning BEFORE state_updates:
+
+internal_reasoning:
+  evidence_analyzed: [list of evidence IDs you considered]
+  conclusions: [step-by-step reasoning from evidence to conclusions]
+  milestone_justifications:
+    milestone_name: "Why this milestone is complete based on evidence X, Y, Z"
+  uncertainties: [what remains unclear]
+
+Example - Completing symptom_verified:
+  internal_reasoning:
+    evidence_analyzed: ["evidence_001", "evidence_002"]
+    conclusions:
+      - observation: "Error logs show 500 errors starting at 14:35 UTC"
+        inference: "Problem is confirmed and ongoing"
+        confidence: 0.95
+    milestone_justifications:
+      symptom_verified: "Confirmed via evidence_001 (error logs) and evidence_002 (metrics) showing consistent 500 errors"
+    uncertainties: ["Root cause still unknown"]
+
+Without justification, milestone completion will be REJECTED.
+
+PROACTIVE BLOCKER DETECTION
+Detect data quality issues IMMEDIATELY (Turn 1) instead of waiting 3 turns:
+
+If evidence is corrupted, incomplete, missing critical fields, or unusable:
+  state_updates:
+    missing_critical_data:
+      blocker_type: "data_corrupted" | "data_missing" | "data_incomplete" | "data_access_denied"
+      description: "Specific issue description"
+      what_was_expected: "Complete error logs with timestamps"
+      what_was_found: "Logs missing timestamps and stack traces"
+      impact: "Cannot establish timeline or trace error origin"
+      suggested_alternatives: ["Request logs from different source", "Use metrics as alternative"]
+      triggers_degraded_mode: true
+
+This triggers IMMEDIATE degraded mode entry, allowing you to:
+- Transparently communicate limitations
+- Offer alternative approaches
+- Continue best-effort investigation with caveats
+
+For minor issues that don't block progress, use evidence_quality_issues instead.
 """
 
 # Adaptive instructions by stage
@@ -229,6 +273,92 @@ def get_fallback_prompt_for_case(
 
 
 # =============================================================================
+# DEGRADED MODE INSTRUCTIONS
+# =============================================================================
+
+
+def get_degraded_mode_instructions(case: Case) -> str:
+    """
+    Generate degraded mode instructions when investigation is blocked or struggling.
+
+    Reference: Prompt Engineering Guide Section 4.6 (lines 1248-1327)
+    """
+    if not case.degraded_mode or not case.degraded_mode.is_active:
+        return ""
+
+    mode = case.degraded_mode
+    mode_type_display = mode.mode_type.value.replace("_", " ").title()
+
+    # Map mode types to specific guidance
+    if mode.mode_type.value == "data_blocker":
+        limitation = "Critical data is corrupted, incomplete, or inaccessible"
+        suggestion = (
+            "Request alternative data sources or work with available information"
+        )
+    elif mode.mode_type.value == "limited_data":
+        limitation = "Insufficient data to complete full investigation"
+        suggestion = "Identify what data would be most valuable and request it"
+    elif mode.mode_type.value == "hypothesis_deadlock":
+        limitation = "All hypotheses are inconclusive with current evidence"
+        suggestion = (
+            "Try a different diagnostic approach or escalate to deeper investigation"
+        )
+    elif mode.mode_type.value == "no_progress":
+        limitation = "Investigation has not advanced in several turns"
+        suggestion = "Clarify what information would unblock progress"
+    elif mode.mode_type.value == "external_dependency":
+        limitation = "Waiting on external team or resource"
+        suggestion = "Provide interim analysis or alternative approaches"
+    else:
+        limitation = "Investigation facing unexpected challenges"
+        suggestion = "Identify specific blockers and suggest alternatives"
+
+    instructions = f"""
+═══════════════════════════════════════════════════════════
+⚠️ DEGRADED INVESTIGATION MODE
+═══════════════════════════════════════════════════════════
+
+**Type**: {mode_type_display}
+**Reason**: {mode.reason}
+
+**BEHAVIOR CHANGES:**
+
+1. **Transparent Communication**
+   - ALWAYS prefix responses: "⚠️ Investigation limitations: {limitation}"
+   - Explicitly state caveats in EVERY response
+   - Be honest about confidence levels
+
+2. **Lower Confidence Assessment**
+   - Assess confidence based ONLY on available evidence
+   - Use explicit confidence terms:
+     * "I'm speculating" (<50% confidence)
+     * "I think this is probably..." (50-70% confidence)
+     * "I'm fairly confident" (70-90% confidence)
+     * Never claim >90% confidence in degraded mode
+
+3. **Offer Fallback Options**
+   - Every 2 turns, explicitly offer:
+     * Escalation: "Would you like to escalate to [team/person]?"
+     * Alternative approach: "We could try [alternative method]"
+     * Documentation: "I can document findings so far for handoff"
+
+4. **Continue Best-Effort Investigation**
+   - DON'T give up or stop investigating
+   - Work within limitations
+   - Provide best-effort analysis with caveats
+   - Focus on what CAN be determined vs what cannot
+
+5. **Suggested Next Steps**
+   - {suggestion}
+   - Be specific about what would help exit degraded mode
+
+Turn {case.current_turn}: You are in degraded mode. Follow the above behavior changes strictly.
+"""
+
+    return instructions
+
+
+# =============================================================================
 # BUILDER FUNCTIONS
 # =============================================================================
 
@@ -255,6 +385,11 @@ def get_prompt_for_case(
                 "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n"
                 + adaptive_instr
             )
+
+        # Inject degraded mode instructions if active
+        degraded_mode_instr = get_degraded_mode_instructions(case)
+        if degraded_mode_instr:
+            adaptive_instr = degraded_mode_instr + "\n\n" + adaptive_instr
 
         return INVESTIGATION_BASE.format(adaptive_instructions=adaptive_instr, **ctx)
 
