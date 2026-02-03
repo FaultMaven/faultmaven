@@ -113,6 +113,81 @@ class TokenBudget:
             return ""
 
 
+def _build_state_summary(case: Case) -> str:
+    """
+    Build compact state summary for long conversations (Gap #8: Section 11.5).
+
+    Instead of full conversation history (~2000 tokens), provides compact summary (~200 tokens).
+
+    Args:
+        case: Current case
+
+    Returns:
+        Formatted state summary
+    """
+    # Problem description
+    problem_desc = case.description[:100] if case.description else "Not specified"
+    if case.problem_verification and case.problem_verification.symptom_statement:
+        problem_desc = case.problem_verification.symptom_statement[:100]
+
+    # Current stage
+    stage = "INQUIRY"
+    if case.status.value == "investigating" and case.current_stage:
+        stage = case.current_stage.value.upper()
+    elif case.status.value in ["resolved", "closed"]:
+        stage = case.status.value.upper()
+
+    # Verification status
+    verified_items = []
+    if case.progress:
+        p = case.progress
+        if p.symptom_verified:
+            verified_items.append("symptom")
+        if p.scope_assessed:
+            verified_items.append("scope")
+        if p.timeline_established:
+            verified_items.append("timeline")
+        if p.changes_identified:
+            verified_items.append("changes")
+
+    verified = ", ".join(verified_items) if verified_items else "none"
+
+    # Active hypothesis
+    active_h = [
+        h for h in case.hypotheses.values() if h.status.value in ["active", "validated"]
+    ]
+    if active_h:
+        best_h = max(active_h, key=lambda h: h.likelihood)
+        hypothesis_str = (
+            f"{best_h.statement[:80]} ({best_h.likelihood*100:.0f}% confidence)"
+        )
+    else:
+        hypothesis_str = "None yet"
+
+    # Evidence count
+    evidence_count = len(case.evidence)
+    evidence_str = (
+        f"{evidence_count} artifacts analyzed"
+        if evidence_count > 0
+        else "No evidence collected"
+    )
+
+    # Turn metrics
+    turns_total = case.current_turn
+    turns_since_progress = case.turns_without_progress
+
+    summary = f"""<state_summary>
+Investigation: {problem_desc}
+Stage: {stage}
+Verified: {verified}
+Active Hypothesis: {hypothesis_str}
+Evidence: {evidence_str}
+Turns: {turns_total} total, {turns_since_progress} since last progress
+</state_summary>"""
+
+    return summary
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -120,6 +195,7 @@ def build_investigation_context(
     max_tokens: Optional[int] = None,
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
+    use_state_summary: Optional[bool] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -131,6 +207,8 @@ def build_investigation_context(
         max_tokens: Optional explicit token limit (overrides provider-based calculation)
         provider_name: LLM provider name for dynamic budget calculation
         model_name: LLM model name for fine-grained budget calculation
+        use_state_summary: Optional flag to use compact state summary instead of full history
+                          (auto-enabled for conversations >15 turns)
 
     Returns:
         Dictionary of formatted context sections
@@ -149,13 +227,18 @@ def build_investigation_context(
 
     budget = TokenBudget(max_tokens)
 
-    # 1. Identity & Status
-    identity = f"CASE_ID: {case.case_id}\nSTATUS: {case.status.value.upper()}\n"
+    # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
+    identity = f"<case_identity>\n"
+    identity += f"CASE_ID: {case.case_id}\n"
+    identity += f"STATUS: {case.status.value.upper()}\n"
     if case.status == CaseStatus.INVESTIGATING and case.current_stage:
         identity += f"CURRENT_STAGE: {case.current_stage.value.upper()}\n"
+    identity += "</case_identity>"
 
     # 2. Case Core Context
-    core_context = f"TITLE: {case.title}\nDESCRIPTION: {case.description}\n"
+    core_context = f"<problem_context>\n"
+    core_context += f"TITLE: {case.title}\n"
+    core_context += f"DESCRIPTION: {case.description}\n"
     if case.problem_verification:
         pv = case.problem_verification
         core_context += f"SYMPTOM_STATEMENT: {pv.symptom_statement}\n"
@@ -163,71 +246,109 @@ def build_investigation_context(
             core_context += f"SEVERITY: {pv.severity}\n"
         if pv.temporal_state:
             core_context += f"TEMPORAL_STATE: {pv.temporal_state.value}\n"
+    core_context += "</problem_context>"
 
     # 3. Milestone Status
-    milestones_str = "MILESTONES COMPLETED:\n"
+    milestones_str = ""
     if case.status == CaseStatus.INVESTIGATING:
+        milestones_str = "<milestones_completed>\n"
         p = case.progress
         for milestone, completed in p.dict().items():
             if isinstance(completed, bool) and completed:
                 milestones_str += f"- {milestone}\n"
-    else:
-        milestones_str = ""
+        milestones_str += "</milestones_completed>"
 
     # 4. Evidence Summary
-    evidence_str = "EVIDENCE COLLECTED:\n"
+    evidence_str = "<evidence_collected>\n"
     if case.evidence:
         for i, ev in enumerate(case.evidence[-10:]):  # Last 10 evidence items
-            evidence_str += f"- [{ev.category}] {ev.summary} (ID: {ev.evidence_id})\n"
+            evidence_str += (
+                f"- [{ev.category.value}] {ev.summary} (ID: {ev.evidence_id})\n"
+            )
     else:
-        evidence_str = "No formal evidence collected yet.\n"
+        evidence_str += "No formal evidence collected yet.\n"
+    evidence_str += "</evidence_collected>"
 
     # 5. Hypothesis Summary
-    hypothesis_str = "WORKING HYPOTHESES:\n"
-    active_h = [h for h in case.hypotheses.values() if h.status != "retired"]
+    hypothesis_str = ""
+    active_h = [h for h in case.hypotheses.values() if h.status.value != "retired"]
     if active_h:
+        hypothesis_str = "<working_hypotheses>\n"
         for h in active_h:
             hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
-    else:
-        hypothesis_str = ""
+        hypothesis_str += "</working_hypotheses>"
 
     # 6. Conversation History
-    # Use full messages from case.messages for better context preservation
-    # Per Prompt Engineering Guide Section 11.5: Provide recent conversation
-    # with actual content, not just outcomes
-    recent_history = ""
+    # Gap #8: State Summary + Last Turn pattern for long conversations
+    # Use compact state summary for conversations >15 turns to save tokens
+    # Auto-enable state summary mode for long conversations
+    if use_state_summary is None:
+        use_state_summary = case.current_turn > 15
 
-    # Get recent messages (last 20 messages = ~10 turns)
-    # Limit to prevent excessive token usage in very long conversations
-    recent_messages = case.messages[-20:] if case.messages else []
+    if use_state_summary:
+        # State Summary + Last Turn pattern (~200 tokens vs ~2000)
+        recent_history = _build_state_summary(case)
 
-    # Group messages by turn for readability
-    current_turn_num = None
-    for msg in recent_messages:
-        turn_num = msg.get("turn_number", "?")
-        role = msg.get("role", "unknown").upper()
-        content = msg.get("content", "")
+        # Add previous turn context if available
+        if case.turn_history:
+            last_turn = case.turn_history[-1]
+            recent_history += "\n\n<previous_turn>\n"
 
-        if not content:
-            continue  # Skip empty messages
+            # What user provided
+            if last_turn.evidence_added:
+                recent_history += f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
 
-        # Add turn header when starting a new turn
-        if turn_num != current_turn_num:
-            if current_turn_num is not None:
-                recent_history += "\n"
-            recent_history += f"TURN {turn_num}:\n"
-            current_turn_num = turn_num
+            # What agent requested or concluded
+            if last_turn.agent_summary:
+                summary = last_turn.agent_summary[:200]
+                recent_history += f"Agent: {summary}\n"
 
-        recent_history += f"{role}: {content}\n"
+            recent_history += "</previous_turn>"
+
+        # Current turn
+        recent_history += "\n\n<current_turn>\n"
+        recent_history += f"User: {user_message}\n"
+        recent_history += "</current_turn>"
+
+    else:
+        # Full conversation history for short conversations (<15 turns)
+        recent_history = "<conversation_history>\n"
+
+        # Get recent messages (last 20 messages = ~10 turns)
+        recent_messages = case.messages[-20:] if case.messages else []
+
+        if not recent_messages:
+            recent_history += "No previous conversation.\n"
+        else:
+            # Group messages by turn for readability
+            current_turn_num = None
+            for msg in recent_messages:
+                turn_num = msg.get("turn_number", "?")
+                role = msg.get("role", "unknown").upper()
+                content = msg.get("content", "")
+
+                if not content:
+                    continue  # Skip empty messages
+
+                # Add turn header when starting a new turn
+                if turn_num != current_turn_num:
+                    if current_turn_num is not None:
+                        recent_history += "\n"
+                    recent_history += f"TURN {turn_num}:\n"
+                    current_turn_num = turn_num
+
+                recent_history += f"{role}: {content}\n"
+
+        recent_history += "</conversation_history>"
 
     # 7. Knowledge Base Results
-    kb_str = "KNOWLEDGE BASE SEARCH RESULTS:\n"
+    kb_str = ""
     if kb_results:
+        kb_str = "<knowledge_base_matches>\n"
         for i, res in enumerate(kb_results[:3]):  # Top 3
             kb_str += f"MATCH {i+1} ({res.get('type')}): {res.get('summary')}\n"
             kb_str += f"SOLUTION: {res.get('solution')}\n\n"
-    else:
-        kb_str = ""
+        kb_str += "</knowledge_base_matches>"
 
     # 8. System Feedback (Validation errors from previous turn)
     feedback_str = ""

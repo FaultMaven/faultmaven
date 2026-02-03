@@ -490,6 +490,7 @@ def get_prompt_for_case(
     kb_results: Optional[List[Dict[str, Any]]] = None,
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
+    use_state_summary: Optional[bool] = None,
 ) -> str:
     """Build the final prompt based on case status and stage.
 
@@ -499,6 +500,8 @@ def get_prompt_for_case(
         kb_results: Optional knowledge base search results
         provider_name: LLM provider name for dynamic budget calculation (Gap #6)
         model_name: LLM model name for fine-grained budget calculation (Gap #6)
+        use_state_summary: Optional flag to use compact state summary (Gap #8)
+                          (auto-enabled for conversations >15 turns)
 
     Returns:
         Formatted prompt for the LLM
@@ -510,6 +513,7 @@ def get_prompt_for_case(
         kb_results,
         provider_name=provider_name,
         model_name=model_name,
+        use_state_summary=use_state_summary,
     )
 
     if case.status == CaseStatus.INQUIRY:
