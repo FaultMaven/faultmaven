@@ -14,6 +14,7 @@ Key Features:
 - Integration with Case domain models
 """
 
+from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
@@ -32,6 +33,40 @@ from faultmaven.modules.case.contracts import (
 # =============================================================================
 # Shared Components
 # =============================================================================
+
+
+class ReasoningConclusion(BaseModel):
+    """Single reasoning step in the internal analysis."""
+
+    observation: str = Field(description="What was observed in the evidence")
+    inference: str = Field(description="What this implies about the problem")
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Confidence in this inference"
+    )
+
+
+class InternalReasoning(BaseModel):
+    """
+    Internal reasoning that must be completed BEFORE state_updates.
+    Forces LLM to justify decisions with evidence trail.
+
+    Reference: Prompt Engineering Guide Section 13
+    """
+
+    evidence_analyzed: List[str] = Field(
+        description="Evidence IDs that were considered in this turn"
+    )
+    conclusions: List[ReasoningConclusion] = Field(
+        description="Step-by-step reasoning from evidence to conclusions"
+    )
+    milestone_justifications: Dict[str, str] = Field(
+        default_factory=dict,
+        description="For each milestone being completed, explain why based on evidence",
+    )
+    uncertainties: List[str] = Field(
+        default_factory=list,
+        description="What remains unclear or uncertain after this analysis",
+    )
 
 
 class ProblemConfirmation(BaseModel):
@@ -160,6 +195,59 @@ class WorkingConclusionUpdate(BaseModel):
     blockers: List[str] = Field(default_factory=list)
 
 
+class BlockerType(str, Enum):
+    """Type of blocker preventing investigation progress."""
+
+    DATA_CORRUPTED = "data_corrupted"
+    DATA_MISSING = "data_missing"
+    DATA_INCOMPLETE = "data_incomplete"
+    DATA_ACCESS_DENIED = "data_access_denied"
+    TOOL_UNAVAILABLE = "tool_unavailable"
+    EXTERNAL_DEPENDENCY = "external_dependency"
+
+
+class EvidenceQualityIssue(BaseModel):
+    """
+    Quality issue with evidence that may block or limit investigation.
+
+    Reference: Prompt Engineering Guide Section 14 (lines 3352-3376)
+    """
+
+    evidence_id: str = Field(description="Evidence ID with quality issue")
+    issue_type: str = Field(
+        description="corrupted | incomplete | missing_metadata | ambiguous | etc."
+    )
+    severity: Literal["blocking", "limiting", "minor"] = Field(
+        description="blocking=cannot proceed, limiting=reduced confidence, minor=note only"
+    )
+    description: str = Field(description="What's wrong with this evidence")
+    workaround: Optional[str] = Field(
+        None, description="How to work around this issue if possible"
+    )
+
+
+class MissingCriticalData(BaseModel):
+    """
+    Proactive detection of critical data blockers.
+    Triggers immediate degraded mode entry instead of waiting 3 turns.
+
+    Reference: Prompt Engineering Guide Section 14 (lines 3316-3351)
+    """
+
+    blocker_type: BlockerType = Field(description="Type of data blocker")
+    description: str = Field(description="Specific description of what's missing/wrong")
+    what_was_expected: str = Field(description="What data was expected")
+    what_was_found: str = Field(description="What was actually found")
+    impact: str = Field(description="How this blocks investigation progress")
+    suggested_alternatives: List[str] = Field(
+        default_factory=list,
+        description="Alternative data sources or approaches user could try",
+    )
+    triggers_degraded_mode: bool = Field(
+        True, description="Whether this should trigger immediate degraded mode"
+    )
+
+
 class RootCauseConclusionUpdate(BaseModel):
     """Final root cause conclusion."""
 
@@ -228,8 +316,20 @@ class InvestigationResponse_Verification(BaseInteractionResponse):
         # Hypotheses allowed but secondary
         hypotheses_to_add: List[HypothesisToAdd] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None
+        missing_critical_data: Optional[MissingCriticalData] = Field(
+            None,
+            description="Proactive blocker detection. Triggers immediate degraded mode.",
+        )
+        evidence_quality_issues: List[EvidenceQualityIssue] = Field(
+            default_factory=list,
+            description="Quality issues with evidence that may limit investigation.",
+        )
         outcome: TurnOutcome
 
+    internal_reasoning: Optional[InternalReasoning] = Field(
+        None,
+        description="REQUIRED when milestones are completed. Justification BEFORE state changes.",
+    )
     state_updates: VerificationStateUpdate
 
 
@@ -246,8 +346,20 @@ class InvestigationResponse_Hypothesis(BaseInteractionResponse):
         )
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
+        missing_critical_data: Optional[MissingCriticalData] = Field(
+            None,
+            description="Proactive blocker detection. Triggers immediate degraded mode.",
+        )
+        evidence_quality_issues: List[EvidenceQualityIssue] = Field(
+            default_factory=list,
+            description="Quality issues with evidence that may limit investigation.",
+        )
         outcome: TurnOutcome
 
+    internal_reasoning: Optional[InternalReasoning] = Field(
+        None,
+        description="REQUIRED when milestones are completed. Justification BEFORE state changes.",
+    )
     state_updates: HypothesisStateUpdate
 
 
@@ -264,6 +376,10 @@ class InvestigationResponse_Resolution(BaseInteractionResponse):
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         outcome: TurnOutcome
 
+    internal_reasoning: Optional[InternalReasoning] = Field(
+        None,
+        description="REQUIRED when milestones are completed. Justification BEFORE state changes.",
+    )
     state_updates: ResolutionStateUpdate
 
 
@@ -282,8 +398,20 @@ class InvestigationResponse_General(BaseInteractionResponse):
         solutions_to_add: List[SolutionToAdd] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
+        missing_critical_data: Optional[MissingCriticalData] = Field(
+            None,
+            description="Proactive blocker detection. Triggers immediate degraded mode.",
+        )
+        evidence_quality_issues: List[EvidenceQualityIssue] = Field(
+            default_factory=list,
+            description="Quality issues with evidence that may limit investigation.",
+        )
         outcome: TurnOutcome
 
+    internal_reasoning: Optional[InternalReasoning] = Field(
+        None,
+        description="REQUIRED when milestones are completed. Justification BEFORE state changes.",
+    )
     state_updates: GeneralStateUpdate
 
 

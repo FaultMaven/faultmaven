@@ -87,6 +87,88 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Reasoning Validation
+# =============================================================================
+
+
+def validate_reasoning_first(
+    response_obj: BaseInteractionResponse, case: Case
+) -> tuple[bool, list[str]]:
+    """
+    Validate that milestone completions are justified with internal reasoning.
+
+    Reference: Prompt Engineering Guide Section 13 (lines 3236-3281)
+
+    Returns:
+        (is_valid, error_messages)
+    """
+    errors = []
+
+    # Only validate investigation responses (not INQUIRY or TERMINAL)
+    if isinstance(response_obj, (InquiryResponse, TerminalResponse)):
+        return True, []
+
+    # Check if response has internal_reasoning field
+    internal_reasoning = getattr(response_obj, "internal_reasoning", None)
+    milestones = getattr(response_obj.state_updates, "milestones", None)
+
+    if not milestones:
+        # No milestones being completed, no validation needed
+        return True, []
+
+    # Get list of milestone fields being completed (set to True)
+    completed_milestones = []
+    milestone_dict = milestones.model_dump(exclude_none=True)
+    for milestone_name, value in milestone_dict.items():
+        if isinstance(value, bool) and value is True:
+            completed_milestones.append(milestone_name)
+
+    if not completed_milestones:
+        # No milestones actually completed, no validation needed
+        return True, []
+
+    # If milestones are being completed, internal_reasoning is REQUIRED
+    if not internal_reasoning:
+        errors.append(
+            f"Milestones {completed_milestones} completed without internal_reasoning. "
+            "You MUST provide internal_reasoning with justifications when completing milestones."
+        )
+        return False, errors
+
+    # Check 1: All completed milestones must have justifications
+    for milestone in completed_milestones:
+        if milestone not in internal_reasoning.milestone_justifications:
+            errors.append(
+                f"Milestone '{milestone}' completed without justification. "
+                "Add justification to internal_reasoning.milestone_justifications."
+            )
+
+    # Check 2: Justifications must reference analyzed evidence
+    if (
+        internal_reasoning.milestone_justifications
+        and not internal_reasoning.evidence_analyzed
+    ):
+        errors.append(
+            "Milestone justifications provided but no evidence_analyzed listed. "
+            "Specify which evidence IDs were considered."
+        )
+
+    # Check 3: Evidence IDs must exist in case
+    case_evidence_ids = {e.evidence_id for e in case.evidence}
+    for evidence_id in internal_reasoning.evidence_analyzed:
+        # Skip "new_index_N" references (evidence being added this turn)
+        if evidence_id.startswith("new_index_"):
+            continue
+        if evidence_id not in case_evidence_ids:
+            errors.append(
+                f"internal_reasoning references evidence_id '{evidence_id}' which doesn't exist in case. "
+                f"Available evidence IDs: {list(case_evidence_ids)}"
+            )
+
+    return len(errors) == 0, errors
+
+
+# =============================================================================
 # Milestone Engine - Main Implementation
 # =============================================================================
 
@@ -195,7 +277,20 @@ class MilestoneEngine:
                     logger.warning(f"KB Search failed: {e}")
 
             # Build prompt using the adaptive template system
-            prompt = get_prompt_for_case(case, user_message, kb_results)
+            # Gap #6: Pass provider info for dynamic token budget calculation
+            provider_name = getattr(self.llm_provider, "provider_name", None)
+            model_name = (
+                getattr(self.llm_provider.config, "default_model", None)
+                if hasattr(self.llm_provider, "config")
+                else None
+            )
+            prompt = get_prompt_for_case(
+                case,
+                user_message,
+                kb_results,
+                provider_name=provider_name,
+                model_name=model_name,
+            )
 
             # Determine schema based on status/stage
             if case.status == CaseStatus.INQUIRY:
@@ -237,16 +332,16 @@ class MilestoneEngine:
             metadata["blocked_reasons"] = progress_metrics.blocked_reasons
             metadata["next_steps"] = progress_metrics.next_steps
 
-            # Step 5.6: Generate working conclusion if significant progress
-            if (
-                metadata.get("milestones_completed")
-                or progress_metrics.investigation_momentum == InvestigationMomentum.HIGH
-            ):
+            # Step 5.6: Generate working conclusion EVERY turn during INVESTIGATING
+            # Gap #7: Working Conclusion Every Turn
+            # Reference: Prompt Engineering Guide Section 11.7
+            # Why: Provides consistent context tracking, prevents "lost context" issues
+            if case_updated.status == CaseStatus.INVESTIGATING:
                 working_conclusion = generate_working_conclusion(
                     case=case_updated, current_turn=case_updated.current_turn
                 )
                 case_updated.working_conclusion = working_conclusion
-                logger.info(
+                logger.debug(
                     f"Working conclusion updated: likelihood={working_conclusion.likelihood:.2f}"
                 )
 
@@ -495,6 +590,15 @@ class MilestoneEngine:
     ) -> tuple[Case, dict[str, Any]]:
         """Process structured response and update case state."""
 
+        # Validate reasoning-first requirement
+        is_valid, validation_errors = validate_reasoning_first(response_obj, case)
+        if not is_valid:
+            error_msg = "Reasoning validation failed:\n" + "\n".join(validation_errors)
+            logger.warning(
+                f"Reasoning validation failed for case {case.case_id}: {error_msg}"
+            )
+            raise ValueError(error_msg)
+
         # Initialize metadata
         metadata = {
             "milestones_completed": [],
@@ -582,6 +686,49 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
+
+        # 0. Check for Proactive Blocker Detection
+        if hasattr(updates, "missing_critical_data") and updates.missing_critical_data:
+            blocker = updates.missing_critical_data
+            if blocker.triggers_degraded_mode and not case.degraded_mode:
+                # Enter degraded mode immediately
+                from faultmaven.modules.case.domain.models import DegradedModeType
+
+                case.degraded_mode = DegradedMode(
+                    mode_type=DegradedModeType.DATA_BLOCKER,
+                    reason=blocker.description,
+                    attempted_actions=[
+                        f"Expected: {blocker.what_was_expected}, Found: {blocker.what_was_found}"
+                    ],
+                    fallback_offered=(
+                        ", ".join(blocker.suggested_alternatives)
+                        if blocker.suggested_alternatives
+                        else None
+                    ),
+                )
+                logger.warning(
+                    f"Case {case.case_id} entered degraded mode immediately due to data blocker: {blocker.description}"
+                )
+                metadata["degraded_mode_entered"] = True
+                metadata["progress_made"] = False  # Blocker prevents progress
+
+        # Track evidence quality issues (non-blocking)
+        if (
+            hasattr(updates, "evidence_quality_issues")
+            and updates.evidence_quality_issues
+        ):
+            for issue in updates.evidence_quality_issues:
+                logger.info(
+                    f"Evidence quality issue detected: {issue.evidence_id} - {issue.issue_type} ({issue.severity})"
+                )
+                # Could store these in case metadata for future reference
+                metadata.setdefault("evidence_quality_issues", []).append(
+                    {
+                        "evidence_id": issue.evidence_id,
+                        "issue_type": issue.issue_type,
+                        "severity": issue.severity,
+                    }
+                )
 
         # 1. Update Milestones
         if updates.milestones:
