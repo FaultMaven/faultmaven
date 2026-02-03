@@ -1729,11 +1729,15 @@ async def submit_case_query(
 
         except asyncio.TimeoutError:
             logger.error(f"Turn processing timed out for case {case_id} after 35s")
-            # Return fallback response
+            # Return 504 Gateway Timeout - upstream service (LLM) took too long
             raise HTTPException(
-                status_code=500,
-                detail="Request timeout - processing is taking longer than expected",
-                headers={"x-correlation-id": correlation_id},
+                status_code=504,  # Gateway Timeout - more accurate than 500
+                detail="Request timeout - processing is taking longer than expected. Please try again with a simpler query or contact support if this persists.",
+                headers={
+                    "x-correlation-id": correlation_id,
+                    "x-error-code": "REQUEST_TIMEOUT",
+                    "Retry-After": "30",  # Suggest retry after 30 seconds
+                },
             )
 
     except NotFoundError as e:
@@ -1756,31 +1760,38 @@ async def submit_case_query(
         # Detect specific error conditions and provide actionable guidance
         if "over capacity" in error_msg.lower() or "503" in error_msg:
             detail = "AI service temporarily unavailable due to high demand. Please wait a moment and try again."
+            status_code = 503
+            error_code = "LLM_OVER_CAPACITY"
+            retry_after = "60"
         elif "rate limit" in error_msg.lower() or "429" in error_msg:
             detail = "Rate limit exceeded. Please wait a minute before sending another message."
+            status_code = 429
+            error_code = "RATE_LIMIT_EXCEEDED"
+            retry_after = "60"
         elif "timeout" in error_msg.lower():
             detail = "Request timed out. Please try again with a shorter message or fewer attachments."
+            status_code = 504
+            error_code = "LLM_TIMEOUT"
+            retry_after = "30"
         elif "authentication" in error_msg.lower() or "401" in error_msg:
             detail = "AI service authentication error. Please contact support."
+            status_code = 503
+            error_code = "LLM_AUTH_ERROR"
+            retry_after = "300"  # 5 minutes - this needs admin intervention
         else:
             # Generic fallback with hint about the error type
             detail = f"Unable to process your message: {error_msg[:200]}"  # Limit message length
+            status_code = 500
+            error_code = "SERVICE_ERROR"
+            retry_after = "10"
 
         raise HTTPException(
-            status_code=(
-                503
-                if ("over capacity" in error_msg.lower() or "503" in error_msg)
-                else 500
-            ),
+            status_code=status_code,
             detail=detail,
             headers={
                 "x-correlation-id": correlation_id,
-                "Retry-After": (
-                    "60"
-                    if "over capacity" in error_msg.lower()
-                    or "rate limit" in error_msg.lower()
-                    else "10"
-                ),
+                "x-error-code": error_code,
+                "Retry-After": retry_after,
             },
         )
     except Exception as e:
@@ -1794,17 +1805,27 @@ async def submit_case_query(
         if "over capacity" in error_str.lower() or "503" in error_str:
             detail = "AI service temporarily unavailable. Please try again in a moment."
             status_code = 503
+            error_code = "LLM_UNAVAILABLE"
+            retry_after = "60"
         elif "connection" in error_str.lower() or "network" in error_str.lower():
             detail = "Network error communicating with AI service. Please try again."
             status_code = 503
+            error_code = "NETWORK_ERROR"
+            retry_after = "30"
         else:
             detail = f"An unexpected error occurred. Error ID: {correlation_id}"
             status_code = 500
+            error_code = "UNEXPECTED_ERROR"
+            retry_after = "10"
 
         raise HTTPException(
             status_code=status_code,
             detail=detail,
-            headers={"x-correlation-id": correlation_id},
+            headers={
+                "x-correlation-id": correlation_id,
+                "x-error-code": error_code,
+                "Retry-After": retry_after,
+            },
         )
 
 
