@@ -66,8 +66,10 @@ def generate_working_conclusion(
 ) -> WorkingConclusion:
     """Generate working conclusion based on current case state.
 
-    Called when milestones complete or momentum is high to update
-    the agent's current best understanding of the problem.
+    Called EVERY turn during INVESTIGATING status to maintain consistent
+    context tracking and prevent "lost context" issues.
+
+    Reference: Gap #7 - Working Conclusion Every Turn
 
     Args:
         case: Current case with hypotheses, evidence, and progress

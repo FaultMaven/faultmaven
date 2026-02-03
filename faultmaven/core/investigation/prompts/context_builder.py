@@ -10,6 +10,10 @@ Priority:
 4. Knowledge Base Search Results
 5. Detailed Evidence Summaries
 6. Older Conversation History (Truncated)
+
+Gap #6: Token Budget Dynamic Loading
+- Provider-specific token limits (Claude: 200K, GPT-4: 128K, etc.)
+- Reference: Prompt Engineering Guide Section 11.3
 """
 
 import logging
@@ -18,6 +22,68 @@ from typing import Any, Dict, List, Optional
 from faultmaven.modules.case.contracts import Case, CaseStatus, InvestigationStage
 
 logger = logging.getLogger(__name__)
+
+
+def get_token_budget_for_provider(
+    provider_name: str, model_name: Optional[str] = None
+) -> int:
+    """
+    Get provider-specific token budget for prompts.
+
+    Reference: Prompt Engineering Guide Section 11.3 - Provider-Specific Limits
+
+    Args:
+        provider_name: Provider name (e.g., "anthropic", "openai", "fireworks")
+        model_name: Optional specific model name for fine-grained limits
+
+    Returns:
+        Recommended prompt token budget (conservative to leave room for response)
+    """
+    # Provider-specific prompt budgets (conservative to allow response tokens)
+    # Based on total context windows minus expected response size
+
+    # Default to conservative 8K if provider unknown
+    default_budget = 8000
+
+    provider_lower = provider_name.lower() if provider_name else ""
+    model_lower = model_name.lower() if model_name else ""
+
+    # Anthropic Claude (200K context window)
+    if "anthropic" in provider_lower or "claude" in model_lower:
+        if "sonnet" in model_lower or "opus" in model_lower:
+            return 12000  # 12K prompt budget for 200K context
+        return 10000  # Conservative for other Claude models
+
+    # OpenAI GPT-4 (128K context window)
+    elif "openai" in provider_lower or "gpt-4" in model_lower:
+        if "turbo" in model_lower or "gpt-4o" in model_lower:
+            return 10000  # 10K prompt budget for 128K context
+        return 8000  # Conservative for older GPT-4
+
+    # Google Gemini (1M+ context window)
+    elif "google" in provider_lower or "gemini" in model_lower:
+        return 15000  # 15K prompt budget for massive context
+
+    # Meta Llama (128K context window)
+    elif "meta" in provider_lower or "llama" in model_lower:
+        return 8000  # 8K prompt budget for 128K context
+
+    # Fireworks AI (context varies by model)
+    elif "fireworks" in provider_lower:
+        if "llama-3.3" in model_lower:
+            return 8000
+        return 6000  # Conservative for other models
+
+    # Cohere (4K-128K depending on model)
+    elif "cohere" in provider_lower:
+        return 6000  # Conservative
+
+    # Default fallback
+    logger.debug(
+        f"Unknown provider '{provider_name}' with model '{model_name}', "
+        f"using default budget of {default_budget} tokens"
+    )
+    return default_budget
 
 
 class TokenBudget:
@@ -51,11 +117,36 @@ def build_investigation_context(
     case: Case,
     user_message: str,
     kb_results: Optional[List[Dict[str, Any]]] = None,
-    max_tokens: int = 8000,
+    max_tokens: Optional[int] = None,
+    provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
+
+    Args:
+        case: Current case
+        user_message: User's message this turn
+        kb_results: Optional knowledge base search results
+        max_tokens: Optional explicit token limit (overrides provider-based calculation)
+        provider_name: LLM provider name for dynamic budget calculation
+        model_name: LLM model name for fine-grained budget calculation
+
+    Returns:
+        Dictionary of formatted context sections
     """
+    # Determine token budget (Gap #6: Provider-Specific Limits)
+    if max_tokens is None:
+        if provider_name:
+            max_tokens = get_token_budget_for_provider(provider_name, model_name)
+            logger.debug(
+                f"Using provider-specific budget: {max_tokens} tokens "
+                f"(provider={provider_name}, model={model_name})"
+            )
+        else:
+            max_tokens = 8000  # Default fallback
+            logger.debug("Using default budget: 8000 tokens (no provider specified)")
+
     budget = TokenBudget(max_tokens)
 
     # 1. Identity & Status

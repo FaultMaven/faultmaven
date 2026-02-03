@@ -277,7 +277,20 @@ class MilestoneEngine:
                     logger.warning(f"KB Search failed: {e}")
 
             # Build prompt using the adaptive template system
-            prompt = get_prompt_for_case(case, user_message, kb_results)
+            # Gap #6: Pass provider info for dynamic token budget calculation
+            provider_name = getattr(self.llm_provider, "provider_name", None)
+            model_name = (
+                getattr(self.llm_provider.config, "default_model", None)
+                if hasattr(self.llm_provider, "config")
+                else None
+            )
+            prompt = get_prompt_for_case(
+                case,
+                user_message,
+                kb_results,
+                provider_name=provider_name,
+                model_name=model_name,
+            )
 
             # Determine schema based on status/stage
             if case.status == CaseStatus.INQUIRY:
@@ -319,16 +332,16 @@ class MilestoneEngine:
             metadata["blocked_reasons"] = progress_metrics.blocked_reasons
             metadata["next_steps"] = progress_metrics.next_steps
 
-            # Step 5.6: Generate working conclusion if significant progress
-            if (
-                metadata.get("milestones_completed")
-                or progress_metrics.investigation_momentum == InvestigationMomentum.HIGH
-            ):
+            # Step 5.6: Generate working conclusion EVERY turn during INVESTIGATING
+            # Gap #7: Working Conclusion Every Turn
+            # Reference: Prompt Engineering Guide Section 11.7
+            # Why: Provides consistent context tracking, prevents "lost context" issues
+            if case_updated.status == CaseStatus.INVESTIGATING:
                 working_conclusion = generate_working_conclusion(
                     case=case_updated, current_turn=case_updated.current_turn
                 )
                 case_updated.working_conclusion = working_conclusion
-                logger.info(
+                logger.debug(
                     f"Working conclusion updated: likelihood={working_conclusion.likelihood:.2f}"
                 )
 

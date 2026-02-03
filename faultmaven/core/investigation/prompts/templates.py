@@ -485,11 +485,32 @@ Turn {case.current_turn}: You are in degraded mode. Follow the above behavior ch
 
 
 def get_prompt_for_case(
-    case: Case, user_message: str, kb_results: Optional[List[Dict[str, Any]]] = None
+    case: Case,
+    user_message: str,
+    kb_results: Optional[List[Dict[str, Any]]] = None,
+    provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> str:
-    """Build the final prompt based on case status and stage."""
+    """Build the final prompt based on case status and stage.
 
-    ctx = build_investigation_context(case, user_message, kb_results)
+    Args:
+        case: Current case
+        user_message: User's message this turn
+        kb_results: Optional knowledge base search results
+        provider_name: LLM provider name for dynamic budget calculation (Gap #6)
+        model_name: LLM model name for fine-grained budget calculation (Gap #6)
+
+    Returns:
+        Formatted prompt for the LLM
+    """
+
+    ctx = build_investigation_context(
+        case,
+        user_message,
+        kb_results,
+        provider_name=provider_name,
+        model_name=model_name,
+    )
 
     if case.status == CaseStatus.INQUIRY:
         return INQUIRY_TEMPLATE.format(**ctx)
