@@ -981,6 +981,22 @@ async def generate_case_title(
         # Extract meaningful user content from conversation for LLM prompt
         user_message_content = _extract_user_signals_from_context(context_text)
 
+        # Debug logging to diagnose empty extraction
+        logger.info(
+            f"Title generation: Extracted user signals",
+            extra={
+                "case_id": case_id,
+                "context_length": len(context_text) if context_text else 0,
+                "user_signals_length": (
+                    len(user_message_content) if user_message_content else 0
+                ),
+                "context_preview": context_text[:300] if context_text else None,
+                "user_signals_preview": (
+                    user_message_content[:200] if user_message_content else None
+                ),
+            },
+        )
+
         # Generate title using LLM with fallback logic
         title_source = "unknown"
         llm_provider = getattr(request.app.state, "llm_provider", None)
