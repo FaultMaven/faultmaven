@@ -1264,6 +1264,8 @@ def _generate_smart_extractive_title(
         "i'm experiencing",
         "i am experiencing",
         "i am having",
+        "i noticed",  # "I noticed our API..."
+        "by the way,",  # "By the way, can..."
         "hello,",  # Only strip if followed by comma
         "hi,",  # Only strip if followed by comma
         "hey,",  # Only strip if followed by comma
@@ -1392,6 +1394,49 @@ async def _generate_title_with_llm(
         # Reduced from 3 to 2 words - many valid titles are 2 words:
         # "Database Timeout", "API Slowness", "Memory Leak", "Redis Error"
         if len(words) < 2 or len(title.strip()) < 5:
+            return False
+
+        # Check for incomplete endings (titles ending mid-sentence)
+        # These indicate truncated or low-quality titles
+        INCOMPLETE_ENDINGS = {
+            "have",
+            "has",
+            "is",
+            "are",
+            "was",
+            "were",
+            "been",
+            "will",
+            "would",
+            "should",
+            "could",
+            "can",
+            "may",
+            "might",
+            "the",
+            "a",
+            "an",
+            "my",
+            "our",
+            "their",
+            "this",
+            "that",
+            "with",
+            "about",
+            "from",
+            "into",
+            "to",
+            "for",
+            "of",
+            "and",
+            "or",
+            "but",
+            "by",
+        }
+
+        # Check if last word is incomplete
+        last_word = words[-1].lower().strip(".,!?;:")
+        if last_word in INCOMPLETE_ENDINGS:
             return False
 
         # Optional banned words check (English-centric, configurable)
