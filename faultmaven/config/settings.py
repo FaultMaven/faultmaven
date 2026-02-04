@@ -45,6 +45,7 @@ class LLMProvider(str, Enum):
     GEMINI = "gemini"
     HUGGINGFACE = "huggingface"
     COHERE = "cohere"
+    OPENROUTER = "openrouter"
     LOCAL = "local"
     GROQ = "groq"
     NOT_SET = "NOT_SET"
