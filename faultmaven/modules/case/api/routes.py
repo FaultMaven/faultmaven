@@ -888,36 +888,16 @@ async def generate_case_title(
             extra={"existing_title": case.title},
         )
 
-        # Check idempotency - don't overwrite user-set titles without force=true
-        if not effective_force and hasattr(case, "title") and case.title:
-            # Check if existing title is meaningful (not default/auto-generated)
-            default_titles = ["New Case", "Untitled Case", "Untitled"]
-            # Check if title is generic/banned (always check for existing titles)
-            is_meaningful_title = (
-                case.title not in default_titles
-                and not case.title.lower().startswith("case-")
-                and len(case.title.split()) >= 3  # At least 3 words
-                and case.title.lower().strip()
-                not in BANNED_GENERIC_WORDS  # Not exact match
-                and not any(
-                    generic in case.title.lower() for generic in BANNED_GENERIC_WORDS
-                )  # No substring match
-            )
-
-            if is_meaningful_title:
-                # Return existing user-set title to maintain idempotency
-                logger.info(
-                    f"🔍 Returning existing meaningful title: '{case.title}'",
-                    extra={"idempotent_title": case.title},
-                )
-                response.headers["x-correlation-id"] = correlation_id
-                response.headers["x-title-source"] = "existing"
-                return TitleResponse(schema_version="3.1.0", title=case.title)
-            else:
-                logger.info(
-                    f"🔍 Existing title '{case.title}' is generic/banned, will regenerate",
-                    extra={"rejected_title": case.title},
-                )
+        # Idempotency check removed - allow free regeneration
+        # Rationale:
+        # 1. Hybrid approach makes regeneration nearly free (90% extractive, 1ms, $0)
+        # 2. Turn threshold (5+ turns) already prevents abuse
+        # 3. Duplicate request middleware provides rate limiting
+        # 4. Better UX - users can regenerate as conversation evolves
+        # 5. Titles improve as more context is revealed
+        #
+        # Previous: Blocked regeneration if title was "meaningful"
+        # Now: Always regenerate (respects turn threshold + duplicate protection)
 
         # Minimum turn threshold for LLM-based title generation
         # Rationale: Require substantive conversation to generate meaningful titles
