@@ -1035,6 +1035,32 @@ async def generate_case_title(
                     detail="Failed to persist generated title",
                     headers={"x-correlation-id": correlation_id},
                 )
+
+            # Verify persistence by re-fetching the case from database
+            verification_case = await case_service.get_case(
+                case_id, current_user.user_id
+            )
+            if verification_case and verification_case.title != generated_title:
+                logger = logging.getLogger(__name__)
+                logger.error(
+                    f"Title persistence verification failed for case {case_id}: expected '{generated_title}', got '{verification_case.title}'",
+                    extra={
+                        "case_id": case_id,
+                        "expected_title": generated_title,
+                        "actual_title": verification_case.title,
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Title saved but verification failed - possible database issue",
+                    headers={"x-correlation-id": correlation_id},
+                )
+
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"Title persistence verified for case {case_id}",
+                extra={"case_id": case_id, "title": generated_title},
+            )
         except HTTPException:
             # Re-raise HTTPException without modification to preserve original error
             raise
