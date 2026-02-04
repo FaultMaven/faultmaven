@@ -108,7 +108,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
 
             # Check for duplicate
-            is_duplicate, cached_response = await self._check_duplicate(request)
+            is_duplicate, cached_response, original_timestamp, ttl = (
+                await self._check_duplicate(request)
+            )
 
             if is_duplicate:
                 check_duration = time.time() - start_time
@@ -121,7 +123,18 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                     self.metrics["cache_hits"] += 1
                     return JSONResponse(content=json.loads(cached_response))
                 else:
-                    return self._create_duplicate_response(request)
+                    # Calculate TTL remaining
+                    if original_timestamp:
+                        elapsed = (
+                            datetime.now(timezone.utc) - original_timestamp
+                        ).total_seconds()
+                        ttl_remaining = max(0, int(ttl - elapsed))
+                    else:
+                        ttl_remaining = ttl
+
+                    return self._create_duplicate_response(
+                        request, original_timestamp, ttl_remaining
+                    )
 
             # Process request
             response = await call_next(request)
@@ -177,12 +190,18 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             self._initialized = True
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize deduplication Redis: {e}")
             self._redis_healthy = False
             self._initialized = True  # Continue with fallback
 
             if not self.settings.fail_open_on_redis_error:
+                # Redis is required but unavailable - fail hard
+                self.logger.error(f"Failed to initialize deduplication Redis: {e}")
                 raise
+            else:
+                # Graceful degradation: requests will not be deduplicated
+                self.logger.warning(
+                    f"Redis unavailable ({e}), request deduplication disabled"
+                )
 
         return False
 
@@ -220,14 +239,20 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         return False
 
-    async def _check_duplicate(self, request: Request) -> Tuple[bool, Optional[str]]:
-        """Check if request is a duplicate"""
+    async def _check_duplicate(
+        self, request: Request
+    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
+        """Check if request is a duplicate
+
+        Returns:
+            Tuple of (is_duplicate, cached_response, original_timestamp, ttl)
+        """
 
         # Generate request hash
         request_hash = await self._generate_request_hash(request)
 
         if not request_hash:
-            return False, None
+            return False, None, None, 0
 
         # Check for duplicate
         return await self._check_hash_duplicate(request_hash, request.url.path)
@@ -288,8 +313,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_hash_duplicate(
         self, request_hash: str, endpoint: str
-    ) -> Tuple[bool, Optional[str]]:
-        """Check if hash represents a duplicate request"""
+    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
+        """Check if hash represents a duplicate request
+
+        Returns:
+            Tuple of (is_duplicate, cached_response, original_timestamp, ttl)
+        """
 
         # Get TTL for this endpoint
         config = self.endpoint_configs.get(endpoint, {})
@@ -299,49 +328,65 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         try:
             if self._redis and self._redis_healthy:
-                return await self._check_redis_duplicate(key, ttl)
+                is_dup, cached, orig_time = await self._check_redis_duplicate(key, ttl)
+                return is_dup, cached, orig_time, ttl
             else:
-                return await self._check_fallback_duplicate(key, ttl)
+                is_dup, cached, orig_time = await self._check_fallback_duplicate(
+                    key, ttl
+                )
+                return is_dup, cached, orig_time, ttl
 
         except Exception as e:
             self.logger.error(f"Duplicate check failed: {e}")
-            return False, None
+            return False, None, None, ttl
 
     async def _check_redis_duplicate(
         self, key: str, ttl: int
-    ) -> Tuple[bool, Optional[str]]:
-        """Check for duplicate using Redis"""
+    ) -> Tuple[bool, Optional[str], Optional[datetime]]:
+        """Check for duplicate using Redis
+
+        Returns:
+            Tuple of (is_duplicate, cached_response, original_timestamp)
+        """
 
         # Lua script for atomic check-and-set with TTL
         lua_script = """
         local key = KEYS[1]
         local ttl = tonumber(ARGV[1])
         local timestamp = ARGV[2]
-        
+
         local existing = redis.call('GET', key)
         if existing then
             return {1, existing}  -- duplicate found
         end
-        
+
         -- Store timestamp
         redis.call('SETEX', key, ttl, timestamp)
         return {0, nil}  -- not duplicate
         """
 
-        current_time = to_json_compatible(datetime.now(timezone.utc))
+        current_time = datetime.now(timezone.utc)
+        current_time_str = to_json_compatible(current_time)
 
         try:
             result = await self._redis.eval(
-                lua_script, 1, key, ttl, current_time  # number of keys
+                lua_script, 1, key, ttl, current_time_str  # number of keys
             )
 
             is_duplicate, cached_data = result
 
             if is_duplicate:
                 self.logger.debug(f"Duplicate request detected: {key}")
-                return True, cached_data
+                # Parse original timestamp from cached data
+                try:
+                    original_timestamp = datetime.fromisoformat(
+                        cached_data.replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    original_timestamp = current_time
+                return True, cached_data, original_timestamp
 
-            return False, None
+            return False, None, None
 
         except RedisError as e:
             self.logger.warning(f"Redis duplicate check failed: {e}")
@@ -350,10 +395,15 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_fallback_duplicate(
         self, key: str, ttl: int
-    ) -> Tuple[bool, Optional[str]]:
-        """Check for duplicate using in-memory store"""
+    ) -> Tuple[bool, Optional[str], Optional[datetime]]:
+        """Check for duplicate using in-memory store
+
+        Returns:
+            Tuple of (is_duplicate, cached_response, original_timestamp)
+        """
 
         current_time = time.time()
+        current_datetime = datetime.now(timezone.utc)
 
         # Clean up expired entries periodically
         if current_time - self._last_fallback_cleanup > self._fallback_cleanup_interval:
@@ -367,14 +417,16 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             # Check if still valid
             if current_time - timestamp < ttl:
                 self.logger.debug(f"Duplicate found in fallback store: {key}")
-                return True, cached_response
+                # Calculate original timestamp
+                original_timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                return True, cached_response, original_timestamp
             else:
                 # Expired, remove it
                 del self._fallback_store[key]
 
         # Store new entry
         self._fallback_store[key] = (current_time, None)
-        return False, None
+        return False, None, None
 
     async def _cleanup_fallback_store(self) -> None:
         """Clean up expired entries from fallback store"""
@@ -456,46 +508,47 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         return None
 
-    def _create_duplicate_response(self, request: Request) -> JSONResponse:
-        """Create response for duplicate request - MUST conform to AgentResponse schema"""
+    def _create_duplicate_response(
+        self,
+        request: Request,
+        original_timestamp: Optional[datetime],
+        ttl_remaining: int,
+    ) -> JSONResponse:
+        """Create error response for duplicate request using ProtectionErrorResponse schema"""
 
-        # Extract session_id from request to maintain API contract
+        # Create DuplicateRequestError
+        error = DuplicateRequestError(
+            original_timestamp=original_timestamp or datetime.now(timezone.utc),
+            ttl_remaining=ttl_remaining,
+            correlation_id=request.headers.get("x-correlation-id", ""),
+        )
+
+        # Convert to ProtectionErrorResponse
+        error_response = ProtectionErrorResponse.from_duplicate_error(error)
+
+        # Log the duplicate detection
         session_id = self._extract_session_id(request)
-        if not session_id:
-            session_id = "session_unknown"
+        self.logger.info(
+            f"Duplicate request blocked: {request.url.path}, "
+            f"session={session_id}, "
+            f"ttl_remaining={ttl_remaining}s"
+        )
 
-        # Return AgentResponse-compliant structure
+        # Return 409 Conflict with Retry-After header
         return JSONResponse(
-            status_code=200,
+            status_code=409,  # Conflict - duplicate resource creation attempt
+            headers={
+                "Retry-After": str(ttl_remaining),
+                "x-error-code": error_response.error_code,
+            },
             content={
-                "schema_version": "3.1.0",
-                "content": "I'm processing your request. This appears to be a recent request - if you need a fresh response, please wait a moment and try again.",
-                "response_type": "ANSWER",
-                "session_id": session_id,
-                "view_state": {
-                    "session_id": session_id,
-                    "user": {
-                        "user_id": "anonymous",
-                        "email": "user@example.com",
-                        "name": "User",
-                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                    },
-                    "active_case": None,
-                    "cases": [],
-                    "messages": [],
-                    "uploaded_data": [],
-                    "show_case_selector": False,
-                    "show_data_upload": True,
-                    "loading_state": None,
-                },
-                "sources": [
-                    {
-                        "type": "SYSTEM",
-                        "content": "Duplicate request detected",
-                        "metadata": {"type": "deduplication"},
-                    }
-                ],
-                "plan": None,
+                "error_type": error_response.error_type,
+                "error_code": error_response.error_code,
+                "message": error_response.message,
+                "retry_after": error_response.retry_after,
+                "correlation_id": error_response.correlation_id,
+                "timestamp": error_response.timestamp,
+                "suggestions": error_response.suggestions,
             },
         )
 

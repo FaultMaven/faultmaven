@@ -450,3 +450,25 @@ class SessionlessCaseRepository(CaseRepository):
         async with get_db_session() as session:
             repo = _get_repository_for_session(session)
             return await repo.get_latest_agent_execution(case_id, agent_type)
+
+    # ============================================================
+    # Checkpoint Operations
+    # ============================================================
+
+    async def create_checkpoint(self, checkpoint: "CaseCheckpoint") -> "CaseCheckpoint":
+        """Create a new case checkpoint."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.create_checkpoint(checkpoint)
+
+    async def get_checkpoint(self, checkpoint_id: str) -> Optional["CaseCheckpoint"]:
+        """Get a checkpoint by ID."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.get_checkpoint(checkpoint_id)
+
+    async def get_checkpoints(self, case_id: str) -> builtins.list["CaseCheckpoint"]:
+        """Get all checkpoints for a case."""
+        async with get_db_session() as session:
+            repo = _get_repository_for_session(session)
+            return await repo.get_checkpoints(case_id)

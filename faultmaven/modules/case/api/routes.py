@@ -919,48 +919,59 @@ async def generate_case_title(
                     extra={"rejected_title": case.title},
                 )
 
-        # Get conversation context
-        context_text = ""
-        try:
-            context_text = await case_service.get_case_conversation_context(
-                case_id, limit=10
-            )
-        except Exception:
-            context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
-
-        # Smart context check: Only call LLM if we have sufficient message content
-        # Extract meaningful user content from conversation
-        user_message_content = _extract_user_signals_from_context(context_text)
-
-        # Minimum content threshold for LLM-based title generation
+        # Minimum turn threshold for LLM-based title generation
         # Rationale: Require substantive conversation to generate meaningful titles
-        # - Avoids wasting LLM API calls on greetings ("hi", "hello")
-        # - Ensures enough context for accurate title generation
-        # - Examples of 200+ char messages: detailed problem descriptions, error messages with context
-        MIN_MESSAGE_LENGTH_FOR_LLM = (
-            200  # characters of meaningful user message content
-        )
+        # - Avoids wasting LLM API calls on insufficient conversation
+        # - Turn count is clearer UX than character count ("need 5 turns" vs "need 200 chars")
+        # - 5 turns = meaningful back-and-forth discussion
+        MIN_TURNS_FOR_TITLE_GENERATION = 5
 
-        # Check if we have enough context for title generation
-        content_length = (
-            len(user_message_content.strip()) if user_message_content else 0
-        )
-
-        if content_length < MIN_MESSAGE_LENGTH_FOR_LLM:
-            # Insufficient content - return user-friendly error
-            logger.info(
-                f"Skipping title generation: insufficient conversation context (case_id={case_id}, content_length={content_length})",
+        # Get messages to check turn count
+        # Use repository directly (same as get_case_conversation_context does)
+        try:
+            messages = await case_service.repository.get_messages(case_id, limit=50)
+        except Exception as e:
+            logger.warning(
+                f"Failed to get messages for case {case_id}: {str(e)}",
                 extra={
                     "case_id": case_id,
-                    "content_length": content_length,
-                    "threshold": MIN_MESSAGE_LENGTH_FOR_LLM,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "correlation_id": correlation_id,
+                },
+            )
+            messages = []
+
+        # Count user turns (user role messages only)
+        # Messages from repository.get_messages() are dicts with "role" field
+        # role can be "user" or "agent"
+        user_turn_count = len([m for m in messages if m.get("role") == "user"])
+
+        logger.info(
+            f"Title generation: checking turn threshold (case_id={case_id}, turns={user_turn_count}, threshold={MIN_TURNS_FOR_TITLE_GENERATION})",
+            extra={
+                "case_id": case_id,
+                "user_turn_count": user_turn_count,
+                "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
+            },
+        )
+
+        # Check if we have enough turns for title generation
+        if user_turn_count < MIN_TURNS_FOR_TITLE_GENERATION:
+            # Insufficient turns - return user-friendly error
+            logger.info(
+                f"Skipping title generation: insufficient turns (case_id={case_id}, turns={user_turn_count})",
+                extra={
+                    "case_id": case_id,
+                    "user_turn_count": user_turn_count,
+                    "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
                 },
             )
             error_response = ErrorResponse(
                 schema_version="3.1.0",
                 error=ErrorDetail(
-                    code="INSUFFICIENT_CONTEXT",
-                    message="Not enough conversation to generate a title. Continue discussing your issue, then try again.",
+                    code="INSUFFICIENT_TURNS",
+                    message=f"Need at least {MIN_TURNS_FOR_TITLE_GENERATION} conversation turns to generate a meaningful title. Continue discussing your issue (currently {user_turn_count} turns), then try again.",
                 ),
             )
             raise HTTPException(
@@ -968,6 +979,27 @@ async def generate_case_title(
                 detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id},
             )
+
+        # Get conversation context for LLM prompt
+        context_text = ""
+        try:
+            context_text = await case_service.get_case_conversation_context(
+                case_id, limit=10
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to get conversation context for case {case_id}, using fallback: {str(e)}",
+                extra={
+                    "case_id": case_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "correlation_id": correlation_id,
+                },
+            )
+            context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
+
+        # Extract meaningful user content from conversation for LLM prompt
+        user_message_content = _extract_user_signals_from_context(context_text)
 
         # Generate title using LLM with fallback logic
         title_source = "unknown"
@@ -1169,11 +1201,13 @@ def _extract_user_signals_from_context(context_text: str) -> str:
             if len(user_messages) > 12:
                 user_messages = user_messages[-12:]
 
-    # Return the most recent user message (likely most relevant) with sanitization
+    # Return ALL user messages concatenated for accurate length measurement
+    # This ensures the threshold check considers total conversation depth,
+    # not just the last message (which could be short like "thanks")
     if user_messages:
-        # Take the most recent meaningful user message
-        raw_content = user_messages[-1]
-        return _sanitize_title_content(raw_content)
+        # Join all user messages with space separator
+        all_content = " ".join(user_messages)
+        return _sanitize_title_content(all_content)
 
     return ""
 
@@ -1289,11 +1323,11 @@ async def _generate_title_with_llm(
             top_p=0.9,  # Focused sampling
         )
 
-        if response and response.strip():
+        if response and response.content and response.content.strip():
             # Strip quotes/punctuation; collapse whitespace
             import re
 
-            generated_title = response.strip().strip('"').strip("'").strip()
+            generated_title = response.content.strip().strip('"').strip("'").strip()
             generated_title = re.sub(
                 r"\s+", " ", generated_title
             )  # Collapse whitespace
@@ -1729,11 +1763,15 @@ async def submit_case_query(
 
         except asyncio.TimeoutError:
             logger.error(f"Turn processing timed out for case {case_id} after 35s")
-            # Return fallback response
+            # Return 504 Gateway Timeout - upstream service (LLM) took too long
             raise HTTPException(
-                status_code=500,
-                detail="Request timeout - processing is taking longer than expected",
-                headers={"x-correlation-id": correlation_id},
+                status_code=504,  # Gateway Timeout - more accurate than 500
+                detail="Request timeout - processing is taking longer than expected. Please try again with a simpler query or contact support if this persists.",
+                headers={
+                    "x-correlation-id": correlation_id,
+                    "x-error-code": "REQUEST_TIMEOUT",
+                    "Retry-After": "30",  # Suggest retry after 30 seconds
+                },
             )
 
     except NotFoundError as e:
@@ -1756,31 +1794,38 @@ async def submit_case_query(
         # Detect specific error conditions and provide actionable guidance
         if "over capacity" in error_msg.lower() or "503" in error_msg:
             detail = "AI service temporarily unavailable due to high demand. Please wait a moment and try again."
+            status_code = 503
+            error_code = "LLM_OVER_CAPACITY"
+            retry_after = "60"
         elif "rate limit" in error_msg.lower() or "429" in error_msg:
             detail = "Rate limit exceeded. Please wait a minute before sending another message."
+            status_code = 429
+            error_code = "RATE_LIMIT_EXCEEDED"
+            retry_after = "60"
         elif "timeout" in error_msg.lower():
             detail = "Request timed out. Please try again with a shorter message or fewer attachments."
+            status_code = 504
+            error_code = "LLM_TIMEOUT"
+            retry_after = "30"
         elif "authentication" in error_msg.lower() or "401" in error_msg:
             detail = "AI service authentication error. Please contact support."
+            status_code = 503
+            error_code = "LLM_AUTH_ERROR"
+            retry_after = "300"  # 5 minutes - this needs admin intervention
         else:
             # Generic fallback with hint about the error type
             detail = f"Unable to process your message: {error_msg[:200]}"  # Limit message length
+            status_code = 500
+            error_code = "SERVICE_ERROR"
+            retry_after = "10"
 
         raise HTTPException(
-            status_code=(
-                503
-                if ("over capacity" in error_msg.lower() or "503" in error_msg)
-                else 500
-            ),
+            status_code=status_code,
             detail=detail,
             headers={
                 "x-correlation-id": correlation_id,
-                "Retry-After": (
-                    "60"
-                    if "over capacity" in error_msg.lower()
-                    or "rate limit" in error_msg.lower()
-                    else "10"
-                ),
+                "x-error-code": error_code,
+                "Retry-After": retry_after,
             },
         )
     except Exception as e:
@@ -1794,17 +1839,27 @@ async def submit_case_query(
         if "over capacity" in error_str.lower() or "503" in error_str:
             detail = "AI service temporarily unavailable. Please try again in a moment."
             status_code = 503
+            error_code = "LLM_UNAVAILABLE"
+            retry_after = "60"
         elif "connection" in error_str.lower() or "network" in error_str.lower():
             detail = "Network error communicating with AI service. Please try again."
             status_code = 503
+            error_code = "NETWORK_ERROR"
+            retry_after = "30"
         else:
             detail = f"An unexpected error occurred. Error ID: {correlation_id}"
             status_code = 500
+            error_code = "UNEXPECTED_ERROR"
+            retry_after = "10"
 
         raise HTTPException(
             status_code=status_code,
             detail=detail,
-            headers={"x-correlation-id": correlation_id},
+            headers={
+                "x-correlation-id": correlation_id,
+                "x-error-code": error_code,
+                "Retry-After": retry_after,
+            },
         )
 
 
