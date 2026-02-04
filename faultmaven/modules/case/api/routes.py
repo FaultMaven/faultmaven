@@ -1323,11 +1323,11 @@ async def _generate_title_with_llm(
             top_p=0.9,  # Focused sampling
         )
 
-        if response and response.strip():
+        if response and response.content and response.content.strip():
             # Strip quotes/punctuation; collapse whitespace
             import re
 
-            generated_title = response.strip().strip('"').strip("'").strip()
+            generated_title = response.content.strip().strip('"').strip("'").strip()
             generated_title = re.sub(
                 r"\s+", " ", generated_title
             )  # Collapse whitespace
