@@ -559,15 +559,20 @@ class MilestoneEngine:
                 # Some LLMs return: ```json\n{...}\n``` instead of raw JSON
                 if isinstance(content, str):
                     content = content.strip()
+
+                    # Check if content is wrapped in markdown code blocks
                     if content.startswith("```"):
                         # Remove markdown code fence
                         lines = content.split("\n")
-                        # Remove first line (```json or ```)
-                        if lines[0].startswith("```"):
+
+                        # Remove first line (```json, ```JSON, or just ```)
+                        if lines and lines[0].startswith("```"):
                             lines = lines[1:]
-                        # Remove last line (```)
+
+                        # Remove last line if it's just ```
                         if lines and lines[-1].strip() == "```":
                             lines = lines[:-1]
+
                         content = "\n".join(lines).strip()
 
             return schema_model.model_validate_json(content)
