@@ -1305,7 +1305,9 @@ async def _generate_title_with_llm(
 
         words = title.split()
         # Length/word-count guards (language-agnostic)
-        if len(words) < 3 or len(title.strip()) < 5:
+        # Reduced from 3 to 2 words - many valid titles are 2 words:
+        # "Database Timeout", "API Slowness", "Memory Leak", "Redis Error"
+        if len(words) < 2 or len(title.strip()) < 5:
             return False
 
         # Optional banned words check (English-centric, configurable)
