@@ -367,7 +367,12 @@ async def create_session(
                 import uuid
 
                 user_id = f"user_{str(uuid.uuid4())[:8]}"
-                logger.info(f"Auto-generated anonymous user_id for session: {user_id}")
+                logger.warning(
+                    f"⚠️ Creating anonymous session (user_id={user_id}) without JWT token. "
+                    f"If user just logged in, frontend should pass JWT token in Authorization header. "
+                    f"This will cause cases to be invisible after re-login. "
+                    f"Client ID: {request.client_id if request else 'none'}"
+                )
 
         # Create session with metadata and client_id
         session_result = await session_service.create_session(
