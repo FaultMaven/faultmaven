@@ -477,6 +477,11 @@ async def list_cases(
     correlation_id = str(uuid.uuid4())
     response.headers["x-correlation-id"] = correlation_id
 
+    # Prevent browser/extension caching to ensure title updates are visible immediately
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
     try:
         # Build filter with restored filtering parameters
         filters = CaseListFilter(
@@ -581,6 +586,11 @@ async def get_case(
     """
     correlation_id = str(uuid.uuid4())
     response.headers["x-correlation-id"] = correlation_id
+
+    # Prevent browser/extension caching to ensure title updates are visible immediately
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
 
     try:
         case = await case_service.get_case(case_id, current_user.user_id)
