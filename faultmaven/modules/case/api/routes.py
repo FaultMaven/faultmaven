@@ -919,7 +919,69 @@ async def generate_case_title(
                     extra={"rejected_title": case.title},
                 )
 
-        # Get conversation context
+        # Minimum turn threshold for LLM-based title generation
+        # Rationale: Require substantive conversation to generate meaningful titles
+        # - Avoids wasting LLM API calls on insufficient conversation
+        # - Turn count is clearer UX than character count ("need 5 turns" vs "need 200 chars")
+        # - 5 turns = meaningful back-and-forth discussion
+        MIN_TURNS_FOR_TITLE_GENERATION = 5
+
+        # Get messages to check turn count
+        # Use repository directly (same as get_case_conversation_context does)
+        try:
+            messages = await case_service.repository.get_messages(case_id, limit=50)
+        except Exception as e:
+            logger.warning(
+                f"Failed to get messages for case {case_id}: {str(e)}",
+                extra={
+                    "case_id": case_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "correlation_id": correlation_id,
+                },
+            )
+            messages = []
+
+        # Count user turns (user_query messages only)
+        # Messages from repository.get_messages() are dicts with "message_type" field
+        user_turn_count = len(
+            [m for m in messages if m.get("message_type") == "user_query"]
+        )
+
+        logger.info(
+            f"Title generation: checking turn threshold (case_id={case_id}, turns={user_turn_count}, threshold={MIN_TURNS_FOR_TITLE_GENERATION})",
+            extra={
+                "case_id": case_id,
+                "user_turn_count": user_turn_count,
+                "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
+            },
+        )
+
+        # Check if we have enough turns for title generation
+        if user_turn_count < MIN_TURNS_FOR_TITLE_GENERATION:
+            # Insufficient turns - return user-friendly error
+            logger.info(
+                f"Skipping title generation: insufficient turns (case_id={case_id}, turns={user_turn_count})",
+                extra={
+                    "case_id": case_id,
+                    "user_turn_count": user_turn_count,
+                    "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
+                },
+            )
+            error_response = ErrorResponse(
+                schema_version="3.1.0",
+                error=ErrorDetail(
+                    code="INSUFFICIENT_TURNS",
+                    message=f"Need at least {MIN_TURNS_FOR_TITLE_GENERATION} conversation turns to generate a meaningful title. Continue discussing your issue (currently {user_turn_count} turns), then try again.",
+                ),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=error_response.model_dump(),
+                headers={"x-correlation-id": correlation_id},
+            )
+
+        # Get conversation context for LLM prompt
         context_text = ""
         try:
             context_text = await case_service.get_case_conversation_context(
@@ -937,62 +999,8 @@ async def generate_case_title(
             )
             context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
 
-        # Smart context check: Only call LLM if we have sufficient message content
-        # Extract meaningful user content from conversation
+        # Extract meaningful user content from conversation for LLM prompt
         user_message_content = _extract_user_signals_from_context(context_text)
-
-        # Debug logging for content extraction
-        logger.debug(
-            f"Title generation: extracted user signals",
-            extra={
-                "case_id": case_id,
-                "context_text_length": len(context_text) if context_text else 0,
-                "user_signals_length": (
-                    len(user_message_content) if user_message_content else 0
-                ),
-                "context_preview": context_text[:200] if context_text else None,
-                "user_signals_preview": (
-                    user_message_content[:100] if user_message_content else None
-                ),
-            },
-        )
-
-        # Minimum content threshold for LLM-based title generation
-        # Rationale: Require substantive conversation to generate meaningful titles
-        # - Avoids wasting LLM API calls on greetings ("hi", "hello")
-        # - Ensures enough context for accurate title generation
-        # - Examples of 200+ char messages: detailed problem descriptions, error messages with context
-        MIN_MESSAGE_LENGTH_FOR_LLM = (
-            200  # characters of meaningful user message content
-        )
-
-        # Check if we have enough context for title generation
-        content_length = (
-            len(user_message_content.strip()) if user_message_content else 0
-        )
-
-        if content_length < MIN_MESSAGE_LENGTH_FOR_LLM:
-            # Insufficient content - return user-friendly error
-            logger.info(
-                f"Skipping title generation: insufficient conversation context (case_id={case_id}, content_length={content_length})",
-                extra={
-                    "case_id": case_id,
-                    "content_length": content_length,
-                    "threshold": MIN_MESSAGE_LENGTH_FOR_LLM,
-                },
-            )
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="INSUFFICIENT_CONTEXT",
-                    message="Not enough conversation to generate a title. Continue discussing your issue, then try again.",
-                ),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=error_response.model_dump(),
-                headers={"x-correlation-id": correlation_id},
-            )
 
         # Generate title using LLM with fallback logic
         title_source = "unknown"
