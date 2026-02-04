@@ -554,6 +554,21 @@ class MilestoneEngine:
                     else:
                         # Already a string
                         content = args
+            else:
+                # For non-function-calling modes, strip markdown code blocks if present
+                # Some LLMs return: ```json\n{...}\n``` instead of raw JSON
+                if isinstance(content, str):
+                    content = content.strip()
+                    if content.startswith("```"):
+                        # Remove markdown code fence
+                        lines = content.split("\n")
+                        # Remove first line (```json or ```)
+                        if lines[0].startswith("```"):
+                            lines = lines[1:]
+                        # Remove last line (```)
+                        if lines and lines[-1].strip() == "```":
+                            lines = lines[:-1]
+                        content = "\n".join(lines).strip()
 
             return schema_model.model_validate_json(content)
 
