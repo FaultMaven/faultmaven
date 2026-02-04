@@ -132,9 +132,17 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                     else:
                         ttl_remaining = ttl
 
-                    return self._create_duplicate_response(
-                        request, original_timestamp, ttl_remaining
-                    )
+                    # If TTL has expired, allow the request through
+                    if ttl_remaining == 0:
+                        self.logger.debug(
+                            f"Duplicate request TTL expired, allowing request through"
+                        )
+                        # Continue to process the request normally
+                    else:
+                        # TTL still active, block the duplicate
+                        return self._create_duplicate_response(
+                            request, original_timestamp, ttl_remaining
+                        )
 
             # Process request
             response = await call_next(request)
