@@ -42,6 +42,7 @@ class LLMProvider(str, Enum):
     FIREWORKS = "fireworks"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
     COHERE = "cohere"
     LOCAL = "local"
     GROQ = "groq"
