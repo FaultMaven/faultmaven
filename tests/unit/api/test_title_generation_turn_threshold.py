@@ -62,11 +62,11 @@ class TestTurnThreshold:
         # Only 3 user turns (below threshold of 5)
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
-                {"message_type": "user_query", "content": "Message 1"},
-                {"message_type": "agent_response", "content": "Response 1"},
-                {"message_type": "user_query", "content": "Message 2"},
-                {"message_type": "agent_response", "content": "Response 2"},
-                {"message_type": "user_query", "content": "Message 3"},
+                {"role": "user", "content": "Message 1"},
+                {"role": "agent", "content": "Response 1"},
+                {"role": "user", "content": "Message 2"},
+                {"role": "agent", "content": "Response 2"},
+                {"role": "user", "content": "Message 3"},
             ]
         )
 
@@ -98,27 +98,27 @@ class TestTurnThreshold:
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
                 {
-                    "message_type": "user_query",
+                    "role": "user",
                     "content": "Database connection timeout issue with PostgreSQL server on production environment",
                 },
-                {"message_type": "agent_response", "content": "Response 1"},
+                {"role": "agent", "content": "Response 1"},
                 {
-                    "message_type": "user_query",
+                    "role": "user",
                     "content": "Error message shows authentication failed for postgres user",
                 },
-                {"message_type": "agent_response", "content": "Response 2"},
+                {"role": "agent", "content": "Response 2"},
                 {
-                    "message_type": "user_query",
+                    "role": "user",
                     "content": "I've verified the password is correct in environment variables",
                 },
-                {"message_type": "agent_response", "content": "Response 3"},
+                {"role": "agent", "content": "Response 3"},
                 {
-                    "message_type": "user_query",
+                    "role": "user",
                     "content": "Should I check the pg_hba.conf file for authentication settings",
                 },
-                {"message_type": "agent_response", "content": "Response 4"},
+                {"role": "agent", "content": "Response 4"},
                 {
-                    "message_type": "user_query",
+                    "role": "user",
                     "content": "Found the issue in authentication configuration thanks",
                 },
             ]
@@ -171,13 +171,13 @@ class TestTurnThreshold:
         for i in range(1, 11):
             messages.append(
                 {
-                    "message_type": "user_query",
+                    "role": "user",
                     "content": f"Database connection timeout issue on production server environment number {i}",
                 }
             )
             messages.append(
                 {
-                    "message_type": "agent_response",
+                    "role": "agent",
                     "content": f"Let me help investigate that issue",
                 }
             )
@@ -214,24 +214,24 @@ class TestTurnThreshold:
             assert "INSUFFICIENT_TURNS" not in str(e.detail)
 
     @pytest.mark.asyncio
-    async def test_only_counts_user_query_messages(
+    async def test_only_counts_user_role_messages(
         self, mock_request, mock_response, mock_user, mock_case
     ):
-        """Should only count user_query messages, not agent_response or system_event"""
+        """Should only count user role messages, not agent or system"""
         mock_case_service = AsyncMock()
         mock_case_service.get_case = AsyncMock(return_value=mock_case)
 
-        # 3 user_query + 3 agent_response + 2 system_event = only 3 user turns
+        # 3 user + 3 agent + 2 system = only 3 user turns
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
-                {"message_type": "system_event", "content": "Case created"},
-                {"message_type": "user_query", "content": "User 1"},
-                {"message_type": "agent_response", "content": "Agent 1"},
-                {"message_type": "user_query", "content": "User 2"},
-                {"message_type": "agent_response", "content": "Agent 2"},
-                {"message_type": "system_event", "content": "Case updated"},
-                {"message_type": "user_query", "content": "User 3"},
-                {"message_type": "agent_response", "content": "Agent 3"},
+                {"role": "system", "content": "Case created"},
+                {"role": "user", "content": "User 1"},
+                {"role": "agent", "content": "Agent 1"},
+                {"role": "user", "content": "User 2"},
+                {"role": "agent", "content": "Agent 2"},
+                {"role": "system", "content": "Case updated"},
+                {"role": "user", "content": "User 3"},
+                {"role": "agent", "content": "Agent 3"},
             ]
         )
 
@@ -308,9 +308,9 @@ class TestTurnThreshold:
         # 2 user turns
         mock_case_service.repository.get_messages = AsyncMock(
             return_value=[
-                {"message_type": "user_query", "content": "First"},
-                {"message_type": "agent_response", "content": "Response"},
-                {"message_type": "user_query", "content": "Second"},
+                {"role": "user", "content": "First"},
+                {"role": "agent", "content": "Response"},
+                {"role": "user", "content": "Second"},
             ]
         )
 

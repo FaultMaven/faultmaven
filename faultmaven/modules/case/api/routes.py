@@ -942,11 +942,10 @@ async def generate_case_title(
             )
             messages = []
 
-        # Count user turns (user_query messages only)
-        # Messages from repository.get_messages() are dicts with "message_type" field
-        user_turn_count = len(
-            [m for m in messages if m.get("message_type") == "user_query"]
-        )
+        # Count user turns (user role messages only)
+        # Messages from repository.get_messages() are dicts with "role" field
+        # role can be "user" or "agent"
+        user_turn_count = len([m for m in messages if m.get("role") == "user"])
 
         logger.info(
             f"Title generation: checking turn threshold (case_id={case_id}, turns={user_turn_count}, threshold={MIN_TURNS_FOR_TITLE_GENERATION})",
