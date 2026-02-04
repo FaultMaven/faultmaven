@@ -1318,7 +1318,7 @@ async def _generate_title_with_llm(
         # Generate title using LLM with optimized settings
         response = await llm_provider.generate(
             prompt=prompt,
-            max_tokens=24,  # Slightly more tokens for better titles
+            max_tokens=64,  # Increased to avoid truncation (was 24, caused Gemini MAX_TOKENS errors)
             temperature=0.2,  # More deterministic
             top_p=0.9,  # Focused sampling
         )
@@ -1328,6 +1328,25 @@ async def _generate_title_with_llm(
             import re
 
             generated_title = response.content.strip().strip('"').strip("'").strip()
+
+            # Check for error placeholder strings from LLM providers
+            error_placeholders = [
+                "[Response truncated due to token limit]",
+                "[Content blocked by safety filters]",
+                "[Response blocked]",
+                "[Error]",
+            ]
+            if any(
+                placeholder.lower() in generated_title.lower()
+                for placeholder in error_placeholders
+            ):
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    "Title generation: LLM returned error placeholder",
+                    extra={"error_placeholder": generated_title},
+                )
+                raise ValueError(f"LLM returned error placeholder: {generated_title}")
+
             generated_title = re.sub(
                 r"\s+", " ", generated_title
             )  # Collapse whitespace
