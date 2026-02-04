@@ -370,6 +370,15 @@ When hypothesis validated with sufficient confidence:
    - While implementing permanent fix (e.g., adding index), suggest temporary mitigations
    - Example: "While the index builds, you could temporarily increase query timeout"
 
+**6. MITIGATION_FIRST Follow-up (Critical):**
+   When a temporary workaround was applied to stop the bleeding:
+   - Remind user that the fix is temporary and follow-up is needed
+   - State what still needs to be done: "Once [X] is fixed, remember to [re-enable/revert/remove] the temporary workaround"
+   - Offer to help with root cause investigation if not yet done
+   - Example: "The fraud check bypass is a temporary fix. Once the SSL cert is renewed,
+     make sure to re-enable it. Would you like help investigating why the cert wasn't
+     monitored for expiration?"
+
 **Completion:**
 When solution_verified = True:
 → Case will auto-transition to RESOLVED
