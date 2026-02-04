@@ -888,79 +888,70 @@ async def generate_case_title(
             extra={"existing_title": case.title},
         )
 
-        # Check idempotency - don't overwrite user-set titles without force=true
-        if not effective_force and hasattr(case, "title") and case.title:
-            # Check if existing title is meaningful (not default/auto-generated)
-            default_titles = ["New Case", "Untitled Case", "Untitled"]
-            # Check if title is generic/banned (always check for existing titles)
-            is_meaningful_title = (
-                case.title not in default_titles
-                and not case.title.lower().startswith("case-")
-                and len(case.title.split()) >= 3  # At least 3 words
-                and case.title.lower().strip()
-                not in BANNED_GENERIC_WORDS  # Not exact match
-                and not any(
-                    generic in case.title.lower() for generic in BANNED_GENERIC_WORDS
-                )  # No substring match
-            )
+        # Idempotency check removed - allow free regeneration
+        # Rationale:
+        # 1. Hybrid approach makes regeneration nearly free (90% extractive, 1ms, $0)
+        # 2. Turn threshold (5+ turns) already prevents abuse
+        # 3. Duplicate request middleware provides rate limiting
+        # 4. Better UX - users can regenerate as conversation evolves
+        # 5. Titles improve as more context is revealed
+        #
+        # Previous: Blocked regeneration if title was "meaningful"
+        # Now: Always regenerate (respects turn threshold + duplicate protection)
 
-            if is_meaningful_title:
-                # Return existing user-set title to maintain idempotency
-                logger.info(
-                    f"🔍 Returning existing meaningful title: '{case.title}'",
-                    extra={"idempotent_title": case.title},
-                )
-                response.headers["x-correlation-id"] = correlation_id
-                response.headers["x-title-source"] = "existing"
-                return TitleResponse(schema_version="3.1.0", title=case.title)
-            else:
-                logger.info(
-                    f"🔍 Existing title '{case.title}' is generic/banned, will regenerate",
-                    extra={"rejected_title": case.title},
-                )
-
-        # Get conversation context
-        context_text = ""
-        try:
-            context_text = await case_service.get_case_conversation_context(
-                case_id, limit=10
-            )
-        except Exception:
-            context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
-
-        # Smart context check: Only call LLM if we have sufficient message content
-        # Extract meaningful user content from conversation
-        user_message_content = _extract_user_signals_from_context(context_text)
-
-        # Minimum content threshold for LLM-based title generation
+        # Minimum turn threshold for LLM-based title generation
         # Rationale: Require substantive conversation to generate meaningful titles
-        # - Avoids wasting LLM API calls on greetings ("hi", "hello")
-        # - Ensures enough context for accurate title generation
-        # - Examples of 200+ char messages: detailed problem descriptions, error messages with context
-        MIN_MESSAGE_LENGTH_FOR_LLM = (
-            200  # characters of meaningful user message content
-        )
+        # - Avoids wasting LLM API calls on insufficient conversation
+        # - Turn count is clearer UX than character count ("need 5 turns" vs "need 200 chars")
+        # - 5 turns = meaningful back-and-forth discussion
+        MIN_TURNS_FOR_TITLE_GENERATION = 5
 
-        # Check if we have enough context for title generation
-        content_length = (
-            len(user_message_content.strip()) if user_message_content else 0
-        )
-
-        if content_length < MIN_MESSAGE_LENGTH_FOR_LLM:
-            # Insufficient content - return user-friendly error
-            logger.info(
-                f"Skipping title generation: insufficient conversation context (case_id={case_id}, content_length={content_length})",
+        # Get messages to check turn count
+        # Use repository directly (same as get_case_conversation_context does)
+        try:
+            messages = await case_service.repository.get_messages(case_id, limit=50)
+        except Exception as e:
+            logger.warning(
+                f"Failed to get messages for case {case_id}: {str(e)}",
                 extra={
                     "case_id": case_id,
-                    "content_length": content_length,
-                    "threshold": MIN_MESSAGE_LENGTH_FOR_LLM,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "correlation_id": correlation_id,
+                },
+            )
+            messages = []
+
+        # Count user turns (user role messages only)
+        # Messages from repository.get_messages() are dicts with "role" field
+        # role can be "user" or "agent"
+        user_turn_count = len([m for m in messages if m.get("role") == "user"])
+
+        logger.info(
+            f"Title generation: checking turn threshold (case_id={case_id}, turns={user_turn_count}, threshold={MIN_TURNS_FOR_TITLE_GENERATION})",
+            extra={
+                "case_id": case_id,
+                "user_turn_count": user_turn_count,
+                "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
+            },
+        )
+
+        # Check if we have enough turns for title generation
+        if user_turn_count < MIN_TURNS_FOR_TITLE_GENERATION:
+            # Insufficient turns - return user-friendly error
+            logger.info(
+                f"Skipping title generation: insufficient turns (case_id={case_id}, turns={user_turn_count})",
+                extra={
+                    "case_id": case_id,
+                    "user_turn_count": user_turn_count,
+                    "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
                 },
             )
             error_response = ErrorResponse(
                 schema_version="3.1.0",
                 error=ErrorDetail(
-                    code="INSUFFICIENT_CONTEXT",
-                    message="Not enough conversation to generate a title. Continue discussing your issue, then try again.",
+                    code="INSUFFICIENT_TURNS",
+                    message=f"Need at least {MIN_TURNS_FOR_TITLE_GENERATION} conversation turns to generate a meaningful title. Continue discussing your issue (currently {user_turn_count} turns), then try again.",
                 ),
             )
             raise HTTPException(
@@ -968,6 +959,27 @@ async def generate_case_title(
                 detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id},
             )
+
+        # Get conversation context for LLM prompt
+        context_text = ""
+        try:
+            context_text = await case_service.get_case_conversation_context(
+                case_id, limit=10
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to get conversation context for case {case_id}, using fallback: {str(e)}",
+                extra={
+                    "case_id": case_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "correlation_id": correlation_id,
+                },
+            )
+            context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
+
+        # Extract meaningful user content from conversation for LLM prompt
+        user_message_content = _extract_user_signals_from_context(context_text)
 
         # Generate title using LLM with fallback logic
         title_source = "unknown"
@@ -1169,13 +1181,92 @@ def _extract_user_signals_from_context(context_text: str) -> str:
             if len(user_messages) > 12:
                 user_messages = user_messages[-12:]
 
-    # Return the most recent user message (likely most relevant) with sanitization
+    # Return ALL user messages concatenated for accurate length measurement
+    # This ensures the threshold check considers total conversation depth,
+    # not just the last message (which could be short like "thanks")
     if user_messages:
-        # Take the most recent meaningful user message
-        raw_content = user_messages[-1]
-        return _sanitize_title_content(raw_content)
+        # Join all user messages with space separator
+        all_content = " ".join(user_messages)
+        return _sanitize_title_content(all_content)
 
     return ""
+
+
+def _generate_smart_extractive_title(
+    user_signals: str, max_words: int = 8
+) -> Optional[str]:
+    """Generate title using smart extractive logic (no LLM).
+
+    Strips conversational filler and extracts meaningful technical content.
+
+    Args:
+        user_signals: Pre-extracted user content from conversation
+        max_words: Maximum words in generated title
+
+    Returns:
+        Extracted title or None if insufficient content
+    """
+    if not user_signals or not user_signals.strip():
+        return None
+
+    # Conversational filler to strip (case-insensitive, ordered longest-first)
+    CONVERSATIONAL_FILLER = [
+        "i was wondering if you could help me with",
+        "could you assist me with",
+        "can you help me with",
+        "i need help with",
+        "i have a question about",
+        "could you assist with",
+        "i'm having trouble with",
+        "i'm experiencing",
+        "i am experiencing",
+        "i am having",
+        "hello",
+        "greetings",
+        "hey",
+        "hi",
+    ]
+
+    # Clean and tokenize
+    content = user_signals.strip()
+    content_lower = content.lower()
+
+    # Strip filler from beginning (try longest patterns first, repeat until no match)
+    stripped_any = True
+    while stripped_any:
+        stripped_any = False
+        for filler in CONVERSATIONAL_FILLER:
+            if content_lower.startswith(filler):
+                # Remove the filler and any trailing whitespace
+                content = content[len(filler) :].strip()
+                content_lower = content.lower()
+                stripped_any = True
+                break  # Start over with longest patterns first
+
+    # Tokenize the cleaned content
+    words = content.split()
+
+    # Extract meaningful words (up to max_words)
+    meaningful_words = words[:max_words]
+
+    if len(meaningful_words) < 3:
+        return None
+
+    # Join and clean up
+    title = " ".join(meaningful_words)
+    title = title.strip(".,!?;:")
+
+    # Title case (capitalize first letter of each word except common articles)
+    title_words = title.split()
+    lowercase_words = {"a", "an", "the", "in", "on", "at", "to", "for", "of", "with"}
+    title_cased = []
+    for i, word in enumerate(title_words):
+        if i == 0 or word.lower() not in lowercase_words:
+            title_cased.append(word.capitalize())
+        else:
+            title_cased.append(word.lower())
+
+    return " ".join(title_cased)
 
 
 async def _generate_title_with_llm(
@@ -1186,7 +1277,14 @@ async def _generate_title_with_llm(
     user_signals: Optional[str] = None,
     llm_provider=None,
 ) -> tuple[str, str]:
-    """Generate title using LLM with fallback to first few words
+    """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
+
+    Strategy:
+    - Simple cases (< 300 chars): Fast smart extractive (1ms, $0, no API)
+    - Complex cases (>= 300 chars): LLM synthesis (500-1200ms, ~$0.0002, API call)
+
+    Smart extractive strips conversational filler and extracts meaningful terms.
+    LLM path is used for multi-topic or long conversations requiring synthesis.
 
     Args:
         context_text: Conversation context text
@@ -1195,6 +1293,9 @@ async def _generate_title_with_llm(
         hint: Optional hint to guide title generation
         user_signals: Pre-extracted user signals from conversation
         llm_provider: LLM provider from app.state (Composition Root)
+
+    Returns:
+        Tuple of (title, source) where source is "extractive", "llm", or "fallback"
     """
 
     # Helper function to validate title - length/word-count guards, not dictionary rules
@@ -1259,41 +1360,106 @@ async def _generate_title_with_llm(
             fallback = get_fallback_title()
             if not fallback:
                 raise ValueError("Insufficient context for title generation")
-            return fallback
+            return fallback, "extractive"
 
-        # Prepare the prompt with NONE option for deterministic handling
-        hint_text = f"\nHint: {hint}" if hint else ""
-        # Compose a robust prompt that prefers a concise, domain-specific title but
-        # falls back conservatively to an extractive short phrase when the LLM
-        # determines no coherent title can be produced. The NONE token provides a
-        # deterministic escape hatch; the final fallback uses the user's initial
-        # message first-words as a safe title.
+        # HYBRID APPROACH: Use smart extractive for simple cases, LLM for complex ones
+        # Complexity heuristics:
+        # 1. Content length: < 300 chars = simple, single-issue conversation
+        # 2. No user_signals means insufficient extraction (rare edge case)
+
+        use_smart_extractive = False
+        if user_signals and user_signals.strip():
+            content_length = len(user_signals)
+            # Simple conversation: short content that likely describes a single issue
+            if content_length < 300:
+                use_smart_extractive = True
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    f"Title generation: Using smart extractive (content_length={content_length})",
+                    extra={"content_length": content_length, "decision": "extractive"},
+                )
+
+        if use_smart_extractive:
+            # Fast path: Smart extractive title generation (1ms, $0, no API call)
+            extractive_title = _generate_smart_extractive_title(user_signals, max_words)
+            if extractive_title and is_title_valid(extractive_title):
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "Title generation: Smart extractive success",
+                    extra={"extractive_title": extractive_title},
+                )
+                return extractive_title, "extractive"
+            else:
+                # Extractive failed (rare), fall through to LLM
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "Title generation: Smart extractive insufficient, using LLM",
+                    extra={"extractive_attempt": extractive_title},
+                )
+
+        # Slow path: LLM-based title generation (500-1200ms, $0.0001-0.0003, API call)
+        # Used for: complex conversations, long content, multi-topic discussions
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"Title generation: Using LLM (content_length={len(user_signals) if user_signals else 0})",
+            extra={
+                "content_length": len(user_signals) if user_signals else 0,
+                "decision": "llm",
+            },
+        )
+
+        # Use extracted user signals if available, otherwise fall back to full context
+        # User signals are already cleaned, deduplicated, and focused on user content
+        prompt_content = (
+            user_signals if user_signals and user_signals.strip() else context_text
+        )
+
+        # Simple, clear prompt focused on the task
+        hint_text = f" {hint}" if hint else ""
         prompt = (
-            f"Generate ONLY a concise, specific title (<= {max_words} words). "
-            "Return ONLY the title, no quotes or punctuation, Title Case, avoid generic words "
-            "(Issue/Problem/Troubleshooting/Conversation/Discussion/Untitled/New Case). "
-            "Use precise domain terms present in the content. If multiple themes exist, choose the dominant one.\n"
-            f"If the LLM cannot produce a compliant title, return ONLY the token NONE.{hint_text}\n\n"
-            "If the context does not suggest a coherent message, instead return the first few words "
-            "of the user's initial meaningful message as the title (this is a final fallback).\n\n"
-            "Conversation (user messages emphasized):\n"
-            f"{context_text}\n\n"
-            "Title:"
+            f"Generate a concise, descriptive title (maximum {max_words} words) for this technical support conversation.\n\n"
+            f"User's messages:\n{prompt_content}\n\n"
+            f"Requirements:\n"
+            f"- Maximum {max_words} words\n"
+            f"- Use specific technical terms from the conversation\n"
+            f"- Title Case format (e.g., 'PostgreSQL Connection Timeout')\n"
+            f"- Avoid generic words: Issue, Problem, Troubleshooting, Conversation\n"
+            f"- Return ONLY the title, no quotes or explanations{hint_text}\n\n"
+            f"Title:"
         )
 
         # Generate title using LLM with optimized settings
         response = await llm_provider.generate(
             prompt=prompt,
-            max_tokens=24,  # Slightly more tokens for better titles
+            max_tokens=64,  # Increased to avoid truncation (was 24, caused Gemini MAX_TOKENS errors)
             temperature=0.2,  # More deterministic
             top_p=0.9,  # Focused sampling
         )
 
-        if response and response.strip():
+        if response and response.content and response.content.strip():
             # Strip quotes/punctuation; collapse whitespace
             import re
 
-            generated_title = response.strip().strip('"').strip("'").strip()
+            generated_title = response.content.strip().strip('"').strip("'").strip()
+
+            # Check for error placeholder strings from LLM providers
+            error_placeholders = [
+                "[Response truncated due to token limit]",
+                "[Content blocked by safety filters]",
+                "[Response blocked]",
+                "[Error]",
+            ]
+            if any(
+                placeholder.lower() in generated_title.lower()
+                for placeholder in error_placeholders
+            ):
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    "Title generation: LLM returned error placeholder",
+                    extra={"error_placeholder": generated_title},
+                )
+                raise ValueError(f"LLM returned error placeholder: {generated_title}")
+
             generated_title = re.sub(
                 r"\s+", " ", generated_title
             )  # Collapse whitespace
@@ -1729,11 +1895,15 @@ async def submit_case_query(
 
         except asyncio.TimeoutError:
             logger.error(f"Turn processing timed out for case {case_id} after 35s")
-            # Return fallback response
+            # Return 504 Gateway Timeout - upstream service (LLM) took too long
             raise HTTPException(
-                status_code=500,
-                detail="Request timeout - processing is taking longer than expected",
-                headers={"x-correlation-id": correlation_id},
+                status_code=504,  # Gateway Timeout - more accurate than 500
+                detail="Request timeout - processing is taking longer than expected. Please try again with a simpler query or contact support if this persists.",
+                headers={
+                    "x-correlation-id": correlation_id,
+                    "x-error-code": "REQUEST_TIMEOUT",
+                    "Retry-After": "30",  # Suggest retry after 30 seconds
+                },
             )
 
     except NotFoundError as e:
@@ -1756,31 +1926,38 @@ async def submit_case_query(
         # Detect specific error conditions and provide actionable guidance
         if "over capacity" in error_msg.lower() or "503" in error_msg:
             detail = "AI service temporarily unavailable due to high demand. Please wait a moment and try again."
+            status_code = 503
+            error_code = "LLM_OVER_CAPACITY"
+            retry_after = "60"
         elif "rate limit" in error_msg.lower() or "429" in error_msg:
             detail = "Rate limit exceeded. Please wait a minute before sending another message."
+            status_code = 429
+            error_code = "RATE_LIMIT_EXCEEDED"
+            retry_after = "60"
         elif "timeout" in error_msg.lower():
             detail = "Request timed out. Please try again with a shorter message or fewer attachments."
+            status_code = 504
+            error_code = "LLM_TIMEOUT"
+            retry_after = "30"
         elif "authentication" in error_msg.lower() or "401" in error_msg:
             detail = "AI service authentication error. Please contact support."
+            status_code = 503
+            error_code = "LLM_AUTH_ERROR"
+            retry_after = "300"  # 5 minutes - this needs admin intervention
         else:
             # Generic fallback with hint about the error type
             detail = f"Unable to process your message: {error_msg[:200]}"  # Limit message length
+            status_code = 500
+            error_code = "SERVICE_ERROR"
+            retry_after = "10"
 
         raise HTTPException(
-            status_code=(
-                503
-                if ("over capacity" in error_msg.lower() or "503" in error_msg)
-                else 500
-            ),
+            status_code=status_code,
             detail=detail,
             headers={
                 "x-correlation-id": correlation_id,
-                "Retry-After": (
-                    "60"
-                    if "over capacity" in error_msg.lower()
-                    or "rate limit" in error_msg.lower()
-                    else "10"
-                ),
+                "x-error-code": error_code,
+                "Retry-After": retry_after,
             },
         )
     except Exception as e:
@@ -1794,17 +1971,27 @@ async def submit_case_query(
         if "over capacity" in error_str.lower() or "503" in error_str:
             detail = "AI service temporarily unavailable. Please try again in a moment."
             status_code = 503
+            error_code = "LLM_UNAVAILABLE"
+            retry_after = "60"
         elif "connection" in error_str.lower() or "network" in error_str.lower():
             detail = "Network error communicating with AI service. Please try again."
             status_code = 503
+            error_code = "NETWORK_ERROR"
+            retry_after = "30"
         else:
             detail = f"An unexpected error occurred. Error ID: {correlation_id}"
             status_code = 500
+            error_code = "UNEXPECTED_ERROR"
+            retry_after = "10"
 
         raise HTTPException(
             status_code=status_code,
             detail=detail,
-            headers={"x-correlation-id": correlation_id},
+            headers={
+                "x-correlation-id": correlation_id,
+                "x-error-code": error_code,
+                "Retry-After": retry_after,
+            },
         )
 
 

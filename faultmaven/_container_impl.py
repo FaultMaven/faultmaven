@@ -752,23 +752,27 @@ class DIContainer(BaseDIContainer):
                     "LLM provider requested but container not initialized - this should not happen after startup"
                 )
 
-        # Ensure we always return a valid implementation, even if initialization failed
+        # LLM provider must be initialized - fail hard if not available
         llm_provider = getattr(self, "llm_provider", None)
         if llm_provider is None:
-            # Create proper fallback implementation instead of MagicMock
-            from faultmaven.models.interfaces import ILLMProvider
-
+            # CRITICAL: LLM provider is required for core functionality
+            # This should NEVER happen in production - it's a configuration error
             logger = logging.getLogger(__name__)
-            logger.error(
-                "LLM provider not initialized - creating minimal fallback implementation"
+            logger.critical(
+                "FATAL: LLM provider not initialized. "
+                "This is a critical configuration error that prevents core functionality. "
+                "Application cannot operate without a working LLM provider."
             )
 
-            class MinimalLLMProvider(ILLMProvider):
-                async def generate(self, prompt: str, **kwargs) -> str:
-                    return "I apologize, but the AI service is temporarily unavailable. Please try again in a few moments."
-
-            self.llm_provider = MinimalLLMProvider()
-            return self.llm_provider
+            # Fail hard - raise exception instead of silently degrading
+            raise RuntimeError(
+                "LLM provider not initialized. "
+                "This is a critical configuration error. "
+                "Please check: (1) API keys are set in environment, "
+                "(2) Network connectivity to LLM provider, "
+                "(3) LLM provider settings are correct. "
+                "Application cannot start without a working LLM provider."
+            )
         return llm_provider
 
     def get_sanitizer(self):
