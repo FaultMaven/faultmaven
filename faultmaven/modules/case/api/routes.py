@@ -1212,6 +1212,83 @@ def _extract_user_signals_from_context(context_text: str) -> str:
     return ""
 
 
+def _generate_smart_extractive_title(
+    user_signals: str, max_words: int = 8
+) -> Optional[str]:
+    """Generate title using smart extractive logic (no LLM).
+
+    Strips conversational filler and extracts meaningful technical content.
+
+    Args:
+        user_signals: Pre-extracted user content from conversation
+        max_words: Maximum words in generated title
+
+    Returns:
+        Extracted title or None if insufficient content
+    """
+    if not user_signals or not user_signals.strip():
+        return None
+
+    # Conversational filler to strip (case-insensitive, ordered longest-first)
+    CONVERSATIONAL_FILLER = [
+        "i was wondering if you could help me with",
+        "could you assist me with",
+        "can you help me with",
+        "i need help with",
+        "i have a question about",
+        "could you assist with",
+        "i'm having trouble with",
+        "i'm experiencing",
+        "i am experiencing",
+        "i am having",
+        "hello",
+        "greetings",
+        "hey",
+        "hi",
+    ]
+
+    # Clean and tokenize
+    content = user_signals.strip()
+    content_lower = content.lower()
+
+    # Strip filler from beginning (try longest patterns first, repeat until no match)
+    stripped_any = True
+    while stripped_any:
+        stripped_any = False
+        for filler in CONVERSATIONAL_FILLER:
+            if content_lower.startswith(filler):
+                # Remove the filler and any trailing whitespace
+                content = content[len(filler) :].strip()
+                content_lower = content.lower()
+                stripped_any = True
+                break  # Start over with longest patterns first
+
+    # Tokenize the cleaned content
+    words = content.split()
+
+    # Extract meaningful words (up to max_words)
+    meaningful_words = words[:max_words]
+
+    if len(meaningful_words) < 3:
+        return None
+
+    # Join and clean up
+    title = " ".join(meaningful_words)
+    title = title.strip(".,!?;:")
+
+    # Title case (capitalize first letter of each word except common articles)
+    title_words = title.split()
+    lowercase_words = {"a", "an", "the", "in", "on", "at", "to", "for", "of", "with"}
+    title_cased = []
+    for i, word in enumerate(title_words):
+        if i == 0 or word.lower() not in lowercase_words:
+            title_cased.append(word.capitalize())
+        else:
+            title_cased.append(word.lower())
+
+    return " ".join(title_cased)
+
+
 async def _generate_title_with_llm(
     context_text: str,
     case,
@@ -1220,7 +1297,14 @@ async def _generate_title_with_llm(
     user_signals: Optional[str] = None,
     llm_provider=None,
 ) -> tuple[str, str]:
-    """Generate title using LLM with fallback to first few words
+    """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
+
+    Strategy:
+    - Simple cases (< 300 chars): Fast smart extractive (1ms, $0, no API)
+    - Complex cases (>= 300 chars): LLM synthesis (500-1200ms, ~$0.0002, API call)
+
+    Smart extractive strips conversational filler and extracts meaningful terms.
+    LLM path is used for multi-topic or long conversations requiring synthesis.
 
     Args:
         context_text: Conversation context text
@@ -1229,6 +1313,9 @@ async def _generate_title_with_llm(
         hint: Optional hint to guide title generation
         user_signals: Pre-extracted user signals from conversation
         llm_provider: LLM provider from app.state (Composition Root)
+
+    Returns:
+        Tuple of (title, source) where source is "extractive", "llm", or "fallback"
     """
 
     # Helper function to validate title - length/word-count guards, not dictionary rules
@@ -1293,7 +1380,53 @@ async def _generate_title_with_llm(
             fallback = get_fallback_title()
             if not fallback:
                 raise ValueError("Insufficient context for title generation")
-            return fallback
+            return fallback, "extractive"
+
+        # HYBRID APPROACH: Use smart extractive for simple cases, LLM for complex ones
+        # Complexity heuristics:
+        # 1. Content length: < 300 chars = simple, single-issue conversation
+        # 2. No user_signals means insufficient extraction (rare edge case)
+
+        use_smart_extractive = False
+        if user_signals and user_signals.strip():
+            content_length = len(user_signals)
+            # Simple conversation: short content that likely describes a single issue
+            if content_length < 300:
+                use_smart_extractive = True
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    f"Title generation: Using smart extractive (content_length={content_length})",
+                    extra={"content_length": content_length, "decision": "extractive"},
+                )
+
+        if use_smart_extractive:
+            # Fast path: Smart extractive title generation (1ms, $0, no API call)
+            extractive_title = _generate_smart_extractive_title(user_signals, max_words)
+            if extractive_title and is_title_valid(extractive_title):
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "Title generation: Smart extractive success",
+                    extra={"extractive_title": extractive_title},
+                )
+                return extractive_title, "extractive"
+            else:
+                # Extractive failed (rare), fall through to LLM
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "Title generation: Smart extractive insufficient, using LLM",
+                    extra={"extractive_attempt": extractive_title},
+                )
+
+        # Slow path: LLM-based title generation (500-1200ms, $0.0001-0.0003, API call)
+        # Used for: complex conversations, long content, multi-topic discussions
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"Title generation: Using LLM (content_length={len(user_signals) if user_signals else 0})",
+            extra={
+                "content_length": len(user_signals) if user_signals else 0,
+                "decision": "llm",
+            },
+        )
 
         # Use extracted user signals if available, otherwise fall back to full context
         # User signals are already cleaned, deduplicated, and focused on user content
