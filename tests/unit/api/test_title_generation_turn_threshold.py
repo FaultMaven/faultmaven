@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from faultmaven.modules.case.api.routes import generate_case_title
 from faultmaven.modules.case.contracts import CaseDTO
 from faultmaven.modules.auth.contracts import UserDTO
+from faultmaven.infrastructure.llm.providers.base import LLMResponse
 
 
 class TestTurnThreshold:
@@ -17,7 +18,14 @@ class TestTurnThreshold:
         request = MagicMock()
         request.app.state.llm_provider = AsyncMock()
         request.app.state.llm_provider.generate = AsyncMock(
-            return_value="Database Connection Issues"
+            return_value=LLMResponse(
+                content="Database Connection Issues",
+                confidence=0.95,
+                provider="test",
+                model="test-model",
+                tokens_used=10,
+                response_time_ms=100,
+            )
         )
         return request
 
@@ -151,8 +159,13 @@ class TestTurnThreshold:
                 case_service=mock_case_service,
                 current_user=mock_user,
             )
-            # If it succeeds, great!
-            assert result.title == "Database Connection Issues"
+            # If it succeeds, verify threshold passed (title should be updated)
+            # Actual title content depends on hybrid logic (extractive vs LLM)
+            # so we only verify that SOME non-generic title was set
+            assert (
+                result.title != "Case-240101-1"
+            ), "Title should be updated from generic"
+            assert len(result.title) > 0, "Title should not be empty"
         except HTTPException as e:
             # If it fails, make sure it's NOT due to turn threshold
             assert "INSUFFICIENT_TURNS" not in str(e.detail)
@@ -207,8 +220,13 @@ class TestTurnThreshold:
                 case_service=mock_case_service,
                 current_user=mock_user,
             )
-            # If it succeeds, great!
-            assert result.title == "Database Connection Issues"
+            # If it succeeds, verify threshold passed (title should be updated)
+            # Actual title content depends on hybrid logic (extractive vs LLM)
+            # so we only verify that SOME non-generic title was set
+            assert (
+                result.title != "Case-240101-1"
+            ), "Title should be updated from generic"
+            assert len(result.title) > 0, "Title should not be empty"
         except HTTPException as e:
             # If it fails, make sure it's NOT due to turn threshold
             assert "INSUFFICIENT_TURNS" not in str(e.detail)
