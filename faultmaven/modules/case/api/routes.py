@@ -1226,6 +1226,7 @@ def _generate_smart_extractive_title(
         return None
 
     # Conversational filler to strip (case-insensitive, ordered longest-first)
+    # Only strip COMPLETE conversational phrases, not single words that might be part of content
     CONVERSATIONAL_FILLER = [
         "i was wondering if you could help me with",
         "could you assist me with",
@@ -1237,10 +1238,9 @@ def _generate_smart_extractive_title(
         "i'm experiencing",
         "i am experiencing",
         "i am having",
-        "hello",
-        "greetings",
-        "hey",
-        "hi",
+        "hello,",  # Only strip if followed by comma
+        "hi,",  # Only strip if followed by comma
+        "hey,",  # Only strip if followed by comma
     ]
 
     # Clean and tokenize
@@ -1253,8 +1253,8 @@ def _generate_smart_extractive_title(
         stripped_any = False
         for filler in CONVERSATIONAL_FILLER:
             if content_lower.startswith(filler):
-                # Remove the filler and any trailing whitespace
-                content = content[len(filler) :].strip()
+                # Remove the filler and any trailing whitespace/punctuation
+                content = content[len(filler) :].strip().strip(",").strip()
                 content_lower = content.lower()
                 stripped_any = True
                 break  # Start over with longest patterns first
@@ -1271,6 +1271,48 @@ def _generate_smart_extractive_title(
     # Join and clean up
     title = " ".join(meaningful_words)
     title = title.strip(".,!?;:")
+
+    # Reject titles that end with incomplete phrases
+    # These indicate we cut off mid-sentence and should use LLM instead
+    INCOMPLETE_ENDINGS = {
+        "have",
+        "has",
+        "is",
+        "are",
+        "was",
+        "were",
+        "been",
+        "will",
+        "would",
+        "should",
+        "could",
+        "can",
+        "may",
+        "might",
+        "the",
+        "a",
+        "an",
+        "my",
+        "our",
+        "their",
+        "this",
+        "that",
+        "with",
+        "about",
+        "from",
+        "into",
+        "to",
+        "for",
+        "of",
+        "and",
+        "or",
+        "but",
+    }
+
+    last_word = meaningful_words[-1].lower().strip(".,!?;:")
+    if last_word in INCOMPLETE_ENDINGS:
+        # Title ends with incomplete phrase, reject it
+        return None
 
     # Title case (capitalize first letter of each word except common articles)
     title_words = title.split()
