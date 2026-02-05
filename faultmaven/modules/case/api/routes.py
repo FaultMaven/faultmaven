@@ -1311,7 +1311,6 @@ async def generate_case_title(
                     headers={"x-correlation-id": correlation_id},
                 )
 
-            logger = logging.getLogger(__name__)
             logger.info(
                 f"Title persistence verified for case {case_id}",
                 extra={"case_id": case_id, "title": generated_title},
@@ -1321,7 +1320,6 @@ async def generate_case_title(
             raise
         except ServiceException as e:
             # Handle service-level exceptions with proper error detail
-            logger = logging.getLogger(__name__)
             logger.error(
                 f"Service error persisting generated title: {e}",
                 extra={"case_id": case_id, "correlation_id": correlation_id},
@@ -1333,7 +1331,6 @@ async def generate_case_title(
             )
         except Exception as e:
             # Handle unexpected exceptions
-            logger = logging.getLogger(__name__)
             logger.error(
                 f"Unexpected error persisting generated title: {e}",
                 extra={"case_id": case_id, "correlation_id": correlation_id},
@@ -1354,7 +1351,6 @@ async def generate_case_title(
         )
 
         # Optional telemetry logging
-        logger = logging.getLogger(__name__)
         logger.info(
             f"Title generation completed successfully",
             extra={
@@ -1373,7 +1369,6 @@ async def generate_case_title(
             he.headers["x-correlation-id"] = correlation_id
         raise
     except Exception as e:
-        logger = logging.getLogger(__name__)
         logger.error(
             f"Unexpected error in generate_case_title: {e}",
             extra={"correlation_id": correlation_id},
@@ -1669,7 +1664,6 @@ async def _generate_title_with_llm(
                 placeholder.lower() in generated_title.lower()
                 for placeholder in error_placeholders
             ):
-                logger = logging.getLogger(__name__)
                 logger.warning(
                     "Title generation: LLM returned error placeholder",
                     extra={"error_placeholder": generated_title},
@@ -1696,7 +1690,6 @@ async def _generate_title_with_llm(
 
             # Check if LLM returned NONE token (deterministic escape hatch)
             if generated_title.upper() == "NONE":
-                logger = logging.getLogger(__name__)
                 logger.info("Title generation: LLM returned NONE token")
                 raise ValueError("LLM determined no compliant title possible")
 
@@ -1708,7 +1701,6 @@ async def _generate_title_with_llm(
 
             # Run lightweight validation guards
             if not is_title_valid(generated_title):
-                logger = logging.getLogger(__name__)
                 logger.info(
                     "Title generation: LLM output failed validation guards",
                     extra={"invalid_title": generated_title},
@@ -1736,7 +1728,6 @@ async def _generate_title_with_llm(
                     "Generated title failed validation guards and fallback insufficient"
                 )
 
-            logger = logging.getLogger(__name__)
             logger.info(
                 "Title generation: LLM success",
                 extra={"generated_title": generated_title},

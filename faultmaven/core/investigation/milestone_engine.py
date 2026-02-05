@@ -792,23 +792,6 @@ class MilestoneEngine:
                 )
                 # If MITIGATION_FIRST selected and confirmed, agent prompts will adapt automatically next turn
 
-            # Bug #4: Evidence-Milestone Linking
-            # Ideally, we link the evidence that caused this milestone completion.
-            # Ideally, LLM tells us via internal_reasoning or evidence.advances_milestones.
-            # Since we don't have explicit link in schema yet, we infer it from evidence added this turn?
-            # Or we leave it empty for now as "inferred from context".
-            # Implementation: If we just completed a milestone, and we added evidence, tag that evidence?
-            if metadata["milestones_completed"] and metadata["evidence_added"]:
-                # Backfill advances_milestones for evidence added this turn
-                # This is a heuristic: "If I added evidence and completed a milestone, that evidence likely advanced it"
-                for ev_id in metadata["evidence_added"]:
-                    # Find evidence object
-                    ev = next(
-                        (e for e in case.evidence if e.evidence_id == ev_id), None
-                    )
-                    if ev:
-                        ev.advances_milestones.extend(metadata["milestones_completed"])
-
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
             if m.root_cause_method:
@@ -844,7 +827,12 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=EvidenceForm.TEXT,  # Default
+                    form=EvidenceForm.USER_INPUT,  # Default
+                    # Mandatory fields
+                    primary_purpose="Investigation context",
+                    preprocessed_content=ev_item.summary,  # Use summary as content for text evidence
+                    content_size_bytes=len(ev_item.summary),
+                    preprocessing_method="none",
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
@@ -924,6 +912,13 @@ class MilestoneEngine:
                 )
                 case.solutions.append(sol)
                 metadata["solutions_proposed"].append(sol.solution_id)
+
+        # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
+        if metadata["milestones_completed"] and metadata["evidence_added"]:
+            for ev_id in metadata["evidence_added"]:
+                ev = next((e for e in case.evidence if e.evidence_id == ev_id), None)
+                if ev:
+                    ev.advances_milestones.extend(metadata["milestones_completed"])
 
         # Bug #8: Robust Turn Outcome Determination
         metadata["outcome"] = self._determine_turn_outcome(
@@ -1203,6 +1198,7 @@ class MilestoneEngine:
             collected_at=datetime.now(UTC),
             collected_by=case.user_id,
             collected_at_turn=turn_number,
+            primary_purpose="File Analysis",  # Mandatory
         )
 
         return evidence
