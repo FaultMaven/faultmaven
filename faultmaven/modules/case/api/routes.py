@@ -1313,6 +1313,7 @@ def _generate_smart_extractive_title(
     # Reject titles that end with incomplete phrases
     # These indicate we cut off mid-sentence and should use LLM instead
     INCOMPLETE_ENDINGS = {
+        # Auxiliary verbs
         "have",
         "has",
         "is",
@@ -1320,6 +1321,7 @@ def _generate_smart_extractive_title(
         "was",
         "were",
         "been",
+        # Modal verbs
         "will",
         "would",
         "should",
@@ -1327,14 +1329,32 @@ def _generate_smart_extractive_title(
         "can",
         "may",
         "might",
+        # Articles
         "the",
         "a",
         "an",
+        # Possessive adjectives
         "my",
         "our",
         "their",
+        "your",
+        "his",
+        "her",
+        "its",
+        # Demonstratives
         "this",
         "that",
+        "these",
+        "those",
+        # Personal pronouns (subject)
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        # Prepositions
         "with",
         "about",
         "from",
@@ -1342,9 +1362,18 @@ def _generate_smart_extractive_title(
         "to",
         "for",
         "of",
+        "in",
+        "on",
+        "at",
+        # Conjunctions
         "and",
         "or",
         "but",
+        "by",
+        "so",
+        "if",
+        "when",
+        "while",
     }
 
     last_word = meaningful_words[-1].lower().strip(".,!?;:")
@@ -1409,6 +1438,7 @@ async def _generate_title_with_llm(
         # Check for incomplete endings (titles ending mid-sentence)
         # These indicate truncated or low-quality titles
         INCOMPLETE_ENDINGS = {
+            # Auxiliary verbs
             "have",
             "has",
             "is",
@@ -1416,6 +1446,7 @@ async def _generate_title_with_llm(
             "was",
             "were",
             "been",
+            # Modal verbs
             "will",
             "would",
             "should",
@@ -1423,14 +1454,32 @@ async def _generate_title_with_llm(
             "can",
             "may",
             "might",
+            # Articles
             "the",
             "a",
             "an",
+            # Possessive adjectives
             "my",
             "our",
             "their",
+            "your",
+            "his",
+            "her",
+            "its",
+            # Demonstratives
             "this",
             "that",
+            "these",
+            "those",
+            # Personal pronouns (subject)
+            "i",
+            "you",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            # Prepositions
             "with",
             "about",
             "from",
@@ -1438,10 +1487,18 @@ async def _generate_title_with_llm(
             "to",
             "for",
             "of",
+            "in",
+            "on",
+            "at",
+            # Conjunctions
             "and",
             "or",
             "but",
             "by",
+            "so",
+            "if",
+            "when",
+            "while",
         }
 
         # Check if last word is incomplete
