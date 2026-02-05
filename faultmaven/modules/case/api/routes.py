@@ -16,6 +16,7 @@ Key Endpoints:
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -220,6 +221,259 @@ BANNED_GENERIC_WORDS = [
     "support request",
     "technical issue",
 ]
+
+# =============================================================================
+# Title Generation Constants
+# =============================================================================
+
+# Incomplete ending detection - words that indicate mid-sentence title cuts
+# These words should NEVER be the last word in a title as they indicate truncation
+INCOMPLETE_ENDINGS = {
+    # Auxiliary verbs
+    "have",
+    "has",
+    "is",
+    "are",
+    "was",
+    "were",
+    "been",
+    # Modal verbs
+    "will",
+    "would",
+    "should",
+    "could",
+    "can",
+    "may",
+    "might",
+    # Articles
+    "the",
+    "a",
+    "an",
+    # Possessive adjectives
+    "my",
+    "our",
+    "their",
+    "your",
+    "his",
+    "her",
+    "its",
+    # Demonstratives
+    "this",
+    "that",
+    "these",
+    "those",
+    # Personal pronouns (subject)
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    # Prepositions
+    "with",
+    "about",
+    "from",
+    "into",
+    "to",
+    "for",
+    "of",
+    "in",
+    "on",
+    "at",
+    # Conjunctions
+    "and",
+    "or",
+    "but",
+    "by",
+    "so",
+    "if",
+    "when",
+    "while",
+}
+
+# Conversational filler patterns (ordered longest-first for greedy matching)
+# Only strip COMPLETE conversational phrases, not single words that might be part of content
+CONVERSATIONAL_FILLER = [
+    "i was wondering if you could help me with",
+    "could you assist me with",
+    "can you help me with",
+    "i need help with",
+    "i have a question about",
+    "could you assist with",
+    "i'm having trouble with",
+    "i'm experiencing",
+    "i am experiencing",
+    "i am having",
+    "i noticed",  # "I noticed our API..."
+    "by the way,",  # "By the way, can..."
+    "hello,",  # Only strip if followed by comma
+    "hi,",  # Only strip if followed by comma
+    "hey,",  # Only strip if followed by comma
+]
+
+# Title casing exceptions - keep these words lowercase in the middle of titles
+TITLE_CASE_LOWERCASE_WORDS = {
+    "a",
+    "an",
+    "the",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+}
+
+# =============================================================================
+# Title Generation Thresholds and Settings
+# =============================================================================
+
+# Turn threshold - minimum user conversation turns required for title generation
+MIN_TURNS_FOR_TITLE_GENERATION = 5  # Require meaningful conversation depth
+
+# Content length thresholds
+MIN_CONTENT_LENGTH_FOR_TITLE = 200  # Minimum chars of user content after extraction
+EXTRACTIVE_MAX_CONTENT_LENGTH = (
+    300  # Use fast extractive for simple, short conversations
+)
+
+# Title validation constraints
+MIN_TITLE_WORDS = 2  # Minimum words in valid title ("API Error" is valid)
+MIN_TITLE_LENGTH = 5  # Minimum characters in valid title
+MAX_TITLE_WORDS_DEFAULT = 8  # Default maximum words in generated title
+MIN_EXTRACTIVE_WORDS = (
+    3  # Extractive path requires more words than validation (more conservative)
+)
+
+# LLM generation settings (optimized for title quality)
+LLM_TITLE_MAX_TOKENS = 64  # Prevent truncation (increased from 24 after Gemini errors)
+LLM_TITLE_TEMPERATURE = 0.2  # More deterministic generation
+LLM_TITLE_TOP_P = 0.9  # Focused sampling
+
+# Context extraction settings
+MAX_USER_MESSAGES_FOR_CONTEXT = 12  # Cap message count to reduce noise
+MIN_MESSAGE_WORD_COUNT = 3  # Filter out very short messages like "ok", "thanks"
+CONTEXT_MESSAGE_LIMIT = 10  # Number of recent messages to fetch for context
+
+# =============================================================================
+# Helper Functions for Title Generation
+# =============================================================================
+
+
+def is_title_valid(title: str, check_banned_words: bool = True) -> bool:
+    """Validate generated title meets quality standards.
+
+    Args:
+        title: Generated title string
+        check_banned_words: Whether to check against banned generic words
+
+    Returns:
+        True if title passes all validation gates
+    """
+    if not title:
+        return False
+
+    words = title.split()
+    # Length/word-count guards (language-agnostic)
+    # Reduced from 3 to 2 words - many valid titles are 2 words:
+    # "Database Timeout", "API Slowness", "Memory Leak", "Redis Error"
+    if len(words) < MIN_TITLE_WORDS or len(title.strip()) < MIN_TITLE_LENGTH:
+        return False
+
+    # Check for incomplete endings (titles ending mid-sentence)
+    # These indicate truncated or low-quality titles
+    last_word = words[-1].lower().strip(".,!?;:")
+    if last_word in INCOMPLETE_ENDINGS:
+        return False
+
+    # Optional banned words check (English-centric, configurable)
+    if check_banned_words:
+        title_lower = title.lower().strip()
+        return not (
+            title_lower in BANNED_GENERIC_WORDS
+            or any(generic in title_lower for generic in BANNED_GENERIC_WORDS)
+        )
+
+    return True
+
+
+def apply_title_case(title: str) -> str:
+    """Apply title case formatting to generated title.
+
+    Capitalizes first letter of each word except common articles/prepositions
+    in the middle of the title.
+
+    Args:
+        title: Raw title string
+
+    Returns:
+        Title-cased string (e.g., "Database Connection Timeout")
+    """
+    words = title.split()
+    title_cased = []
+    for i, word in enumerate(words):
+        # Always capitalize first word, otherwise check exceptions
+        if i == 0 or word.lower() not in TITLE_CASE_LOWERCASE_WORDS:
+            title_cased.append(word.capitalize())
+        else:
+            title_cased.append(word.lower())
+    return " ".join(title_cased)
+
+
+def get_extractive_fallback_title(
+    user_signals: Optional[str],
+    context_text: str,
+    case,
+    max_words: int = MAX_TITLE_WORDS_DEFAULT,
+) -> Optional[str]:
+    """Generate fallback title using extractive logic.
+
+    Tries multiple sources in order of reliability:
+    1. Pre-extracted user signals
+    2. Re-extract from context
+    3. Case description
+
+    Args:
+        user_signals: Pre-extracted user content
+        context_text: Full conversation context
+        case: Case object
+        max_words: Maximum words in title
+
+    Returns:
+        Extracted title or None if insufficient content
+    """
+    # First try the pre-extracted user signals (most reliable)
+    if user_signals and user_signals.strip():
+        words = user_signals.strip().split()[:max_words]
+        candidate = " ".join(words)
+        if is_title_valid(candidate, check_banned_words=False):
+            return apply_title_case(candidate)
+
+    # Fallback to re-extracting from context if user_signals not provided
+    extracted_signals = _extract_user_signals_from_context(context_text)
+    if extracted_signals:
+        words = extracted_signals.strip().split()[:max_words]
+        candidate = " ".join(words)
+        if is_title_valid(candidate, check_banned_words=False):
+            return apply_title_case(candidate)
+
+    # Final fallback: try case description if available and meaningful
+    if (
+        hasattr(case, "description")
+        and case.description
+        and case.description.strip()
+        and case.description != "No description"
+    ):
+        words = case.description.strip().split()[:max_words]
+        candidate = " ".join(words)
+        if is_title_valid(candidate, check_banned_words=False):
+            return apply_title_case(candidate)
+
+    # Skip case title fallback entirely - it's likely to be generic
+    # If no meaningful content found, this should trigger 422 instead
+    return None
 
 
 async def _di_get_case_service_dependency(request: Request) -> Optional[ICaseService]:
@@ -862,11 +1116,11 @@ async def generate_case_title(
         )
 
         # Parse request body parameters (optional) - force can be in body or query
-        max_words = 8  # default
+        max_words = MAX_TITLE_WORDS_DEFAULT  # default
         hint = None
         body_force = False
         if request_body:
-            max_words = request_body.get("max_words", 8)
+            max_words = request_body.get("max_words", MAX_TITLE_WORDS_DEFAULT)
             hint = request_body.get("hint")
             body_force = request_body.get("force", False)
 
@@ -875,7 +1129,7 @@ async def generate_case_title(
 
         # Validate max_words (3–12, default 8)
         if not isinstance(max_words, int) or max_words < 3 or max_words > 12:
-            max_words = 8
+            max_words = MAX_TITLE_WORDS_DEFAULT
 
         logger.info(
             f"🔍 Effective parameters: max_words={max_words}, hint='{hint}', force={effective_force}",
@@ -908,13 +1162,6 @@ async def generate_case_title(
         #
         # Previous: Blocked regeneration if title was "meaningful"
         # Now: Always regenerate (respects turn threshold + duplicate protection)
-
-        # Minimum turn threshold for LLM-based title generation
-        # Rationale: Require substantive conversation to generate meaningful titles
-        # - Avoids wasting LLM API calls on insufficient conversation
-        # - Turn count is clearer UX than character count ("need 5 turns" vs "need 200 chars")
-        # - 5 turns = meaningful back-and-forth discussion
-        MIN_TURNS_FOR_TITLE_GENERATION = 5
 
         # Get messages to check turn count
         # Use repository directly (same as get_case_conversation_context does)
@@ -974,7 +1221,7 @@ async def generate_case_title(
         context_text = ""
         try:
             context_text = await case_service.get_case_conversation_context(
-                case_id, limit=10
+                case_id, limit=CONTEXT_MESSAGE_LIMIT
             )
         except Exception as e:
             logger.warning(
@@ -1146,8 +1393,6 @@ def _sanitize_title_content(content: str) -> str:
         return ""
 
     # Basic content hygiene - remove common PII patterns
-    import re
-
     # Remove email addresses
     content = re.sub(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[email]", content
@@ -1222,16 +1467,17 @@ def _extract_user_signals_from_context(context_text: str) -> str:
         # Validate and dedupe user content
         if (
             user_content
-            and len(user_content.split()) >= 3  # At least 3 meaningful words
+            and len(user_content.split())
+            >= MIN_MESSAGE_WORD_COUNT  # Filter short messages
             and user_content.lower() not in seen_messages
         ):  # Dedupe
 
             seen_messages.add(user_content.lower())
             user_messages.append(user_content)
 
-            # Cap to last 8-12 meaningful user messages to reduce noise
-            if len(user_messages) > 12:
-                user_messages = user_messages[-12:]
+            # Cap to last N meaningful user messages to reduce noise
+            if len(user_messages) > MAX_USER_MESSAGES_FOR_CONTEXT:
+                user_messages = user_messages[-MAX_USER_MESSAGES_FOR_CONTEXT:]
 
     # Return ALL user messages concatenated for accurate length measurement
     # This ensures the threshold check considers total conversation depth,
@@ -1245,7 +1491,7 @@ def _extract_user_signals_from_context(context_text: str) -> str:
 
 
 def _generate_smart_extractive_title(
-    user_signals: str, max_words: int = 8
+    user_signals: str, max_words: int = MAX_TITLE_WORDS_DEFAULT
 ) -> Optional[str]:
     """Generate title using smart extractive logic (no LLM).
 
@@ -1260,26 +1506,6 @@ def _generate_smart_extractive_title(
     """
     if not user_signals or not user_signals.strip():
         return None
-
-    # Conversational filler to strip (case-insensitive, ordered longest-first)
-    # Only strip COMPLETE conversational phrases, not single words that might be part of content
-    CONVERSATIONAL_FILLER = [
-        "i was wondering if you could help me with",
-        "could you assist me with",
-        "can you help me with",
-        "i need help with",
-        "i have a question about",
-        "could you assist with",
-        "i'm having trouble with",
-        "i'm experiencing",
-        "i am experiencing",
-        "i am having",
-        "i noticed",  # "I noticed our API..."
-        "by the way,",  # "By the way, can..."
-        "hello,",  # Only strip if followed by comma
-        "hi,",  # Only strip if followed by comma
-        "hey,",  # Only strip if followed by comma
-    ]
 
     # Clean and tokenize
     content = user_signals.strip()
@@ -1303,95 +1529,23 @@ def _generate_smart_extractive_title(
     # Extract meaningful words (up to max_words)
     meaningful_words = words[:max_words]
 
-    if len(meaningful_words) < 3:
+    # Extractive path requires more words (3) than general validation (2)
+    # This is intentional - extractive titles from longer content are more reliable
+    if len(meaningful_words) < MIN_EXTRACTIVE_WORDS:
         return None
 
     # Join and clean up
     title = " ".join(meaningful_words)
     title = title.strip(".,!?;:")
 
-    # Reject titles that end with incomplete phrases
-    # These indicate we cut off mid-sentence and should use LLM instead
-    INCOMPLETE_ENDINGS = {
-        # Auxiliary verbs
-        "have",
-        "has",
-        "is",
-        "are",
-        "was",
-        "were",
-        "been",
-        # Modal verbs
-        "will",
-        "would",
-        "should",
-        "could",
-        "can",
-        "may",
-        "might",
-        # Articles
-        "the",
-        "a",
-        "an",
-        # Possessive adjectives
-        "my",
-        "our",
-        "their",
-        "your",
-        "his",
-        "her",
-        "its",
-        # Demonstratives
-        "this",
-        "that",
-        "these",
-        "those",
-        # Personal pronouns (subject)
-        "i",
-        "you",
-        "he",
-        "she",
-        "it",
-        "we",
-        "they",
-        # Prepositions
-        "with",
-        "about",
-        "from",
-        "into",
-        "to",
-        "for",
-        "of",
-        "in",
-        "on",
-        "at",
-        # Conjunctions
-        "and",
-        "or",
-        "but",
-        "by",
-        "so",
-        "if",
-        "when",
-        "while",
-    }
-
+    # Check for incomplete endings - reject if title ends mid-sentence
     last_word = meaningful_words[-1].lower().strip(".,!?;:")
     if last_word in INCOMPLETE_ENDINGS:
-        # Title ends with incomplete phrase, reject it
+        # Title ends with incomplete phrase, reject it and fall through to LLM
         return None
 
-    # Title case (capitalize first letter of each word except common articles)
-    title_words = title.split()
-    lowercase_words = {"a", "an", "the", "in", "on", "at", "to", "for", "of", "with"}
-    title_cased = []
-    for i, word in enumerate(title_words):
-        if i == 0 or word.lower() not in lowercase_words:
-            title_cased.append(word.capitalize())
-        else:
-            title_cased.append(word.lower())
-
-    return " ".join(title_cased)
+    # Apply title casing and return
+    return apply_title_case(title)
 
 
 async def _generate_title_with_llm(
@@ -1422,156 +1576,27 @@ async def _generate_title_with_llm(
     Returns:
         Tuple of (title, source) where source is "extractive", "llm", or "fallback"
     """
-
-    # Helper function to validate title - length/word-count guards, not dictionary rules
-    def is_title_valid(title, check_banned_words=True):
-        if not title:
-            return False
-
-        words = title.split()
-        # Length/word-count guards (language-agnostic)
-        # Reduced from 3 to 2 words - many valid titles are 2 words:
-        # "Database Timeout", "API Slowness", "Memory Leak", "Redis Error"
-        if len(words) < 2 or len(title.strip()) < 5:
-            return False
-
-        # Check for incomplete endings (titles ending mid-sentence)
-        # These indicate truncated or low-quality titles
-        INCOMPLETE_ENDINGS = {
-            # Auxiliary verbs
-            "have",
-            "has",
-            "is",
-            "are",
-            "was",
-            "were",
-            "been",
-            # Modal verbs
-            "will",
-            "would",
-            "should",
-            "could",
-            "can",
-            "may",
-            "might",
-            # Articles
-            "the",
-            "a",
-            "an",
-            # Possessive adjectives
-            "my",
-            "our",
-            "their",
-            "your",
-            "his",
-            "her",
-            "its",
-            # Demonstratives
-            "this",
-            "that",
-            "these",
-            "those",
-            # Personal pronouns (subject)
-            "i",
-            "you",
-            "he",
-            "she",
-            "it",
-            "we",
-            "they",
-            # Prepositions
-            "with",
-            "about",
-            "from",
-            "into",
-            "to",
-            "for",
-            "of",
-            "in",
-            "on",
-            "at",
-            # Conjunctions
-            "and",
-            "or",
-            "but",
-            "by",
-            "so",
-            "if",
-            "when",
-            "while",
-        }
-
-        # Check if last word is incomplete
-        last_word = words[-1].lower().strip(".,!?;:")
-        if last_word in INCOMPLETE_ENDINGS:
-            return False
-
-        # Optional banned words check (English-centric, configurable)
-        if check_banned_words:
-            title_lower = title.lower().strip()
-            return not (
-                title_lower in BANNED_GENERIC_WORDS
-                or any(generic in title_lower for generic in BANNED_GENERIC_WORDS)
-            )
-
-        return True
-
-    # Deterministic extractive fallback using stronger signal extraction
-    def get_fallback_title():
-        # First try the pre-extracted user signals (most reliable)
-        if user_signals and user_signals.strip():
-            words = user_signals.strip().split()[:max_words]
-            candidate = " ".join(words)
-            if is_title_valid(candidate):
-                return candidate
-
-        # Fallback to re-extracting from context if user_signals not provided
-        extracted_signals = _extract_user_signals_from_context(context_text)
-        if extracted_signals:
-            words = extracted_signals.strip().split()[:max_words]
-            candidate = " ".join(words)
-            if is_title_valid(candidate):
-                return candidate
-
-        # Final fallback: try case description if available and meaningful
-        if (
-            hasattr(case, "description")
-            and case.description
-            and case.description.strip()
-            and case.description != "No description"
-        ):
-            words = case.description.strip().split()[:max_words]
-            candidate = " ".join(words)
-            if is_title_valid(candidate):
-                return candidate
-
-        # Skip case title fallback entirely - it's likely to be generic
-        # if hasattr(case, 'title') and case.title:
-        #     This was allowing "New Chat Conversation" to pass through
-
-        # If no meaningful content found, this should trigger 422 instead
-        return None
-
     try:
         # LLM provider passed from app.state (Composition Root)
         if not llm_provider:
-            fallback = get_fallback_title()
+            fallback = get_extractive_fallback_title(
+                user_signals, context_text, case, max_words
+            )
             if not fallback:
                 raise ValueError("Insufficient context for title generation")
             return fallback, "extractive"
 
         # HYBRID APPROACH: Use smart extractive for simple cases, LLM for complex ones
         # Complexity heuristics:
-        # 1. Content length: < 300 chars = simple, single-issue conversation
+        # 1. Content length: < EXTRACTIVE_MAX_CONTENT_LENGTH chars = simple, single-issue conversation
         # 2. No user_signals means insufficient extraction (rare edge case)
 
         use_smart_extractive = False
         if user_signals and user_signals.strip():
             content_length = len(user_signals)
             # Simple conversation: short content that likely describes a single issue
-            if content_length < 300:
+            if content_length < EXTRACTIVE_MAX_CONTENT_LENGTH:
                 use_smart_extractive = True
-                logger = logging.getLogger(__name__)
                 logger.info(
                     f"Title generation: Using smart extractive (content_length={content_length})",
                     extra={"content_length": content_length, "decision": "extractive"},
@@ -1581,7 +1606,6 @@ async def _generate_title_with_llm(
             # Fast path: Smart extractive title generation (1ms, $0, no API call)
             extractive_title = _generate_smart_extractive_title(user_signals, max_words)
             if extractive_title and is_title_valid(extractive_title):
-                logger = logging.getLogger(__name__)
                 logger.info(
                     "Title generation: Smart extractive success",
                     extra={"extractive_title": extractive_title},
@@ -1589,7 +1613,6 @@ async def _generate_title_with_llm(
                 return extractive_title, "extractive"
             else:
                 # Extractive failed (rare), fall through to LLM
-                logger = logging.getLogger(__name__)
                 logger.info(
                     "Title generation: Smart extractive insufficient, using LLM",
                     extra={"extractive_attempt": extractive_title},
@@ -1597,7 +1620,6 @@ async def _generate_title_with_llm(
 
         # Slow path: LLM-based title generation (500-1200ms, $0.0001-0.0003, API call)
         # Used for: complex conversations, long content, multi-topic discussions
-        logger = logging.getLogger(__name__)
         logger.info(
             f"Title generation: Using LLM (content_length={len(user_signals) if user_signals else 0})",
             extra={
@@ -1629,15 +1651,13 @@ async def _generate_title_with_llm(
         # Generate title using LLM with optimized settings
         response = await llm_provider.generate(
             prompt=prompt,
-            max_tokens=64,  # Increased to avoid truncation (was 24, caused Gemini MAX_TOKENS errors)
-            temperature=0.2,  # More deterministic
-            top_p=0.9,  # Focused sampling
+            max_tokens=LLM_TITLE_MAX_TOKENS,
+            temperature=LLM_TITLE_TEMPERATURE,
+            top_p=LLM_TITLE_TOP_P,
         )
 
         if response and response.content and response.content.strip():
             # Strip quotes/punctuation; collapse whitespace
-            import re
-
             generated_title = response.content.strip().strip('"').strip("'").strip()
 
             # Check for error placeholder strings from LLM providers
@@ -1701,7 +1721,9 @@ async def _generate_title_with_llm(
 
                 use_fallback = get_settings().case.title_generation_use_fallback
                 if use_fallback:
-                    fallback = get_fallback_title()
+                    fallback = get_extractive_fallback_title(
+                        user_signals, context_text, case, max_words
+                    )
                     if fallback and is_title_valid(
                         fallback, check_banned_words=False
                     ):  # Don't block non-English fallbacks
@@ -1723,10 +1745,11 @@ async def _generate_title_with_llm(
             )
             return generated_title, "llm"
         else:
-            fallback = get_fallback_title()
+            fallback = get_extractive_fallback_title(
+                user_signals, context_text, case, max_words
+            )
             if not fallback:
                 raise ValueError("LLM failed and insufficient fallback context")
-            logger = logging.getLogger(__name__)
             logger.info(
                 f"Title generation: LLM empty response, using fallback",
                 extra={"fallback_title": fallback},
@@ -1734,9 +1757,10 @@ async def _generate_title_with_llm(
             return fallback, "fallback"
 
     except Exception as e:
-        logger = logging.getLogger(__name__)
         logger.warning(f"LLM title generation failed, trying fallback: {e}")
-        fallback = get_fallback_title()
+        fallback = get_extractive_fallback_title(
+            user_signals, context_text, case, max_words
+        )
         if not fallback:
             raise ValueError("Both LLM and fallback title generation failed")
         logger.info(
