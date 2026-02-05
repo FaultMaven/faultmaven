@@ -675,18 +675,22 @@ class MilestoneEngine:
             logger.info(
                 f"Problem confirmed during inquiry: {updates.problem_confirmation.problem_type}"
             )
+            # If problem is confirmed but no statement, use preliminary guidance or construct one
+            if (
+                not case.inquiry.proposed_problem_statement
+                and updates.problem_confirmation.preliminary_guidance
+            ):
+                case.inquiry.proposed_problem_statement = (
+                    updates.problem_confirmation.preliminary_guidance
+                )
 
-        # Check for user confirmation (still simple text check? or should LLM signal it?)
-        # Design guide says: "Step C: User confirms... System detects and sets"
-        # Ideally, we want the LLM to signal 'problem_confirmed' in the schema,
-        # but InquiryStateUpdate only has 'problem_confirmation' (Agent's understanding).
+        # Handle explicit user confirmation/corrections logic (Bug #1)
+        # If the LLM has refined the statement based on user corrections, it will come through updates.proposed_problem_statement
+        # If the user explicitly confirmed (e.g. "Yes"), the LLM should have updated problem_confirmation or proposed_problem_statement
 
-        # Wait, the Design says: "User says 'yes' -> System detects".
-        # So we KEEP the text heuristic for confirmation? Or add it to schema?
-        # Schema has `problem_statement_confirmed`? No, InquiryStateUpdate doesn't.
-        # Let's keep the logic: If LLM sees user confirmed, it should PROPOSE the FINAL statement again?
-        # Actually, let's keep the heuristic for "Yes" -> confirm for now as per design 3.4
-        pass
+        # If we have a problem statement but it's not confirmed yet, the Agent should ask.
+        # This is handled by the Prompt (asking for confirmation).
+        # We ensure metadata reflects the state.
 
         # Check for KB Resolution
         if updates.knowledge_resolution:
@@ -772,6 +776,38 @@ class MilestoneEngine:
                     if not getattr(p, field, False):
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
+
+            # Bug #3: Path Selection Trigger
+            # Check if symptom_verified was just completed
+            if (
+                "symptom_verified" in metadata["milestones_completed"]
+                and not case.path_selection
+            ):
+                case.path_selection = determine_investigation_path(
+                    case.problem_verification
+                )
+                logger.info(
+                    f"Path Selection Triggered: {case.path_selection.path} "
+                    f"(reason: {case.path_selection.rationale})"
+                )
+                # If MITIGATION_FIRST selected and confirmed, agent prompts will adapt automatically next turn
+
+            # Bug #4: Evidence-Milestone Linking
+            # Ideally, we link the evidence that caused this milestone completion.
+            # Ideally, LLM tells us via internal_reasoning or evidence.advances_milestones.
+            # Since we don't have explicit link in schema yet, we infer it from evidence added this turn?
+            # Or we leave it empty for now as "inferred from context".
+            # Implementation: If we just completed a milestone, and we added evidence, tag that evidence?
+            if metadata["milestones_completed"] and metadata["evidence_added"]:
+                # Backfill advances_milestones for evidence added this turn
+                # This is a heuristic: "If I added evidence and completed a milestone, that evidence likely advanced it"
+                for ev_id in metadata["evidence_added"]:
+                    # Find evidence object
+                    ev = next(
+                        (e for e in case.evidence if e.evidence_id == ev_id), None
+                    )
+                    if ev:
+                        ev.advances_milestones.extend(metadata["milestones_completed"])
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
@@ -889,11 +925,10 @@ class MilestoneEngine:
                 case.solutions.append(sol)
                 metadata["solutions_proposed"].append(sol.solution_id)
 
-        # Determine Outcome
-        if metadata["milestones_completed"]:
-            metadata["outcome"] = TurnOutcome.MILESTONE_COMPLETED
-        elif updates.outcome:
-            metadata["outcome"] = updates.outcome
+        # Bug #8: Robust Turn Outcome Determination
+        metadata["outcome"] = self._determine_turn_outcome(
+            case, metadata, updates.outcome
+        )
 
     # =========================================================================
     # State Management
@@ -1033,6 +1068,39 @@ class MilestoneEngine:
             )
             return True
         return False
+
+    def _determine_turn_outcome(
+        self, case: Case, metadata: dict[str, Any], reported_outcome: TurnOutcome
+    ) -> TurnOutcome:
+        """
+        Determine turn outcome classification (Bug #8).
+        Checked AFTER milestone detection and evidence processing.
+        """
+        # Terminal transition
+        if case.is_terminal:
+            return (
+                TurnOutcome.CASE_RESOLVED
+                if case.status == CaseStatus.RESOLVED
+                else TurnOutcome.OTHER
+            )
+
+        # Milestone completed
+        if metadata.get("milestones_completed"):
+            return TurnOutcome.MILESTONE_COMPLETED
+
+        # Hypothesis validated
+        if metadata.get("hypotheses_validated"):
+            return TurnOutcome.HYPOTHESIS_TESTED
+
+        # Evidence provided
+        if metadata.get("evidence_added") or metadata.get("files_uploaded"):
+            return TurnOutcome.DATA_PROVIDED
+
+        # Agent requested data (heuristic: outcome reported as DATA_REQUESTED)
+        if reported_outcome == TurnOutcome.DATA_REQUESTED:
+            return TurnOutcome.DATA_REQUESTED
+
+        return TurnOutcome.CONVERSATION
 
     def _enter_degraded_mode(
         self, case: Case, mode_type: str, reason: str | None = None

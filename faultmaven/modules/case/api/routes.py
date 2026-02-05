@@ -1282,7 +1282,6 @@ async def generate_case_title(
                 case_id, {"title": generated_title}, current_user.user_id
             )
             if not success:
-                logger = logging.getLogger(__name__)
                 logger.error(
                     f"Failed to persist generated title for case {case_id}",
                     extra={"case_id": case_id, "generated_title": generated_title},
@@ -1298,7 +1297,6 @@ async def generate_case_title(
                 case_id, current_user.user_id
             )
             if verification_case and verification_case.title != generated_title:
-                logger = logging.getLogger(__name__)
                 logger.error(
                     f"Title persistence verification failed for case {case_id}: expected '{generated_title}', got '{verification_case.title}'",
                     extra={

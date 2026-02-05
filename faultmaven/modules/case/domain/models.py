@@ -377,6 +377,23 @@ class InvestigationProgress(BaseModel):
         """,
     )
 
+    mitigation_verified: bool = Field(
+        default=False,
+        description="Mitigation effectiveness confirmed (problem stopped)",
+    )
+
+    mitigation_effectiveness: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="How well mitigation worked: 1.0 = fully resolved, 0.5 = partially, 0.0 = ineffective",
+    )
+
+    mitigation_solution_id: Optional[str] = Field(
+        default=None,
+        description="Solution ID of applied mitigation (links to case.solutions)",
+    )
+
     # ============================================================
     # Milestone Completion Timestamps
     # ============================================================
