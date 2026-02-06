@@ -897,6 +897,32 @@ URGENCY_DEFINITIONS = {
 - ❌ Keyword-based: "not down" might trigger CRITICAL due to word "down"
 - ✅ Semantic: LLM assesses actual business impact from context
 
+**Urgency Signal Examples** (for LLM detection):
+
+**CRITICAL Signals**:
+- "production down", "complete outage", "no users can access"
+- "data loss", "data corruption", "billing broken"
+- "security breach", "unauthorized access", "breach detected"
+- "100% error rate", "total failure", "nothing works"
+
+**HIGH Signals**:
+- "revenue impact", "customers affected", "checkout failing"
+- "payments broken", "30%+ of requests failing"
+- "SLA breach", "executive visibility", "customer escalation"
+- "major degradation", "significant impact", "business critical"
+
+**MEDIUM Signals**:
+- "intermittent issues", "some users affected", "partial failure"
+- "slow but functional", "degraded experience", "occasional errors"
+- "10-30% failure rate", "performance issues", "latency spike"
+
+**LOW Signals**:
+- "historical investigation", "post-mortem", "retrospective"
+- "optimization opportunity", "nice to have", "not urgent"
+- "minor bug", "cosmetic issue", "edge case"
+
+**Detection Timing**: Urgency signals should be detected in Turn 1 and acknowledged immediately in agent response. Don't wait for formal path selection to recognize urgency.
+
 **Early Path Hint** (during INQUIRY):
 If CRITICAL/HIGH + ONGOING detected, agent offers:
 > "This sounds like it's actively impacting users. Should I focus on quick
@@ -1382,3 +1408,147 @@ def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
     # Conversation only
     return TurnOutcome.CONVERSATION
 ```
+
+### 3.3 Diagnostic Reasoning Requirements
+
+**REQUIREMENT**: Before suggesting any action, mitigation, or hypothesis, the agent MUST demonstrate context-specific diagnostic reasoning that explains WHY the suggestion is relevant to this specific investigation.
+
+**PURPOSE**: Prevent generic advice disconnected from case evidence. Force grounded reasoning based on actual symptoms, timeline, and context.
+
+---
+
+**Diagnostic Reasoning Pattern** (agent response structure):
+
+1. **Observation** - What specific evidence/symptom triggered this line of thinking?
+2. **Analysis** - Why does this evidence point toward this explanation/action?
+3. **Suggestion** - What specific action follows from this reasoning?
+4. **Expected Outcome** - What should happen if this reasoning is correct?
+
+---
+
+**Example: BAD (Generic Advice)**
+
+```
+❌ Agent: "Your database is slow. You should:
+   - Scale up your database pods
+   - Add read replicas
+   - Enable connection pooling
+   - Check for slow queries"
+```
+
+**Why Bad**: No connection to this specific case. Could apply to any database issue. No diagnostic reasoning.
+
+---
+
+**Example: GOOD (Grounded Diagnostic Reasoning)**
+
+```
+✅ Agent: "I notice the timeouts started exactly 2 minutes after deployment e8f3a92:
+
+OBSERVATION:
+- Error rate jumped from 0% to 40% at 14:03 UTC
+- Deployment e8f3a92 completed at 14:01 UTC
+- Timeline correlation: +2 minutes
+- No infrastructure changes in that window
+
+ANALYSIS:
+This tight temporal correlation (2-minute gap) suggests the deployment
+introduced the issue rather than database capacity. If this were a capacity
+problem, we'd expect gradual degradation, not a sharp cliff at deployment time.
+
+SUGGESTED MITIGATION:
+Rollback deployment e8f3a92 to previous version (d4b2c11) to test causation.
+
+EXPECTED OUTCOME:
+If my reasoning is correct:
+- Error rate should drop from 40% to near-0% within 60 seconds of rollback
+- Connection timeouts should stop
+- If errors persist after rollback, we can rule out the deployment"
+```
+
+**Why Good**:
+- Grounds reasoning in specific evidence (timestamps, deployment ID, error rate)
+- Explains WHY correlation matters (sharp vs gradual)
+- Mitigation is testable and reversible
+- Defines success criteria
+
+---
+
+**Example: BAD (Hypothesis without Reasoning)**
+
+```
+❌ Agent: "Based on the symptoms, here are three hypotheses:
+   1. Database connection pool exhaustion
+   2. Network timeout misconfiguration
+   3. Deadlock in transaction processing"
+```
+
+**Why Bad**: Lists possibilities without explaining which evidence points where. No prioritization or diagnostic logic.
+
+---
+
+**Example: GOOD (Hypothesis with Diagnostic Reasoning)**
+
+```
+✅ Agent: "From the evidence, I'm forming a primary hypothesis:
+
+OBSERVATION:
+- Logs show 'connection timeout after 5000ms' errors
+- Database metrics show connection pool at 45/100 (not exhausted)
+- No slow query logs during error window
+- Application default timeout: 5 seconds
+- Database query latency: 8-12 seconds (above timeout)
+
+ANALYSIS:
+The database isn't refusing connections (pool not full), but queries are
+taking 8-12 seconds while the app times out at 5 seconds. This explains
+why we see timeouts despite available capacity.
+
+PRIMARY HYPOTHESIS:
+Recent deployment introduced N+1 query pattern causing queries to take
+8-12 seconds, exceeding application's 5-second timeout threshold.
+
+DIAGNOSTIC TEST:
+Can you share the query execution plan for the slow queries? If we see
+sequential scans or missing JOINs that weren't present before deployment
+e8f3a92, that would validate this hypothesis."
+```
+
+**Why Good**:
+- Uses specific metrics (5s timeout vs 8-12s latency)
+- Rules out competing explanations (pool exhaustion)
+- Hypothesis is testable and falsifiable
+- Requests specific evidence to validate
+
+---
+
+**PROHIBITED PATTERNS** (agent must NEVER do these):
+
+❌ **Checklist Engineering**: "Try these 10 things and see what works"
+❌ **Solution Brainstorming**: "Here are 5 possible solutions..."
+❌ **Generic Best Practices**: "You should implement monitoring/logging/alerting"
+❌ **Speculation Without Evidence**: "It's probably a memory leak or DNS issue"
+❌ **Action Without Explanation**: "Run this command: `kubectl restart deployment foo`"
+
+---
+
+**REQUIRED PATTERNS** (agent must ALWAYS do these):
+
+✅ **Evidence-Grounded**: Quote specific metrics, timestamps, log lines, error messages
+✅ **Causal Reasoning**: Explain mechanism (HOW would X cause Y?)
+✅ **Falsifiable**: Define what evidence would prove hypothesis wrong
+✅ **Prioritized**: Explain why this hypothesis over alternatives
+✅ **Testable**: Suggest specific evidence that would validate/refute
+
+---
+
+**ENFORCEMENT**:
+
+This requirement applies to ALL agent suggestions during INVESTIGATING state:
+- Mitigation proposals (MITIGATION_FIRST path)
+- Hypothesis generation (all paths)
+- Diagnostic command suggestions
+- Solution proposals
+- Evidence requests (explain WHY specific evidence is needed)
+
+**EXCEPTION**: INQUIRY state (problem statement refinement) does not require diagnostic reasoning, as investigation hasn't started yet.
