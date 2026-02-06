@@ -61,42 +61,131 @@ This document defines the state transitions, path routing, and turn tracking log
 
 **Trigger**: User commits to formal investigation AND confirms problem statement
 
+**CONFIRMATION PATTERN (Consistent Across All Flows)**:
+
+Both natural and manual status changes use TWO-STEP confirmation:
+
+1. Agent presents what will happen (problem statement, action, etc.)
+2. User explicitly confirms with Yes/No buttons or typed response
+
+**Natural flow (Section 1.2)**:
+- Turn N: User says "let's investigate"
+- Turn N response: Agent presents problem statement + [Yes/No]
+- Turn N+1: User clicks [Yes] or types confirmation
+- Turn N+1 response: Agent transitions status
+
+**Manual flow (Section 1.5)**:
+- User clicks status dropdown → modal
+- User confirms modal → sends system message
+- Agent receives system message → presents statement + [Yes/No]
+- User confirms → Agent transitions status
+
+Both flows converge at the confirmation step.
+
 ```python
-def can_start_investigation(case: Case) -> bool:
+async def handle_inquiry_turn(case: Case, user_message: str) -> str:
     """
-    Requires:
-    1. Problem confirmation (agent understands problem type)
-    2. Problem statement formalized and confirmed by user
-    3. User decided to investigate
+    Process inquiry turn and manage problem statement workflow.
+
+    ITERATIVE REFINEMENT PATTERN (Section 1.7, line 773):
+    1. Agent generates proposed_problem_statement from conversation
+    2. Agent presents statement for confirmation
+    3. User confirms OR provides corrections
+    4. If corrections: Update proposed_problem_statement and repeat step 2
+    5. If confirmed: Set problem_statement_confirmed = True
     """
-    return (
-        case.status == CaseStatus.INQUIRY and
-        case.inquiry.problem_confirmation is not None and
-        case.inquiry.proposed_problem_statement is not None and
-        case.inquiry.problem_statement_confirmed == True and
-        case.inquiry.decided_to_investigate == True
-    )
 
-if can_start_investigation(case):
-    # Create ProblemVerification with confirmed statement
-    case.problem_verification = ProblemVerification(
-        symptom_statement=case.inquiry.proposed_problem_statement
-        # LLM will fill other fields during investigation
-    )
+    # Generate or update proposed_problem_statement
+    if not case.inquiry.proposed_problem_statement or user_provides_corrections(user_message):
+        case.inquiry.proposed_problem_statement = await llm_generate_problem_statement(
+            conversation_history=case.messages,
+            problem_confirmation=case.inquiry.problem_confirmation,
+            user_corrections=extract_corrections(user_message)
+        )
 
-    transition_status(case, CaseStatus.INVESTIGATING, "system",
-                     "User confirmed problem and decided to investigate")
+    # Check if user confirms statement
+    if user_confirms(user_message):  # "Yes", "Yes, investigate", "That's right", etc.
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
+        case.inquiry.decided_to_investigate = True
+        case.inquiry.decision_made_at = datetime.now(timezone.utc)
+
+        # Now can_start_investigation returns True
+        return await transition_to_investigating(case)
+
+    else:
+        # Present statement for confirmation
+        return f"""Based on our conversation, the problem is:
+
+{case.inquiry.proposed_problem_statement}
+
+Is this what you want me to investigate?
+
+[✅ Yes]  [❌ No]
+
+💡 Tip: Click a button or type to clarify"""
+
+
+def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any]):
+    """
+    Handle structured updates during INQUIRY.
+
+    Logic:
+    1. If user confirms problem -> transition to INVESTIGATING
+    2. If user provides preliminary guidance -> Refine problem statement
+    3. If user decides to investigate -> Set flag
+    """
+
+    # 1. Capture problem statement
+    if updates.proposed_problem_statement:
+        case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
+
+    # 2. Check for transition
+    if updates.problem_statement_confirmed and updates.decided_to_investigate:
+        if not case.inquiry.proposed_problem_statement:
+            # Error state: cannot confirm null statement
+            return
+
+        # Create ProblemVerification with confirmed statement
+        case.problem_verification = ProblemVerification(
+            symptom_statement=case.inquiry.proposed_problem_statement
+            # LLM will fill other fields during investigation
+        )
+
+        transition_status(case, CaseStatus.INVESTIGATING, "system",
+                         "User confirmed problem and decided to investigate")
 ```
 
 #### INVESTIGATING → RESOLVED (Terminal)
 
 **Trigger**: Solution verified
 
+**MULTIPLE SOLUTIONS HANDLING**:
+
+If multiple solutions exist, `solution_verified` means AT LEAST ONE solution is verified effective.
+
+Multiple solutions allowed:
+
+- Try solution A, doesn't work → Try solution B
+- Solution B works → solution_verified = True → RESOLVED
+
+Only ONE solution needs verification for terminal transition.
+
 ```python
 def can_mark_resolved(case: Case) -> bool:
+    """
+    Case can transition to RESOLVED when AT LEAST ONE solution is verified effective.
+
+    Multiple solutions allowed:
+    - Try solution A, doesn't work → Try solution B
+    - Solution B works → solution_verified = True → RESOLVED
+
+    Only ONE solution needs verification for terminal transition.
+    """
     return (
         case.status == CaseStatus.INVESTIGATING and
-        case.progress.solution_verified == True
+        case.progress.solution_verified == True and
+        any(s.verified_at is not None for s in case.solutions)  # At least one solution verified
     )
 
 if can_mark_resolved(case):
@@ -169,10 +258,23 @@ def fast_track_resolution(case: Case, knowledge_resolution: KnowledgeResolution)
 **Flow**:
 ```
 1. INQUIRY: Agent searches KB, finds high-confidence match
-2. INQUIRY: Agent says "This looks similar to [past case]. Solution was [X]."
-3. INQUIRY: User tries solution, confirms "Yes, that fixed it!"
-4. System: Transition directly to RESOLVED (skip INVESTIGATING)
+2. INQUIRY: Agent says "This looks similar to [past case]. Solution was [X]. Try this?"
+3. INQUIRY: User tries solution
+4. INQUIRY: User confirms "Yes, that fixed it!" (explicit confirmation - follows two-step pattern)
+5. System: Transition directly to RESOLVED (skip INVESTIGATING)
 ```
+
+**FAST-TRACK CONFIRMATION PATTERN**:
+
+The fast-track resolution uses the same two-step confirmation pattern:
+
+1. Agent detects KB match during INQUIRY
+2. Agent presents: "Similar past case [X]. Solution: [Y]. Try this?"
+3. User tries solution
+4. User confirms: "Yes, that fixed it!" (explicit confirmation)
+5. Agent transitions directly to RESOLVED (skips INVESTIGATING)
+
+Confirmation follows same two-step pattern as INQUIRY → INVESTIGATING.
 
 **Metrics Implications**:
 - `time_to_resolution`: Extremely low (1-2 turns)
@@ -237,17 +339,24 @@ VALID_TRANSITIONS = {
                                                  └──────────────┘
 ```
 
-### 1.4 Milestone Progression
+### 1.4 Automatic Terminal Transitions
 
-**During INVESTIGATING status, milestones complete opportunistically**:
+Terminal transitions are triggered automatically based on milestone completion.
 
 ```python
-async def process_turn(case: Case, user_message: str):
-    """Process one turn and update milestones"""
+async def process_turn(case: Case, user_message: str) -> str:
+    """
+    Process one turn and update milestones.
 
-    # Only process if not terminal
+    AUTOMATIC TRANSITIONS:
+    - Checked AFTER agent response generation
+    - Triggered by milestone completion (data-driven)
+    - Terminal transitions are irreversible
+    """
+
+    # Validate not terminal
     if case.is_terminal:
-        return "Case is closed."
+        return "Case is closed. No further updates allowed."
 
     # Capture state before
     progress_before = case.progress.dict()
@@ -259,20 +368,121 @@ async def process_turn(case: Case, user_message: str):
     progress_after = case.progress.dict()
 
     # Detect completed milestones
-    milestones_completed = [
-        key for key in progress_before
-        if isinstance(progress_before[key], bool)
-        and progress_before[key] == False
-        and progress_after[key] == True
-    ]
+    milestones_completed = detect_milestone_completions(progress_before, progress_after)
 
     # Record turn
     record_turn(case, milestones_completed)
 
-    # Check for automatic status transitions to terminal states
-    check_status_transitions(case)
+    # ============================================================
+    # AUTOMATIC TERMINAL TRANSITION CHECK
+    # ============================================================
+    # When: After every turn's agent response
+    # Conditions: Data-driven (milestone-based)
+    # Result: Irreversible status change to terminal state
+
+    await check_terminal_transitions(case)
 
     return agent_response
+
+
+async def check_terminal_transitions(case: Case):
+    """
+    Check and execute automatic transitions to terminal states.
+
+    INVESTIGATING → RESOLVED:
+    - Trigger: solution_verified = True
+    - Automatic: Yes (no user confirmation needed)
+    - Terminal: Yes (irreversible)
+
+    INVESTIGATING → CLOSED:
+    - Trigger: User explicit action (force_close)
+    - Automatic: No (requires user intent)
+    - Terminal: Yes (irreversible)
+
+    INQUIRY → CLOSED:
+    - Trigger: User explicit action (close_from_inquiry)
+    - Automatic: No (requires user intent)
+    - Terminal: Yes (irreversible)
+
+    INQUIRY → RESOLVED:
+    - Trigger: Fast-track KB resolution + user confirmation
+    - Automatic: After confirmation only
+    - Terminal: Yes (irreversible)
+    """
+
+    # Only check if not already terminal
+    if case.is_terminal:
+        return
+
+    # AUTOMATIC: INVESTIGATING → RESOLVED
+    if case.status == CaseStatus.INVESTIGATING:
+        if case.progress.solution_verified:
+            case.status = CaseStatus.RESOLVED
+            case.resolved_at = datetime.now(timezone.utc)
+            case.closed_at = datetime.now(timezone.utc)
+            case.closure_reason = "resolved"
+            case.status_history.append(CaseStatusTransition(
+                from_status=CaseStatus.INVESTIGATING,
+                to_status=CaseStatus.RESOLVED,
+                triggered_at=datetime.now(timezone.utc),
+                triggered_by="system",
+                reason="Solution verified - automatic transition"
+            ))
+            # TERMINAL - no further transitions
+
+    # Note: INVESTIGATING → CLOSED requires explicit user force_close() call
+    # Note: INQUIRY → CLOSED requires explicit user close_from_inquiry() call
+    # These are NOT automatic transitions
+
+
+# ============================================================
+# EXPLICIT USER-TRIGGERED TRANSITIONS (Non-Automatic)
+# ============================================================
+
+def force_close_investigation(case: Case, user_id: str, reason: str):
+    """
+    User explicitly abandons investigation without solution.
+
+    Trigger: User action (not automatic)
+    Terminal: Yes (irreversible)
+    """
+    if case.status != CaseStatus.INVESTIGATING:
+        raise InvalidTransitionError("Can only force-close from INVESTIGATING status")
+
+    case.status = CaseStatus.CLOSED
+    case.closed_at = datetime.now(timezone.utc)
+    case.closure_reason = reason  # "abandoned" | "escalated" | "other"
+    case.status_history.append(CaseStatusTransition(
+        from_status=CaseStatus.INVESTIGATING,
+        to_status=CaseStatus.CLOSED,
+        triggered_at=datetime.now(timezone.utc),
+        triggered_by=user_id,
+        reason=f"User force-closed: {reason}"
+    ))
+    # TERMINAL - no further transitions
+
+
+def close_from_inquiry(case: Case, user_id: str):
+    """
+    Close after inquiry without formal investigation.
+
+    Trigger: User action (not automatic)
+    Terminal: Yes (irreversible)
+    """
+    if case.status != CaseStatus.INQUIRY:
+        raise InvalidTransitionError("Can only close-from-inquiry when in INQUIRY status")
+
+    case.status = CaseStatus.CLOSED
+    case.closed_at = datetime.now(timezone.utc)
+    case.closure_reason = "inquiry_only"
+    case.status_history.append(CaseStatusTransition(
+        from_status=CaseStatus.INQUIRY,
+        to_status=CaseStatus.CLOSED,
+        triggered_at=datetime.now(timezone.utc),
+        triggered_by=user_id,
+        reason="User closed after inquiry only"
+    ))
+    # TERMINAL - no further transitions
 ```
 
 ### 1.5 Manual Status Change Requests
@@ -556,21 +766,37 @@ All manual status changes use **existing endpoints** - no new APIs required:
 
 ## 2. Path Selection & Routing
 
-### 2.0 Preliminary Urgency Assessment (During INQUIRY)
+### 2.0 Path Selection Timeline (3 Phases)
 
-**Purpose**: Enable faster path hints before formal investigation starts.
+Path selection happens in THREE distinct phases to balance early urgency detection with accurate routing:
 
-During INQUIRY, agent assesses urgency based on **business impact** (semantic), not keywords:
+#### Phase 1: Preliminary Assessment (INQUIRY Status)
+
+**When**: Turn 1-2, during problem confirmation
+
+**Purpose**: Early urgency detection for user awareness
+
+**Output**: `preliminary_urgency` (stored but not used for routing yet)
 
 ```python
-class PreliminaryUrgency(BaseModel):
-    """Early urgency signal for faster path selection."""
-    level: UrgencyLevel        # CRITICAL | HIGH | MEDIUM | LOW
-    is_ongoing: bool           # True if problem appears active NOW
-    impact_assessment: str     # Brief description of business impact
-    mitigation_hint: Optional[str]  # Quick mitigation if obvious
+def assess_preliminary_urgency(case: Case) -> PreliminaryUrgency:
+    """
+    Early urgency assessment during INQUIRY.
+    Provides early warning but does NOT determine path yet.
 
-# Semantic urgency definitions (NOT keyword-based):
+    Called: During first turn when problem_confirmation is created
+    """
+    return PreliminaryUrgency(
+        level=llm_assess_urgency(case.inquiry.problem_confirmation),
+        is_ongoing=llm_detect_temporal_state(case.inquiry.problem_confirmation),
+        impact_assessment="Business impact description",
+        mitigation_hint="Optional quick mitigation suggestion"
+    )
+```
+
+**Semantic urgency definitions** (NOT keyword-based):
+
+```python
 URGENCY_DEFINITIONS = {
     "CRITICAL": "Complete service unavailability or data loss/corruption",
     "HIGH": "Significant degradation affecting most users",
@@ -580,6 +806,7 @@ URGENCY_DEFINITIONS = {
 ```
 
 **Why Semantic, Not Keywords**:
+
 - ❌ Keyword-based: "not down" might trigger CRITICAL due to word "down"
 - ✅ Semantic: LLM assesses actual business impact from context
 
@@ -589,6 +816,59 @@ If CRITICAL/HIGH + ONGOING detected, agent offers:
 > mitigation first, then investigate root cause after?"
 
 This accelerates path selection without waiting for full verification.
+
+#### Phase 2: Formal Path Selection (INVESTIGATING Status)
+
+**When**: First turn AFTER `symptom_verified = True`
+
+**Purpose**: Determine investigation path based on verified urgency
+
+**Output**: `case.path_selection` (used for routing)
+
+```python
+def select_investigation_path(case: Case) -> PathSelection:
+    """
+    Formal path selection after symptom verification complete.
+
+    Called: Automatically when symptom_verified transitions False → True
+    Precondition: case.problem_verification with temporal_state and urgency_level set
+    """
+    if not case.progress.symptom_verified:
+        raise InvalidStateError("Cannot select path before symptom verification")
+
+    return determine_investigation_path(case.problem_verification)
+```
+
+#### Phase 3: Path Execution (INVESTIGATING Status)
+
+**When**: Immediately after path selection
+
+**Purpose**: Apply path-specific behavior (mitigation for MITIGATION_FIRST)
+
+**Output**: `mitigation_applied = True` (if applicable)
+
+```python
+async def execute_path_behavior(case: Case):
+    """
+    Execute path-specific behavior immediately after selection.
+
+    For MITIGATION_FIRST: Apply mitigation if correlation strong enough
+    For ROOT_CAUSE: Continue to hypothesis formulation
+    """
+    if case.path_selection.path == InvestigationPath.MITIGATION_FIRST:
+        if case.problem_verification.correlation_confidence >= 0.7:
+            # Strong correlation → apply mitigation
+            await apply_mitigation(case)
+            case.progress.mitigation_applied = True
+```
+
+**Timeline Diagram**:
+
+```
+Turn 1 (INQUIRY):     preliminary_urgency assessed → Early hint provided
+Turn 2 (INQUIRY→INVESTIGATING): Status transition
+Turn 3 (INVESTIGATING): symptom_verified = True → path_selection determined → mitigation applied (if MITIGATION_FIRST)
+```
 
 ### 2.1 Path Selection Matrix
 
@@ -726,6 +1006,119 @@ Traditional RCA path - thorough investigation from start.
 
 ## 3. Turn Progress Tracking
 
+### 3.1 Evidence Processing and Milestone Advancement
+
+Evidence is the primary mechanism for advancing investigation milestones. When evidence is added, the system automatically evaluates which milestones it satisfies.
+
+```python
+async def process_evidence(
+    case: Case,
+    evidence: Evidence
+) -> List[str]:
+    """
+    Process evidence and advance milestones opportunistically.
+
+    Returns: List of milestone names that transitioned False → True
+
+    Called: After LLM analyzes evidence and creates Evidence object
+    """
+
+    milestones_advanced = []
+
+    # SYMPTOM_EVIDENCE advances verification milestones
+    if evidence.category == EvidenceCategory.SYMPTOM_EVIDENCE:
+
+        # Check each verification milestone
+        if not case.progress.symptom_verified:
+            if validates_symptom(evidence, case.problem_verification):
+                case.progress.symptom_verified = True
+                milestones_advanced.append("symptom_verified")
+
+        if not case.progress.scope_assessed:
+            if reveals_scope(evidence, case.problem_verification):
+                case.progress.scope_assessed = True
+                milestones_advanced.append("scope_assessed")
+
+        if not case.progress.timeline_established:
+            if shows_timeline(evidence, case.problem_verification):
+                case.progress.timeline_established = True
+                milestones_advanced.append("timeline_established")
+
+        if not case.progress.changes_identified:
+            if identifies_changes(evidence, case.problem_verification):
+                case.progress.changes_identified = True
+                milestones_advanced.append("changes_identified")
+
+    # CAUSAL_EVIDENCE advances root cause identification
+    elif evidence.category == EvidenceCategory.CAUSAL_EVIDENCE:
+
+        if not case.progress.root_cause_identified:
+            # Check if evidence strongly supports a hypothesis
+            if evidence.tests_hypothesis_id:
+                hypothesis = case.hypotheses.get(evidence.tests_hypothesis_id)
+                if hypothesis and evidence.stance == EvidenceStance.SUPPORTS:
+                    if evidence.stance_confidence >= 0.8:
+                        # Strong evidence → advance root cause
+                        case.progress.root_cause_identified = True
+                        case.progress.root_cause_likelihood = evidence.stance_confidence
+                        milestones_advanced.append("root_cause_identified")
+
+    # RESOLUTION_EVIDENCE advances solution verification
+    elif evidence.category == EvidenceCategory.RESOLUTION_EVIDENCE:
+
+        if not case.progress.solution_verified:
+            if verifies_solution_effectiveness(evidence, case.solutions):
+                case.progress.solution_verified = True
+                milestones_advanced.append("solution_verified")
+
+    # Update evidence advances_milestones field
+    evidence.advances_milestones = milestones_advanced
+
+    # Trigger side effects (path selection, terminal transitions)
+    if "symptom_verified" in milestones_advanced:
+        if not case.path_selection:
+            case.path_selection = select_investigation_path(case)
+            await execute_path_behavior(case)
+
+    if "solution_verified" in milestones_advanced:
+        await check_terminal_transitions(case)
+
+    return milestones_advanced
+
+
+# ============================================================
+# VALIDATION HELPERS (Implementation-specific)
+# ============================================================
+
+def validates_symptom(evidence: Evidence, verification: ProblemVerification) -> bool:
+    """Check if evidence confirms the symptom"""
+    # Implementation: Check if evidence.analysis mentions symptom indicators
+    # Example: "Error rate confirms timeout symptom"
+    return True  # Simplified for spec
+
+def reveals_scope(evidence: Evidence, verification: ProblemVerification) -> bool:
+    """Check if evidence determines affected scope"""
+    # Implementation: Check if evidence identifies services, users, regions
+    return True
+
+def shows_timeline(evidence: Evidence, verification: ProblemVerification) -> bool:
+    """Check if evidence establishes timeline"""
+    # Implementation: Check if evidence has timestamps or duration data
+    return True
+
+def identifies_changes(evidence: Evidence, verification: ProblemVerification) -> bool:
+    """Check if evidence reveals recent changes"""
+    # Implementation: Check if evidence links to deployments, configs, etc.
+    return True
+
+def verifies_solution_effectiveness(evidence: Evidence, solutions: List[Solution]) -> bool:
+    """Check if evidence confirms solution worked"""
+    # Implementation: Check if metrics show problem resolved
+    return True
+```
+
+### 3.2 Turn Recording and Progress Detection
+
 ```python
 async def record_turn(
     case: Case,
@@ -758,12 +1151,29 @@ async def record_turn(
         new_evidence = case.evidence[evidence_count_before:]
         evidence_added = [e.evidence_id for e in new_evidence]
 
+    # Detect hypotheses generated this turn
+    hypotheses_count_before = len([h for h in case.hypotheses.values() if h.created_at < turn_start_time])
+    hypotheses_count_after = len(case.hypotheses)
+    hypotheses_generated = hypotheses_count_after - hypotheses_count_before
+
+    # Detect solutions proposed this turn
+    solutions_count_before = len([s for s in case.solutions if s.proposed_at < turn_start_time])
+    solutions_count_after = len(case.solutions)
+    solutions_proposed = solutions_count_after - solutions_count_before
+
     # Determine if progress made
     progress_made = (
         len(milestones_completed) > 0 or
         len(evidence_added) > 0 or
-        any(h.status == HypothesisStatus.VALIDATED for h in case.hypotheses.values())
+        hypotheses_generated > 0 or  # NEW: Generating hypotheses is progress
+        any(h.status == HypothesisStatus.VALIDATED for h in case.hypotheses.values()) or
+        solutions_proposed > 0  # NEW: Proposing solutions is progress
     )
+
+    # RATIONALE:
+    # Hypothesis generation and solution proposals represent active agent work.
+    # Only increment turns_without_progress when TRULY stuck (no actions taken).
+    # Otherwise, waiting for user evidence would trigger premature degraded mode.
 
     # Create turn record
     turn = TurnProgress(
@@ -771,7 +1181,8 @@ async def record_turn(
         milestones_completed=milestones_completed,
         evidence_added=evidence_added,
         progress_made=progress_made,
-        outcome=determine_turn_outcome(case, progress_made)
+        # Updated logic: Robust outcome determination based on milestones, evidence, hypotheses
+        outcome=self._determine_turn_outcome(case, metadata, outcome_override="conversation")
     )
 
     case.turn_history.append(turn)
@@ -787,5 +1198,62 @@ async def record_turn(
     if case.turns_without_progress >= 3:
         enter_degraded_mode(case, DegradedModeType.NO_PROGRESS)
 
+    # Exit degraded mode if progress resumes
+    check_degraded_mode_exit(case, progress_made)
+
     return turn
+
+
+def check_degraded_mode_exit(case: Case, progress_made: bool):
+    """
+    Exit degraded mode when progress resumes.
+
+    Entry: turns_without_progress >= 3
+    Exit: progress_made = True on any subsequent turn
+
+    DEGRADED MODE RECOVERY:
+    - Agent enters degraded mode after 3 turns without progress
+    - Agent exits automatically when progress resumes
+    - Exit condition: Any milestone, evidence, hypothesis, or solution activity
+    - Recovery resets turns_without_progress counter to 0
+    """
+    if case.degraded_mode and case.degraded_mode.is_active:
+        if progress_made:
+            case.degraded_mode.exited_at = datetime.now(timezone.utc)
+            case.degraded_mode.exit_reason = "Progress resumed - user provided evidence or agent found breakthrough"
+            case.degraded_mode.is_active = False
+            case.turns_without_progress = 0  # Reset counter
+
+
+def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
+    """
+    Determine turn outcome classification.
+
+    Checked AFTER milestone detection and evidence processing.
+    Used for LLM observability and metrics (not workflow control).
+    """
+
+    # Terminal transition
+    if case.is_terminal:
+        return TurnOutcome.CASE_RESOLVED if case.status == CaseStatus.RESOLVED else TurnOutcome.OTHER
+
+    # Milestone completed
+    if any(milestone_completed_this_turn(case)):
+        return TurnOutcome.MILESTONE_COMPLETED
+
+    # Hypothesis validated
+    if any(h.tested_at == case.current_turn for h in case.hypotheses.values()):
+        return TurnOutcome.HYPOTHESIS_TESTED
+
+    # Evidence provided
+    if any(e.collected_at_turn == case.current_turn for e in case.evidence):
+        return TurnOutcome.DATA_PROVIDED
+
+    # Agent requested data
+    if agent_requested_data_this_turn(case):
+        return TurnOutcome.DATA_REQUESTED
+
+    # Conversation only
+    return TurnOutcome.CONVERSATION
 ```
+{ _ble_edit_exec_gexec__save_lastarg ""; } 4>&1 5>&2 &>/dev/null

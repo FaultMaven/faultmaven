@@ -549,12 +549,14 @@ class CaseService(BaseService, ICaseService):
                 try:
                     created_at = parse_utc_timestamp(msg_dict.get("created_at"))
                     timestamp = created_at.strftime("%H:%M") if created_at else "??:??"
-                    message_type = msg_dict.get("message_type", "system_event")
+                    # Use 'role' field from database schema
+                    # Values: "user", "agent", "system"
+                    role = msg_dict.get("role", "system")
                     content = msg_dict.get("content", "")
 
-                    if message_type == "user_query":
+                    if role == "user":
                         context_lines.append(f"{i}. [{timestamp}] User: {content}")
-                    elif message_type == "agent_response":
+                    elif role == "agent":
                         # Truncate long agent responses
                         truncated = (
                             content[:200] + "..." if len(content) > 200 else content
@@ -562,7 +564,7 @@ class CaseService(BaseService, ICaseService):
                         context_lines.append(
                             f"{i}. [{timestamp}] Assistant: {truncated}"
                         )
-                    elif message_type == "system_event":
+                    elif role == "system":
                         context_lines.append(f"{i}. [{timestamp}] System: {content}")
                 except Exception as e:
                     self.logger.warning(f"Failed to format message {i} in context: {e}")

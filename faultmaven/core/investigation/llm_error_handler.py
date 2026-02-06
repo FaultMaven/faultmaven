@@ -97,6 +97,20 @@ class LLMErrorHandler:
             for pattern in ("auth", "api key", "unauthorized", "401", "403")
         )
 
+    def is_model_not_found_error(self, error: Exception) -> bool:
+        """Check if error is related to model not found (404)."""
+        error_str = str(error).lower()
+        return any(
+            pattern in error_str
+            for pattern in (
+                "model not found",
+                "not_found",
+                "404",
+                "inaccessible",
+                "not deployed",
+            )
+        )
+
     def is_token_limit_error(self, error: Exception) -> bool:
         """Check if error is related to token limits."""
         error_str = str(error).lower()
@@ -134,6 +148,17 @@ class LLMErrorHandler:
                 action=ErrorAction.ESCALATE,
                 message="System configuration error. Please contact support.",
                 error_code="AUTH_FAILED",
+            )
+
+        # Check for model not found errors (non-retryable configuration issue)
+        if self.is_model_not_found_error(error):
+            logger.error(f"Model not found error: {error}")
+            # Extract more details from the error for better diagnostics
+            error_details = str(error)[:300]  # First 300 chars for context
+            return ErrorResult(
+                action=ErrorAction.ESCALATE,
+                message=f"503 LLM service unavailable: Model not found or inaccessible. Please check LLM provider configuration. Details: {error_details}",
+                error_code="MODEL_NOT_FOUND",
             )
 
         # Check for token limit errors
@@ -174,10 +199,14 @@ class LLMErrorHandler:
             exc_info=True,
         )
 
+        # Include error details in user-facing message for better diagnostics
+        error_preview = str(error)[:200]
+        error_type = type(error).__name__
+
         if retry_count == 0:
             return ErrorResult(
                 action=ErrorAction.USE_FALLBACK_PROMPT,
-                message="Error occurred. Trying simplified prompt...",
+                message=f"Unexpected error from LLM provider ({error_type}): {error_preview}. Trying simplified prompt...",
                 error_code="UNKNOWN_ERROR",
                 should_use_fallback=True,
                 retry_count=1,
@@ -185,7 +214,7 @@ class LLMErrorHandler:
 
         return ErrorResult(
             action=ErrorAction.FAIL,
-            message=f"LLM error: {type(error).__name__}: {str(error)[:200]}",
+            message=f"LLM error ({error_type}): {error_preview}",
             error_code="UNKNOWN_ERROR",
             retry_count=retry_count,
         )

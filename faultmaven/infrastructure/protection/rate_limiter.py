@@ -99,10 +99,16 @@ class RedisRateLimiter:
             self.logger.info("Redis rate limiter initialized successfully")
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
             self._redis_healthy = False
             if not self.fallback_enabled:
+                # Redis is required but unavailable - fail hard
+                self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
                 raise
+            else:
+                # Graceful degradation to in-memory rate limiting
+                self.logger.warning(
+                    f"Redis unavailable ({e}), using in-memory rate limiting fallback"
+                )
 
     async def close(self) -> None:
         """Close Redis connection"""

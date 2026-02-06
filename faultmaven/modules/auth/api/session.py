@@ -37,7 +37,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_optional,
+    require_authentication,
+)
 from faultmaven.api.v1.dependencies import get_case_service, get_session_service
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
@@ -299,6 +302,7 @@ async def create_session(
     user_id: Optional[str] = Query(None),
     session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
+    current_user: Optional["DevUser"] = Depends(get_current_user_optional),
 ):
     """
     Create or resume a troubleshooting session.
@@ -307,6 +311,11 @@ async def create_session(
     - If `client_id` is provided and matches an active session, that session is resumed
     - If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)
     - If `client_id` is new or not provided, creates fresh session
+
+    **User ID Resolution:**
+    - Priority 1: `user_id` query parameter (explicit override)
+    - Priority 2: Authenticated user from JWT token (prevents anonymous session creation)
+    - Priority 3: Auto-generated anonymous user (development/unauthenticated only)
 
     **Session Timeout:**
     - Sessions automatically expire after `timeout_minutes` of inactivity
@@ -321,6 +330,7 @@ async def create_session(
     Args:
         request: Session creation parameters including optional client_id and timeout
         user_id: Optional user identifier (query param)
+        current_user: Optional authenticated user from JWT token
 
     Returns:
         Session creation/resumption response with expiration information
@@ -341,12 +351,28 @@ async def create_session(
         # Always set validated timeout in metadata
         metadata["timeout_minutes"] = validated_timeout_minutes
 
-        # Auto-generate user_id for development if not provided
+        # Determine user_id priority:
+        # 1. Query parameter (explicit override)
+        # 2. Authenticated user (from JWT token)
+        # 3. Auto-generated anonymous user (development only)
         if not user_id:
-            import uuid
+            if current_user:
+                # Use authenticated user's ID from JWT token
+                user_id = current_user.user_id
+                logger.info(
+                    f"Using authenticated user_id for session: {user_id} (from JWT)"
+                )
+            else:
+                # Auto-generate anonymous user_id for development
+                import uuid
 
-            user_id = f"user_{str(uuid.uuid4())[:8]}"
-            logger.info(f"Auto-generated user_id for session: {user_id}")
+                user_id = f"user_{str(uuid.uuid4())[:8]}"
+                logger.warning(
+                    f"⚠️ Creating anonymous session (user_id={user_id}) without JWT token. "
+                    f"If user just logged in, frontend should pass JWT token in Authorization header. "
+                    f"This will cause cases to be invisible after re-login. "
+                    f"Client ID: {request.client_id if request else 'none'}"
+                )
 
         # Create session with metadata and client_id
         session_result = await session_service.create_session(

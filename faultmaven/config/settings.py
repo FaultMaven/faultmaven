@@ -42,7 +42,10 @@ class LLMProvider(str, Enum):
     FIREWORKS = "fireworks"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+    HUGGINGFACE = "huggingface"
     COHERE = "cohere"
+    OPENROUTER = "openrouter"
     LOCAL = "local"
     GROQ = "groq"
     NOT_SET = "NOT_SET"
@@ -363,9 +366,10 @@ class LLMSettings(BaseSettings):
 
     # Provider behavior
     strict_provider_mode: bool = Field(
-        default=False,
+        default=True,  # Changed to True for predictability and transparency
         env="STRICT_PROVIDER_MODE",
-        description="When enabled, only use the primary provider with no fallbacks",
+        description="When enabled, only use the primary provider with no fallbacks. "
+        "Default: True (single LLM for consistency). Set to false for automatic fallback to other providers.",
     )
 
     # Token limits
