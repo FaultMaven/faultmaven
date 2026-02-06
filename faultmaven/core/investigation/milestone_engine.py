@@ -310,6 +310,25 @@ class MilestoneEngine:
                 case, user_message, response_obj, attachments
             )
 
+            # 3b. Validate Diagnostic Reasoning (Section 3.3)
+            # Ensure agent provides context-specific reasoning before suggestions
+            from faultmaven.core.investigation.diagnostic_reasoning_validator import (
+                validate_diagnostic_reasoning,
+            )
+
+            is_valid_reasoning, violations = validate_diagnostic_reasoning(
+                case=case_updated,
+                agent_response=response_obj.agent_response,
+                contains_suggestion=None,  # Auto-detect
+            )
+            if not is_valid_reasoning:
+                logger.warning(
+                    f"Diagnostic reasoning validation failed: {violations}. "
+                    "Agent response may contain generic advice without case-specific reasoning."
+                )
+                # Add violations to metadata for observability
+                metadata["diagnostic_reasoning_violations"] = violations
+
             # Phase 1: No-Op Detection
             progress_made = self._check_if_progress_made(metadata)
             metadata["progress_made"] = progress_made
@@ -672,6 +691,10 @@ class MilestoneEngine:
                 True  # Heuristic: if agent has guidance, it means it's confirmed
             )
             case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+            case.inquiry.decided_to_investigate = (
+                True  # FIX: Set flag for INQUIRY → INVESTIGATING transition
+            )
+            case.inquiry.decision_made_at = datetime.now(UTC)
             logger.info(
                 f"Problem confirmed during inquiry: {updates.problem_confirmation.problem_type}"
             )
@@ -836,6 +859,40 @@ class MilestoneEngine:
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
+
+        # 2b. Process Evidence for Milestone Advancement
+        # After creating evidence, check if it advances any milestones opportunistically
+        if metadata["evidence_added"]:
+            from faultmaven.core.investigation.evidence_processor import (
+                process_evidence,
+            )
+
+            for ev_id in metadata["evidence_added"]:
+                ev = next((e for e in case.evidence if e.evidence_id == ev_id), None)
+                if ev:
+                    milestones_advanced = await process_evidence(case, ev)
+                    # Track milestones advanced by this evidence
+                    for milestone_name in milestones_advanced:
+                        if milestone_name not in metadata["milestones_completed"]:
+                            metadata["milestones_completed"].append(milestone_name)
+                    logger.info(
+                        f"Evidence {ev_id} advanced {len(milestones_advanced)} milestone(s): {milestones_advanced}"
+                    )
+
+        # 2c. Trigger Path Selection if symptom_verified milestone completed
+        if "symptom_verified" in metadata.get("milestones_completed", []):
+            if not case.path_selection:
+                from faultmaven.modules.case.domain.services.investigation_router import (
+                    determine_investigation_path,
+                )
+
+                case.path_selection = determine_investigation_path(
+                    case.problem_verification
+                )
+                logger.info(
+                    f"Path selection triggered: {case.path_selection.path.value} "
+                    f"(auto={case.path_selection.auto_selected})"
+                )
 
         # 3. Add/Update Hypotheses
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
@@ -1024,27 +1081,14 @@ class MilestoneEngine:
                 )
                 return case
 
-        # 2. INVESTIGATING -> RESOLVED
+        # 2. INVESTIGATING -> RESOLVED (using terminal_transitions module)
         if case.status == CaseStatus.INVESTIGATING and case.progress.solution_verified:
-            case.status = CaseStatus.RESOLVED
-            case.resolved_at = datetime.now(UTC)
-            case.closed_at = datetime.now(UTC)
-            case.closure_reason = "resolved"
+            from faultmaven.core.investigation.terminal_transitions import (
+                check_terminal_transitions,
+            )
+
+            await check_terminal_transitions(case)
             metadata["status_transitioned"] = True
-
-            case.status_history.append(
-                CaseStatusTransition(
-                    from_status=old_status,
-                    to_status=CaseStatus.RESOLVED,
-                    triggered_by="system",
-                    reason="Solution verified via milestones",
-                )
-            )
-
-            logger.info(
-                f"Case {case.case_id} automatically transitioned to RESOLVED "
-                f"(solution verified)"
-            )
 
         return case
 
@@ -1071,31 +1115,16 @@ class MilestoneEngine:
         Determine turn outcome classification (Bug #8).
         Checked AFTER milestone detection and evidence processing.
         """
-        # Terminal transition
-        if case.is_terminal:
-            return (
-                TurnOutcome.CASE_RESOLVED
-                if case.status == CaseStatus.RESOLVED
-                else TurnOutcome.OTHER
-            )
+        from faultmaven.core.investigation.turn_outcome import determine_turn_outcome
 
-        # Milestone completed
-        if metadata.get("milestones_completed"):
-            return TurnOutcome.MILESTONE_COMPLETED
-
-        # Hypothesis validated
-        if metadata.get("hypotheses_validated"):
-            return TurnOutcome.HYPOTHESIS_TESTED
-
-        # Evidence provided
-        if metadata.get("evidence_added") or metadata.get("files_uploaded"):
-            return TurnOutcome.DATA_PROVIDED
-
-        # Agent requested data (heuristic: outcome reported as DATA_REQUESTED)
-        if reported_outcome == TurnOutcome.DATA_REQUESTED:
-            return TurnOutcome.DATA_REQUESTED
-
-        return TurnOutcome.CONVERSATION
+        return determine_turn_outcome(
+            case=case,
+            progress_made=metadata.get("progress_made", False),
+            milestones_completed=metadata.get("milestones_completed", []),
+            evidence_added=metadata.get("evidence_added", []),
+            hypotheses_generated=len(metadata.get("hypotheses_generated", [])),
+            solutions_proposed=len(metadata.get("solutions_proposed", [])),
+        )
 
     def _enter_degraded_mode(
         self, case: Case, mode_type: str, reason: str | None = None
