@@ -61,9 +61,27 @@ This document defines the state transitions, path routing, and turn tracking log
 
 **Trigger**: User commits to formal investigation AND confirms problem statement
 
-**CONFIRMATION PATTERN (Consistent Across All Flows)**:
+**CONFIRMATION PATTERN (Conditional, Based on Context)**:
 
-Both natural and manual status changes use TWO-STEP confirmation:
+Confirmations reduce errors but create friction. Use conditional logic:
+
+**WHEN TO CONFIRM** (two-step required):
+
+- Situation is CRITICAL/HIGH severity (alignment crucial before action)
+- Problem description is ambiguous, inconsistent, or incomplete
+- Key details changed that affect investigation direction
+- User manually requests status transition (via dropdown)
+- First time transitioning to INVESTIGATING (establish shared understanding)
+
+**WHEN TO SKIP CONFIRMATION** (natural progression):
+
+- Problem already established and user asks follow-up question
+- User reports results of agent-suggested action (implicit confirmation)
+- Context is clear and user needs direct answer
+- User provides information that refines (not changes) direction
+- Investigation flowing naturally with user engagement
+
+**Two-Step Confirmation Flow** (when required):
 
 1. Agent presents what will happen (problem statement, action, etc.)
 2. User explicitly confirms with Yes/No buttons or typed response
@@ -485,6 +503,32 @@ def close_from_inquiry(case: Case, user_id: str):
     # TERMINAL - no further transitions
 ```
 
+#### 1.4.1 State Update Timing
+
+State updates occur at specific points within a turn to ensure consistency:
+
+| Update Type | When | Trigger |
+|-------------|------|---------|
+| `proposed_problem_statement` | During INQUIRY turn | LLM generates from conversation |
+| `problem_statement_confirmed` | After user confirmation | User says "Yes" or equivalent |
+| `symptom_verified` | After evidence processing | Evidence validates symptom |
+| `path_selection` | After `symptom_verified = True` | Automatic |
+| `mitigation_applied` | During MITIGATION_FIRST path | After user confirms mitigation worked |
+| `root_cause_identified` | After hypothesis validation | Strong evidence supports hypothesis |
+| `solution_verified` | After user confirms fix | User confirms problem resolved |
+| Terminal transition | End of turn | After all other processing |
+
+**Order of Operations Within a Turn**:
+
+1. **Receive user message**
+2. **LLM processes** and generates response + `state_updates`
+3. **Apply non-terminal state updates** (milestones, evidence, hypotheses)
+4. **Record turn progress** (detect what changed)
+5. **Check terminal transitions** (RESOLVED/CLOSED) if conditions met
+6. **Return response to user**
+
+**Rationale**: Terminal transitions happen last to ensure all state is consistent before case becomes immutable.
+
 ### 1.5 Manual Status Change Requests
 
 **Purpose**: Allow users to manually request status transitions for practical scenarios (urgent issues, external resolutions, etc.)
@@ -764,6 +808,49 @@ All manual status changes use **existing endpoints** - no new APIs required:
 
 ---
 
+### 1.6 Agent Role Constraints
+
+**CRITICAL**: The agent is an **ADVISOR**, not an executor. It helps users troubleshoot but never performs actions itself.
+
+#### What the Agent Can Do
+
+- **Suggest** actions for users to take
+- **Ask** for data users can provide
+- **Recommend** diagnostic steps
+- **Explain** reasoning and implications
+- **Guide** through investigation methodology
+
+#### What the Agent CANNOT Do
+
+- Execute commands or queries
+- Access systems, logs, or metrics directly
+- Run diagnostic tools
+- Make changes to infrastructure
+
+#### Language Constraints
+
+**Prohibited Phrases** (implies agent execution):
+
+- ❌ "Let me check the logs"
+- ❌ "I'll execute that command"
+- ❌ "I'll look into the database"
+- ❌ "Let me run a query"
+- ❌ "Which would you like me to run?"
+
+**Correct Phrases** (advisor tone):
+
+- ✅ "Could you check the logs for errors?"
+- ✅ "You might want to try running that command"
+- ✅ "It would help to look at the database metrics"
+- ✅ "You could run a query to confirm"
+- ✅ "Which would you like to try first?"
+
+**Rationale**: This constraint ensures user expectations align with actual capabilities. Users who think the agent is executing commands will become frustrated when nothing happens.
+
+**Implementation**: LLM system prompts must explicitly state advisor-only role and prohibit execution language.
+
+---
+
 ## 2. Path Selection & Routing
 
 ### 2.0 Path Selection Timeline (3 Phases)
@@ -963,6 +1050,23 @@ Mitigation is a **tool available during early stages**, not a stage jump.
   - Case transitions to RESOLVED
 
 **Milestones**: `symptom_verified` → `mitigation_applied` (during 1-2) → `root_cause_identified` → `solution_applied` → `solution_verified`
+
+**CRITICAL: Mitigation Follow-up Requirement**
+
+When a temporary workaround is applied to stop the bleeding:
+
+1. **Track workaround state**: Set `has_temporary_workaround = True` in case metadata
+2. **After root cause fixed**: Agent reminds user to revert/remove the workaround
+3. **Required guidance before RESOLVED**:
+   - State what needs to be done: "Once [permanent fix] is deployed, remember to [re-enable/revert/remove] the temporary workaround"
+   - Offer to help with root cause investigation if not yet done
+
+**Example**:
+> "The fraud check bypass stopped the immediate issue. Once the SSL cert is renewed, make sure to re-enable the fraud check. Would you like help investigating why the cert wasn't monitored for expiration?"
+
+**Without follow-up**: Temporary workarounds become permanent technical debt, creating security holes or degraded functionality.
+
+**Milestone consideration**: For complete lifecycle tracking, consider adding `workaround_reverted` milestone before marking RESOLVED.
 
 ---
 
@@ -1175,6 +1279,28 @@ async def record_turn(
     # Only increment turns_without_progress when TRULY stuck (no actions taken).
     # Otherwise, waiting for user evidence would trigger premature degraded mode.
 
+    # ============================================================
+    # PROGRESS DEFINITION (for turns_without_progress counter)
+    # ============================================================
+    #
+    # Progress IS made when ANY of the following occur:
+    # - Milestone transitions False → True
+    # - Evidence is added to the case
+    # - New hypothesis is generated
+    # - Hypothesis status changes (ACTIVE → VALIDATED/REFUTED)
+    # - Solution is proposed or verified
+    # - User confirms problem statement or path selection
+    #
+    # Progress is NOT made when:
+    # - Agent only asks clarifying questions (no state advancement)
+    # - Agent repeats previous information
+    # - Conversation is off-topic or circular
+    # - User provides information that doesn't advance investigation
+    #
+    # IMPORTANT: Waiting for user to provide requested evidence does NOT
+    # count against progress. The counter only increments when the agent
+    # fails to take productive action or generate useful hypotheses.
+
     # Create turn record
     turn = TurnProgress(
         turn_number=case.current_turn,
@@ -1256,4 +1382,3 @@ def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
     # Conversation only
     return TurnOutcome.CONVERSATION
 ```
-{ _ble_edit_exec_gexec__save_lastarg ""; } 4>&1 5>&2 &>/dev/null
