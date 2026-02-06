@@ -37,7 +37,8 @@ from faultmaven.services.auth_service import (
 def mock_settings():
     """Mock settings for testing."""
     settings = MagicMock()
-    settings.security.jwt_algorithm = "RS256"
+    settings.auth.auth_mode = "local"  # Default to local mode for tests
+    settings.security.jwt_algorithm = "HS256"  # Match local mode default
     settings.security.jwt_access_token_expire_minutes = 15
     settings.security.jwt_refresh_token_expire_days = 7
     settings.security.jwt_issuer = "faultmaven-api"
@@ -47,7 +48,8 @@ def mock_settings():
     settings.security.jwt_public_key = None
     settings.security.jwt_private_key_path = None
     settings.security.jwt_public_key_path = None
-    settings.security.jwt_secret_key = None
+    settings.security.jwt_secret_key = MagicMock()
+    settings.security.jwt_secret_key.get_secret_value.return_value = "test-secret-key"
     return settings
 
 
@@ -1143,6 +1145,225 @@ class TestKeyLoading:
             assert claims["sub"] == "user-123"
             assert claims["org_id"] == "org-456"
             assert claims["email"] == "test@example.com"
+
+
+# ============================================================
+# Algorithm Selection Tests
+# ============================================================
+
+
+class TestAlgorithmSelection:
+    """Tests for _algorithm property - AUTH_MODE-based algorithm selection."""
+
+    def test_algorithm_uses_hs256_for_local_auth_mode(self, mock_settings):
+        """Algorithm is HS256 when AUTH_MODE=local."""
+        # Configure local auth mode
+        mock_settings.auth.auth_mode = "local"
+        mock_settings.security.jwt_secret_key = MagicMock()
+        mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
+            "test-secret-key"
+        )
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
+            service = AuthService()
+            assert service._algorithm == "HS256"
+
+    def test_algorithm_uses_rs256_for_oauth_auth_mode(self, mock_settings):
+        """Algorithm is RS256 when AUTH_MODE=oauth."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        # Generate test RSA keys
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
+
+        # Configure OAuth auth mode with RSA keys
+        mock_settings.auth.auth_mode = "oauth"
+        mock_settings.security.jwt_private_key = MagicMock()
+        mock_settings.security.jwt_private_key.get_secret_value.return_value = (
+            private_pem
+        )
+        mock_settings.security.jwt_public_key = public_pem
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
+            service = AuthService()
+            assert service._algorithm == "RS256"
+
+    def test_algorithm_respects_auth_mode_over_rsa_key_presence(self, mock_settings):
+        """AUTH_MODE takes precedence over RSA key availability."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        # Generate test RSA keys
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
+
+        # Configure local auth mode BUT with RSA keys present
+        # This simulates having RSA keys configured for future OAuth use
+        mock_settings.auth.auth_mode = "local"
+        mock_settings.security.jwt_secret_key = MagicMock()
+        mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
+            "test-secret-key"
+        )
+        mock_settings.security.jwt_private_key = MagicMock()
+        mock_settings.security.jwt_private_key.get_secret_value.return_value = (
+            private_pem
+        )
+        mock_settings.security.jwt_public_key = public_pem
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
+            service = AuthService()
+            # Despite RSA keys being present, should use HS256 because AUTH_MODE=local
+            assert service._algorithm == "HS256"
+
+    def test_local_mode_token_generation_and_validation(self, mock_settings):
+        """Tokens generated and validated with HS256 in local mode."""
+        # Configure local auth mode
+        mock_settings.auth.auth_mode = "local"
+        mock_settings.security.jwt_secret_key = MagicMock()
+        mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
+            "test-secret-key-for-hs256"
+        )
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
+            service = AuthService()
+
+            # Generate token
+            token = service.generate_access_token(
+                user_id="user-123",
+                organization_id="org-456",
+                email="test@example.com",
+                roles=["admin"],
+            )
+
+            # Verify token can be decoded
+            claims = service.verify_token(token, token_type="access")
+            assert claims["sub"] == "user-123"
+
+            # Verify token header uses HS256
+            import jwt as pyjwt
+
+            header = pyjwt.get_unverified_header(token)
+            assert header["alg"] == "HS256"
+
+    def test_oauth_mode_token_generation_and_validation(self, mock_settings):
+        """Tokens generated and validated with RS256 in OAuth mode."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        # Generate test RSA keys
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
+
+        # Configure OAuth auth mode
+        mock_settings.auth.auth_mode = "oauth"
+        mock_settings.security.jwt_private_key = MagicMock()
+        mock_settings.security.jwt_private_key.get_secret_value.return_value = (
+            private_pem
+        )
+        mock_settings.security.jwt_public_key = public_pem
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
+            service = AuthService()
+
+            # Generate token
+            token = service.generate_access_token(
+                user_id="user-123",
+                organization_id="org-456",
+                email="test@example.com",
+                roles=["admin"],
+            )
+
+            # Verify token can be decoded
+            claims = service.verify_token(token, token_type="access")
+            assert claims["sub"] == "user-123"
+
+            # Verify token header uses RS256
+            import jwt as pyjwt
+
+            header = pyjwt.get_unverified_header(token)
+            assert header["alg"] == "RS256"
 
 
 # ============================================================

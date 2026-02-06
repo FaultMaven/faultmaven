@@ -179,14 +179,26 @@ class AuthService:
 
     @property
     def _algorithm(self) -> str:
-        """Get JWT algorithm from settings.
+        """Get JWT algorithm based on AUTH_MODE.
 
-        Automatically uses RS256 if RSA keys are loaded, otherwise uses configured algorithm.
+        Algorithm selection follows iam-design.md:
+        - AUTH_MODE=local → HS256 (symmetric key with JWT_SECRET_KEY)
+        - AUTH_MODE=oauth → RS256 (asymmetric key with RSA keys)
+
+        This ensures consistent algorithm selection across token generation
+        and validation, preventing "alg value is not allowed" errors.
         """
-        # If RSA keys are available, use RS256
+        # Respect AUTH_MODE setting for consistent token handling
+        if self._settings.auth.auth_mode == "local":
+            return "HS256"
+        elif self._settings.auth.auth_mode == "oauth":
+            return "RS256"
+
+        # Legacy fallback: Check if RSA keys are available
         if self._private_key and self._public_key:
             return "RS256"
-        # Otherwise use configured algorithm
+
+        # Final fallback to configured algorithm
         return self._settings.security.jwt_algorithm
 
     @property

@@ -733,6 +733,9 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
+        from faultmaven.modules.case.domain.services.investigation_router import (
+            determine_investigation_path,
+        )
 
         # 0. Check for Proactive Blocker Detection
         if hasattr(updates, "missing_critical_data") and updates.missing_critical_data:
@@ -882,10 +885,6 @@ class MilestoneEngine:
         # 2c. Trigger Path Selection if symptom_verified milestone completed
         if "symptom_verified" in metadata.get("milestones_completed", []):
             if not case.path_selection:
-                from faultmaven.modules.case.domain.services.investigation_router import (
-                    determine_investigation_path,
-                )
-
                 case.path_selection = determine_investigation_path(
                     case.problem_verification
                 )
