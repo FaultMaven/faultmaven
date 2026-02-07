@@ -115,6 +115,7 @@ class DatabaseSessionRepository(SessionRepository):
             session_model = SessionModel(
                 session_id=session.session_id,
                 user_id=session.user_id,
+                organization_id=session.organization_id,
                 created_at=session.created_at,
                 last_accessed=session.last_accessed,
                 expires_at=session.expires_at,
@@ -345,6 +346,7 @@ class DatabaseSessionRepository(SessionRepository):
         return Session(
             session_id=model.session_id,
             user_id=model.user_id,
+            organization_id=model.organization_id,
             created_at=self._ensure_tz_aware(model.created_at),
             last_accessed=self._ensure_tz_aware(model.last_accessed),
             expires_at=(

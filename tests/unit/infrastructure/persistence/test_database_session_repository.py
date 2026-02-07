@@ -69,6 +69,7 @@ def sample_session() -> Session:
     return Session(
         session_id=str(uuid4()),
         user_id="test-user-001",
+        organization_id="00000000-0000-0000-0000-000000000001",  # Default org for single-tenant
         created_at=datetime.now(timezone.utc),
         last_accessed=datetime.now(timezone.utc),
         expires_at=datetime.now(timezone.utc) + timedelta(hours=24),

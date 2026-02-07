@@ -53,6 +53,10 @@ class SessionContext(BaseModel):
     user_id: str = Field(
         ..., description="User identifier - REQUIRED for authorization"
     )
+    organization_id: str = Field(
+        default="00000000-0000-0000-0000-000000000001",
+        description="Organization ID for multi-tenant isolation"
+    )
 
     # Multi-device support fields (spec lines 263-269)
     client_id: Optional[str] = Field(

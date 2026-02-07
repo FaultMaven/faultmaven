@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.api.v1.dependencies import (
     get_current_user,
     get_session_id,
+    get_session_service,
     get_user_id,
     require_authenticated_user,
 )

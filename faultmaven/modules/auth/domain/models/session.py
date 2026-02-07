@@ -29,6 +29,7 @@ class Session:
     Attributes:
         session_id: Unique identifier for the session (UUID format)
         user_id: Identifier of the user who owns the session
+        organization_id: Organization ID for multi-tenant isolation
         created_at: Timestamp when the session was created
         last_accessed: Timestamp of the last session activity
         expires_at: Optional expiration timestamp for the session
@@ -37,6 +38,7 @@ class Session:
 
     session_id: str
     user_id: str
+    organization_id: str = "00000000-0000-0000-0000-000000000001"  # Default org for single-tenant mode
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_accessed: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = None
