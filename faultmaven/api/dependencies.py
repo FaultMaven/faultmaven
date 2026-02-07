@@ -25,7 +25,7 @@ Usage:
 
 from typing import AsyncGenerator
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.api.v1.dependencies import (
@@ -103,6 +103,7 @@ async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def get_service_factory(
     db_session: AsyncSession = Depends(get_async_db_session),
+    request: Request = None,
 ) -> ServiceFactory:
     """Get service factory for request.
 
@@ -112,6 +113,7 @@ async def get_service_factory(
 
     Args:
         db_session: Database session from get_async_db_session
+        request: FastAPI request (optional, for tenant_provider access)
 
     Returns:
         ServiceFactory instance
@@ -124,7 +126,12 @@ async def get_service_factory(
             case_service = factory.create_case_service()
             return await case_service.get_case_statistics(org_id)
     """
-    return ServiceFactory(db_session)
+    # Get tenant_provider from app.state if request is available
+    tenant_provider = None
+    if request is not None:
+        tenant_provider = getattr(request.app.state, "tenant_provider", None)
+
+    return ServiceFactory(db_session, tenant_provider=tenant_provider)
 
 
 # ============================================================

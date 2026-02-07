@@ -45,7 +45,7 @@ def create_case_service(
             tenant_provider=tenant_provider,  # Inject TenantProvider for deployment-agnostic org resolution
         )
         logger.debug(
-            "Case service initialized with milestone-based repository and TenantProvider"
+            f"Case service initialized with milestone-based repository and TenantProvider (tenant_provider={tenant_provider})"
         )
         return service
     except Exception as e:
@@ -262,28 +262,29 @@ def create_organization_service(
     Returns:
         Tuple of (organization_service, organization_repository)
     """
-    if not db_session:
-        logger.debug("OrganizationService skipped (no database session)")
-        return None, None
-
+    # Organization repository no longer needs a pre-created db_session
+    # It will use get_db_session() per operation like SessionlessCaseRepository
     try:
-        from faultmaven.infrastructure.persistence.organization_repository import (
-            PostgreSQLOrganizationRepository,
+        from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
+            SessionlessOrganizationRepository,
         )
         from faultmaven.modules.auth.domain.services.organization_service import (
             OrganizationService,
         )
 
-        repository = PostgreSQLOrganizationRepository(db_session)
+        repository = SessionlessOrganizationRepository()
         service = OrganizationService(
             organization_repository=repository,
             audit_repository=None,
             settings=settings,
         )
-        logger.debug("OrganizationService initialized")
+        logger.debug("OrganizationService initialized with sessionless repository")
         return service, repository
     except Exception as e:
         logger.warning(f"OrganizationService initialization failed: {e}")
+        import traceback
+
+        traceback.print_exc()
         return None, None
 
 
@@ -419,9 +420,13 @@ def create_tenant_provider(
     organization_repository: Any | None,
     settings: FaultMavenSettings,
 ) -> Any | None:
-    """Create tenant provider for deployment neutrality."""
-    if not db_session:
-        logger.debug("TenantProvider skipped (no database session)")
+    """Create tenant provider for deployment neutrality.
+
+    Note: db_session parameter is deprecated and unused since we now use
+    SessionlessOrganizationRepository. Kept for backward compatibility.
+    """
+    if not organization_repository:
+        logger.debug("TenantProvider skipped (no organization repository)")
         return None
 
     try:
@@ -436,6 +441,9 @@ def create_tenant_provider(
         return provider
     except Exception as e:
         logger.warning(f"TenantProvider initialization failed: {e}")
+        import traceback
+
+        traceback.print_exc()
         return None
 
 

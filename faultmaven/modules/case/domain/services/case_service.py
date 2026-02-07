@@ -176,7 +176,9 @@ class CaseService(BaseService, ICaseService):
             # Resolve organization context using TenantProvider (deployment-neutral)
             # In single-tenant mode: uses default organization
             # In multi-tenant mode: uses user's organization
-            resolved_org_id = owner_id.strip()  # Fallback for backward compatibility
+            from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+            resolved_org_id = SingleTenantProvider.DEFAULT_ORG_ID  # Default fallback
             if self.tenant_provider:
                 try:
                     # For single-tenant: get_default_organization() is simpler
@@ -184,13 +186,11 @@ class CaseService(BaseService, ICaseService):
                     organization = await self.tenant_provider.get_default_organization()
                     resolved_org_id = organization.org_id
                 except Exception as e:
-                    # If get_default_organization fails (e.g., multi-tenant mode),
-                    # fall back to owner_id (legacy behavior)
+                    # If get_default_organization fails, use default org_id
                     self.logger.debug(
                         f"TenantProvider.get_default_organization() failed: {e}. "
-                        f"Using owner_id as fallback for organization_id"
+                        f"Using default organization_id: {resolved_org_id}"
                     )
-                    # Fallback to owner_id if TenantProvider fails
 
             # Create new case using milestone-based model
             case = Case(
