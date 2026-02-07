@@ -98,9 +98,9 @@ class TestAlembicMigrationInfrastructure:
         # Verify success
         assert result.returncode == 0, f"Migration failed: {result.stderr}"
         assert (
-            "Running upgrade  -> da6856719b5f" in result.stderr
-            or "Running upgrade  -> da6856719b5f" in result.stdout
-        )
+            "Running upgrade  -> 0d4e538d666d" in result.stderr
+            or "Running upgrade  -> 0d4e538d666d" in result.stdout
+        ), f"Expected consolidated baseline migration. Output: {result.stderr}"
 
     def test_tables_created_correctly(self, clean_database, database_url):
         """Test 2: All expected tables are created after migration."""
@@ -110,12 +110,13 @@ class TestAlembicMigrationInfrastructure:
         # Get tables
         tables = get_tables(TEST_DB)
 
-        # Expected core tables (updated to reflect all migrations)
+        # Expected core tables (consolidated baseline migration creates all tables at once)
         expected_tables = [
             "agent_executions",
             "agent_tool_calls",
             "agent_tool_calls_v2",
             "alembic_version",
+            "case_checkpoints",
             "case_messages",
             "case_status_transitions",
             "case_tags",
@@ -125,18 +126,28 @@ class TestAlembicMigrationInfrastructure:
             "hypotheses",
             "investigation_sessions",
             "knowledge_items",
-            "knowledge_suggestions",  # Added in migration 013
+            "knowledge_suggestions",
+            "oauth_authorization_codes",
+            "oauth_revoked_tokens",
+            "organization_members",
+            "organizations",
+            "permissions",
+            "role_permissions",
+            "roles",
             "sessions",
             "solutions",
             "standalone_evidence",
+            "team_members",
+            "teams",
             "uploaded_files",
+            "user_audit_log",
             "users",
         ]
 
         # Verify all expected tables exist
         assert len(tables) == len(
             expected_tables
-        ), f"Expected {len(expected_tables)} tables, got {len(tables)}: {tables}"
+        ), f"Expected {len(expected_tables)} tables, got {len(tables)}. Missing: {set(expected_tables) - set(tables)}, Extra: {set(tables) - set(expected_tables)}"
         for expected_table in expected_tables:
             assert expected_table in tables, f"Missing table: {expected_table}"
 
@@ -148,10 +159,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (015_rename_consulting_to_inquiry)
+        # Verify revision ID matches the consolidated baseline migration
         assert (
-            revision == "015_rename_consulting_to_inquiry"
-        ), f"Expected revision 015_rename_consulting_to_inquiry (current head), got {revision}"
+            revision == "0d4e538d666d"
+        ), f"Expected revision 0d4e538d666d (consolidated baseline), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -161,24 +172,25 @@ class TestAlembicMigrationInfrastructure:
         # Verify tables exist
         tables_before = get_tables(TEST_DB)
         assert (
-            len(tables_before) == 19
-        ), f"Expected 19 tables initially, got {len(tables_before)}"
+            len(tables_before) == 30
+        ), f"Expected 30 tables initially, got {len(tables_before)}"
 
-        # Rollback one migration (013 -> 012)
+        # Rollback consolidated baseline (should remove all tables except alembic_version)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify table count decreases (migration 013 added knowledge_suggestions table)
+        # Verify all tables removed except alembic_version
         tables_after = get_tables(TEST_DB)
         assert (
-            len(tables_after) == 19
-        ), f"Expected 19 tables after rollback, got {len(tables_after)}: {tables_after}"
+            len(tables_after) == 1
+        ), f"Expected 1 table (alembic_version) after rollback, got {len(tables_after)}: {tables_after}"
+        assert tables_after == ["alembic_version"], f"Expected only alembic_version, got {tables_after}"
 
-        # Verify revision moved back one step
+        # Verify revision moved to base (empty - no migrations)
         revision = get_current_revision(database_url)
         assert (
-            revision == "014_drop_message_constraint"
-        ), f"Expected revision 014_drop_message_constraint after rollback, got {revision}"
+            revision == "" or "current" not in revision.lower()
+        ), f"Expected no revision after rollback to base, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -195,27 +207,30 @@ class TestAlembicMigrationInfrastructure:
         # Verify tables restored
         tables = get_tables(TEST_DB)
         assert (
-            len(tables) == 19
-        ), f"Expected 19 tables after re-application, got {len(tables)}"
+            len(tables) == 30
+        ), f"Expected 30 tables after re-application, got {len(tables)}"
         assert (
             "knowledge_suggestions" in tables
         ), "knowledge_suggestions table should be restored"
+        assert (
+            "organizations" in tables
+        ), "organizations table should be restored"
 
         # Verify revision
         revision = get_current_revision(database_url)
-        assert revision == "015_rename_consulting_to_inquiry"
+        assert revision == "0d4e538d666d", f"Expected consolidated baseline revision, got {revision}"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
         result = run_alembic("history", database_url)
 
         assert result.returncode == 0, f"History command failed: {result.stderr}"
-        # Check for baseline and latest migrations
+        # Check for consolidated baseline migration
         output = result.stdout + result.stderr
-        assert "da6856719b5f" in output, "Baseline revision should be in history"
+        assert "0d4e538d666d" in output, f"Consolidated baseline revision should be in history. Output: {output}"
         assert (
-            "011_add_standalone_evidence" in output
-        ), "Latest revision should be in history"
+            "001_consolidated_baseline" in output
+        ), f"Consolidated baseline name should be in history. Output: {output}"
 
 
 class TestHelperScript:

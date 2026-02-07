@@ -115,7 +115,7 @@ check_port_available() {
 
 wait_for_service() {
     local port=$1
-    local max_wait=30
+    local max_wait=60
     local elapsed=0
     local check_interval=1
 
@@ -270,7 +270,7 @@ restart_app() {
     echo ""
 
     stop_app
-    sleep 1
+    sleep 3
     start_app
 }
 

@@ -44,6 +44,8 @@ from faultmaven.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 
+from faultmaven.providers.tenancy.base import TenantProvider
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
@@ -73,13 +75,17 @@ class ServiceFactory:
             case = await case_service.get_case(case_id, org_id)
     """
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(
+        self, db_session: AsyncSession, tenant_provider: Optional[TenantProvider] = None
+    ):
         """Initialize service factory.
 
         Args:
             db_session: Database session for repositories
+            tenant_provider: Optional tenant provider for org resolution
         """
         self.db_session = db_session
+        self.tenant_provider = tenant_provider
 
         # Create repositories with the provided session
         self.case_repo: CaseRepository = get_case_repository(
@@ -112,6 +118,7 @@ class ServiceFactory:
         return APICaseService(
             case_repo=self.case_repo,
             session_repo=self.session_repo,
+            tenant_provider=self.tenant_provider,
         )
 
     def create_investigation_session_service(self) -> APIInvestigationSessionService:
@@ -183,7 +190,9 @@ class ServiceFactory:
         from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
             AgentOrchestrationService,
         )
-        from faultmaven.modules.agent.tools.agent_tools import agent_tool_registry
+        from faultmaven.modules.agent.tools.base import (
+            tool_registry as agent_tool_registry,
+        )
 
         return AgentOrchestrationService(
             case_repo=self.case_repo,

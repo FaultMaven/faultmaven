@@ -562,7 +562,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text("""
                 INSERT INTO case_messages (message_id, case_id, role, content, metadata)
-                VALUES (:message_id, :case_id, :role, :content, :metadata::jsonb)
+                VALUES (:message_id, :case_id, :role, :content, :metadata)
             """)
 
             await self.db.execute(
@@ -763,9 +763,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 escalation_state, documentation, progress, metadata
             ) VALUES (
                 :case_id, :user_id, :title, :status, :created_at, :updated_at,
-                :inquiry::jsonb, :problem_verification::jsonb, :working_conclusion::jsonb,
-                :root_cause_conclusion::jsonb, :path_selection::jsonb, :degraded_mode::jsonb,
-                :escalation_state::jsonb, :documentation::jsonb, :progress::jsonb, :metadata::jsonb
+                :inquiry, :problem_verification, :working_conclusion,
+                :root_cause_conclusion, :path_selection, :degraded_mode,
+                :escalation_state, :documentation, :progress, :metadata
             )
             ON CONFLICT (case_id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
@@ -826,7 +826,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 ),
                 "documentation": json.dumps(case.documentation.model_dump()),
                 "progress": json.dumps(case.progress.model_dump()),
-                "metadata": json.dumps({}),  # Reserved for future use
+                "metadata": json.dumps(case.metadata or {}),
             },
         )
 

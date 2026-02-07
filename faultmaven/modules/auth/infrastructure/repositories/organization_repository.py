@@ -38,19 +38,19 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         """Create a new organization."""
         query = text("""
             INSERT INTO organizations (
-                org_id, name, slug, description, plan_tier, max_members, max_cases,
+                organization_id, name, slug, description, plan_tier, max_members, max_cases,
                 settings, created_at, updated_at
             ) VALUES (
-                :org_id, :name, :slug, :description, :plan_tier, :max_members, :max_cases,
+                :organization_id, :name, :slug, :description, :plan_tier, :max_members, :max_cases,
                 :settings::jsonb, :created_at, :updated_at
             )
-            RETURNING org_id
+            RETURNING organization_id
         """)
 
         await self.db.execute(
             query,
             {
-                "org_id": org.org_id,
+                "organization_id": org.organization_id,
                 "name": org.name,
                 "slug": org.slug,
                 "description": org.description,
@@ -64,26 +64,26 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         )
         await self.db.commit()
 
-        logger.info(f"Created organization: {org.org_id} ({org.name})")
+        logger.info(f"Created organization: {org.organization_id} ({org.name})")
         return org
 
     async def get_organization(self, org_id: str) -> Optional[Organization]:
         """Get organization by ID."""
         query = text("""
-            SELECT org_id, name, slug, description, plan_tier, max_members, max_cases,
+            SELECT organization_id, name, slug, description, plan_tier, max_members, max_cases,
                    settings, created_at, updated_at, deleted_at
             FROM organizations
-            WHERE org_id = :org_id AND deleted_at IS NULL
+            WHERE organization_id = :organization_id AND deleted_at IS NULL
         """)
 
-        result = await self.db.execute(query, {"org_id": org_id})
+        result = await self.db.execute(query, {"organization_id": org_id})
         row = result.fetchone()
 
         if not row:
             return None
 
         return Organization(
-            org_id=row.org_id,
+            organization_id=row.organization_id,
             name=row.name,
             slug=row.slug,
             description=row.description,
@@ -99,7 +99,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug."""
         query = text("""
-            SELECT org_id, name, slug, description, plan_tier, max_members, max_cases,
+            SELECT organization_id, name, slug, description, plan_tier, max_members, max_cases,
                    settings, created_at, updated_at, deleted_at
             FROM organizations
             WHERE slug = :slug AND deleted_at IS NULL
@@ -112,7 +112,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
             return None
 
         return Organization(
-            org_id=row.org_id,
+            organization_id=row.organization_id,
             name=row.name,
             slug=row.slug,
             description=row.description,
@@ -139,13 +139,13 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
                 max_cases = :max_cases,
                 settings = :settings::jsonb,
                 updated_at = :updated_at
-            WHERE org_id = :org_id AND deleted_at IS NULL
+            WHERE organization_id = :organization_id AND deleted_at IS NULL
         """)
 
         result = await self.db.execute(
             query,
             {
-                "org_id": org.org_id,
+                "organization_id": org.organization_id,
                 "name": org.name,
                 "slug": org.slug,
                 "description": org.description,
@@ -165,11 +165,11 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         query = text("""
             UPDATE organizations
             SET deleted_at = :deleted_at
-            WHERE org_id = :org_id AND deleted_at IS NULL
+            WHERE organization_id = :organization_id AND deleted_at IS NULL
         """)
 
         result = await self.db.execute(
-            query, {"org_id": org_id, "deleted_at": datetime.now(timezone.utc)}
+            query, {"organization_id": org_id, "deleted_at": datetime.now(timezone.utc)}
         )
         await self.db.commit()
 
@@ -178,10 +178,10 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def list_user_organizations(self, user_id: str) -> List[Organization]:
         """List all organizations a user belongs to."""
         query = text("""
-            SELECT o.org_id, o.name, o.slug, o.description, o.plan_tier, o.max_members,
+            SELECT o.organization_id, o.name, o.slug, o.description, o.plan_tier, o.max_members,
                    o.max_cases, o.settings, o.created_at, o.updated_at, o.deleted_at
             FROM organizations o
-            JOIN organization_members om ON o.org_id = om.org_id
+            JOIN organization_members om ON o.organization_id = om.organization_id
             WHERE om.user_id = :user_id AND o.deleted_at IS NULL
             ORDER BY om.joined_at DESC
         """)
@@ -191,7 +191,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
         return [
             Organization(
-                org_id=row.org_id,
+                organization_id=row.organization_id,
                 name=row.name,
                 slug=row.slug,
                 description=row.description,
@@ -209,9 +209,9 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def add_member(self, org_id: str, user_id: str, role_id: str) -> bool:
         """Add user to organization with role."""
         query = text("""
-            INSERT INTO organization_members (user_id, org_id, role_id, joined_at)
-            VALUES (:user_id, :org_id, :role_id, :joined_at)
-            ON CONFLICT (user_id, org_id) DO UPDATE
+            INSERT INTO organization_members (user_id, organization_id, role_id, joined_at)
+            VALUES (:user_id, :organization_id, :role_id, :joined_at)
+            ON CONFLICT (user_id, organization_id) DO UPDATE
             SET role_id = EXCLUDED.role_id
         """)
 
@@ -219,7 +219,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
             query,
             {
                 "user_id": user_id,
-                "org_id": org_id,
+                "organization_id": org_id,
                 "role_id": role_id,
                 "joined_at": datetime.now(timezone.utc),
             },
@@ -235,10 +235,12 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         """Remove user from organization."""
         query = text("""
             DELETE FROM organization_members
-            WHERE org_id = :org_id AND user_id = :user_id
+            WHERE organization_id = :organization_id AND user_id = :user_id
         """)
 
-        result = await self.db.execute(query, {"org_id": org_id, "user_id": user_id})
+        result = await self.db.execute(
+            query, {"organization_id": org_id, "user_id": user_id}
+        )
         await self.db.commit()
 
         return result.rowcount > 0
@@ -248,11 +250,11 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         query = text("""
             UPDATE organization_members
             SET role_id = :role_id
-            WHERE org_id = :org_id AND user_id = :user_id
+            WHERE organization_id = :organization_id AND user_id = :user_id
         """)
 
         result = await self.db.execute(
-            query, {"org_id": org_id, "user_id": user_id, "role_id": role_id}
+            query, {"organization_id": org_id, "user_id": user_id, "role_id": role_id}
         )
         await self.db.commit()
 
@@ -261,19 +263,19 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def list_organization_members(self, org_id: str) -> List[OrganizationMember]:
         """List all members of an organization."""
         query = text("""
-            SELECT user_id, org_id, role_id, joined_at, last_active_at
+            SELECT user_id, organization_id, role_id, joined_at, last_active_at
             FROM organization_members
-            WHERE org_id = :org_id
+            WHERE organization_id = :organization_id
             ORDER BY joined_at DESC
         """)
 
-        result = await self.db.execute(query, {"org_id": org_id})
+        result = await self.db.execute(query, {"organization_id": org_id})
         rows = result.fetchall()
 
         return [
             OrganizationMember(
                 user_id=row.user_id,
-                org_id=row.org_id,
+                organization_id=row.organization_id,
                 role_id=row.role_id,
                 joined_at=row.joined_at,
                 last_active_at=row.last_active_at,
@@ -286,10 +288,12 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         query = text("""
             SELECT role_id
             FROM organization_members
-            WHERE org_id = :org_id AND user_id = :user_id
+            WHERE organization_id = :organization_id AND user_id = :user_id
         """)
 
-        result = await self.db.execute(query, {"org_id": org_id, "user_id": user_id})
+        result = await self.db.execute(
+            query, {"organization_id": org_id, "user_id": user_id}
+        )
         row = result.fetchone()
 
         return row.role_id if row else None
@@ -303,11 +307,12 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         Permission format: 'resource.action' (e.g., 'cases.write')
         """
         query = text("""
-            SELECT user_has_org_permission(:user_id, :org_id, :permission)
+            SELECT user_has_org_permission(:user_id, :organization_id, :permission)
         """)
 
         result = await self.db.execute(
-            query, {"user_id": user_id, "org_id": org_id, "permission": permission}
+            query,
+            {"user_id": user_id, "organization_id": org_id, "permission": permission},
         )
         row = result.fetchone()
 

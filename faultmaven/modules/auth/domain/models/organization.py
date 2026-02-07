@@ -61,7 +61,7 @@ class AuditCategory(str, Enum):
 class Organization(BaseModel):
     """Organization (workspace/tenant) model."""
 
-    org_id: str
+    organization_id: str
     name: str
     slug: str
     description: Optional[str] = None
@@ -78,7 +78,7 @@ class OrganizationMember(BaseModel):
     """User membership in organization."""
 
     user_id: str
-    org_id: str
+    organization_id: str
     role_id: str  # References roles.role_id
     joined_at: datetime
     last_active_at: Optional[datetime] = None
@@ -88,7 +88,7 @@ class Team(BaseModel):
     """Team (sub-organization group) model."""
 
     team_id: str
-    org_id: str
+    organization_id: str
     name: str
     description: Optional[str] = None
     settings: Dict[str, Any] = Field(default_factory=dict)
@@ -139,7 +139,7 @@ class UserAuditLog(BaseModel):
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     session_id: Optional[str] = None
-    org_id: Optional[str] = None
+    organization_id: Optional[str] = None
     event_at: datetime
     success: bool = True
 

@@ -2232,6 +2232,34 @@ confidence_service = container.get_confidence_service()
 - Foreign key constraints enforce ownership
 - User can only access own data
 
+**Multi-Tenancy (Organization Isolation)**:
+- All 18 tables include `organization_id` column (String(64), NOT NULL, indexed)
+- Every database query filters by `organization_id` for tenant isolation
+- Authorization pattern: `WHERE organization_id = :current_user_org_id`
+- Default org for local mode: `SingleTenantProvider.DEFAULT_ORG_ID` (`00000000-0000-0000-0000-000000000001`)
+
+**Tables with organization_id**:
+| Table | Type | Notes |
+|-------|------|-------|
+| `sessions` | Top-level | User session ownership |
+| `cases` | Top-level | Case ownership |
+| `evidence` | Case-child | Denormalized for query performance |
+| `hypotheses` | Case-child | Denormalized for authorization |
+| `solutions` | Case-child | Denormalized for authorization |
+| `case_messages` | Case-child | Denormalized for isolation |
+| `uploaded_files` | Case-child | Denormalized for isolation |
+| `case_status_transitions` | Case-child | Audit trail |
+| `case_tags` | Case-child | Denormalized |
+| `agent_tool_calls` | Case-child | Tracking |
+| `evidence_artifacts` | Case-child | File tracking |
+| `case_checkpoints` | Case-child | State snapshots |
+| `agent_executions` | Case-child | Execution tracking |
+| `agent_tool_calls_v2` | Execution-child | Tool tracking |
+| `investigation_sessions` | Case-child | Session tracking |
+| `standalone_evidence` | Top-level | Unlinked evidence |
+| `knowledge_items` | Top-level | Knowledge base |
+| `knowledge_suggestions` | Top-level | KB suggestions |
+
 **RBAC**:
 - User roles: `user`, `admin`, `analyst`
 - Admin: Full system access

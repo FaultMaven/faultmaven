@@ -278,8 +278,10 @@ class UserService(BaseService):
         user.updated_at = datetime.now(timezone.utc)
         await self.user_repo.save(user)
 
-        # Use default organization if not specified
-        org_id = organization_id or "org-default"
+        # Use SingleTenantProvider.DEFAULT_ORG_ID for local mode
+        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+        org_id = organization_id or SingleTenantProvider.DEFAULT_ORG_ID
 
         # Get user's roles and permissions
         roles = user.roles if user.roles else ["member"]
@@ -801,9 +803,12 @@ class UserService(BaseService):
         user_roles = user.roles if user.roles else ["member"]
         permissions = [p.value for p in get_permissions_for_roles(user_roles)]
 
+        # Import here to avoid circular imports
+        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
         return {
             "user_id": user.user_id,
-            "organization_id": "org-default",
+            "organization_id": SingleTenantProvider.DEFAULT_ORG_ID,
             "email": user.email,
             "full_name": user.display_name,
             "roles": user_roles,

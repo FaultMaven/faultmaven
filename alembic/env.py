@@ -45,8 +45,13 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Target metadata for autogenerate (none - we use manual migrations)
-target_metadata = None
+# Add project root to path for model imports
+sys.path.insert(0, str(project_root))
+
+# Target metadata for autogenerate - import from models
+from faultmaven.infrastructure.persistence.models import Base
+
+target_metadata = Base.metadata
 
 
 def get_database_url() -> str:

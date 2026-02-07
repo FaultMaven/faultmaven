@@ -46,6 +46,7 @@ class DevUser:
         is_dev_user: Flag indicating development account
         is_active: Account active status
         roles: List of user roles for access control (e.g., ['admin'], ['user'])
+        organization_id: Organization UUID (defaults to SingleTenantProvider.DEFAULT_ORG_ID)
     """
 
     user_id: str
@@ -56,13 +57,17 @@ class DevUser:
     is_dev_user: bool = True
     is_active: bool = True
     roles: list[str] = None  # Will be set to ['admin'] by default in __post_init__
+    organization_id: str = None  # Will be set to DEFAULT_ORG_ID in __post_init__
 
     def __post_init__(self):
-        """Set default roles if not provided"""
+        """Set default roles and organization_id if not provided"""
         if self.roles is None:
             # Default: all dev users are admins for development
             # In production, this should default to ['user']
             self.roles = ["admin"]
+        if self.organization_id is None:
+            # Default to SingleTenantProvider.DEFAULT_ORG_ID for local mode
+            self.organization_id = "00000000-0000-0000-0000-000000000001"
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""
@@ -75,6 +80,7 @@ class DevUser:
             "is_dev_user": self.is_dev_user,
             "is_active": self.is_active,
             "roles": self.roles if self.roles else ["admin"],
+            "organization_id": self.organization_id,
         }
 
     @classmethod
@@ -89,6 +95,7 @@ class DevUser:
             is_dev_user=data.get("is_dev_user", True),
             is_active=data.get("is_active", True),
             roles=data.get("roles", ["admin"]),  # Default to admin for dev users
+            organization_id=data.get("organization_id"),
         )
 
 

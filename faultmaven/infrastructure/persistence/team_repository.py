@@ -31,11 +31,13 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
     async def create_team(self, team: Team) -> Team:
         """Create a new team."""
+        import json
+
         query = text("""
             INSERT INTO teams (
-                team_id, org_id, name, description, settings, created_at, updated_at
+                team_id, organization_id, name, description, settings, created_at, updated_at
             ) VALUES (
-                :team_id, :org_id, :name, :description, :settings::jsonb, :created_at, :updated_at
+                :team_id, :org_id, :name, :description, :settings, :created_at, :updated_at
             )
             RETURNING team_id
         """)
@@ -47,7 +49,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
                 "org_id": team.org_id,
                 "name": team.name,
                 "description": team.description,
-                "settings": team.settings or {},
+                "settings": json.dumps(team.settings or {}),
                 "created_at": team.created_at,
                 "updated_at": team.updated_at,
             },
@@ -60,7 +62,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
     async def get_team(self, team_id: str) -> Optional[Team]:
         """Get team by ID."""
         query = text("""
-            SELECT team_id, org_id, name, description, settings, created_at, updated_at, deleted_at
+            SELECT team_id, organization_id, name, description, settings, created_at, updated_at, deleted_at
             FROM teams
             WHERE team_id = :team_id AND deleted_at IS NULL
         """)
@@ -73,7 +75,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
         return Team(
             team_id=row.team_id,
-            org_id=row.org_id,
+            org_id=row.organization_id,
             name=row.name,
             description=row.description,
             settings=row.settings or {},
@@ -84,13 +86,15 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
     async def update_team(self, team: Team) -> bool:
         """Update team."""
+        import json
+
         team.updated_at = datetime.now(timezone.utc)
 
         query = text("""
             UPDATE teams
             SET name = :name,
                 description = :description,
-                settings = :settings::jsonb,
+                settings = :settings,
                 updated_at = :updated_at
             WHERE team_id = :team_id AND deleted_at IS NULL
         """)
@@ -101,7 +105,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
                 "team_id": team.team_id,
                 "name": team.name,
                 "description": team.description,
-                "settings": team.settings or {},
+                "settings": json.dumps(team.settings or {}),
                 "updated_at": team.updated_at,
             },
         )
@@ -127,9 +131,9 @@ class PostgreSQLTeamRepository(ITeamRepository):
     async def list_organization_teams(self, org_id: str) -> List[Team]:
         """List all teams in an organization."""
         query = text("""
-            SELECT team_id, org_id, name, description, settings, created_at, updated_at, deleted_at
+            SELECT team_id, organization_id, name, description, settings, created_at, updated_at, deleted_at
             FROM teams
-            WHERE org_id = :org_id AND deleted_at IS NULL
+            WHERE organization_id = :org_id AND deleted_at IS NULL
             ORDER BY created_at DESC
         """)
 
@@ -139,7 +143,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         return [
             Team(
                 team_id=row.team_id,
-                org_id=row.org_id,
+                org_id=row.organization_id,
                 name=row.name,
                 description=row.description,
                 settings=row.settings or {},
@@ -153,11 +157,11 @@ class PostgreSQLTeamRepository(ITeamRepository):
     async def list_user_teams(self, user_id: str, org_id: str) -> List[Team]:
         """List all teams a user belongs to in an organization."""
         query = text("""
-            SELECT t.team_id, t.org_id, t.name, t.description, t.settings,
+            SELECT t.team_id, t.organization_id, t.name, t.description, t.settings,
                    t.created_at, t.updated_at, t.deleted_at
             FROM teams t
             JOIN team_members tm ON t.team_id = tm.team_id
-            WHERE tm.user_id = :user_id AND t.org_id = :org_id AND t.deleted_at IS NULL
+            WHERE tm.user_id = :user_id AND t.organization_id = :org_id AND t.deleted_at IS NULL
             ORDER BY tm.joined_at DESC
         """)
 
@@ -167,7 +171,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         return [
             Team(
                 team_id=row.team_id,
-                org_id=row.org_id,
+                org_id=row.organization_id,
                 name=row.name,
                 description=row.description,
                 settings=row.settings or {},

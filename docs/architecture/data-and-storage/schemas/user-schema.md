@@ -207,7 +207,7 @@ COMMENT ON COLUMN users.sso_provider_id IS 'External user ID from SSO provider (
 ```sql
 CREATE TABLE organizations (
     -- Primary Key
-    org_id VARCHAR(20) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
+    organization_id VARCHAR(20) PRIMARY KEY DEFAULT ('org_' || gen_random_uuid()::text),
 
     -- Organization Info
     name VARCHAR(200) NOT NULL,
@@ -253,8 +253,8 @@ COMMENT ON COLUMN organizations.slug IS 'URL slug for organization (e.g., acme-c
 CREATE TABLE organization_members (
     -- Composite Primary Key
     user_id VARCHAR(20) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    org_id VARCHAR(20) NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
-    PRIMARY KEY (user_id, org_id),
+    organization_id VARCHAR(20) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, organization_id),
 
     -- Role in Organization
     role_id VARCHAR(20) NOT NULL REFERENCES roles(role_id),
@@ -275,7 +275,7 @@ CREATE TABLE organization_members (
 );
 
 -- Indexes
-CREATE INDEX idx_org_members_org_id ON organization_members(org_id);
+CREATE INDEX idx_org_members_organization_id ON organization_members(organization_id);
 CREATE INDEX idx_org_members_role_id ON organization_members(role_id);
 
 COMMENT ON TABLE organization_members IS 'User membership in organizations with roles';
@@ -289,7 +289,7 @@ CREATE TABLE teams (
     team_id VARCHAR(20) PRIMARY KEY DEFAULT ('team_' || gen_random_uuid()::text),
 
     -- Parent Organization
-    org_id VARCHAR(20) NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    organization_id VARCHAR(20) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
 
     -- Team Info
     name VARCHAR(200) NOT NULL,
@@ -303,11 +303,11 @@ CREATE TABLE teams (
     deleted_at TIMESTAMPTZ,
 
     -- Unique name within organization
-    UNIQUE (org_id, name)
+    UNIQUE (organization_id, name)
 );
 
 -- Indexes
-CREATE INDEX idx_teams_org_id ON teams(org_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_teams_organization_id ON teams(organization_id) WHERE deleted_at IS NULL;
 
 COMMENT ON TABLE teams IS 'Sub-organization groups for collaboration';
 ```
@@ -456,7 +456,7 @@ CREATE TABLE user_audit_log (
 
     -- Actor
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE SET NULL,
-    org_id VARCHAR(20) REFERENCES organizations(org_id) ON DELETE SET NULL,
+    organization_id VARCHAR(20) REFERENCES organizations(organization_id) ON DELETE SET NULL,
 
     -- Event
     event_type VARCHAR(100) NOT NULL,  -- 'user.login', 'user.password_change', 'role.assigned', etc.
@@ -477,7 +477,7 @@ CREATE TABLE user_audit_log (
 
 -- Indexes
 CREATE INDEX idx_user_audit_log_user_id ON user_audit_log(user_id, created_at DESC);
-CREATE INDEX idx_user_audit_log_org_id ON user_audit_log(org_id, created_at DESC);
+CREATE INDEX idx_user_audit_log_organization_id ON user_audit_log(organization_id, created_at DESC);
 CREATE INDEX idx_user_audit_log_event_type ON user_audit_log(event_type);
 CREATE INDEX idx_user_audit_log_created_at ON user_audit_log(created_at DESC);
 
@@ -502,7 +502,7 @@ SELECT c.*
 FROM cases c
 JOIN users u ON u.user_id = c.user_id
 JOIN organization_members om ON om.user_id = u.user_id
-WHERE om.org_id = :current_org_id
+WHERE om.organization_id = :current_organization_id
 AND om.user_id = :current_user_id;
 ```
 
@@ -524,7 +524,7 @@ USING (
         SELECT u.user_id
         FROM users u
         JOIN organization_members om ON om.user_id = u.user_id
-        WHERE om.org_id = current_setting('app.current_org_id')::varchar
+        WHERE om.organization_id = current_setting('app.current_organization_id')::varchar
     )
 );
 ```

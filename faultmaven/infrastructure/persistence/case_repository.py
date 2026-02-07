@@ -762,7 +762,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         # PostgreSQL: messages stored as JSONB array, use array_append
         query = text("""
             UPDATE cases
-            SET messages = messages || :message::jsonb,
+            SET messages = messages || :message,
                 message_count = message_count + 1,
                 last_activity_at = :timestamp
             WHERE case_id = :case_id

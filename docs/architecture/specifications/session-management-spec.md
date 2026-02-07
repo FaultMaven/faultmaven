@@ -77,9 +77,12 @@ session_id: str  # Unique identifier (UUID)
 
 **Properties:**
 - Globally unique across all users
-- Generated client-side or server-side
+- **Server-generated only** (prevents session fixation attacks)
 - Persistent for investigation duration
 - Maps to single InvestigationState
+
+> [!IMPORTANT]
+> Session IDs are ALWAYS generated server-side during initial login (Local Mode), token exchange (Cloud Mode), or explicit session creation API calls. Client-provided session IDs are rejected with `400 Bad Request` to prevent session fixation attacks.
 
 ### Session Scope
 
@@ -101,9 +104,18 @@ class StateManager:
 
     async def get_investigation_state(
         self,
-        session_id: str
+        session_id: str,
+        user_id: str
     ) -> Optional[InvestigationState]:
-        """Retrieve investigation state for session"""
+        """Retrieve investigation state for session.
+        
+        Args:
+            session_id: Session identifier
+            user_id: User ID for ownership verification
+            
+        Raises:
+            UnauthorizedError: If user_id doesn't match session owner
+        """
 
     async def update_investigation_state(
         self,
@@ -116,10 +128,18 @@ class StateManager:
     async def initialize_investigation_session(
         self,
         session_id: str,
+        case_id: str,
         user_id: str = None,
         llm_provider = None
     ) -> bool:
-        """Initialize new investigation session"""
+        """Initialize new investigation session.
+        
+        Args:
+            session_id: Unique session identifier
+            case_id: Case ID that this investigation belongs to
+            user_id: Optional user identifier
+            llm_provider: Optional LLM provider for orchestrator
+        """
 
     async def delete_investigation_state(
         self,
@@ -574,6 +594,154 @@ async def get_investigation_state(
 
     # Retrieve state
     return await self._get_state_from_redis(session_id)
+```
+
+---
+
+## Session Restoration After TTL Expiry
+
+When a user's session TTL expires in Redis but they have a valid refresh token, the system should support session restoration to maintain investigation continuity.
+
+### Problem
+
+- **Access Token Lifetime:** 1 hour
+- **Refresh Token Lifetime:** 7 days
+- **Session TTL in Redis:** 1 hour (default)
+
+A user with a valid 7-day refresh token cannot resume their investigation after 1 hour of inactivity because the session and InvestigationState are lost when Redis TTL expires.
+
+### Solution: Persistent Backup
+
+```python
+async def restore_or_create_session(
+    self,
+    user_id: str,
+    client_id: str,
+    refresh_token_valid: bool
+) -> SessionResponse:
+    """Restore session from backup or create new one.
+    
+    Flow:
+    1. If Redis session exists → return it
+    2. If Redis session expired but PostgreSQL backup exists → restore it
+    3. If neither exists → create new session
+    """
+    # Check Redis first
+    session_id = await self.store.get_session_by_client(user_id, client_id)
+    if session_id:
+        state = await self.redis.get(f"inv:state:{session_id}")
+        if state:
+            return SessionResponse(session_id=session_id, session_resumed=True)
+    
+    # Check PostgreSQL backup (only if user has valid refresh token)
+    if refresh_token_valid:
+        backup = await self.db.query(
+            """SELECT session_id, final_state FROM investigations 
+               WHERE user_id = $1 AND client_id = $2 
+               AND outcome = 'in_progress'
+               ORDER BY created_at DESC LIMIT 1""",
+            user_id, client_id
+        )
+        if backup:
+            # Restore state to Redis
+            await self.redis.set(
+                f"inv:state:{backup.session_id}", 
+                backup.final_state, 
+                ex=3600
+            )
+            return SessionResponse(
+                session_id=backup.session_id, 
+                session_resumed=True,
+                message="Investigation restored from backup"
+            )
+    
+    # Create new session
+    return await self.create_session(...)
+```
+
+### Backup Strategy
+
+| Event | Action |
+|-------|--------|
+| **Session Update** | Update Redis (primary) |
+| **Every 5 turns** | Async backup to PostgreSQL |
+| **Investigation Completion** | Full backup to PostgreSQL |
+| **Session Expiry** | No action (backup already exists) |
+
+---
+
+## Optimistic Concurrency Control
+
+While the Copilot extension has a single UI, race conditions can occur between:
+- Frontend state and backend state during slow network conditions
+- Multiple API calls in flight simultaneously
+- State updates during token refresh
+
+### State Versioning
+
+InvestigationState includes a `version` field for optimistic locking:
+
+```python
+class InvestigationState(BaseModel):
+    version: int = 0  # Incremented on each successful update
+    # ... other fields
+```
+
+### Update with Version Check
+
+```python
+async def update_investigation_state(
+    self,
+    session_id: str,
+    state: InvestigationState,
+    expected_version: int,
+    ttl: int = 3600
+) -> bool:
+    """Update state with optimistic locking.
+    
+    Raises:
+        ConcurrencyError: If version mismatch (state was modified)
+    """
+    key = f"inv:state:{session_id}"
+    
+    # Atomic check-and-set using Redis WATCH/MULTI
+    async with self.redis.pipeline(transaction=True) as pipe:
+        await pipe.watch(key)
+        current_json = await pipe.get(key)
+        
+        if current_json:
+            current = InvestigationState.parse_raw(current_json)
+            if current.version != expected_version:
+                await pipe.unwatch()
+                raise ConcurrencyError(
+                    f"State modified: expected version {expected_version}, "
+                    f"found {current.version}"
+                )
+        
+        state.version = expected_version + 1
+        pipe.multi()
+        await pipe.set(key, state.json(), ex=ttl)
+        await pipe.execute()
+    
+    return True
+```
+
+### Client Handling
+
+```typescript
+// Retry with fresh state on concurrency error
+async function updateState(newState: InvestigationState): Promise<void> {
+  try {
+    await api.updateInvestigationState(newState, newState.version);
+  } catch (error) {
+    if (error.code === 'CONCURRENCY_ERROR') {
+      // Fetch latest state and retry or notify user
+      const freshState = await api.getInvestigationState();
+      // Merge changes or prompt user
+    }
+    throw error;
+  }
+}
 ```
 
 ---

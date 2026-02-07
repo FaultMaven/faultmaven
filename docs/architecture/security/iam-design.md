@@ -266,6 +266,35 @@ Even in Local Mode, security best practices apply:
 | **Rate Limiting** | 10 login attempts per minute per IP |
 | **HTTPS** | Recommended even for localhost |
 
+### Organization Context
+
+FaultMaven JWT tokens include an `org_id` claim that determines the user's organization context:
+
+| Mode | Organization Strategy |
+|------|----------------------|
+| **Local Mode** | All users belong to default organization `00000000-0000-0000-0000-000000000001` (managed by `SingleTenantProvider`) |
+| **Cloud Mode** | Users can belong to multiple organizations; `org_id` represents active context |
+
+**JWT Payload Structure (all modes):**
+
+```json
+{
+  "sub": "user_abc123",
+  "username": "alice",
+  "org_id": "00000000-0000-0000-0000-000000000001",
+  "email": "alice@example.com",
+  "roles": ["user"],
+  "scopes": ["cases:read", "cases:write"],
+  "exp": 1708012800,
+  "iat": 1708009200,
+  "type": "access",
+  "auth_mode": "local"
+}
+```
+
+> [!IMPORTANT]
+> The `org_id` claim is **always present** in both Local and Cloud mode tokens. Services can safely assume `AuthenticatedUser.organization_id` is never empty.
+
 ### Environment-Based Endpoint Exposure
 
 Certain endpoints are only available in specific environments:
@@ -914,6 +943,44 @@ Authorization: Bearer {access_token}
   "revoked_tokens": 1
 }
 ```
+
+### Session Invalidation on Auth Events
+
+Authentication events have implications for session state management. The following table defines the expected behavior:
+
+| Event | Session Action |
+|-------|----------------|
+| **Logout** | Delete all sessions for user and revoke all tokens |
+| **Token Revocation** | Delete session associated with revoked token |
+| **New Login (same client_id)** | Replace previous session with new one |
+| **Password Change** | Invalidate all sessions (security measure) |
+| **Account Deactivation** | Delete all sessions immediately |
+
+**Implementation:**
+
+```python
+async def logout(
+    auth_service: IAuthService,
+    state_manager: StateManager,
+    session_store: ISessionStore,
+    token: str,
+    session_id: str
+) -> LogoutResponse:
+    """Logout user and cleanup session state."""
+    # 1. Revoke token
+    await auth_service.revoke_token(token)
+    
+    # 2. Delete investigation state from Redis
+    await state_manager.delete_investigation_state(session_id)
+    
+    # 3. Clean up client mapping
+    await session_store.cleanup_client_session_mapping(session_id)
+    
+    return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
+```
+
+> [!IMPORTANT]
+> Session invalidation must be atomic with token revocation. If token revocation succeeds but session cleanup fails, the user may see stale session data on next login. Use a transaction or saga pattern to ensure consistency.
 
 ## Frontend Implementation
 

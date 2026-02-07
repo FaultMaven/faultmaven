@@ -557,10 +557,26 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         jti = str(uuid.uuid4())
 
         # Build payload matching iam-design.md spec
+        # Determine organization_id (use user's org or default for local mode)
+        from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+        org_id = (
+            getattr(user, "organization_id", None)
+            or SingleTenantProvider.DEFAULT_ORG_ID
+        )
+
+        # Log when using default org_id (helps debugging)
+        if not getattr(user, "organization_id", None):
+            logger.debug(
+                "Using default org_id for user without organization",
+                extra={"user_id": user.user_id, "org_id": org_id},
+            )
+
         payload = {
             "sub": user.user_id,  # Subject (user ID)
             "username": user.username,
             "email": user.email if hasattr(user, "email") else "",
+            "org_id": org_id,  # Organization ID (required for all modes)
             "roles": user.roles if hasattr(user, "roles") else ["user"],
             "scopes": [
                 "openid",

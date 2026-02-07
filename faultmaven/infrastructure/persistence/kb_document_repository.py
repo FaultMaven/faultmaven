@@ -39,9 +39,11 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def create_document(self, doc: KBDocument) -> KBDocument:
         """Create KB document metadata."""
+        import json
+
         query = text("""
             INSERT INTO kb_documents (
-                doc_id, owner_user_id, org_id, title, description, document_type,
+                doc_id, owner_user_id, organization_id, title, description, document_type,
                 chromadb_collection, chromadb_doc_count, visibility, tags,
                 file_size, original_filename, content_type, storage_path,
                 metadata, created_at, updated_at
@@ -49,7 +51,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 :doc_id, :owner_user_id, :org_id, :title, :description, :document_type,
                 :chromadb_collection, :chromadb_doc_count, :visibility, :tags,
                 :file_size, :original_filename, :content_type, :storage_path,
-                :metadata::jsonb, :created_at, :updated_at
+                :metadata, :created_at, :updated_at
             )
             RETURNING doc_id
         """)
@@ -71,7 +73,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 "original_filename": doc.original_filename,
                 "content_type": doc.content_type,
                 "storage_path": doc.storage_path,
-                "metadata": doc.metadata or {},
+                "metadata": json.dumps(doc.metadata or {}),
                 "created_at": doc.created_at,
                 "updated_at": doc.updated_at,
             },
@@ -84,7 +86,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     async def get_document(self, doc_id: str) -> Optional[KBDocument]:
         """Get KB document by ID."""
         query = text("""
-            SELECT doc_id, owner_user_id, org_id, title, description, document_type,
+            SELECT doc_id, owner_user_id, organization_id, title, description, document_type,
                    chromadb_collection, chromadb_doc_count, visibility, tags,
                    file_size, original_filename, content_type, storage_path,
                    metadata, created_at, updated_at, deleted_at
@@ -102,6 +104,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def update_document(self, doc: KBDocument) -> bool:
         """Update KB document metadata."""
+        import json
+
         doc.updated_at = datetime.now(timezone.utc)
 
         query = text("""
@@ -112,7 +116,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 visibility = :visibility,
                 tags = :tags,
                 chromadb_doc_count = :chromadb_doc_count,
-                metadata = :metadata::jsonb,
+                metadata = :metadata,
                 updated_at = :updated_at
             WHERE doc_id = :doc_id AND deleted_at IS NULL
         """)
@@ -127,7 +131,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 "visibility": doc.visibility.value,
                 "tags": doc.tags or [],
                 "chromadb_doc_count": doc.chromadb_doc_count,
-                "metadata": doc.metadata or {},
+                "metadata": json.dumps(doc.metadata or {}),
                 "updated_at": doc.updated_at,
             },
         )
@@ -156,7 +160,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         """List KB documents owned by user."""
         if include_shared:
             query = text("""
-                SELECT DISTINCT d.doc_id, d.owner_user_id, d.org_id, d.title, d.description,
+                SELECT DISTINCT d.doc_id, d.owner_user_id, d.organization_id, d.title, d.description,
                        d.document_type, d.chromadb_collection, d.chromadb_doc_count,
                        d.visibility, d.tags, d.file_size, d.original_filename,
                        d.content_type, d.storage_path, d.metadata, d.created_at,
@@ -171,7 +175,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
             """)
         else:
             query = text("""
-                SELECT doc_id, owner_user_id, org_id, title, description, document_type,
+                SELECT doc_id, owner_user_id, organization_id, title, description, document_type,
                        chromadb_collection, chromadb_doc_count, visibility, tags,
                        file_size, original_filename, content_type, storage_path,
                        metadata, created_at, updated_at, deleted_at
@@ -200,7 +204,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         """Search KB documents by text."""
         # Simplified search - full-text search on title and description
         sql_query = text("""
-            SELECT doc_id, owner_user_id, org_id, title, description, document_type,
+            SELECT doc_id, owner_user_id, organization_id, title, description, document_type,
                    chromadb_collection, chromadb_doc_count, visibility, tags,
                    file_size, original_filename, content_type, storage_path,
                    metadata, created_at, updated_at, deleted_at
@@ -317,9 +321,9 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     ) -> bool:
         """Share document with entire organization."""
         query = text("""
-            INSERT INTO kb_document_org_shares (doc_id, org_id, permission, shared_by, shared_at)
+            INSERT INTO kb_document_org_shares (doc_id, organization_id, permission, shared_by, shared_at)
             VALUES (:doc_id, :org_id, :permission::kb_share_permission, :shared_by, :shared_at)
-            ON CONFLICT (doc_id, org_id) DO UPDATE
+            ON CONFLICT (doc_id, organization_id) DO UPDATE
             SET permission = EXCLUDED.permission
         """)
 
@@ -344,7 +348,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         """Unshare document from organization."""
         query = text("""
             DELETE FROM kb_document_org_shares
-            WHERE doc_id = :doc_id AND org_id = :org_id
+            WHERE doc_id = :doc_id AND organization_id = :org_id
         """)
 
         result = await self.db.execute(query, {"doc_id": doc_id, "org_id": org_id})
@@ -374,7 +378,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
         # Get org shares
         org_query = text("""
-            SELECT org_id, permission, shared_at, shared_by
+            SELECT organization_id, permission, shared_at, shared_by
             FROM kb_document_org_shares
             WHERE doc_id = :doc_id
         """)
@@ -418,7 +422,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         return KBDocument(
             doc_id=row.doc_id,
             owner_user_id=row.owner_user_id,
-            org_id=row.org_id,
+            org_id=row.organization_id,
             title=row.title,
             description=row.description,
             document_type=KBDocumentType(row.document_type),
