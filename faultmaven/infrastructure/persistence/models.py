@@ -66,7 +66,12 @@ class SessionModel(Base):
 
     # Required Fields
     user_id = Column(String(255), nullable=False, index=True)
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
 
     # Timestamps
     created_at = Column(
@@ -287,7 +292,12 @@ class EvidenceModel(Base):
         nullable=False,
         index=True,
     )
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     category = Column(String(50), nullable=False, index=True)
     summary = Column(String(500), nullable=False)
     preprocessed_content = Column(Text, nullable=False)
@@ -369,7 +379,12 @@ class HypothesisModel(Base):
     hypothesis_metadata = Column("metadata", Text, default="{}")
 
     # Multi-tenancy and audit fields (TASK-026)
-    organization_id = Column(String(20), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(20),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     created_by = Column(String(255), nullable=False, index=True)
     updated_by = Column(String(255), nullable=True)
 
@@ -427,7 +442,12 @@ class SolutionModel(Base):
     solution_metadata = Column("metadata", Text, default="{}")
 
     # Multi-tenancy and audit fields (TASK-026)
-    organization_id = Column(String(20), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(20),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     created_by = Column(String(255), nullable=False, index=True)
     updated_by = Column(String(255), nullable=True)
 
@@ -469,7 +489,12 @@ class CaseMessageModel(Base):
         nullable=False,
         index=True,
     )
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     turn_number = Column(Integer, nullable=False, default=0)
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
@@ -518,7 +543,12 @@ class UploadedFileModel(Base):
         nullable=False,
         index=True,
     )
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     filename = Column(String(255), nullable=False)
     size_bytes = Column(Integer, nullable=False)
     data_type = Column(String(50), nullable=False, default="other")
@@ -565,7 +595,12 @@ class CaseStatusTransitionModel(Base):
         nullable=False,
         index=True,
     )
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     from_status = Column(String(50))
     to_status = Column(String(50), nullable=False)
     reason = Column(Text)
@@ -600,7 +635,12 @@ class CaseTagModel(Base):
         nullable=False,
         index=True,
     )
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     tag = Column(String(50), nullable=False, index=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -635,7 +675,12 @@ class AgentToolCallModel(Base):
         nullable=False,
         index=True,
     )
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     tool_name = Column(String(100), nullable=False, index=True)
     tool_input = Column(Text, nullable=False)  # JSON as TEXT
     tool_output = Column(Text)  # JSON as TEXT
@@ -718,7 +763,12 @@ class EvidenceArtifactModel(Base):
 
     # Ownership
     user_id = Column(String(255), nullable=False, index=True)
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
 
     # File metadata
     original_filename = Column(String(512), nullable=False)
@@ -826,7 +876,12 @@ class CaseCheckpointModel(Base):
         index=True,
     )
 
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     turn_number = Column(Integer, nullable=False)
 
     # Snapshot Data
@@ -1108,7 +1163,12 @@ class InvestigationSessionModel(Base):
 
     # Ownership
     user_id = Column(String(255), nullable=False, index=True)
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
 
     # Session status
     status = Column(String(32), nullable=False, default="active", index=True)
@@ -1233,7 +1293,12 @@ class StandaloneEvidenceModel(Base):
 
     # Ownership
     uploaded_by = Column(String(36), nullable=False, index=True)
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
 
     # Timestamps
     uploaded_at = Column(
@@ -1293,7 +1358,12 @@ class KnowledgeItemModel(Base):
     item_id = Column(String(64), primary_key=True)
 
     # Organization scope (NO foreign key - items persist independently)
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
 
     # Content
     title = Column(String(512), nullable=False)
@@ -1405,7 +1475,12 @@ class KnowledgeSuggestionModel(Base):
     suggestion_id = Column(String(64), primary_key=True)
 
     # Organization and Case scope
-    organization_id = Column(String(64), nullable=False, index=True, default="00000000-0000-0000-0000-000000000001")
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        default="00000000-0000-0000-0000-000000000001",
+    )
     case_id = Column(String(64), nullable=False, index=True)
 
     # Status

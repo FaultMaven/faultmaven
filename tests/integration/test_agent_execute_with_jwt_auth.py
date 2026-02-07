@@ -109,15 +109,17 @@ def client(auth_service, mock_session):
 
     async def mock_execute(*args, **kwargs):
         """Simple mock execution that returns success."""
-        yield ExecutionEvent.started(execution_id="exec_auth_test")
-        yield ExecutionEvent.status_update(
+        yield ExecutionEvent.started(
             execution_id="exec_auth_test",
-            status=ExecutionStatus.RUNNING,
-            message="Processing request",
+            message="Execution started",
         )
-        yield ExecutionEvent.response_chunk(
+        yield ExecutionEvent.thinking(
+            content="Processing request",
             execution_id="exec_auth_test",
-            chunk="Test response",
+        )
+        yield ExecutionEvent.response(
+            content="Test response",
+            execution_id="exec_auth_test",
         )
         yield ExecutionEvent.completed(
             execution_id="exec_auth_test",
@@ -125,7 +127,37 @@ def client(auth_service, mock_session):
             duration_ms=1000,
         )
 
-    mock_agent_service.execute_investigation_step = mock_execute
+    # Mock execute_agent to return the async generator directly
+    mock_agent_service.execute_agent = mock_execute
+
+    # Mock get_execution to return a completed execution record
+    now = datetime.now(timezone.utc)
+
+    # Create a mock execution with all attributes needed by AgentExecutionResponse.from_domain
+    from types import SimpleNamespace
+
+    def mock_get_total_tokens():
+        return 150
+
+    mock_execution = SimpleNamespace(
+        execution_id="exec_auth_test",
+        session_id=mock_session.session_id,
+        organization_id=mock_session.organization_id,
+        user_message="What is the issue?",
+        response="Test response",  # from_domain uses 'response' not 'agent_response'
+        status=ExecutionStatus.COMPLETED,  # Keep as enum, from_domain checks .value
+        tokens_used=150,
+        started_at=now,
+        created_at=now,  # Fallback for started_at
+        completed_at=now,
+        tool_calls=[],
+        get_total_tokens=mock_get_total_tokens,  # Method expected by from_domain
+    )
+
+    async def mock_get_execution(*args, **kwargs):
+        return mock_execution
+
+    mock_agent_service.get_execution = mock_get_execution
 
     def get_mock_agent_service():
         return mock_agent_service
@@ -147,31 +179,7 @@ def client(auth_service, mock_session):
     app.dependency_overrides[get_agent_orchestration_service] = get_mock_agent_service
     app.dependency_overrides[get_session_service] = get_mock_session_service
 
-    # Patch AuthService in the middleware to use our test auth service
-    with patch(
-        "faultmaven.api.middleware.auth.get_settings"
-    ) as mock_get_settings_middleware:
-        # Configure middleware to use same settings as our auth service
-        mock_settings = MagicMock()
-        mock_settings.auth.auth_mode = "local"
-        mock_settings.security.jwt_algorithm = "HS256"
-        mock_settings.security.jwt_secret_key = MagicMock()
-        mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
-            "test-secret-key-for-integration-testing"
-        )
-        mock_settings.security.jwt_access_token_expire_minutes = 15
-        mock_settings.security.jwt_refresh_token_expire_days = 7
-        mock_settings.security.jwt_issuer = "faultmaven-api"
-        mock_settings.security.jwt_audience = "faultmaven-app"
-        mock_settings.security.token_revocation_prefix = "revoked:token:"
-        mock_settings.security.jwt_private_key = None
-        mock_settings.security.jwt_public_key = None
-        mock_settings.security.jwt_private_key_path = None
-        mock_settings.security.jwt_public_key_path = None
-
-        mock_get_settings_middleware.return_value = mock_settings
-
-        yield TestClient(app)
+    yield TestClient(app)
 
     # Cleanup
     app.dependency_overrides.clear()
@@ -194,7 +202,7 @@ class TestAgentExecuteWithJWTAuth:
         response = client.post(
             f"/api/v1/cases/{mock_session.case_id}/sessions/{mock_session.session_id}/execute",
             json={
-                "user_prompt": "What is the issue?",
+                "user_message": "What is the issue?",
                 "stream": True,
             },
             headers=headers,
@@ -217,7 +225,7 @@ class TestAgentExecuteWithJWTAuth:
         response = client.post(
             f"/api/v1/cases/{mock_session.case_id}/sessions/{mock_session.session_id}/execute",
             json={
-                "user_prompt": "What is the issue?",
+                "user_message": "What is the issue?",
                 "stream": False,
             },
             headers=headers,
@@ -239,7 +247,7 @@ class TestAgentExecuteWithJWTAuth:
         response = client.post(
             f"/api/v1/cases/{mock_session.case_id}/sessions/{mock_session.session_id}/execute",
             json={
-                "user_prompt": "What is the issue?",
+                "user_message": "What is the issue?",
                 "stream": False,
             },
             headers=headers,
@@ -253,7 +261,7 @@ class TestAgentExecuteWithJWTAuth:
         response = client.post(
             f"/api/v1/cases/{mock_session.case_id}/sessions/{mock_session.session_id}/execute",
             json={
-                "user_prompt": "What is the issue?",
+                "user_message": "What is the issue?",
                 "stream": False,
             },
         )

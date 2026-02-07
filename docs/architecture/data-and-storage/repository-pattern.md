@@ -308,53 +308,106 @@ class CaseRepository(ABC):
     Implementations:
     - InMemoryCaseRepository: RAM (development)
     - PostgreSQLCaseRepository: K8s PostgreSQL (production)
-    - SQLiteCaseRepository: Local file (future)
+    - SQLiteCaseRepository: Local file (single-node deployment)
     """
 
     # Core CRUD (5 methods)
     @abstractmethod
-    async def save(self, case: Case) -> Case: ...
+    async def save(self, case: Case) -> Case:
+        """Save or update a case. Returns the saved case."""
+        ...
 
     @abstractmethod
-    async def get(self, case_id: str) -> Optional[Case]: ...
+    async def get(self, case_id: str) -> Optional[Case]:
+        """Get a case by ID. Returns None if not found."""
+        ...
 
     @abstractmethod
-    async def list(...) -> tuple[List[Case], int]: ...
+    async def list(
+        self,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> tuple[List[Case], int]:
+        """List cases with optional filters. Returns (cases, total_count)."""
+        ...
 
     @abstractmethod
-    async def delete(self, case_id: str) -> bool: ...
+    async def delete(self, case_id: str) -> bool:
+        """Delete a case by ID. Returns True if deleted, False if not found."""
+        ...
 
     @abstractmethod
-    async def search(...) -> tuple[List[Case], int]: ...
+    async def search(
+        self,
+        query: str,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> tuple[List[Case], int]:
+        """Full-text search cases. Returns (cases, total_count)."""
+        ...
 
     # Message Management (2 methods)
     @abstractmethod
-    async def add_message(self, case_id: str, message_dict: dict) -> bool: ...
+    async def add_message(self, case_id: str, message_dict: dict) -> bool:
+        """Add a message to a case. Returns True if successful."""
+        ...
 
     @abstractmethod
-    async def get_messages(...) -> List[dict]: ...
+    async def get_messages(
+        self,
+        case_id: str,
+        limit: Optional[int] = None,
+        offset: int = 0
+    ) -> List[dict]:
+        """Get messages for a case with optional pagination."""
+        ...
 
     # Activity Tracking (1 method)
     @abstractmethod
-    async def update_activity_timestamp(self, case_id: str) -> bool: ...
+    async def update_activity_timestamp(self, case_id: str) -> bool:
+        """Update last_activity_at for a case. Returns True if successful."""
+        ...
 
     # Analytics (1 method)
     @abstractmethod
-    async def get_analytics(self, case_id: str) -> Dict[str, Any]: ...
+    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
+        """Get analytics/statistics for a case."""
+        ...
 
     # Maintenance (1 method)
     @abstractmethod
-    async def cleanup_expired(...) -> int: ...
+    async def cleanup_expired(
+        self,
+        days_inactive: int = 90,
+        limit: int = 100
+    ) -> int:
+        """Cleanup expired/inactive cases. Returns count of deleted cases."""
+        ...
 
     # Session Association (1 method)
     @abstractmethod
-    async def find_by_session(...) -> tuple[List[Case], int]: ...
+    async def find_by_session(
+        self,
+        session_id: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> tuple[List[Case], int]:
+        """Find cases associated with a session. Returns (cases, total_count)."""
+        ...
 
     # Transaction Support (1 method)
-    async def begin_transaction(self): ...
+    @abstractmethod
+    async def begin_transaction(self):
+        """Begin a database transaction context. Returns transaction context manager."""
+        ...
 ```
 
-**Total: 13 methods**
+**Total: 13 methods** (5 CRUD + 2 messages + 6 specialized)
 
 ---
 
@@ -549,9 +602,9 @@ VECTOR_STORAGE_TYPE=inmemory   # or: chromadb for persistence
   - ✅ All 13 repository methods implemented
   - ✅ 8 integration tests passing with real SQLite database
   - ✅ Hybrid normalized schema (cases + 6 related tables)
-  - ✅ Full feature parity with PostgreSQL repository
+  - ✅ **Functional parity** with PostgreSQL (same features, different SQL implementation)
 
-**SQLite-Compatible SQL Patterns**:
+**SQLite-Compatible SQL Patterns** (24 PostgreSQL features replaced):
 
 - **Type Casts**: No `::jsonb` → plain parameter binding with JSON strings
 - **JSON Functions**: No `jsonb_build_object()` → separate queries + Python dict construction
@@ -769,7 +822,162 @@ class Container:
 
 ---
 
-## 7. Testing Strategy
+## 7. Error Handling Strategy
+
+### 7.1 Repository Error Patterns
+
+All repository implementations must handle errors consistently:
+
+**Error Categories**:
+
+| Error Type | When It Occurs | Repository Behavior | Caller Responsibility |
+|------------|----------------|---------------------|---------------------- |
+| **Connection Failure** | DB unreachable, network timeout | Raise `ConnectionError` | Retry with exponential backoff |
+| **Constraint Violation** | Unique/FK/CHECK constraint fails | Raise `IntegrityError` | Validate before save or show user error |
+| **Not Found** | Resource doesn't exist | Return `None` (get) or `False` (delete) | Handle gracefully, don't treat as error |
+| **Transaction Conflict** | Concurrent modification detected | Raise `ConcurrencyError` | Retry with optimistic locking |
+| **Invalid Input** | Malformed data, type mismatch | Raise `ValueError` | Validate at service layer |
+| **Timeout** | Query exceeds time limit | Raise `TimeoutError` | Log and retry or fail gracefully |
+
+**Example Implementation**:
+
+```python
+from typing import Optional
+from sqlalchemy.exc import IntegrityError, OperationalError
+from asyncio import TimeoutError
+
+class PostgreSQLCaseRepository(CaseRepository):
+    async def save(self, case: Case) -> Case:
+        try:
+            # Attempt save
+            result = await self.db.execute(insert_query, case.dict())
+            await self.db.commit()
+            return case
+
+        except IntegrityError as e:
+            await self.db.rollback()
+            if "unique constraint" in str(e).lower():
+                raise ValueError(f"Case {case.case_id} already exists")
+            elif "foreign key" in str(e).lower():
+                raise ValueError(f"Referenced entity not found: {e}")
+            else:
+                raise ValueError(f"Data integrity violation: {e}")
+
+        except OperationalError as e:
+            await self.db.rollback()
+            if "connection" in str(e).lower():
+                raise ConnectionError(f"Database connection failed: {e}")
+            else:
+                raise
+
+        except TimeoutError:
+            await self.db.rollback()
+            raise TimeoutError(f"Query timed out saving case {case.case_id}")
+
+        except Exception as e:
+            await self.db.rollback()
+            # Log unexpected errors
+            logger.error(f"Unexpected error saving case: {e}", exc_info=True)
+            raise
+
+    async def get(self, case_id: str) -> Optional[Case]:
+        """Returns None if not found - NOT an error."""
+        try:
+            result = await self.db.fetch_one(select_query, {"case_id": case_id})
+            return Case(**result) if result else None
+        except Exception as e:
+            logger.error(f"Error fetching case {case_id}: {e}")
+            raise
+```
+
+### 7.2 Transaction Rollback Patterns
+
+**Auto-Rollback on Error**:
+
+- All write operations (`save`, `delete`, `add_message`) must rollback on error
+- Read operations (`get`, `list`) don't need rollback (no changes made)
+
+**Transaction Context Manager**:
+```python
+async def transfer_case_ownership(
+    repo: CaseRepository,
+    case_id: str,
+    new_user_id: str
+):
+    """Example of explicit transaction management."""
+    async with repo.begin_transaction():
+        # Multiple operations in one transaction
+        case = await repo.get(case_id)
+        if not case:
+            raise ValueError(f"Case {case_id} not found")
+
+        case.user_id = new_user_id
+        case.updated_at = datetime.utcnow()
+
+        await repo.save(case)
+        await repo.add_message(case_id, {
+            "type": "system",
+            "content": f"Ownership transferred to {new_user_id}"
+        })
+
+        # Automatic commit on success, rollback on exception
+```
+
+### 7.3 Retry Strategy
+
+**When to Retry**:
+- ✅ Transient connection failures
+- ✅ Deadlocks / lock timeouts
+- ✅ Temporary network issues
+- ❌ Constraint violations (permanent failures)
+- ❌ Invalid input (won't succeed on retry)
+
+**Retry Implementation** (Service Layer):
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    reraise=True
+)
+async def save_case_with_retry(repo: CaseRepository, case: Case) -> Case:
+    """Retry transient failures, fail fast on permanent errors."""
+    return await repo.save(case)
+```
+
+### 7.4 Error Logging
+
+**What to Log**:
+
+- ✅ All exceptions (with stack trace)
+- ✅ Connection failures (for monitoring)
+- ✅ Constraint violations (for debugging)
+- ✅ Slow queries (> 100ms)
+- ❌ Not Found results (normal operation)
+
+**Logging Pattern**:
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+async def save(self, case: Case) -> Case:
+    try:
+        result = await self._execute_save(case)
+        logger.debug(f"Saved case {case.case_id}")
+        return result
+    except IntegrityError as e:
+        logger.warning(f"Integrity violation saving case {case.case_id}: {e}")
+        raise ValueError(f"Data integrity violation: {e}")
+    except Exception as e:
+        logger.error(f"Failed to save case {case.case_id}: {e}", exc_info=True)
+        raise
+```
+
+---
+
+## 8. Testing Strategy
 
 ### 7.1 Contract Tests by Data Type
 

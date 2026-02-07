@@ -3,38 +3,39 @@
 **Version**: 2.0
 **Status**: Schema Implemented - Python Code Pending
 **Last Updated**: 2025-01-14
-**Implementation**: See `docs/schema/003_enterprise_user_schema.sql`
+**Implementation**: See `docs/reference/database/003_enterprise_user_schema.sql`
 
 ---
 
 ## Implementation Status
 
-**Current State** (as of 2025-01-14):
+**Current State** (as of 2026-02-07):
 
 | Component | Status | Location |
 |-----------|--------|----------|
 | ✅ Design | Approved | This document |
-| ✅ Production Schema | **IMPLEMENTED** | `docs/schema/003_enterprise_user_schema.sql` |
-| ✅ Migration Script | **CREATED** | 8 tables, RLS policies, RBAC, audit logging |
+| ✅ SQL Schema File | Available | `docs/reference/database/003_enterprise_user_schema.sql` (658 lines) |
 | ⚠️ Current Runtime | Development-only | Redis (DevUserStore) + InMemory |
-| ⏳ Repository Layer | Pending | Python PostgreSQL implementation needed |
-| ⏳ Service Layer | Pending | Team/org management services needed |
-| ⏳ API Endpoints | Pending | Team/org/role management endpoints needed |
+| ⏳ Database Deployment | Not deployed | Schema not applied to any environment |
+| ⏳ Repository Layer | Not implemented | Python PostgreSQL implementation needed |
+| ⏳ Service Layer | Not implemented | Team/org management services needed |
+| ⏳ API Endpoints | Not implemented | Team/org/role management endpoints needed |
 
 **Implementation Progress**:
 - ✅ **Schema Design Complete** (v2.0): Full enterprise SaaS schema with organizations, teams, roles, permissions
-- ✅ **SQL Migration Created**: `docs/schema/003_enterprise_user_schema.sql` (494 lines, production-ready)
+- ✅ **SQL Schema File Available**: `docs/reference/database/003_enterprise_user_schema.sql` (658 lines)
   - 8 tables: organizations, organization_members, teams, team_members, roles, permissions, role_permissions, user_audit_log
   - Row-Level Security (RLS) policies for multi-tenant isolation
   - 7 system roles with permission mappings
   - 19 core permissions across 5 resources
   - Audit logging for compliance
-- ⏳ **Code Implementation Pending**: Python repository, service, and API layers (Phase 2)
+  - SQL function: `user_has_org_permission()` for permission checks
+- ⏳ **Implementation Pending**: Schema not deployed, repositories not implemented, APIs not built
 
 **Schema Extensions Created**:
-- `docs/schema/002_add_case_sharing.sql` - Case collaboration (case_participants table)
-- `docs/schema/003_enterprise_user_schema.sql` - **THIS SCHEMA** - Teams, orgs, RBAC
-- `docs/schema/004_kb_sharing_infrastructure.sql` - KB document sharing
+- `docs/reference/database/002_add_case_sharing.sql` - Case collaboration (case_participants table)
+- `docs/reference/database/003_enterprise_user_schema.sql` - **THIS SCHEMA** - Teams, orgs, RBAC
+- `docs/reference/database/004_kb_sharing_infrastructure.sql` - KB document sharing
 
 ---
 
@@ -721,7 +722,7 @@ HAVING COUNT(*) > 5;
 All phases of the enterprise user schema have been successfully implemented:
 
 **Phase 1: Schema Creation** ✅
-- ✅ Created migration script: `docs/schema/003_enterprise_user_schema.sql` (494 lines)
+- ✅ Created migration script: `docs/reference/database/003_enterprise_user_schema.sql` (494 lines)
 - ✅ Seeded 7 system roles and 19 permissions
 - ✅ Tested schema on development PostgreSQL
 - ✅ Verified foreign keys, constraints, and RLS policies
@@ -776,7 +777,7 @@ All phases of the enterprise user schema have been successfully implemented:
 **Status**: Ready for deployment
 
 1. ✅ **Design reviewed and approved**
-2. ✅ **Migration script created** (`docs/schema/003_enterprise_user_schema.sql`)
+2. ✅ **Migration script created** (`docs/reference/database/003_enterprise_user_schema.sql`)
 3. ✅ **Repositories implemented** (PostgreSQLOrganizationRepository, PostgreSQLTeamRepository)
 4. ✅ **Services implemented** (OrganizationService, TeamService)
 5. ✅ **API endpoints implemented** (30 new REST endpoints)

@@ -903,12 +903,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
                     last_updated_turn, last_progress_at_turn, iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason, evidence_links,
-                    tested_at, concluded_at, proposed_at, updated_at, metadata, organization_id, created_by
+                    tested_at, concluded_at, proposed_at, updated_at, metadata
                 ) VALUES (
                     :hypothesis_id, :case_id, :statement, :status, :likelihood, :initial_likelihood,
                     :last_updated_turn, :last_progress_at_turn, :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason, :evidence_links,
-                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb, :organization_id, :created_by
+                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
                     statement = EXCLUDED.statement,
@@ -951,8 +951,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "proposed_at": hypothesis.proposed_at or datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps({}),
-                    "organization_id": "ORG_TBD",  # TODO: Resolve from case
-                    "created_by": "SYSTEM",
                 },
             )
 

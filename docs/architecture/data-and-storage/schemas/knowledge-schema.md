@@ -76,7 +76,7 @@ await user_kb_store.delete_document(user_id, document_id)
 
 **Purpose**: Enable collaboration by sharing runbooks and documentation with users, teams, and organizations
 
-**Implementation**: See `docs/schema/004_kb_sharing_infrastructure.sql`
+**Implementation**: See `docs/reference/database/004_kb_sharing_infrastructure.sql`
 
 #### 1.5.1 Architecture Change
 

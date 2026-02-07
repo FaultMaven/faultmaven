@@ -159,10 +159,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the consolidated baseline migration
+        # Verify revision ID matches the latest migration (002_normalize_organization_id)
         assert (
-            revision == "0d4e538d666d"
-        ), f"Expected revision 0d4e538d666d (consolidated baseline), got {revision}"
+            revision == "93e6242a6b94"
+        ), f"Expected revision 93e6242a6b94 (002_normalize_organization_id), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -175,22 +175,21 @@ class TestAlembicMigrationInfrastructure:
             len(tables_before) == 30
         ), f"Expected 30 tables initially, got {len(tables_before)}"
 
-        # Rollback consolidated baseline (should remove all tables except alembic_version)
+        # Rollback migration #002 (should revert to baseline migration #001 with 30 tables)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify all tables removed except alembic_version
+        # Verify tables still exist (we're back at baseline migration #001)
         tables_after = get_tables(TEST_DB)
         assert (
-            len(tables_after) == 1
-        ), f"Expected 1 table (alembic_version) after rollback, got {len(tables_after)}: {tables_after}"
-        assert tables_after == ["alembic_version"], f"Expected only alembic_version, got {tables_after}"
+            len(tables_after) == 30
+        ), f"Expected 30 tables after rollback to baseline, got {len(tables_after)}: {tables_after}"
 
-        # Verify revision moved to base (empty - no migrations)
+        # Verify revision moved back to baseline (migration #001)
         revision = get_current_revision(database_url)
         assert (
-            revision == "" or "current" not in revision.lower()
-        ), f"Expected no revision after rollback to base, got {revision}"
+            revision == "0d4e538d666d"
+        ), f"Expected baseline revision 0d4e538d666d after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -212,13 +211,13 @@ class TestAlembicMigrationInfrastructure:
         assert (
             "knowledge_suggestions" in tables
         ), "knowledge_suggestions table should be restored"
-        assert (
-            "organizations" in tables
-        ), "organizations table should be restored"
+        assert "organizations" in tables, "organizations table should be restored"
 
         # Verify revision
         revision = get_current_revision(database_url)
-        assert revision == "0d4e538d666d", f"Expected consolidated baseline revision, got {revision}"
+        assert (
+            revision == "93e6242a6b94"
+        ), f"Expected revision 93e6242a6b94 (002_normalize_organization_id), got {revision}"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
@@ -227,7 +226,9 @@ class TestAlembicMigrationInfrastructure:
         assert result.returncode == 0, f"History command failed: {result.stderr}"
         # Check for consolidated baseline migration
         output = result.stdout + result.stderr
-        assert "0d4e538d666d" in output, f"Consolidated baseline revision should be in history. Output: {output}"
+        assert (
+            "0d4e538d666d" in output
+        ), f"Consolidated baseline revision should be in history. Output: {output}"
         assert (
             "001_consolidated_baseline" in output
         ), f"Consolidated baseline name should be in history. Output: {output}"

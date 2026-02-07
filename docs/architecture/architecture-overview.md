@@ -317,7 +317,7 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 - `faultmaven/infrastructure/monitoring/` - Performance monitoring
 - `faultmaven/infrastructure/redis_client.py` - Lightweight Redis client factory
 
-**Database Schema**: Production-ready PostgreSQL schema definitions in `docs/schema/`:
+**Database Schema**: Production-ready PostgreSQL schema definitions in `docs/reference/database/`:
 - `001_initial_hybrid_schema.sql` - Base schema (10 normalized tables)
 - `002_add_case_sharing.sql` - Case sharing infrastructure (case_participants table)
 - `003_enterprise_user_schema.sql` - Organizations, teams, RBAC (8 tables, 7 roles, 19 permissions)
@@ -659,7 +659,7 @@ graph LR
 - **Purpose**: Persistent investigation tracking with collaboration support
 - **Lifecycle**: Long-lived, persists for audit and follow-up
 - **Scope**: Single investigation from query to resolution
-- **Storage**: PostgreSQL database-backed for persistence (see `docs/schema/` for schema definitions)
+- **Storage**: PostgreSQL database-backed for persistence (see `docs/reference/database/` for schema definitions)
 - **Sharing Capabilities**:
   - Individual user sharing with role-based access (owner, collaborator, viewer)
   - Team-based sharing for organizational collaboration
@@ -1064,7 +1064,7 @@ class OrganizationService:
         return await self.repository.add_member(org_id, user_id, role_id)
 ```
 
-**Database Schema**: See `docs/schema/` for complete PostgreSQL schema definitions:
+**Database Schema**: See `docs/reference/database/` for complete PostgreSQL schema definitions:
 - `002_add_case_sharing.sql` - Case collaboration infrastructure
 - `003_enterprise_user_schema.sql` - Organizations, teams, RBAC
 - `004_kb_sharing_infrastructure.sql` - Knowledge base sharing

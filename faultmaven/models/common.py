@@ -55,7 +55,7 @@ class SessionContext(BaseModel):
     )
     organization_id: str = Field(
         default="00000000-0000-0000-0000-000000000001",
-        description="Organization ID for multi-tenant isolation"
+        description="Organization ID for multi-tenant isolation",
     )
 
     # Multi-device support fields (spec lines 263-269)

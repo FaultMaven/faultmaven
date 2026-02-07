@@ -292,7 +292,7 @@ reports = await self.db.execute(
 #### Current Approach
 ```python
 # Manual SQL migration scripts
-# docs/schema/005_add_reports_table.sql
+# docs/reference/database/005_add_reports_table.sql
 CREATE TABLE reports (
     report_id UUID PRIMARY KEY,
     ...

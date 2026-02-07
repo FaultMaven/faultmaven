@@ -1425,7 +1425,8 @@ class TestTokenVerificationEdgeCases:
             algorithm="RS256",
         )
 
-        # Configure service with test keys
+        # Configure service with test keys and RS256 algorithm
+        mock_settings.auth.auth_mode = "oauth"  # Use oauth mode for RS256
         mock_settings.security.jwt_private_key = None
         mock_settings.security.jwt_public_key = public_pem
 
@@ -1489,6 +1490,9 @@ class TestTokenVerificationEdgeCases:
             private_pem,
             algorithm="RS256",
         )
+
+        # Configure service for RS256 algorithm
+        mock_settings.auth.auth_mode = "oauth"  # Use oauth mode for RS256
 
         with patch(
             "faultmaven.services.auth_service.get_settings", return_value=mock_settings
