@@ -372,6 +372,8 @@ class CaseUIResponse_Investigating(BaseModel):
 
     title: str = Field(description="Case title", max_length=200)
 
+    current_turn: int = Field(ge=0, description="Current turn counter")
+
     created_at: datetime = Field(description="When case was created")
 
     updated_at: datetime = Field(description="Last update timestamp")
@@ -441,6 +443,8 @@ class CaseUIResponse_Resolved(BaseModel):
     )
 
     title: str = Field(description="Case title", max_length=200)
+
+    current_turn: int = Field(ge=0, description="Current turn counter")
 
     created_at: datetime = Field(description="When case was created")
 
