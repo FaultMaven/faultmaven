@@ -103,10 +103,8 @@ def validate_reasoning_first(
 
     EXCEPTION: Validation is skipped during terminal state transitions to allow graceful
     case closure without forcing justifications. This handles the scenario where:
-    - User explicitly says "close this case" (user intent detection sets solution_verified=True)
-    - Case automatically transitions INVESTIGATING → RESOLVED
-    - LLM may try to complete other milestones during closure
-    - We skip validation because the case is already transitioning to terminal state
+    - User confirms a pending transition via the User-Agent Handshake
+    - Case is transitioning to RESOLVED or CLOSED
 
     Reference: Prompt Engineering Guide Section 13 (lines 3236-3281)
 
@@ -120,9 +118,7 @@ def validate_reasoning_first(
     Skip Conditions (validation bypassed):
         1. Response is InquiryResponse or TerminalResponse (no investigation milestones)
         2. Case is already in terminal state (RESOLVED or CLOSED)
-        3. Case is transitioning to terminal state:
-           - LLM is setting solution_verified=True in this response, OR
-           - solution_verified was already set by user intent detection
+        3. Case has a pending_transition (user confirmation in progress)
     """
     errors = []
 
@@ -166,36 +162,17 @@ def validate_reasoning_first(
         return True, []
 
     # ===== TERMINAL TRANSITION EXCEPTION =====
-    # Skip validation if case is transitioning to terminal state.
-    #
-    # SCENARIO: User says "close this case"
-    #   1. User intent detection (milestone_engine.py:361-401) sets case.progress.solution_verified = True
-    #   2. Case still in INVESTIGATING status (transition happens AFTER LLM call)
-    #   3. LLM generates response, may try to complete milestones (e.g., symptom_verified=True)
-    #   4. validate_reasoning_first() called
-    #   5. CRITICAL FIX: We detect case.progress.solution_verified is already True
-    #   6. Skip validation → Allow LLM response without justifications
-    #   7. Terminal transition executes (terminal_transitions.py:47-79)
-    #   8. Case becomes RESOLVED with closure_reason="resolved"
-    #
-    # WHY THIS FIX IS NEEDED:
-    # - Original logic only checked if LLM was CURRENTLY setting solution_verified
-    # - Missed the case where solution_verified was ALREADY set by user intent detection
-    # - Caused reasoning validation errors during case closure (Turn 4 bug)
-    #
-    # FIX: Check BOTH conditions:
-    # 1. LLM is setting solution_verified in THIS response (completed_milestones contains "solution_verified")
-    # 2. solution_verified was ALREADY set (case.progress.solution_verified == True)
+    # Skip validation if case has a pending transition (User-Agent Handshake in progress).
+    # The user has already confirmed the transition, so we allow graceful closure
+    # without forcing the LLM to justify additional milestones.
     if case.status == CaseStatus.INVESTIGATING:
-        # Check if LLM is setting solution_verified in this response
-        llm_setting_solution_verified = "solution_verified" in completed_milestones
-        # Check if solution_verified was already set (e.g., by user intent detection)
+        has_pending = hasattr(case, "pending_transition") and case.pending_transition
         already_solution_verified = case.progress.solution_verified
 
-        if llm_setting_solution_verified or already_solution_verified:
+        if has_pending or already_solution_verified:
             logger.debug(
-                f"🔍 Skipping reasoning validation (case transitioning to RESOLVED: "
-                f"llm_setting={llm_setting_solution_verified}, already_set={already_solution_verified})"
+                f"🔍 Skipping reasoning validation (terminal transition in progress: "
+                f"pending={has_pending}, solution_verified={already_solution_verified})"
             )
             return True, []
 
@@ -501,20 +478,33 @@ class MilestoneEngine:
                     }
 
                 elif to_status_str == "resolved":
-                    # Set milestones for automatic RESOLVED transition
-                    if not case.progress.solution_proposed:
-                        case.progress.solution_proposed = True
-                    if not case.progress.solution_applied:
-                        case.progress.solution_applied = True
-                    case.progress.solution_verified = True
-
-                    logger.info(
-                        f"✅ Set solution milestones for case {case.case_id} via explicit intent "
-                        f"(will auto-transition to RESOLVED)"
+                    # User-Agent Handshake: Explicit UI "Resolve" action.
+                    # Execute immediately since this is a direct user action
+                    # via the UI status dropdown (not NLP interpretation).
+                    from faultmaven.core.investigation.terminal_transitions import (
+                        _execute_resolved_transition,
                     )
 
-                    # Continue to normal LLM flow - terminal transition will happen in check_terminal_transitions()
-                    # Don't return early - let LLM generate proper resolution summary
+                    _execute_resolved_transition(
+                        case=case, user_id=case.user_id, reason="User resolved via UI"
+                    )
+                    agent_response = "Case marked as resolved."
+
+                    logger.info(
+                        f"✅ Case {case.case_id} transitioned to RESOLVED via explicit UI intent"
+                    )
+
+                    # Save and return immediately
+                    await self.repository.save(case)
+                    return {
+                        "agent_response": agent_response,
+                        "case_updated": case,
+                        "metadata": {
+                            "turn_number": case.current_turn,
+                            "milestones_completed": ["solution_verified"],
+                            "progress_made": True,
+                        },
+                    }
 
                 elif to_status_str == "investigating":
                     if case.status != CaseStatus.INQUIRY:
@@ -671,45 +661,49 @@ class MilestoneEngine:
                         )
 
                     # CHECK RESOLUTION (medium priority)
+                    # User-Agent Handshake: NLP-detected intent to resolve.
+                    # Instead of directly setting solution_verified, propose the
+                    # transition. The LLM will include the proposal in its response
+                    # and the user confirms on the next turn.
                     elif any(pattern in user_msg_lower for pattern in resolve_patterns):
                         logger.info(
-                            f"🎯 Detected explicit user intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
+                            f"🎯 Detected NLP intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
                         )
-                        # Set milestone progression to allow solution_verified=True
-                        # Milestone ordering: proposed → applied → verified
-                        if not case.progress.solution_proposed:
-                            case.progress.solution_proposed = True
-                        if not case.progress.solution_applied:
-                            case.progress.solution_applied = True
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            propose_transition,
+                        )
 
-                        # This will trigger automatic transition in check_terminal_transitions()
-                        case.progress.solution_verified = True
-
-                        logger.info(
-                            f"✅ Set solution milestones for case {case.case_id} based on user intent"
+                        propose_transition(
+                            case=case,
+                            to_status="resolved",
+                            reason="User indicated the problem is resolved",
+                            summary=f"Based on your message, the issue appears to be resolved.",
                         )
 
                         logger.info(
-                            f"✅ Case {case.case_id} will transition to RESOLVED based on user intent"
+                            f"📋 Proposed RESOLVED transition for case {case.case_id} (pending user confirmation)"
                         )
 
                     # CHECK AMBIGUOUS CLOSE PATTERNS (lowest priority)
-                    # Only trigger resolution if no abandonment indicators present
+                    # "close this case" is ambiguous — could mean CLOSED (abandoned) or RESOLVED.
+                    # Propose resolution and let the LLM ask user to clarify.
                     elif any(pattern in user_msg_lower for pattern in close_patterns):
-                        # Default ambiguous "close" to RESOLVED (backward compatible)
                         logger.info(
-                            f"🎯 Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...' (defaulting to RESOLVED)"
+                            f"🎯 Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...'"
                         )
-                        # Set milestone progression to allow solution_verified=True
-                        if not case.progress.solution_proposed:
-                            case.progress.solution_proposed = True
-                        if not case.progress.solution_applied:
-                            case.progress.solution_applied = True
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            propose_transition,
+                        )
 
-                        case.progress.solution_verified = True
+                        propose_transition(
+                            case=case,
+                            to_status="resolved",
+                            reason="User requested case closure (ambiguous — defaulting to resolved)",
+                            summary=f"You asked to close this case. Should I mark it as resolved (problem fixed) or closed (without solution)?",
+                        )
 
                         logger.info(
-                            f"✅ Case {case.case_id} will transition to RESOLVED (ambiguous close defaulted to resolution)"
+                            f"📋 Proposed transition for case {case.case_id} (pending user clarification)"
                         )
 
             # 1. Gather Context & Build Prompt

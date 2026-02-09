@@ -259,7 +259,6 @@ class InvestigationService(BaseService):
             Progress summary with:
             - case_id, status, current_stage
             - milestones_completed, pending_milestones
-            - completion_percentage
             - current_turn, is_stuck, degraded_mode
 
         Raises:

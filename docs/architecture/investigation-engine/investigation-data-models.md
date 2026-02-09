@@ -174,7 +174,11 @@ class InvestigationProgress(BaseModel):
 
     solution_verified: bool = Field(
         default=False,
-        description="Solution effectiveness verified"
+        description=(
+            "Solution effectiveness verified via User-Agent Handshake. "
+            "NOT directly settable by LLM — requires explicit user confirmation. "
+            "Set by confirm_pending_transition() after user approves resolution."
+        )
     )
 
     # ============================================================
@@ -1230,6 +1234,13 @@ class DocumentType(str, Enum):
 class EvidenceCategory(str, Enum):
     """Evidence classification by investigation purpose"""
 
+    UNCLASSIFIED = "unclassified"
+    """
+    Raw user-submitted data awaiting LLM classification.
+    NOT evidence yet — stored with ID so LLM can reference it.
+    Does NOT advance any milestones.
+    """
+
     SYMPTOM_EVIDENCE = "symptom_evidence"
     """
     Validates: Symptom, scope, timeline, changes
@@ -1245,7 +1256,9 @@ class EvidenceCategory(str, Enum):
     RESOLUTION_EVIDENCE = "resolution_evidence"
     """
     Validates: Solution effectiveness
-    Advances: solution_verified
+    Supports: User-Agent Handshake for solution_verified
+    Note: Does NOT directly advance solution_verified.
+    The agent uses this evidence to propose resolution via ProposedTransition.
     """
 
     OTHER = "other"

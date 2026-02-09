@@ -6422,9 +6422,6 @@ components:
             type: string
           type: array
           title: Pending Milestones
-        completion_percentage:
-          type: number
-          title: Completion Percentage
         evidence_count:
           type: integer
           title: Evidence Count
@@ -6465,7 +6462,6 @@ components:
       - current_stage
       - milestones_completed
       - pending_milestones
-      - completion_percentage
       - evidence_count
       - hypothesis_count
       - solution_count
