@@ -515,8 +515,12 @@ WHAT YOU ALREADY KNOW (Don't re-verify!)
 
 
 def _format_milestones(progress) -> str:
-    """Format milestone completion status"""
-    
+    """Format milestone completion status
+
+    Note: solution_verified is displayed but set via User-Agent Handshake
+    (confirm_pending_transition), not directly by the LLM.
+    """
+
     milestones = {
         "symptom_verified": progress.symptom_verified,
         "scope_assessed": progress.scope_assessed,
@@ -525,14 +529,14 @@ def _format_milestones(progress) -> str:
         "root_cause_identified": progress.root_cause_identified,
         "solution_proposed": progress.solution_proposed,
         "solution_applied": progress.solution_applied,
-        "solution_verified": progress.solution_verified,
+        "solution_verified": progress.solution_verified,  # Set via User-Agent Handshake
     }
-    
+
     lines = []
     for milestone, completed in milestones.items():
         status = "✅" if completed else "⏳"
         lines.append(f"{status} {milestone}")
-    
+
     return "\n".join(lines)
 
 
@@ -819,25 +823,34 @@ Focus: Comprehensive solution from the start that prevents recurrence
    - risks: "Rollback plan: If errors continue, run: [command]"
 
 **3. Track Progress**
-   
+
    Milestones:
    - solution_proposed: Set to True when you propose solution
    - solution_applied: Set to True when user confirms they applied it
-   - solution_verified: Set to True when you verify it worked
+   - solution_verified: Set via User-Agent Handshake (see below)
 
 **4. Verify Effectiveness**
-   
+
    Request verification evidence:
    - Error rates (should decrease to 0% or baseline)
    - Latency metrics (should return to normal)
    - Logs (errors should stop)
    - User reports (issue resolved)
-   
+
    Compare before/after:
    - "Before: 10% error rate"
    - "After: 0% error rate for 15 minutes"
-   
-   If solution verified → outcome = "case_resolved"
+
+**5. Propose Resolution (User-Agent Handshake)**
+
+   When verification criteria are met, propose a resolution:
+   - Include `proposed_transition` in your response with to_status="resolved"
+   - Summarize what was fixed and the evidence supporting resolution
+   - Ask user to confirm: "The issue appears resolved. Can you confirm?"
+
+   The system stores this as a pending_transition. On the next turn,
+   if the user confirms, the system sets solution_verified=True and
+   transitions to RESOLVED. If the user declines, investigation continues.
 
 **Solution Verification Criteria:**
 ✅ Symptom resolved (errors stopped, performance improved)
@@ -845,7 +858,7 @@ Focus: Comprehensive solution from the start that prevents recurrence
 ✅ Stable for reasonable period (15-30 min for immediate issues)
 ✅ No new problems introduced
 
-If ALL criteria met → Set solution_verified = True"""
+If ALL criteria met → Include proposed_transition in response"""
 
 
 def _build_general_instructions(case: Case) -> str:

@@ -1,282 +1,196 @@
-"""Evidence Processing and Milestone Advancement
+"""Evidence Milestone Validation
 
-Implements opportunistic milestone advancement based on evidence category.
+Validates that LLM milestone claims are supported by cited evidence.
 
-Reference: investigation-lifecycle-logic.md Section 3.1
+The LLM is the sole authority for milestone advancement via structured output.
+This module does NOT independently advance milestones. Instead, it validates
+that when the LLM claims a milestone has been reached, it has cited sufficient
+evidence IDs to justify that claim.
+
+Design Decision (Issue A):
+- LLM structured output is the sole authority for milestone advancement.
+- The evidence processor is a validation layer, not a discovery layer.
+- If the LLM claims a milestone without citing evidence, the claim is logged
+  as a warning but still applied (the LLM may have reasoning not captured in
+  evidence). Future iterations may reject unsupported claims.
+
+Reference: workflow-design-review.md Issue A
 """
 
 import logging
-from typing import List
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 from faultmaven.modules.case.contracts import (
     Case,
-    Evidence,
     EvidenceCategory,
-    EvidenceStance,
-    ProblemVerification,
-    Solution,
 )
 
 logger = logging.getLogger(__name__)
 
 
-async def process_evidence(case: Case, evidence: Evidence) -> List[str]:
+# Minimum evidence citations expected per milestone for validation
+MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
+    "symptom_verified": {
+        "min_evidence": 1,
+        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
+        "description": "At least 1 symptom evidence item confirming the reported symptom",
+    },
+    "scope_assessed": {
+        "min_evidence": 1,
+        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
+        "description": "At least 1 evidence item identifying impact scope",
+    },
+    "timeline_established": {
+        "min_evidence": 1,
+        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
+        "description": "At least 1 evidence item with temporal data",
+    },
+    "changes_identified": {
+        "min_evidence": 1,
+        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE, EvidenceCategory.CAUSAL_EVIDENCE],
+        "description": "At least 1 evidence item linking to recent changes",
+    },
+    "root_cause_identified": {
+        "min_evidence": 2,
+        "expected_categories": [EvidenceCategory.CAUSAL_EVIDENCE],
+        "description": "At least 2 causal evidence items supporting the root cause",
+    },
+    "solution_proposed": {
+        "min_evidence": 1,
+        "expected_categories": [EvidenceCategory.CAUSAL_EVIDENCE],
+        "description": "At least 1 evidence item justifying the proposed solution",
+    },
+    "solution_applied": {
+        "min_evidence": 0,
+        "expected_categories": [],
+        "description": "User confirmation that solution was applied (no evidence required)",
+    },
+    "mitigation_applied": {
+        "min_evidence": 0,
+        "expected_categories": [],
+        "description": "User confirmation that mitigation was applied (no evidence required)",
+    },
+}
+
+
+@dataclass
+class MilestoneValidationResult:
+    """Result of validating a milestone claim against cited evidence."""
+
+    milestone: str
+    is_valid: bool
+    cited_evidence_ids: List[str]
+    cited_count: int
+    expected_min: int
+    expected_categories: List[str]
+    actual_categories: List[str]
+    warnings: List[str] = field(default_factory=list)
+
+
+def validate_milestone_claims(
+    case: Case,
+    milestones_claimed: List[str],
+    reasoning: Optional[object] = None,
+) -> List[MilestoneValidationResult]:
     """
-    Process evidence and advance milestones opportunistically.
+    Validate that LLM milestone claims are supported by cited evidence.
 
-    Returns: List of milestone names that transitioned False → True
+    This does NOT advance milestones. It checks whether the LLM's claims
+    are justified by the evidence IDs cited in internal_reasoning.
 
-    Called: After LLM analyzes evidence and creates Evidence object
+    Args:
+        case: Current case state
+        milestones_claimed: Milestone names the LLM is claiming as completed
+        reasoning: InternalReasoning object with evidence_analyzed IDs
 
-    Reference: investigation-lifecycle-logic.md lines 738-842
+    Returns:
+        List of validation results, one per claimed milestone
     """
+    results = []
 
-    milestones_advanced = []
+    # Extract cited evidence IDs from reasoning
+    cited_ids: List[str] = []
+    if reasoning and hasattr(reasoning, "evidence_analyzed"):
+        cited_ids = reasoning.evidence_analyzed or []
 
-    # SYMPTOM_EVIDENCE advances verification milestones
-    if evidence.category == EvidenceCategory.SYMPTOM_EVIDENCE:
+    # Build lookup of cited evidence by category
+    cited_evidence_by_category: Dict[str, List[str]] = {}
+    for ev_id in cited_ids:
+        ev = next((e for e in case.evidence if e.evidence_id == ev_id), None)
+        if ev:
+            cat = ev.category.value if ev.category else "unknown"
+            cited_evidence_by_category.setdefault(cat, []).append(ev_id)
 
-        # Check each verification milestone
-        if not case.progress.symptom_verified:
-            if validates_symptom(evidence, case.problem_verification):
-                case.progress.symptom_verified = True
-                milestones_advanced.append("symptom_verified")
-                logger.info(
-                    f"Milestone advanced: symptom_verified (evidence: {evidence.evidence_id})"
+    for milestone in milestones_claimed:
+        expectations = MILESTONE_EVIDENCE_EXPECTATIONS.get(milestone)
+        if not expectations:
+            results.append(
+                MilestoneValidationResult(
+                    milestone=milestone,
+                    is_valid=True,
+                    cited_evidence_ids=cited_ids,
+                    cited_count=len(cited_ids),
+                    expected_min=0,
+                    expected_categories=[],
+                    actual_categories=list(cited_evidence_by_category.keys()),
+                    warnings=[f"No validation expectations defined for milestone '{milestone}'"],
                 )
+            )
+            continue
 
-        if not case.progress.scope_assessed:
-            if reveals_scope(evidence, case.problem_verification):
-                case.progress.scope_assessed = True
-                milestones_advanced.append("scope_assessed")
-                logger.info(
-                    f"Milestone advanced: scope_assessed (evidence: {evidence.evidence_id})"
-                )
+        expected_min = expectations["min_evidence"]
+        expected_cats = [c.value for c in expectations["expected_categories"]]
 
-        if not case.progress.timeline_established:
-            if shows_timeline(evidence, case.problem_verification):
-                case.progress.timeline_established = True
-                milestones_advanced.append("timeline_established")
-                logger.info(
-                    f"Milestone advanced: timeline_established (evidence: {evidence.evidence_id})"
-                )
+        # Count evidence in expected categories
+        relevant_evidence = []
+        for cat in expected_cats:
+            relevant_evidence.extend(cited_evidence_by_category.get(cat, []))
 
-        if not case.progress.changes_identified:
-            if identifies_changes(evidence, case.problem_verification):
-                case.progress.changes_identified = True
-                milestones_advanced.append("changes_identified")
-                logger.info(
-                    f"Milestone advanced: changes_identified (evidence: {evidence.evidence_id})"
-                )
-
-    # CAUSAL_EVIDENCE advances root cause identification
-    elif evidence.category == EvidenceCategory.CAUSAL_EVIDENCE:
-
-        if not case.progress.root_cause_identified:
-            # Check if evidence strongly supports a hypothesis
-            if evidence.tests_hypothesis_id:
-                hypothesis = case.hypotheses.get(evidence.tests_hypothesis_id)
-                if hypothesis and evidence.stance == EvidenceStance.SUPPORTS:
-                    if evidence.stance_confidence >= 0.8:
-                        # Strong evidence → advance root cause
-                        case.progress.root_cause_identified = True
-                        case.progress.root_cause_likelihood = evidence.stance_confidence
-                        milestones_advanced.append("root_cause_identified")
-                        logger.info(
-                            f"Milestone advanced: root_cause_identified "
-                            f"(hypothesis: {evidence.tests_hypothesis_id}, "
-                            f"confidence: {evidence.stance_confidence})"
-                        )
-
-    # RESOLUTION_EVIDENCE advances solution verification
-    elif evidence.category == EvidenceCategory.RESOLUTION_EVIDENCE:
-
-        if not case.progress.solution_verified:
-            if verifies_solution_effectiveness(evidence, case.solutions):
-                case.progress.solution_verified = True
-                milestones_advanced.append("solution_verified")
-                logger.info(
-                    f"Milestone advanced: solution_verified (evidence: {evidence.evidence_id})"
-                )
-
-    # Update evidence advances_milestones field
-    evidence.advances_milestones = milestones_advanced
-
-    # Trigger side effects (path selection, terminal transitions)
-    if "symptom_verified" in milestones_advanced:
-        if not case.path_selection:
-            logger.info("symptom_verified completed → triggering path selection")
-            # Path selection happens in milestone_engine after this returns
-
-    if "solution_verified" in milestones_advanced:
-        logger.info(
-            "solution_verified completed → will trigger terminal transition check"
+        # Also count UNCLASSIFIED evidence as potentially relevant
+        # (user data that hasn't been promoted yet)
+        unclassified = cited_evidence_by_category.get(
+            EvidenceCategory.UNCLASSIFIED.value, []
         )
-        # Terminal transition check happens in milestone_engine after this returns
 
-    return milestones_advanced
+        total_relevant = len(relevant_evidence) + len(unclassified)
+        is_valid = total_relevant >= expected_min
 
+        warnings = []
+        if not is_valid:
+            warnings.append(
+                f"Milestone '{milestone}' claimed with {total_relevant} relevant evidence "
+                f"(expected >= {expected_min}). "
+                f"Expected categories: {expected_cats}. "
+                f"Cited: {cited_ids}"
+            )
+            logger.warning(warnings[-1])
+        else:
+            logger.info(
+                f"Milestone '{milestone}' validated: {total_relevant} relevant evidence "
+                f"(expected >= {expected_min})"
+            )
 
-# ============================================================
-# VALIDATION HELPERS (Implementation-specific)
-# ============================================================
+        # Check milestone justification in reasoning
+        if reasoning and hasattr(reasoning, "milestone_justifications"):
+            justifications = reasoning.milestone_justifications or {}
+            if milestone not in justifications:
+                warnings.append(
+                    f"Milestone '{milestone}' claimed without justification in internal_reasoning"
+                )
+                logger.warning(warnings[-1])
 
+        results.append(
+            MilestoneValidationResult(
+                milestone=milestone,
+                is_valid=is_valid,
+                cited_evidence_ids=relevant_evidence,
+                cited_count=total_relevant,
+                expected_min=expected_min,
+                expected_categories=expected_cats,
+                actual_categories=list(cited_evidence_by_category.keys()),
+                warnings=warnings,
+            )
+        )
 
-def validates_symptom(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """
-    Check if evidence confirms the symptom.
-
-    Implementation: Check if evidence.analysis mentions symptom indicators
-    Example: "Error rate confirms timeout symptom"
-    """
-    if not verification or not verification.symptom_statement:
-        return False
-
-    # Check evidence analysis for symptom confirmation keywords
-    analysis_lower = evidence.analysis.lower() if evidence.analysis else ""
-    symptom_lower = (
-        verification.symptom_statement.lower() if verification.symptom_statement else ""
-    )
-
-    # Evidence explicitly validates symptom if it:
-    # 1. Contains symptom-related keywords
-    # 2. Provides data confirming the problem exists
-    # 3. References the symptom in its analysis
-
-    validation_keywords = [
-        "confirms",
-        "validates",
-        "shows",
-        "demonstrates",
-        "proves",
-        "indicates",
-        "error",
-        "timeout",
-        "failure",
-        "unavailable",
-    ]
-
-    # Check if analysis mentions validation keywords
-    has_validation = any(keyword in analysis_lower for keyword in validation_keywords)
-
-    # Check if analysis references the symptom
-    symptom_keywords = symptom_lower.split()[:3]  # First 3 words of symptom
-    references_symptom = any(
-        keyword in analysis_lower for keyword in symptom_keywords if len(keyword) > 3
-    )
-
-    return has_validation and references_symptom
-
-
-def reveals_scope(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """
-    Check if evidence determines affected scope.
-
-    Implementation: Check if evidence identifies services, users, regions
-    """
-    if not evidence.analysis:
-        return False
-
-    analysis_lower = evidence.analysis.lower()
-
-    # Scope indicators
-    scope_keywords = [
-        "users affected",
-        "services impacted",
-        "region",
-        "% of requests",
-        "% of users",
-        "all users",
-        "specific",
-        "production",
-        "staging",
-        "eu-west",
-        "us-east",
-    ]
-
-    return any(keyword in analysis_lower for keyword in scope_keywords)
-
-
-def shows_timeline(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """
-    Check if evidence establishes timeline.
-
-    Implementation: Check if evidence has timestamps or duration data
-    """
-    if not evidence.analysis:
-        return False
-
-    analysis_lower = evidence.analysis.lower()
-
-    # Timeline indicators
-    timeline_keywords = [
-        "started at",
-        "began at",
-        "since",
-        "minutes ago",
-        "hours ago",
-        "at ",  # Timestamp references
-        "utc",
-        "duration",
-        "for the past",
-    ]
-
-    return any(keyword in analysis_lower for keyword in timeline_keywords)
-
-
-def identifies_changes(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """
-    Check if evidence reveals recent changes.
-
-    Implementation: Check if evidence links to deployments, configs, etc.
-    """
-    if not evidence.analysis:
-        return False
-
-    analysis_lower = evidence.analysis.lower()
-
-    # Change indicators
-    change_keywords = [
-        "deployment",
-        "deployed",
-        "release",
-        "config change",
-        "configuration",
-        "update",
-        "modified",
-        "commit",
-        "version",
-        "rollout",
-    ]
-
-    return any(keyword in analysis_lower for keyword in change_keywords)
-
-
-def verifies_solution_effectiveness(
-    evidence: Evidence, solutions: List[Solution]
-) -> bool:
-    """
-    Check if evidence confirms solution worked.
-
-    Implementation: Check if metrics show problem resolved
-    """
-    if not evidence.analysis:
-        return False
-
-    analysis_lower = evidence.analysis.lower()
-
-    # Solution verification indicators
-    verification_keywords = [
-        "fixed",
-        "resolved",
-        "working",
-        "back to normal",
-        "error rate dropped",
-        "errors stopped",
-        "success rate",
-        "0% error",
-        "no errors",
-        "stable",
-    ]
-
-    return any(keyword in analysis_lower for keyword in verification_keywords)
+    return results

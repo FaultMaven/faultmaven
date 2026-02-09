@@ -351,6 +351,8 @@ class StateValidator:
         issues = []
 
         # solution_verified requires solution_proposed
+        # NOTE: solution_verified is set by User-Agent Handshake (confirm_pending_transition),
+        # not directly by LLM. This constraint validates data consistency.
         if progress.solution_verified and not progress.solution_proposed:
             issues.append(ValidationIssue(
                 code="MILESTONE_ORDER_001",

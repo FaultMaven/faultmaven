@@ -154,7 +154,7 @@ def render_case_header(case: Case) -> str:
             InvestigationStage.DIAGNOSING: "Diagnosing the cause",
             InvestigationStage.RESOLVING: "Applying solution",
         }
-        stage_detail = f"\n  {stage_labels[case.current_stage]} ({case.progress.completion_percentage:.0f}%)"
+        stage_detail = f"\n  {stage_labels[case.current_stage]}"
 
     return f"""
 ┌─────────────────────────────────────────────┐
@@ -260,15 +260,15 @@ case.closure_reason = "escalated"
 |------|-------------|-------------|
 | **Standard** | Full investigation | INQUIRY → INVESTIGATING → RESOLVED |
 | **Fast-Track** | Known issue from KB | INQUIRY → RESOLVED (skips INVESTIGATING) |
+| **Mitigation + RCA** | Stop bleeding, then find root cause | INQUIRY → INVESTIGATING (Mitigation → RCA) → RESOLVED |
+| **Mitigation Only** | Stop bleeding, user satisfied | INQUIRY → INVESTIGATING (Mitigation) → RESOLVED |
 | **Abandoned** | No solution found | INQUIRY/INVESTIGATING → CLOSED |
 
 ### Investigation Paths
 
-Both paths follow **linear stage progression**: 1 → 2 → 3 → 4
-
 | Path | Mitigation | Use When |
 |------|------------|----------|
-| `MITIGATION_FIRST` | Available as tool during stages 1-2 | ONGOING + HIGH/CRITICAL urgency |
+| `MITIGATION_FIRST` | Applied during stages 1-2; user then chooses RCA or close | ONGOING + HIGH/CRITICAL urgency |
 | `ROOT_CAUSE` | After RCA complete | HISTORICAL + LOW/MEDIUM urgency |
 | `USER_CHOICE` | User decides | Ambiguous cases |
 

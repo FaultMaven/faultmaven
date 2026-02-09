@@ -161,7 +161,6 @@ class CaseDetail(BaseModel):
     # Milestones
     milestones_completed: List[str]
     pending_milestones: List[str]
-    completion_percentage: float
 
     # Counts
     evidence_count: int
@@ -201,7 +200,6 @@ class CaseDetail(BaseModel):
             current_stage=case.current_stage,
             milestones_completed=case.progress.completed_milestones,
             pending_milestones=case.progress.pending_milestones,
-            completion_percentage=case.progress.completion_percentage,
             evidence_count=len(case.evidence),
             hypothesis_count=len(case.hypotheses),
             solution_count=len(case.solutions),

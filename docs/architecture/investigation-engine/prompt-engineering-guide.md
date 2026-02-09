@@ -2203,30 +2203,29 @@ def detect_progress(case: Case, llm_output: InvestigationResponse) -> bool:
     return progress_made
 ```
 
-### 8.5 Status Transition Rules
+### 8.5 Status Transition Rules (User-Agent Handshake)
+
+Terminal transitions are NEVER automatic. The agent proposes, the user confirms.
 
 ```python
-def check_automatic_status_transitions(case: Case) -> None:
-    """
-    Check if case should transition status automatically.
-    Based on milestone completion.
-    """
-    
-    # INVESTIGATING → RESOLVED
-    if (case.status == CaseStatus.INVESTIGATING and 
-        case.progress.solution_verified):
-        
-        case.status = CaseStatus.RESOLVED
-        case.resolved_at = datetime.now(timezone.utc)
-        case.closed_at = datetime.now(timezone.utc)
-        case.closure_reason = "resolved"
-        
-        record_status_transition(
-            case,
-            from_status=CaseStatus.INVESTIGATING,
-            to_status=CaseStatus.RESOLVED,
-            reason="Solution verified"
-        )
+# Agent proposes resolution in its response schema:
+proposed_transition = ProposedTransition(
+    to_status="resolved",
+    reason="Solution applied and user confirmed effectiveness",
+    summary="Root cause: memory leak in UserService. Fix: added pool limit.",
+    evidence_ids=["ev_abc123", "ev_def456"],
+)
+
+# System stores as pending (does NOT execute):
+propose_transition(case, to_status="resolved", reason=..., summary=...)
+
+# Next turn: user confirms → system executes:
+confirm_pending_transition(case, user_id)
+# Sets solution_verified=True, status=RESOLVED, closure_reason="resolved"
+
+# If user declines:
+cancel_pending_transition(case)
+# Clears pending_transition, investigation continues
 ```
 
 ---
@@ -2486,18 +2485,25 @@ def test_milestone_advancement_calculation():
     
     assert "symptom_verified" in milestones
 
-def test_status_transition_triggers():
-    """Test automatic status transitions"""
-    
+def test_status_transition_via_handshake():
+    """Test terminal transitions via User-Agent Handshake"""
+
     case = create_test_case(status=CaseStatus.INVESTIGATING)
-    case.progress.solution_verified = True
-    
-    check_automatic_status_transitions(case)
-    
+
+    # Agent proposes resolution
+    propose_transition(case, to_status="resolved", reason="Fix verified", summary="...")
+    assert case.pending_transition is not None
+    assert case.status == CaseStatus.INVESTIGATING  # NOT yet resolved
+
+    # User confirms
+    confirm_pending_transition(case, user_id="user_123")
+
     assert case.status == CaseStatus.RESOLVED
+    assert case.progress.solution_verified == True
     assert case.resolved_at is not None
     assert case.closed_at is not None
     assert case.closure_reason == "resolved"
+    assert case.pending_transition is None
 ```
 
 ### 10.3 Confidence Calibration Tracking

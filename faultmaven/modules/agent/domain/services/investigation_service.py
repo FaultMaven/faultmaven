@@ -259,7 +259,6 @@ class InvestigationService(BaseService):
             Progress summary with:
             - case_id, status, current_stage
             - milestones_completed, pending_milestones
-            - completion_percentage
             - current_turn, is_stuck, degraded_mode
 
         Raises:
@@ -290,7 +289,6 @@ class InvestigationService(BaseService):
                 ),
                 "milestones_completed": case.progress.completed_milestones,
                 "pending_milestones": case.progress.pending_milestones,
-                "completion_percentage": case.progress.completion_percentage,
                 "current_turn": case.current_turn,
                 "is_stuck": case.is_stuck if hasattr(case, "is_stuck") else False,
                 "degraded_mode": (

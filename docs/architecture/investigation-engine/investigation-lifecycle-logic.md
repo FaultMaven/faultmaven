@@ -177,43 +177,53 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any]):
 
 #### INVESTIGATING → RESOLVED (Terminal)
 
-**Trigger**: Solution verified
+**Trigger**: User-Agent Handshake (explicit user confirmation)
+
+**User-Agent Handshake Pattern**:
+
+Terminal transitions are NEVER automatic. The agent proposes resolution, and the
+user must explicitly confirm before the transition executes.
+
+**Flow**:
+1. Agent detects solution effectiveness → includes `ProposedTransition` in response
+2. System stores `pending_transition` on case (does NOT execute)
+3. Agent's response asks user: "Should I mark this case as resolved?"
+4. Next turn: user confirms → system sets `solution_verified=True` and transitions
+5. If user declines → `pending_transition` cleared, investigation continues
 
 **MULTIPLE SOLUTIONS HANDLING**:
 
-If multiple solutions exist, `solution_verified` means AT LEAST ONE solution is verified effective.
-
-Multiple solutions allowed:
-
-- Try solution A, doesn't work → Try solution B
-- Solution B works → solution_verified = True → RESOLVED
-
-Only ONE solution needs verification for terminal transition.
+If multiple solutions exist, the agent proposes resolution when AT LEAST ONE
+solution appears effective. The user confirms which solution resolved the issue.
 
 ```python
-def can_mark_resolved(case: Case) -> bool:
-    """
-    Case can transition to RESOLVED when AT LEAST ONE solution is verified effective.
+def propose_transition(case, to_status, reason, summary, evidence_ids=None):
+    """Store a pending transition proposal. Does NOT execute."""
+    case.pending_transition = {
+        "to_status": to_status,
+        "reason": reason,
+        "summary": summary,
+        "evidence_ids": evidence_ids or [],
+        "proposed_at": datetime.now(UTC).isoformat(),
+        "proposed_by": "agent",
+    }
 
-    Multiple solutions allowed:
-    - Try solution A, doesn't work → Try solution B
-    - Solution B works → solution_verified = True → RESOLVED
-
-    Only ONE solution needs verification for terminal transition.
-    """
-    return (
-        case.status == CaseStatus.INVESTIGATING and
-        case.progress.solution_verified == True and
-        any(s.verified_at is not None for s in case.solutions)  # At least one solution verified
+def confirm_pending_transition(case, user_id):
+    """Execute transition after user confirms."""
+    case.progress.solution_verified = True
+    case.atomic_update(
+        status=CaseStatus.RESOLVED,
+        resolved_at=datetime.now(UTC),
+        closed_at=datetime.now(UTC),
+        closure_reason="resolved",
     )
-
-if can_mark_resolved(case):
-    case.status = CaseStatus.RESOLVED
-    case.resolved_at = datetime.now(timezone.utc)
-    case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = "resolved"
+    case.pending_transition = None
     # TERMINAL - no further transitions
 ```
+
+**Why not automatic?** The LLM's interpretation of "it works" can be wrong.
+The user might mean "this command works" not "the whole system is fixed."
+Terminal transitions are irreversible, so false positives are costly.
 
 #### INVESTIGATING → CLOSED (Terminal)
 
@@ -393,65 +403,52 @@ async def process_turn(case: Case, user_message: str) -> str:
     record_turn(case, milestones_completed)
 
     # ============================================================
-    # AUTOMATIC TERMINAL TRANSITION CHECK
+    # TERMINAL TRANSITION HANDLING (User-Agent Handshake)
     # ============================================================
-    # When: After every turn's agent response
-    # Conditions: Data-driven (milestone-based)
-    # Result: Irreversible status change to terminal state
+    # Terminal transitions are NEVER automatic. The agent proposes
+    # a transition via ProposedTransition, and the system holds it
+    # pending until the user confirms in the next turn.
 
-    await check_terminal_transitions(case)
+    # 1. Handle pending transition confirmation from previous turn
+    if case.pending_transition:
+        if user_confirms_transition(user_message):
+            confirm_pending_transition(case, case.user_id)
+        elif user_declines_transition(user_message):
+            cancel_pending_transition(case)
+
+    # 2. Handle ProposedTransition from LLM response
+    proposed = getattr(response.state_updates, "proposed_transition", None)
+    if proposed:
+        propose_transition(
+            case=case,
+            to_status=proposed.to_status,
+            reason=proposed.reason,
+            summary=proposed.summary,
+            evidence_ids=proposed.evidence_ids,
+        )
 
     return agent_response
 
 
-async def check_terminal_transitions(case: Case):
-    """
-    Check and execute automatic transitions to terminal states.
-
-    INVESTIGATING → RESOLVED:
-    - Trigger: solution_verified = True
-    - Automatic: Yes (no user confirmation needed)
-    - Terminal: Yes (irreversible)
-
-    INVESTIGATING → CLOSED:
-    - Trigger: User explicit action (force_close)
-    - Automatic: No (requires user intent)
-    - Terminal: Yes (irreversible)
-
-    INQUIRY → CLOSED:
-    - Trigger: User explicit action (close_from_inquiry)
-    - Automatic: No (requires user intent)
-    - Terminal: Yes (irreversible)
-
-    INQUIRY → RESOLVED:
-    - Trigger: Fast-track KB resolution + user confirmation
-    - Automatic: After confirmation only
-    - Terminal: Yes (irreversible)
-    """
-
-    # Only check if not already terminal
-    if case.is_terminal:
-        return
-
-    # AUTOMATIC: INVESTIGATING → RESOLVED
-    if case.status == CaseStatus.INVESTIGATING:
-        if case.progress.solution_verified:
-            case.status = CaseStatus.RESOLVED
-            case.resolved_at = datetime.now(timezone.utc)
-            case.closed_at = datetime.now(timezone.utc)
-            case.closure_reason = "resolved"
-            case.status_history.append(CaseStatusTransition(
-                from_status=CaseStatus.INVESTIGATING,
-                to_status=CaseStatus.RESOLVED,
-                triggered_at=datetime.now(timezone.utc),
-                triggered_by="system",
-                reason="Solution verified - automatic transition"
-            ))
-            # TERMINAL - no further transitions
-
-    # Note: INVESTIGATING → CLOSED requires explicit user force_close() call
-    # Note: INQUIRY → CLOSED requires explicit user close_from_inquiry() call
-    # These are NOT automatic transitions
+# Terminal transitions (all require user confirmation):
+#
+# INVESTIGATING → RESOLVED:
+#   - Trigger: Agent proposes via ProposedTransition + user confirms
+#   - Automatic: No (requires User-Agent Handshake)
+#   - Terminal: Yes (irreversible)
+#
+# INVESTIGATING → CLOSED:
+#   - Trigger: User explicit action (force_close via UI or chat)
+#   - Automatic: No (requires user intent)
+#   - Terminal: Yes (irreversible)
+#
+# INQUIRY → CLOSED:
+#   - Trigger: User explicit action (close_from_inquiry)
+#   - Terminal: Yes (irreversible)
+#
+# INQUIRY → RESOLVED:
+#   - Trigger: Fast-track KB resolution + user confirmation
+#   - Terminal: Yes (irreversible)
 
 
 # ============================================================
@@ -1034,44 +1031,42 @@ Mitigation is a **tool available during early stages**, not a stage jump.
     - Apply quick mitigation (rollback, restart, etc.)
     - Mark `mitigation_applied = True`
     - Service stabilized, pressure reduced
-  - Next: Stage 2
+  - Next: Agent offers user the choice (see below)
 
-- **Stage 2: Hypothesis Formulation**
-  - Generate theories about root cause
-  - Service is now stable, can take time for thorough analysis
-  - May use systematic exploration when cause unclear
-  - Next: Stage 3
+- **Post-Mitigation Decision Point**
+  After mitigation is applied and verified effective, the agent asks the user
+  whether to continue with root cause analysis or close the case. See Section 4.4
+  for the two sub-scenarios (Full Path vs. Quick Path).
 
-- **Stage 3: Hypothesis Validation**
-  - Test hypotheses with diagnostic evidence
-  - Identify root cause with confidence
-  - Mark `root_cause_identified = True`
-  - Next: Stage 4
+- **If user chooses RCA (Full Path):**
+  - **Stage 2: Hypothesis Formulation**
+    - Generate theories about root cause
+    - Service is now stable, can take time for thorough analysis
+  - **Stage 3: Hypothesis Validation**
+    - Test hypotheses with diagnostic evidence
+    - Mark `root_cause_identified = True`
+  - **Stage 4: Solution**
+    - Apply permanent fix, verify effectiveness
+    - Agent proposes resolution via User-Agent Handshake
 
-- **Stage 4: Solution**
-  - Apply evidence-based permanent fix
-  - Address root cause to prevent recurrence
-  - Verify effectiveness
-  - Case transitions to RESOLVED
+- **If user chooses to close (Quick Path):**
+  - Agent proposes resolution via User-Agent Handshake
+  - Case transitions to RESOLVED with mitigation as the resolution
 
-**Milestones**: `symptom_verified` → `mitigation_applied` (during 1-2) → `root_cause_identified` → `solution_applied` → `solution_verified`
+**Full Path Milestones**: `symptom_verified` → `mitigation_applied` → `mitigation_verified` → `root_cause_identified` → `solution_applied` → `solution_verified`
 
-**CRITICAL: Mitigation Follow-up Requirement**
+**Quick Path Milestones**: `symptom_verified` → `mitigation_applied` → `mitigation_verified` → `solution_verified`
 
-When a temporary workaround is applied to stop the bleeding:
+**Mitigation Follow-up Guidance (Advisory)**
 
-1. **Track workaround state**: Set `has_temporary_workaround = True` in case metadata
-2. **After root cause fixed**: Agent reminds user to revert/remove the workaround
-3. **Required guidance before RESOLVED**:
-   - State what needs to be done: "Once [permanent fix] is deployed, remember to [re-enable/revert/remove] the temporary workaround"
-   - Offer to help with root cause investigation if not yet done
+When a temporary workaround is applied, the agent SHOULD advise the user about
+follow-up even if they choose the quick path:
 
-**Example**:
-> "The fraud check bypass stopped the immediate issue. Once the SSL cert is renewed, make sure to re-enable the fraud check. Would you like help investigating why the cert wasn't monitored for expiration?"
+> "The fraud check bypass stopped the immediate issue. If you close this case,
+> remember to re-enable the fraud check once the SSL cert is renewed. Would you
+> like help investigating why the cert wasn't monitored for expiration?"
 
-**Without follow-up**: Temporary workarounds become permanent technical debt, creating security holes or degraded functionality.
-
-**Milestone consideration**: For complete lifecycle tracking, consider adding `workaround_reverted` milestone before marking RESOLVED.
+This is advisory — the system does not block resolution if the user declines RCA.
 
 ---
 
@@ -1115,115 +1110,70 @@ Traditional RCA path - thorough investigation from start.
 
 ## 3. Turn Progress Tracking
 
-### 3.1 Evidence Processing and Milestone Advancement
+### 3.1 Evidence Milestone Validation
 
-Evidence is the primary mechanism for advancing investigation milestones. When evidence is added, the system automatically evaluates which milestones it satisfies.
+The LLM structured output is the **sole authority** for milestone advancement.
+When the LLM claims a milestone has been reached (via the `milestones` field in
+its response schema), the evidence processor validates the claim against cited
+evidence. It does NOT independently advance milestones.
+
+**Design Decision (Issue A)**: The evidence processor was previously a
+keyword-based discovery layer that parsed LLM-generated analysis text to find
+milestones. This created a dual pathway for advancement and was fragile. It is
+now validation-only.
 
 ```python
-async def process_evidence(
+def validate_milestone_claims(
     case: Case,
-    evidence: Evidence
-) -> List[str]:
+    milestones_claimed: List[str],
+    reasoning: Optional[InternalReasoning] = None,
+) -> List[MilestoneValidationResult]:
     """
-    Process evidence and advance milestones opportunistically.
+    Validate that LLM milestone claims are supported by cited evidence.
 
-    Returns: List of milestone names that transitioned False → True
+    This does NOT advance milestones. It checks whether the LLM's claims
+    are justified by the evidence IDs cited in internal_reasoning.
 
-    Called: After LLM analyzes evidence and creates Evidence object
+    Called: After LLM sets milestones in structured output
     """
 
-    milestones_advanced = []
+    for milestone in milestones_claimed:
+        expectations = MILESTONE_EVIDENCE_EXPECTATIONS[milestone]
 
-    # SYMPTOM_EVIDENCE advances verification milestones
-    if evidence.category == EvidenceCategory.SYMPTOM_EVIDENCE:
+        # Count evidence in expected categories among cited IDs
+        relevant = count_cited_evidence(case, reasoning, expectations)
 
-        # Check each verification milestone
-        if not case.progress.symptom_verified:
-            if validates_symptom(evidence, case.problem_verification):
-                case.progress.symptom_verified = True
-                milestones_advanced.append("symptom_verified")
+        if relevant < expectations["min_evidence"]:
+            log_warning(
+                f"Milestone '{milestone}' claimed with {relevant} relevant evidence "
+                f"(expected >= {expectations['min_evidence']})"
+            )
 
-        if not case.progress.scope_assessed:
-            if reveals_scope(evidence, case.problem_verification):
-                case.progress.scope_assessed = True
-                milestones_advanced.append("scope_assessed")
+# Minimum evidence expectations per milestone:
+MILESTONE_EVIDENCE_EXPECTATIONS = {
+    "symptom_verified":     {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
+    "scope_assessed":       {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
+    "timeline_established": {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
+    "changes_identified":   {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE]},
+    "root_cause_identified":{"min_evidence": 2, "categories": [CAUSAL_EVIDENCE]},
+    "solution_proposed":    {"min_evidence": 1, "categories": [CAUSAL_EVIDENCE]},
+    "solution_applied":     {"min_evidence": 0, "categories": []},  # User confirmation
+    "mitigation_applied":   {"min_evidence": 0, "categories": []},  # User confirmation
+}
+# NOTE: solution_verified is not in this list — it requires the User-Agent Handshake.
+```
 
-        if not case.progress.timeline_established:
-            if shows_timeline(evidence, case.problem_verification):
-                case.progress.timeline_established = True
-                milestones_advanced.append("timeline_established")
+**Evidence Classification**:
 
-        if not case.progress.changes_identified:
-            if identifies_changes(evidence, case.problem_verification):
-                case.progress.changes_identified = True
-                milestones_advanced.append("changes_identified")
+User-submitted data is stored with an ID as `UNCLASSIFIED` until the LLM
+promotes it to a specific category via `evidence_to_add`:
 
-    # CAUSAL_EVIDENCE advances root cause identification
-    elif evidence.category == EvidenceCategory.CAUSAL_EVIDENCE:
-
-        if not case.progress.root_cause_identified:
-            # Check if evidence strongly supports a hypothesis
-            if evidence.tests_hypothesis_id:
-                hypothesis = case.hypotheses.get(evidence.tests_hypothesis_id)
-                if hypothesis and evidence.stance == EvidenceStance.SUPPORTS:
-                    if evidence.stance_confidence >= 0.8:
-                        # Strong evidence → advance root cause
-                        case.progress.root_cause_identified = True
-                        case.progress.root_cause_likelihood = evidence.stance_confidence
-                        milestones_advanced.append("root_cause_identified")
-
-    # RESOLUTION_EVIDENCE advances solution verification
-    elif evidence.category == EvidenceCategory.RESOLUTION_EVIDENCE:
-
-        if not case.progress.solution_verified:
-            if verifies_solution_effectiveness(evidence, case.solutions):
-                case.progress.solution_verified = True
-                milestones_advanced.append("solution_verified")
-
-    # Update evidence advances_milestones field
-    evidence.advances_milestones = milestones_advanced
-
-    # Trigger side effects (path selection, terminal transitions)
-    if "symptom_verified" in milestones_advanced:
-        if not case.path_selection:
-            case.path_selection = select_investigation_path(case)
-            await execute_path_behavior(case)
-
-    if "solution_verified" in milestones_advanced:
-        await check_terminal_transitions(case)
-
-    return milestones_advanced
-
-
-# ============================================================
-# VALIDATION HELPERS (Implementation-specific)
-# ============================================================
-
-def validates_symptom(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """Check if evidence confirms the symptom"""
-    # Implementation: Check if evidence.analysis mentions symptom indicators
-    # Example: "Error rate confirms timeout symptom"
-    return True  # Simplified for spec
-
-def reveals_scope(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """Check if evidence determines affected scope"""
-    # Implementation: Check if evidence identifies services, users, regions
-    return True
-
-def shows_timeline(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """Check if evidence establishes timeline"""
-    # Implementation: Check if evidence has timestamps or duration data
-    return True
-
-def identifies_changes(evidence: Evidence, verification: ProblemVerification) -> bool:
-    """Check if evidence reveals recent changes"""
-    # Implementation: Check if evidence links to deployments, configs, etc.
-    return True
-
-def verifies_solution_effectiveness(evidence: Evidence, solutions: List[Solution]) -> bool:
-    """Check if evidence confirms solution worked"""
-    # Implementation: Check if metrics show problem resolved
-    return True
+| Category | Description |
+|----------|-------------|
+| `UNCLASSIFIED` | Raw user data, not yet classified as evidence |
+| `SYMPTOM_EVIDENCE` | Verifies symptoms, scope, timeline, changes |
+| `CAUSAL_EVIDENCE` | Tests hypotheses about root cause |
+| `RESOLUTION_EVIDENCE` | Verifies solution effectiveness |
 ```
 
 ### 3.2 Turn Recording and Progress Detection
@@ -1602,23 +1552,68 @@ The agent pursues milestones opportunistically.
 ---
 
 ### 4.4 Mitigation-First Investigation (Ongoing Outage)
-**User Goal**: Restore service availability immediately, then find root cause later.
-**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation) → `INVESTIGATING` (RCA) → `RESOLVED`
+**User Goal**: Restore service availability immediately.
+**Trigger**: High Severity + Ongoing Outage (auto-selected or user-chosen path).
 
-#### Workflow Steps & Milestones
+After mitigation is applied and verified, the user decides whether to continue
+with root cause analysis or close the case. The system does not distinguish
+between these sub-scenarios — the milestone state captures what happened.
 
-**Phase 1: Mitigation**
-*   **Trigger**: High Severity + Ongoing Outage.
-*   `symptom_verified`: Confirmed.
-*   `mitigation_applied`: Temporary fix applied (e.g., "Rollback", "Reboot").
-*   `mitigation_verified`: Service restored (but root cause unknown).
+#### Sub-Scenario A: Full Path (Mitigation + RCA)
+**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation → RCA) → `RESOLVED`
 
-**Phase 2: Root Cause Analysis (Post-Mitigation)**
-*   User decides to continue for RCA.
+The user wants a permanent fix after the immediate fire is out.
+
+**Milestones**:
+*   `symptom_verified`: Problem confirmed.
+*   `mitigation_applied`: Temporary fix applied (e.g., rollback, restart).
+*   `mitigation_verified`: Service restored (root cause still unknown).
 *   `root_cause_identified`: Why did it fail?
-*   `solution_proposed`: Permanent fix (e.g., "Fix memory leak code").
+*   `solution_proposed`: Permanent fix proposed.
 *   `solution_applied`: Permanent fix deployed.
-*   `solution_verified`: Permanent fix validated.
+*   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
+
+#### Sub-Scenario B: Quick Path (Mitigation Only)
+**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation) → `RESOLVED`
+
+The user is satisfied with the mitigation and does not need RCA. This is a
+valid outcome — not every incident requires a root cause investigation.
+
+**Milestones**:
+*   `symptom_verified`: Problem confirmed.
+*   `mitigation_applied`: Temporary fix applied.
+*   `mitigation_verified`: Service restored.
+*   `solution_verified`: User confirms resolution (via User-Agent Handshake).
+*   `root_cause_identified`: **Not set** (no RCA performed).
+
+#### Agent Behavior After Mitigation
+
+After `mitigation_verified = True`, the agent MUST offer the user a choice:
+
+> "The mitigation is working — [specific metric showing improvement]. Would you
+> like me to help investigate the root cause to prevent recurrence, or is this
+> sufficient to close the case?"
+
+The agent should factor in `mitigation_effectiveness`:
+- **1.0 (fully resolved)**: Both options equally valid. Offer choice neutrally.
+- **0.5-0.9 (partially resolved)**: Recommend RCA, noting residual risk.
+- **< 0.5 (mostly ineffective)**: Strongly recommend continuing investigation.
+
+#### How the System Distinguishes the Two Paths (Retrospectively)
+
+No additional code, data elements, or routing logic is needed. The milestone
+state IS the distinction:
+
+| Field | Full Path | Quick Path |
+|-------|-----------|------------|
+| `mitigation_applied` | True | True |
+| `mitigation_verified` | True | True |
+| `root_cause_identified` | True | False |
+| `solution_applied` | True | False |
+| `solution_verified` | True | True |
+
+Analytics and reporting can query these milestone combinations to classify
+resolved cases by path type after the fact.
 
 ---
 
