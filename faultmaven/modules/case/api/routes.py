@@ -2103,7 +2103,9 @@ async def submit_case_query(
                     response.view_state = ViewState(
                         session_id="",  # Not needed for this use case
                         user=User(
-                            user_id=current_user.user_id, email=current_user.email or ""
+                            user_id=current_user.user_id,
+                            email=current_user.email or "",
+                            name=current_user.display_name or current_user.username,
                         ),
                         active_case=updated_case,
                         cases=[],  # Not needed - just sending active_case status
