@@ -814,3 +814,14 @@ class EvidenceDetailsResponse(BaseModel):
     preprocessed_content: str
     content_size_bytes: int
     analysis: Optional[str] = None
+
+
+# ============================================================
+# Forward Reference Resolution
+# ============================================================
+
+# Import ViewState at end to avoid circular imports
+from faultmaven.models.api import ViewState  # noqa: E402
+
+# Rebuild model with resolved forward references
+CaseQueryResponse.model_rebuild()

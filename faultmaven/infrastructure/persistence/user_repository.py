@@ -448,8 +448,7 @@ class PostgreSQLUserRepository(UserRepository):
         }
 
         # Upsert query
-        query = text(
-            """
+        query = text("""
             INSERT INTO users (
                 user_id, username, email, display_name, avatar_url, timezone, locale,
                 hashed_password, is_active, is_email_verified, email_verified_at,
@@ -479,8 +478,7 @@ class PostgreSQLUserRepository(UserRepository):
                 last_password_change_at = EXCLUDED.last_password_change_at,
                 deleted_at = EXCLUDED.deleted_at,
                 roles = EXCLUDED.roles
-        """
-        )
+        """)
 
         await self.db.execute(query, user_data)
         await self.db.commit()
@@ -596,13 +594,11 @@ class PostgreSQLUserRepository(UserRepository):
         total_count = count_result.scalar()
 
         # Get paginated results
-        query = text(
-            """
+        query = text("""
             SELECT * FROM users
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
-        """
-        )
+        """)
         result = await self.db.execute(query, {"limit": limit, "offset": offset})
         rows = result.fetchall()
 
@@ -656,14 +652,12 @@ class PostgreSQLUserRepository(UserRepository):
         total_count = count_result.scalar()
 
         # Get paginated results
-        query = text(
-            f"""
+        query = text(f"""
             SELECT * FROM users
             {where_clause}
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
-        """
-        )
+        """)
         result = await self.db.execute(query, params)
         rows = result.fetchall()
 
