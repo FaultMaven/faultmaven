@@ -2683,21 +2683,16 @@ async def get_report_recommendations(
                 status_code=404, detail="Case not found or access denied"
             )
 
-        # Validate case is in resolved state
-        resolved_states = [
-            CaseStatus.RESOLVED,
-            CaseStatus.RESOLVED_WITH_WORKAROUND,
-            CaseStatus.RESOLVED_BY_USER,
-        ]
-
-        if case.status not in resolved_states:
+        # Validate case is in resolved state (terminal state with solution)
+        # Note: Only RESOLVED is valid - CLOSED is terminal without solution
+        if case.status != CaseStatus.RESOLVED:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": "invalid_case_state",
-                    "message": f"Cannot get report recommendations for case in {case.status.value} state",
+                    "message": f"Cannot get report recommendations for case in {case.status.value} state. Case must be RESOLVED.",
                     "current_state": case.status.value,
-                    "required_states": [s.value for s in resolved_states],
+                    "required_state": CaseStatus.RESOLVED.value,
                 },
             )
 
