@@ -44,6 +44,15 @@ class CaseConverter:
         Returns:
             CaseAPI: The API response model with proper formatting
         """
+        # Safely extract priority (domain Case doesn't have this field)
+        priority_value = "medium"  # Default
+        if hasattr(case_entity, "priority"):
+            priority_attr = getattr(case_entity, "priority")
+            if hasattr(priority_attr, "value"):
+                priority_value = priority_attr.value
+            else:
+                priority_value = str(priority_attr)
+
         return CaseAPI(
             case_id=getattr(case_entity, "case_id", str(uuid4())),
             title=getattr(case_entity, "title", "Untitled Case"),
@@ -53,11 +62,7 @@ class CaseConverter:
                 if hasattr(case_entity.status, "value")
                 else str(getattr(case_entity, "status", "inquiry"))
             ),
-            priority=(
-                case_entity.priority.value
-                if hasattr(case_entity.priority, "value")
-                else str(getattr(case_entity, "priority", "medium"))
-            ),
+            priority=priority_value,
             created_at=(
                 to_json_compatible(case_entity.created_at)
                 if hasattr(case_entity.created_at, "isoformat")
