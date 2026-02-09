@@ -280,21 +280,8 @@ class InvestigationProgress(BaseModel):
             self.changes_identified
         )
 
-    @property
-    def completion_percentage(self) -> float:
-        """Overall progress for UI display"""
-        milestones = [
-            self.symptom_verified,
-            self.scope_assessed,
-            self.timeline_established,
-            self.changes_identified,
-            self.root_cause_identified,
-            self.solution_proposed,
-            self.solution_applied,
-            self.solution_verified,
-            self.mitigation_applied,  # 9th milestone for MITIGATION_FIRST path
-        ]
-        return sum(milestones) / len(milestones)
+    # completion_percentage removed — inaccurate and non-essential.
+    # Milestone completion tracked via completed_milestones/pending_milestones.
 
 class InvestigationStage(str, Enum):
     """

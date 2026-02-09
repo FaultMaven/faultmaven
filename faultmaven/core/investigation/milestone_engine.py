@@ -392,13 +392,16 @@ class MilestoneEngine:
                     EvidenceSourceType,
                 )
 
-                # Create Evidence object from user message
+                # Store user message as unclassified data item with an ID.
+                # The LLM will determine which user submissions qualify as
+                # evidence and promote them via evidence_to_add with a
+                # specific category. Until then, these remain UNCLASSIFIED.
                 user_evidence = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=user_message[:200]
                     + ("..." if len(user_message) > 200 else ""),
                     content_ref=f"turn_{case.current_turn + 1}_user_message",
-                    category=EvidenceCategory.SYMPTOM_EVIDENCE,  # User input is symptom evidence
+                    category=EvidenceCategory.UNCLASSIFIED,  # Raw data, not yet classified as evidence
                     source_type=EvidenceSourceType.USER_REPORT,  # User-provided information
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
@@ -1313,6 +1316,8 @@ class MilestoneEngine:
                 )
 
         # 1. Update Milestones
+        # NOTE: solution_verified is excluded — it requires the User-Agent
+        # Handshake via ProposedTransition (see terminal_transitions.py).
         if updates.milestones:
             m = updates.milestones
             p = case.progress
@@ -1326,7 +1331,7 @@ class MilestoneEngine:
                 "mitigation_applied",
                 "solution_proposed",
                 "solution_applied",
-                "solution_verified",
+                # solution_verified excluded — requires User-Agent Handshake
             ]
             for field in milestone_fields:
                 if getattr(m, field, False):
@@ -1395,23 +1400,28 @@ class MilestoneEngine:
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
 
-        # 2b. Process Evidence for Milestone Advancement
-        # After creating evidence, check if it advances any milestones opportunistically
-        if metadata["evidence_added"]:
+        # 2b. Validate Milestone Claims Against Cited Evidence
+        # The LLM structured output is the sole authority for milestone advancement.
+        # The evidence processor validates that claims are supported by cited evidence
+        # but does NOT independently advance milestones.
+        if metadata["milestones_completed"]:
             from faultmaven.core.investigation.evidence_processor import (
-                process_evidence,
+                validate_milestone_claims,
             )
 
-            for ev_id in metadata["evidence_added"]:
-                ev = next((e for e in case.evidence if e.evidence_id == ev_id), None)
-                if ev:
-                    milestones_advanced = await process_evidence(case, ev)
-                    # Track milestones advanced by this evidence
-                    for milestone_name in milestones_advanced:
-                        if milestone_name not in metadata["milestones_completed"]:
-                            metadata["milestones_completed"].append(milestone_name)
-                    logger.info(
-                        f"Evidence {ev_id} advanced {len(milestones_advanced)} milestone(s): {milestones_advanced}"
+            reasoning = getattr(response_obj, "internal_reasoning", None)
+            validation_results = validate_milestone_claims(
+                case, metadata["milestones_completed"], reasoning
+            )
+            for result in validation_results:
+                if not result.is_valid:
+                    logger.warning(
+                        f"Milestone '{result.milestone}' claimed with insufficient evidence: "
+                        f"{result.cited_count}/{result.expected_min} required. "
+                        f"Warnings: {result.warnings}"
+                    )
+                    metadata.setdefault("milestone_validation_warnings", []).extend(
+                        result.warnings
                     )
 
         # 2c. Trigger Path Selection if symptom_verified milestone completed
@@ -1578,12 +1588,37 @@ class MilestoneEngine:
         """
         Check if case should automatically transition status.
 
-        Automatic Transitions:
+        Automatic Transitions (non-terminal):
         - INQUIRY -> INVESTIGATING when decided_to_investigate=True
-        - INQUIRY -> RESOLVED/CLOSED for fast-track
-        - INVESTIGATING -> RESOLVED when solution_verified=True
+        - INQUIRY -> RESOLVED for fast-track KB resolution (user already confirmed)
+
+        User-Agent Handshake Transitions (terminal):
+        - INVESTIGATING -> RESOLVED requires ProposedTransition + user confirmation
+        - Any -> CLOSED requires explicit user action
+
+        ProposedTransition handling:
+        - If the LLM response includes a proposed_transition, store it as pending
+        - The transition is NOT executed until the user confirms in the next turn
+        - If a pending_transition exists and user confirms, execute it
         """
         old_status = case.status
+
+        # 0. Handle pending transition confirmation from previous turn
+        if hasattr(case, "pending_transition") and case.pending_transition:
+            from faultmaven.core.investigation.terminal_transitions import (
+                confirm_pending_transition,
+                cancel_pending_transition,
+            )
+
+            user_message = metadata.get("user_message", "")
+            if self._user_confirms_transition(user_message):
+                confirm_pending_transition(case, case.user_id)
+                metadata["status_transitioned"] = True
+                return case
+            elif self._user_declines_transition(user_message):
+                cancel_pending_transition(case)
+                # Continue normal processing
+            # else: user said something ambiguous, let LLM handle it
 
         # 1. INQUIRY transitions
         if case.status == CaseStatus.INQUIRY:
@@ -1618,16 +1653,55 @@ class MilestoneEngine:
                 )
                 return case
 
-        # 2. INVESTIGATING -> RESOLVED (using terminal_transitions module)
-        if case.status == CaseStatus.INVESTIGATING and case.progress.solution_verified:
-            from faultmaven.core.investigation.terminal_transitions import (
-                check_terminal_transitions,
-            )
+        # 2. Handle ProposedTransition from LLM response (User-Agent Handshake)
+        # The LLM proposes a terminal transition; we store it pending.
+        # Auto-transition on solution_verified is REMOVED — all terminal
+        # transitions require explicit user confirmation.
+        response_obj = metadata.get("response_obj")
+        if response_obj and hasattr(response_obj, "state_updates"):
+            proposed = getattr(response_obj.state_updates, "proposed_transition", None)
+            if proposed:
+                from faultmaven.core.investigation.terminal_transitions import (
+                    propose_transition,
+                )
 
-            await check_terminal_transitions(case)
-            metadata["status_transitioned"] = True
+                propose_transition(
+                    case=case,
+                    to_status=proposed.to_status,
+                    reason=proposed.reason,
+                    summary=proposed.summary,
+                    evidence_ids=proposed.evidence_ids,
+                )
+                metadata["transition_proposed"] = True
+                logger.info(
+                    f"Agent proposed transition → {proposed.to_status} "
+                    f"(pending user confirmation)"
+                )
 
         return case
+
+    def _user_confirms_transition(self, user_message: str) -> bool:
+        """Check if user message confirms a pending transition."""
+        if not user_message:
+            return False
+        msg = user_message.strip().lower()
+        confirm_patterns = [
+            "yes", "yeah", "yep", "correct", "confirmed", "approve",
+            "go ahead", "do it", "mark as resolved", "close it",
+            "that's right", "sounds good", "looks good",
+        ]
+        return any(msg.startswith(p) or msg == p for p in confirm_patterns)
+
+    def _user_declines_transition(self, user_message: str) -> bool:
+        """Check if user message declines a pending transition."""
+        if not user_message:
+            return False
+        msg = user_message.strip().lower()
+        decline_patterns = [
+            "no", "nope", "not yet", "wait", "cancel", "don't",
+            "not ready", "hold on", "stop",
+        ]
+        return any(msg.startswith(p) or msg == p for p in decline_patterns)
 
     def _check_fast_track_resolution(self, case: Case) -> bool:
         """Check if case can be Fast-Track resolved via KB match.

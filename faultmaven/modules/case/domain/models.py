@@ -490,32 +490,8 @@ class InvestigationProgress(BaseModel):
             self.solution_proposed and self.solution_applied and self.solution_verified
         )
 
-    @property
-    def completion_percentage(self) -> float:
-        """
-        Overall progress percentage for UI display.
-        Returns: 0.0 to 1.0
-
-        Includes 9 milestones:
-        - 4 verification milestones
-        - 1 investigation milestone (root_cause_identified)
-        - 3 resolution milestones
-        - 1 path-specific milestone (mitigation_applied for MITIGATION_FIRST path)
-        """
-        milestones = [
-            self.symptom_verified,
-            self.scope_assessed,
-            self.timeline_established,
-            self.changes_identified,
-            self.root_cause_identified,
-            self.solution_proposed,
-            self.solution_applied,
-            self.solution_verified,
-            self.mitigation_applied,  # 9th milestone for MITIGATION_FIRST path
-        ]
-        completed = sum(milestones)
-        total = len(milestones)
-        return completed / total if total > 0 else 0.0
+    # completion_percentage property removed — inaccurate and non-essential.
+    # Milestone completion is tracked via completed_milestones/pending_milestones lists.
 
     @property
     def completed_milestones(self) -> List[str]:
@@ -1215,7 +1191,23 @@ class ProblemVerification(BaseModel):
 class EvidenceCategory(str, Enum):
     """
     Evidence classification by investigation purpose.
-    Determines which milestones the evidence can advance.
+
+    UNCLASSIFIED: Raw user-submitted data that has not yet been classified by the
+    LLM as evidence. All user messages and file uploads start as UNCLASSIFIED.
+    The LLM promotes relevant items to a specific category via evidence_to_add.
+
+    Only classified evidence (non-UNCLASSIFIED) is used for milestone validation.
+    """
+
+    UNCLASSIFIED = "unclassified"
+    """
+    Purpose: Raw user-submitted data awaiting LLM classification.
+
+    This is NOT evidence yet. It is user-submitted data stored with an ID
+    so the LLM can reference it. The LLM determines which items qualify
+    as evidence and assigns them a specific category.
+
+    Does NOT advance any milestones.
     """
 
     SYMPTOM_EVIDENCE = "symptom_evidence"

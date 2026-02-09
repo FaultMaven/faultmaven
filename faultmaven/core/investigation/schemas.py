@@ -124,7 +124,13 @@ class KnowledgeResolution(BaseModel):
 
 
 class MilestoneUpdates(BaseModel):
-    """Milestones LLM can set to True (never False)."""
+    """Milestones LLM can set to True (never False).
+
+    NOTE: solution_verified is NOT settable here. It requires the User-Agent
+    Handshake pattern: the agent proposes resolution via ProposedTransition,
+    and the user confirms. Only then does the system set solution_verified=True
+    and transition to RESOLVED.
+    """
 
     symptom_verified: Optional[bool] = None
     scope_assessed: Optional[bool] = None
@@ -134,7 +140,8 @@ class MilestoneUpdates(BaseModel):
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     solution_proposed: Optional[bool] = None
     solution_applied: Optional[bool] = None
-    solution_verified: Optional[bool] = None
+    # solution_verified is intentionally excluded — requires User-Agent Handshake
+    # via ProposedTransition. See terminal_transitions.py.
     mitigation_applied: Optional[bool] = None
     root_cause_method: Optional[str] = Field(
         None,
@@ -268,6 +275,34 @@ class MissingCriticalData(BaseModel):
     )
 
 
+class ProposedTransition(BaseModel):
+    """
+    Agent proposes a state transition that requires user confirmation.
+
+    Terminal transitions (INVESTIGATING → RESOLVED, INVESTIGATING → CLOSED,
+    INQUIRY → RESOLVED) are never automatic. The agent proposes the transition,
+    and the system holds it pending until the user explicitly confirms.
+
+    This implements the User-Agent Handshake pattern: the agent's interpretation
+    of user intent (e.g., "it works" → solution_verified) is not sufficient to
+    trigger an irreversible state change. The user must confirm the proposal.
+    """
+
+    to_status: str = Field(
+        description="Target status: 'resolved' or 'closed'"
+    )
+    reason: str = Field(
+        description="Why the agent believes this transition is appropriate"
+    )
+    summary: str = Field(
+        description="Summary presented to user for confirmation (e.g., problem statement, root cause, solution applied)"
+    )
+    evidence_ids: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Evidence IDs supporting this transition proposal",
+    )
+
+
 class RootCauseConclusionUpdate(BaseModel):
     """Final root cause conclusion."""
 
@@ -394,6 +429,13 @@ class InvestigationResponse_Resolution(BaseInteractionResponse):
             default_factory=list
         )  # For verification evidence
         working_conclusion: Optional[WorkingConclusionUpdate] = None
+        proposed_transition: Optional[ProposedTransition] = Field(
+            None,
+            description=(
+                "Propose a terminal transition (RESOLVED/CLOSED) for user confirmation. "
+                "The transition is NOT executed until the user explicitly confirms."
+            ),
+        )
         outcome: TurnOutcome
 
     internal_reasoning: Optional[InternalReasoning] = Field(
@@ -425,6 +467,13 @@ class InvestigationResponse_General(BaseInteractionResponse):
         evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
             default_factory=list,
             description="Quality issues with evidence that may limit investigation.",
+        )
+        proposed_transition: Optional[ProposedTransition] = Field(
+            None,
+            description=(
+                "Propose a terminal transition (RESOLVED/CLOSED) for user confirmation. "
+                "The transition is NOT executed until the user explicitly confirms."
+            ),
         )
         outcome: TurnOutcome
 

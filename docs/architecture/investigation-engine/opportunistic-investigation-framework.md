@@ -154,7 +154,7 @@ def render_case_header(case: Case) -> str:
             InvestigationStage.DIAGNOSING: "Diagnosing the cause",
             InvestigationStage.RESOLVING: "Applying solution",
         }
-        stage_detail = f"\n  {stage_labels[case.current_stage]} ({case.progress.completion_percentage:.0f}%)"
+        stage_detail = f"\n  {stage_labels[case.current_stage]}"
 
     return f"""
 ┌─────────────────────────────────────────────┐
