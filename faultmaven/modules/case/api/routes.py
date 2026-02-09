@@ -2099,6 +2099,9 @@ async def submit_case_query(
                     case_id, current_user.user_id
                 )
                 if updated_case:
+                    # Convert domain Case to API Case model
+                    api_case = CaseConverter.entity_to_api(updated_case)
+
                     # Create view_state with updated active_case
                     response.view_state = ViewState(
                         session_id="",  # Not needed for this use case
@@ -2107,7 +2110,7 @@ async def submit_case_query(
                             email=current_user.email or "",
                             name=current_user.display_name or current_user.username,
                         ),
-                        active_case=updated_case,
+                        active_case=api_case,
                         cases=[],  # Not needed - just sending active_case status
                         messages=[],  # Not needed
                         uploaded_data=[],  # Not needed
@@ -2115,8 +2118,8 @@ async def submit_case_query(
                         show_data_upload=False,
                     )
                     logger.debug(
-                        f"Added updated case to view_state: status={updated_case.status}, "
-                        f"case_id={updated_case.case_id}"
+                        f"Added updated case to view_state: status={api_case.status}, "
+                        f"case_id={api_case.case_id}"
                     )
             except Exception as e:
                 # Don't fail the request if view_state update fails
