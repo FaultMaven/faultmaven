@@ -442,10 +442,6 @@ class CaseQueryResponse(BaseModel):
     case_status: CaseStatus
     progress_made: bool
     is_stuck: bool
-    view_state: Optional["ViewState"] = Field(
-        default=None,
-        description="Updated view state including active case with latest status",
-    )
 
 
 # ============================================================
@@ -814,14 +810,3 @@ class EvidenceDetailsResponse(BaseModel):
     preprocessed_content: str
     content_size_bytes: int
     analysis: Optional[str] = None
-
-
-# ============================================================
-# Forward Reference Resolution
-# ============================================================
-
-# Import ViewState at end to avoid circular imports
-from faultmaven.models.api import ViewState  # noqa: E402
-
-# Rebuild model with resolved forward references
-CaseQueryResponse.model_rebuild()
