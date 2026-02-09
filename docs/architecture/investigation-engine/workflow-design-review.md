@@ -101,6 +101,26 @@ The 3-turn path selection timeline is acceptable. What matters is the agent's ur
 
 ---
 
+### Decision: Mitigation-First Has Two Sub-Scenarios, No Additional Logic Needed
+
+**Question**: The MITIGATION_FIRST path has two possible outcomes — full path (mitigation + RCA + permanent fix) and quick path (mitigation only). Does the system need separate routing or tracking?
+
+**Decision**: No additional code, data elements, or routing logic. The milestone state already distinguishes the two paths retrospectively:
+
+| Field | Full Path | Quick Path |
+|-------|-----------|------------|
+| `mitigation_applied` | True | True |
+| `mitigation_verified` | True | True |
+| `root_cause_identified` | True | **False** |
+| `solution_applied` | True | **False** |
+| `solution_verified` | True | True |
+
+The distinction is a **user choice** after mitigation is verified, not a system routing decision. The agent offers the choice ("continue with RCA or close?"), factoring in `mitigation_effectiveness`. Both paths end with the User-Agent Handshake for resolution.
+
+**Changes**: Updated lifecycle doc Section 4.4 with both sub-scenarios and agent behavior guidance. Updated framework doc resolution paths table.
+
+---
+
 ## Remaining Items (Refinements, Not Fundamentals)
 
 These items from the initial review remain as future improvement areas. They are refinements, not fundamental design issues.

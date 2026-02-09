@@ -1034,44 +1034,42 @@ Mitigation is a **tool available during early stages**, not a stage jump.
     - Apply quick mitigation (rollback, restart, etc.)
     - Mark `mitigation_applied = True`
     - Service stabilized, pressure reduced
-  - Next: Stage 2
+  - Next: Agent offers user the choice (see below)
 
-- **Stage 2: Hypothesis Formulation**
-  - Generate theories about root cause
-  - Service is now stable, can take time for thorough analysis
-  - May use systematic exploration when cause unclear
-  - Next: Stage 3
+- **Post-Mitigation Decision Point**
+  After mitigation is applied and verified effective, the agent asks the user
+  whether to continue with root cause analysis or close the case. See Section 4.4
+  for the two sub-scenarios (Full Path vs. Quick Path).
 
-- **Stage 3: Hypothesis Validation**
-  - Test hypotheses with diagnostic evidence
-  - Identify root cause with confidence
-  - Mark `root_cause_identified = True`
-  - Next: Stage 4
+- **If user chooses RCA (Full Path):**
+  - **Stage 2: Hypothesis Formulation**
+    - Generate theories about root cause
+    - Service is now stable, can take time for thorough analysis
+  - **Stage 3: Hypothesis Validation**
+    - Test hypotheses with diagnostic evidence
+    - Mark `root_cause_identified = True`
+  - **Stage 4: Solution**
+    - Apply permanent fix, verify effectiveness
+    - Agent proposes resolution via User-Agent Handshake
 
-- **Stage 4: Solution**
-  - Apply evidence-based permanent fix
-  - Address root cause to prevent recurrence
-  - Verify effectiveness
-  - Case transitions to RESOLVED
+- **If user chooses to close (Quick Path):**
+  - Agent proposes resolution via User-Agent Handshake
+  - Case transitions to RESOLVED with mitigation as the resolution
 
-**Milestones**: `symptom_verified` → `mitigation_applied` (during 1-2) → `root_cause_identified` → `solution_applied` → `solution_verified`
+**Full Path Milestones**: `symptom_verified` → `mitigation_applied` → `mitigation_verified` → `root_cause_identified` → `solution_applied` → `solution_verified`
 
-**CRITICAL: Mitigation Follow-up Requirement**
+**Quick Path Milestones**: `symptom_verified` → `mitigation_applied` → `mitigation_verified` → `solution_verified`
 
-When a temporary workaround is applied to stop the bleeding:
+**Mitigation Follow-up Guidance (Advisory)**
 
-1. **Track workaround state**: Set `has_temporary_workaround = True` in case metadata
-2. **After root cause fixed**: Agent reminds user to revert/remove the workaround
-3. **Required guidance before RESOLVED**:
-   - State what needs to be done: "Once [permanent fix] is deployed, remember to [re-enable/revert/remove] the temporary workaround"
-   - Offer to help with root cause investigation if not yet done
+When a temporary workaround is applied, the agent SHOULD advise the user about
+follow-up even if they choose the quick path:
 
-**Example**:
-> "The fraud check bypass stopped the immediate issue. Once the SSL cert is renewed, make sure to re-enable the fraud check. Would you like help investigating why the cert wasn't monitored for expiration?"
+> "The fraud check bypass stopped the immediate issue. If you close this case,
+> remember to re-enable the fraud check once the SSL cert is renewed. Would you
+> like help investigating why the cert wasn't monitored for expiration?"
 
-**Without follow-up**: Temporary workarounds become permanent technical debt, creating security holes or degraded functionality.
-
-**Milestone consideration**: For complete lifecycle tracking, consider adding `workaround_reverted` milestone before marking RESOLVED.
+This is advisory — the system does not block resolution if the user declines RCA.
 
 ---
 
@@ -1602,23 +1600,68 @@ The agent pursues milestones opportunistically.
 ---
 
 ### 4.4 Mitigation-First Investigation (Ongoing Outage)
-**User Goal**: Restore service availability immediately, then find root cause later.
-**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation) → `INVESTIGATING` (RCA) → `RESOLVED`
+**User Goal**: Restore service availability immediately.
+**Trigger**: High Severity + Ongoing Outage (auto-selected or user-chosen path).
 
-#### Workflow Steps & Milestones
+After mitigation is applied and verified, the user decides whether to continue
+with root cause analysis or close the case. The system does not distinguish
+between these sub-scenarios — the milestone state captures what happened.
 
-**Phase 1: Mitigation**
-*   **Trigger**: High Severity + Ongoing Outage.
-*   `symptom_verified`: Confirmed.
-*   `mitigation_applied`: Temporary fix applied (e.g., "Rollback", "Reboot").
-*   `mitigation_verified`: Service restored (but root cause unknown).
+#### Sub-Scenario A: Full Path (Mitigation + RCA)
+**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation → RCA) → `RESOLVED`
 
-**Phase 2: Root Cause Analysis (Post-Mitigation)**
-*   User decides to continue for RCA.
+The user wants a permanent fix after the immediate fire is out.
+
+**Milestones**:
+*   `symptom_verified`: Problem confirmed.
+*   `mitigation_applied`: Temporary fix applied (e.g., rollback, restart).
+*   `mitigation_verified`: Service restored (root cause still unknown).
 *   `root_cause_identified`: Why did it fail?
-*   `solution_proposed`: Permanent fix (e.g., "Fix memory leak code").
+*   `solution_proposed`: Permanent fix proposed.
 *   `solution_applied`: Permanent fix deployed.
-*   `solution_verified`: Permanent fix validated.
+*   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
+
+#### Sub-Scenario B: Quick Path (Mitigation Only)
+**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation) → `RESOLVED`
+
+The user is satisfied with the mitigation and does not need RCA. This is a
+valid outcome — not every incident requires a root cause investigation.
+
+**Milestones**:
+*   `symptom_verified`: Problem confirmed.
+*   `mitigation_applied`: Temporary fix applied.
+*   `mitigation_verified`: Service restored.
+*   `solution_verified`: User confirms resolution (via User-Agent Handshake).
+*   `root_cause_identified`: **Not set** (no RCA performed).
+
+#### Agent Behavior After Mitigation
+
+After `mitigation_verified = True`, the agent MUST offer the user a choice:
+
+> "The mitigation is working — [specific metric showing improvement]. Would you
+> like me to help investigate the root cause to prevent recurrence, or is this
+> sufficient to close the case?"
+
+The agent should factor in `mitigation_effectiveness`:
+- **1.0 (fully resolved)**: Both options equally valid. Offer choice neutrally.
+- **0.5-0.9 (partially resolved)**: Recommend RCA, noting residual risk.
+- **< 0.5 (mostly ineffective)**: Strongly recommend continuing investigation.
+
+#### How the System Distinguishes the Two Paths (Retrospectively)
+
+No additional code, data elements, or routing logic is needed. The milestone
+state IS the distinction:
+
+| Field | Full Path | Quick Path |
+|-------|-----------|------------|
+| `mitigation_applied` | True | True |
+| `mitigation_verified` | True | True |
+| `root_cause_identified` | True | False |
+| `solution_applied` | True | False |
+| `solution_verified` | True | True |
+
+Analytics and reporting can query these milestone combinations to classify
+resolved cases by path type after the fact.
 
 ---
 
