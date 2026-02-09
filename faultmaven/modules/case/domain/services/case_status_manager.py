@@ -18,11 +18,12 @@ from faultmaven.modules.case.domain.models import CaseStatus, KnowledgeResolutio
 from faultmaven.utils.serialization import to_json_compatible
 
 # Allowed user transitions (via UI)
+# Note: INQUIRY → RESOLVED is handled automatically by agent (fast-track), not user-selectable
 ALLOWED_TRANSITIONS = {
     CaseStatus.INQUIRY: [
         CaseStatus.INVESTIGATING,  # "Start investigation"
-        CaseStatus.RESOLVED,  # NEW: Fast-Track via KB match
         CaseStatus.CLOSED,  # "Close without investigating"
+        # RESOLVED excluded - fast-track is agent-controlled only
     ],
     CaseStatus.INVESTIGATING: [
         CaseStatus.RESOLVED,  # "Mark as resolved"
