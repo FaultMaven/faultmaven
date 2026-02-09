@@ -789,8 +789,8 @@ class TestMilestoneEngine:
         # 1. Status should be CLOSED
         assert updated_case.status == CaseStatus.CLOSED
 
-        # 2. Closure reason should be "user_closed"
-        assert updated_case.closure_reason == "user_closed"
+        # 2. Closure reason should be "abandoned"
+        assert updated_case.closure_reason == "abandoned"
 
         # 3. closed_at should be set
         assert updated_case.closed_at is not None

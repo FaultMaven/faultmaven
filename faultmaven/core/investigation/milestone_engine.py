@@ -473,7 +473,7 @@ class MilestoneEngine:
                         agent_response = "Case closed without investigation."
                     elif case.status == CaseStatus.INVESTIGATING:
                         force_close_investigation(
-                            case=case, user_id=case.user_id, reason="user_closed"
+                            case=case, user_id=case.user_id, reason="abandoned"
                         )
                         agent_response = "Investigation closed without resolution."
                     else:
@@ -554,7 +554,9 @@ class MilestoneEngine:
             # 2. Natural language (user types) → Pattern matching below
             #
             # SKIP PATTERN MATCHING if explicit intent provided by frontend
-            if user_message and not intent_type:
+            # SKIP PATTERN MATCHING if explicit intent provided by frontend
+            # UNLESS intent is "conversation" (which is default for user typing)
+            if user_message and (not intent_type or intent_type == "conversation"):
                 user_msg_lower = user_message.lower().strip()
 
                 # ========================================

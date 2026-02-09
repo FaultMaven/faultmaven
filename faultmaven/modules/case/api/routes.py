@@ -2093,6 +2093,33 @@ async def submit_case_query(
                 timeout=35.0,
             )
 
+            # 6.5. Fetch updated case and add to view_state for frontend real-time updates
+            try:
+                updated_case = await case_service.get_case(
+                    case_id, current_user.user_id
+                )
+                if updated_case:
+                    # Create view_state with updated active_case
+                    response.view_state = ViewState(
+                        session_id="",  # Not needed for this use case
+                        user=User(
+                            user_id=current_user.user_id, email=current_user.email or ""
+                        ),
+                        active_case=updated_case,
+                        cases=[],  # Not needed - just sending active_case status
+                        messages=[],  # Not needed
+                        uploaded_data=[],  # Not needed
+                        show_case_selector=False,
+                        show_data_upload=False,
+                    )
+                    logger.debug(
+                        f"Added updated case to view_state: status={updated_case.status}, "
+                        f"case_id={updated_case.case_id}"
+                    )
+            except Exception as e:
+                # Don't fail the request if view_state update fails
+                logger.warning(f"Failed to add view_state to response: {e}")
+
             # 7. Store idempotency result if key provided
             if idempotency_key:
                 await case_service.store_idempotency_result(

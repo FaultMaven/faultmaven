@@ -124,6 +124,9 @@ def run_alembic_migrations() -> bool:
         # Run migrations via subprocess to avoid blocking in async context
         # Using the same Python interpreter ensures we use the right virtualenv
         logger.info(f"Running Alembic migrations (config: {alembic_ini})...")
+        logger.info(f"Working directory: {project_root}")
+        logger.info(f"Python executable: {sys.executable}")
+
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=str(project_root),
@@ -133,19 +136,34 @@ def run_alembic_migrations() -> bool:
         )
 
         if result.returncode == 0:
-            logger.info("Alembic migrations complete")
+            logger.info("✅ Alembic migrations complete")
+            # Log stdout for visibility
+            if result.stdout:
+                logger.debug(f"Migration output: {result.stdout}")
             return True
         else:
+            # Enhanced error logging
+            logger.error(
+                f"❌ Alembic migration failed with exit code {result.returncode}"
+            )
+            logger.error(f"STDERR: {result.stderr}")
+            if result.stdout:
+                logger.error(f"STDOUT: {result.stdout}")
             raise RuntimeError(
                 f"Alembic migration failed with exit code {result.returncode}: {result.stderr}"
             )
 
     except subprocess.TimeoutExpired:
+        logger.error("❌ Alembic migration timed out after 60 seconds")
         raise RuntimeError("Alembic migration timed out after 60 seconds")
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         # This one might be optional if dev env without alembic, but in prod it should fail
-        logger.warning("Alembic command not found - assuming manual schema management")
+        logger.warning(
+            f"⚠️ Alembic command not found - assuming manual schema management: {e}"
+        )
+        return False
     except Exception as e:
+        logger.error(f"❌ Alembic migration failed with exception: {e}", exc_info=True)
         raise RuntimeError(f"Alembic migration failed: {e}") from e
 
 

@@ -342,6 +342,7 @@ class IntentType(str, Enum):
     HYPOTHESIS_ACTION = "hypothesis_action"  # Validate/refute/retire hypothesis
     EVIDENCE_REQUEST = "evidence_request"  # Request specific evidence
     CONFIRMATION = "confirmation"  # Yes/No confirmation response
+    GREETING = "greeting"  # Heuristic greeting response
 
 
 class QueryIntent(BaseModel):
@@ -441,6 +442,10 @@ class CaseQueryResponse(BaseModel):
     case_status: CaseStatus
     progress_made: bool
     is_stuck: bool
+    view_state: Optional["ViewState"] = Field(
+        default=None,
+        description="Updated view state including active case with latest status",
+    )
 
 
 # ============================================================

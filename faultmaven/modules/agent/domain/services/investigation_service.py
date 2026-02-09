@@ -135,6 +135,15 @@ class InvestigationService(BaseService):
             # for all interactions (conversation history unified).
             intent_type = request.intent.type
 
+            # Heuristic check for greetings if intent is CONVERSATION (default)
+            if intent_type == IntentType.CONVERSATION and request.message:
+                heuristic_intent = self._detect_intent_heuristic(request.message)
+                if heuristic_intent:
+                    intent_type = heuristic_intent
+                    self.logger.info(
+                        f"Heuristic detected intent {intent_type.value} for message: '{request.message}'"
+                    )
+
             if intent_type == IntentType.STATUS_TRANSITION:
                 # Explicit state transition (resolve/close) via UI button
                 result = await self._handle_status_transition(
@@ -175,6 +184,9 @@ class InvestigationService(BaseService):
                     intent_type=intent_type.value,  # Pass intent for logging/tracing
                     intent_data=request.intent.model_dump(exclude_unset=True),
                 )
+            elif intent_type == IntentType.GREETING:
+                # Heuristic greeting response (no LLM)
+                result = await self._handle_greeting(case=case)
             else:
                 raise ValueError(f"Unknown intent type: {intent_type}")
 
@@ -405,6 +417,57 @@ class InvestigationService(BaseService):
         )
 
         return result
+
+    async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:
+        """Handle greeting intent without LLM.
+
+        Args:
+            case: Case entity
+
+        Returns:
+            Result dict with static agent response and updated case
+        """
+        self.logger.info(f"Processing greeting for case {case.case_id}")
+
+        # Static response (saving tokens and latency)
+        agent_response = (
+            "Hello! I'm FaultMaven, an expert SRE troubleshooting copilot. "
+            "I can help you diagnose issues, analyze logs, and verify solutions. "
+            "Please describe the problem you're observing."
+        )
+
+        # No engine call needed - manually construct result
+        return {
+            "agent_response": agent_response,
+            "case_updated": case,
+            "metadata": {
+                "progress_made": False,
+                "milestones_completed": [],
+            },
+        }
+
+    def _detect_intent_heuristic(self, message: str) -> Optional[IntentType]:
+        """Detect intent from message content using simple heuristics.
+
+        Args:
+            message: User message text
+
+        Returns:
+            Detected IntentType or None
+        """
+        import re
+
+        clean_msg = message.strip().lower()
+
+        # Greeting patterns (case-insensitive)
+        # Matches: "Hi", "Hello", "Hi FaultMaven", "Greetings", "Help"
+        # Does NOT match: "Hi, the db is down", "Hello, I have an error"
+        greeting_pattern = r"^(hi|hello|hey|greetings|help)( faultmaven)?[\.!]*$"
+
+        if re.match(greeting_pattern, clean_msg):
+            return IntentType.GREETING
+
+        return None
 
     @trace("investigation_service_transition_to_investigating")
     async def transition_to_investigating(

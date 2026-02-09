@@ -156,8 +156,9 @@ class EvidenceToAdd(BaseModel):
     """Evidence to be added to the case."""
 
     summary: str
-    content_ref: str = Field(
-        description="Content reference or snippet. If file, use 'file:FILENAME'"
+    content_ref: Optional[str] = Field(
+        default=None,
+        description="Content reference or snippet. If file, use 'file:FILENAME'. Optional if summary is self-contained.",
     )
     category: EvidenceCategory
     source_type: EvidenceSourceType
