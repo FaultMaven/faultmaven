@@ -113,7 +113,6 @@ CREATE TABLE cases (
     -- Progress Tracking (JSONB)
     progress JSONB DEFAULT '{
         "current_phase": "inquiry",
-        "completion_percentage": 0,
         "milestones": []
     }'::jsonb,
 
