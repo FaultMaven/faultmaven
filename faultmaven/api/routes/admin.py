@@ -29,6 +29,7 @@ from faultmaven.api.models import (
     UserStatusResponse,
 )
 from faultmaven.api.routes.auth import get_user_service
+from faultmaven.api.v1.dependencies import get_llm_provider
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -429,4 +430,66 @@ async def remove_role(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to remove role: {str(e)}",
+        )
+
+
+@router.get("/debug/llm-routing", response_model=dict)
+async def get_llm_routing_health(
+    current_user: AuthenticatedUser = Depends(require_admin),
+    llm_provider=Depends(get_llm_provider),
+) -> dict:
+    """Get LLM provider health and routing status (admin only).
+
+    Returns detailed health metrics for all LLM providers including:
+    - Current health status (HEALTHY, DEGRADED, UNHEALTHY, UNKNOWN)
+    - Consecutive failure counts
+    - Average latency
+    - Sticky routing status
+    - Last success/failure timestamps
+
+    Returns:
+        Dict with provider health summary and routing configuration
+
+    Raises:
+        401 Unauthorized: No valid JWT token
+        403 Forbidden: User lacks admin role
+        503 Service Unavailable: LLM provider not configured
+    """
+    if not llm_provider:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM provider not configured",
+        )
+
+    try:
+        # Get provider health summary from registry
+        provider_status = llm_provider.get_provider_status()
+
+        # Get fallback chain configuration
+        fallback_chain = llm_provider.registry.get_fallback_chain()
+        available_providers = llm_provider.registry.get_available_providers()
+
+        return {
+            "providers": provider_status,
+            "routing": {
+                "fallback_chain": fallback_chain,
+                "available_providers": available_providers,
+                "sticky_provider": llm_provider.registry._sticky_provider,
+            },
+            "cache": {
+                "enabled": True,
+                "size": llm_provider.cache.current_size,
+                "max_size": llm_provider.cache.max_size,
+            },
+            "config": {
+                "confidence_threshold": llm_provider.confidence_threshold,
+                "request_timeout": llm_provider.request_timeout,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get LLM routing health: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get LLM routing health: {str(e)}",
         )

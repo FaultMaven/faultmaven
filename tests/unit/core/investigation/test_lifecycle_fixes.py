@@ -195,10 +195,14 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
     result = await engine.process_turn(base_case, "Check logs")
     case = result["case_updated"]
 
-    # We added one new evidence, so total evidence should be 2
-    assert len(case.evidence) == 2
-    # The new evidence is the second one (appended)
-    ev = case.evidence[1]
+    # Evidence count: 1 initial + 1 auto-created from user message + 1 from LLM response = 3
+    assert len(case.evidence) == 3
+    # The user message evidence is auto-created (second one)
+    user_msg_ev = case.evidence[1]
+    assert user_msg_ev.source_type.value == "user_report"
+
+    # The LLM response evidence is the third one (last appended)
+    ev = case.evidence[2]
 
     # heuristic check
     assert "symptom_verified" in ev.advances_milestones

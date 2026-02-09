@@ -52,10 +52,17 @@ async def check_terminal_transitions(case: Case):
                 f"auto-transitioning INVESTIGATING → RESOLVED"
             )
 
-            case.status = CaseStatus.RESOLVED
-            case.resolved_at = datetime.now(UTC)
-            case.closed_at = datetime.now(UTC)
-            case.closure_reason = "resolved"
+            # Use Case.atomic_update() to set multiple fields atomically
+            # This avoids Pydantic validation Catch-22 where:
+            # - Cannot set status=RESOLVED if resolved_at is None
+            # - Cannot set resolved_at if status != RESOLVED
+            now = datetime.now(UTC)
+            case.atomic_update(
+                status=CaseStatus.RESOLVED,
+                resolved_at=now,
+                closed_at=now,
+                closure_reason="resolved",
+            )
             case.status_history.append(
                 CaseStatusTransition(
                     from_status=CaseStatus.INVESTIGATING,
@@ -105,9 +112,12 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
         f"Reason: {reason}"
     )
 
-    case.status = CaseStatus.CLOSED
-    case.closed_at = datetime.now(UTC)
-    case.closure_reason = reason  # "abandoned" | "escalated" | "other"
+    # Use Case.atomic_update() to avoid validation Catch-22
+    case.atomic_update(
+        status=CaseStatus.CLOSED,
+        closed_at=datetime.now(UTC),
+        closure_reason=reason,  # "abandoned" | "escalated" | "other"
+    )
     case.status_history.append(
         CaseStatusTransition(
             from_status=CaseStatus.INVESTIGATING,
@@ -144,9 +154,12 @@ def close_from_inquiry(case: Case, user_id: str):
         f"User {user_id} closing case {case.case_id} from INQUIRY without investigation"
     )
 
-    case.status = CaseStatus.CLOSED
-    case.closed_at = datetime.now(UTC)
-    case.closure_reason = "inquiry_only"
+    # Use Case.atomic_update() to avoid validation Catch-22
+    case.atomic_update(
+        status=CaseStatus.CLOSED,
+        closed_at=datetime.now(UTC),
+        closure_reason="inquiry_only",
+    )
     case.status_history.append(
         CaseStatusTransition(
             from_status=CaseStatus.INQUIRY,

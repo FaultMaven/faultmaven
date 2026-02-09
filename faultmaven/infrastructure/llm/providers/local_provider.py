@@ -97,6 +97,12 @@ class LocalProvider(BaseLLMProvider):
 
         # Add any additional options
         if kwargs:
+            # Handle structured output (Ollama uses "format": "json")
+            if "response_format" in kwargs:
+                payload["format"] = "json"
+                # Remove it so it doesn't clutter options
+                kwargs.pop("response_format")
+
             payload["options"].update(kwargs)
 
         async with aiohttp.ClientSession() as session:
@@ -159,6 +165,9 @@ class LocalProvider(BaseLLMProvider):
         }
 
         # Add any additional kwargs
+        if "response_format" in kwargs:
+            payload["response_format"] = kwargs.pop("response_format")
+
         payload.update(kwargs)
 
         self.logger.debug(f"Request payload: {payload}")

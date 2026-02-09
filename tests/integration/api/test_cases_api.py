@@ -11,11 +11,13 @@ Tests:
 - DELETE /api/v1/cases/{case_id} (204 No Content)
 - POST /api/v1/cases/{case_id}/assign (200 OK)
 - POST /api/v1/cases/{case_id}/close (200 OK)
-- POST /api/v1/cases/{case_id}/reopen (200 OK)
 - Missing JWT token returns 401
 
 Note: As of TASK-020, JWT authentication is required. Legacy header authentication
 (X-Organization-ID, X-User-ID) has been removed.
+
+Note: Terminal states (RESOLVED, CLOSED) are irreversible by design. To handle case
+recurrence, create a new case with a link to the original case (future enhancement).
 """
 
 from datetime import datetime, timezone

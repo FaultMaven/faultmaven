@@ -249,35 +249,6 @@ class TestCaseLifecycle:
         assert "Missing index" in closed.closure_reason
 
     @pytest.mark.asyncio
-    async def test_case_lifecycle_create_abandon_reopen(self, case_service):
-        """Test case lifecycle with abandonment and reopening."""
-        org_id = create_test_org_id()
-        user_id = create_test_user_id()
-
-        # Create and close case
-        case = await case_service.create_case(
-            user_id=user_id,
-            organization_id=org_id,
-            title="Intermittent error",
-            description="Error happens randomly",
-            severity=CaseSeverity.MEDIUM,
-        )
-
-        closed = await case_service.close_case(
-            case.case_id,
-            org_id,
-            "other",  # Cannot reproduce - monitoring for recurrence
-        )
-
-        assert closed.status == CaseStatus.RESOLVED
-
-        # Reopen case when issue reoccurs
-        reopened = await case_service.reopen_case(case.case_id, org_id)
-
-        assert reopened.status == CaseStatus.INQUIRY
-        assert reopened.resolved_at is None
-
-    @pytest.mark.asyncio
     async def test_case_lifecycle_with_assignment(self, case_service):
         """Test case lifecycle with assignment."""
         org_id = create_test_org_id()
@@ -417,27 +388,6 @@ class TestAuthorizationEnforcement:
         # Attempt to close with org B
         with pytest.raises(NotFoundError):
             await case_service.close_case(case.case_id, org_b, "Unauthorized close")
-
-    @pytest.mark.asyncio
-    async def test_authorization_prevents_cross_org_reopen(self, case_service):
-        """Test that reopen_case prevents cross-organization access."""
-        org_a = create_test_org_id()
-        org_b = create_test_org_id()
-        user_id = create_test_user_id()
-
-        # Create and close case for org A
-        case = await case_service.create_case(
-            user_id=user_id,
-            organization_id=org_a,
-            title="Org A Case",
-            description="",
-            severity=CaseSeverity.LOW,
-        )
-        await case_service.close_case(case.case_id, org_a, "Closed")
-
-        # Attempt to reopen with org B
-        with pytest.raises(NotFoundError):
-            await case_service.reopen_case(case.case_id, org_b)
 
     @pytest.mark.asyncio
     async def test_authorization_allows_same_org_access(self, case_service):
@@ -632,23 +582,6 @@ class TestCaseStateTransitions:
 
         with pytest.raises(ConflictError):
             await case_service.close_case(case.case_id, org_id, "resolved")
-
-    @pytest.mark.asyncio
-    async def test_cannot_reopen_non_closed_case(self, case_service):
-        """Test that reopening non-closed case raises error."""
-        org_id = create_test_org_id()
-        user_id = create_test_user_id()
-
-        case = await case_service.create_case(
-            user_id=user_id,
-            organization_id=org_id,
-            title="Test",
-            description="",
-            severity=CaseSeverity.LOW,
-        )
-
-        with pytest.raises(ConflictError):
-            await case_service.reopen_case(case.case_id, org_id)
 
 
 # ============================================================

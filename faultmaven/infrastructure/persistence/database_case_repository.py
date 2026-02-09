@@ -991,6 +991,22 @@ class DatabaseCaseRepository(CaseRepository):
 
         # Extract fields from metadata
         description = metadata.get("description", "")
+
+        # Backward compatibility: Fix description for old INVESTIGATING cases
+        # Old cases may be in INVESTIGATING status with empty description
+        if (
+            model.status == CaseStatus.INVESTIGATING.value
+            and (not description or not description.strip())
+            and inquiry.proposed_problem_statement
+        ):
+            description = inquiry.proposed_problem_statement
+            # Log only in debug mode to avoid production log spam
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Auto-healed missing description for case {model.case_id} "
+                    f"from proposed_problem_statement"
+                )
+
         investigation_strategy = InvestigationStrategy(
             metadata.get("investigation_strategy", "post_mortem")
         )

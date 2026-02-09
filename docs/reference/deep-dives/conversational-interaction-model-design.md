@@ -628,8 +628,8 @@ What works best for you?
 
 **Session Continuity**:
 - Mode persists within a case (even across sessions)
-- Case reopening defaults to last mode
 - Evidence requests and progress preserved
+- Note: Terminal states (RESOLVED/CLOSED) are irreversible; create new case for recurrence
 
 **State Storage**:
 ```python

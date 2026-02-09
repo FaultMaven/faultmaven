@@ -41,6 +41,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.cache = SemanticCache()
         self.confidence_threshold = confidence_threshold
         self.registry = get_registry()
+        self._router_initialized = False  # Track router initialization separately
 
         # Get timeout from settings with environment variable override
         self.settings = get_settings()
@@ -97,19 +98,15 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
         # Route through registry with BaseExternalClient wrapping
         try:
-            # Log provider information on first use
-            available = self.registry.get_available_providers()
-            fallback_chain = self.registry.get_fallback_chain()
-            self.logger.info(f"🔍 LLM Router: Available providers: {available}")
-            self.logger.info(
-                f"🔍 LLM Router: Fallback chain: {' -> '.join(fallback_chain)}"
-            )
-
-            self.logger.info(f"🔍 LLM Router: About to call registry.route_request")
-            self.logger.info(f"🔍 LLM Router: Registry type: {type(self.registry)}")
-            self.logger.info(
-                f"🔍 LLM Router: Registry available: {self.registry is not None}"
-            )
+            # Initialize registry and log provider info only once
+            if not self._router_initialized:
+                available = self.registry.get_available_providers()
+                fallback_chain = self.registry.get_fallback_chain()
+                self.logger.info(f"🔍 LLM Router: Available providers: {available}")
+                self.logger.info(
+                    f"🔍 LLM Router: Fallback chain: {' -> '.join(fallback_chain)}"
+                )
+                self._router_initialized = True
 
             response = await self.call_external(
                 operation_name="route_llm_request",
@@ -125,10 +122,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 timeout=self.request_timeout,  # Configurable timeout from environment/settings
                 retries=1,  # Single retry for failed LLM calls
                 retry_delay=2.0,
-            )
-
-            self.logger.info(
-                f"✅ LLM Router: Registry call successful, response type: {type(response)}"
             )
 
             # Store successful response in cache

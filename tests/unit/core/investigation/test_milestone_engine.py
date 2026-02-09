@@ -353,3 +353,521 @@ class TestMilestoneEngine:
         # Verify no exception raised and case is returned
         assert result["case_updated"] is not None
         assert result["agent_response"] == "Found evidence but quality is limited"
+
+    @pytest.mark.asyncio
+    async def test_user_intent_detection_resolves_case(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test that explicit user intent to resolve case triggers automatic transition"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Set case to INVESTIGATING status
+        base_case.status = CaseStatus.INVESTIGATING
+
+        # Mock LLM response (doesn't matter much, user intent happens before LLM call)
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Case marked as resolved.",
+                "state_updates": {"outcome": "conversation"},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # Test various resolution phrases
+        resolution_phrases = [
+            "mark as resolved",
+            "close this case",
+            "case is resolved",
+            "problem solved",
+            "issue fixed",
+            "solution worked",
+        ]
+
+        for phrase in resolution_phrases:
+            # Reset case status using atomic_update to avoid validation Catch-22
+            base_case.atomic_update(
+                status=CaseStatus.INVESTIGATING,
+                resolved_at=None,
+                closed_at=None,
+            )
+            base_case.progress.solution_verified = False
+
+            result = await engine.process_turn(base_case, phrase)
+
+            updated_case = result["case_updated"]
+
+            # Verify case transitioned to RESOLVED
+            assert (
+                updated_case.status == CaseStatus.RESOLVED
+            ), f"Failed for phrase: '{phrase}'"
+            assert (
+                updated_case.progress.solution_verified is True
+            ), f"Failed for phrase: '{phrase}'"
+            assert (
+                updated_case.resolved_at is not None
+            ), f"Failed for phrase: '{phrase}'"
+            assert updated_case.closed_at is not None, f"Failed for phrase: '{phrase}'"
+            assert (
+                updated_case.closure_reason == "resolved"
+            ), f"Failed for phrase: '{phrase}'"
+
+            # Verify status history updated
+            assert (
+                len(updated_case.status_history) > 0
+            ), f"Failed for phrase: '{phrase}'"
+            last_transition = updated_case.status_history[-1]
+            assert (
+                last_transition.from_status == CaseStatus.INVESTIGATING
+            ), f"Failed for phrase: '{phrase}'"
+            assert (
+                last_transition.to_status == CaseStatus.RESOLVED
+            ), f"Failed for phrase: '{phrase}'"
+
+    @pytest.mark.asyncio
+    async def test_user_intent_detection_case_insensitive(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test that user intent detection is case-insensitive"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        base_case.status = CaseStatus.INVESTIGATING
+
+        # Mock LLM response
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Case marked as resolved.",
+                "state_updates": {"outcome": "conversation"},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # Test uppercase, mixed case, with punctuation
+        result = await engine.process_turn(
+            base_case, "CLOSE THIS CASE! The solution worked perfectly."
+        )
+
+        updated_case = result["case_updated"]
+        assert updated_case.status == CaseStatus.RESOLVED
+        assert updated_case.progress.solution_verified is True
+
+    @pytest.mark.asyncio
+    async def test_user_intent_detection_no_false_positives(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test that user intent detection doesn't trigger on unrelated phrases"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        base_case.status = CaseStatus.INVESTIGATING
+
+        # Mock LLM response
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Continuing investigation.",
+                "state_updates": {"outcome": "conversation"},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # Test phrases that should NOT trigger resolution
+        non_resolution_phrases = [
+            "I want to resolve this issue",
+            "How do I close cases?",
+            "The problem is not solved yet",
+            "Please help me solve this",
+        ]
+
+        for phrase in non_resolution_phrases:
+            base_case.status = CaseStatus.INVESTIGATING
+            base_case.progress.solution_verified = False
+
+            result = await engine.process_turn(base_case, phrase)
+
+            updated_case = result["case_updated"]
+
+            # Verify case did NOT transition to RESOLVED
+            assert (
+                updated_case.status == CaseStatus.INVESTIGATING
+            ), f"False positive for phrase: '{phrase}'"
+            assert (
+                updated_case.progress.solution_verified is False
+            ), f"False positive for phrase: '{phrase}'"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_validation_skipped_when_solution_verified_already_set(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test that reasoning validation is skipped when solution_verified was already set by user intent"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        base_case.status = CaseStatus.INVESTIGATING
+        # Simulate user intent detection having already set solution_verified
+        base_case.progress.solution_verified = True
+
+        # Mock LLM response trying to complete OTHER milestones without justification
+        # This simulates the Turn 4 error scenario reported by user
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Case is being closed.",
+                "state_updates": {
+                    "milestones": {"symptom_verified": True},  # No justification!
+                    "outcome": "milestone_completed",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # This should NOT fail with reasoning validation error
+        # because solution_verified is already True (case transitioning to terminal)
+        result = await engine.process_turn(base_case, "Closing the case")
+
+        # Verify no validation error occurred
+        assert result["case_updated"] is not None
+        assert result["case_updated"].status == CaseStatus.RESOLVED
+
+    @pytest.mark.asyncio
+    async def test_complete_user_intent_to_terminal_transition_flow(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Integration test: Complete flow from user intent → terminal state with LLM milestone attempts
+
+        This test exercises the complete integration of:
+        1. User intent detection (detects "close case" and sets solution_verified=True)
+        2. LLM tries to complete OTHER milestones without justification
+        3. Reasoning validation correctly skips validation (case.progress.solution_verified already True)
+        4. Terminal transition executes (INVESTIGATING → RESOLVED)
+        5. Case ends in correct terminal state with closure_reason="resolved"
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Start in INVESTIGATING with some progress
+        base_case.status = CaseStatus.INVESTIGATING
+        base_case.progress.symptom_verified = True
+        base_case.progress.scope_assessed = True
+
+        # Mock LLM response that tries to complete milestones without justification
+        # This would normally fail reasoning validation, but should be skipped
+        # because user intent detection sets solution_verified=True
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Understood. I'll mark this case as resolved.",
+                "state_updates": {
+                    "milestones": {
+                        "timeline_established": True,  # No justification provided!
+                        "changes_identified": True,  # No justification provided!
+                    },
+                    "outcome": "milestone_completed",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # User explicitly says "close this case" - triggers user intent detection
+        result = await engine.process_turn(base_case, "close this case")
+
+        updated_case = result["case_updated"]
+
+        # ===== VERIFY COMPLETE TERMINAL TRANSITION =====
+
+        # 1. Case transitioned to RESOLVED terminal state
+        assert updated_case.status == CaseStatus.RESOLVED
+        assert updated_case.is_terminal is True
+
+        # 2. Terminal state timestamps set
+        assert updated_case.resolved_at is not None
+        assert updated_case.closed_at is not None
+
+        # 3. Correct closure reason (resolved, not fast_track_kb_match)
+        assert updated_case.closure_reason == "resolved"
+
+        # 4. Solution milestone progression completed
+        assert updated_case.progress.solution_verified is True
+
+        # 5. Status history recorded transition
+        assert len(updated_case.status_history) > 0
+        last_transition = updated_case.status_history[-1]
+        assert last_transition.from_status == CaseStatus.INVESTIGATING
+        assert last_transition.to_status == CaseStatus.RESOLVED
+        assert last_transition.triggered_by == "system"
+        assert "automatic transition" in last_transition.reason.lower()
+
+        # 6. No reasoning validation error (even though LLM didn't justify milestones)
+        # This proves the fix at milestone_engine.py:144-159 works correctly
+        assert "error" not in result["agent_response"].lower()
+
+        # 7. LLM's milestone attempts were processed (best-effort)
+        # Even though case is closing, we don't block the LLM's state updates
+        assert updated_case.progress.timeline_established is True
+        assert updated_case.progress.changes_identified is True
+
+    @pytest.mark.asyncio
+    async def test_user_intent_close_as_unresolved_transitions_to_closed(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test user intent: 'Close as unresolved' should transition to CLOSED, not RESOLVED
+
+        This tests the fix for the bug where:
+        - User says "Close this case as unresolved"
+        - System was incorrectly transitioning to RESOLVED (with solution)
+        - Should transition to CLOSED (without solution, abandoned)
+
+        Pattern matching order:
+        1. Abandonment patterns (highest priority) → CLOSED
+        2. Resolution patterns (medium priority) → RESOLVED
+        3. Ambiguous close patterns (lowest priority) → RESOLVED (backward compatible)
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Start in INVESTIGATING with some progress
+        base_case.status = CaseStatus.INVESTIGATING
+        base_case.progress.symptom_verified = True
+        base_case.progress.scope_assessed = True
+
+        # Mock LLM response using TerminalResponse schema
+        # (case will be CLOSED after user intent detection, so TerminalResponse is used)
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Understood. This case has been closed without resolution as requested.",
+                "state_updates": {
+                    "final_summary_update": "Case closed by user request without finding resolution.",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # User explicitly says "close as unresolved" - should trigger CLOSED, not RESOLVED
+        result = await engine.process_turn(base_case, "Close this case as unresolved")
+
+        updated_case = result["case_updated"]
+
+        # ===== VERIFY CORRECT TERMINAL STATE =====
+
+        # 1. Case transitioned to CLOSED (NOT RESOLVED)
+        assert updated_case.status == CaseStatus.CLOSED
+        assert updated_case.status != CaseStatus.RESOLVED
+        assert updated_case.is_terminal is True
+
+        # 2. Terminal state timestamps set
+        assert updated_case.closed_at is not None
+
+        # 3. Correct closure reason (abandoned, not resolved)
+        assert updated_case.closure_reason == "abandoned"
+
+        # 4. Solution milestone NOT completed (no solution verified)
+        assert updated_case.progress.solution_verified is False
+
+        # 5. resolved_at should be None (not a resolution)
+        assert updated_case.resolved_at is None
+
+        # 6. Status history recorded transition to CLOSED
+        assert len(updated_case.status_history) > 0
+        last_transition = updated_case.status_history[-1]
+        assert last_transition.from_status == CaseStatus.INVESTIGATING
+        assert last_transition.to_status == CaseStatus.CLOSED
+        assert "abandoned" in last_transition.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_user_intent_ambiguous_close_defaults_to_resolved(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test user intent: Ambiguous 'close this case' defaults to RESOLVED (backward compatible)
+
+        When user says just "close this case" without clarification:
+        - Defaults to RESOLVED (backward compatible behavior)
+        - User must explicitly say "unresolved" or "without solution" to get CLOSED
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Start in INVESTIGATING with some progress
+        base_case.status = CaseStatus.INVESTIGATING
+        base_case.progress.symptom_verified = True
+
+        # Mock LLM response
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Case marked as resolved.",
+                "state_updates": {
+                    "outcome": "milestone_completed",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # User says ambiguous "close this case" - should default to RESOLVED
+        result = await engine.process_turn(base_case, "close this case")
+
+        updated_case = result["case_updated"]
+
+        # Should transition to RESOLVED (backward compatible default)
+        assert updated_case.status == CaseStatus.RESOLVED
+        assert updated_case.closure_reason == "resolved"
+        assert updated_case.progress.solution_verified is True
+        assert updated_case.resolved_at is not None
+
+    @pytest.mark.asyncio
+    async def test_explicit_status_transition_inquiry_to_closed(
+        self, mock_llm, mock_repo
+    ):
+        """Test explicit status_transition intent: INQUIRY → CLOSED via dropdown"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Create case in INQUIRY status
+        inquiry_case = Case(
+            case_id="case_1234567890ab",  # 17 chars
+            title="Test Inquiry Close",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test description",
+            problem_verification=ProblemVerification(
+                symptom_statement="Test symptom",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+        )
+
+        # User clicks "Close" in dropdown - frontend sends status_transition intent
+        result = await engine.process_turn(
+            case=inquiry_case,
+            user_message="Close this case. I don't need further investigation.",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": "inquiry",
+                "to_status": "closed",
+                "user_confirmed": True,
+            },
+        )
+
+        updated_case = result["case_updated"]
+
+        # 1. Status should be CLOSED
+        assert updated_case.status == CaseStatus.CLOSED
+
+        # 2. Closure reason should be "inquiry_only"
+        assert updated_case.closure_reason == "inquiry_only"
+
+        # 3. closed_at should be set
+        assert updated_case.closed_at is not None
+
+        # 4. Should NOT have gone through investigation
+        assert updated_case.progress.symptom_verified is False
+
+        # 5. Status history should record the transition
+        assert len(updated_case.status_history) > 0
+        last_transition = updated_case.status_history[-1]
+        assert last_transition.from_status == CaseStatus.INQUIRY
+        assert last_transition.to_status == CaseStatus.CLOSED
+
+        # 6. Agent response should acknowledge closure
+        assert "closed" in result["agent_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_explicit_status_transition_investigating_to_closed(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Test explicit status_transition intent: INVESTIGATING → CLOSED via dropdown"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Start in INVESTIGATING with some progress
+        base_case.status = CaseStatus.INVESTIGATING
+        base_case.progress.symptom_verified = True
+
+        # User clicks "Close" in dropdown - frontend sends status_transition intent
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="Close this case as unresolved.",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": "investigating",
+                "to_status": "closed",
+                "user_confirmed": True,
+            },
+        )
+
+        updated_case = result["case_updated"]
+
+        # 1. Status should be CLOSED
+        assert updated_case.status == CaseStatus.CLOSED
+
+        # 2. Closure reason should be "user_closed"
+        assert updated_case.closure_reason == "user_closed"
+
+        # 3. closed_at should be set
+        assert updated_case.closed_at is not None
+
+        # 4. Solution should NOT be verified
+        assert updated_case.progress.solution_verified is False
+
+        # 5. Status history should record the transition
+        assert len(updated_case.status_history) > 0
+        last_transition = updated_case.status_history[-1]
+        assert last_transition.from_status == CaseStatus.INVESTIGATING
+        assert last_transition.to_status == CaseStatus.CLOSED
+
+        # 6. Agent response should acknowledge closure
+        assert "closed" in result["agent_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_explicit_status_transition_inquiry_to_investigating(
+        self, mock_llm, mock_repo
+    ):
+        """Test explicit status_transition intent: INQUIRY → INVESTIGATING via dropdown"""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Create case in INQUIRY status
+        inquiry_case = Case(
+            case_id="case_0987654321ab",  # 17 chars
+            title="Test Inquiry to Investigating",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="Test description",
+            problem_verification=ProblemVerification(
+                symptom_statement="Test symptom",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+        )
+
+        # Mock LLM response for investigation kickoff
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Let's start the investigation. I'll begin by verifying the symptom.",
+                "state_updates": {
+                    "outcome": "milestone_completed",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        # User clicks "Start Investigation" in dropdown
+        result = await engine.process_turn(
+            case=inquiry_case,
+            user_message="I want to start a formal investigation to find the root cause.",
+            intent_type="status_transition",
+            intent_data={
+                "from_status": "inquiry",
+                "to_status": "investigating",
+                "user_confirmed": True,
+            },
+        )
+
+        updated_case = result["case_updated"]
+
+        # 1. Status should be INVESTIGATING
+        assert updated_case.status == CaseStatus.INVESTIGATING
+
+        # 2. Inquiry data should be updated
+        assert updated_case.inquiry.problem_statement_confirmed is True
+        assert updated_case.inquiry.decided_to_investigate is True
+
+        # 3. Status history should record the transition
+        assert len(updated_case.status_history) > 0
+        last_transition = updated_case.status_history[-1]
+        assert last_transition.from_status == CaseStatus.INQUIRY
+        assert last_transition.to_status == CaseStatus.INVESTIGATING
+
+        # 4. Should continue to LLM for kickoff message
+        assert mock_llm.generate.called
+        assert "investigation" in result["agent_response"].lower()

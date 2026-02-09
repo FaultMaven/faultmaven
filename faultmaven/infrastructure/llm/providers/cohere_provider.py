@@ -113,6 +113,10 @@ class CohereProvider(BaseLLMProvider):
         if stream:
             payload["stream"] = True
 
+        # Handle response format (v2 supports type: "json_object")
+        if "response_format" in kwargs:
+            payload["response_format"] = kwargs.pop("response_format")
+
         # Add any additional kwargs
         payload.update(kwargs)
 

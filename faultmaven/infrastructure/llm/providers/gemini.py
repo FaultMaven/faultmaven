@@ -73,6 +73,16 @@ class GeminiProvider(BaseLLMProvider):
         if "stop_sequences" in kwargs:
             generation_config["stopSequences"] = kwargs["stop_sequences"]
 
+        # Handle structured output (json_schema or json_object)
+        if "response_format" in kwargs:
+            rf = kwargs["response_format"]
+            if rf.get("type") == "json_schema":
+                generation_config["response_mime_type"] = "application/json"
+                if "json_schema" in rf and "schema" in rf["json_schema"]:
+                    generation_config["response_schema"] = rf["json_schema"]["schema"]
+            elif rf.get("type") == "json_object":
+                generation_config["response_mime_type"] = "application/json"
+
         # Prepare request body for Gemini API format
         request_body = {
             "contents": [{"parts": [{"text": prompt}]}],

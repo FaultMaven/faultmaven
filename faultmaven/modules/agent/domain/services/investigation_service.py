@@ -21,7 +21,7 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
+from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse, IntentType
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
@@ -102,6 +102,7 @@ class InvestigationService(BaseService):
             case.current_turn += 1
 
             # Per case-storage-design.md Section 4.7, use "timestamp" not "created_at"
+            # Preserve intent metadata for debugging, analytics, and audit trail
             user_message_obj = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": case.current_turn,
@@ -116,6 +117,11 @@ class InvestigationService(BaseService):
                     "attachment_count": (
                         len(request.attachments) if request.attachments else 0
                     ),
+                    # Intent metadata for tracing and analytics
+                    "intent_type": request.intent.type.value,
+                    "intent_metadata": request.intent.model_dump(
+                        exclude_unset=True, exclude={"type"}
+                    ),
                 },
             }
             case.messages.append(user_message_obj)
@@ -124,15 +130,53 @@ class InvestigationService(BaseService):
             # Persist user message and new turn number immediately
             await self.repository.save(case)
 
-            # 4. Process turn via MilestoneEngine
-            # Engine handles:
-            # - Generating status-based prompt
-            # - Invoking LLM
-            # - Updating case state (milestones, evidence, hypotheses)
-            # - Saving case via repository
-            result = await self.engine.process_turn(
-                case=case, user_message=request.message, attachments=request.attachments
-            )
+            # 4. Route based on structured intent (clean, no keyword matching)
+            # Intent-based routing eliminates ambiguity and provides single code path
+            # for all interactions (conversation history unified).
+            intent_type = request.intent.type
+
+            if intent_type == IntentType.STATUS_TRANSITION:
+                # Explicit state transition (resolve/close) via UI button
+                result = await self._handle_status_transition(
+                    case=case,
+                    user_message=request.message,
+                    from_status=request.intent.from_status,
+                    to_status=request.intent.to_status,
+                    user_confirmed=request.intent.user_confirmed or False,
+                )
+            elif intent_type == IntentType.CONFIRMATION:
+                # Yes/No confirmation response
+                result = await self._handle_confirmation(
+                    case=case,
+                    user_message=request.message,
+                    confirmation_value=request.intent.confirmation_value,
+                )
+            elif intent_type == IntentType.HYPOTHESIS_ACTION:
+                # Validate/refute/retire hypothesis
+                result = await self._handle_hypothesis_action(
+                    case=case,
+                    user_message=request.message,
+                    hypothesis_id=request.intent.hypothesis_id,
+                    action=request.intent.action,
+                )
+            elif intent_type == IntentType.CONVERSATION:
+                # Normal conversation - process via MilestoneEngine
+                # Engine handles:
+                # - Generating status-based prompt
+                # - Invoking LLM with structured output
+                # - Updating case state (milestones, evidence, hypotheses)
+                # - Pattern matching fallback for natural language (e.g., "close as unresolved")
+                # - Automatic status transitions
+                # - Saving case via repository
+                result = await self.engine.process_turn(
+                    case=case,
+                    user_message=request.message,
+                    attachments=request.attachments,
+                    intent_type=intent_type.value,  # Pass intent for logging/tracing
+                    intent_data=request.intent.model_dump(exclude_unset=True),
+                )
+            else:
+                raise ValueError(f"Unknown intent type: {intent_type}")
 
             # 5. Build response
             updated_case = result["case_updated"]
@@ -249,6 +293,118 @@ class InvestigationService(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to get progress for case {case_id}: {e}")
             raise ServiceException(f"Progress retrieval failed: {str(e)}") from e
+
+    # ============================================================
+    # Intent-Based Query Handlers
+    # ============================================================
+
+    async def _handle_status_transition(
+        self,
+        case: "Case",
+        user_message: str,
+        from_status: Optional[str],
+        to_status: Optional[str],
+        user_confirmed: bool,
+    ) -> Dict[str, Any]:
+        """Handle status transition intent with validation.
+
+        Args:
+            case: Case entity
+            user_message: User's message explaining the transition
+            from_status: Expected current status
+            to_status: Requested new status
+            user_confirmed: Whether user confirmed the transition
+
+        Returns:
+            Result dict with agent response and updated case
+        """
+        self.logger.info(
+            f"Processing status transition: {from_status} → {to_status} "
+            f"(confirmed={user_confirmed}) for case {case.case_id}"
+        )
+
+        # Validate transition request
+        if not to_status:
+            raise ValueError("to_status is required for status_transition intent")
+
+        # Delegate to milestone engine with structured intent
+        result = await self.engine.process_turn(
+            case=case,
+            user_message=user_message,
+            attachments=None,
+            intent_type="status_transition",
+            intent_data={
+                "from_status": from_status,
+                "to_status": to_status,
+                "user_confirmed": user_confirmed,
+            },
+        )
+
+        return result
+
+    async def _handle_confirmation(
+        self, case: "Case", user_message: str, confirmation_value: Optional[bool]
+    ) -> Dict[str, Any]:
+        """Handle yes/no confirmation intent.
+
+        Args:
+            case: Case entity
+            user_message: User's confirmation message
+            confirmation_value: True for yes, False for no
+
+        Returns:
+            Result dict with agent response and updated case
+        """
+        self.logger.info(
+            f"Processing confirmation: {confirmation_value} for case {case.case_id}"
+        )
+
+        result = await self.engine.process_turn(
+            case=case,
+            user_message=user_message,
+            attachments=None,
+            intent_type="confirmation",
+            intent_data={"value": confirmation_value},
+        )
+
+        return result
+
+    async def _handle_hypothesis_action(
+        self,
+        case: "Case",
+        user_message: str,
+        hypothesis_id: Optional[str],
+        action: Optional[str],
+    ) -> Dict[str, Any]:
+        """Handle hypothesis action intent (validate/refute/retire).
+
+        Args:
+            case: Case entity
+            user_message: User's message about the hypothesis
+            hypothesis_id: Target hypothesis ID
+            action: Action to perform
+
+        Returns:
+            Result dict with agent response and updated case
+        """
+        self.logger.info(
+            f"Processing hypothesis action: {action} on {hypothesis_id} for case {case.case_id}"
+        )
+
+        if not hypothesis_id or not action:
+            raise ValueError(
+                "hypothesis_id and action required for hypothesis_action intent"
+            )
+
+        result = await self.engine.process_turn(
+            case=case,
+            user_message=user_message,
+            attachments=None,
+            intent_type="hypothesis_action",
+            intent_data={"hypothesis_id": hypothesis_id, "action": action},
+        )
+
+        return result
 
     @trace("investigation_service_transition_to_investigating")
     async def transition_to_investigating(

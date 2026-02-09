@@ -395,13 +395,13 @@ class TestGetStatisticsBenchmark:
 
 
 # ============================================================
-# Close/Reopen Case Benchmark
+# Close Case Benchmark
 # ============================================================
 
 
 @pytest.mark.benchmark
-class TestCloseReopenBenchmark:
-    """Benchmark close_case and reopen_case operations."""
+class TestCloseBenchmark:
+    """Benchmark close_case operation."""
 
     @pytest.mark.asyncio
     async def test_close_case_performance(self, case_service):
@@ -439,39 +439,3 @@ class TestCloseReopenBenchmark:
         print(f"  Target: <200ms p95")
 
         assert p95 < 200, f"Close case P95 ({p95:.2f}ms) exceeds target (200ms)"
-
-    @pytest.mark.asyncio
-    async def test_reopen_case_performance(self, case_service):
-        """Benchmark reopen_case performance. Target: <200ms p95."""
-        org_id = create_test_org_id()
-        user_id = create_test_user_id()
-
-        # Create and close cases
-        cases = []
-        for i in range(30):
-            case = await case_service.create_case(
-                user_id=user_id,
-                organization_id=org_id,
-                title=f"Benchmark Case {i}",
-                description="Case for reopen benchmarking",
-                severity=CaseSeverity.LOW,
-            )
-            await case_service.close_case(case.case_id, org_id, "resolved")
-            cases.append(case)
-
-        times = []
-        for case in cases:
-            start = time.perf_counter()
-            await case_service.reopen_case(case.case_id, org_id)
-            elapsed = (time.perf_counter() - start) * 1000
-            times.append(elapsed)
-
-        times.sort()
-        p95 = times[int(len(times) * 0.95)]
-
-        print(f"\nReopen Case Benchmark:")
-        print(f"  Mean: {statistics.mean(times):.2f}ms")
-        print(f"  P95: {p95:.2f}ms")
-        print(f"  Target: <200ms p95")
-
-        assert p95 < 200, f"Reopen case P95 ({p95:.2f}ms) exceeds target (200ms)"

@@ -87,6 +87,9 @@ class HuggingFaceProvider(BaseLLMProvider):
             ]
         if "stop_sequences" in kwargs:
             request_body["parameters"]["stop"] = kwargs["stop_sequences"]
+        if "response_format" in kwargs:
+            # Some HF endpoints (TGI/vLLM) support response_format in parameters
+            request_body["parameters"]["response_format"] = kwargs["response_format"]
 
         # Add wait_for_model parameter to handle model loading
         request_body["options"] = {"wait_for_model": True}

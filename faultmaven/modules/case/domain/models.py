@@ -3356,6 +3356,15 @@ class Case(BaseModel):
 
         Spec Reference: DB Design Specification lines 157-176
         """
+        # Skip validation during atomic_update() to avoid Catch-22
+        if getattr(self, "_in_atomic_update", False):
+            return self
+
+        # Allow atomic transitions by checking if multiple terminal fields are being set
+        # This is a private flag used to verify transient states during atomic updates
+        if hasattr(self, "_in_terminal_transition"):
+            return self
+
         # RESOLVED requires resolved_at and closed_at
         if self.status == CaseStatus.RESOLVED:
             if not self.resolved_at:
@@ -3405,6 +3414,29 @@ class Case(BaseModel):
 
         return self
 
+    def atomic_transition(self):
+        """
+        Context manager to allow atomic updates of interdependent fields.
+        Useful for transitioning to terminal states where status/timestamps depend on each other.
+        """
+
+        class AtomicContext:
+            def __init__(self, case):
+                self.case = case
+
+            def __enter__(self):
+                self.case._in_terminal_transition = True
+                return self.case
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if hasattr(self.case, "_in_terminal_transition"):
+                    del self.case._in_terminal_transition
+                # Only validate if no exception occurred during the block
+                if exc_type is None:
+                    self.case.validate_status_timestamp_consistency()
+
+        return AtomicContext(self)
+
     @model_validator(mode="after")
     def validate_investigating_requirements(self) -> "Case":
         """
@@ -3428,6 +3460,45 @@ class Case(BaseModel):
                 )
 
         return self
+
+    # ============================================================
+    # Atomic State Update Helper
+    # ============================================================
+    def atomic_update(self, **updates: Any) -> None:
+        """
+        Perform atomic updates to multiple fields, bypassing incremental validation.
+
+        This method is necessary for state transitions that require multiple fields
+        to be updated simultaneously (e.g., setting status=RESOLVED requires
+        resolved_at to be set, but resolved_at can only be set when status=RESOLVED).
+
+        The validation Catch-22:
+        - Cannot set status=RESOLVED if resolved_at is None (validator line 3361)
+        - Cannot set resolved_at if status != RESOLVED (validator line 3367)
+
+        Usage:
+            case.atomic_update(
+                status=CaseStatus.RESOLVED,
+                resolved_at=datetime.now(UTC),
+                closed_at=datetime.now(UTC),
+                closure_reason="resolved"
+            )
+
+        Args:
+            **updates: Field names and values to update atomically
+
+        Note:
+            Sets _in_atomic_update flag to signal validators to skip checks.
+            Uses object.__setattr__() to bypass Pydantic's validate_assignment.
+        """
+        # Set flag to signal validators to skip consistency checks
+        object.__setattr__(self, "_in_atomic_update", True)
+        try:
+            for field_name, value in updates.items():
+                object.__setattr__(self, field_name, value)
+        finally:
+            # Clear flag after all updates complete
+            object.__setattr__(self, "_in_atomic_update", False)
 
     # ============================================================
     # Configuration

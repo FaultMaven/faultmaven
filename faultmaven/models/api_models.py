@@ -9,11 +9,15 @@ They handle:
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStage
+from faultmaven.modules.case.domain.services.case_status_manager import (
+    CaseStatusManager,
+)
 
 # ============================================================
 # Case Creation and Updates
@@ -98,6 +102,12 @@ class CaseSummary(BaseModel):
     is_stuck: bool
     is_terminal: bool
 
+    # Status transitions
+    valid_next_states: List[str] = Field(
+        default_factory=list,
+        description="Allowed status transitions from current state for user-initiated changes",
+    )
+
     @classmethod
     def from_case(cls, case: Case) -> "CaseSummary":
         """Convert Case domain model to API summary."""
@@ -119,6 +129,10 @@ class CaseSummary(BaseModel):
             total_milestones=8,
             is_stuck=case.is_stuck,
             is_terminal=case.is_terminal,
+            valid_next_states=[
+                status.value
+                for status in CaseStatusManager.get_allowed_transitions(case.status)
+            ],
         )
 
 
@@ -160,6 +174,12 @@ class CaseDetail(BaseModel):
     degraded_mode_active: bool
     escalated: bool
 
+    # Status transitions
+    valid_next_states: List[str] = Field(
+        default_factory=list,
+        description="Allowed status transitions from current state for user-initiated changes",
+    )
+
     @classmethod
     def from_case(cls, case: Case) -> "CaseDetail":
         """Convert Case domain model to API detail view."""
@@ -193,6 +213,10 @@ class CaseDetail(BaseModel):
             escalated=(
                 case.escalation_state.is_active if case.escalation_state else False
             ),
+            valid_next_states=[
+                status.value
+                for status in CaseStatusManager.get_allowed_transitions(case.status)
+            ],
         )
 
 
@@ -302,17 +326,102 @@ class CaseSearchResponse(BaseModel):
 
 
 # ============================================================
-# Case Query Submission
+# Case Query Submission with Intent-Based Routing
 # ============================================================
+
+
+class IntentType(str, Enum):
+    """Intent types for query routing.
+
+    Enables reliable intent detection without keyword matching.
+    Each type routes to specialized handling logic.
+    """
+
+    CONVERSATION = "conversation"  # Natural language query - use LLM
+    STATUS_TRANSITION = "status_transition"  # Explicit state transition (resolve/close)
+    HYPOTHESIS_ACTION = "hypothesis_action"  # Validate/refute/retire hypothesis
+    EVIDENCE_REQUEST = "evidence_request"  # Request specific evidence
+    CONFIRMATION = "confirmation"  # Yes/No confirmation response
+
+
+class QueryIntent(BaseModel):
+    """Structured intent metadata for programmatic query handling.
+
+    Enables reliable intent detection without keyword matching.
+    All queries must specify their intent type for proper routing.
+
+    Design Reference: Intent-based routing eliminates ambiguity in pattern matching
+    and provides single code path for all interactions (conversation history unified).
+    """
+
+    type: IntentType = Field(
+        description="Intent type for routing - determines which handler processes this query"
+    )
+
+    # Additional intent-specific fields (vary by type)
+    from_status: Optional[CaseStatus] = Field(
+        default=None, description="For status_transition: source status (validation)"
+    )
+    to_status: Optional[CaseStatus] = Field(
+        default=None,
+        description="For status_transition: target status (REQUIRED for status_transition)",
+    )
+    user_confirmed: Optional[bool] = Field(
+        default=None,
+        description="User explicitly confirmed action via UI button/dialog",
+    )
+    hypothesis_id: Optional[str] = Field(
+        default=None, description="For hypothesis_action: target hypothesis ID"
+    )
+    action: Optional[str] = Field(
+        default=None, description="Action to perform: validate | refute | retire"
+    )
+    evidence_id: Optional[str] = Field(
+        default=None, description="For evidence_request: target evidence ID"
+    )
+    confirmation_value: Optional[bool] = Field(
+        default=None, description="For confirmation: yes/no value"
+    )
+
+    @model_validator(mode="after")
+    def validate_intent_fields(self):
+        """Ensure required fields present for each intent type."""
+        if self.type == IntentType.STATUS_TRANSITION:
+            if not self.to_status:
+                raise ValueError("to_status required for status_transition intent")
+        elif self.type == IntentType.HYPOTHESIS_ACTION:
+            if not self.hypothesis_id or not self.action:
+                raise ValueError(
+                    "hypothesis_id and action required for hypothesis_action intent"
+                )
+        elif self.type == IntentType.EVIDENCE_REQUEST:
+            if not self.evidence_id:
+                raise ValueError("evidence_id required for evidence_request intent")
+        elif self.type == IntentType.CONFIRMATION:
+            if self.confirmation_value is None:
+                raise ValueError("confirmation_value required for confirmation intent")
+        return self
 
 
 class CaseQueryRequest(BaseModel):
     """Request to submit a query to a case investigation.
 
     Used by POST /cases/{case_id}/queries endpoint.
+
+    All queries now include structured intent for reliable routing.
+    The message is human-readable; the intent is machine-readable.
     """
 
-    message: str = Field(description="User message", min_length=1, max_length=4000)
+    message: str = Field(
+        description="Human-readable message for conversation history and context",
+        min_length=1,
+        max_length=4000,
+    )
+
+    intent: QueryIntent = Field(
+        default_factory=lambda: QueryIntent(type=IntentType.CONVERSATION),
+        description="Structured intent for programmatic routing and handling. Defaults to CONVERSATION for backward compatibility.",
+    )
 
     attachments: Optional[List[dict]] = Field(
         default=None,

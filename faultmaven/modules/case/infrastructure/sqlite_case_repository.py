@@ -24,6 +24,7 @@ Architecture:
 
 import builtins
 import json
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
@@ -60,6 +61,8 @@ from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 class SQLiteCaseRepository(CaseRepository):
@@ -1223,13 +1226,13 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
-                    "category": evidence.data_type,
+                    "category": evidence.category.value,
                     "summary": evidence.summary,
                     "preprocessed_content": evidence.preprocessed_content or "",
-                    "content_ref": evidence.storage_ref,
-                    "file_size": evidence.file_size,
-                    "filename": evidence.filename,
-                    "upload_timestamp": evidence.timestamp,
+                    "content_ref": evidence.content_ref,
+                    "file_size": evidence.content_size_bytes,
+                    "filename": "",  # Evidence doesn't have filename - would come from source
+                    "upload_timestamp": evidence.collected_at.isoformat(),
                     "metadata": json.dumps({}),
                 },
             )
@@ -1528,10 +1531,41 @@ class SQLiteCaseRepository(CaseRepository):
                     "reason": (
                         transition.reason if hasattr(transition, "reason") else None
                     ),
-                    "transitioned_at": transition.timestamp,
+                    "transitioned_at": transition.triggered_at,
                     "metadata": json.dumps({}),
                 },
             )
+
+    def _convert_legacy_inquiry_data(self, data: dict) -> dict:
+        """Convert legacy LLM schema format to domain model format for backward compatibility.
+
+        Old cases may have been saved with LLM schema format before conversion was added:
+        - problem_confirmation.preliminary_guidance: Optional[str] (can be None)
+        - preliminary_urgency.level: Literal["CRITICAL", "HIGH", ...] (uppercase)
+        - preliminary_urgency.assessed_at_turn: missing field
+
+        This method converts to domain model format:
+        - problem_confirmation.preliminary_guidance: str (required, convert None to "")
+        - preliminary_urgency.level: UrgencyLevel enum (lowercase)
+        - preliminary_urgency.assessed_at_turn: int (default to 1)
+        """
+        # Handle problem_confirmation conversion
+        if "problem_confirmation" in data and data["problem_confirmation"]:
+            pc = data["problem_confirmation"]
+            if "preliminary_guidance" in pc and pc["preliminary_guidance"] is None:
+                pc["preliminary_guidance"] = ""
+
+        # Handle preliminary_urgency conversion
+        if "preliminary_urgency" in data and data["preliminary_urgency"]:
+            pu = data["preliminary_urgency"]
+            # Convert uppercase level to lowercase for UrgencyLevel enum
+            if "level" in pu and isinstance(pu["level"], str):
+                pu["level"] = pu["level"].lower()
+            # Add missing assessed_at_turn field (default to 1 for old data)
+            if "assessed_at_turn" not in pu:
+                pu["assessed_at_turn"] = 1
+
+        return data
 
     def _row_to_case(
         self,
@@ -1542,10 +1576,10 @@ class SQLiteCaseRepository(CaseRepository):
         messages_data: builtins.list[dict] | None = None,
     ) -> Case:
         """Reconstruct Case domain object from database row."""
-        # Parse JSON columns
-        inquiry = (
-            InquiryData(**json.loads(row.inquiry)) if row.inquiry else InquiryData()
-        )
+        # Parse JSON columns with backward compatibility for legacy schema
+        inquiry_data = json.loads(row.inquiry) if row.inquiry else {}
+        inquiry_data = self._convert_legacy_inquiry_data(inquiry_data)
+        inquiry = InquiryData(**inquiry_data) if inquiry_data else InquiryData()
         problem_verification = (
             ProblemVerification(**json.loads(row.problem_verification))
             if row.problem_verification
@@ -1638,11 +1672,27 @@ class SQLiteCaseRepository(CaseRepository):
             "updated_at": row.updated_at,
         }
 
+        # Backward compatibility: Fix description for old INVESTIGATING cases
+        # Old cases may be in INVESTIGATING status with empty description
+        description = row.description if hasattr(row, "description") else ""
+        if (
+            CaseStatus(row.status) == CaseStatus.INVESTIGATING
+            and (not description or not description.strip())
+            and inquiry.proposed_problem_statement
+        ):
+            description = inquiry.proposed_problem_statement
+            # Log only in debug mode to avoid production log spam
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Auto-healed missing description for case {row.case_id} "
+                    f"from proposed_problem_statement"
+                )
+
         # Only add optional fields if they exist and have values in database
         # This allows Pydantic to apply its own defaults for missing fields
 
-        if hasattr(row, "description") and row.description:
-            case_data["description"] = row.description
+        if description:
+            case_data["description"] = description
 
         if hasattr(row, "investigation_strategy") and row.investigation_strategy:
             case_data["investigation_strategy"] = InvestigationStrategy(

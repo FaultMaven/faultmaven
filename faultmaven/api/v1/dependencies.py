@@ -490,3 +490,15 @@ async def get_team_service(request: Request):
     if service is None:
         raise HTTPException(status_code=503, detail="Team service not available")
     return service
+
+
+async def get_llm_provider(request: Request):
+    """Get LLM provider instance from app.extra (Composition Root)"""
+    try:
+        container = request.app.extra.get("di_container")
+        if container:
+            return getattr(container, "llm_provider", None)
+        return None
+    except Exception:
+        # LLM provider is optional - return None if not available
+        return None

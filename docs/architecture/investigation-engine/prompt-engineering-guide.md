@@ -808,13 +808,17 @@ class MilestoneUpdates(BaseModel):
     
     # Investigation milestones
     root_cause_identified: Optional[bool] = None
-    root_cause_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    root_cause_method: Optional[str] = None  # direct_analysis | hypothesis_validation | correlation | other
+    root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
+    root_cause_method: Optional[str] = Field(
+        None,
+        description="direct_analysis | hypothesis_validation | correlation | other",
+    )
     
     # Resolution milestones
     solution_proposed: Optional[bool] = None
-    solution_applied: Optional[bool] = None  # User action - LLM reports
+    solution_applied: Optional[bool] = None
     solution_verified: Optional[bool] = None
+    mitigation_applied: Optional[bool] = None
 
 class EvidenceToAdd(BaseModel):
     """Evidence object LLM creates"""
@@ -975,36 +979,26 @@ YOUR TASK
 ```python
 def get_symptom_verification_instructions(case: Case) -> str:
     return """
-**FOCUS: VERIFICATION** (Understanding the Problem)
+**FOCUS: SYMPTOM_VERIFICATION** (Goal: Confirm problem & context)
 
-**Current Stage**: SYMPTOM_VERIFICATION
-**Goal**: Confirm problem is real, understand context
+**Priority Actions (MUST focus on these):**
+1. **Verification**: Confirm symptom with logs, metrics, or user reports.
+2. **Impact**: Assess scope (blast radius) and urgency (CRITICAL/HIGH/MEDIUM/LOW).
+3. **Timeline**: Establish when it started and if it's currently ONGOING.
+4. **Changes**: Identify recent deployments or configuration changes.
 
-**Priority Actions:**
-1. ✅ Verify symptom with concrete evidence (logs, metrics, user reports)
-2. ✅ Assess scope (who/what affected, blast radius)
-3. ✅ Establish timeline (when started, when noticed, still ongoing?)
-4. ✅ Identify recent changes (deployments, configs, scaling events)
-5. ✅ Determine temporal_state (ONGOING vs HISTORICAL)
-6. ✅ Assess urgency_level (CRITICAL/HIGH/MEDIUM/LOW)
+**URGENCY RECOGNITION:**
+Watch for high-impact signals (revenue, production, data loss, or broad customer complaints).
+If production or customers are actively affected:
+→ Acknowledge urgency IMMEDIATELY.
+→ Offer **MITIGATION_FIRST** path (stop the bleeding before deep RCA).
 
-**What to Fill Out:**
-- `verification_updates`: Complete ProblemVerification fields
-- `milestones`: Set verification milestones to True when verified
-- `evidence_to_add`: Add evidence objects for data user provided
+**DATA COLLECTION:**
+- Update ProblemVerification fields in `verification_updates`.
+- Add newly provided data to `evidence_to_add` (use "USER_MESSAGE" if text-based).
 
-**IMPORTANT: You CAN jump ahead if user provides comprehensive data!**
-
-Example: If logs show obvious root cause → Set root_cause_identified = True
-Don't artificially constrain yourself to verification only.
-
-**Verification Completion:**
-When ALL verification milestones complete, system will:
-- Compute investigation path (MITIGATION_FIRST vs ROOT_CAUSE)
-- Auto-advance to HYPOTHESIS_FORMULATION stage (or SOLUTION for MITIGATION_FIRST path)
-- Provide path-specific guidance
-
-Continue until verification milestones are complete.
+**NOTE: YOU CAN JUMP AHEAD!**
+If evidence reveals root cause, set `root_cause_identified = True` immediately. Do not stay in verification if the answer is clear.
 """
 ```
 
@@ -3056,9 +3050,11 @@ Required fields:
 - agent_response: Your natural response to user
 - state_updates.milestones: Set newly completed milestones to true
 - state_updates.outcome: One of [milestone_completed, data_requested, blocked, ...]
-- state_updates.internal_reasoning: Your analysis BEFORE state changes (required first)
-
-Full schema: See InvestigationResponse in system prompt cache.
+- internal_reasoning: REQUIRED when completing milestones (otherwise optional).
+  - evidence_analyzed: List of IDs considered.
+  - conclusions: Step-by-step reasoning from observations to inferences.
+  - milestone_justifications: Key-value map of {milestone_name: "justification"}.
+  - uncertainties: What remains unclear.
 </output_schema>
 """
 ```
@@ -3149,7 +3145,7 @@ class InternalReasoning(BaseModel):
 
     # What conclusions were drawn?
     conclusions: List[ReasoningConclusion] = Field(
-        description="Conclusions with supporting evidence"
+        description="Conclusions with step-by-step reasoning"
     )
 
     # What milestones can NOW be completed (with justification)?
@@ -3165,11 +3161,10 @@ class InternalReasoning(BaseModel):
     )
 
 class ReasoningConclusion(BaseModel):
-    """A single conclusion with evidence chain"""
-    statement: str
-    evidence_refs: List[str]  # Evidence IDs supporting this
-    confidence: float  # 0.0 - 1.0
-    alternative_interpretations: List[str] = []
+    """A single conclusion with observation and inference"""
+    observation: str = Field(description="What was observed in the evidence")
+    inference: str = Field(description="What this implies about the problem")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence in this inference")
 ```
 
 ### 13.3 Prompt Instructions for Reasoning-First
@@ -3195,10 +3190,9 @@ Your response MUST follow this order:
     "evidence_analyzed": ["error_log_ev123", "metrics_ev456"],
     "conclusions": [
       {
-        "statement": "Errors correlate with deployment at 14:10",
-        "evidence_refs": ["error_log_ev123"],
-        "confidence": 0.85,
-        "alternative_interpretations": ["Could be coincidental timing"]
+        "observation": "Error logs show 500 errors starting at 14:35 UTC",
+        "inference": "Problem is confirmed and ongoing",
+        "confidence": 0.95
       }
     ],
     "milestone_justifications": {

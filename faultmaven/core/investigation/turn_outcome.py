@@ -94,8 +94,11 @@ def _agent_requested_data_this_turn(case: Case) -> bool:
         return False
 
     last_turn = case.turn_history[-1]
+    # TurnProgress stores summary, not full response
     agent_response = (
-        last_turn.agent_response.lower() if last_turn.agent_response else ""
+        last_turn.agent_response_summary.lower()
+        if last_turn.agent_response_summary
+        else ""
     )
 
     # Data request indicators

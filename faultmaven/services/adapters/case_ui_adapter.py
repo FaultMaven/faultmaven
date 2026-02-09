@@ -52,6 +52,9 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationPath,
 )
+from faultmaven.modules.case.domain.services.case_status_manager import (
+    CaseStatusManager,
+)
 
 
 def transform_case_for_ui(case: Case) -> CaseUIResponse:
@@ -254,6 +257,10 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
         inquiry=inquiry_data,
+        valid_next_states=[
+            status.value
+            for status in CaseStatusManager.get_allowed_transitions(case.status)
+        ],
     )
 
 
@@ -353,6 +360,10 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         degraded_mode=case.degraded_mode is not None and case.degraded_mode.is_active,
         investigation_strategy=investigation_strategy_data,
         problem_verification=problem_verification_data,
+        valid_next_states=[
+            status.value
+            for status in CaseStatusManager.get_allowed_transitions(case.status)
+        ],
     )
 
 
@@ -461,7 +472,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
 
     return CaseUIResponse_Resolved(
         case_id=case.case_id,
-        status=CaseStatus.RESOLVED,
+        status=case.status,  # Use actual status (RESOLVED or CLOSED)
         title=case.title,
         current_turn=case.current_turn,
         created_at=case.created_at,
@@ -472,4 +483,8 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         verification_status=verification_status,
         resolution_summary=resolution_summary,
         reports_available=reports_available,
+        valid_next_states=[
+            status.value
+            for status in CaseStatusManager.get_allowed_transitions(case.status)
+        ],
     )

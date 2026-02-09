@@ -13,6 +13,7 @@ This document defines the state transitions, path routing, and turn tracking log
 1. [Investigation Lifecycle](#1-investigation-lifecycle)
 2. [Path Selection & Routing](#2-path-selection--routing)
 3. [Turn Progress Tracking](#3-turn-progress-tracking)
+4. [Supported Case Lifecycles](#4-supported-case-lifecycles)
 
 ---
 
@@ -881,35 +882,13 @@ def assess_preliminary_urgency(case: Case) -> PreliminaryUrgency:
     )
 ```
 
-**Semantic urgency definitions** (NOT keyword-based):
-
-```python
-URGENCY_DEFINITIONS = {
-    "CRITICAL": "Complete service unavailability or data loss/corruption",
-    "HIGH": "Significant degradation affecting most users",
-    "MEDIUM": "Partial degradation or intermittent issues",
-    "LOW": "Minor issues or historical investigation"
-}
-```
-
-**Why Semantic, Not Keywords**:
-
-- ❌ Keyword-based: "not down" might trigger CRITICAL due to word "down"
-- ✅ Semantic: LLM assesses actual business impact from context
-
-**Urgency Signal Examples** (for LLM detection):
-
 **CRITICAL Signals**:
-- "production down", "complete outage", "no users can access"
-- "data loss", "data corruption", "billing broken"
-- "security breach", "unauthorized access", "breach detected"
-- "100% error rate", "total failure", "nothing works"
+- "revenue loss", "production downtime", "data loss/corruption"
+- "100% error rate", "total service failure", "security breach"
 
 **HIGH Signals**:
-- "revenue impact", "customers affected", "checkout failing"
-- "payments broken", "30%+ of requests failing"
-- "SLA breach", "executive visibility", "customer escalation"
-- "major degradation", "significant impact", "business critical"
+- "customers affected", "checkout failing", "payments broken"
+- "30%+ of requests failing", "customer complaints", "SLA violation"
 
 **MEDIUM Signals**:
 - "intermittent issues", "some users affected", "partial failure"
@@ -1552,3 +1531,109 @@ This requirement applies to ALL agent suggestions during INVESTIGATING state:
 - Evidence requests (explain WHY specific evidence is needed)
 
 **EXCEPTION**: INQUIRY state (problem statement refinement) does not require diagnostic reasoning, as investigation hasn't started yet.
+
+---
+
+## 4. Supported Case Lifecycles
+
+This section outlines all possible case lifecycles and their associated milestones.
+
+### 4.1 Inquiry-Only Lifecycle (No Investigation)
+**User Goal**: Ask a quick question or get clarification without starting a formal investigation.
+**Flow**: `INQUIRY` → `CLOSED`
+
+#### Workflow Steps
+1.  **User Inquiry**: User asks a question (e.g., "How do I check logs?").
+2.  **Agent Response**: Agent answers the question.
+3.  **Closure**: User leaves or explicitly closes the session.
+
+#### Milestones
+*   None (Investigation milestones do not start).
+
+---
+
+### 4.2 Fast-Track Resolution (Knowledge Base Match)
+**User Goal**: Resolve a known issue quickly using past cases or runbooks.
+**Flow**: `INQUIRY` → `RESOLVED` (Skips `INVESTIGATING`)
+
+#### Workflow Steps
+1.  **Detection**: Agent detects high-confidence Knowledge Base match during Inquiry.
+2.  **Proposal**: Agent suggests the known solution from the KB match.
+3.  **Verification**: User tries the solution and confirms it works.
+4.  **Transition**: Case transitions directly to `RESOLVED`.
+
+#### Milestones
+*   `knowledge_resolution` (Record of KB match application)
+
+---
+
+### 4.3 Standard Investigation (Root Cause Path)
+**User Goal**: Diagnosing a new or complex issue to find the root cause and fix it permanently.
+**Flow**: `INQUIRY` → `INVESTIGATING` → `RESOLVED`
+
+#### Workflow Steps & Milestones
+
+**Phase 1: Inquiry**
+*   **Goal**: Establish problem statement.
+*   **Transition Trigger**: User confirms problem statement and decides to investigate.
+
+**Phase 2: Investigation (Iterative)**
+The agent pursues milestones opportunistically.
+
+*   **Stage A: Understanding (Symptom Verification)**
+    *   `symptom_verified`: Confirmed via evidence (logs, metrics).
+    *   `scope_assessed`: Impact radius determined (e.g., "All regions", "Prod only").
+    *   `timeline_established`: Start time and duration identified.
+    *   `changes_identified`: Recent deployments or config changes mapped.
+
+*   **Stage B: Diagnosing (Hypothesis & Root Cause)**
+    *   `root_cause_identified`: Validated hypothesis explaining the issue.
+        *   *Method*: `hypothesis_validation` or `direct_analysis`.
+
+*   **Stage C: Resolving (Solution)**
+    *   `solution_proposed`: Agent suggests a fix (e.g., "Scale up replicas").
+    *   `solution_applied`: User confirms action taken.
+    *   `solution_verified`: Evidence confirms system recovery.
+
+**Phase 3: Resolution**
+*   **Transition Trigger**: `solution_verified` is True.
+*   **State**: `RESOLVED`.
+
+---
+
+### 4.4 Mitigation-First Investigation (Ongoing Outage)
+**User Goal**: Restore service availability immediately, then find root cause later.
+**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation) → `INVESTIGATING` (RCA) → `RESOLVED`
+
+#### Workflow Steps & Milestones
+
+**Phase 1: Mitigation**
+*   **Trigger**: High Severity + Ongoing Outage.
+*   `symptom_verified`: Confirmed.
+*   `mitigation_applied`: Temporary fix applied (e.g., "Rollback", "Reboot").
+*   `mitigation_verified`: Service restored (but root cause unknown).
+
+**Phase 2: Root Cause Analysis (Post-Mitigation)**
+*   User decides to continue for RCA.
+*   `root_cause_identified`: Why did it fail?
+*   `solution_proposed`: Permanent fix (e.g., "Fix memory leak code").
+*   `solution_applied`: Permanent fix deployed.
+*   `solution_verified`: Permanent fix validated.
+
+---
+
+### 4.5 Abandoned / Escalated Investigation
+**User Goal**: Investigation stalled or handed off to human expert.
+**Flow**: `INQUIRY` → `INVESTIGATING` → `CLOSED`
+
+#### Workflow Steps
+1.  **Investigation Starts**: Milestones partially completed.
+2.  **Stall/Escalation**:
+    *   Agent cannot find root cause.
+    *   User stops responding.
+    *   User explicitly requests escalation.
+3.  **Closure**: Case marked `CLOSED` with reason (e.g., `escalated`, `abandoned`).
+
+#### Milestones
+*   Partial completion of verification/diagnosis milestones.
+*   `working_conclusion`: Summary of findings up to the point of closure.

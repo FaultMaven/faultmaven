@@ -229,9 +229,12 @@ class TestInvestigationServiceProcessTurn:
             {"file_id": "file1", "filename": "file1.txt"},
             {"file_id": "file2", "filename": "file2.log"},
         ]
+        from faultmaven.models.api_models import QueryIntent, IntentType
+
         request_with_attachments = CaseQueryRequest(
             message="Test message with attachments",
             attachments=attachments,
+            intent=QueryIntent(type=IntentType.CONVERSATION),
         )
 
         response = await service.process_turn(

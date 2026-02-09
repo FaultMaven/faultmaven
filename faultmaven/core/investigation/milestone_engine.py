@@ -97,15 +97,53 @@ def validate_reasoning_first(
     """
     Validate that milestone completions are justified with internal reasoning.
 
+    This function enforces the "Reasoning-First" pattern where the LLM must provide
+    justifications for milestone completions BEFORE setting state updates. This prevents
+    the LLM from arbitrarily completing milestones without evidence-based reasoning.
+
+    EXCEPTION: Validation is skipped during terminal state transitions to allow graceful
+    case closure without forcing justifications. This handles the scenario where:
+    - User explicitly says "close this case" (user intent detection sets solution_verified=True)
+    - Case automatically transitions INVESTIGATING → RESOLVED
+    - LLM may try to complete other milestones during closure
+    - We skip validation because the case is already transitioning to terminal state
+
     Reference: Prompt Engineering Guide Section 13 (lines 3236-3281)
 
+    Args:
+        response_obj: LLM's structured response (InquiryResponse, InvestigationResponse_*, or TerminalResponse)
+        case: Current case state
+
     Returns:
-        (is_valid, error_messages)
+        (is_valid, error_messages): Tuple of validation result and list of error messages
+
+    Skip Conditions (validation bypassed):
+        1. Response is InquiryResponse or TerminalResponse (no investigation milestones)
+        2. Case is already in terminal state (RESOLVED or CLOSED)
+        3. Case is transitioning to terminal state:
+           - LLM is setting solution_verified=True in this response, OR
+           - solution_verified was already set by user intent detection
     """
     errors = []
 
+    # Debug logging for Turn 2 issue
+    logger.debug(
+        f"🔍 validate_reasoning_first: response_type={type(response_obj).__name__}, "
+        f"case_status={case.status.value}, "
+        f"is_InquiryResponse={isinstance(response_obj, InquiryResponse)}, "
+        f"is_TerminalResponse={isinstance(response_obj, TerminalResponse)}"
+    )
+
     # Only validate investigation responses (not INQUIRY or TERMINAL)
     if isinstance(response_obj, (InquiryResponse, TerminalResponse)):
+        logger.debug("🔍 Skipping reasoning validation (INQUIRY or TERMINAL response)")
+        return True, []
+
+    # Skip validation if case is already in terminal state
+    if case.is_terminal:
+        logger.debug(
+            "🔍 Skipping reasoning validation (case already in terminal state)"
+        )
         return True, []
 
     # Check if response has internal_reasoning field
@@ -126,6 +164,40 @@ def validate_reasoning_first(
     if not completed_milestones:
         # No milestones actually completed, no validation needed
         return True, []
+
+    # ===== TERMINAL TRANSITION EXCEPTION =====
+    # Skip validation if case is transitioning to terminal state.
+    #
+    # SCENARIO: User says "close this case"
+    #   1. User intent detection (milestone_engine.py:361-401) sets case.progress.solution_verified = True
+    #   2. Case still in INVESTIGATING status (transition happens AFTER LLM call)
+    #   3. LLM generates response, may try to complete milestones (e.g., symptom_verified=True)
+    #   4. validate_reasoning_first() called
+    #   5. CRITICAL FIX: We detect case.progress.solution_verified is already True
+    #   6. Skip validation → Allow LLM response without justifications
+    #   7. Terminal transition executes (terminal_transitions.py:47-79)
+    #   8. Case becomes RESOLVED with closure_reason="resolved"
+    #
+    # WHY THIS FIX IS NEEDED:
+    # - Original logic only checked if LLM was CURRENTLY setting solution_verified
+    # - Missed the case where solution_verified was ALREADY set by user intent detection
+    # - Caused reasoning validation errors during case closure (Turn 4 bug)
+    #
+    # FIX: Check BOTH conditions:
+    # 1. LLM is setting solution_verified in THIS response (completed_milestones contains "solution_verified")
+    # 2. solution_verified was ALREADY set (case.progress.solution_verified == True)
+    if case.status == CaseStatus.INVESTIGATING:
+        # Check if LLM is setting solution_verified in this response
+        llm_setting_solution_verified = "solution_verified" in completed_milestones
+        # Check if solution_verified was already set (e.g., by user intent detection)
+        already_solution_verified = case.progress.solution_verified
+
+        if llm_setting_solution_verified or already_solution_verified:
+            logger.debug(
+                f"🔍 Skipping reasoning validation (case transitioning to RESOLVED: "
+                f"llm_setting={llm_setting_solution_verified}, already_set={already_solution_verified})"
+            )
+            return True, []
 
     # If milestones are being completed, internal_reasoning is REQUIRED
     if not internal_reasoning:
@@ -159,10 +231,33 @@ def validate_reasoning_first(
         # Skip "new_index_N" references (evidence being added this turn)
         if evidence_id.startswith("new_index_"):
             continue
+
+        # STRICT VALIDATION: All evidence IDs must be real
+        # No more USER_MESSAGE_* pseudo-IDs - user messages are now auto-created as Evidence
         if evidence_id not in case_evidence_ids:
             errors.append(
                 f"internal_reasoning references evidence_id '{evidence_id}' which doesn't exist in case. "
                 f"Available evidence IDs: {list(case_evidence_ids)}"
+            )
+
+    # Check 4: Enforce evidence ID format (must start with "ev_")
+    for evidence_id in internal_reasoning.evidence_analyzed:
+        if evidence_id.startswith("new_index_"):
+            continue  # These are valid temporary references
+        if not evidence_id.startswith("ev_"):
+            errors.append(
+                f"Invalid evidence ID format: '{evidence_id}'. "
+                f"Evidence IDs must start with 'ev_' prefix (e.g., 'ev_a1b2c3d4e5f6'). "
+                f"Do not use placeholder IDs or descriptive labels."
+            )
+
+    # Check 5: Cannot complete milestones without evidence
+    if internal_reasoning.milestone_justifications:
+        if not internal_reasoning.evidence_analyzed:
+            errors.append(
+                "Cannot complete milestones without analyzing evidence. "
+                "The evidence_analyzed list is empty, but milestone_justifications are provided. "
+                "You must cite specific evidence IDs to support milestone completion."
             )
 
     return len(errors) == 0, errors
@@ -226,21 +321,26 @@ class MilestoneEngine:
         case: Case,
         user_message: str,
         attachments: list[dict[str, Any]] | None = None,
+        intent_type: str | None = None,
+        intent_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        Process a single conversation turn.
+        Process a single conversation turn with optional structured intent.
 
         This is the main entry point for the milestone engine. It:
-        1. Generates status-appropriate prompt
-        2. Invokes LLM with structured output
-        3. Processes response and updates case state
-        4. Records turn progress
-        5. Checks for automatic status transitions
+        1. Routes based on intent_type (if provided) or processes normally
+        2. Generates status-appropriate prompt
+        3. Invokes LLM with structured output
+        4. Processes response and updates case state
+        5. Records turn progress
+        6. Checks for automatic status transitions
 
         Args:
             case: Current case
             user_message: User's message this turn
             attachments: Optional file attachments
+            intent_type: Optional structured intent type (status_transition, confirmation, etc.)
+            intent_data: Optional intent-specific data
 
         Returns:
             {
@@ -258,12 +358,355 @@ class MilestoneEngine:
         Raises:
             MilestoneEngineError: If processing fails
         """
+        # Add intent information to logger for tracing
+        intent_info = f" [intent={intent_type}]" if intent_type else ""
         logger.info(
             f"Processing turn {case.current_turn} for case {case.case_id} "
-            f"(status: {case.status})"
+            f"(status: {case.status}){intent_info}"
         )
 
+        # Debug logging for Turn 2 issue
+        if case.status == CaseStatus.INQUIRY:
+            logger.info(
+                f"🔍 Turn {case.current_turn + 1} starting: status={case.status.value}, "
+                f"confirmed={case.inquiry.problem_statement_confirmed}, "
+                f"decided_to_investigate={case.inquiry.decided_to_investigate}"
+            )
+        else:
+            logger.info(
+                f"🔍 Turn {case.current_turn + 1} starting: status={case.status.value}, "
+                f"stage={case.current_stage}"
+            )
+
         try:
+            # 0. CRITICAL: Auto-create Evidence from user message BEFORE LLM prompt
+            # This ensures ALL data has concrete Evidence IDs that the LLM can reference
+            # Eliminates the need for USER_MESSAGE_* pseudo-ID workarounds
+            user_message_evidence_id = None
+            if user_message and user_message.strip():
+                from uuid import uuid4
+                from faultmaven.modules.case.domain.models import (
+                    Evidence,
+                    EvidenceCategory,
+                    EvidenceForm,
+                    EvidenceSourceType,
+                )
+
+                # Create Evidence object from user message
+                user_evidence = Evidence(
+                    evidence_id=f"ev_{uuid4().hex[:12]}",
+                    summary=user_message[:200]
+                    + ("..." if len(user_message) > 200 else ""),
+                    content_ref=f"turn_{case.current_turn + 1}_user_message",
+                    category=EvidenceCategory.SYMPTOM_EVIDENCE,  # User input is symptom evidence
+                    source_type=EvidenceSourceType.USER_REPORT,  # User-provided information
+                    collected_at=datetime.now(UTC),
+                    collected_by=case.user_id,
+                    collected_at_turn=case.current_turn + 1,
+                    form=EvidenceForm.USER_INPUT,
+                    primary_purpose="User-provided context and information",
+                    preprocessed_content=user_message,
+                    content_size_bytes=len(user_message),
+                    preprocessing_method="none",
+                )
+
+                # Add to case BEFORE LLM sees it
+                case.evidence.append(user_evidence)
+                user_message_evidence_id = user_evidence.evidence_id
+
+                logger.info(
+                    f"📝 Auto-created Evidence from user message: {user_evidence.evidence_id} "
+                    f"(turn {case.current_turn + 1}, {len(user_message)} bytes)"
+                )
+
+            # 0b. Detect explicit user intent to close/resolve case
+            # This handles cases where user explicitly says "close this case" or "mark as resolved"
+            # without relying on LLM to set solution_verified=True
+            #
+            # CRITICAL DISTINCTION:
+            # - CLOSED (without solution): User abandons investigation without finding solution
+            # - RESOLVED (with solution): User confirms problem is fixed/resolved
+            #
+            # TWO COMPLEMENTARY PATHS (Intent-Based Routing Design):
+            # 1. EXPLICIT INTENT (frontend buttons/actions) → Skip pattern matching, use intent_data
+            # 2. NATURAL LANGUAGE (user types in chat) → Pattern matching fallback (below)
+            #
+            # Pattern matching order matters: Check abandonment FIRST, then resolution.
+            # This prevents "close as unresolved" from matching resolution patterns.
+            #
+            # BUG FIX (2026-02-08): User said "Close this case as unresolved" but system went to RESOLVED
+            # ROOT CAUSE: Patterns were too specific ("close as unresolved" exact match)
+            # FIX: Use key phrases that work with variations:
+            #   - "as unresolved" matches: "close as unresolved", "close this case as unresolved"
+            #   - "without solution" matches: "close without solution", "close this without solution"
+            # This handles natural language variations while maintaining correct intent detection.
+            # ============================================================
+            # USER INTENT DETECTION - EXPLICIT STATUS TRANSITION (Frontend Buttons)
+            # ============================================================
+            # BUG FIX (2026-02-09): Status dropdown transitions not working
+            # ROOT CAUSE: intent_type="status_transition" skipped pattern matching but had no handler
+            # FIX: Add explicit handler before pattern matching section
+            if intent_type == "status_transition" and intent_data:
+                to_status_str = intent_data.get("to_status")
+                from_status_str = intent_data.get("from_status")
+
+                if not to_status_str:
+                    raise ValueError(
+                        "to_status is required for status_transition intent"
+                    )
+
+                logger.info(
+                    f"🎯 Explicit status_transition intent: {from_status_str} → {to_status_str} "
+                    f"for case {case.case_id}"
+                )
+
+                # Import terminal transition functions
+                from faultmaven.core.investigation.terminal_transitions import (
+                    close_from_inquiry,
+                    force_close_investigation,
+                )
+
+                # Handle each status transition
+                if to_status_str == "closed":
+                    if case.status == CaseStatus.INQUIRY:
+                        close_from_inquiry(case=case, user_id=case.user_id)
+                        agent_response = "Case closed without investigation."
+                    elif case.status == CaseStatus.INVESTIGATING:
+                        force_close_investigation(
+                            case=case, user_id=case.user_id, reason="user_closed"
+                        )
+                        agent_response = "Investigation closed without resolution."
+                    else:
+                        raise ValueError(
+                            f"Cannot transition to CLOSED from {case.status.value}"
+                        )
+
+                    logger.info(
+                        f"✅ Case {case.case_id} transitioned to CLOSED via explicit intent"
+                    )
+
+                    # Save and return immediately (skip LLM)
+                    await self.repository.save(case)
+                    return {
+                        "agent_response": agent_response,
+                        "case_updated": case,
+                        "metadata": {
+                            "turn_number": case.current_turn,
+                            "milestones_completed": [],
+                            "progress_made": False,
+                        },
+                    }
+
+                elif to_status_str == "resolved":
+                    # Set milestones for automatic RESOLVED transition
+                    if not case.progress.solution_proposed:
+                        case.progress.solution_proposed = True
+                    if not case.progress.solution_applied:
+                        case.progress.solution_applied = True
+                    case.progress.solution_verified = True
+
+                    logger.info(
+                        f"✅ Set solution milestones for case {case.case_id} via explicit intent "
+                        f"(will auto-transition to RESOLVED)"
+                    )
+
+                    # Continue to normal LLM flow - terminal transition will happen in check_terminal_transitions()
+                    # Don't return early - let LLM generate proper resolution summary
+
+                elif to_status_str == "investigating":
+                    if case.status != CaseStatus.INQUIRY:
+                        raise ValueError(
+                            f"Cannot transition to INVESTIGATING from {case.status.value}"
+                        )
+
+                    # Update inquiry state
+                    case.inquiry.problem_statement_confirmed = True
+                    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+                    case.inquiry.decided_to_investigate = True
+                    case.inquiry.decision_made_at = datetime.now(UTC)
+
+                    # Transition to INVESTIGATING
+                    case.status = CaseStatus.INVESTIGATING
+                    case.status_history.append(
+                        CaseStatusTransition(
+                            from_status=CaseStatus.INQUIRY,
+                            to_status=CaseStatus.INVESTIGATING,
+                            triggered_at=datetime.now(UTC),
+                            triggered_by=case.user_id,
+                            reason="User initiated formal investigation",
+                        )
+                    )
+
+                    logger.info(
+                        f"✅ Case {case.case_id} transitioned to INVESTIGATING via explicit intent"
+                    )
+
+                    # Continue to normal LLM flow for investigation kickoff message
+
+                else:
+                    raise ValueError(f"Unknown to_status: {to_status_str}")
+
+            # ============================================================
+            # USER INTENT DETECTION - PATTERN MATCHING (Natural Language)
+            # ============================================================
+            # Two complementary paths:
+            # 1. Explicit intent (frontend buttons) → Handled above with intent_data
+            # 2. Natural language (user types) → Pattern matching below
+            #
+            # SKIP PATTERN MATCHING if explicit intent provided by frontend
+            if user_message and not intent_type:
+                user_msg_lower = user_message.lower().strip()
+
+                # ========================================
+                # INQUIRY STATUS - CLOSE FROM INQUIRY
+                # ========================================
+                if case.status == CaseStatus.INQUIRY:
+                    # User wants to close from INQUIRY without starting investigation
+                    close_inquiry_patterns = [
+                        "close this",
+                        "close the case",
+                        "don't need",
+                        "don't want",
+                        "no need",
+                        "not needed",
+                        "cancel this",
+                        "never mind",
+                        "nevermind",
+                    ]
+
+                    if any(
+                        pattern in user_msg_lower for pattern in close_inquiry_patterns
+                    ):
+                        logger.info(
+                            f"🎯 Detected user intent to CLOSE from INQUIRY for case {case.case_id}: '{user_message[:50]}...'"
+                        )
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            close_from_inquiry,
+                        )
+
+                        close_from_inquiry(
+                            case=case,
+                            user_id=case.user_id,
+                        )
+
+                        logger.info(
+                            f"✅ Case {case.case_id} transitioned to CLOSED (inquiry_only) based on user intent"
+                        )
+
+                # ========================================
+                # INVESTIGATING STATUS - ABANDONMENT / RESOLUTION
+                # ========================================
+                elif case.status == CaseStatus.INVESTIGATING:
+                    # Pattern matching for ABANDONMENT intent (CLOSED without solution)
+                    # These patterns indicate user wants to close WITHOUT confirming solution
+                    # Note: Use key phrases that can appear anywhere in the message
+                    abandonment_patterns = [
+                        "as unresolved",  # "close as unresolved", "close this case as unresolved"
+                        "without solution",  # "close without solution", "close this without solution"
+                        "without resolving",  # "close without resolving"
+                        "abandon this case",
+                        "abandon the case",
+                        "abandon",  # Generic abandonment
+                        "give up",
+                        "can't solve",
+                        "cannot solve",
+                        "unable to resolve",
+                        "escalate this",
+                        "escalate to",
+                    ]
+
+                    # Pattern matching for RESOLUTION intent (RESOLVED with solution)
+                    # These patterns indicate user confirms problem is fixed
+                    # Use specific phrases that clearly indicate solution/resolution
+                    resolve_patterns = [
+                        "mark as resolved",
+                        "mark this resolved",
+                        "case is resolved",
+                        "case resolved",
+                        "this is resolved",
+                        "problem is solved",
+                        "problem solved",
+                        "issue is fixed",
+                        "issue fixed",
+                        "solution worked",
+                        "solution works",
+                        "fixed now",
+                        "working now",
+                    ]
+
+                    # Ambiguous patterns that need context from abandonment keywords
+                    # "close this case" could mean either CLOSED or RESOLVED
+                    # Check if combined with abandonment indicators
+                    close_patterns = [
+                        "close this case",
+                        "close the case",
+                    ]
+
+                    # CHECK ABANDONMENT FIRST (highest priority)
+                    if any(
+                        pattern in user_msg_lower for pattern in abandonment_patterns
+                    ):
+                        logger.info(
+                            f"🎯 Detected explicit user intent to ABANDON case {case.case_id} (CLOSED): '{user_message[:50]}...'"
+                        )
+                        # Import here to avoid circular dependency
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            force_close_investigation,
+                        )
+
+                        # Force close with "abandoned" reason
+                        force_close_investigation(
+                            case=case,
+                            user_id=case.user_id,
+                            reason="abandoned",
+                        )
+
+                        logger.info(
+                            f"✅ Case {case.case_id} transitioned to CLOSED (abandoned) based on user intent"
+                        )
+
+                    # CHECK RESOLUTION (medium priority)
+                    elif any(pattern in user_msg_lower for pattern in resolve_patterns):
+                        logger.info(
+                            f"🎯 Detected explicit user intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
+                        )
+                        # Set milestone progression to allow solution_verified=True
+                        # Milestone ordering: proposed → applied → verified
+                        if not case.progress.solution_proposed:
+                            case.progress.solution_proposed = True
+                        if not case.progress.solution_applied:
+                            case.progress.solution_applied = True
+
+                        # This will trigger automatic transition in check_terminal_transitions()
+                        case.progress.solution_verified = True
+
+                        logger.info(
+                            f"✅ Set solution milestones for case {case.case_id} based on user intent"
+                        )
+
+                        logger.info(
+                            f"✅ Case {case.case_id} will transition to RESOLVED based on user intent"
+                        )
+
+                    # CHECK AMBIGUOUS CLOSE PATTERNS (lowest priority)
+                    # Only trigger resolution if no abandonment indicators present
+                    elif any(pattern in user_msg_lower for pattern in close_patterns):
+                        # Default ambiguous "close" to RESOLVED (backward compatible)
+                        logger.info(
+                            f"🎯 Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...' (defaulting to RESOLVED)"
+                        )
+                        # Set milestone progression to allow solution_verified=True
+                        if not case.progress.solution_proposed:
+                            case.progress.solution_proposed = True
+                        if not case.progress.solution_applied:
+                            case.progress.solution_applied = True
+
+                        case.progress.solution_verified = True
+
+                        logger.info(
+                            f"✅ Case {case.case_id} will transition to RESOLVED (ambiguous close defaulted to resolution)"
+                        )
+
             # 1. Gather Context & Build Prompt
             # Phase 3: Inquiry KB Search (Fast-track)
             kb_results = None
@@ -295,15 +738,33 @@ class MilestoneEngine:
             # Determine schema based on status/stage
             if case.status == CaseStatus.INQUIRY:
                 schema_model = InquiryResponse
+                logger.info(
+                    f"🔍 Turn {case.current_turn + 1} schema selection: "
+                    f"status={case.status.value}, schema=InquiryResponse"
+                )
             elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
                 schema_model = TerminalResponse
+                logger.info(
+                    f"🔍 Turn {case.current_turn + 1} schema selection: "
+                    f"status={case.status.value}, schema=TerminalResponse"
+                )
             else:
                 schema_model = get_schema_for_stage(
                     case.current_stage or InvestigationStage.SYMPTOM_VERIFICATION
                 )
+                logger.info(
+                    f"🔍 Turn {case.current_turn + 1} schema selection: "
+                    f"status={case.status.value}, stage={case.current_stage}, "
+                    f"schema={schema_model.__name__}"
+                )
 
             # 2. Invoke LLM with structured output
             response_obj = await self._generate_structured_output(prompt, schema_model)
+
+            # Debug: Log what type was actually returned
+            logger.info(
+                f"🔍 Turn {case.current_turn + 1} response type: {type(response_obj).__name__}"
+            )
 
             # 3. Process response and update case state
             case_updated, metadata = await self._process_response_structured(
@@ -518,9 +979,13 @@ class MilestoneEngine:
         # Conditionally include schema in prompt based on provider capability
         if strategy.include_schema_in_prompt:
             # Provider requires schema in prompt text (json_object or prompt_only modes)
+            from faultmaven.core.investigation.prompts.templates import (
+                SCHEMA_INSTRUCTIONS,
+            )
+
             schema_json = json.dumps(schema, indent=2)
             json_instruction = (
-                "\n\n## RESPONSE FORMAT\n"
+                f"\n\n{SCHEMA_INSTRUCTIONS}\n"
                 "You MUST respond with valid JSON matching this exact schema:\n\n"
                 f"```json\n{schema_json}\n```\n\n"
                 "IMPORTANT:\n"
@@ -576,23 +1041,31 @@ class MilestoneEngine:
             else:
                 # For non-function-calling modes, strip markdown code blocks if present
                 # Some LLMs return: ```json\n{...}\n``` instead of raw JSON
+                # Or even worse: "Here's the response:\n```json\n{...}\n```"
                 if isinstance(content, str):
                     content = content.strip()
 
-                    # Check if content is wrapped in markdown code blocks
-                    if content.startswith("```"):
-                        # Remove markdown code fence
-                        lines = content.split("\n")
+                    # Check if content contains a markdown code block
+                    if "```" in content:
+                        # Extract JSON from markdown code block
+                        # Handle both cases:
+                        # 1. ```json\n{...}\n```
+                        # 2. Some text\n```json\n{...}\n```\nMore text
+                        import re
 
-                        # Remove first line (```json, ```JSON, or just ```)
-                        if lines and lines[0].startswith("```"):
-                            lines = lines[1:]
-
-                        # Remove last line if it's just ```
-                        if lines and lines[-1].strip() == "```":
-                            lines = lines[:-1]
-
-                        content = "\n".join(lines).strip()
+                        # Match ```json (or ```JSON or just ```) followed by content until closing ```
+                        pattern = r"```(?:json|JSON)?\s*\n(.*?)\n```"
+                        match = re.search(pattern, content, re.DOTALL)
+                        if match:
+                            content = match.group(1).strip()
+                        elif content.startswith("```"):
+                            # Fallback to old logic if regex fails
+                            lines = content.split("\n")
+                            if lines and lines[0].startswith("```"):
+                                lines = lines[1:]
+                            if lines and lines[-1].strip() == "```":
+                                lines = lines[:-1]
+                            content = "\n".join(lines).strip()
 
             return schema_model.model_validate_json(content)
 
@@ -685,27 +1158,84 @@ class MilestoneEngine:
         if updates.proposed_problem_statement:
             case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
 
+        # Convert and store problem_confirmation from LLM schema to domain model
         if updates.problem_confirmation:
-            # Transfer guess to inquiry data
-            case.inquiry.problem_statement_confirmed = (
-                True  # Heuristic: if agent has guidance, it means it's confirmed
+            from faultmaven.modules.case.domain.models import (
+                ProblemConfirmation as DomainProblemConfirmation,
             )
-            case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-            case.inquiry.decided_to_investigate = (
-                True  # FIX: Set flag for INQUIRY → INVESTIGATING transition
+
+            case.inquiry.problem_confirmation = DomainProblemConfirmation(
+                problem_type=updates.problem_confirmation.problem_type,
+                severity_guess=updates.problem_confirmation.severity_guess,
+                preliminary_guidance=updates.problem_confirmation.preliminary_guidance
+                or "",  # Convert None to empty string
             )
-            case.inquiry.decision_made_at = datetime.now(UTC)
-            logger.info(
-                f"Problem confirmed during inquiry: {updates.problem_confirmation.problem_type}"
+
+        # Convert and store preliminary_urgency from LLM schema to domain model
+        if updates.preliminary_urgency:
+            from faultmaven.modules.case.domain.models import (
+                PreliminaryUrgency as DomainPreliminaryUrgency,
+                UrgencyLevel,
             )
-            # If problem is confirmed but no statement, use preliminary guidance or construct one
-            if (
-                not case.inquiry.proposed_problem_statement
-                and updates.problem_confirmation.preliminary_guidance
-            ):
+
+            case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
+                level=UrgencyLevel(
+                    updates.preliminary_urgency.level.lower()
+                ),  # Convert uppercase to lowercase enum
+                impact_assessment=updates.preliminary_urgency.impact_assessment,
+                assessed_at_turn=case.current_turn,  # Use current turn number
+            )
+
+        # STAGE 1: Extract problem statement from LLM (first turn only)
+        # Extract problem statement but DON'T auto-confirm yet
+        if updates.problem_confirmation and not case.inquiry.proposed_problem_statement:
+            if updates.problem_confirmation.preliminary_guidance:
                 case.inquiry.proposed_problem_statement = (
                     updates.problem_confirmation.preliminary_guidance
                 )
+                logger.info(
+                    f"Problem statement extracted from preliminary_guidance: {updates.problem_confirmation.problem_type}"
+                )
+            # If no preliminary_guidance but proposed_problem_statement exists in updates,
+            # it was already set above at line 685-686
+
+        # STAGE 2: Conditional auto-confirm for urgent ongoing issues
+        # Only auto-confirm if ALL conditions are met:
+        # - Urgency is CRITICAL or HIGH
+        # - Problem is ongoing (not historical)
+        # - We have a proposed problem statement (non-empty)
+        # - Not already confirmed
+        if (
+            updates.preliminary_urgency
+            and updates.preliminary_urgency.level in ["CRITICAL", "HIGH"]
+            and updates.preliminary_urgency.is_ongoing
+            and case.inquiry.proposed_problem_statement
+            and case.inquiry.proposed_problem_statement.strip()  # Ensure non-empty
+            and not case.inquiry.problem_statement_confirmed
+        ):
+            # Auto-confirm for urgent ongoing production issues
+            case.inquiry.problem_statement_confirmed = True
+            case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+            case.inquiry.decided_to_investigate = True
+            case.inquiry.decision_made_at = datetime.now(UTC)
+            logger.info(
+                f"Auto-confirmed urgent issue: {updates.preliminary_urgency.level} + ongoing, "
+                f"problem_type={updates.problem_confirmation.problem_type if updates.problem_confirmation else 'unknown'}"
+            )
+        elif (
+            updates.preliminary_urgency
+            and updates.preliminary_urgency.level in ["CRITICAL", "HIGH"]
+            and updates.preliminary_urgency.is_ongoing
+            and not case.inquiry.proposed_problem_statement
+        ):
+            # Log info if we can't auto-confirm due to missing problem statement
+            # This is EXPECTED behavior when user query is urgent but vague - LLM will
+            # ask clarifying questions first, then auto-confirm on subsequent turn once
+            # it has enough information to formulate a clear problem statement
+            logger.info(
+                f"Urgent issue detected but cannot auto-confirm yet: proposed_problem_statement is missing. "
+                f"Will auto-confirm on next turn once LLM extracts clear problem statement from user responses."
+            )
 
         # Handle explicit user confirmation/corrections logic (Bug #1)
         # If the LLM has refined the statement based on user corrections, it will come through updates.proposed_problem_statement
@@ -994,12 +1524,13 @@ class MilestoneEngine:
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
-        # Change status
-        case.status = CaseStatus.INVESTIGATING
-
-        # Copy confirmed problem statement to description
+        # Copy confirmed problem statement to description BEFORE changing status
+        # (Pydantic validation requires description to be set before INVESTIGATING status)
         if case.inquiry.proposed_problem_statement:
             case.description = case.inquiry.proposed_problem_statement
+
+        # Change status (Pydantic validation happens here)
+        case.status = CaseStatus.INVESTIGATING
 
         # Initialize investigation progress
         case.progress = InvestigationProgress()
@@ -1019,9 +1550,14 @@ class MilestoneEngine:
         if case.inquiry.preliminary_urgency:
             pu = case.inquiry.preliminary_urgency
             if pu.level:
-                verification_kwargs["urgency_level"] = pu.level
+                verification_kwargs["urgency_level"] = (
+                    pu.level.lower()
+                )  # Convert to lowercase for enum
+                # If severity still unknown, use urgency level as severity (keep uppercase for severity)
                 if verification_kwargs["severity"] == "UNKNOWN":
-                    verification_kwargs["severity"] = pu.level.value.upper()
+                    verification_kwargs["severity"] = (
+                        pu.level
+                    )  # Keep uppercase for severity field
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
 
@@ -1092,12 +1628,18 @@ class MilestoneEngine:
         return case
 
     def _check_fast_track_resolution(self, case: Case) -> bool:
-        """Check if case can be Fast-Track resolved via KB match."""
+        """Check if case can be Fast-Track resolved via KB match.
+
+        Fast-track resolution uses closure_reason="resolved" (same as normal resolution)
+        because a solution WAS found (via knowledge base). The distinction between
+        fast-track and normal resolution is captured in case.inquiry.knowledge_resolution
+        and status transition history.
+        """
         if case.inquiry.knowledge_resolution:
             case.status = CaseStatus.RESOLVED
             case.resolved_at = datetime.now(UTC)
             case.closed_at = datetime.now(UTC)
-            case.closure_reason = "fast_track_kb_match"
+            case.closure_reason = "resolved"  # KB match = solution found = resolved
 
             # Log transition
             logger.info(
@@ -1356,7 +1898,7 @@ class MilestoneEngine:
 
         # 2. Detect anchoring and add system feedback if necessary
         is_anchored, reason, hypothesis_ids = self.hypothesis_manager.detect_anchoring(
-            active_hypotheses
+            active_hypotheses, case.current_turn
         )
 
         if is_anchored:

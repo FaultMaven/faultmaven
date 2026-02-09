@@ -136,6 +136,8 @@ class MockMilestoneEngine:
         case: Case,
         user_message: str,
         attachments: Optional[list] = None,
+        intent_type: Optional[str] = None,
+        intent_data: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Mock turn processing.
 
@@ -195,9 +197,10 @@ def sample_user_id() -> str:
 @pytest.fixture
 def sample_case_query_request():
     """Create a sample CaseQueryRequest."""
-    from faultmaven.models.api_models import CaseQueryRequest
+    from faultmaven.models.api_models import CaseQueryRequest, QueryIntent, IntentType
 
     return CaseQueryRequest(
         message="Test user message",
         attachments=None,
+        intent=QueryIntent(type=IntentType.CONVERSATION),
     )

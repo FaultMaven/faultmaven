@@ -12,6 +12,9 @@ loading is handled by the settings system.
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Type, Union
 
 from faultmaven.exceptions import ModelLoadingException
@@ -25,6 +28,81 @@ from .groq_provider import GroqProvider
 from .huggingface import HuggingFaceProvider
 from .local_provider import LocalProvider
 from .openai_provider import OpenAIProvider
+
+
+class ProviderHealth(Enum):
+    """Health status for LLM providers"""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"  # responding but slow/partial failures
+    UNHEALTHY = "unhealthy"  # circuit open, skip entirely
+    UNKNOWN = "unknown"  # never tried or recovery period expired
+
+
+@dataclass
+class ProviderState:
+    """Track health and performance metrics for a provider"""
+
+    name: str
+    health: ProviderHealth = ProviderHealth.UNKNOWN
+    consecutive_failures: int = 0
+    last_failure_time: float = 0.0
+    last_success_time: float = 0.0
+    avg_latency_ms: float = 0.0
+    _latency_window: list = field(default_factory=list)  # rolling window
+    _recovery_cooldown: float = 60.0  # Dynamic cooldown
+
+    # Thresholds
+    FAILURE_THRESHOLD: int = 3  # failures before UNHEALTHY
+    DEGRADED_THRESHOLD: int = 1  # failures before DEGRADED
+    BASE_RECOVERY_COOLDOWN: float = 60.0  # initial seconds before retrying UNHEALTHY
+    MAX_RECOVERY_COOLDOWN: float = 600.0  # max cooldown (10 minutes)
+    LATENCY_WINDOW_SIZE: int = 10
+
+    def record_success(self, latency_ms: float):
+        """Record successful provider call"""
+        self.consecutive_failures = 0
+        self.last_success_time = time.monotonic()
+        self.health = ProviderHealth.HEALTHY
+        self._recovery_cooldown = self.BASE_RECOVERY_COOLDOWN  # Reset cooldown
+        self._update_latency(latency_ms)
+
+    def record_failure(self):
+        """Record failed provider call with exponential backoff"""
+        self.consecutive_failures += 1
+        self.last_failure_time = time.monotonic()
+
+        # Exponential backoff: 60s, 120s, 240s, 480s, max 600s
+        self._recovery_cooldown = min(
+            self.BASE_RECOVERY_COOLDOWN * (2 ** (self.consecutive_failures - 1)),
+            self.MAX_RECOVERY_COOLDOWN,
+        )
+
+        if self.consecutive_failures >= self.FAILURE_THRESHOLD:
+            self.health = ProviderHealth.UNHEALTHY
+        elif self.consecutive_failures >= self.DEGRADED_THRESHOLD:
+            self.health = ProviderHealth.DEGRADED
+
+    def should_attempt(self) -> bool:
+        """Can we try this provider right now?"""
+        if self.health in (ProviderHealth.HEALTHY, ProviderHealth.UNKNOWN):
+            return True
+        if self.health == ProviderHealth.DEGRADED:
+            return True  # still usable, just not preferred
+        # UNHEALTHY: only retry after cooldown
+        elapsed = time.monotonic() - self.last_failure_time
+        if elapsed >= self._recovery_cooldown:
+            self.health = ProviderHealth.UNKNOWN  # give it another chance
+            return True
+        return False
+
+    def _update_latency(self, latency_ms: float):
+        """Update rolling average latency"""
+        self._latency_window.append(latency_ms)
+        if len(self._latency_window) > self.LATENCY_WINDOW_SIZE:
+            self._latency_window.pop(0)
+        self.avg_latency_ms = sum(self._latency_window) / len(self._latency_window)
+
 
 # Data-driven provider schema - single source of truth
 PROVIDER_SCHEMA = {
@@ -143,6 +221,11 @@ class ProviderRegistry:
         self._fallback_chain: List[str] = []
         self._initialized = False
 
+        # Provider health tracking (stateful routing)
+        self._provider_states: Dict[str, ProviderState] = {}
+        self._sticky_provider: Optional[str] = None  # last known good provider
+        self._routing_initialized = False  # Track if we've logged routing config
+
         # Don't initialize immediately - wait for first use
         # self._initialize_from_environment()
 
@@ -207,8 +290,22 @@ class ProviderRegistry:
             )
             primary_provider = "local"
 
-        # Initialize all providers defined in schema
-        for provider_name, schema in PROVIDER_SCHEMA.items():
+        # Check if strict mode is enabled
+        strict_mode = self.settings.llm.strict_provider_mode
+
+        # Determine which providers to initialize
+        if strict_mode:
+            # In strict mode, only initialize the primary provider
+            providers_to_init = {primary_provider: PROVIDER_SCHEMA[primary_provider]}
+            self.logger.info(
+                f"🔒 Strict mode enabled - initializing only '{primary_provider}'"
+            )
+        else:
+            # In normal mode, initialize all providers
+            providers_to_init = PROVIDER_SCHEMA
+
+        # Initialize selected providers
+        for provider_name, schema in providers_to_init.items():
             try:
                 self.logger.info(
                     f"🔍 Attempting to initialize provider: {provider_name}"
@@ -408,6 +505,10 @@ class ProviderRegistry:
                     chain.append(provider)
 
         self._fallback_chain = chain
+
+        # Initialize provider health states for all providers in chain
+        self._provider_states = {name: ProviderState(name=name) for name in chain}
+
         if strict_mode and len(chain) == 1:
             self.logger.info(f"Provider chain (strict mode): {chain[0]} ONLY")
         else:
@@ -438,6 +539,68 @@ class ProviderRegistry:
         self._ensure_initialized()
         return self._fallback_chain.copy()
 
+    def _get_routing_order(self) -> List[str]:
+        """Build provider attempt order: sticky first, then healthy, then degraded.
+
+        Implements smart routing that:
+        1. Prefers last successful provider (sticky routing)
+        2. Routes by health status (HEALTHY > UNKNOWN > DEGRADED)
+        3. Skips UNHEALTHY providers until recovery cooldown expires
+        4. Falls back to original chain order for tie-breaking
+        """
+        if self._sticky_provider and self._sticky_provider in self._provider_states:
+            state = self._provider_states[self._sticky_provider]
+            if state.should_attempt():
+                # Sticky provider is still viable — put it first
+                rest = [p for p in self._fallback_chain if p != self._sticky_provider]
+                return [self._sticky_provider] + rest
+
+        # No sticky or sticky is down — route by health
+        attemptable = [
+            (name, state)
+            for name, state in self._provider_states.items()
+            if state.should_attempt()
+        ]
+
+        # Sort: HEALTHY > UNKNOWN > DEGRADED, then by original chain order
+        health_priority = {
+            ProviderHealth.HEALTHY: 0,
+            ProviderHealth.UNKNOWN: 1,
+            ProviderHealth.DEGRADED: 2,
+        }
+        attemptable.sort(
+            key=lambda x: (
+                health_priority.get(x[1].health, 3),
+                self._fallback_chain.index(x[0]),
+            )
+        )
+        return [name for name, _ in attemptable]
+
+    def get_provider_health_summary(self) -> Dict[str, Dict]:
+        """Get health status summary for all providers.
+
+        Useful for debugging/monitoring endpoints.
+
+        Returns:
+            Dict with provider health metrics including:
+            - health status
+            - consecutive failures
+            - average latency
+            - sticky status
+        """
+        self._ensure_initialized()
+        return {
+            name: {
+                "health": state.health.value,
+                "consecutive_failures": state.consecutive_failures,
+                "avg_latency_ms": round(state.avg_latency_ms, 1),
+                "sticky": name == self._sticky_provider,
+                "last_success": state.last_success_time,
+                "last_failure": state.last_failure_time,
+            }
+            for name, state in self._provider_states.items()
+        }
+
     async def route_request(
         self,
         prompt: str,
@@ -447,11 +610,12 @@ class ProviderRegistry:
         confidence_threshold: float = 0.8,
         **kwargs,
     ) -> LLMResponse:
-        """Route request through the fallback chain until success"""
-        self._ensure_initialized()
+        """Route request through health-aware fallback chain.
 
-        """
-        Route request through the fallback chain until success
+        Uses smart routing to:
+        - Prefer last successful provider (sticky routing)
+        - Skip unhealthy providers until recovery cooldown
+        - Track provider health and performance metrics
 
         Args:
             prompt: Input prompt
@@ -467,17 +631,43 @@ class ProviderRegistry:
         Raises:
             Exception: If all providers fail
         """
+        self._ensure_initialized()
+
+        # Log routing config only once
+        if not self._routing_initialized:
+            self.logger.info(
+                f"🔍 Smart routing initialized: chain={' → '.join(self._fallback_chain)}"
+            )
+            self._routing_initialized = True
+
+        # Get health-aware routing order
+        routing_order = self._get_routing_order()
+
+        if not routing_order:
+            # All providers unhealthy — force retry primary as last resort
+            self.logger.warning("⚠️ All providers unhealthy, forcing primary retry")
+            routing_order = [self._fallback_chain[0]]
+
         last_error = None
         best_low_confidence_response = None
         best_low_confidence_score = 0.0
 
-        for provider_name in self._fallback_chain:
+        for provider_name in routing_order:
             provider = self._providers.get(provider_name)
             if not provider:
                 continue
 
+            state = self._provider_states.get(provider_name)
+            if not state:
+                continue
+
             try:
-                self.logger.info(f"Trying provider: {provider_name}")
+                # Log only on provider change (not every request)
+                if provider_name != self._sticky_provider:
+                    self.logger.info(f"Trying provider: {provider_name}")
+
+                # Track call start time for latency measurement
+                start_time = time.monotonic()
 
                 # Retry loop for ModelLoadingException
                 max_model_loading_retries = 2
@@ -506,12 +696,22 @@ class ProviderRegistry:
                             )
                             raise  # Re-raise to trigger fallback to next provider
 
+                # Calculate latency
+                latency_ms = (time.monotonic() - start_time) * 1000
+
                 # Check confidence threshold
                 if response.confidence >= confidence_threshold:
-                    self.logger.info(
-                        f"✅ Success with {provider_name} "
-                        f"(confidence: {response.confidence:.2f})"
-                    )
+                    # Record success with latency
+                    state.record_success(latency_ms)
+
+                    # Update sticky provider (log only on change)
+                    if provider_name != self._sticky_provider:
+                        self.logger.info(
+                            f"🔄 Switched to {provider_name} "
+                            f"(was: {self._sticky_provider or 'none'})"
+                        )
+                    self._sticky_provider = provider_name
+
                     return response
                 else:
                     # Log the actual response content for debugging
@@ -536,7 +736,13 @@ class ProviderRegistry:
                     continue
 
             except Exception as e:
-                self.logger.warning(f"❌ Provider {provider_name} failed: {e}")
+                # Record failure for health tracking
+                state.record_failure()
+
+                self.logger.warning(
+                    f"❌ {provider_name} failed (consecutive: {state.consecutive_failures}, "
+                    f"health: {state.health.value}): {e}"
+                )
                 last_error = e
                 continue
 

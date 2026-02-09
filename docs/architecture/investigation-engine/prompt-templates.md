@@ -585,71 +585,26 @@ YOUR TASK
 def _get_symptom_verification_instructions(case: Case) -> str:
     """Get Symptom Verification stage (stage 1) instructions"""
 
-    return """**CURRENT STAGE: SYMPTOM_VERIFICATION** (Stage 1: Where and When)
+    return """**CURRENT STAGE: SYMPTOM_VERIFICATION** (Goal: Confirm problem & context)
 
-**Goal**: Verify problem is real, understand context
+**Priority Actions (MUST focus on these):**
+1. **Verification**: Confirm symptom with logs, metrics, or user reports.
+2. **Impact**: Assess scope (blast radius) and urgency (CRITICAL/HIGH/MEDIUM/LOW).
+3. **Timeline**: Establish when it started and if it's currently ONGOING.
+4. **Changes**: Identify recent deployments or configuration changes.
 
-**Priority Actions:**
+**URGENCY RECOGNITION:**
+Watch for high-impact signals (revenue, production, data loss, or broad customer complaints).
+If production or customers are actively affected:
+→ Acknowledge urgency IMMEDIATELY.
+→ Offer **MITIGATION_FIRST** path (stop the bleeding before deep RCA).
 
-1. ✅ **Verify symptom** with concrete evidence
-   - Logs showing errors
-   - Metrics showing performance degradation
-   - User reports documenting impact
+**DATA COLLECTION:**
+- Update ProblemVerification fields in `verification_updates`.
+- Add newly provided data to `evidence_to_add` (use "USER_MESSAGE" if text-based).
 
-2. ✅ **Assess scope**
-   - Who/what is affected (all users? specific endpoints?)
-   - Blast radius (single service? multiple systems?)
-   - Geographic scope (all regions? specific datacenter?)
-
-3. ✅ **Establish timeline**
-   - When did it start?
-   - When was it noticed?
-   - Is it still happening? (ONGOING vs HISTORICAL)
-
-4. ✅ **Identify recent changes**
-   - Deployments (code, config, infrastructure)
-   - Scaling events
-   - External changes (upstream services, traffic patterns)
-
-5. ✅ **Determine temporal_state**
-   - ONGOING: Currently happening (active incident)
-   - HISTORICAL: Happened in the past (post-mortem)
-
-6. ✅ **Assess urgency_level**
-   - CRITICAL: Service down, data loss, security breach
-   - HIGH: Significant user impact, degraded performance
-   - MEDIUM: Intermittent issues, some users affected
-   - LOW: Minor issues, workarounds available
-
-**What to Fill Out:**
-- `verification_updates`: Complete ProblemVerification fields
-- `milestones`: Set verification milestones to True when verified
-- `evidence_to_add`: Add evidence objects for data user provided
-
-**IMPORTANT: You CAN Jump Ahead!**
-
-If user provides comprehensive data that reveals root cause:
-→ Set root_cause_identified = True in SAME turn
-→ Don't artificially constrain yourself to verification only
-→ Complete everything you can
-
-Example:
-"Here's the error log showing NullPointerException at line 42, started after
-deployment at 14:10"
-
-You can complete in ONE turn:
-✅ symptom_verified (error confirmed)
-✅ timeline_established (14:10 start time)
-✅ changes_identified (deployment at 14:10)
-✅ root_cause_identified (deployment introduced bug at line 42)
-
-**Verification Completion:**
-When ALL verification milestones complete:
-- System will compute investigation path (MITIGATION_FIRST vs ROOT_CAUSE)
-- System will auto-advance to next stage based on path:
-  * MITIGATION_FIRST: Advances to SOLUTION (stage 4) for quick mitigation
-  * ROOT_CAUSE: Advances to HYPOTHESIS_FORMULATION (stage 2) for RCA
-- Next turn will provide path-specific guidance"""
+**NOTE: YOU CAN JUMP AHEAD!**
+If evidence reveals root cause, set `root_cause_identified = True` immediately. Do not stay in verification if the answer is clear."""
 
 
 def _get_hypothesis_formulation_instructions(case: Case) -> str:
@@ -1097,7 +1052,17 @@ System will detect blocking patterns automatically (3+ turns → degraded mode)
 OUTPUT FORMAT
 ═══════════════════════════════════════════════════════════
 
-Return JSON matching InvestigationResponse schema.
+## OUTPUT SCHEMA
+You MUST respond with valid JSON matching these fields:
+- **agent_response**: Your natural conversational response to the user.
+- **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
+  - evidence_analyzed: List of IDs considered. Examples: ["evidence_001", "USER_MESSAGE_TURN_2"]
+  - conclusions: Step-by-step reasoning from observations to inferences.
+  - milestone_justifications: Key-value map of {milestone_name: "justification"}.
+  - uncertainties: What remains unclear.
+- **state_updates**:
+  - milestones: Map of milestone flags (set True where data allows).
+  - outcome: milestone_completed | data_requested | hypothesis_validated | conversation | blocked
 
 **ONLY include fields that CHANGE this turn!**
 - Use null for unchanged fields
@@ -1105,30 +1070,29 @@ Return JSON matching InvestigationResponse schema.
 - Be realistic - only fill what user data supports
 
 Example:
-{{
+{
   "agent_response": "Great! The error log shows NullPointerException...",
-  "state_updates": {{
-    "milestones": {{
+  "internal_reasoning": {
+    "evidence_analyzed": ["evidence_001"],
+    "conclusions": [
+      {
+        "observation": "NullPointerException at UserService.java:42",
+        "inference": "Deployment introduced bug",
+        "confidence": 0.95
+      }
+    ],
+    "milestone_justifications": {
+      "root_cause_identified": "Error log shows exact line and timing matches deployment"
+    }
+  },
+  "state_updates": {
+    "milestones": {
       "symptom_verified": true,
       "root_cause_identified": true
-    }},
-    "evidence_to_add": [{{
-      "summary": "NullPointerException at UserService.java:42",
-      "analysis": "Missing null check causes crash when user object is null"
-    }}],
-    "root_cause_conclusion": {{
-      "root_cause": "Missing null check at line 42",
-      "mechanism": "When user object is null, code crashes",
-      "confidence_score": 0.95
-    }},
-    "working_conclusion": {{
-      "statement": "Deployment introduced bug: missing null check",
-      "confidence": 0.95,
-      "reasoning": "Error log shows exact line, timing matches deployment"
-    }},
-    "outcome": "milestone_completed"
-  }}
-}}
+    },
+    ...
+  }
+}
 
 **KEY PRINCIPLE**: Be opportunistic! Complete everything you CAN this turn."""
 ```
@@ -1505,18 +1469,13 @@ Here's the error log [upload: error.log]
 YOUR TASK
 ═══════════════════════════════════════════════════════════
 
-**CURRENT STAGE: UNDERSTANDING** (Confirming the Problem)
+**CURRENT STAGE: SYMPTOM_VERIFICATION** (Goal: Confirm problem & context)
 
-**Goal**: Verify problem is real, understand context
-
-**Priority Actions:**
-
-1. ✅ **Verify symptom** with concrete evidence
-   - Logs showing errors
-   - Metrics showing performance degradation
-   - User reports documenting impact
-
-[... rest of Understanding instructions ...]
+**Priority Actions (MUST focus on these):**
+1. **Verification**: Confirm symptom with logs, metrics, or user reports.
+2. **Impact**: Assess scope (blast radius) and urgency.
+3. **Timeline**: Establish when it started and if it's currently ONGOING.
+...
 ```
 
 ### Example 3: INVESTIGATING Template (With Degraded Mode)

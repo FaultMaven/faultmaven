@@ -18,6 +18,9 @@ from faultmaven.modules.case.domain.models import (
     HypothesisStatus,
     InvestigationStage,
 )
+from faultmaven.modules.case.domain.services.case_status_manager import (
+    CaseStatusManager,
+)
 
 # ============================================================
 # Supporting Models for Phase-Adaptive Responses
@@ -349,6 +352,11 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     uploaded_files_count: int = Field(ge=0, description="Total files uploaded")
 
+    valid_next_states: List[str] = Field(
+        default_factory=list,
+        description="Allowed status transitions from current state for user-initiated changes",
+    )
+
     # ============================================================
     # Inquiry-Specific Fields (Nested)
     # ============================================================
@@ -377,6 +385,11 @@ class CaseUIResponse_Investigating(BaseModel):
     created_at: datetime = Field(description="When case was created")
 
     updated_at: datetime = Field(description="Last update timestamp")
+
+    valid_next_states: List[str] = Field(
+        default_factory=list,
+        description="Allowed status transitions from current state for user-initiated changes",
+    )
 
     # ============================================================
     # Investigation-Specific Fields
@@ -437,9 +450,8 @@ class CaseUIResponse_Resolved(BaseModel):
 
     case_id: str = Field(description="Case identifier")
 
-    status: Literal[CaseStatus.RESOLVED] = Field(
-        default=CaseStatus.RESOLVED,
-        description="Always 'resolved' for this response type",
+    status: Literal[CaseStatus.RESOLVED, CaseStatus.CLOSED] = Field(
+        description="Case terminal status: 'resolved' (with solution) or 'closed' (without investigation)",
     )
 
     title: str = Field(description="Case title", max_length=200)
@@ -451,6 +463,11 @@ class CaseUIResponse_Resolved(BaseModel):
     updated_at: datetime = Field(description="Last update timestamp")
 
     resolved_at: datetime = Field(description="When case was resolved")
+
+    valid_next_states: List[str] = Field(
+        default_factory=list,
+        description="Allowed status transitions from current state for user-initiated changes",
+    )
 
     # ============================================================
     # Resolution-Specific Fields
