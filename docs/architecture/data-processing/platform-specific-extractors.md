@@ -3,13 +3,19 @@
 **Status:** 🔮 Future Enhancement
 **Priority:** Medium
 **Category:** Data Ingestion
-**Related:** Page Injection, Evidence Collection
+**Related:** Page Injection, Evidence Collection, [Data Preprocessing v3.0 — Tier 2](./data-preprocessing-design-specification.md#6-tier-2-deep-analysis-service)
 
 ---
 
 ## Overview
 
 Platform-specific extractors intelligently parse and structure content from popular SRE/DevOps platforms (Datadog, GitHub, PagerDuty, Grafana, etc.) instead of treating all web pages as generic HTML blobs.
+
+**Relationship to Three-Tier Model**: In the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
+- **Tier 1 (frontend)**: Client-side platform detection and structured data extraction before upload
+- **Tier 2 (backend)**: Platform-aware deep analysis as a pluggable `ITier2AnalysisService` backend
+
+This document primarily describes the Tier 1 (frontend) approach. For Tier 2 integration, see the [Tier 2 Service Interface](./data-preprocessing-design-specification.md#62-service-interface-contract).
 
 ---
 
@@ -244,14 +250,14 @@ structured = llm.extract_structured_data(prompt)
 
 ## References
 
-- [Phase 2 Implementation Roadmap](../../faultmaven-copilot/enhanced-ui-design.md#phase-2-data-submission-weeks-4-6)
-- [Phase-Based Retrieval](../investigation-engine/phase-based-retrieval.md) - Related evidence organization
-- [Current Page Injection Implementation](../../faultmaven-copilot/src/shared/ui/components/ChatWindow.tsx#L146-L209)
+- [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md) - Three-tier model including Tier 2 pluggable backends
+- [Data Submission Design v4.1](./data-submission-design.md) - API endpoints and submission flow
+- [Data Classification Strategy v1.2](./data-classification-strategy.md) - Tier 0 data type classification
 
 ---
 
 ## Status
 
-**Current:** Generic HTML capture only
-**Next Steps:** Monitor usage patterns, validate need with users
+**Current:** Generic HTML capture only (Tier 1 structural extraction handles HTML as UNSTRUCTURED_TEXT)
+**Next Steps:** Monitor usage patterns, validate need with users. Consider implementing as a Tier 2 backend for platform-aware deep analysis.
 **Target:** Q2 2026 (post-MVP)
