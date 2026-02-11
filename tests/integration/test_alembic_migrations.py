@@ -159,10 +159,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (002_normalize_organization_id)
+        # Verify revision ID matches the latest migration (evidence_classification_redesign)
         assert (
-            revision == "93e6242a6b94"
-        ), f"Expected revision 93e6242a6b94 (002_normalize_organization_id), got {revision}"
+            revision == "a32b2452ebb2"
+        ), f"Expected revision a32b2452ebb2 (evidence_classification_redesign), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -175,21 +175,22 @@ class TestAlembicMigrationInfrastructure:
             len(tables_before) == 30
         ), f"Expected 30 tables initially, got {len(tables_before)}"
 
-        # Rollback migration #002 (should revert to baseline migration #001 with 30 tables)
+        # Rollback latest migration (evidence_classification_redesign)
+        # Should revert to fix_schema_inconsistencies_comprehensive (01e7fb5bff43)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify tables still exist (we're back at baseline migration #001)
+        # Verify tables still exist (we're back at fix_schema_inconsistencies_comprehensive)
         tables_after = get_tables(TEST_DB)
         assert (
             len(tables_after) == 30
-        ), f"Expected 30 tables after rollback to baseline, got {len(tables_after)}: {tables_after}"
+        ), f"Expected 30 tables after rollback, got {len(tables_after)}: {tables_after}"
 
-        # Verify revision moved back to baseline (migration #001)
+        # Verify revision moved back to fix_schema_inconsistencies_comprehensive
         revision = get_current_revision(database_url)
         assert (
-            revision == "0d4e538d666d"
-        ), f"Expected baseline revision 0d4e538d666d after rollback, got {revision}"
+            revision == "01e7fb5bff43"
+        ), f"Expected revision 01e7fb5bff43 (fix_schema_inconsistencies_comprehensive) after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -213,11 +214,11 @@ class TestAlembicMigrationInfrastructure:
         ), "knowledge_suggestions table should be restored"
         assert "organizations" in tables, "organizations table should be restored"
 
-        # Verify revision
+        # Verify revision (should be back at head: evidence_classification_redesign)
         revision = get_current_revision(database_url)
         assert (
-            revision == "93e6242a6b94"
-        ), f"Expected revision 93e6242a6b94 (002_normalize_organization_id), got {revision}"
+            revision == "a32b2452ebb2"
+        ), f"Expected revision a32b2452ebb2 (evidence_classification_redesign), got {revision}"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""

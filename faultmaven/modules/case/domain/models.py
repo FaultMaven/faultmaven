@@ -1192,110 +1192,210 @@ class EvidenceCategory(str, Enum):
     """
     Evidence classification by investigation purpose.
 
-    UNCLASSIFIED: Raw user-submitted data that has not yet been classified by the
-    LLM as evidence. All user messages and file uploads start as UNCLASSIFIED.
-    The LLM promotes relevant items to a specific category via evidence_to_add.
+    Post-redesign (2026-02-11):
+    - UNCLASSIFIED removed (single-phase evidence creation)
+    - OTHER renamed to CONTEXTUAL_EVIDENCE (clearer purpose)
+    - REJECTED added (track rejected submissions for deduplication)
 
-    Only classified evidence (non-UNCLASSIFIED) is used for milestone validation.
+    Evidence is created AFTER LLM evaluation with complete classification.
     """
 
-    UNCLASSIFIED = "unclassified"
-    """
-    Purpose: Raw user-submitted data awaiting LLM classification.
-
-    This is NOT evidence yet. It is user-submitted data stored with an ID
-    so the LLM can reference it. The LLM determines which items qualify
-    as evidence and assigns them a specific category.
-
-    Does NOT advance any milestones.
-    """
+    # ===== RELEVANT EVIDENCE (4 categories) =====
 
     SYMPTOM_EVIDENCE = "symptom_evidence"
     """
-    Purpose: Verify symptom and establish context.
+    Shows problem manifestation.
 
-    Validates:
-    - Symptom is real
-    - Scope of impact
-    - Timeline
-    - Recent changes
+    Purpose: Prove the problem exists and establish scope/timeline.
 
-    Advances Milestones:
-    - symptom_verified
-    - scope_assessed
-    - timeline_established
-    - changes_identified
+    IMPORTANT: This category describes what the data CONTAINS, not whether the user
+    has committed to investigating. A log file with errors is SYMPTOM_EVIDENCE even
+    during INQUIRY phase (exploratory upload before problem confirmed).
 
     Examples:
-    - Error logs
-    - Metrics dashboards
+    - Error logs showing failures
+    - Metrics showing degradation (high CPU, slow response times)
     - User impact reports
-    - Deployment logs
+    - Deployment logs showing recent changes
+
+    Advances Milestones: symptom_verified, scope_assessed, timeline_established
+    (Note: Milestone validation only runs during INVESTIGATING status. Evidence
+    created during INQUIRY sits inert until investigation begins.)
     """
 
     CAUSAL_EVIDENCE = "causal_evidence"
     """
-    Purpose: Test hypothesis about root cause.
+    Points to root cause.
 
-    Validates:
-    - Specific theory about what caused the problem
-    - Hypothesis-driven diagnostic data
-
-    Advances Milestones:
-    - root_cause_identified (if hypothesis validated)
+    Purpose: Test hypothesis about what caused the problem.
 
     Examples:
     - Connection pool metrics (for "pool exhausted" hypothesis)
     - Memory dumps (for "memory leak" hypothesis)
     - Network traces (for "latency" hypothesis)
-    - Config files (for "misconfigured" hypothesis)
+    - Config changes (for "misconfiguration" hypothesis)
+
+    Advances Milestones: root_cause_identified
     """
 
     RESOLUTION_EVIDENCE = "resolution_evidence"
     """
-    Purpose: Verify solution effectiveness.
+    Validates fix effectiveness.
 
-    Validates:
-    - Solution was applied
-    - Problem resolved after fix
-
-    Advances Milestones:
-    - solution_verified
+    Purpose: Prove that solution resolved the problem.
 
     Examples:
     - Error rate after rollback (before/after comparison)
     - Latency metrics after optimization
     - Resource usage after scaling
     - Success rate after config change
+
+    Advances Milestones: solution_verified
     """
 
-    OTHER = "other"
+    CONTEXTUAL_EVIDENCE = "contextual_evidence"  # Was: OTHER
     """
-    Evidence that does not fit standard categories.
-    May be useful contextually but does not directly advance milestones.
+    Provides baseline, environmental, or background context.
+
+    Purpose: Help understand system or problem context without directly
+    showing symptoms, proving causes, or validating resolutions.
+
+    Characteristics:
+    - Describes "what is already there" (baseline, normal state)
+    - Neither problematic nor a fix
+    - System configuration, architecture, or operational context
+    - Historical baseline or reference data
 
     Examples:
-    - Background documentation
-    - Architecture diagrams
-    - Historical incident notes
+    - System architecture diagrams
+    - Current/baseline configuration files
+    - "Normal" resource usage patterns (for comparison)
+    - System inventory (versions, dependencies, infrastructure)
+    - SLA requirements or business context
+    - Historical incident reports (for reference)
+
+    INQUIRY Phase Usage:
+    - If uploaded data truly shows NO problems (clean logs, normal metrics),
+      classify as CONTEXTUAL_EVIDENCE
+    - If data shows problems (errors, anomalies), classify as SYMPTOM_EVIDENCE
+      even during INQUIRY phase (classify based on content, not user's commitment)
+
+    Does NOT directly advance milestones, but helps LLM understand environment.
+    """
+
+    # ===== REJECTED SUBMISSIONS =====
+
+    REJECTED = "rejected"
+    """
+    Submission analyzed but rejected as not useful for investigation.
+
+    IMPORTANT: This is NOT evidence. It exists in the evidence table for
+    practical reasons (deduplication, audit trail, cost avoidance), not
+    because it's evidence.
+
+    Purpose: Track rejected submissions for:
+    - Deduplication: Prevent re-upload via content_hash
+    - Audit trail: Record what was submitted and evaluated
+    - Cost avoidance: Don't re-analyze same file
+    - User feedback: Explain why rejected
+
+    Can be "un-rejected" if investigation context changes.
+
+    Examples:
+    - Screenshots unrelated to issue
+    - Logs from unrelated services
+    - Accidental uploads
+    - Files determined not useful after analysis
+
+    Reasoning captured in `primary_purpose` field.
+
+    Note: Duplicate files are also marked as REJECTED with reference to original.
     """
 
 
 class EvidenceSourceType(str, Enum):
-    """Type of evidence source"""
+    """
+    Fundamental type of data source.
 
-    LOG_FILE = "log_file"
-    METRICS_DATA = "metrics_data"
-    CONFIG_FILE = "config_file"
-    CODE_REVIEW = "code_review"
-    SCREENSHOT = "screenshot"
-    COMMAND_OUTPUT = "command_output"
-    DATABASE_QUERY = "database_query"
-    TRACE_DATA = "trace_data"
-    API_RESPONSE = "api_response"
-    USER_REPORT = "user_report"
-    MONITORING_ALERT = "monitoring_alert"
-    OTHER = "other"
+    Post-redesign (2026-02-11): Simplified from 12 types to 5 clear categories.
+
+    Migration mapping:
+    - log_file, command_output, trace_data, api_response, other → LOGS
+    - metrics_data, monitoring_alert → METRICS
+    - config_file, code_review, database_query → CONFIGURATION
+    - screenshot → VISUAL
+    - user_report → USER_DESCRIPTION
+    """
+
+    LOGS = "logs"
+    """
+    Any textual diagnostic output.
+
+    Includes:
+    - Application logs
+    - System logs
+    - Command output (kubectl, curl, docker logs, etc.)
+    - Distributed trace data
+    - API responses
+    - Error messages
+
+    Characteristics: Time-ordered textual records of system behavior
+    """
+
+    METRICS = "metrics"
+    """
+    Quantitative measurements.
+
+    Includes:
+    - Time-series metrics (CPU, memory, latency)
+    - Dashboards and graphs
+    - Performance data
+    - Resource usage statistics
+    - Monitoring alerts (triggered by metrics)
+
+    Characteristics: Numerical data, often time-series
+    """
+
+    CONFIGURATION = "configuration"
+    """
+    System/application configuration.
+
+    Includes:
+    - Config files (YAML, JSON, TOML, env vars)
+    - Code snippets
+    - Database schema
+    - Infrastructure definitions (Kubernetes manifests, Terraform)
+    - Dependency lists
+
+    Characteristics: Defines how system should behave
+    """
+
+    VISUAL = "visual"
+    """
+    Visual representations.
+
+    Includes:
+    - Screenshots (errors, dashboards, terminals)
+    - Architecture diagrams
+    - Graphs and charts
+    - Images
+
+    Characteristics: Requires visual interpretation
+    """
+
+    USER_DESCRIPTION = "user_description"
+    """
+    User's typed narrative.
+
+    Includes:
+    - Problem descriptions
+    - Observations
+    - Impact reports
+    - Steps to reproduce
+    - Context explanations
+
+    Characteristics: Human-written context, not machine-generated data
+    """
 
 
 class EvidenceForm(str, Enum):
@@ -1541,7 +1641,10 @@ class HypothesisCategory(str, Enum):
     """Network issues, connectivity, latency, DNS"""
 
     DATA = "data"
-    """Data issues, database problems, data corruption"""
+    """Data quality issues, corruption, consistency problems"""
+
+    DATABASE = "database"
+    """Database performance, queries, indexes, connections"""
 
     HARDWARE = "hardware"
     """Hardware failures, disk issues, CPU/memory"""
@@ -2923,6 +3026,23 @@ class Case(BaseModel):
         default=None,
         description="Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other",
         max_length=100,
+    )
+
+    pending_transition: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="""
+        Pending status transition awaiting user confirmation (User-Agent Handshake pattern).
+
+        Used for terminal transitions that require explicit user confirmation:
+        - to_status: Target status (str)
+        - reason: Why transition is being proposed (str)
+        - summary: Agent's explanation to user (str)
+        - evidence_ids: Supporting evidence (List[str])
+        - proposed_at: When transition was proposed (str ISO datetime)
+        - proposed_by: Who proposed it ("agent" | "user" | user_id)
+
+        Cleared after transition executes or is cancelled.
+        """,
     )
 
     # ============================================================

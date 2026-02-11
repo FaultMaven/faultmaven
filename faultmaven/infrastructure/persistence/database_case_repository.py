@@ -1279,6 +1279,97 @@ class DatabaseCaseRepository(CaseRepository):
                 pass
         return result
 
+    async def create_agent_execution(self, execution: Any) -> Any:
+        """Create new agent execution record in database.
+
+        Args:
+            execution: AgentExecution domain object to save
+
+        Returns:
+            Saved AgentExecution with empty tool_calls list
+
+        Raises:
+            RepositoryException: If save fails
+        """
+        try:
+            from faultmaven.infrastructure.persistence.models import AgentExecutionModel
+            from faultmaven.modules.case.domain.owned_models.agent_execution import (
+                AgentExecution,
+            )
+
+            # Convert domain model to ORM model
+            token_usage_json = (
+                json.dumps(execution.token_usage) if execution.token_usage else None
+            )
+            metadata_json = (
+                json.dumps(execution.metadata) if execution.metadata else None
+            )
+
+            execution_model = AgentExecutionModel(
+                execution_id=execution.execution_id,
+                case_id=execution.case_id,
+                organization_id=getattr(
+                    execution, "organization_id", "00000000-0000-0000-0000-000000000001"
+                ),
+                agent_type=(
+                    execution.agent_type.value
+                    if hasattr(execution.agent_type, "value")
+                    else str(execution.agent_type)
+                ),
+                agent_model=execution.agent_model,
+                status=(
+                    execution.status.value
+                    if hasattr(execution.status, "value")
+                    else str(execution.status)
+                ),
+                started_at=execution.started_at,
+                completed_at=execution.completed_at,
+                execution_duration_ms=execution.execution_duration_ms,
+                prompt=execution.prompt,
+                response=execution.response,
+                error_message=execution.error_message,
+                token_usage=token_usage_json,
+                created_at=execution.created_at,
+                updated_at=execution.updated_at,
+            )
+
+            # Save to database
+            self.db.add(execution_model)
+            await self.db.flush()
+            await self.db.commit()
+
+            # Return domain object with empty tool_calls list
+            result = AgentExecution(
+                execution_id=execution.execution_id,
+                case_id=execution.case_id,
+                agent_type=execution.agent_type,
+                agent_model=execution.agent_model,
+                status=execution.status,
+                started_at=execution.started_at,
+                completed_at=execution.completed_at,
+                execution_duration_ms=execution.execution_duration_ms,
+                prompt=execution.prompt,
+                response=execution.response,
+                error_message=execution.error_message,
+                token_usage=execution.token_usage,
+                tool_calls=[],  # Initially empty, tools added separately
+                metadata=execution.metadata,
+                created_at=execution.created_at,
+                updated_at=execution.updated_at,
+            )
+
+            logger.debug(f"Created agent execution {execution.execution_id}")
+            return result
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(
+                f"Failed to create agent execution {execution.execution_id}: {e}"
+            )
+            raise RepositoryException(
+                f"Failed to create agent execution {execution.execution_id}: {e}"
+            ) from e
+
     # ========================================================================
     # Clear (Testing Utility)
     # ========================================================================

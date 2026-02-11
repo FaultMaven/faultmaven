@@ -1,5 +1,24 @@
 # FaultMaven Data Submission Design v4.0
 
+> **DESIGN SUPERSEDED** (2026-02-10):
+>
+> This document has been superseded by the final approved design:
+> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](/home/swhouse/product/docs/working/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)**
+>
+> **Critical Changes**:
+>
+> 1. `EvidenceCategory.UNCLASSIFIED` → **REMOVED** (single-phase creation AFTER LLM, not two-phase)
+> 2. `EvidenceCategory.OTHER` → **RENAMED** to `CONTEXTUAL_EVIDENCE`
+> 3. `EvidenceCategory.IRRELEVANT` → **ADDED** (track rejected submissions)
+> 4. `EvidenceSourceType`: 12 types → **5 types** (LOGS, METRICS, CONFIGURATION, VISUAL, USER_DESCRIPTION)
+> 5. Evidence table tracks ALL file submissions (including irrelevant)
+> 6. Pure chat never enters evidence table
+> 7. **Single-phase creation**: Evidence created AFTER LLM with complete data (not placeholder then update)
+>
+> **See the final design document for complete specification.**
+
+---
+
 ## Executive Summary
 
 This document specifies how users submit diagnostic data (logs, metrics, traces, configs) to FaultMaven through two complementary paths:

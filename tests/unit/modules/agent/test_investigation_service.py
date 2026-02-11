@@ -283,9 +283,7 @@ class TestInvestigationServiceGetProgress:
         assert (
             "pending_milestones" in progress
         )  # InvestigationProgress.pending_milestones property
-        assert (
-            "completion_percentage" in progress
-        )  # InvestigationProgress.completion_percentage property
+        # Note: completion_percentage was removed from InvestigationProgress model
 
     @pytest.mark.asyncio
     async def test_get_progress_case_not_found(

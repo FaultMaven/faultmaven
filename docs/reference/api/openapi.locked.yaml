@@ -681,6 +681,107 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/snapshot/{turn_number}:
+    get:
+      tags:
+      - cases
+      - replay
+      summary: Get case snapshot at specific turn
+      description: 'Get the full state of a case at a specific turn number.
+
+
+        This is a read-only operation that reconstructs the case from the checkpoint.'
+      operationId: get_case_snapshot
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: turn_number
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Turn Number
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/faultmaven__modules__case__domain__models__Case'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/diff:
+    get:
+      tags:
+      - cases
+      - replay
+      summary: Diff two case states
+      description: 'Compute the semantic difference between two turns of a case.
+
+
+        Returns a dictionary describing added, removed, and modified fields.'
+      operationId: diff_case_turns
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: integer
+          description: Start turn number
+          title: From
+        description: Start turn number
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: integer
+          description: End turn number
+          title: To
+        description: End turn number
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Diff Case Turns
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cases/{case_id}:
     delete:
       tags:
@@ -1005,6 +1106,7 @@ paths:
                     inquiry: '#/components/schemas/CaseUIResponse_Inquiry'
                     investigating: '#/components/schemas/CaseUIResponse_Investigating'
                     resolved: '#/components/schemas/CaseUIResponse_Resolved'
+                    closed: '#/components/schemas/CaseUIResponse_Resolved'
                 title: Response Get Case Ui Api V1 Cases  Case Id  Ui Get
         '422':
           description: Validation Error
@@ -4652,15 +4754,19 @@ paths:
         \ & Resumption:**\n- If `client_id` is provided and matches an active session,\
         \ that session is resumed\n- If `client_id` matches an expired session, returns\
         \ 404/410 error (frontend creates new session)\n- If `client_id` is new or\
-        \ not provided, creates fresh session\n\n**Session Timeout:**\n- Sessions\
-        \ automatically expire after `timeout_minutes` of inactivity\n- Default timeout:\
-        \ 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n\
-        - Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend\
-        \ Crash Recovery:**\n- Browser crashes: Session resumes if within timeout\
-        \ window\n- Extended downtime: Session expires, new session created automatically\n\
-        \nArgs:\n    request: Session creation parameters including optional client_id\
-        \ and timeout\n    user_id: Optional user identifier (query param)\n\nReturns:\n\
-        \    Session creation/resumption response with expiration information"
+        \ not provided, creates fresh session\n\n**User ID Resolution:**\n- Priority\
+        \ 1: `user_id` query parameter (explicit override)\n- Priority 2: Authenticated\
+        \ user from JWT token (prevents anonymous session creation)\n- Priority 3:\
+        \ Auto-generated anonymous user (development/unauthenticated only)\n\n**Session\
+        \ Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n\
+        - Default timeout: 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout:\
+        \ 480 minutes\n- Expired sessions cannot be resumed and return 404/410 errors\n\
+        \n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within\
+        \ timeout window\n- Extended downtime: Session expires, new session created\
+        \ automatically\n\nArgs:\n    request: Session creation parameters including\
+        \ optional client_id and timeout\n    user_id: Optional user identifier (query\
+        \ param)\n    current_user: Optional authenticated user from JWT token\n\n\
+        Returns:\n    Session creation/resumption response with expiration information"
       operationId: create_session_api_v1_sessions_post
       parameters:
       - name: user_id
@@ -4671,6 +4777,14 @@ paths:
           - type: string
           - type: 'null'
           title: User Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
         content:
           application/json:
@@ -6264,57 +6378,6 @@ components:
       required:
       - file
       title: Body_upload_evidence_api_v1_evidence_post
-    Case:
-      properties:
-        case_id:
-          type: string
-          title: Case Id
-        title:
-          type: string
-          title: Title
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-        status:
-          type: string
-          enum:
-          - inquiry
-          - investigating
-          - resolved
-          - closed
-          title: Status
-          default: inquiry
-        priority:
-          type: string
-          enum:
-          - low
-          - medium
-          - high
-          - critical
-          title: Priority
-          default: medium
-        created_at:
-          type: string
-          title: Created At
-        updated_at:
-          type: string
-          title: Updated At
-        message_count:
-          type: integer
-          title: Message Count
-          default: 0
-        owner_id:
-          type: string
-          title: Owner Id
-      type: object
-      required:
-      - case_id
-      - title
-      - owner_id
-      title: Case
-      description: Represents a troubleshooting case.
     CaseCreateRequest:
       properties:
         title:
@@ -6443,6 +6506,13 @@ components:
         escalated:
           type: boolean
           title: Escalated
+        valid_next_states:
+          items:
+            type: string
+          type: array
+          title: Valid Next States
+          description: Allowed status transitions from current state for user-initiated
+            changes
       type: object
       required:
       - case_id
@@ -6546,7 +6616,11 @@ components:
           maxLength: 4000
           minLength: 1
           title: Message
-          description: User message
+          description: Human-readable message for conversation history and context
+        intent:
+          $ref: '#/components/schemas/QueryIntent'
+          description: Structured intent for programmatic routing and handling. Defaults
+            to CONVERSATION for backward compatibility.
         attachments:
           anyOf:
           - items:
@@ -6563,7 +6637,12 @@ components:
       description: 'Request to submit a query to a case investigation.
 
 
-        Used by POST /cases/{case_id}/queries endpoint.'
+        Used by POST /cases/{case_id}/queries endpoint.
+
+
+        All queries now include structured intent for reliable routing.
+
+        The message is human-readable; the intent is machine-readable.'
     CaseQueryResponse:
       properties:
         agent_response:
@@ -6734,6 +6813,38 @@ components:
         \ -> RESOLVED (terminal)\n                             -> CLOSED (terminal)\n\
         \           -> CLOSED (terminal)\n\nTerminal States: RESOLVED, CLOSED (no\
         \ further transitions)"
+    CaseStatusTransition:
+      properties:
+        from_status:
+          $ref: '#/components/schemas/CaseStatus'
+          description: Status before transition
+        to_status:
+          $ref: '#/components/schemas/CaseStatus'
+          description: Status after transition
+        triggered_at:
+          type: string
+          format: date-time
+          title: Triggered At
+          description: When transition occurred
+        triggered_by:
+          type: string
+          title: Triggered By
+          description: 'Who triggered: user_id or ''system'' for automatic transitions'
+        reason:
+          type: string
+          maxLength: 500
+          title: Reason
+          description: Human-readable reason for transition
+      type: object
+      required:
+      - from_status
+      - to_status
+      - triggered_by
+      - reason
+      title: CaseStatusTransition
+      description: 'Record of one status change.
+
+        Provides audit trail for case lifecycle.'
     CaseSummary:
       properties:
         case_id:
@@ -6798,6 +6909,13 @@ components:
         is_terminal:
           type: boolean
           title: Is Terminal
+        valid_next_states:
+          items:
+            type: string
+          type: array
+          title: Valid Next States
+          description: Allowed status transitions from current state for user-initiated
+            changes
       type: object
       required:
       - case_id
@@ -6855,6 +6973,13 @@ components:
           minimum: 0.0
           title: Uploaded Files Count
           description: Total files uploaded
+        valid_next_states:
+          items:
+            type: string
+          type: array
+          title: Valid Next States
+          description: Allowed status transitions from current state for user-initiated
+            changes
         inquiry:
           $ref: '#/components/schemas/InquiryResponseData'
           description: Nested inquiry phase data
@@ -6891,6 +7016,11 @@ components:
           maxLength: 200
           title: Title
           description: Case title
+        current_turn:
+          type: integer
+          minimum: 0.0
+          title: Current Turn
+          description: Current turn counter
         created_at:
           type: string
           format: date-time
@@ -6901,6 +7031,13 @@ components:
           format: date-time
           title: Updated At
           description: Last update timestamp
+        valid_next_states:
+          items:
+            type: string
+          type: array
+          title: Valid Next States
+          description: Allowed status transitions from current state for user-initiated
+            changes
         working_conclusion:
           anyOf:
           - $ref: '#/components/schemas/WorkingConclusionSummary'
@@ -6956,6 +7093,7 @@ components:
       required:
       - case_id
       - title
+      - current_turn
       - created_at
       - updated_at
       - progress
@@ -6975,15 +7113,22 @@ components:
           description: Case identifier
         status:
           type: string
-          const: resolved
+          enum:
+          - resolved
+          - closed
           title: Status
-          description: Always 'resolved' for this response type
-          default: resolved
+          description: 'Case terminal status: ''resolved'' (with solution) or ''closed''
+            (without investigation)'
         title:
           type: string
           maxLength: 200
           title: Title
           description: Case title
+        current_turn:
+          type: integer
+          minimum: 0.0
+          title: Current Turn
+          description: Current turn counter
         created_at:
           type: string
           format: date-time
@@ -6999,6 +7144,13 @@ components:
           format: date-time
           title: Resolved At
           description: When case was resolved
+        valid_next_states:
+          items:
+            type: string
+          type: array
+          title: Valid Next States
+          description: Allowed status transitions from current state for user-initiated
+            changes
         root_cause:
           $ref: '#/components/schemas/RootCauseSummary'
           description: What caused the problem
@@ -7020,7 +7172,9 @@ components:
       type: object
       required:
       - case_id
+      - status
       - title
+      - current_turn
       - created_at
       - updated_at
       - resolved_at
@@ -7059,6 +7213,96 @@ components:
       type: object
       title: CaseUpdateRequest
       description: Request to update an existing case.
+    Change:
+      properties:
+        description:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Description
+          description: What changed
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+          description: When the change occurred
+        change_type:
+          type: string
+          maxLength: 50
+          title: Change Type
+          description: 'Type of change: deployment | config | scaling | code | infrastructure
+            | data | other'
+        changed_by:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Changed By
+          description: Who made the change (user, system, team)
+        details:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Details
+          description: Additional structured details (version numbers, config values,
+            etc.)
+      type: object
+      required:
+      - description
+      - occurred_at
+      - change_type
+      title: Change
+      description: Recent change that may be relevant to the problem.
+    ConfidenceLevel:
+      type: string
+      enum:
+      - speculation
+      - probable
+      - confident
+      - verified
+      title: ConfidenceLevel
+      description: 'Categorical confidence levels.
+
+        Maps to numeric confidence scores.'
+    Correlation:
+      properties:
+        change_description:
+          type: string
+          maxLength: 500
+          title: Change Description
+          description: Description of the change
+        timing_description:
+          type: string
+          maxLength: 200
+          title: Timing Description
+          description: 'Temporal relationship: ''2 minutes before'', ''immediately
+            after'', ''coincides with'', etc.'
+        confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Confidence
+          description: Confidence in this correlation (0.0 = weak, 1.0 = strong)
+        correlation_type:
+          type: string
+          maxLength: 50
+          title: Correlation Type
+          description: 'Type: temporal | causal | coincidental | other'
+        evidence:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Evidence
+          description: Evidence supporting this correlation
+      type: object
+      required:
+      - change_description
+      - timing_description
+      - confidence
+      - correlation_type
+      title: Correlation
+      description: Correlation between a change and the symptom.
     DataType:
       type: string
       enum:
@@ -7134,6 +7378,75 @@ components:
       - uploaded_at
       title: DataUploadResponse
       description: Response payload for data upload with AI analysis.
+    DegradedMode:
+      properties:
+        mode_type:
+          $ref: '#/components/schemas/DegradedModeType'
+          description: Why investigation degraded
+        entered_at:
+          type: string
+          format: date-time
+          title: Entered At
+          description: When degraded mode was entered
+        reason:
+          type: string
+          maxLength: 1000
+          title: Reason
+          description: Detailed explanation of why investigation degraded
+        attempted_actions:
+          items:
+            type: string
+          type: array
+          title: Attempted Actions
+          description: What agent tried before degrading
+        fallback_offered:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Fallback Offered
+          description: Fallback option presented to user
+        user_choice:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: User Choice
+          description: 'How user responded: ''accept_fallback'' | ''provide_more_data''
+            | ''escalate'' | ''abandon'''
+        exited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Exited At
+          description: When degraded mode was exited (if recovered)
+        exit_reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Exit Reason
+          description: How investigation recovered from degraded mode
+      type: object
+      required:
+      - mode_type
+      - reason
+      title: DegradedMode
+      description: 'Investigation is blocked or struggling.
+
+        Agent offers fallback options.'
+    DegradedModeType:
+      type: string
+      enum:
+      - no_progress
+      - limited_data
+      - hypothesis_deadlock
+      - external_dependency
+      - data_blocker
+      - other
+      title: DegradedModeType
+      description: Reason for entering degraded mode
     DeleteResponse:
       properties:
         message:
@@ -7275,6 +7588,291 @@ components:
 
 
         Supports both line-based and semantic snippet extraction.'
+    DocumentType:
+      type: string
+      enum:
+      - incident_report
+      - post_mortem
+      - runbook
+      - chat_summary
+      - timeline
+      - evidence_bundle
+      - other
+      title: DocumentType
+      description: Type of generated document
+    DocumentationData:
+      properties:
+        documents_generated:
+          items:
+            $ref: '#/components/schemas/GeneratedDocument'
+          type: array
+          title: Documents Generated
+          description: All documents generated for this case
+        runbook_entry:
+          anyOf:
+          - type: string
+            maxLength: 5000
+          - type: 'null'
+          title: Runbook Entry
+          description: Runbook entry created from this case
+        post_mortem_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Post Mortem Id
+          description: Link to post-mortem doc if created
+        lessons_learned:
+          items:
+            type: string
+          type: array
+          title: Lessons Learned
+          description: Key takeaways from investigation
+        what_went_well:
+          items:
+            type: string
+          type: array
+          title: What Went Well
+          description: Positive aspects of investigation
+        what_could_improve:
+          items:
+            type: string
+          type: array
+          title: What Could Improve
+          description: Areas for improvement
+        preventive_measures:
+          items:
+            type: string
+          type: array
+          title: Preventive Measures
+          description: How to prevent recurrence
+        monitoring_recommendations:
+          items:
+            type: string
+          type: array
+          title: Monitoring Recommendations
+          description: Monitoring/alerts to add
+        generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Generated At
+          description: When documentation was generated
+        generated_by:
+          type: string
+          title: Generated By
+          description: 'Who generated: ''agent'' or user_id'
+          default: agent
+      type: object
+      title: DocumentationData
+      description: 'Documentation generated when case closes.
+
+        Captures lessons learned and artifacts.'
+    EscalationState:
+      properties:
+        escalation_type:
+          $ref: '#/components/schemas/EscalationType'
+          description: Why escalation was needed
+        reason:
+          type: string
+          maxLength: 1000
+          title: Reason
+          description: Detailed explanation of escalation reason
+        escalated_to:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Escalated To
+          description: Team or person escalated to
+        escalated_at:
+          type: string
+          format: date-time
+          title: Escalated At
+          description: When escalation occurred
+        context_summary:
+          type: string
+          maxLength: 5000
+          title: Context Summary
+          description: Summary of investigation so far for escalation recipient
+        key_findings:
+          items:
+            type: string
+          type: array
+          title: Key Findings
+          description: Key findings to communicate to expert
+        resolution:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Resolution
+          description: How escalation was resolved
+        resolved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resolved At
+          description: When escalation was resolved
+      type: object
+      required:
+      - escalation_type
+      - reason
+      - context_summary
+      title: EscalationState
+      description: 'Investigation escalated to human expert.
+
+        Tracks escalation lifecycle.'
+    EscalationType:
+      type: string
+      enum:
+      - expertise_required
+      - permissions_required
+      - no_progress
+      - user_request
+      - critical_severity
+      - other
+      title: EscalationType
+      description: Reason for escalation
+    Evidence:
+      properties:
+        evidence_id:
+          type: string
+          pattern: ^ev_[a-f0-9]{12}$
+          title: Evidence Id
+          description: Unique evidence identifier
+        category:
+          $ref: '#/components/schemas/EvidenceCategory'
+          description: 'System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE
+            | RESOLUTION_EVIDENCE | OTHER'
+        primary_purpose:
+          type: string
+          maxLength: 100
+          title: Primary Purpose
+          description: What this evidence validates (milestone name or hypothesis
+            ID)
+        summary:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Summary
+          description: Brief summary of evidence content (<500 chars) for UI display
+            and quick scanning
+        preprocessed_content:
+          type: string
+          title: Preprocessed Content
+          description: "\n        Extracted relevant diagnostic information from preprocessing\
+            \ pipeline.\n\n        This is what the agent uses for hypothesis evaluation\
+            \ and evidence analysis.\n        Contains only the high-signal portions\
+            \ extracted from raw files.\n\n        Examples:\n        - Logs: Crime\
+            \ scene extraction (approx. 200 lines around errors)\n        - Metrics:\
+            \ Anomaly detection results with statistical analysis\n        - Config:\
+            \ Parsed configuration with secrets redacted\n        - Code: AST-extracted\
+            \ functions and classes\n        - Text: LLM-generated summary\n     \
+            \   - Images: Vision model description\n\n        Size: Typically 5 to\
+            \ 50 KB (compressed from larger raw files).\n        Compression ratios:\
+            \ 200:1 for logs, 167:1 for metrics, 50:1 for code.\n\n        This field\
+            \ is REQUIRED for all evidence. Raw files remain in S3 for audit/deep\
+            \ dive.\n        "
+        content_ref:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Content Ref
+          description: S3 URI to original raw file (1-10MB) for audit, compliance,
+            and deep dive analysis. May be None for user-typed evidence.
+        content_size_bytes:
+          type: integer
+          minimum: 0.0
+          title: Content Size Bytes
+          description: Size of original raw file in bytes
+        preprocessing_method:
+          type: string
+          title: Preprocessing Method
+          description: "\n        Preprocessing method used to extract preprocessed_content\
+            \ from raw file.\n        Examples: crime_scene_extraction, anomaly_detection,\
+            \ parse_and_sanitize,\n        ast_extraction, vision_analysis, single_shot_summary,\
+            \ map_reduce_summary\n        "
+        compression_ratio:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Compression Ratio
+          description: Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1
+            compression)
+        analysis:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Analysis
+          description: Agent analysis of this evidence and its significance to the
+            investigation
+        source_type:
+          $ref: '#/components/schemas/EvidenceSourceType'
+          description: Type of evidence source
+        form:
+          $ref: '#/components/schemas/EvidenceForm'
+          description: 'How evidence was provided: DOCUMENT (uploaded) or USER_INPUT
+            (typed)'
+        advances_milestones:
+          items:
+            type: string
+          type: array
+          title: Advances Milestones
+          description: Which milestones this evidence helped complete
+        collected_at:
+          type: string
+          format: date-time
+          title: Collected At
+          description: When evidence was collected
+        collected_by:
+          type: string
+          title: Collected By
+          description: 'Who collected: user_id or ''system'' for automated collection'
+        collected_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Collected At Turn
+          description: Turn number when evidence was collected
+      type: object
+      required:
+      - category
+      - primary_purpose
+      - summary
+      - preprocessed_content
+      - content_size_bytes
+      - preprocessing_method
+      - source_type
+      - form
+      - collected_by
+      - collected_at_turn
+      title: Evidence
+      description: 'Evidence collected during investigation.
+
+        Categorized by purpose to drive milestone advancement.
+
+
+        NOTE: Evidence.category is SYSTEM-INFERRED, not LLM-specified!
+
+        System categorizes based on:
+
+        - Which milestones are incomplete (if symptom not verified -> SYMPTOM_EVIDENCE)
+
+        - Hypothesis evaluation results (if creates hypothesis_evidence links -> CAUSAL_EVIDENCE)
+
+        - Solution state (if solution proposed -> RESOLUTION_EVIDENCE)
+
+
+        LLM provides: summary, analysis
+
+        LLM evaluates: stance per hypothesis (creates hypothesis_evidence links)
+
+        System infers: category, advances_milestones'
     EvidenceArtifact:
       properties:
         evidence_id:
@@ -7374,6 +7972,28 @@ components:
 
 
         Categorizes the kind of evidence artifact stored.'
+    EvidenceCategory:
+      type: string
+      enum:
+      - symptom_evidence
+      - causal_evidence
+      - resolution_evidence
+      - contextual_evidence
+      - rejected
+      title: EvidenceCategory
+      description: 'Evidence classification by investigation purpose.
+
+
+        Post-redesign (2026-02-11):
+
+        - UNCLASSIFIED removed (single-phase evidence creation)
+
+        - OTHER renamed to CONTEXTUAL_EVIDENCE (clearer purpose)
+
+        - REJECTED added (track rejected submissions for deduplication)
+
+
+        Evidence is created AFTER LLM evaluation with complete classification.'
     EvidenceDetailsResponse:
       properties:
         evidence_id:
@@ -7438,6 +8058,13 @@ components:
       - content_size_bytes
       title: EvidenceDetailsResponse
       description: Detailed evidence information with source and hypothesis linkage.
+    EvidenceForm:
+      type: string
+      enum:
+      - document
+      - user_input
+      title: EvidenceForm
+      description: How evidence was provided by user
     EvidenceLinkRequest:
       properties:
         case_id:
@@ -7479,6 +8106,33 @@ components:
 
 
         Example: "Please upload logs from the API gateway between 10:00-10:30 UTC"'
+    EvidenceSourceType:
+      type: string
+      enum:
+      - logs
+      - metrics
+      - configuration
+      - visual
+      - user_description
+      title: EvidenceSourceType
+      description: "Fundamental type of data source.\n\nPost-redesign (2026-02-11):\
+        \ Simplified from 12 types to 5 clear categories.\n\nMigration mapping:\n\
+        - log_file, command_output, trace_data, api_response, other \u2192 LOGS\n\
+        - metrics_data, monitoring_alert \u2192 METRICS\n- config_file, code_review,\
+        \ database_query \u2192 CONFIGURATION\n- screenshot \u2192 VISUAL\n- user_report\
+        \ \u2192 USER_DESCRIPTION"
+    EvidenceStance:
+      type: string
+      enum:
+      - supports
+      - neutral
+      - refutes
+      title: EvidenceStance
+      description: 'How evidence relates to a hypothesis.
+
+        Evaluated by LLM after evidence submission against ALL active hypotheses.
+
+        One evidence can have different stances for different hypotheses.'
     EvidenceSummary:
       properties:
         evidence_id:
@@ -7535,6 +8189,51 @@ components:
       type: object
       title: FileAnalysis
       description: Detailed AI analysis of file.
+    GeneratedDocument:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Unique document identifier
+        document_type:
+          $ref: '#/components/schemas/DocumentType'
+          description: Type of document
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+          description: Document title
+        content_ref:
+          type: string
+          maxLength: 1000
+          title: Content Ref
+          description: Reference to document content (S3 URI, file path, etc.)
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+          description: When document was generated
+        format:
+          type: string
+          maxLength: 50
+          title: Format
+          description: 'Document format: markdown | pdf | html | json | other'
+        size_bytes:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Size Bytes
+          description: Document size in bytes
+      type: object
+      required:
+      - document_type
+      - title
+      - content_ref
+      - format
+      title: GeneratedDocument
+      description: A generated document artifact.
     HTTPValidationError:
       properties:
         detail:
@@ -7544,6 +8243,198 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    Hypothesis:
+      properties:
+        hypothesis_id:
+          type: string
+          pattern: ^hyp_[a-f0-9]{12}$
+          title: Hypothesis Id
+          description: Unique hypothesis identifier
+        statement:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Statement
+          description: Hypothesis statement (what we think caused the problem)
+        category:
+          $ref: '#/components/schemas/HypothesisCategory'
+          description: Hypothesis category (for anchoring detection)
+        status:
+          $ref: '#/components/schemas/HypothesisStatus'
+          description: Current hypothesis status
+          default: captured
+        likelihood:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Likelihood
+          description: Estimated likelihood this hypothesis is correct (0.0-1.0)
+          default: 0.5
+        initial_likelihood:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Initial Likelihood
+          description: Original likelihood when hypothesis was generated
+          default: 0.5
+        evidence_links:
+          additionalProperties:
+            $ref: '#/components/schemas/HypothesisEvidenceLink'
+          type: object
+          title: Evidence Links
+          description: "\n        Maps evidence_id to relationship details.\n\n  \
+            \      ONE evidence can:\n        - STRONGLY_SUPPORTS hypothesis A\n \
+            \       - REFUTES hypothesis B\n        - Be IRRELEVANT to hypothesis\
+            \ C\n\n        Backed by hypothesis_evidence junction table in database.\n\
+            \        LLM evaluates each evidence against ALL active hypotheses after\
+            \ submission.\n        "
+        generated_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Generated At Turn
+          description: Turn number when hypothesis was generated
+        last_updated_turn:
+          type: integer
+          minimum: 0.0
+          title: Last Updated Turn
+          description: Turn number when hypothesis was last updated
+          default: 0
+        last_progress_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Last Progress At Turn
+          description: Turn number when hypothesis last showed progress
+          default: 0
+        iterations_without_progress:
+          type: integer
+          minimum: 0.0
+          title: Iterations Without Progress
+          description: Count of consecutive iterations without progress
+          default: 0
+        generation_mode:
+          $ref: '#/components/schemas/HypothesisGenerationMode'
+        retirement_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Retirement Reason
+          description: Reason if hypothesis was retired
+        rationale:
+          type: string
+          maxLength: 1000
+          title: Rationale
+          description: Why this hypothesis was generated
+        tested_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Tested At
+          description: When hypothesis testing began
+        concluded_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Concluded At
+          description: When hypothesis was validated/refuted/retired
+      type: object
+      required:
+      - statement
+      - category
+      - generated_at_turn
+      - generation_mode
+      - rationale
+      title: Hypothesis
+      description: 'Hypothesis for systematic root cause exploration.
+
+
+        Philosophy: Hypotheses are OPTIONAL. Agent may:
+
+        - Identify root cause directly from evidence (no hypotheses)
+
+        - OR generate hypotheses for systematic testing (when unclear)'
+    HypothesisCategory:
+      type: string
+      enum:
+      - code
+      - config
+      - environment
+      - network
+      - data
+      - database
+      - hardware
+      - external
+      - human
+      - other
+      title: HypothesisCategory
+      description: 'Hypothesis categories for anchoring detection.
+
+
+        If agent tests 4+ hypotheses in same category without validation,
+
+        it is "anchored" and should try different category.'
+    HypothesisEvidenceLink:
+      properties:
+        hypothesis_id:
+          type: string
+          title: Hypothesis Id
+          description: Hypothesis being evaluated
+        evidence_id:
+          type: string
+          title: Evidence Id
+          description: Evidence being evaluated
+        stance:
+          $ref: '#/components/schemas/EvidenceStance'
+          description: How this evidence relates to THIS hypothesis (including IRRELEVANT)
+        reasoning:
+          type: string
+          maxLength: 1000
+          title: Reasoning
+          description: LLM's explanation of the relationship
+        stance_confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Stance Confidence
+          description: Confidence in the stance assessment (0.0-1.0). Use for granularity
+            instead of STRONGLY_ variants.
+        analyzed_at:
+          type: string
+          format: date-time
+          title: Analyzed At
+          description: When this relationship was established
+      type: object
+      required:
+      - hypothesis_id
+      - evidence_id
+      - stance
+      - reasoning
+      - stance_confidence
+      title: HypothesisEvidenceLink
+      description: 'Many-to-many relationship between hypothesis and evidence.
+
+
+        ONE evidence can have DIFFERENT stances for DIFFERENT hypotheses:
+
+        - Evidence "Pool at 95%" -> STRONGLY_SUPPORTS "pool exhausted" hypothesis
+
+        - Evidence "Pool at 95%" -> REFUTES "network latency" hypothesis
+
+        - Evidence "Pool at 95%" -> IRRELEVANT to "memory leak" hypothesis
+
+
+        Stored in hypothesis_evidence junction table.
+
+        LLM evaluates evidence against ALL active hypotheses after submission.'
+    HypothesisGenerationMode:
+      type: string
+      enum:
+      - opportunistic
+      - systematic
+      - forced_alternative
+      title: HypothesisGenerationMode
+      description: How hypothesis was generated
     HypothesisRelationship:
       properties:
         hypothesis_id:
@@ -7642,6 +8533,86 @@ components:
       type: object
       title: ImpactData
       description: Impact assessment for problem scope.
+    InquiryData:
+      properties:
+        problem_confirmation:
+          anyOf:
+          - $ref: '#/components/schemas/ProblemConfirmation'
+          - type: 'null'
+          description: Agent initial understanding of the problem
+        proposed_problem_statement:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Proposed Problem Statement
+          description: "\n        Agent formalized problem statement (clear, specific,\
+            \ actionable) - ITERATIVE REFINEMENT pattern.\n\n        UI Display:\n\
+            \        - When None: Display \"To be defined\" or blank (no problem detected\
+            \ yet)\n        - When set: Display the statement text\n\n        Lifecycle:\n\
+            \        1. LLM creates initial formalization from conversation context\n\
+            \        2. LLM can UPDATE iteratively based on user corrections/refinements\n\
+            \        3. Becomes IMMUTABLE once problem_statement_confirmed = True\n\
+            \        4. Copied to case.description when investigation starts\n\n \
+            \       Pattern: Iterative Refinement - refine until user confirms without\
+            \ reservation\n        "
+        problem_statement_confirmed:
+          type: boolean
+          title: Problem Statement Confirmed
+          description: User confirmed the formalized problem statement
+          default: false
+        problem_statement_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Problem Statement Confirmed At
+          description: When user confirmed the problem statement
+        quick_suggestions:
+          items:
+            type: string
+          type: array
+          title: Quick Suggestions
+          description: Quick fixes or guidance provided during inquiry
+        decided_to_investigate:
+          type: boolean
+          title: Decided To Investigate
+          description: Whether user committed to formal investigation
+          default: false
+        decision_made_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decision Made At
+          description: When user decided to investigate (or not)
+        inquiry_turns:
+          type: integer
+          minimum: 0.0
+          title: Inquiry Turns
+          description: Number of turns spent in INQUIRY status
+          default: 0
+        knowledge_matches:
+          items:
+            $ref: '#/components/schemas/KnowledgeMatch'
+          type: array
+          title: Knowledge Matches
+          description: Potential solutions found in KB
+        knowledge_resolution:
+          anyOf:
+          - $ref: '#/components/schemas/KnowledgeResolution'
+          - type: 'null'
+          description: Resolution details if fixed via KB match
+        preliminary_urgency:
+          anyOf:
+          - $ref: '#/components/schemas/PreliminaryUrgency'
+          - type: 'null'
+          description: Early urgency assessment
+      type: object
+      title: InquiryData
+      description: 'Pre-investigation INQUIRY status data.
+
+        Captures early problem exploration before formal investigation commitment.'
     InquiryResponseData:
       properties:
         proposed_problem_statement:
@@ -7676,6 +8647,195 @@ components:
       type: object
       title: InquiryResponseData
       description: Nested inquiry data for INQUIRY phase response.
+    IntentType:
+      type: string
+      enum:
+      - conversation
+      - status_transition
+      - hypothesis_action
+      - evidence_request
+      - confirmation
+      - greeting
+      title: IntentType
+      description: 'Intent types for query routing.
+
+
+        Enables reliable intent detection without keyword matching.
+
+        Each type routes to specialized handling logic.'
+    InvestigationMomentum:
+      type: string
+      enum:
+      - high
+      - moderate
+      - low
+      - blocked
+      title: InvestigationMomentum
+      description: 'Investigation momentum indicator for progress tracking.
+
+
+        Used to signal overall investigation health and guide agent behavior.
+
+        Calculated from recent progress patterns (evidence collection, hypothesis
+        updates).'
+    InvestigationPath:
+      type: string
+      enum:
+      - mitigation_first
+      - root_cause
+      - user_choice
+      title: InvestigationPath
+      description: 'Investigation routing strategy (4-stage workflow).
+
+
+        IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
+
+        LLM provides inputs (temporal_state, urgency_level) during verification.
+
+        System calls determine_investigation_path() to select path deterministically.
+
+
+        INVESTIGATING phase has 4 stages:
+
+        - Stage 1: Symptom verification (where and when)
+
+        - Stage 2: Hypotheses formulation (why)
+
+        - Stage 3: Hypothesis validation (why really)
+
+        - Stage 4: Solution (how)
+
+
+        Two paths based on urgency:
+
+        - MITIGATION_FIRST: 1-4-2-3-4 (quick mitigation, then RCA)
+
+        - ROOT_CAUSE: 1-2-3-4 (traditional RCA)'
+    InvestigationProgress:
+      properties:
+        symptom_verified:
+          type: boolean
+          title: Symptom Verified
+          description: Symptom confirmed with concrete evidence (logs, metrics, user
+            reports)
+          default: false
+        scope_assessed:
+          type: boolean
+          title: Scope Assessed
+          description: 'Scope determined: affected users/services/regions, blast radius'
+          default: false
+        timeline_established:
+          type: boolean
+          title: Timeline Established
+          description: 'Timeline determined: when problem started, when noticed, duration'
+          default: false
+        changes_identified:
+          type: boolean
+          title: Changes Identified
+          description: 'Recent changes identified: deployments, configs, scaling events'
+          default: false
+        root_cause_identified:
+          type: boolean
+          title: Root Cause Identified
+          description: Root cause determined (directly or via hypothesis validation)
+          default: false
+        root_cause_likelihood:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Root Cause Likelihood
+          description: Likelihood in root cause identification (0.0 = unknown, 1.0
+            = certain)
+          default: 0.0
+        root_cause_method:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Root Cause Method
+          description: 'How root cause was identified: direct_analysis | hypothesis_validation
+            | correlation | other'
+        solution_proposed:
+          type: boolean
+          title: Solution Proposed
+          description: Solution or mitigation has been proposed
+          default: false
+        solution_applied:
+          type: boolean
+          title: Solution Applied
+          description: Solution has been applied by user
+          default: false
+        solution_verified:
+          type: boolean
+          title: Solution Verified
+          description: Solution effectiveness verified (error rate decreased, metrics
+            improved)
+          default: false
+        mitigation_applied:
+          type: boolean
+          title: Mitigation Applied
+          description: "\n        MITIGATION_FIRST path: Quick mitigation applied\
+            \ (stage 1 -> 4 complete).\n\n        Used to track progress in MITIGATION_FIRST\
+            \ path (1-4-2-3-4):\n        - Stage 1: Symptom verified\n        - Stage\
+            \ 4: Quick mitigation applied (mitigation_applied = True)\n        - Stage\
+            \ 2: Return to hypothesis formulation for RCA\n        - Stage 3: Hypothesis\
+            \ validation\n        - Stage 4: Permanent solution applied (solution_applied\
+            \ = True)\n\n        When True: Agent should return to stage 2 (hypothesis\
+            \ formulation) for full RCA\n        When False: Either ROOT_CAUSE path,\
+            \ or MITIGATION_FIRST has not applied mitigation yet\n\n        Note:\
+            \ Different from solution_applied - mitigation is quick correlation-based\
+            \ fix,\n        solution is comprehensive permanent fix after RCA.\n \
+            \       "
+          default: false
+        mitigation_verified:
+          type: boolean
+          title: Mitigation Verified
+          description: Mitigation effectiveness confirmed (problem stopped)
+          default: false
+        mitigation_effectiveness:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Mitigation Effectiveness
+          description: 'How well mitigation worked: 1.0 = fully resolved, 0.5 = partially,
+            0.0 = ineffective'
+        mitigation_solution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mitigation Solution Id
+          description: Solution ID of applied mitigation (links to case.solutions)
+        verification_completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Verification Completed At
+          description: When all verification milestones (symptom, scope, timeline,
+            changes) were completed
+        investigation_completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Investigation Completed At
+          description: When root cause was identified
+        resolution_completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resolution Completed At
+          description: When solution was verified
+      type: object
+      title: InvestigationProgress
+      description: 'Milestone-based progress tracking.
+
+
+        Philosophy: Track what''s completed, not what phase we''re in.
+
+        Agent completes milestones opportunistically based on data availability.'
     InvestigationProgressSummary:
       properties:
         milestones_completed:
@@ -7745,14 +8905,9 @@ components:
       - active_incident
       - post_mortem
       title: InvestigationStrategy
-      description: 'Investigation approach - speed vs depth
+      description: 'Investigation approach mode.
 
-
-        Selected when Lead Investigator Mode activated:
-
-        - Active Incident: Speed priority, mitigation first
-
-        - Post-Mortem: Thoroughness priority, complete RCA'
+        Affects decision thresholds, workflow behavior, and agent prompts.'
     InvestigationStrategyData:
       properties:
         approach:
@@ -7852,6 +9007,59 @@ components:
       - updated_at
       title: KnowledgeBaseDocument
       description: Response model for knowledge base document operations.
+    KnowledgeMatch:
+      properties:
+        match_id:
+          type: string
+          title: Match Id
+        match_type:
+          type: string
+          title: Match Type
+        relevance_score:
+          type: number
+          title: Relevance Score
+        summary:
+          type: string
+          title: Summary
+        potential_solution:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Potential Solution
+      type: object
+      required:
+      - match_id
+      - match_type
+      - relevance_score
+      - summary
+      title: KnowledgeMatch
+      description: Records a potential KB match during INQUIRY.
+    KnowledgeResolution:
+      properties:
+        match_id:
+          type: string
+          title: Match Id
+        match_type:
+          type: string
+          title: Match Type
+        solution_applied:
+          type: string
+          title: Solution Applied
+        user_confirmation:
+          type: string
+          title: User Confirmation
+        resolution_turn:
+          type: integer
+          title: Resolution Turn
+      type: object
+      required:
+      - match_id
+      - match_type
+      - solution_applied
+      - user_confirmation
+      - resolution_turn
+      title: KnowledgeResolution
+      description: Records instant resolution via KB match during INQUIRY phase.
     LinkCaseRequest:
       properties:
         closure_note:
@@ -8318,6 +9526,63 @@ components:
       type: object
       title: OrganizationUpdateRequest
       description: Request to update organization details
+    PathSelection:
+      properties:
+        path:
+          $ref: '#/components/schemas/InvestigationPath'
+          description: Selected investigation path (system-determined from matrix)
+        auto_selected:
+          type: boolean
+          title: Auto Selected
+          description: True if system auto-selected, False if user chose
+        rationale:
+          type: string
+          maxLength: 500
+          title: Rationale
+          description: Why this path was selected
+        alternate_path:
+          anyOf:
+          - $ref: '#/components/schemas/InvestigationPath'
+          - type: 'null'
+          description: Alternative path user could have chosen (if auto-selected)
+        selected_at:
+          type: string
+          format: date-time
+          title: Selected At
+          description: When path was selected
+        selected_by:
+          type: string
+          title: Selected By
+          description: 'Who selected: ''system'' for auto, or user_id for manual'
+          default: system
+        temporal_state:
+          anyOf:
+          - $ref: '#/components/schemas/TemporalState'
+          - type: 'null'
+          description: Temporal state used in decision
+        urgency_level:
+          anyOf:
+          - $ref: '#/components/schemas/UrgencyLevel'
+          - type: 'null'
+          description: Urgency level used in decision
+      type: object
+      required:
+      - path
+      - auto_selected
+      - rationale
+      title: PathSelection
+      description: 'Path selection details.
+
+        Records how investigation path was chosen.
+
+
+        IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
+
+        LLM provides inputs (temporal_state, urgency_level) during verification.
+
+        System calls determine_investigation_path() to select path deterministically.
+
+        LLM does NOT choose the path directly!'
     PermissionCheckRequest:
       properties:
         permission:
@@ -8361,6 +9626,199 @@ components:
       - description
       title: PlanStep
       description: Represents one step in a multi-step plan.
+    PreliminaryUrgency:
+      properties:
+        level:
+          $ref: '#/components/schemas/UrgencyLevel'
+        impact_assessment:
+          type: string
+          title: Impact Assessment
+        assessed_at_turn:
+          type: integer
+          title: Assessed At Turn
+      type: object
+      required:
+      - level
+      - impact_assessment
+      - assessed_at_turn
+      title: PreliminaryUrgency
+      description: Early urgency assessment using semantic business impact.
+    ProblemConfirmation:
+      properties:
+        problem_type:
+          type: string
+          maxLength: 100
+          title: Problem Type
+          description: 'Classified problem type: error | slowness | unavailability
+            | data_issue | other'
+        severity_guess:
+          type: string
+          maxLength: 50
+          title: Severity Guess
+          description: 'Initial severity assessment: critical | high | medium | low
+            | unknown'
+        preliminary_guidance:
+          type: string
+          maxLength: 2000
+          title: Preliminary Guidance
+          description: Initial guidance or suggestions
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+          description: When this confirmation was created
+      type: object
+      required:
+      - problem_type
+      - severity_guess
+      - preliminary_guidance
+      title: ProblemConfirmation
+      description: Agents initial problem understanding during inquiry.
+    ProblemVerification:
+      properties:
+        symptom_statement:
+          type: string
+          maxLength: 1000
+          minLength: 1
+          title: Symptom Statement
+          description: Clear statement of the problem symptom
+        symptom_indicators:
+          items:
+            type: string
+          type: array
+          title: Symptom Indicators
+          description: 'Specific metrics/observations confirming symptom (e.g., ''Error
+            rate: 15%'', ''P99 latency: 5s'')'
+        affected_services:
+          items:
+            type: string
+          type: array
+          title: Affected Services
+          description: Services/components affected
+        affected_users:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Affected Users
+          description: 'User impact description: ''all users'' | ''10% of users''
+            | ''premium tier'' | etc.'
+        affected_regions:
+          items:
+            type: string
+          type: array
+          title: Affected Regions
+          description: Geographic regions affected
+        severity:
+          type: string
+          maxLength: 50
+          title: Severity
+          description: 'Assessed severity: CRITICAL | HIGH | MEDIUM | LOW'
+        user_impact:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: User Impact
+          description: Description of user-facing impact
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+          description: When problem began (best estimate)
+        noticed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Noticed At
+          description: When problem was noticed/reported
+        resolved_naturally_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resolved Naturally At
+          description: If problem resolved on its own, when?
+        duration:
+          anyOf:
+          - type: string
+            format: duration
+          - type: 'null'
+          title: Duration
+          description: How long problem lasted (for historical problems)
+        temporal_state:
+          anyOf:
+          - $ref: '#/components/schemas/TemporalState'
+          - type: 'null'
+          description: ONGOING | HISTORICAL
+        recent_changes:
+          items:
+            $ref: '#/components/schemas/Change'
+          type: array
+          title: Recent Changes
+          description: Recent changes that may be relevant (deployments, configs,
+            etc.)
+        correlations:
+          items:
+            $ref: '#/components/schemas/Correlation'
+          type: array
+          maxItems: 10
+          title: Correlations
+          description: Identified correlations between changes and symptom
+        correlation_confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Correlation Confidence
+          description: Confidence in change-symptom correlation (0.0 = no correlation,
+            1.0 = certain)
+          default: 0.0
+        urgency_level:
+          $ref: '#/components/schemas/UrgencyLevel'
+          description: Urgency classification for path routing
+          default: unknown
+        urgency_factors:
+          items:
+            type: string
+          type: array
+          title: Urgency Factors
+          description: Factors contributing to urgency assessment
+        verified_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Verified At
+          description: When verification was completed
+        verification_confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Verification Confidence
+          description: Overall confidence in verification accuracy
+          default: 0.0
+      type: object
+      required:
+      - symptom_statement
+      - severity
+      title: ProblemVerification
+      description: 'Consolidated problem verification data.
+
+
+        Contains all data gathered during verification phase:
+
+        - Symptom details
+
+        - Scope assessment
+
+        - Timeline
+
+        - Recent changes
+
+        - Correlations'
     ProblemVerificationData:
       properties:
         urgency_level:
@@ -8406,6 +9864,67 @@ components:
       - failed
       title: ProcessingStatus
       description: Defines the status of data processing operations.
+    QueryIntent:
+      properties:
+        type:
+          $ref: '#/components/schemas/IntentType'
+          description: Intent type for routing - determines which handler processes
+            this query
+        from_status:
+          anyOf:
+          - $ref: '#/components/schemas/CaseStatus'
+          - type: 'null'
+          description: 'For status_transition: source status (validation)'
+        to_status:
+          anyOf:
+          - $ref: '#/components/schemas/CaseStatus'
+          - type: 'null'
+          description: 'For status_transition: target status (REQUIRED for status_transition)'
+        user_confirmed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: User Confirmed
+          description: User explicitly confirmed action via UI button/dialog
+        hypothesis_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hypothesis Id
+          description: 'For hypothesis_action: target hypothesis ID'
+        action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Action
+          description: 'Action to perform: validate | refute | retire'
+        evidence_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Id
+          description: 'For evidence_request: target evidence ID'
+        confirmation_value:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Confirmation Value
+          description: 'For confirmation: yes/no value'
+      type: object
+      required:
+      - type
+      title: QueryIntent
+      description: 'Structured intent metadata for programmatic query handling.
+
+
+        Enables reliable intent detection without keyword matching.
+
+        All queries must specify their intent type for proper routing.
+
+
+        Design Reference: Intent-based routing eliminates ambiguity in pattern matching
+
+        and provides single code path for all interactions (conversation history unified).'
     RelatedHypothesis:
       properties:
         hypothesis_id:
@@ -8725,6 +10244,66 @@ components:
         9 response formats designed to serve 16 QueryIntent categories (1.8:1 ratio).
 
         Each format has strict structural requirements for frontend parsing.'
+    RootCauseConclusion:
+      properties:
+        root_cause:
+          type: string
+          maxLength: 1000
+          minLength: 1
+          title: Root Cause
+          description: Definitive statement of root cause
+        confidence_level:
+          $ref: '#/components/schemas/ConfidenceLevel'
+          description: Categorical confidence level
+        likelihood:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Likelihood
+          description: Numeric likelihood score (0.0-1.0)
+        mechanism:
+          type: string
+          maxLength: 2000
+          title: Mechanism
+          description: How this root cause led to the symptom
+        evidence_basis:
+          items:
+            type: string
+          type: array
+          title: Evidence Basis
+          description: Evidence IDs supporting this conclusion
+        validated_hypothesis_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Validated Hypothesis Id
+          description: If identified via hypothesis validation, the hypothesis ID
+        contributing_factors:
+          items:
+            type: string
+          type: array
+          title: Contributing Factors
+          description: Secondary factors that made the problem worse or more likely
+        determined_at:
+          type: string
+          format: date-time
+          title: Determined At
+          description: When root cause was determined
+        determined_by:
+          type: string
+          title: Determined By
+          description: 'Who determined: ''agent'' or user_id'
+          default: agent
+      type: object
+      required:
+      - root_cause
+      - confidence_level
+      - likelihood
+      - mechanism
+      title: RootCauseConclusion
+      description: 'Final determination of root cause.
+
+        More authoritative than WorkingConclusion.'
     RootCauseSummary:
       properties:
         description:
@@ -9034,6 +10613,111 @@ components:
       - updated_at
       title: SettingsUpdateResponse
       description: Response for updating organization settings
+    Solution:
+      properties:
+        solution_id:
+          type: string
+          pattern: ^sol_[a-f0-9]{12}$
+          title: Solution Id
+          description: Unique solution identifier
+        solution_type:
+          $ref: '#/components/schemas/SolutionType'
+          description: Type of solution
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+          description: Short solution title
+        immediate_action:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Immediate Action
+          description: Quick fix or mitigation (temporary)
+        longterm_fix:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Longterm Fix
+          description: Permanent solution (comprehensive)
+        implementation_steps:
+          items:
+            type: string
+          type: array
+          title: Implementation Steps
+          description: Step-by-step implementation instructions
+        commands:
+          items:
+            type: string
+          type: array
+          title: Commands
+          description: Specific commands to execute
+        risks:
+          items:
+            type: string
+          type: array
+          title: Risks
+          description: Risks or side effects of this solution
+        proposed_at:
+          type: string
+          format: date-time
+          title: Proposed At
+          description: When solution was proposed
+        proposed_by:
+          type: string
+          title: Proposed By
+          description: 'Who proposed: ''agent'' or user_id'
+          default: agent
+        applied_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Applied At
+          description: When solution was applied
+        applied_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Applied By
+          description: Who applied the solution
+        verified_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Verified At
+          description: When solution effectiveness was verified
+        verification_method:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Verification Method
+          description: How effectiveness was verified
+        verification_evidence_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Verification Evidence Id
+          description: Evidence ID proving solution worked
+        effectiveness:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Effectiveness
+          description: How well solution worked (0.0 = failed, 1.0 = perfect)
+      type: object
+      required:
+      - solution_type
+      - title
+      title: Solution
+      description: Proposed or applied solution/mitigation.
     SolutionSummary:
       properties:
         description:
@@ -9057,6 +10741,20 @@ components:
       - applied_by
       title: SolutionSummary
       description: Solution information for RESOLVED phase.
+    SolutionType:
+      type: string
+      enum:
+      - rollback
+      - config_change
+      - restart
+      - scaling
+      - code_fix
+      - workaround
+      - infrastructure
+      - data_fix
+      - other
+      title: SolutionType
+      description: Type of solution/mitigation
     Source:
       properties:
         type:
@@ -9266,6 +10964,15 @@ components:
       type: object
       title: TeamUpdateRequest
       description: Request to update team details
+    TemporalState:
+      type: string
+      enum:
+      - ongoing
+      - historical
+      title: TemporalState
+      description: 'Problem temporal classification.
+
+        Used for investigation path routing.'
     TemporalStateData:
       properties:
         started_at:
@@ -9348,6 +11055,144 @@ components:
       - status
       title: ToolCallResponse
       description: Response model for a tool call within an execution.
+    TurnOutcome:
+      type: string
+      enum:
+      - milestone_completed
+      - data_provided
+      - data_requested
+      - data_not_provided
+      - hypothesis_tested
+      - case_resolved
+      - conversation
+      - other
+      title: TurnOutcome
+      description: 'Turn outcome classification.
+
+
+        NOTE: Outcomes are LLM-observable only (what happened this turn).
+
+        Workflow control uses direct metrics (turns_without_progress, degraded_mode).
+
+        Outcomes are for analytics and prompt context, not control flow.'
+    TurnProgress:
+      properties:
+        turn_number:
+          type: integer
+          minimum: 0.0
+          title: Turn Number
+          description: Sequential turn number
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+          description: When turn occurred
+        milestones_completed:
+          items:
+            type: string
+          type: array
+          title: Milestones Completed
+          description: Milestone names completed this turn (e.g., 'symptom_verified')
+        evidence_added:
+          items:
+            type: string
+          type: array
+          title: Evidence Added
+          description: Evidence IDs added this turn
+        hypotheses_generated:
+          items:
+            type: string
+          type: array
+          title: Hypotheses Generated
+          description: Hypothesis IDs generated this turn
+        hypotheses_validated:
+          items:
+            type: string
+          type: array
+          title: Hypotheses Validated
+          description: Hypothesis IDs validated this turn
+        solutions_proposed:
+          items:
+            type: string
+          type: array
+          title: Solutions Proposed
+          description: Solution IDs proposed this turn
+        progress_made:
+          type: boolean
+          title: Progress Made
+          description: Did investigation advance this turn?
+        actions_taken:
+          items:
+            type: string
+          type: array
+          title: Actions Taken
+          description: 'Agent actions: ''verified_symptom'', ''requested_logs'', ''generated_hypothesis'',
+            etc.'
+        outcome:
+          $ref: '#/components/schemas/TurnOutcome'
+          description: Turn outcome classification
+        user_message_summary:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: User Message Summary
+          description: Summary of user message
+        agent_response_summary:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Agent Response Summary
+          description: Summary of agent response
+        system_feedback:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: System Feedback
+          description: Instruction or error from system to agent (e.g., 'Invalid evidence
+            ID')
+        momentum:
+          anyOf:
+          - $ref: '#/components/schemas/InvestigationMomentum'
+          - type: 'null'
+          description: Investigation momentum indicator for this turn
+        blocked_reasons:
+          items:
+            type: string
+          type: array
+          title: Blocked Reasons
+          description: Reasons why investigation is blocked or progressing slowly
+        next_steps:
+          items:
+            type: string
+          type: array
+          title: Next Steps
+          description: Suggested next steps for the investigation
+        stagnation_detected:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stagnation Detected
+          description: 'Stagnation type detected this turn: no_progress, hypothesis_anchoring,
+            action_loop, hypothesis_deadlock'
+        validation_repairs:
+          items:
+            type: string
+          type: array
+          title: Validation Repairs
+          description: State repairs made by StateValidator this turn (e.g., 'Fixed
+            milestone ordering')
+      type: object
+      required:
+      - turn_number
+      - progress_made
+      - outcome
+      title: TurnProgress
+      description: 'Record of what happened in one turn.
+
+        Turn = one user message + one agent response.'
     UploadedData:
       properties:
         id:
@@ -9386,6 +11231,83 @@ components:
       - processing_status
       title: UploadedData
       description: A strongly-typed model for data uploaded by the user.
+    UploadedFile:
+      properties:
+        file_id:
+          type: string
+          pattern: ^(file_|data_)[a-f0-9]{12,16}$
+          title: File Id
+          description: Unique file identifier (same as data_id in data service)
+        filename:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Filename
+          description: Original filename
+        size_bytes:
+          type: integer
+          minimum: 0.0
+          title: Size Bytes
+          description: File size in bytes
+        data_type:
+          type: string
+          maxLength: 50
+          title: Data Type
+          description: Detected data type from preprocessing (log, metric, config,
+            code, text, image, etc.)
+        uploaded_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Uploaded At Turn
+          description: Turn number when file was uploaded
+        uploaded_at:
+          type: string
+          format: date-time
+          title: Uploaded At
+          description: Upload timestamp
+        source_type:
+          type: string
+          maxLength: 50
+          title: Source Type
+          description: file_upload | paste | screenshot | page_injection | agent_generated
+          default: file_upload
+        preprocessing_summary:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Preprocessing Summary
+          description: Brief summary from preprocessing pipeline (<500 chars)
+        content_ref:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Content Ref
+          description: Reference to stored file content (S3 URI or data_id). May be
+            None if processing pending.
+      type: object
+      required:
+      - filename
+      - size_bytes
+      - data_type
+      - uploaded_at_turn
+      title: UploadedFile
+      description: 'Raw file metadata for files uploaded to a case.
+
+
+        Key Distinction:
+
+        - UploadedFile: Raw file metadata, exists in ANY case phase (INQUIRY or INVESTIGATING)
+
+        - Evidence: Investigation-linked data derived from files, ONLY exists in INVESTIGATING
+        phase
+
+
+        Files uploaded during INQUIRY are tracked here but do NOT become evidence
+        until
+
+        the case transitions to INVESTIGATING and hypotheses are formulated.'
     UploadedFileDetails:
       properties:
         file_id:
@@ -9620,6 +11542,25 @@ components:
       - files
       title: UploadedFilesListResponse
       description: List of uploaded files with evidence counts.
+    UrgencyLevel:
+      type: string
+      enum:
+      - critical
+      - high
+      - medium
+      - low
+      - unknown
+      title: UrgencyLevel
+      description: 'Urgency classification for path routing.
+
+
+        Used with TemporalState to determine investigation path:
+
+        - ONGOING + HIGH/CRITICAL -> MITIGATION
+
+        - HISTORICAL + LOW/MEDIUM -> ROOT_CAUSE
+
+        - Other combinations -> USER_CHOICE'
     User:
       properties:
         user_id:
@@ -9828,11 +11769,11 @@ components:
           $ref: '#/components/schemas/User'
         active_case:
           anyOf:
-          - $ref: '#/components/schemas/Case'
+          - $ref: '#/components/schemas/faultmaven__models__api__Case'
           - type: 'null'
         cases:
           items:
-            $ref: '#/components/schemas/Case'
+            $ref: '#/components/schemas/faultmaven__models__api__Case'
           type: array
           title: Cases
         messages:
@@ -9873,7 +11814,7 @@ components:
           - type: object
           - type: 'null'
           title: Investigation Progress
-          description: OODA investigation progress (phase, iteration, hypotheses)
+          description: Investigation progress (milestones, evidence, hypotheses)
       type: object
       required:
       - session_id
@@ -9883,6 +11824,61 @@ components:
         state.
 
         This is the single source of truth for what the frontend should display.'
+    WorkingConclusion:
+      properties:
+        statement:
+          type: string
+          maxLength: 1000
+          minLength: 1
+          title: Statement
+          description: Current conclusion statement
+        likelihood:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Likelihood
+          description: Likelihood of this conclusion (0.0-1.0)
+        reasoning:
+          type: string
+          maxLength: 2000
+          title: Reasoning
+          description: Why agent believes this conclusion
+        supporting_evidence_ids:
+          items:
+            type: string
+          type: array
+          title: Supporting Evidence Ids
+          description: Evidence IDs supporting this conclusion
+        caveats:
+          items:
+            type: string
+          type: array
+          title: Caveats
+          description: Limitations or uncertainties
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+          description: When this conclusion was formed/updated
+        supersedes_conclusion_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Supersedes Conclusion At
+          description: Timestamp of previous conclusion this replaces
+      type: object
+      required:
+      - statement
+      - likelihood
+      - reasoning
+      title: WorkingConclusion
+      description: 'Agent current best understanding of the problem.
+
+        Updated iteratively as investigation progresses.
+
+
+        Less authoritative than RootCauseConclusion.'
     WorkingConclusionSummary:
       properties:
         summary:
@@ -9987,6 +11983,57 @@ components:
       - updated_at
       title: SessionResponse
       description: Response model for investigation session.
+    faultmaven__models__api__Case:
+      properties:
+        case_id:
+          type: string
+          title: Case Id
+        title:
+          type: string
+          title: Title
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        status:
+          type: string
+          enum:
+          - inquiry
+          - investigating
+          - resolved
+          - closed
+          title: Status
+          default: inquiry
+        priority:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+          - critical
+          title: Priority
+          default: medium
+        created_at:
+          type: string
+          title: Created At
+        updated_at:
+          type: string
+          title: Updated At
+        message_count:
+          type: integer
+          title: Message Count
+          default: 0
+        owner_id:
+          type: string
+          title: Owner Id
+      type: object
+      required:
+      - case_id
+      - title
+      - owner_id
+      title: Case
+      description: Represents a troubleshooting case.
     faultmaven__models__api__SessionResponse:
       properties:
         schema_version:
@@ -10034,6 +12081,222 @@ components:
       - created_at
       title: SessionResponse
       description: Response payload for auth session operations - API spec compliance.
+    faultmaven__modules__case__domain__models__Case:
+      properties:
+        case_id:
+          type: string
+          maxLength: 17
+          minLength: 17
+          pattern: ^case_[a-f0-9]{12}$
+          title: Case Id
+          description: Unique case identifier
+        user_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: User Id
+          description: User who created the case
+        organization_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Organization Id
+          description: Organization this case belongs to
+        title:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Title
+          description: Short case title for list views and headers (e.g., 'API Performance
+            Issue')
+        description:
+          type: string
+          maxLength: 2000
+          title: Description
+          description: "\n        Confirmed problem description - canonical, user-facing,\
+            \ displayed prominently in UI.\n\n        Lifecycle:\n        1. Empty\
+            \ initially during INQUIRY (while agent formalizes problem)\n        2.\
+            \ Set when user confirms proposed_problem_statement and decides to investigate\n\
+            \        3. Immutable after status becomes INVESTIGATING (provides stable\
+            \ reference)\n        4. Used for UI display, search, and documentation\n\
+            \n        Example: \"API experiencing slowness with 30% of requests taking\
+            \ >5s response time\n                  across all US regions, started\
+            \ 2 hours ago coinciding with v2.1.3 deployment\"\n        "
+          default: ''
+        status:
+          $ref: '#/components/schemas/CaseStatus'
+          description: Current lifecycle status
+          default: inquiry
+        status_history:
+          items:
+            $ref: '#/components/schemas/CaseStatusTransition'
+          type: array
+          title: Status History
+          description: Complete history of status changes
+        closure_reason:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Closure Reason
+          description: 'Why case was closed: resolved | abandoned | escalated | inquiry_only
+            | duplicate | other'
+        progress:
+          $ref: '#/components/schemas/InvestigationProgress'
+          description: Milestone-based progress tracking
+        current_turn:
+          type: integer
+          minimum: 0.0
+          title: Current Turn
+          description: Current turn number (increments with each user-agent exchange)
+          default: 0
+        turns_without_progress:
+          type: integer
+          minimum: 0.0
+          title: Turns Without Progress
+          description: Consecutive turns with no milestone advancement (for stuck
+            detection)
+          default: 0
+        turn_history:
+          items:
+            $ref: '#/components/schemas/TurnProgress'
+          type: array
+          title: Turn History
+          description: Complete history of all turns
+        messages:
+          items:
+            type: object
+          type: array
+          title: Messages
+          description: "\n        Complete conversation history (user queries + agent\
+            \ responses).\n\n        Per case-storage-design.md Section 4.7, each\
+            \ message contains:\n        - message_id: str - Unique identifier\n \
+            \       - case_id: str - Case this message belongs to\n        - turn_number:\
+            \ int - Which turn this message belongs to\n        - role: str - \"user\"\
+            \ | \"assistant\" | \"system\"\n        - content: str - The actual message\
+            \ text\n        - created_at: datetime - When message was created (ISO\
+            \ format)\n        - token_count: Optional[int] - Number of tokens in\
+            \ content\n        - metadata: dict - Additional data (sources, tools\
+            \ used, etc.)\n\n        NOTE: Does NOT contain session_id (per case-and-session-concepts.md)\n\
+            \        Sessions provide authentication only, not message ownership.\n\
+            \n        Relationship to turn_history:\n        - messages[i].turn_number\
+            \ references turn_history[j].turn_number\n        - Provides the \"what\
+            \ was said\" to complement turn_history's \"what happened\"\n        "
+        message_count:
+          type: integer
+          minimum: 0.0
+          title: Message Count
+          description: Total number of messages (user + agent combined)
+          default: 0
+        path_selection:
+          anyOf:
+          - $ref: '#/components/schemas/PathSelection'
+          - type: 'null'
+          description: Selected investigation path (MITIGATION vs ROOT_CAUSE)
+        investigation_strategy:
+          $ref: '#/components/schemas/InvestigationStrategy'
+          description: 'Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM
+            (thoroughness)'
+          default: post_mortem
+        inquiry:
+          $ref: '#/components/schemas/InquiryData'
+          description: Pre-investigation INQUIRY status data
+        problem_verification:
+          anyOf:
+          - $ref: '#/components/schemas/ProblemVerification'
+          - type: 'null'
+          description: Consolidated verification data (symptom, scope, timeline, changes)
+        uploaded_files:
+          items:
+            $ref: '#/components/schemas/UploadedFile'
+          type: array
+          title: Uploaded Files
+          description: "\n        All files uploaded to this case (raw file metadata).\n\
+            \n        Files can be uploaded at ANY phase (INQUIRY or INVESTIGATING).\n\
+            \        Evidence is DERIVED from uploaded files after analysis during\
+            \ INVESTIGATING phase.\n\n        Difference from evidence:\n        -\
+            \ uploaded_files: Raw file metadata (file_id, filename, size, upload time)\n\
+            \        - evidence: Investigation data linked to hypotheses (only in\
+            \ INVESTIGATING phase)\n        "
+        evidence:
+          items:
+            $ref: '#/components/schemas/Evidence'
+          type: array
+          title: Evidence
+          description: All evidence collected during investigation
+        hypotheses:
+          additionalProperties:
+            $ref: '#/components/schemas/Hypothesis'
+          type: object
+          title: Hypotheses
+          description: Generated hypotheses (key = hypothesis_id)
+        solutions:
+          items:
+            $ref: '#/components/schemas/Solution'
+          type: array
+          title: Solutions
+          description: Proposed and applied solutions
+        working_conclusion:
+          anyOf:
+          - $ref: '#/components/schemas/WorkingConclusion'
+          - type: 'null'
+          description: Agent current best understanding (updated iteratively)
+        root_cause_conclusion:
+          anyOf:
+          - $ref: '#/components/schemas/RootCauseConclusion'
+          - type: 'null'
+          description: Final root cause determination
+        degraded_mode:
+          anyOf:
+          - $ref: '#/components/schemas/DegradedMode'
+          - type: 'null'
+          description: Investigation is stuck or blocked
+        escalation_state:
+          anyOf:
+          - $ref: '#/components/schemas/EscalationState'
+          - type: 'null'
+          description: Escalated to human expert
+        documentation:
+          $ref: '#/components/schemas/DocumentationData'
+          description: Generated documentation and lessons learned
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+          description: When case was created
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+          description: Last modification timestamp
+        last_activity_at:
+          type: string
+          format: date-time
+          title: Last Activity At
+          description: Most recent user/agent interaction (for 'updated Xm ago' display)
+        resolved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resolved At
+          description: When case reached RESOLVED status
+        closed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Closed At
+          description: When case reached terminal state (RESOLVED or CLOSED)
+      type: object
+      required:
+      - user_id
+      - organization_id
+      - title
+      title: Case
+      description: 'Root case entity.
+
+        Represents one complete troubleshooting investigation.'
   securitySchemes:
     HTTPBearer:
       type: http

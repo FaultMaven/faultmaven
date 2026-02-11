@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict
 from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 
 # Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
 import conftest as root_conftest  # noqa: F401
@@ -93,6 +94,266 @@ async def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
         base_url=BASE_URL, timeout=TIMEOUT, follow_redirects=True
     ) as client:
         yield client
+
+
+@pytest_asyncio.fixture(scope="function")
+async def test_client() -> AsyncGenerator[httpx.AsyncClient, None]:
+    """Alias for http_client for backwards compatibility with test_evidence_flow.py."""
+    async with httpx.AsyncClient(
+        base_url=BASE_URL, timeout=TIMEOUT, follow_redirects=True
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+def mock_authenticated_user():
+    """Create a mock authenticated user for tests."""
+    from faultmaven.modules.auth.contracts import UserDTO
+
+    return UserDTO(
+        user_id="test_user_123",
+        username="test_user",
+        email="test@example.com",
+        display_name="Test User",
+        is_active=True,
+        roles=["user"],
+    )
+
+
+@pytest.fixture
+def auth_headers() -> Dict[str, str]:
+    """Provide mock authentication headers for integration tests.
+
+    For actual integration tests against a running service, you would need
+    to either:
+    1. Generate a real JWT token from the auth service
+    2. Use a test user token
+    3. Mock the authentication dependency
+
+    For now, providing placeholder headers that tests can use.
+    Tests should mock the require_authentication dependency.
+    """
+    return {
+        "Authorization": "Bearer test_token_placeholder",
+        "Content-Type": "application/json",
+    }
+
+
+@pytest.fixture
+def mock_case_service():
+    """Create a mock case service for tests."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from faultmaven.modules.case.contracts import Case, CaseStatus
+
+    service = AsyncMock()
+
+    # Store created cases to maintain state across create_case and get_case calls
+    created_cases = {}
+
+    # Mock create_case to return a simple case
+    async def create_case_mock(title=None, description=None, owner_id=None, **kwargs):
+        case_id = f"case_{uuid4().hex[:12]}"
+        case = Case(
+            case_id=case_id,
+            title=title or "Test Case",
+            description=description or "Test Description",
+            user_id=owner_id or "test_user_123",
+            organization_id="test_org_123",
+            status=CaseStatus.INQUIRY,
+            current_turn=0,
+            message_count=0,
+        )
+        # Store case for later retrieval
+        created_cases[case_id] = case
+        return case
+
+    service.create_case = create_case_mock
+
+    # Mock get_case to return the case (with evidence if it exists)
+    async def get_case_mock(case_id, user_id):
+        # Return the stored case if it exists, otherwise create a new one
+        if case_id in created_cases:
+            return created_cases[case_id]
+        else:
+            case = Case(
+                case_id=case_id,
+                title="Test Case",
+                description="Test Description",
+                user_id=user_id,
+                organization_id="test_org_123",
+                status=CaseStatus.INVESTIGATING,
+                current_turn=1,
+                message_count=1,
+            )
+            created_cases[case_id] = case
+            return case
+
+    service.get_case = get_case_mock
+
+    return service
+
+
+@pytest.fixture
+def mock_session_service():
+    """Create a mock session service for tests."""
+    from unittest.mock import AsyncMock
+
+    service = AsyncMock()
+    return service
+
+
+@pytest.fixture
+def mock_data_service():
+    """Create a mock data preprocessing service for tests."""
+    from unittest.mock import AsyncMock
+
+    service = AsyncMock()
+
+    # Mock ingest_data to return preprocessed data
+    async def ingest_data_mock(content, session_id, file_name, file_size, context):
+        data_id = f"data_{uuid4().hex[:12]}"
+        return {
+            "data_id": data_id,
+            "data_type": "logs",
+            "content": content,
+            "file_size": file_size,
+            "insights": {"brief_summary": "Test data ingested"},
+            "classification": "SYMPTOM_EVIDENCE",
+        }
+
+    service.ingest_data = ingest_data_mock
+
+    return service
+
+
+@pytest.fixture
+def mock_investigation_service():
+    """Create a mock investigation service for tests."""
+    from unittest.mock import AsyncMock
+
+    from faultmaven.modules.case.contracts import CaseStatus
+
+    service = AsyncMock()
+
+    # Mock process_turn to return a response
+    async def process_turn_mock(case_id, user_id, request):
+        from faultmaven.modules.agent.contracts import CaseQueryResponse
+
+        return CaseQueryResponse(
+            agent_response="Test response",
+            case_id=case_id,
+            case_status=CaseStatus.INVESTIGATING,
+            milestones_completed=[],
+            current_stage="SYMPTOM_VERIFICATION",
+        )
+
+    service.process_turn = process_turn_mock
+
+    return service
+
+
+@pytest.fixture
+def mock_case_vector_store():
+    """Create a mock case vector store for tests."""
+    from unittest.mock import AsyncMock
+
+    store = AsyncMock()
+
+    # Mock add_documents
+    async def add_documents_mock(case_id, documents):
+        return True
+
+    store.add_documents = add_documents_mock
+
+    return store
+
+
+@pytest.fixture
+def mock_case_repository():
+    """Create a mock case repository for tests."""
+    from unittest.mock import AsyncMock
+
+    repo = AsyncMock()
+    return repo
+
+
+@pytest.fixture
+def mock_services_for_integration_tests(
+    mock_authenticated_user,
+    mock_case_service,
+    mock_session_service,
+    mock_data_service,
+    mock_investigation_service,
+    mock_case_vector_store,
+    mock_case_repository,
+):
+    """Mock all services for integration tests (opt-in).
+
+    This fixture overrides all service dependencies and sets up app.state with
+    mock services, allowing integration tests to run without actual service
+    implementations.
+
+    To use this fixture, tests should explicitly request it as a parameter.
+    Tests that need to test authentication failures should NOT use this fixture.
+    """
+    from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.api.v1.dependencies import (
+        get_case_vector_store,
+        get_data_service,
+        get_investigation_service,
+    )
+    from faultmaven.main import app
+    from faultmaven.modules.case.api.routes import (
+        _di_get_case_service_dependency,
+        _di_get_session_service_dependency,
+        get_case_repository,
+        get_case_service,
+    )
+
+    # Mock authentication
+    async def get_mock_user():
+        return mock_authenticated_user
+
+    # Mock service dependencies
+    async def get_mock_case_service():
+        return mock_case_service
+
+    async def get_mock_session_service():
+        return mock_session_service
+
+    async def get_mock_data_service():
+        return mock_data_service
+
+    async def get_mock_investigation_service():
+        return mock_investigation_service
+
+    async def get_mock_case_vector_store():
+        return mock_case_vector_store
+
+    async def get_mock_case_repository():
+        return mock_case_repository
+
+    # Override all dependencies
+    app.dependency_overrides[require_authentication] = get_mock_user
+    app.dependency_overrides[get_case_service] = get_mock_case_service
+    app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
+    app.dependency_overrides[_di_get_session_service_dependency] = (
+        get_mock_session_service
+    )
+    app.dependency_overrides[get_data_service] = get_mock_data_service
+    app.dependency_overrides[get_investigation_service] = get_mock_investigation_service
+    app.dependency_overrides[get_case_vector_store] = get_mock_case_vector_store
+    app.dependency_overrides[get_case_repository] = get_mock_case_repository
+
+    # Set app.state for services that access request.app.state directly
+    app.state.session_service = mock_session_service
+    app.state.case_service = mock_case_service
+
+    yield
+
+    # Clean up after test
+    app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture(scope="function")

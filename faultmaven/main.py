@@ -1192,7 +1192,7 @@ if _is_debug_enabled(settings=_debug_settings):
             from .config.settings import get_settings
 
             settings_debug = get_settings()
-            strict_mode = settings_debug.agent.strict_provider_mode
+            strict_mode = settings_debug.llm.strict_provider_mode
 
             return {
                 "timestamp": to_json_compatible(datetime.now(timezone.utc)),

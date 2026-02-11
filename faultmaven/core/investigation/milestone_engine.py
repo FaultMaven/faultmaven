@@ -27,6 +27,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+# Module initialization
+logger = logging.getLogger(__name__)
+
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.llm_error_handler import (
     ErrorAction,
@@ -84,6 +87,106 @@ from faultmaven.modules.case.domain.services.investigation_router import (
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Evidence Category - Milestone Mapping (Option 2.5: System-Inferred Attribution)
+# =============================================================================
+#
+# This mapping defines which milestones each evidence category can potentially advance.
+# Used for automatic milestone attribution via the _infer_milestones() function.
+#
+# Design Reference:
+# - docs/working/MILESTONE-ADVANCEMENT-ANALYSIS.md (Option 2.5)
+# - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
+#
+# Derived from MILESTONE_EVIDENCE_EXPECTATIONS in evidence_processor.py
+#
+# Three-Tier Logic:
+#   Tier 1: MilestoneUpdates drives state (turn-level, LLM specifies)
+#   Tier 2: System infers advances_milestones from this map (handles 90% of cases)
+#   Tier 3: LLM can override with explicit specification (handles 10% edge cases)
+
+CATEGORY_MILESTONE_MAP = {
+    EvidenceCategory.SYMPTOM_EVIDENCE: [
+        "symptom_verified",  # Confirms problem exists
+        "scope_assessed",  # Identifies impact scope
+        "timeline_established",  # Provides temporal data
+        "changes_identified",  # Shows what changed (deployment logs, config diffs)
+    ],
+    EvidenceCategory.CAUSAL_EVIDENCE: [
+        "changes_identified",  # Identifies which change caused the problem
+        "root_cause_identified",  # Demonstrates root cause
+        "solution_proposed",  # Justifies proposed solution
+    ],
+    EvidenceCategory.RESOLUTION_EVIDENCE: [
+        "solution_applied",  # Demonstrates solution effectiveness
+    ],
+    EvidenceCategory.CONTEXTUAL_EVIDENCE: [
+        # Contextual evidence provides baseline/environmental info
+        # It informs investigation but doesn't directly advance milestones
+    ],
+}
+
+
+def _infer_milestones(
+    category: EvidenceCategory, milestones_completed_this_turn: list[str]
+) -> list[str]:
+    """
+    Infer which milestones this evidence likely advanced.
+
+    This implements Tier 2 of the three-tier milestone attribution logic:
+    - Tier 1: MilestoneUpdates drives milestone state (turn-level, LLM specifies)
+    - Tier 2: System infers advances_milestones from category (THIS FUNCTION - handles 90%)
+    - Tier 3: LLM overrides when explicit (optional, handles 10% edge cases)
+
+    Design Reference:
+    - docs/working/MILESTONE-ADVANCEMENT-ANALYSIS.md (Option 2.5)
+    - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
+
+    Args:
+        category: The evidence category (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL)
+        milestones_completed_this_turn: Milestones completed this turn from MilestoneUpdates
+
+    Returns:
+        List of milestone names this evidence contributed to
+
+    Logic:
+        1. Get eligible milestones for this category from CATEGORY_MILESTONE_MAP
+        2. Intersect with milestones completed this turn (from MilestoneUpdates)
+        3. Result = milestones this evidence can claim credit for
+
+    Example:
+        category = SYMPTOM_EVIDENCE
+        milestones_completed_this_turn = ["symptom_verified", "scope_assessed"]
+        eligible = ["symptom_verified", "scope_assessed", "timeline_established", "changes_identified"]
+        result = ["symptom_verified", "scope_assessed"]
+
+    Key Insight:
+        With one-file-per-turn constraint (UI limitation), inference is UNAMBIGUOUS.
+        There's only one evidence record per turn, so all eligible milestones completed
+        that turn get attributed to it. No guessing needed.
+
+    Note:
+        - CONTEXTUAL_EVIDENCE returns [] (doesn't directly advance milestones)
+        - If category not in map, returns [] (safe fallback)
+        - LLM can override by explicitly setting advances_milestones in EvidenceToAdd
+    """
+    # Get eligible milestones for this category
+    eligible_milestones = CATEGORY_MILESTONE_MAP.get(category, [])
+
+    # Intersect with milestones completed this turn
+    # This is the "system inference" - we know this evidence contributed to these milestones
+    inferred = [m for m in milestones_completed_this_turn if m in eligible_milestones]
+
+    logger.debug(
+        f"_infer_milestones: category={category.value}, "
+        f"milestones_completed_this_turn={milestones_completed_this_turn}, "
+        f"eligible={eligible_milestones}, "
+        f"inferred={inferred}"
+    )
+
+    return inferred
 
 
 # =============================================================================
@@ -192,21 +295,58 @@ def validate_reasoning_first(
                 "Add justification to internal_reasoning.milestone_justifications."
             )
 
+    # Check 1.5: Warn if trying to complete milestones with no evidence in case
+    # IMPORTANT: Also check evidence_to_add to allow post-processing fallback evidence
+    evidence_being_added = (
+        getattr(response_obj.state_updates, "evidence_to_add", []) or []
+    )
+    has_evidence = bool(case.evidence) or bool(evidence_being_added)
+
+    if internal_reasoning.milestone_justifications and not has_evidence:
+        errors.append(
+            "Cannot complete milestones when no evidence has been collected. "
+            "The case has 0 evidence artifacts. You must first request evidence from the user "
+            "before attempting to complete milestones. Use data_requests in state_updates to ask for evidence."
+        )
+
     # Check 2: Justifications must reference analyzed evidence
     if (
         internal_reasoning.milestone_justifications
         and not internal_reasoning.evidence_analyzed
     ):
+        # Build list of available evidence IDs to help LLM
+        available_ids = [e.evidence_id for e in case.evidence]
+        available_ids_str = (
+            ", ".join(f'"{eid}"' for eid in available_ids) if available_ids else "none"
+        )
+
         errors.append(
-            "Milestone justifications provided but no evidence_analyzed listed. "
-            "Specify which evidence IDs were considered."
+            f"Milestone justifications provided but no evidence_analyzed listed. "
+            f"You MUST populate evidence_analyzed with IDs of evidence you considered. "
+            f"Available evidence IDs in this case: [{available_ids_str}]. "
+            f"Copy the relevant IDs from <evidence_collected> section and add them to evidence_analyzed."
         )
 
     # Check 3: Evidence IDs must exist in case
+    # Exception: If evidence is being added this turn, allow invented IDs from LLM
     case_evidence_ids = {e.evidence_id for e in case.evidence}
+    evidence_being_added = (
+        getattr(response_obj.state_updates, "evidence_to_add", []) or []
+    )
+    has_evidence_being_added = bool(evidence_being_added)
+
     for evidence_id in internal_reasoning.evidence_analyzed:
         # Skip "new_index_N" references (evidence being added this turn)
         if evidence_id.startswith("new_index_"):
+            continue
+
+        # LENIENT MODE: If evidence is being added this turn, allow any evidence_id references
+        # The LLM may invent IDs for evidence it's creating (e.g., 'ev_018e211833f48202')
+        # since evidence_to_add doesn't have IDs yet (IDs are generated on creation)
+        if has_evidence_being_added and evidence_id.startswith("ev_"):
+            logger.debug(
+                f"Allowing evidence_id '{evidence_id}' reference because evidence is being added this turn"
+            )
             continue
 
         # STRICT VALIDATION: All evidence IDs must be real
@@ -231,13 +371,254 @@ def validate_reasoning_first(
     # Check 5: Cannot complete milestones without evidence
     if internal_reasoning.milestone_justifications:
         if not internal_reasoning.evidence_analyzed:
+            # Build list of available evidence IDs to help LLM
+            available_ids = [e.evidence_id for e in case.evidence]
+            available_ids_str = (
+                ", ".join(f'"{eid}"' for eid in available_ids)
+                if available_ids
+                else "none"
+            )
+
             errors.append(
-                "Cannot complete milestones without analyzing evidence. "
-                "The evidence_analyzed list is empty, but milestone_justifications are provided. "
-                "You must cite specific evidence IDs to support milestone completion."
+                f"Cannot complete milestones without analyzing evidence. "
+                f"The evidence_analyzed list is empty, but milestone_justifications are provided. "
+                f"You MUST cite specific evidence IDs to support milestone completion. "
+                f"Available evidence IDs in this case: [{available_ids_str}]. "
+                f"Look at the <evidence_collected> section, find the relevant evidence, and copy the IDs to evidence_analyzed."
             )
 
     return len(errors) == 0, errors
+
+
+# =============================================================================
+# LLM Failure Mitigation - Pattern Detection and Fallback
+# =============================================================================
+# Design Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md
+
+
+import re
+from typing import Optional
+from faultmaven.core.investigation.schemas import EvidenceToAdd
+
+# Pattern definitions for detecting external data when LLM misclassifies
+LOG_PATTERNS = [
+    r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}",  # Timestamp: 2026-02-11 14:03:21
+    r"\b(ERROR|WARN|WARNING|FATAL|CRITICAL|DEBUG|INFO|TRACE)\b",  # Log levels
+    r"\b(Exception|Traceback|Stack trace|stack trace)\b",  # Error indicators
+    r"\[[\w\-]+\]",  # Log tags: [pool], [api], [database]
+]
+
+METRIC_PATTERNS = [
+    r"(\d+\.?\d*)\s*(ms|MB|GB|KB|%|req/s|rps|queries/s)",  # Numeric metrics
+    r"\bp\d{2}[:=]\s*\d+",  # Percentiles: p95: 200, p99=500
+    r"\b(latency|throughput|cpu|memory|disk|timeout)\b",  # Metric keywords
+]
+
+CONFIG_PATTERNS = [
+    r"^\s*[\w\-]+\s*[:=]\s*.+",  # Key-value pairs: max_connections: 50
+    r"^\s*[{\[]",  # JSON/YAML start
+    r"\b(config|configuration|setting|parameter)\b",  # Config keywords
+]
+
+
+def _detect_external_data_patterns(message: str) -> Optional[EvidenceToAdd]:
+    """
+    Fallback: Detect external data when LLM misclassifies user messages.
+
+    This function implements automatic pattern-based evidence creation as a defensive
+    mechanism against LLM classification failures. When the LLM fails to properly
+    classify log data, metrics, or configuration as external_data and doesn't create
+    evidence records, this function detects the patterns and creates fallback evidence.
+
+    Design Philosophy:
+    - Make the system robust regardless of LLM quality
+    - Never lose critical evidence due to classification failures
+    - Prefer false positives (creating evidence for conversation) over false negatives
+      (missing critical evidence)
+
+    Args:
+        message: User message to analyze for data patterns
+
+    Returns:
+        EvidenceToAdd object if patterns detected, None if pure conversation
+
+    Pattern Categories:
+        - Logs: Timestamps, log levels, exceptions, stack traces
+        - Metrics: Numeric values with units, percentiles, performance indicators
+        - Configuration: Key-value pairs, JSON/YAML, config keywords
+
+    Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md (Strategy 1)
+    """
+    # Check for log patterns
+    log_match_count = sum(
+        1 for p in LOG_PATTERNS if re.search(p, message, re.IGNORECASE | re.MULTILINE)
+    )
+    if (
+        log_match_count >= 2
+    ):  # Require at least 2 log patterns to reduce false positives
+        return EvidenceToAdd(
+            summary=(
+                f"Log data (auto-detected): {message[:200]}..."
+                if len(message) > 200
+                else f"Log data (auto-detected): {message}"
+            ),
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            content_ref=None,
+        )
+
+    # Check for metric patterns
+    metric_match_count = sum(
+        1
+        for p in METRIC_PATTERNS
+        if re.search(p, message, re.IGNORECASE | re.MULTILINE)
+    )
+    if metric_match_count >= 2:  # Require at least 2 metric patterns
+        return EvidenceToAdd(
+            summary=(
+                f"Metrics (auto-detected): {message[:200]}..."
+                if len(message) > 200
+                else f"Metrics (auto-detected): {message}"
+            ),
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            source_type=EvidenceSourceType.METRICS,
+            content_ref=None,
+        )
+
+    # Check for config patterns
+    config_match_count = sum(
+        1
+        for p in CONFIG_PATTERNS
+        if re.search(p, message, re.IGNORECASE | re.MULTILINE)
+    )
+    if config_match_count >= 2:  # Require at least 2 config patterns
+        return EvidenceToAdd(
+            summary=(
+                f"Configuration (auto-detected): {message[:200]}..."
+                if len(message) > 200
+                else f"Configuration (auto-detected): {message}"
+            ),
+            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+            source_type=EvidenceSourceType.CONFIGURATION,
+            content_ref=None,
+        )
+
+    # No clear patterns detected - likely pure conversation
+    return None
+
+
+def _post_process_llm_response(
+    updates: Any,
+    user_message: str,
+    case: Case,
+) -> Any:
+    """
+    Post-process and repair LLM response to handle classification failures.
+
+    This function implements defensive validation and automatic repair of LLM responses
+    when the LLM fails to properly classify and create evidence. It's called after
+    parsing the LLM response but before applying state updates.
+
+    Validation Rules:
+    1. If LLM classifies as external_data/mixed but evidence_to_add is empty,
+       try automatic pattern detection to create fallback evidence
+    2. If pattern detection finds evidence but LLM said "user_chat",
+       override and create fallback evidence
+
+    Design Philosophy:
+    - Trust but verify: Let LLM make decisions, but validate and repair failures
+    - Never silently lose evidence: Better to create false evidence than miss critical data
+    - Log all interventions for monitoring LLM quality
+
+    Args:
+        updates: Parsed LLM response (InquiryResponse or InvestigationResponse_*)
+        user_message: Original user message for pattern analysis
+        case: Current case state
+
+    Returns:
+        Modified updates object with repaired evidence_to_add if needed
+
+    Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md (Strategy 4)
+    """
+    logger.debug(
+        f"Post-processing LLM response: "
+        f"has_submission_classification={hasattr(updates, 'submission_classification')}, "
+        f"submission_classification_value={getattr(updates, 'submission_classification', None)}, "
+        f"evidence_to_add_count={len(getattr(updates, 'evidence_to_add', []))}"
+    )
+
+    # Check if response has submission_classification (INQUIRY phase)
+    if (
+        hasattr(updates, "submission_classification")
+        and updates.submission_classification
+    ):
+        classification = updates.submission_classification
+        evidence_list = getattr(updates, "evidence_to_add", [])
+
+        # Rule 1: If external_data/mixed but no evidence, try fallback
+        if classification.type in ["external_data", "mixed"]:
+            if not evidence_list or len(evidence_list) == 0:
+                # Try automatic pattern detection
+                fallback_evidence = _detect_external_data_patterns(user_message)
+                if fallback_evidence:
+                    # Create new list or append to existing
+                    if (
+                        not hasattr(updates, "evidence_to_add")
+                        or updates.evidence_to_add is None
+                    ):
+                        updates.evidence_to_add = []
+                    updates.evidence_to_add.append(fallback_evidence)
+                    logger.warning(
+                        f"LLM classified as '{classification.type}' but evidence_to_add was empty. "
+                        f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
+                        f"(category={fallback_evidence.category.value})"
+                    )
+
+        # Rule 2: If LLM said "user_chat" but we detect external data patterns
+        elif classification.type == "user_chat":
+            fallback_evidence = _detect_external_data_patterns(user_message)
+            if fallback_evidence:
+                # Override LLM classification - create fallback evidence
+                if (
+                    not hasattr(updates, "evidence_to_add")
+                    or updates.evidence_to_add is None
+                ):
+                    updates.evidence_to_add = []
+                updates.evidence_to_add.append(fallback_evidence)
+                logger.warning(
+                    f"LLM misclassified external data as 'user_chat'. "
+                    f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
+                    f"(category={fallback_evidence.category.value}). "
+                    f"Message preview: {user_message[:100]}..."
+                )
+
+    # Rule 3: If no submission_classification provided (or None), check patterns anyway
+    # This handles INVESTIGATING phase where submission_classification is optional
+    # and LLM might skip it entirely while still accepting external data
+    if (
+        not hasattr(updates, "submission_classification")
+        or updates.submission_classification is None
+    ):
+        evidence_list = getattr(updates, "evidence_to_add", [])
+
+        # If no evidence but user message looks like external data, create fallback
+        if not evidence_list or len(evidence_list) == 0:
+            fallback_evidence = _detect_external_data_patterns(user_message)
+            if fallback_evidence:
+                if (
+                    not hasattr(updates, "evidence_to_add")
+                    or updates.evidence_to_add is None
+                ):
+                    updates.evidence_to_add = []
+                updates.evidence_to_add.append(fallback_evidence)
+                logger.warning(
+                    f"LLM didn't provide submission_classification and created no evidence. "
+                    f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
+                    f"(category={fallback_evidence.category.value}). "
+                    f"Message preview: {user_message[:100]}..."
+                )
+
+    return updates
 
 
 # =============================================================================
@@ -336,6 +717,7 @@ class MilestoneEngine:
             MilestoneEngineError: If processing fails
         """
         # Add intent information to logger for tracing
+        # Note: current_turn has already been incremented by investigation_service before this point
         intent_info = f" [intent={intent_type}]" if intent_type else ""
         logger.info(
             f"Processing turn {case.current_turn} for case {case.case_id} "
@@ -343,61 +725,64 @@ class MilestoneEngine:
         )
 
         # Debug logging for Turn 2 issue
+        # Note: current_turn already incremented before this point
         if case.status == CaseStatus.INQUIRY:
             logger.info(
-                f"🔍 Turn {case.current_turn + 1} starting: status={case.status.value}, "
+                f"🔍 Turn {case.current_turn} starting: status={case.status.value}, "
                 f"confirmed={case.inquiry.problem_statement_confirmed}, "
                 f"decided_to_investigate={case.inquiry.decided_to_investigate}"
             )
         else:
             logger.info(
-                f"🔍 Turn {case.current_turn + 1} starting: status={case.status.value}, "
+                f"🔍 Turn {case.current_turn} starting: status={case.status.value}, "
                 f"stage={case.current_stage}"
             )
 
         try:
+            # Initialize metadata early so it can be used throughout the function
+            metadata = {
+                "milestones_completed": [],
+                "evidence_added": [],
+                "hypotheses_generated": [],
+                "hypotheses_validated": [],
+                "solutions_proposed": [],
+                "progress_made": False,
+                "status_transitioned": False,
+                "outcome": TurnOutcome.CONVERSATION,
+            }
+
             # 0. CRITICAL: Auto-create Evidence from user message BEFORE LLM prompt
             # This ensures ALL data has concrete Evidence IDs that the LLM can reference
             # Eliminates the need for USER_MESSAGE_* pseudo-ID workarounds
             user_message_evidence_id = None
             if user_message and user_message.strip():
                 from uuid import uuid4
-                from faultmaven.modules.case.domain.models import (
-                    Evidence,
-                    EvidenceCategory,
-                    EvidenceForm,
-                    EvidenceSourceType,
-                )
 
-                # Store user message as unclassified data item with an ID.
-                # The LLM will determine which user submissions qualify as
-                # evidence and promote them via evidence_to_add with a
-                # specific category. Until then, these remain UNCLASSIFIED.
-                user_evidence = Evidence(
-                    evidence_id=f"ev_{uuid4().hex[:12]}",
-                    summary=user_message[:200]
-                    + ("..." if len(user_message) > 200 else ""),
-                    content_ref=f"turn_{case.current_turn + 1}_user_message",
-                    category=EvidenceCategory.UNCLASSIFIED,  # Raw data, not yet classified as evidence
-                    source_type=EvidenceSourceType.USER_REPORT,  # User-provided information
-                    collected_at=datetime.now(UTC),
-                    collected_by=case.user_id,
-                    collected_at_turn=case.current_turn + 1,
-                    form=EvidenceForm.USER_INPUT,
-                    primary_purpose="User-provided context and information",
-                    preprocessed_content=user_message,
-                    content_size_bytes=len(user_message),
-                    preprocessing_method="none",
-                )
+                # ================================================================
+                # EVIDENCE CLASSIFICATION REDESIGN (Phase 4)
+                # ================================================================
+                # REMOVED: UNCLASSIFIED evidence auto-creation
+                #
+                # OLD BEHAVIOR: Auto-create UNCLASSIFIED evidence for every user message
+                # before LLM sees it. LLM would "promote" relevant items via evidence_to_add.
+                #
+                # NEW BEHAVIOR (Single-Phase Evidence Creation):
+                # - Evidence is created AFTER LLM evaluation, not before
+                # - LLM classifies submission as user_chat, external_data, or mixed
+                # - Only external_data and mixed submissions create evidence records
+                # - No UNCLASSIFIED category (replaced with CONTEXTUAL_EVIDENCE & REJECTED)
+                #
+                # Benefits:
+                # - Cleaner data model (no placeholder evidence records)
+                # - Better analytics (clear acceptance rate)
+                # - Lower storage costs (don't store rejected submissions)
+                # - Simpler mental model (evidence = already classified)
+                #
+                # Evidence creation now happens in _process_response_structured()
+                # based on submission_classification from LLM response.
+                # ================================================================
 
-                # Add to case BEFORE LLM sees it
-                case.evidence.append(user_evidence)
-                user_message_evidence_id = user_evidence.evidence_id
-
-                logger.info(
-                    f"📝 Auto-created Evidence from user message: {user_evidence.evidence_id} "
-                    f"(turn {case.current_turn + 1}, {len(user_message)} bytes)"
-                )
+                user_message_evidence_id = None  # No longer auto-created
 
             # 0b. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"
@@ -519,7 +904,9 @@ class MilestoneEngine:
                     case.inquiry.decision_made_at = datetime.now(UTC)
 
                     # Transition to INVESTIGATING
-                    case.status = CaseStatus.INVESTIGATING
+                    # Use the centralized transition method to ensure correct ordering:
+                    # description must be set BEFORE status (Pydantic validation requirement)
+                    await self._transition_to_investigating(case)
                     case.status_history.append(
                         CaseStatusTransition(
                             from_status=CaseStatus.INQUIRY,
@@ -683,6 +1070,8 @@ class MilestoneEngine:
                         logger.info(
                             f"📋 Proposed RESOLVED transition for case {case.case_id} (pending user confirmation)"
                         )
+                        # Mark that we proposed a transition this turn, so we don't immediately confirm it
+                        metadata["transition_proposed_this_turn"] = True
 
                     # CHECK AMBIGUOUS CLOSE PATTERNS (lowest priority)
                     # "close this case" is ambiguous — could mean CLOSED (abandoned) or RESOLVED.
@@ -705,6 +1094,8 @@ class MilestoneEngine:
                         logger.info(
                             f"📋 Proposed transition for case {case.case_id} (pending user clarification)"
                         )
+                        # Mark that we proposed a transition this turn, so we don't immediately confirm it
+                        metadata["transition_proposed_this_turn"] = True
 
             # 1. Gather Context & Build Prompt
             # Phase 3: Inquiry KB Search (Fast-track)
@@ -738,13 +1129,13 @@ class MilestoneEngine:
             if case.status == CaseStatus.INQUIRY:
                 schema_model = InquiryResponse
                 logger.info(
-                    f"🔍 Turn {case.current_turn + 1} schema selection: "
+                    f"🔍 Turn {case.current_turn} schema selection: "
                     f"status={case.status.value}, schema=InquiryResponse"
                 )
             elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
                 schema_model = TerminalResponse
                 logger.info(
-                    f"🔍 Turn {case.current_turn + 1} schema selection: "
+                    f"🔍 Turn {case.current_turn} schema selection: "
                     f"status={case.status.value}, schema=TerminalResponse"
                 )
             else:
@@ -752,7 +1143,7 @@ class MilestoneEngine:
                     case.current_stage or InvestigationStage.SYMPTOM_VERIFICATION
                 )
                 logger.info(
-                    f"🔍 Turn {case.current_turn + 1} schema selection: "
+                    f"🔍 Turn {case.current_turn} schema selection: "
                     f"status={case.status.value}, stage={case.current_stage}, "
                     f"schema={schema_model.__name__}"
                 )
@@ -766,9 +1157,11 @@ class MilestoneEngine:
             )
 
             # 3. Process response and update case state
-            case_updated, metadata = await self._process_response_structured(
+            case_updated, response_metadata = await self._process_response_structured(
                 case, user_message, response_obj, attachments
             )
+            # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
+            metadata.update(response_metadata)
 
             # 3b. Validate Diagnostic Reasoning (Section 3.3)
             # Ensure agent provides context-specific reasoning before suggestions
@@ -796,7 +1189,7 @@ class MilestoneEngine:
 
             # 4. Check for automatic status transitions
             case_updated = await self._check_automatic_transitions(
-                case_updated, metadata
+                case_updated, metadata, user_message
             )
 
             # 5. Phase 4: Hypothesis Housekeeping (Decay & Anchoring)
@@ -1101,16 +1494,10 @@ class MilestoneEngine:
     ) -> tuple[Case, dict[str, Any]]:
         """Process structured response and update case state."""
 
-        # Validate reasoning-first requirement
-        is_valid, validation_errors = validate_reasoning_first(response_obj, case)
-        if not is_valid:
-            error_msg = "Reasoning validation failed:\n" + "\n".join(validation_errors)
-            logger.warning(
-                f"Reasoning validation failed for case {case.case_id}: {error_msg}"
-            )
-            raise ValueError(error_msg)
+        # NOTE: Validation moved AFTER post-processing to allow fallback evidence creation
+        # See line 1500 for actual validation
 
-        # Initialize metadata
+        # Initialize metadata for this response processing
         metadata = {
             "milestones_completed": [],
             "evidence_added": [],
@@ -1133,6 +1520,39 @@ class MilestoneEngine:
                     uploaded_file.file_id
                 ]
 
+        # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
+        # This repairs LLM classification failures before applying state updates
+        # Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md
+        logger.debug(
+            f"Post-processing LLM response: response_type={type(response_obj).__name__}, "
+            f"has_state_updates={hasattr(response_obj, 'state_updates')}, "
+            f"state_updates_exists={response_obj.state_updates is not None if hasattr(response_obj, 'state_updates') else False}"
+        )
+        if isinstance(response_obj, (InquiryResponse,)) or (
+            hasattr(response_obj, "state_updates") and response_obj.state_updates
+        ):
+            # Apply post-processing to repair state_updates
+            logger.debug(
+                f"Applying post-processing to state_updates with user_message preview: {user_message[:100]}..."
+            )
+            response_obj.state_updates = _post_process_llm_response(
+                updates=response_obj.state_updates,
+                user_message=user_message,
+                case=case,
+            )
+            logger.debug(
+                f"Post-processing complete, evidence_to_add count: {len(getattr(response_obj.state_updates, 'evidence_to_add', []))}"
+            )
+
+        # Validate reasoning-first requirement (AFTER post-processing to allow fallback evidence creation)
+        is_valid, validation_errors = validate_reasoning_first(response_obj, case)
+        if not is_valid:
+            error_msg = "Reasoning validation failed:\n" + "\n".join(validation_errors)
+            logger.warning(
+                f"Reasoning validation failed for case {case.case_id}: {error_msg}"
+            )
+            raise ValueError(error_msg)
+
         # Dispatch based on response type
         if isinstance(response_obj, InquiryResponse):
             await self._apply_inquiry_updates(
@@ -1145,7 +1565,7 @@ class MilestoneEngine:
             # Investigation updates (Verification, Hypothesis, Resolution, General)
             # All check 'state_updates' which matches InvestigationStateUpdate structure
             await self._apply_investigation_updates(
-                case, response_obj.state_updates, metadata, attachments
+                case, response_obj.state_updates, metadata, attachments, response_obj
             )
 
         return case, metadata
@@ -1254,12 +1674,58 @@ class MilestoneEngine:
             )
             # This triggers Fast-Track in _check_fast_track_resolution
 
+        # Evidence creation (single-phase): Create evidence from LLM-classified submissions
+        # This code is shared between INQUIRY and INVESTIGATING phases
+        from uuid import uuid4
+
+        has_attr = hasattr(updates, "evidence_to_add")
+        evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
+        evidence_count = len(evidence_list) if evidence_list else 0
+        logger.info(
+            f"🔍 Evidence creation check (INQUIRY): "
+            f"hasattr(updates, 'evidence_to_add')={has_attr}, "
+            f"evidence_to_add={evidence_list}, "
+            f"count={evidence_count}"
+        )
+
+        if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
+            for ev_item in updates.evidence_to_add:
+                # During INQUIRY phase, milestones are not yet being tracked,
+                # so we don't infer milestone attribution (advances_milestones will be empty)
+                # Evidence will be available for milestone validation once case transitions to INVESTIGATING
+                advances_milestones = []  # INQUIRY phase: No milestone tracking yet
+
+                ev = Evidence(
+                    evidence_id=f"ev_{uuid4().hex[:12]}",
+                    summary=ev_item.summary,
+                    content_ref=ev_item.content_ref,
+                    category=ev_item.category,
+                    source_type=ev_item.source_type,
+                    collected_at=datetime.now(UTC),
+                    collected_by=case.user_id,
+                    collected_at_turn=case.current_turn,
+                    form=EvidenceForm.USER_INPUT,
+                    advances_milestones=advances_milestones,
+                    primary_purpose="Investigation context",
+                    preprocessed_content=ev_item.summary,
+                    content_size_bytes=len(ev_item.summary),
+                    preprocessing_method="none",
+                )
+                case.evidence.append(ev)
+                metadata["evidence_added"].append(ev.evidence_id)
+                logger.info(
+                    f"✅ Created evidence (INQUIRY): {ev.evidence_id} | "
+                    f"category={ev.category.value}, source_type={ev.source_type.value}, "
+                    f"summary='{ev.summary[:80]}...'"
+                )
+
     async def _apply_investigation_updates(
         self,
         case: Case,
         updates: Any,
         metadata: dict[str, Any],
         attachments: list[dict[str, Any]] | None = None,
+        response_obj: Any | None = None,
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
         from faultmaven.modules.case.domain.services.investigation_router import (
@@ -1355,25 +1821,55 @@ class MilestoneEngine:
                 p.root_cause_method = m.root_cause_method
 
         # 2. Add Evidence
-        # a) From attachments (explicit linking)
-        if attachments:
-            for attachment in attachments:
-                # Check if this attachment was referenced in evidence_to_add
-                # This is tricky matching. For now, create generic evidence for attachments
-                # UNLESS the LLM explicitly created evidence for it?
-                # The design says: "uploaded files AND create evidence...".
-                # Let's keep the existing logic: create evidence for all attachments,
-                # BUT we can update their metadata if LLM provides specific evidence_to_add?
-                # Simplification: Create evidence for all attachments.
-                evidence = self._create_evidence_from_attachment(
-                    case, attachment, case.current_turn
-                )
-                case.evidence.append(evidence)
-                metadata["evidence_added"].append(evidence.evidence_id)
+        # a) From attachments (REMOVED - Single-phase evidence creation)
+        # Evidence Classification Redesign: Evidence is ONLY created via LLM classification
+        # in evidence_to_add (section b below). Attachments are stored in case.uploaded_files
+        # but don't automatically become evidence records. The LLM must explicitly classify
+        # them via submission_classification and include them in evidence_to_add.
+        #
+        # Old behavior (removed):
+        # if attachments:
+        #     for attachment in attachments:
+        #         evidence = self._create_evidence_from_attachment(...)
+        #         case.evidence.append(evidence)
+        #
+        # New behavior: See section (b) below - evidence_to_add only
 
         # b) From 'evidence_to_add' (text snippets, logs, non-file evidence)
+        # DEBUG: Log what LLM returned for evidence_to_add
+        has_attr = hasattr(updates, "evidence_to_add")
+        evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
+        evidence_count = len(evidence_list) if evidence_list else 0
+        logger.info(
+            f"🔍 Evidence creation check: "
+            f"hasattr(updates, 'evidence_to_add')={has_attr}, "
+            f"evidence_to_add={evidence_list}, "
+            f"count={evidence_count}"
+        )
+
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
             for ev_item in updates.evidence_to_add:
+                # Option 2.5: Infer milestone attribution (Tier 2 + Tier 3)
+                # Tier 2: System infers from category + milestones completed this turn
+                # Tier 3: LLM can override via advances_milestones field
+                milestones_completed_this_turn = metadata.get(
+                    "milestones_completed", []
+                )
+
+                if ev_item.advances_milestones is not None:
+                    # Tier 3: LLM provided explicit override
+                    advances_milestones = ev_item.advances_milestones
+                    logger.debug(
+                        f"Evidence milestone attribution: LLM override "
+                        f"(category={ev_item.category.value}, "
+                        f"explicit_milestones={advances_milestones})"
+                    )
+                else:
+                    # Tier 2: System inference
+                    advances_milestones = _infer_milestones(
+                        ev_item.category, milestones_completed_this_turn
+                    )
+
                 # Deduplication logic (basic)
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
@@ -1385,6 +1881,7 @@ class MilestoneEngine:
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
                     form=EvidenceForm.USER_INPUT,  # Default
+                    advances_milestones=advances_milestones,  # NEW: Option 2.5
                     # Mandatory fields
                     primary_purpose="Investigation context",
                     preprocessed_content=ev_item.summary,  # Use summary as content for text evidence
@@ -1393,6 +1890,11 @@ class MilestoneEngine:
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
+                logger.info(
+                    f"✅ Created evidence: {ev.evidence_id} | "
+                    f"category={ev.category.value}, source_type={ev.source_type.value}, "
+                    f"summary='{ev.summary[:80]}...'"
+                )
 
         # 2b. Validate Milestone Claims Against Cited Evidence
         # The LLM structured output is the sole authority for milestone advancement.
@@ -1544,7 +2046,7 @@ class MilestoneEngine:
         # Initialize problem verification with confirmed statement
         verification_kwargs = {
             "symptom_statement": case.description or "Unspecified issue",
-            "severity": "UNKNOWN",  # Default
+            "severity": "MEDIUM",  # Default when unknown (valid value: CRITICAL|HIGH|MEDIUM|LOW)
         }
 
         # Hydrate from problem confirmation if available
@@ -1559,11 +2061,14 @@ class MilestoneEngine:
                 verification_kwargs["urgency_level"] = (
                     pu.level.lower()
                 )  # Convert to lowercase for enum
-                # If severity still unknown, use urgency level as severity (keep uppercase for severity)
-                if verification_kwargs["severity"] == "UNKNOWN":
+                # If severity still at default (MEDIUM), use urgency level as severity (keep uppercase for severity)
+                if (
+                    verification_kwargs["severity"] == "MEDIUM"
+                    and pu.level != UrgencyLevel.UNKNOWN
+                ):
                     verification_kwargs["severity"] = (
-                        pu.level
-                    )  # Keep uppercase for severity field
+                        pu.level.value.upper()
+                    )  # Convert urgency level to uppercase for severity field
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
 
@@ -1577,7 +2082,7 @@ class MilestoneEngine:
         # case.evidence, case.hypotheses, case.solutions, case.turn_history are defaults
 
     async def _check_automatic_transitions(
-        self, case: Case, metadata: dict[str, Any]
+        self, case: Case, metadata: dict[str, Any], user_message: str = ""
     ) -> Case:
         """
         Check if case should automatically transition status.
@@ -1598,21 +2103,28 @@ class MilestoneEngine:
         old_status = case.status
 
         # 0. Handle pending transition confirmation from previous turn
+        # Skip confirmation check if we just proposed a transition this turn (User-Agent Handshake)
         if hasattr(case, "pending_transition") and case.pending_transition:
-            from faultmaven.core.investigation.terminal_transitions import (
-                confirm_pending_transition,
-                cancel_pending_transition,
-            )
+            # Don't confirm a transition that was just proposed in this same turn
+            if metadata.get("transition_proposed_this_turn", False):
+                logger.info(
+                    f"⏭️  Skipping confirmation check - transition was just proposed this turn"
+                )
+            else:
+                from faultmaven.core.investigation.terminal_transitions import (
+                    confirm_pending_transition,
+                    cancel_pending_transition,
+                )
 
-            user_message = metadata.get("user_message", "")
-            if self._user_confirms_transition(user_message):
-                confirm_pending_transition(case, case.user_id)
-                metadata["status_transitioned"] = True
-                return case
-            elif self._user_declines_transition(user_message):
-                cancel_pending_transition(case)
-                # Continue normal processing
-            # else: user said something ambiguous, let LLM handle it
+                # Use the user_message parameter directly, not from metadata
+                if self._user_confirms_transition(user_message):
+                    confirm_pending_transition(case, case.user_id)
+                    metadata["status_transitioned"] = True
+                    return case
+                elif self._user_declines_transition(user_message):
+                    cancel_pending_transition(case)
+                    # Continue normal processing
+                # else: user said something ambiguous, let LLM handle it
 
         # 1. INQUIRY transitions
         if case.status == CaseStatus.INQUIRY:
@@ -1680,9 +2192,19 @@ class MilestoneEngine:
             return False
         msg = user_message.strip().lower()
         confirm_patterns = [
-            "yes", "yeah", "yep", "correct", "confirmed", "approve",
-            "go ahead", "do it", "mark as resolved", "close it",
-            "that's right", "sounds good", "looks good",
+            "yes",
+            "yeah",
+            "yep",
+            "correct",
+            "confirmed",
+            "approve",
+            "go ahead",
+            "do it",
+            "mark as resolved",
+            "close it",
+            "that's right",
+            "sounds good",
+            "looks good",
         ]
         return any(msg.startswith(p) or msg == p for p in confirm_patterns)
 
@@ -1692,8 +2214,15 @@ class MilestoneEngine:
             return False
         msg = user_message.strip().lower()
         decline_patterns = [
-            "no", "nope", "not yet", "wait", "cancel", "don't",
-            "not ready", "hold on", "stop",
+            "no",
+            "nope",
+            "not yet",
+            "wait",
+            "cancel",
+            "don't",
+            "not ready",
+            "hold on",
+            "stop",
         ]
         return any(msg.startswith(p) or msg == p for p in decline_patterns)
 
@@ -1832,7 +2361,7 @@ class MilestoneEngine:
             content_size_bytes=attachment.get("size", 0),
             preprocessing_method="pending",
             category=category,
-            source_type=EvidenceSourceType.LOG_FILE,  # Default
+            source_type=EvidenceSourceType.LOGS,  # Default (simplified from LOG_FILE)
             form=EvidenceForm.DOCUMENT,
             advances_milestones=[],  # Calculated later
             collected_at=datetime.now(UTC),

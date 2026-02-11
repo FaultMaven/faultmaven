@@ -1,11 +1,25 @@
 # Data Classification Strategy: Highly Effective Rules and Fallback Design
 
-**Version**: 1.1
+**Version**: 1.2
 **Status**: Design Specification
-**Date**: 2025-10-23 (Updated)
+**Date**: 2026-02-10 (Updated)
 **Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-tier fallback for accurate data type detection
 
-**Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the v3.2 QueryClassifier implementation ([query_classifier.py](../../faultmaven/services/preprocessing/query_classifier.py)).
+> **IMPORTANT CONTEXT UPDATE** (2026-02-11):
+>
+> This document addresses **data type classification** (determining what kind of data: LOG_FILE vs METRICS_DATA, etc.).
+>
+> This is separate from **evidence classification**, which has been **IMPLEMENTED**:
+> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](./EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)**
+>
+> **Evidence Classification Changes (IMPLEMENTED 2026-02-11)**:
+>
+> - `EvidenceSourceType` simplified: 12 types → **5 types** (LOGS, METRICS, CONFIGURATION, VISUAL, USER_DESCRIPTION)
+> - The data types identified by this document (LOG_FILE, METRICS_DATA, etc.) now map to the new simplified source types
+> - Evidence categories changed: UNCLASSIFIED removed, OTHER → CONTEXTUAL_EVIDENCE, REJECTED added
+> - Single-phase evidence creation (after LLM evaluation, no placeholders)
+>
+> **Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the v3.2 QueryClassifier implementation ([query_classifier.py](../../faultmaven/services/preprocessing/query_classifier.py)).
 
 ---
 

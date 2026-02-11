@@ -1228,6 +1228,22 @@ class DocumentType(str, Enum):
 
 ## 2. Evidence Model
 
+> **DESIGN SUPERSEDED** (2026-02-10):
+>
+> Evidence classification has been completely redesigned. See the final approved design:
+> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](/home/swhouse/product/docs/working/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)**
+>
+> **Critical Changes**:
+>
+> 1. `EvidenceCategory.UNCLASSIFIED` → **REMOVED** (single-phase creation AFTER LLM)
+> 2. `EvidenceCategory.OTHER` → **RENAMED** to `CONTEXTUAL_EVIDENCE`
+> 3. `EvidenceCategory.IRRELEVANT` → **ADDED** (track rejected submissions)
+> 4. `EvidenceSourceType`: 12 types → **5 types** (LOGS, METRICS, CONFIGURATION, VISUAL, USER_DESCRIPTION)
+> 5. Evidence table tracks ALL file submissions (including irrelevant)
+> 6. Pure chat never enters evidence table
+>
+> **The enum definitions below are outdated. See the final design document for current schemas.**
+
 ### 2.1 Purpose-Driven Categories
 
 ```python
@@ -1239,6 +1255,11 @@ class EvidenceCategory(str, Enum):
     Raw user-submitted data awaiting LLM classification.
     NOT evidence yet — stored with ID so LLM can reference it.
     Does NOT advance any milestones.
+
+    DESIGN NOTE: This is a placeholder category used during two-phase evidence creation.
+    Evidence is created with UNCLASSIFIED before LLM processes, then updated with
+    proper category (SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE, etc.) after LLM analysis.
+    See evidence-classification-design.md for details.
     """
 
     SYMPTOM_EVIDENCE = "symptom_evidence"
@@ -1423,7 +1444,8 @@ class HypothesisCategory(str, Enum):
     CONFIG = "config"
     ENVIRONMENT = "environment"
     NETWORK = "network"
-    DATA = "data"
+    DATA = "data"  # Data quality, corruption, consistency
+    DATABASE = "database"  # Database performance, queries, indexes
     HARDWARE = "hardware"
     EXTERNAL = "external"
     HUMAN = "human"

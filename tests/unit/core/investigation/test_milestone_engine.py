@@ -94,14 +94,40 @@ class TestMilestoneEngine:
     @pytest.mark.asyncio
     async def test_process_turn_investigating(self, mock_llm, mock_repo, base_case):
         """Test processing a turn in INVESTIGATING status"""
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceSourceType,
+            EvidenceForm,
+        )
+
         engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Add evidence to the case (required for milestone completion)
+        base_case.evidence.append(
+            Evidence(
+                evidence_id="ev_001122334455",
+                summary="Test evidence",
+                content_ref="test.log",
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                source_type=EvidenceSourceType.LOGS,
+                collected_at=datetime.now(timezone.utc),
+                collected_by="user_123",
+                primary_purpose="Testing",
+                preprocessed_content="Log content",
+                content_size_bytes=100,
+                preprocessing_method="manual",
+                form=EvidenceForm.USER_INPUT,
+                collected_at_turn=1,
+            )
+        )
 
         # Mock LLM response with structured output (including internal_reasoning)
         mock_response_content = json.dumps(
             {
                 "agent_response": "I have verified the symptom.",
                 "internal_reasoning": {
-                    "evidence_analyzed": ["new_index_1"],
+                    "evidence_analyzed": ["ev_001122334455"],
                     "conclusions": [
                         {
                             "observation": "Symptom observed",
@@ -110,7 +136,7 @@ class TestMilestoneEngine:
                         }
                     ],
                     "milestone_justifications": {
-                        "symptom_verified": "Verified based on observed symptoms"
+                        "symptom_verified": "Verified based on ev_001122334455 showing errors"
                     },
                     "uncertainties": [],
                 },
@@ -216,7 +242,7 @@ class TestMilestoneEngine:
                 summary="Test evidence",
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
-                source_type=EvidenceSourceType.LOG_FILE,
+                source_type=EvidenceSourceType.LOGS,
                 collected_at=datetime.now(timezone.utc),
                 collected_by="user_123",
                 primary_purpose="Testing",
