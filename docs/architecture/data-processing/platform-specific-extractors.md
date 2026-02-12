@@ -58,7 +58,7 @@ const structuredData = await extractor.extract(pageContent, url)
 **Step 3: Send Both Raw + Structured**
 ```json
 {
-  "source_type": "page_capture",
+  "data_type": "metrics",
   "source_url": "https://app.datadoghq.com/dashboard/abc-123",
   "platform": "datadog",
   "raw_html": "...",
@@ -250,14 +250,14 @@ structured = llm.extract_structured_data(prompt)
 
 ## References
 
-- [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md) - Three-tier model including Tier 2 pluggable backends
-- [Evidence Classification Design](./evidence-classification-design.md) - Evidence classification and submission types
-- [Data Classification Strategy v1.2](./data-classification-strategy.md) - Tier 0 data type classification
+- [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md) — Three-tier model including Tier 2 pluggable backends
+- [Evidence Classification Design](./evidence-classification-design.md) — Evidence classification, categories, and unified DataType
+- [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 data type classification
 
 ---
 
 ## Status
 
-**Current:** Generic HTML capture only (Tier 1 structural extraction handles HTML as UNSTRUCTURED_TEXT)
+**Current:** Generic HTML capture only (Tier 1 structural extraction handles HTML as TEXT)
 **Next Steps:** Monitor usage patterns, validate need with users. Consider implementing as a Tier 2 backend for platform-aware deep analysis.
 **Target:** Q2 2026 (post-MVP)

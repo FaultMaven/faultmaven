@@ -109,15 +109,15 @@ USER UPLOADS FILE (10MB max)
 │ TIER 1: MECHANICAL EXTRACTION (<2s, 0 LLM calls)            │
 │                                                              │
 │ Type-specific structural indexing:                            │
-│ • LOGS_AND_ERRORS → Structural index (all error clusters,    │
+│ • LOGS → Structural index (all error clusters,    │
 │   timeline, severity distribution, state transitions)        │
-│ • METRICS_AND_PERFORMANCE → Statistical profile (anomalies,  │
+│ • METRICS → Statistical profile (anomalies,  │
 │   min/max/mean, threshold breaches)                          │
-│ • STRUCTURED_CONFIG → Parse structure, redact secrets         │
-│ • SOURCE_CODE → AST extraction (functions, classes, imports)  │
-│ • UNSTRUCTURED_TEXT → Structure extraction (headings,         │
+│ • CONFIGURATION → Parse structure, redact secrets         │
+│ • CODE → AST extraction (functions, classes, imports)  │
+│ • TEXT → Structure extraction (headings,         │
 │   sections, key sentences via TF-IDF)                        │
-│ • VISUAL_EVIDENCE → Metadata extraction (format, dimensions)  │
+│ • IMAGE → Metadata extraction (format, dimensions)  │
 │                                                              │
 │ Then: Sanitize PII/secrets → Store raw file → Package result │
 │                                                              │
@@ -247,18 +247,18 @@ deep_result = await tier2_service.analyze(
 # Output: DeepAnalysisResult with answer + excerpts
 ```
 
-### 2.3 Data Type Mapping
+### 2.3 Unified DataType
 
-**Preprocessing Data Types → Evidence Source Types**:
+Preprocessing and evidence share a single `DataType` enum. No mapping is needed — the classification result flows directly through the evidence pipeline.
 
-| Preprocessing Data Type | Evidence Source Type | Evidence Form |
-|------------------------|---------------------|---------------|
-| `LOGS_AND_ERRORS` | `EvidenceSourceType.LOG_FILE` | `DOCUMENT` |
-| `METRICS_AND_PERFORMANCE` | `EvidenceSourceType.METRICS_DATA` | `DOCUMENT` |
-| `STRUCTURED_CONFIG` | `EvidenceSourceType.CONFIG_FILE` | `DOCUMENT` |
-| `SOURCE_CODE` | `EvidenceSourceType.CODE_REVIEW` | `DOCUMENT` |
-| `UNSTRUCTURED_TEXT` | `EvidenceSourceType.USER_OBSERVATION` | `DOCUMENT` |
-| `VISUAL_EVIDENCE` | `EvidenceSourceType.SCREENSHOT` | `DOCUMENT` |
+| DataType | Description | Evidence Form |
+|----------|-------------|---------------|
+| `LOGS` | Time-ordered diagnostic output (logs, traces, command output) | `DOCUMENT` |
+| `METRICS` | Quantitative measurements (time-series, dashboards, alerts) | `DOCUMENT` |
+| `CONFIGURATION` | Structured system/app config (YAML, JSON, TOML, env) | `DOCUMENT` |
+| `CODE` | Source code files | `DOCUMENT` |
+| `TEXT` | Unstructured prose (docs, runbooks, descriptions) | `DOCUMENT` |
+| `IMAGE` | Visual content (screenshots, diagrams) | `DOCUMENT` |
 
 All file uploads have `form=DOCUMENT`. Text entered via query endpoint has `form=USER_INPUT`.
 
@@ -301,13 +301,13 @@ Rule-based, no LLM calls. See [Data Classification Strategy](./data-classificati
 
 ```python
 class DataType(str, Enum):
-    """Preprocessing data type classification"""
-    LOGS_AND_ERRORS = "logs_and_errors"
-    UNSTRUCTURED_TEXT = "unstructured_text"
-    STRUCTURED_CONFIG = "structured_config"
-    METRICS_AND_PERFORMANCE = "metrics_and_performance"
-    SOURCE_CODE = "source_code"
-    VISUAL_EVIDENCE = "visual_evidence"
+    """Data type classification — shared across preprocessing and evidence"""
+    LOGS = "logs"                    # Time-ordered diagnostic output
+    METRICS = "metrics"              # Quantitative measurements
+    CONFIGURATION = "configuration"  # Structured system/app config
+    CODE = "code"                    # Source code
+    TEXT = "text"                    # Unstructured prose
+    IMAGE = "image"                  # Visual content
 
 def classify_data_type(
     filename: str,
@@ -324,7 +324,7 @@ def classify_data_type(
     # Check MIME type first (images)
     if mime_type.startswith("image/"):
         return ClassificationResult(
-            data_type=DataType.VISUAL_EVIDENCE, confidence=0.99
+            data_type=DataType.IMAGE, confidence=0.99
         )
 
     sample = content_sample[:5000].decode('utf-8', errors='ignore')
@@ -332,13 +332,13 @@ def classify_data_type(
     # Check for structured config (by extension)
     if filename.endswith(('.yaml', '.yml', '.json', '.toml', '.ini', '.conf')):
         return ClassificationResult(
-            data_type=DataType.STRUCTURED_CONFIG, confidence=0.92
+            data_type=DataType.CONFIGURATION, confidence=0.92
         )
 
     # Check for source code (by extension)
     if filename.endswith(('.py', '.js', '.java', '.go', '.rb', '.cpp', '.c', '.rs')):
         return ClassificationResult(
-            data_type=DataType.SOURCE_CODE, confidence=0.95
+            data_type=DataType.CODE, confidence=0.95
         )
 
     # Check for logs (content patterns)
@@ -349,7 +349,7 @@ def classify_data_type(
     ]
     if any(re.search(pattern, sample) for pattern in log_patterns):
         return ClassificationResult(
-            data_type=DataType.LOGS_AND_ERRORS, confidence=0.85
+            data_type=DataType.LOGS, confidence=0.85
         )
 
     # Check for metrics (content patterns)
@@ -360,12 +360,12 @@ def classify_data_type(
     ]
     if any(re.search(pattern, sample) for pattern in metrics_patterns):
         return ClassificationResult(
-            data_type=DataType.METRICS_AND_PERFORMANCE, confidence=0.80
+            data_type=DataType.METRICS, confidence=0.80
         )
 
     # Default: unstructured text
     return ClassificationResult(
-        data_type=DataType.UNSTRUCTURED_TEXT, confidence=0.50
+        data_type=DataType.TEXT, confidence=0.50
     )
 ```
 
@@ -385,18 +385,16 @@ def classify_data_type(
 
 | Data Type | Extraction Strategy | Output | Compression | Speed |
 |-----------|-------------------|--------|-------------|-------|
-| **LOGS_AND_ERRORS** | Structural Index | Timeline, error clusters, state transitions | 200:1 | 0.5s |
-| **METRICS_AND_PERFORMANCE** | Statistical Profile | Anomalies, distributions, thresholds | 167:1 | 0.3s |
-| **STRUCTURED_CONFIG** | Parse & Sanitize | Full structure with secrets redacted | 1:1 | 0.2s |
-| **SOURCE_CODE** | AST Extraction | Functions, classes, imports, signatures | 50:1 | 0.5s |
-| **UNSTRUCTURED_TEXT** | Structure Extraction | Headings, sections, key sentences | 20:1 | 0.3s |
-| **VISUAL_EVIDENCE** | Metadata Extraction | Format, dimensions, file size | N/A | 0.1s |
+| **LOGS** | Structural Index | Timeline, error clusters, state transitions | 200:1 | 0.5s |
+| **METRICS** | Statistical Profile | Anomalies, distributions, thresholds | 167:1 | 0.3s |
+| **CONFIGURATION** | Parse & Sanitize | Full structure with secrets redacted | 1:1 | 0.2s |
+| **CODE** | AST Extraction | Functions, classes, imports, signatures | 50:1 | 0.5s |
+| **TEXT** | Structure Extraction | Headings, sections, key sentences | 20:1 | 0.3s |
+| **IMAGE** | Metadata Extraction | Format, dimensions, file size | N/A | 0.1s |
 
-### 4.2 LOGS_AND_ERRORS — Structural Index
+### 4.2 LOGS — Structural Index
 
-**This is the most important change from v2.0.** The old "Crime Scene Extraction" (±200 lines around the worst error) was too lossy — it discarded 99.5% of the file, making follow-up Q&A impossible for anything outside that window.
-
-The new approach builds a **structural index** — a comprehensive profile of the entire file that the agent can query and that enables targeted Tier 2 retrieval.
+The structural index is a comprehensive profile of the entire log file that the agent can query and that enables targeted Tier 2 retrieval.
 
 ```python
 def build_log_structural_index(
@@ -558,7 +556,7 @@ def build_log_structural_index(
 - Agent can decide "this file is relevant to the connection timeout hypothesis" → from error clusters mentioning "connection timeout"
 - Vector DB search finds this file when querying "connection pool" → from the cluster descriptions
 
-### 4.3 METRICS_AND_PERFORMANCE — Statistical Profile
+### 4.3 METRICS — Statistical Profile
 
 ```python
 def build_metrics_statistical_profile(
@@ -645,7 +643,7 @@ def build_metrics_statistical_profile(
     )
 ```
 
-### 4.4 STRUCTURED_CONFIG — Parse & Sanitize
+### 4.4 CONFIGURATION — Parse & Sanitize
 
 ```python
 def parse_and_sanitize_config(
@@ -722,7 +720,7 @@ def parse_and_sanitize_config(
     )
 ```
 
-### 4.5 SOURCE_CODE — AST Extraction
+### 4.5 CODE — AST Extraction
 
 ```python
 def extract_code_ast(code_content: str, filename: str) -> ExtractionResult:
@@ -767,9 +765,9 @@ def extract_code_ast(code_content: str, filename: str) -> ExtractionResult:
     )
 ```
 
-### 4.6 UNSTRUCTURED_TEXT — Structure Extraction
+### 4.6 TEXT — Structure Extraction
 
-**Changed from v2.0**: No LLM at Tier 1. Mechanical structure extraction only.
+Mechanical structure extraction only (zero LLM).
 
 ```python
 def extract_text_structure(text_content: str) -> ExtractionResult:
@@ -849,9 +847,9 @@ def extract_text_structure(text_content: str) -> ExtractionResult:
     )
 ```
 
-### 4.7 VISUAL_EVIDENCE — Metadata Extraction
+### 4.7 IMAGE — Metadata Extraction
 
-**Changed from v2.0**: No vision model at Tier 1. Metadata only. Vision analysis moves to Tier 2.
+Metadata only at Tier 1. Vision analysis is handled by Tier 2.
 
 ```python
 def extract_image_metadata(
@@ -905,7 +903,7 @@ def extract_image_metadata(
 
 ### 4.8 Sanitization
 
-Sanitization runs after extraction, before storage. Same as v2.0 — regex-based PII/secret redaction, configurable per provider.
+Sanitization runs after extraction, before storage. Regex-based PII/secret redaction, configurable per provider.
 
 ```python
 def sanitize_content(
@@ -991,6 +989,9 @@ async def package_preprocessing_result(
         content_type=file_info.mime_type,
     )
 
+    # Compute content hash for deduplication
+    content_hash = hashlib.sha256(file_info.raw_content).hexdigest()
+
     return PreprocessingResult(
         temp_id=generate_temp_id(),
         data_type=data_type,
@@ -1002,6 +1003,7 @@ async def package_preprocessing_result(
         extraction_method=extraction_result.method,
         compression_ratio=len(full_extraction) / max(len(file_info.raw_content), 1),
         extraction_metadata=extraction_result.metadata,
+        content_hash=content_hash,
         sanitization_applied=not sanitization_result.skipped,
         redactions_count=sanitization_result.redactions_made,
         processing_time_ms=file_info.processing_time_ms,
@@ -1023,7 +1025,7 @@ def generate_concise_summary(text: str, max_length: int = 500) -> str:
 
 **Trigger**: After Tier 1 completes and Evidence object is created (async background task).
 
-**Key change from v2.0**: Stores the full structural index (error clusters, timeline, state transitions), not just the crime scene window.
+Stores the full structural index (error clusters, timeline, state transitions) for comprehensive semantic search.
 
 ### 5.1 What Gets Stored
 
@@ -1398,6 +1400,9 @@ class PreprocessingResult(BaseModel):
         description="Type-specific metadata (error counts, anomaly details, etc.)"
     )
 
+    # Deduplication
+    content_hash: str = Field(description="SHA-256 hash of raw file content")
+
     # Sanitization
     sanitization_applied: bool = Field(default=False)
     redactions_count: int = Field(default=0)
@@ -1471,7 +1476,8 @@ evidence = Evidence(
     content_ref=preprocessing_result.content_ref,            # Raw file reference
     content_size_bytes=preprocessing_result.content_size_bytes,
     content_type=preprocessing_result.content_type,
-    source_type=map_data_type_to_source_type(preprocessing_result.data_type),
+    data_type=preprocessing_result.data_type,                # Unified DataType enum
+    content_hash=preprocessing_result.content_hash,          # SHA-256 for dedup
     form=EvidenceForm.DOCUMENT,
     preprocessed=True,
 )
@@ -1589,7 +1595,7 @@ class PreprocessingService:
         )
 
         # Tier 1: Extract structural index
-        if classification.data_type == DataType.VISUAL_EVIDENCE:
+        if classification.data_type == DataType.IMAGE:
             extraction = extract_image_metadata(raw_content, file.filename)
         else:
             content_str = raw_content.decode('utf-8', errors='replace')
@@ -1624,14 +1630,14 @@ class PreprocessingService:
 
     async def _extract_by_type(self, data_type, content, filename):
         extractors = {
-            DataType.LOGS_AND_ERRORS: build_log_structural_index,
-            DataType.METRICS_AND_PERFORMANCE: build_metrics_statistical_profile,
-            DataType.STRUCTURED_CONFIG: parse_and_sanitize_config,
-            DataType.SOURCE_CODE: extract_code_ast,
-            DataType.UNSTRUCTURED_TEXT: extract_text_structure,
+            DataType.LOGS: build_log_structural_index,
+            DataType.METRICS: build_metrics_statistical_profile,
+            DataType.CONFIGURATION: parse_and_sanitize_config,
+            DataType.CODE: extract_code_ast,
+            DataType.TEXT: extract_text_structure,
         }
         extractor = extractors.get(data_type, extract_text_structure)
-        return extractor(content, filename) if data_type == DataType.SOURCE_CODE \
+        return extractor(content, filename) if data_type == DataType.CODE \
             else extractor(content, self.config)
 ```
 
@@ -1673,12 +1679,12 @@ def create_tier2_service(config: Settings) -> Optional[ITier2AnalysisService]:
 ```python
 # User uploads 5MB application.log
 
-# Tier 0: Classify → LOGS_AND_ERRORS (confidence 0.85)
+# Tier 0: Classify → LOGS (confidence 0.85)
 # Tier 1: Build structural index
 
 preprocessing_result = PreprocessingResult(
     temp_id="temp_abc123",
-    data_type=DataType.LOGS_AND_ERRORS,
+    data_type=DataType.LOGS,
     summary="Application log: 250K lines, 23 error clusters, 847 total errors. "
             "Highest severity: NullPointerException burst at line 12450.",
     structural_index="""=== LOG STRUCTURAL INDEX ===
@@ -1739,7 +1745,7 @@ deep_result = await tier2_service.analyze(
         case_summary="Investigating application crashes after v2.3.2 deployment",
         active_hypotheses=["Memory leak in cache service"],
     ),
-    data_type=DataType.LOGS_AND_ERRORS,
+    data_type=DataType.LOGS,
 )
 
 # deep_result.answer:
@@ -1758,7 +1764,7 @@ deep_result = await tier2_service.analyze(
 
 preprocessing_result = PreprocessingResult(
     temp_id="temp_ghi789",
-    data_type=DataType.STRUCTURED_CONFIG,
+    data_type=DataType.CONFIGURATION,
     summary="Database config (YAML): PostgreSQL connection, pool_size=100, timeout=30s, 3 secrets redacted",
     structural_index="[Full YAML with secrets redacted]",
     content_ref="local://data/case_123/database_yaml_ghi.yaml",
@@ -1773,17 +1779,6 @@ preprocessing_result = PreprocessingResult(
 
 ---
 
-**Document Version**: 3.0
-**Last Updated**: 2026-02-10
+**Document Version**: 3.1
+**Last Updated**: 2026-02-12
 **Status**: Design Specification
-**Changes from v2.0**:
-1. Restructured around explicit three-tier model (Tier 0, Tier 1, Tier 2)
-2. Enriched log extraction from "Crime Scene" window to comprehensive structural index
-3. Added Tier 2 as pluggable external deep analysis service with multiple backends
-4. All Tier 1 extraction is now zero-LLM (unstructured text and images no longer use LLM at Tier 1)
-5. Vector DB stores structural index instead of crime scene window
-6. Removed User Choice system (replaced by on-demand Tier 2)
-7. Added deployment models: Cloud SaaS, Local+LLM, Local basic, Disabled
-8. Raw file storage is now explicitly required for Tier 2 access
-9. Updated PreprocessingResult schema (renamed full_extraction → structural_index)
-10. Added DeepAnalysisResult and ITier2AnalysisService schemas

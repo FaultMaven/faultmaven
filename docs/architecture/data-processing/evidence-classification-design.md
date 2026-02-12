@@ -1,35 +1,21 @@
-# Evidence Classification - Final Design Specification
+# Evidence Classification Design Specification
 
-**Date:** 2026-02-11 (Updated with milestone advancement section)
-**Implementation Date:** 2026-02-11
-**Status:** ✅ **IMPLEMENTED** (All core phases complete, failure handling deferred)
-**Context:** Complete evidence classification redesign with milestone advancement attribution
-
----
-
-## Implementation Status
-
-**✅ IMPLEMENTED:**
-- Single-phase evidence creation (Phase 1-4)
-- 5 evidence categories and 5 source types (Phase 1-2)
-- Option 2.5 milestone attribution (Phase 4)
-- Content-based classification (Phase 3-4)
-- Database migration created and validated (Phase 1)
-- All unit tests passing (17/17) (Phase 6)
-
-**⏳ DEFERRED (Post-MVP):**
-- Failure mode handling (Phase 7) - Design complete in [evidence-failure-modes.md](./evidence-failure-modes.md)
+**Version:** 2.0
+**Date:** 2026-02-12
+**Status:** Design Specification
+**Context:** Evidence classification taxonomy, single-phase creation, and milestone advancement attribution
 
 ---
 
 ## Executive Summary
 
-This document specifies the final agreed design for evidence classification in FaultMaven, incorporating:
+This document specifies the design for evidence classification in FaultMaven:
 
-1. **Single-phase evidence creation** (after LLM evaluation, not before)
-2. **Classification-first approach** (LLM classifies submissions during processing)
-3. **Simplified taxonomy** (clearer categories and source types)
-4. **Comprehensive tracking** (all submissions tracked, including rejections)
+1. **Single-phase evidence creation** — evidence records created after LLM evaluation, not before
+2. **Classification-first approach** — LLM classifies submissions during processing
+3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing v3.0](./data-preprocessing-design-specification.md))
+4. **5 evidence categories** — SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, REJECTED
+5. **Comprehensive tracking** — all submissions tracked, including rejections
 
 ---
 
@@ -98,12 +84,6 @@ SELECT * FROM evidence WHERE case_id = ? AND category != 'rejected';
 
 **Design Choice:** Evidence records created AFTER LLM evaluation, not before.
 
-**Previous Flow (Deprecated):**
-```
-User submits → Create Evidence(UNCLASSIFIED) → LLM sees → LLM promotes to category
-```
-
-**New Flow (Approved):**
 ```
 User submits → LLM evaluates → If relevant: Create Evidence(category)
                               → If rejected: Create Evidence(REJECTED)
@@ -111,9 +91,9 @@ User submits → LLM evaluates → If relevant: Create Evidence(category)
 ```
 
 **Rationale:**
-- Eliminates UNCLASSIFIED placeholder pattern
-- LLM can still reference evidence using "new_index_N" pattern (already supported)
-- Simpler lifecycle (create once with complete data)
+- No placeholder pattern needed — create once with complete data
+- LLM can reference evidence using "new_index_N" pattern
+- Simpler lifecycle (single creation, no promotion)
 - Aligns with "evidence table = submission attempts" mental model
 
 ---
@@ -135,12 +115,9 @@ class SubmissionClassification(str, Enum):
 
 ---
 
-### Decision 4: Evidence Categories (Refined)
+### Decision 4: Evidence Categories
 
-**Previous (5 categories):**
-- UNCLASSIFIED, SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE, RESOLUTION_EVIDENCE, OTHER
-
-**New (5 categories):**
+**5 categories:**
 
 ```python
 class EvidenceCategory(str, Enum):
@@ -259,12 +236,6 @@ class EvidenceCategory(str, Enum):
     """
 ```
 
-**Key Changes:**
-
-1. ~~UNCLASSIFIED~~ → **REMOVED** (no longer needed with single-phase creation)
-2. OTHER → **CONTEXTUAL_EVIDENCE** (clearer purpose: baseline/context data)
-3. **REJECTED** → **ADDED** (track rejected submissions for deduplication and audit)
-
 **Classification Guidance for LLM:**
 ```
 When classifying evidence, ask:
@@ -283,114 +254,70 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 
 ---
 
-### Decision 5: Evidence Source Types (Simplified)
+### Decision 5: Unified DataType (Shared with Preprocessing)
 
-**Previous (12 types):**
-- LOG_FILE, COMMAND_OUTPUT, TRACE_DATA, API_RESPONSE, METRICS_DATA, MONITORING_ALERT, CONFIG_FILE, CODE_REVIEW, DATABASE_QUERY, SCREENSHOT, USER_REPORT, OTHER
-
-**New (5 types):**
+Evidence uses the same `DataType` enum as preprocessing ([Data Classification Strategy](./data-classification-strategy.md), [Data Preprocessing v3.0](./data-preprocessing-design-specification.md)). This eliminates the need for mapping between separate type systems.
 
 ```python
-class EvidenceSourceType(str, Enum):
-    """Fundamental type of data source"""
+class DataType(str, Enum):
+    """Data type classification — shared across preprocessing and evidence"""
 
     LOGS = "logs"
     """
-    Any textual diagnostic output.
+    Time-ordered diagnostic output.
 
-    Includes:
-    - Application logs
-    - System logs
-    - Command output (kubectl, curl, docker logs, etc.)
-    - Distributed trace data
-    - API responses
-    - Error messages
-
-    Characteristics: Time-ordered textual records of system behavior
+    Includes: Application logs, system logs, command output, distributed traces,
+    API responses, error messages, stack traces.
     """
 
     METRICS = "metrics"
     """
     Quantitative measurements.
 
-    Includes:
-    - Time-series metrics (CPU, memory, latency)
-    - Dashboards and graphs
-    - Performance data
-    - Resource usage statistics
-    - Monitoring alerts (triggered by metrics)
-
-    Characteristics: Numerical data, often time-series
+    Includes: Time-series metrics, dashboards, performance data,
+    resource usage, monitoring alerts, profiling output.
     """
 
     CONFIGURATION = "configuration"
     """
-    System/application configuration.
+    Structured system/application configuration.
 
-    Includes:
-    - Config files (YAML, JSON, TOML, env vars)
-    - Code snippets
-    - Database schema
-    - Infrastructure definitions (Kubernetes manifests, Terraform)
-    - Dependency lists
-
-    Characteristics: Defines how system should behave
+    Includes: Config files (YAML, JSON, TOML, env vars), infrastructure
+    definitions (K8s manifests, Terraform), database schema.
     """
 
-    VISUAL = "visual"
+    CODE = "code"
     """
-    Visual representations.
+    Source code files.
 
-    Includes:
-    - Screenshots (errors, dashboards, terminals)
-    - Architecture diagrams
-    - Graphs and charts
-    - Images
-
-    Characteristics: Requires visual interpretation
+    Includes: Application code, scripts, infrastructure-as-code,
+    database migrations, build configurations.
     """
 
-    USER_DESCRIPTION = "user_description"
+    TEXT = "text"
     """
-    User's typed narrative.
+    Unstructured prose.
 
-    Includes:
-    - Problem descriptions
-    - Observations
-    - Impact reports
-    - Steps to reproduce
-    - Context explanations
+    Includes: Documentation, runbooks, incident reports, problem
+    descriptions, steps to reproduce, user observations.
 
-    Characteristics: Human-written context, not machine-generated data
+    Note: User-typed text input (form=USER_INPUT) uses this type.
+    """
+
+    IMAGE = "image"
+    """
+    Visual content.
+
+    Includes: Screenshots, architecture diagrams, dashboard captures,
+    terminal screenshots, graphs and charts.
     """
 ```
 
-**Migration Mapping:**
-| Old (12 types) | New (5 types) |
-|----------------|---------------|
-| LOG_FILE | LOGS |
-| COMMAND_OUTPUT | LOGS |
-| TRACE_DATA | LOGS |
-| API_RESPONSE | LOGS |
-| METRICS_DATA | METRICS |
-| MONITORING_ALERT | METRICS |
-| CONFIG_FILE | CONFIGURATION |
-| CODE_REVIEW | CONFIGURATION |
-| DATABASE_QUERY | CONFIGURATION (schema) or LOGS (results) |
-| SCREENSHOT | VISUAL |
-| USER_REPORT | USER_DESCRIPTION |
-| OTHER | LOGS (fallback) |
-
-**Rationale for Simplification:**
-1. **Easier for LLM to classify** - 5 clear choices vs 12 overlapping ones
-2. **Clear distinctions** - Each type has unique characteristics
-3. **Reduces ambiguity** - "LOG_FILE vs COMMAND_OUTPUT?" → Just LOGS
-4. **Still captures value** - Preprocessing can provide detailed `data_type` if needed
-
-**Note:** The `data_type` field from preprocessing can still provide granular detail:
-- `source_type = LOGS`, `data_type = "application_log"`
-- `source_type = LOGS`, `data_type = "command_output"`
-- `source_type = LOGS`, `data_type = "distributed_trace"`
+**Rationale:**
+1. **Single taxonomy** — no mapping between preprocessing DataType and evidence source type
+2. **Easier for LLM** — 6 clear, non-overlapping choices
+3. **Fine-grained detail preserved** — preprocessing metadata captures subtypes (e.g., `DataType.LOGS` with `metadata.subtype = "distributed_trace"`)
+4. **`form` field handles input channel** — `DOCUMENT` (file upload) vs `USER_INPUT` (typed text) replaces the old USER_DESCRIPTION source type
 
 ---
 
@@ -536,9 +463,9 @@ class Evidence(BaseModel):
     evidence_id: str = Field(pattern=r"^ev_[a-f0-9]{12}$")
     case_id: str = Field(pattern=r"^case_[a-f0-9]{12}$")
 
-    # Classification (NEW: assigned by LLM at creation time)
+    # Classification (assigned by LLM at creation time)
     category: EvidenceCategory  # SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED
-    source_type: EvidenceSourceType  # LOGS/METRICS/CONFIGURATION/VISUAL/USER_DESCRIPTION
+    data_type: DataType  # LOGS/METRICS/CONFIGURATION/CODE/TEXT/IMAGE (unified with preprocessing)
     form: EvidenceForm  # DOCUMENT (file upload) or USER_INPUT (typed text)
 
     # Content
@@ -596,8 +523,8 @@ CREATE TABLE evidence (
     case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
 
     -- Classification
-    category VARCHAR(50) NOT NULL,  -- New values: contextual_evidence, rejected
-    source_type VARCHAR(50) NOT NULL,  -- New values: logs, metrics, configuration, visual, user_description
+    category VARCHAR(50) NOT NULL,  -- symptom_evidence, causal_evidence, resolution_evidence, contextual_evidence, rejected
+    data_type VARCHAR(50) NOT NULL,  -- logs, metrics, configuration, code, text, image (unified DataType)
     form VARCHAR(20) NOT NULL,
 
     -- Content
@@ -706,7 +633,7 @@ ORDER BY count DESC;
    - submission_classification: {type: "external_data", reasoning: "..."}
    - state_updates.evidence_to_add: [{
        category: "symptom_evidence",  # or "rejected" if not useful
-       source_type: "logs",
+       data_type: "logs",
        summary: "Database connection timeout errors",
        primary_purpose: "Shows connection pool exhaustion at peak hours"
      }]
@@ -836,7 +763,7 @@ The LLM can optionally specify `advances_milestones` explicitly when system infe
 class EvidenceToAdd(BaseModel):
     summary: str
     category: EvidenceCategory
-    source_type: EvidenceSourceType
+    data_type: DataType  # Unified with preprocessing
 
     # OPTIONAL: Override system inference
     advances_milestones: Optional[List[str]] = Field(
@@ -885,63 +812,17 @@ The milestone advancement design uses a hybrid system-inferred approach with opt
 
 ---
 
-## Migration Strategy
+---
 
-### Phase 1: Schema Updates
-1. Add new enum values:
-   - `EvidenceCategory.CONTEXTUAL_EVIDENCE`
-   - `EvidenceCategory.REJECTED`
-   - New `EvidenceSourceType` values (LOGS, METRICS, etc.)
-2. Create migration to rename/map existing values
-3. Add database constraints (UNIQUE on turn_number, content_hash)
+## Related Documentation
 
-### Phase 2: Code Updates
-1. Remove UNCLASSIFIED evidence creation pattern (milestone_engine.py:359-400)
-2. Add submission_classification to LLM response schemas
-3. Update prompt templates with classification guidance
-4. Implement single-phase evidence creation logic
-5. Add content_hash deduplication check
-
-### Phase 3: Testing
-1. Unit tests for classification logic
-2. Integration tests for evidence creation flow
-3. Test deduplication (same file uploaded twice)
-4. Test analytics queries
-
-### Phase 4: Rollout
-1. Deploy schema changes
-2. Migrate existing UNCLASSIFIED → appropriate category or REJECTED
-3. Migrate existing OTHER → CONTEXTUAL_EVIDENCE
-4. Deploy code changes
-5. Monitor evidence creation patterns
+- [Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md) — Defines the three-tier preprocessing model and shared DataType enum
+- [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules for DataType detection
+- [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline diagrams
+- [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling design for single-phase creation
 
 ---
 
-## Open Questions
-
-None - design is finalized and approved.
-
----
-
-## Appendix: Design Evolution
-
-### What Changed from Original Design
-
-1. **UNCLASSIFIED removed**: Was placeholder pattern, now single-phase creation
-2. **OTHER renamed**: Now CONTEXTUAL_EVIDENCE with clear definition
-3. **REJECTED added**: Track rejected submissions for deduplication and audit
-4. **Source types simplified**: 12 → 5 types for clarity
-5. **Evidence table semantics**: Now "submission attempts table" not "validated evidence only"
-
-### Why These Changes
-
-- **Simpler mental model**: One creation, complete data
-- **Better analytics**: Track all submissions including rejections
-- **Clearer taxonomy**: CONTEXTUAL_EVIDENCE vs vague OTHER
-- **Easier classification**: 5 source types vs 12 overlapping ones
-- **Complete audit trail**: Can answer "what was submitted?" and "why rejected?"
-
----
-
-**Document Status:** Approved for Implementation
-**Next Step:** Create detailed implementation plan with task breakdown
+**Document Version:** 2.0
+**Last Updated:** 2026-02-12
+**Status:** Design Specification
