@@ -560,7 +560,7 @@ class UploadedFileMetadata(BaseModel):
     @classmethod
     def from_uploaded_file(cls, uploaded_file) -> "UploadedFileMetadata":
         """Convert UploadedFile model to UploadedFileMetadata."""
-        from faultmaven.models.case import UploadedFile
+        from faultmaven.modules.case.contracts import UploadedFile
 
         # Calculate human-readable size
         size_bytes = uploaded_file.size_bytes
@@ -737,6 +737,10 @@ class DerivedEvidenceSummary(BaseModel):
         description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER"
     )
     collected_at_turn: int
+    source_type: str = Field(description="LOGS | METRICS | TRACES | etc.")
+    content_hash: Optional[str] = None
+    preprocessing_method: Optional[str] = None
+    primary_purpose: Optional[str] = None
     related_hypothesis_ids: List[str] = Field(default_factory=list)
 
 

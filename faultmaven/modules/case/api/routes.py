@@ -15,6 +15,7 @@ Key Endpoints:
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -3135,81 +3136,6 @@ async def list_uploaded_files(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get(
-    "/{case_id}/uploaded-files/{file_id}",
-    response_model=UploadedFileDetails,
-    operation_id="get_uploaded_file_details_v1",
-)
-@trace("api_get_uploaded_file_details")
-async def get_uploaded_file_details(
-    case_id: str,
-    file_id: str,
-    case_service=Depends(get_case_service),
-    current_user: UserDTO = Depends(require_authentication),
-):
-    """
-    Get detailed information about a specific uploaded file.
-
-    Returns:
-        Full file details with AI analysis and hypothesis relationships
-    """
-    try:
-        # Get case with access control
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
-
-        # Find uploaded file first (exists in ALL phases)
-        uploaded_file = None
-        for f in case.uploaded_files:
-            if f.file_id == file_id:
-                uploaded_file = f
-                break
-
-        if not uploaded_file:
-            raise HTTPException(
-                status_code=404, detail=f"File {file_id} not found in case {case_id}"
-            )
-
-        # In INQUIRY phase: return uploaded file details without hypothesis relationships
-        if case.status == CaseStatus.INQUIRY:
-            return UploadedFileDetails.from_uploaded_file(
-                uploaded_file=uploaded_file, case_id=case_id
-            )
-
-        # In INVESTIGATING phase: check if file has been converted to evidence
-        # (Evidence is created from uploaded files during investigation)
-        evidence = None
-        for e in case.evidence:
-            # Match by file_id (evidence tracks original file_id)
-            if e.evidence_id == file_id or (
-                hasattr(e, "source_file_id") and e.source_file_id == file_id
-            ):
-                evidence = e
-                break
-
-        if evidence:
-            # File has been analyzed as evidence - return full details with hypotheses
-            return UploadedFileDetails.from_evidence(
-                evidence=evidence, case_id=case_id, hypotheses=case.hypotheses
-            )
-        else:
-            # File uploaded but not yet analyzed as evidence
-            return UploadedFileDetails.from_uploaded_file(
-                uploaded_file=uploaded_file, case_id=case_id
-            )
-
-    except HTTPException:
-        raise
-    except NotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except PermissionDeniedException as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to get file details: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ============================================================
 # Phase 2: Evidence-to-File Linkage APIs
 # ============================================================
@@ -3225,7 +3151,7 @@ async def get_uploaded_file_details(
 async def get_uploaded_file_details(
     case_id: str = Path(..., description="Case ID"),
     file_id: str = Path(..., description="File ID"),
-    auth: tuple = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     case_service: APICaseService = Depends(get_api_case_service),
 ):
     """
@@ -3236,12 +3162,12 @@ async def get_uploaded_file_details(
     - List of evidence derived from this file
     - Hypothesis linkage for each evidence piece
     """
-    session_id, user_id = auth
+    user_id = current_user.user_id
 
     try:
         # Get case and verify ownership
-        case = await case_service.get_case(case_id)
-        if case.owner_id != user_id:
+        case = await case_service.get_case(case_id, user_id)
+        if case.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         # Find the uploaded file
@@ -3270,8 +3196,18 @@ async def get_uploaded_file_details(
                     DerivedEvidenceSummary(
                         evidence_id=evidence.evidence_id,
                         summary=evidence.summary,
-                        category=evidence.category,
+                        category=_safe_enum_value(evidence.category),
                         collected_at_turn=evidence.collected_at_turn,
+                        source_type=_safe_enum_value(evidence.source_type),
+                        content_hash=(
+                            hashlib.sha256(
+                                evidence.preprocessed_content.encode()
+                            ).hexdigest()
+                            if evidence.preprocessed_content
+                            else None
+                        ),
+                        preprocessing_method=evidence.preprocessing_method,
+                        primary_purpose=evidence.primary_purpose,
                         related_hypothesis_ids=related_hypothesis_ids,
                     )
                 )
@@ -3329,8 +3265,8 @@ async def list_uploaded_files(
 
     try:
         # Get case and verify ownership
-        case = await case_service.get_case(case_id)
-        if case.owner_id != user_id:
+        case = await case_service.get_case(case_id, user_id)
+        if case.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         # Build file list with evidence counts
@@ -3402,8 +3338,8 @@ async def get_evidence_details(
 
     try:
         # Get case and verify ownership
-        case = await case_service.get_case(case_id)
-        if case.owner_id != user_id:
+        case = await case_service.get_case(case_id, user_id)
+        if case.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         # Find the evidence
