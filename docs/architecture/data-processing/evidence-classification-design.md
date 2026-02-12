@@ -472,17 +472,18 @@ class Evidence(BaseModel):
     summary: str = Field(max_length=500)
     primary_purpose: str  # What this evidence shows, or why rejected if REJECTED
     content_ref: str  # S3 URI, file_id, or turn reference
-    preprocessed_content: Optional[str] = None  # Extracted text (for search)
 
     # Metadata
     collected_at: datetime
     collected_by: str  # user_id
     collected_at_turn: int
 
-    # Processing
-    preprocessing_method: str  # "none", "ocr", "log_parser", etc.
+    # Processing (from PreprocessingResult)
+    extraction_method: str  # Tier 1 method: "structural_index", "statistical_profile",
+                            # "parse_and_sanitize", "ast_extraction", "structure_extraction",
+                            # "metadata_extraction", or "none" (for USER_INPUT form)
     content_size_bytes: int
-    content_hash: Optional[str] = None  # SHA256 for deduplication
+    content_hash: Optional[str] = None  # SHA-256 for deduplication
 
     # Investigation linkage
     related_hypotheses: List[str] = []  # hypothesis_ids this evidence evaluates
@@ -531,17 +532,18 @@ CREATE TABLE evidence (
     summary TEXT NOT NULL,
     primary_purpose TEXT NOT NULL,
     content_ref VARCHAR(500) NOT NULL,
-    preprocessed_content TEXT,
+    -- NOTE: structural_index is stored in Vector DB (ChromaDB), not in this table.
+    -- It is too large (50KB+ for logs) to store inline. Use vector search for retrieval.
 
     -- Metadata
     collected_at TIMESTAMP WITH TIME ZONE NOT NULL,
     collected_by VARCHAR(36) NOT NULL,
     collected_at_turn INTEGER NOT NULL,
 
-    -- Processing
-    preprocessing_method VARCHAR(50) NOT NULL,
+    -- Processing (from PreprocessingResult)
+    extraction_method VARCHAR(50) NOT NULL,  -- structural_index, statistical_profile, etc.
     content_size_bytes INTEGER NOT NULL,
-    content_hash VARCHAR(64),  -- SHA256
+    content_hash VARCHAR(64),  -- SHA-256
 
     -- Constraints
     UNIQUE (case_id, turn_number),  -- UI constraint: one evidence per turn max

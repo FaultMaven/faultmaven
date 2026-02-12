@@ -231,7 +231,7 @@ case = await hypothesis_analysis_service.analyze_evidence_impact(
 background_tasks.add_task(
     store_in_vector_db,
     case_id=case_id,
-    preprocessed_content=preprocessing_result.structural_index,
+    structural_index=preprocessing_result.structural_index,
     evidence_id=evidence.evidence_id,
 )
 
@@ -967,6 +967,7 @@ async def package_preprocessing_result(
     file_info: FileInfo,
     case_id: str,
     data_type: DataType,
+    content_hash: str,
 ) -> PreprocessingResult:
     """
     Package extraction results and store raw file.
@@ -988,9 +989,6 @@ async def package_preprocessing_result(
         filename=file_info.filename,
         content_type=file_info.mime_type,
     )
-
-    # Compute content hash for deduplication
-    content_hash = hashlib.sha256(file_info.raw_content).hexdigest()
 
     return PreprocessingResult(
         temp_id=generate_temp_id(),
@@ -1466,26 +1464,57 @@ class DataExcerpt(BaseModel):
 
 ### 7.3 Integration with Evidence Architecture
 
+**PreprocessingResult → Evidence field mapping:**
+
+| PreprocessingResult Field | Evidence Field | Notes |
+|--------------------------|----------------|-------|
+| `summary` | `summary` | <500 char summary for display |
+| `data_type` | `data_type` | Unified DataType enum |
+| `content_ref` | `content_ref` | Raw file reference (S3 URI or local path) |
+| `content_size_bytes` | `content_size_bytes` | Size of raw file |
+| `content_type` | *(not stored)* | MIME type available from content_ref metadata |
+| `content_hash` | `content_hash` | SHA-256 for deduplication |
+| `extraction_method` | `extraction_method` | Tier 1 method name |
+| `structural_index` | *(vector DB only)* | Too large for DB — stored in ChromaDB async |
+| `compression_ratio` | *(not stored)* | Preprocessing metric, not needed in evidence |
+| `extraction_metadata` | *(not stored)* | Available via vector DB metadata |
+| `sanitization_applied` | *(not stored)* | Preprocessing metric, logged but not persisted |
+| `redactions_count` | *(not stored)* | Logged for audit trail, not in evidence table |
+| `processing_time_ms` | *(not stored)* | Preprocessing metric |
+
+**Fields set by LLM evaluation (not from PreprocessingResult):**
+
+| Evidence Field | Source |
+|----------------|--------|
+| `category` | LLM classification (SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED) |
+| `primary_purpose` | LLM-generated description |
+| `related_hypotheses` | LLM + system inference |
+| `advances_milestones` | System-inferred from category + completed milestones |
+| `form` | Input channel: `DOCUMENT` (file upload) or `USER_INPUT` (typed text) |
+
 ```python
 # After Tier 1 preprocessing completes:
 preprocessing_result = await preprocessing_service.process_upload(...)
 
 # Evidence Architecture uses these fields:
 evidence = Evidence(
+    # From PreprocessingResult:
     summary=preprocessing_result.summary,                    # <500 chars
     content_ref=preprocessing_result.content_ref,            # Raw file reference
     content_size_bytes=preprocessing_result.content_size_bytes,
-    content_type=preprocessing_result.content_type,
     data_type=preprocessing_result.data_type,                # Unified DataType enum
     content_hash=preprocessing_result.content_hash,          # SHA-256 for dedup
+    extraction_method=preprocessing_result.extraction_method, # Tier 1 method
     form=EvidenceForm.DOCUMENT,
-    preprocessed=True,
+    # From LLM evaluation:
+    category=llm_result.category,                            # Set by LLM
+    primary_purpose=llm_result.primary_purpose,              # Set by LLM
 )
 
-# The structural index is used:
-# 1. By the agent for initial response generation
-# 2. Stored in vector DB for semantic search
-# 3. NOT stored in the Evidence object (too large)
+# The structural index goes to vector DB (async, does NOT block response):
+# 1. Agent uses it for initial response generation (passed in-memory)
+# 2. Stored in ChromaDB for semantic search across case evidence
+# 3. NOT stored in the evidence table (too large — 50KB+ for logs)
 
 # The content_ref enables:
 # 1. Tier 2 deep analysis on-demand
@@ -1582,12 +1611,23 @@ class PreprocessingService:
         Tier 1 always completes without user interaction.
         """
 
-        # Tier 0: Validate & Classify
+        # Step 0: Read file and validate size
         raw_content = await file.read()
 
         if len(raw_content) > self.config.max_upload_size:
             raise FileTooLargeError(len(raw_content), self.config.max_upload_size)
 
+        # Step 1: Compute content_hash early for deduplication
+        content_hash = hashlib.sha256(raw_content).hexdigest()
+
+        # Step 2: Check for duplicate (early exit before any extraction work)
+        existing = await self.evidence_repo.find_by_content_hash(
+            case_id, content_hash
+        )
+        if existing:
+            raise DuplicateFileError(existing.evidence_id, content_hash)
+
+        # Tier 0: Classify
         classification = classify_data_type(
             filename=file.filename,
             content_sample=raw_content[:5000],
@@ -1624,6 +1664,7 @@ class PreprocessingService:
             ),
             case_id=case_id,
             data_type=classification.data_type,
+            content_hash=content_hash,
         )
 
         return result
@@ -1726,6 +1767,19 @@ Cluster 2: lines 18900-19100 (12 errors, severity=50)
     content_type="text/plain",
     extraction_method="structural_index",
     compression_ratio=0.005,
+    extraction_metadata={
+        "total_lines": 250000,
+        "total_errors": 847,
+        "error_clusters": 23,
+        "severity_distribution": {"ERROR": 823, "FATAL": 2, "CRITICAL": 22},
+        "unique_error_types": 15,
+        "state_transitions": 3,
+        "time_range": {"first": "2025-11-01T14:00:00", "last": "2025-11-01T15:30:00"},
+        "crime_scene_line": 12450,
+    },
+    content_hash="a1b2c3d4e5f6...sha256...of_raw_file_content",
+    sanitization_applied=True,
+    redactions_count=2,
     processing_time_ms=520,
 )
 ```
@@ -1769,8 +1823,15 @@ preprocessing_result = PreprocessingResult(
     structural_index="[Full YAML with secrets redacted]",
     content_ref="local://data/case_123/database_yaml_ghi.yaml",
     content_size_bytes=5120,
+    content_type="application/yaml",
     extraction_method="parse_and_sanitize",
     compression_ratio=1.0,
+    extraction_metadata={
+        "format": "yaml",
+        "secrets_redacted": 3,
+        "keys_count": 42,
+    },
+    content_hash="f7e8d9c0...sha256...of_raw_yaml_content",
     sanitization_applied=True,
     redactions_count=3,
     processing_time_ms=230,

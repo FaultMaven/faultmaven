@@ -48,8 +48,9 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
-      │ attachment_metadata
-      │ {content_hash, extracted_text, ...}
+      │ PreprocessingResult
+      │ {data_type, summary, structural_index, content_ref, content_hash,
+      │  extraction_method, content_size_bytes, extraction_metadata}
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Investigation Service Layer                           │
