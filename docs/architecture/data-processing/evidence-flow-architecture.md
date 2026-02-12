@@ -809,9 +809,8 @@ evidence.storage_size_bytes
 
 ## Related Documentation
 
-- [Evidence Classification Final Design](./EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)
-- [Evidence Redesign Implementation Plan](./EVIDENCE-REDESIGN-IMPLEMENTATION-PLAN.md)
-- [Evidence Creation Failure Modes](./EVIDENCE-CREATION-FAILURE-MODES.md)
+- [Evidence Classification Design](./evidence-classification-design.md)
+- [Evidence Failure Modes](./evidence-failure-modes.md)
 - [Evidence Handling Developer Guide](../../development/evidence-handling-guide.md)
 - [Evidence API Documentation](../../api/evidence-api.md)
 - [Migration Runbook](../../operations/evidence-redesign-migration-runbook.md)

@@ -12,7 +12,7 @@
 > This document addresses **data type classification** (determining what kind of data: LOG_FILE vs METRICS_DATA, etc.).
 >
 > This is separate from **evidence classification**, which has been **IMPLEMENTED**:
-> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](./EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)**
+> **[evidence-classification-design.md](./evidence-classification-design.md)**
 >
 > **Evidence Classification Changes (IMPLEMENTED 2026-02-11)**:
 >
@@ -21,7 +21,7 @@
 > - Evidence categories changed: UNCLASSIFIED removed, OTHER → CONTEXTUAL_EVIDENCE, REJECTED added
 > - Single-phase evidence creation (after LLM evaluation, no placeholders)
 
-**Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the QueryClassifier design in the [Data Submission Design v4.1](./data-submission-design.md#52-query-classification-3-tier-system). The QueryClassifier is not yet implemented as a standalone module.
+**Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the QueryClassifier design in the data submission layer. The QueryClassifier is not yet implemented as a standalone module.
 
 ---
 
@@ -82,7 +82,7 @@ Tier 1: Type-specific Mechanical Extraction (0 LLM, <2s)
 Evidence Architecture → Agent Response
 ```
 
-**For /queries endpoint**: A separate QueryClassifier (3-tier: hints → patterns → heuristics) first determines **IF** content is machine data vs human question. If machine data is detected, DataClassifier (this document) determines **WHAT TYPE**. See [Data Submission Design §5.2](./data-submission-design.md#52-query-classification-3-tier-system).
+**For /queries endpoint**: A separate QueryClassifier (3-tier: hints → patterns → heuristics) first determines **IF** content is machine data vs human question. If machine data is detected, DataClassifier (this document) determines **WHAT TYPE**.
 
 **Hint Passing**: QueryClassifier's `detected_data_type` field (if present) can be passed as a hint to DataClassifier to improve accuracy.
 
@@ -1400,7 +1400,7 @@ ClassificationResult(
 - Positioned this document as Tier 0 in the Data Preprocessing v3.0 three-tier model
 - Updated pipeline relationship diagram to show Tier 0 → Tier 1 flow
 - Fixed reference to QueryClassifier (not yet implemented as standalone module)
-- Updated cross-references to data-submission-design.md and data-preprocessing-design-specification.md
+- Updated cross-references to data-preprocessing-design-specification.md
 - No changes to classification rules or algorithms (still applicable)
 
 **Changelog (v1.1)**:

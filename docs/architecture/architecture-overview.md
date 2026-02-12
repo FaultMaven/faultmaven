@@ -1336,7 +1336,7 @@ Comprehensive **data preprocessing pipeline** transforms uploaded files into LLM
 
 For complete specifications, see:
 - [Data Preprocessing Design v4.0](./data-preprocessing-design.md) - Complete system design
-- [Data Submission Design v3.1](data-processing/data-submission-design.md) - Upload flow and dual-path routing
+- [Evidence Classification Design](data-processing/evidence-classification-design.md) - Evidence classification and submission types
 
 ---
 
@@ -1589,7 +1589,7 @@ Milestone-based investigation engine:
 #### Middleware and Routes
 
 - [`Middleware Architecture`](./middleware-architecture.md) - 📝 *To create* - Middleware stack (api/middleware/): Logging, performance, protection, rate limiting, request ID
-- [`Data Submission Design v3.1`](data-processing/data-submission-design.md) - Data upload handling (routes/case.py): Dual-path routing, pattern detection, conversational responses
+- [`Evidence Classification Design`](data-processing/evidence-classification-design.md) - Data upload handling (routes/case.py): Evidence classification, submission types, dual-path routing
 
 ---
 

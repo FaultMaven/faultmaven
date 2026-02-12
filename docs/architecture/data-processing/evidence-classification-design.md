@@ -18,9 +18,7 @@
 - All unit tests passing (17/17) (Phase 6)
 
 **⏳ DEFERRED (Post-MVP):**
-- Failure mode handling (Phase 7) - Design complete in [EVIDENCE-CREATION-FAILURE-MODES.md](./EVIDENCE-CREATION-FAILURE-MODES.md)
-
-**See:** [EVIDENCE-REDESIGN-IMPLEMENTATION-SUMMARY.md](/home/swhouse/product/docs/working/EVIDENCE-REDESIGN-IMPLEMENTATION-SUMMARY.md) for complete implementation details.
+- Failure mode handling (Phase 7) - Design complete in [evidence-failure-modes.md](./evidence-failure-modes.md)
 
 ---
 
@@ -883,7 +881,7 @@ class EvidenceToAdd(BaseModel):
 3. **No inconsistency risk**: System controls both values with clear derivation logic
 4. **One-file-per-turn constraint**: UI limitation makes inference unambiguous (only one evidence to attribute to)
 
-See [MILESTONE-ADVANCEMENT-ANALYSIS.md](./MILESTONE-ADVANCEMENT-ANALYSIS.md) for detailed analysis and decision rationale.
+The milestone advancement design uses a hybrid system-inferred approach with optional LLM override (Option 2.5).
 
 ---
 

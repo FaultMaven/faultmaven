@@ -40,7 +40,7 @@ Master index for all architecture documentation.
 | **[Case and Session Concepts](case-and-session/case-and-session-concepts.md)** | Case vs Session distinction, multi-device support |
 | **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** | Vector database, RAG, knowledge retrieval |
 | **[Structured Output Capability System](core-architecture/structured-output-capability-system.md)** | Provider-agnostic LLM structured output handling |
-| **[Data Submission Design](data-processing/data-submission-design.md)** | File uploads and data handling |
+| **[Evidence Classification Design](data-processing/evidence-classification-design.md)** | Evidence classification and submission types |
 | **[Data Preprocessing Design](data-processing/data-preprocessing-design-specification.md)** | Data preprocessing pipeline |
 | **[QA Tools Design](knowledge-and-ai/qa-tools-design.md)** | Question answering tools and sub-agents |
 
@@ -194,5 +194,5 @@ Step 3: LLM Analysis (✅ Ready)
 ```
 
 **Related Documents**:
-- [data-submission-design.md](data-processing/data-submission-design.md) - Upload flow and dual submission paths
+- [evidence-classification-design.md](data-processing/evidence-classification-design.md) - Evidence classification and submission types
 

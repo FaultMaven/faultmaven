@@ -3,10 +3,7 @@
 > **DESIGN SUPERSEDED AND IMPLEMENTED** (2026-02-11):
 >
 > This document has been superseded by the final approved design, which is now **IMPLEMENTED**:
-> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](../data-processing/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)** ✅ IMPLEMENTED
->
-> **Implementation Summary:**
-> **[EVIDENCE-REDESIGN-CHANGELOG.md](../data-processing/EVIDENCE-REDESIGN-CHANGELOG.md)**
+> **[evidence-classification-design.md](../data-processing/evidence-classification-design.md)** ✅ IMPLEMENTED
 >
 > **Critical Changes (IMPLEMENTED 2026-02-11)**:
 >
@@ -1541,7 +1538,7 @@ async def test_file_upload_end_to_end():
 
 ### Related Documents
 
-- **[Data Submission Design v4.0](../data-processing/data-submission-design.md)** - API layer and user interaction
+- **[Evidence Classification Design](../data-processing/evidence-classification-design.md)** - Evidence classification and submission types
 - **[Investigation Data Models](./investigation-data-models.md)** - Evidence schema and enums
 - **[Data Preprocessing Architecture v2.0](../data-processing/data-preprocessing-design-specification.md)** - Data transformation pipeline
 - **[Case and Session Concepts](../case-and-session/case-and-session-concepts.md)** - Case lifecycle and structure

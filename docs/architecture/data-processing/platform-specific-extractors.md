@@ -251,7 +251,7 @@ structured = llm.extract_structured_data(prompt)
 ## References
 
 - [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md) - Three-tier model including Tier 2 pluggable backends
-- [Data Submission Design v4.1](./data-submission-design.md) - API endpoints and submission flow
+- [Evidence Classification Design](./evidence-classification-design.md) - Evidence classification and submission types
 - [Data Classification Strategy v1.2](./data-classification-strategy.md) - Tier 0 data type classification
 
 ---
