@@ -30,10 +30,6 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 - **[Evidence Failure Modes](../data-processing/evidence-failure-modes.md)** - Failure handling for single-phase creation
 - **[Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md)** - Three-tier preprocessing model
 
-### Historical Documents
-
-- **[Workflow Design Review](./workflow-design-review.md)** - Historical design decisions (2026-02-09) - Some decisions superseded by later evidence model changes
-
 ## Purpose
 
 This section covers FaultMaven's investigation engine - the opportunistic framework that guides AI agents through problem diagnosis and resolution, including prompt engineering and context management.
