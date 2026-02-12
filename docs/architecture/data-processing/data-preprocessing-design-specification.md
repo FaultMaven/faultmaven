@@ -231,7 +231,7 @@ case = await hypothesis_analysis_service.analyze_evidence_impact(
 background_tasks.add_task(
     store_in_vector_db,
     case_id=case_id,
-    preprocessed_content=preprocessing_result.structural_index,
+    structural_index=preprocessing_result.structural_index,
     evidence_id=evidence.evidence_id,
 )
 
@@ -654,28 +654,68 @@ def parse_and_sanitize_config(
 
     LLM Calls: 0
     Time: ~0.2s
+
+    Error handling:
+    - Parse failure (malformed YAML/JSON/TOML/INI) → fallback to TEXT extraction
+    - Re-serialization failure → return raw content with secrets regex-redacted
     """
 
-    # Detect and parse format
-    if filename.endswith(('.yaml', '.yml')):
-        parsed = yaml.safe_load(config_content)
-        format_type = "yaml"
-    elif filename.endswith('.json'):
-        parsed = json.loads(config_content)
-        format_type = "json"
-    elif filename.endswith('.toml'):
-        parsed = toml.loads(config_content)
-        format_type = "toml"
-    else:
-        parsed = parse_ini(config_content)
-        format_type = "ini"
+    # Detect format from extension
+    ext = Path(filename).suffix.lower()
+    format_map = {
+        '.yaml': 'yaml', '.yml': 'yaml',
+        '.json': 'json',
+        '.toml': 'toml',
+        '.ini': 'ini', '.conf': 'ini', '.cfg': 'ini', '.properties': 'ini',
+    }
+    format_type = format_map.get(ext, 'ini')
 
-    # Redact secrets
+    # Attempt structured parse
+    try:
+        if format_type == "yaml":
+            parsed = yaml.safe_load(config_content)
+        elif format_type == "json":
+            parsed = json.loads(config_content)
+        elif format_type == "toml":
+            parsed = toml.loads(config_content)
+        else:
+            parsed = parse_ini(config_content)
+    except (yaml.YAMLError, json.JSONDecodeError, toml.TomlDecodeError,
+            configparser.Error, Exception) as e:
+        # FALLBACK: Parsing failed — treat as TEXT with regex-based secret redaction
+        logger.warning(
+            f"Config parse failed for {filename} ({format_type}): {e}. "
+            f"Falling back to TEXT extraction with regex secret redaction."
+        )
+        redacted_content = regex_redact_secrets(config_content)
+        return ExtractionResult(
+            method="structure_extraction",  # Fallback to TEXT method
+            content=redacted_content,
+            metadata={
+                "format": format_type,
+                "parse_failed": True,
+                "parse_error": str(e)[:200],
+                "secrets_redacted": -1,  # Unknown (regex-based, not structural)
+            },
+        )
+
+    # Guard: parsed result must be a dict or list
+    if parsed is None:
+        # Empty file or null document (e.g., empty YAML)
+        return ExtractionResult(
+            method="parse_and_sanitize",
+            content="(empty configuration file)",
+            metadata={"format": format_type, "secrets_redacted": 0, "keys_count": 0},
+        )
+
+    # Redact secrets (recursive, handles nested dicts/lists)
     secret_patterns = {
         'api_key': r'(api[_-]?key|apikey)',
         'password': r'(password|passwd|pwd)',
         'secret': r'(secret|token)',
         'private_key': r'(private[_-]?key|privatekey)',
+        'connection_string': r'(connection[_-]?string|conn[_-]?str|dsn|database[_-]?url)',
+        'certificate': r'(certificate|cert[_-]?key|ssl[_-]?key)',
     }
 
     secrets_found = 0
@@ -723,51 +763,141 @@ def parse_and_sanitize_config(
 ### 4.5 CODE — AST Extraction
 
 ```python
+# Supported languages for AST parsing vs regex fallback
+LANGUAGE_EXTENSIONS = {
+    '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
+    '.java': 'java', '.go': 'go', '.rb': 'ruby',
+    '.cpp': 'cpp', '.c': 'c', '.rs': 'rust',
+    '.sh': 'shell', '.bash': 'shell',
+}
+
+# Regex patterns for function signature extraction (non-Python languages)
+FUNCTION_SIGNATURE_PATTERNS = {
+    'javascript': r'^(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(',
+    'typescript': r'^(?:export\s+)?(?:async\s+)?function\s+\w+|(?:const|let|var)\s+\w+\s*[:=]',
+    'java':       r'^\s*(?:public|private|protected)?\s*(?:static)?\s*\w+\s+\w+\s*\(',
+    'go':         r'^func\s+(?:\(\w+\s+\*?\w+\)\s+)?\w+\s*\(',
+    'ruby':       r'^\s*def\s+\w+',
+    'rust':       r'^\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+',
+    'c':          r'^\w[\w\s\*]+\s+\w+\s*\([^)]*\)\s*\{',
+    'cpp':        r'^\w[\w\s\*:]+\s+\w+\s*\([^)]*\)\s*(?:const)?\s*\{',
+    'shell':      r'^\s*(?:\w+\s*\(\)|function\s+\w+)',
+}
+
+
 def extract_code_ast(code_content: str, filename: str) -> ExtractionResult:
     """
     Extract code structure via AST parsing. No LLM.
 
     Compression: 50:1 for large files → key functions only
     Time: ~0.5s
+
+    Error handling:
+    - SyntaxError (Python AST) → fallback to regex-based function signature extraction
+    - Language not recognized → fallback to TEXT extraction
+    - Regex extraction finds nothing → return raw preview (first+last 200 lines)
     """
 
-    language = detect_language(filename)
+    ext = Path(filename).suffix.lower()
+    language = LANGUAGE_EXTENSIONS.get(ext)
+
+    if not language:
+        # Unknown language — fallback to TEXT extraction
+        logger.info(f"Unknown code language for {filename}, falling back to TEXT extraction")
+        return extract_text_structure(code_content)
+
+    definitions = []
 
     if language == "python":
-        import ast
-        tree = ast.parse(code_content)
-        imports = [
-            ast.get_source_segment(code_content, node)
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-        ]
-        definitions = [
-            ast.get_source_segment(code_content, node)
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
-        ]
-        extracted = imports + definitions
-    else:
-        # Fallback: extract function signatures
-        lines = code_content.split('\n')
-        if len(lines) < 500:
-            extracted = lines
-        else:
-            extracted = extract_function_signatures(code_content, language)
+        try:
+            import ast
+            tree = ast.parse(code_content)
+            imports = [
+                ast.get_source_segment(code_content, node)
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+            ]
+            definitions = [
+                ast.get_source_segment(code_content, node)
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef))
+            ]
+            extracted = imports + definitions
 
+            return ExtractionResult(
+                method="ast_extraction",
+                content='\n'.join(str(e) for e in extracted if e),
+                metadata={
+                    "language": language,
+                    "functions_extracted": len(definitions),
+                    "imports_extracted": len(imports),
+                    "ast_parse": "success",
+                },
+            )
+        except SyntaxError as e:
+            # Python AST parse failed (syntax error in source) — fall through to regex
+            logger.warning(
+                f"Python AST parse failed for {filename}: {e}. "
+                f"Falling back to regex-based extraction."
+            )
+
+    # Non-Python languages OR Python AST fallback: regex-based extraction
+    lines = code_content.split('\n')
+
+    # Small files: return entire content (no compression needed)
+    if len(lines) < 500:
+        return ExtractionResult(
+            method="ast_extraction",
+            content=code_content,
+            metadata={
+                "language": language,
+                "functions_extracted": 0,
+                "full_content": True,
+            },
+        )
+
+    # Large files: extract function signatures via regex
+    pattern = FUNCTION_SIGNATURE_PATTERNS.get(language)
+    if pattern:
+        signatures = []
+        for i, line in enumerate(lines):
+            if re.match(pattern, line):
+                # Capture signature + a few lines of context
+                end = min(i + 3, len(lines))
+                signatures.append(f"Line {i+1}: {' '.join(lines[i:end])}")
+
+        if signatures:
+            header = f"=== CODE STRUCTURE INDEX ({language}) ===\n"
+            header += f"Total lines: {len(lines)}\n"
+            header += f"Functions/definitions found: {len(signatures)}\n\n"
+            content = header + '\n'.join(signatures)
+
+            return ExtractionResult(
+                method="ast_extraction",
+                content=content,
+                metadata={
+                    "language": language,
+                    "functions_extracted": len(signatures),
+                    "extraction_strategy": "regex_signatures",
+                },
+            )
+
+    # Last resort: preview (first+last 200 lines)
+    preview = lines[:200] + ["\n--- [CONTENT TRUNCATED] ---\n"] + lines[-200:]
     return ExtractionResult(
         method="ast_extraction",
-        content='\n'.join(str(e) for e in extracted if e),
+        content='\n'.join(preview),
         metadata={
             "language": language,
-            "functions_extracted": len(definitions) if language == "python" else 0,
+            "functions_extracted": 0,
+            "extraction_strategy": "preview_fallback",
         },
     )
 ```
 
 ### 4.6 TEXT — Structure Extraction
 
-Mechanical structure extraction only (zero LLM).
+Mechanical structure extraction only (zero LLM). This is also the **universal fallback** — when any other extractor fails (CONFIG parse error, CODE AST failure with no regex matches), the pipeline falls back to TEXT extraction.
 
 ```python
 def extract_text_structure(text_content: str) -> ExtractionResult:
@@ -776,9 +906,13 @@ def extract_text_structure(text_content: str) -> ExtractionResult:
 
     Strategy:
     1. Identify headings and sections
-    2. Extract key sentences (first sentence of each paragraph)
+    2. Extract key sentences (first sentence of each paragraph, max 30)
     3. Count words, lines, sections
     4. Return first/last 100 lines as preview
+
+    This extractor is also the universal fallback for other extraction
+    failures (CONFIG parse error, CODE AST failure). It always succeeds
+    because it operates on raw text with no parsing assumptions.
 
     LLM Calls: 0
     Time: ~0.3s
@@ -797,15 +931,17 @@ def extract_text_structure(text_content: str) -> ExtractionResult:
         elif i + 1 < len(lines) and re.match(r'^[=\-]{3,}$', lines[i+1].strip()):
             headings.append((i, stripped))  # RST underline
 
-    # Extract first sentence of each paragraph
+    # Extract first sentence of each paragraph (max 30)
     paragraphs = text_content.split('\n\n')
     key_sentences = []
     for para in paragraphs[:50]:
         para = para.strip()
         if para and not para.startswith('#'):
             first_sentence = re.split(r'[.!?]', para)[0]
-            if len(first_sentence) > 20:
+            if 20 < len(first_sentence) < 500:
                 key_sentences.append(first_sentence.strip())
+        if len(key_sentences) >= 30:
+            break
 
     # Preview: first + last 100 lines
     if len(lines) > 200:
@@ -829,8 +965,8 @@ def extract_text_structure(text_content: str) -> ExtractionResult:
 
     if key_sentences:
         index_parts.append("\n=== KEY SENTENCES ===")
-        for sentence in key_sentences[:20]:
-            index_parts.append(f"  • {sentence}")
+        for sentence in key_sentences[:30]:
+            index_parts.append(f"  - {sentence}")
 
     index_parts.append("\n=== PREVIEW ===")
     index_parts.extend(preview)
@@ -849,7 +985,7 @@ def extract_text_structure(text_content: str) -> ExtractionResult:
 
 ### 4.7 IMAGE — Metadata Extraction
 
-Metadata only at Tier 1. Vision analysis is handled by Tier 2.
+Metadata only at Tier 1. Vision analysis (screenshot OCR, diagram interpretation) is handled by Tier 2 via a multimodal LLM.
 
 ```python
 def extract_image_metadata(
@@ -858,15 +994,20 @@ def extract_image_metadata(
     """
     Extract image metadata without LLM or vision model.
 
-    At Tier 1: We know the format, dimensions, and file size.
-    The agent can reference this evidence and trigger Tier 2
-    for vision analysis when needed.
+    At Tier 1: format, dimensions, color mode, EXIF data, and file size.
+    The agent can reference this evidence and trigger Tier 2 for vision
+    analysis when needed (e.g., "describe the error in this screenshot").
+
+    Error handling:
+    - Corrupted/unreadable image → metadata from filename and file size only
+    - EXIF extraction failure → silently skip (EXIF is optional)
 
     LLM Calls: 0
     Time: ~0.1s
     """
 
     from PIL import Image
+    from PIL.ExifTags import TAGS
     import io
 
     metadata = {
@@ -875,6 +1016,8 @@ def extract_image_metadata(
         "format": None,
         "width": None,
         "height": None,
+        "color_mode": None,
+        "exif": {},
     }
 
     try:
@@ -882,14 +1025,29 @@ def extract_image_metadata(
         metadata["format"] = img.format
         metadata["width"] = img.width
         metadata["height"] = img.height
-    except Exception:
-        # Can't parse image — store metadata we have
+        metadata["color_mode"] = img.mode  # RGB, RGBA, L (grayscale), etc.
+
+        # Extract EXIF if available (best-effort, not critical)
+        try:
+            exif_data = img.getexif()
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag_name = TAGS.get(tag_id, str(tag_id))
+                    if isinstance(value, (str, int, float)):
+                        metadata["exif"][tag_name] = value
+        except Exception:
+            pass  # EXIF extraction is optional
+
+    except Exception as e:
+        # Corrupted image — store what we can from filename
+        logger.warning(f"Image parse failed for {filename}: {e}")
         ext = Path(filename).suffix.lower()
         metadata["format"] = ext.lstrip('.')
 
+    # Build summary
+    dims = f"{metadata['width']}x{metadata['height']}" if metadata['width'] else "unknown dimensions"
     summary = (
-        f"Image: {filename} ({metadata['format']}, "
-        f"{metadata.get('width', '?')}x{metadata.get('height', '?')}, "
+        f"Image: {filename} ({metadata['format']}, {dims}, "
         f"{metadata['file_size_bytes']} bytes). "
         f"Vision analysis available via Tier 2 deep analysis."
     )
@@ -958,7 +1116,65 @@ def sanitize_content(
     )
 ```
 
-### 4.9 Packaging & Storage
+### 4.9 Tier 1 Error Handling & Timeout Enforcement
+
+**Tier 1 must always complete within <2s and must never fail the upload.** If an extractor encounters an error, it falls back rather than propagating the exception.
+
+#### Timeout Enforcement
+
+```python
+TIER1_TIMEOUT_SECONDS = 2.0
+
+async def _extract_with_timeout(
+    self,
+    extractor: Callable,
+    *args,
+    **kwargs,
+) -> ExtractionResult:
+    """
+    Run a Tier 1 extractor with timeout enforcement.
+
+    If the extractor exceeds TIER1_TIMEOUT_SECONDS, cancel it and
+    return a TEXT extraction (preview-only) as fallback.
+    """
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(extractor, *args, **kwargs),
+            timeout=TIER1_TIMEOUT_SECONDS,
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Tier 1 extraction timed out after {TIER1_TIMEOUT_SECONDS}s "
+            f"for {kwargs.get('filename', 'unknown')}. "
+            f"Falling back to TEXT preview."
+        )
+        # Fallback: TEXT extraction (always fast — just string splitting)
+        content = args[0] if args else ""
+        return extract_text_structure(content)
+```
+
+#### Fallback Chain Summary
+
+Every DataType extractor has a defined fallback path. No extractor propagates exceptions to the caller — failures always degrade gracefully.
+
+| DataType | Primary Extractor | Error Condition | Fallback |
+|----------|-------------------|-----------------|----------|
+| **LOGS** | `build_log_structural_index` | Timeout >2s (very rare for text processing) | TEXT preview (first+last 100 lines) |
+| **METRICS** | `build_metrics_statistical_profile` | Parse failure (non-numeric data) | TEXT preview |
+| **CONFIGURATION** | `parse_and_sanitize_config` | Parse failure (malformed YAML/JSON/TOML) | TEXT extraction with regex secret redaction |
+| **CODE** | `extract_code_ast` | SyntaxError (Python) | Regex function signatures → TEXT preview |
+| **CODE** | `extract_code_ast` | Unknown language | TEXT extraction (full) |
+| **TEXT** | `extract_text_structure` | *(none — always succeeds)* | N/A (this IS the universal fallback) |
+| **IMAGE** | `extract_image_metadata` | Corrupted image (PIL fails) | Metadata from filename + file size |
+
+**Key invariant**: `process_upload()` never raises an extraction error. It always returns a valid `PreprocessingResult`. The only exceptions that propagate to the caller are:
+- `FileTooLargeError` — file exceeds size limit (pre-extraction)
+- `DuplicateFileError` — content_hash already exists (pre-extraction)
+
+See [Evidence Failure Modes](./evidence-failure-modes.md) for post-extraction failures (storage, LLM, DB).
+
+### 4.10 Packaging & Storage
 
 ```python
 async def package_preprocessing_result(
@@ -967,6 +1183,7 @@ async def package_preprocessing_result(
     file_info: FileInfo,
     case_id: str,
     data_type: DataType,
+    content_hash: str,
 ) -> PreprocessingResult:
     """
     Package extraction results and store raw file.
@@ -988,9 +1205,6 @@ async def package_preprocessing_result(
         filename=file_info.filename,
         content_type=file_info.mime_type,
     )
-
-    # Compute content hash for deduplication
-    content_hash = hashlib.sha256(file_info.raw_content).hexdigest()
 
     return PreprocessingResult(
         temp_id=generate_temp_id(),
@@ -1036,41 +1250,169 @@ The structural index from Tier 1 — not the raw content. Examples:
 
 This means a vector search for "connection timeout" will match a log file's error cluster description even if the raw crime scene window doesn't contain that exact phrase.
 
-### 5.2 Implementation
+### 5.2 Chunking Strategy
+
+The structural index must be split into chunks before embedding and storage. The chunking strategy is optimized for the structured nature of Tier 1 output (section headers, clusters, profiles) rather than generic text.
+
+#### Chunk Parameters
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| **Chunk size** | 500 tokens (~2000 chars) | Balances retrieval granularity with embedding quality. Too small (100 tokens) loses context; too large (2000 tokens) dilutes relevance. |
+| **Overlap** | 50 tokens (~200 chars) | Preserves context across chunk boundaries. Ensures a cluster description split across chunks is still retrievable. |
+| **Splitting strategy** | Section-aware | Split on section headers (`=== ... ===`) first, then on paragraph boundaries within sections. Never split mid-line. |
+
+#### Section-Aware Splitting
+
+Tier 1 structural indexes have a consistent section format (e.g., `=== ERROR CLUSTERS ===`, `=== ANOMALIES ===`). The chunker respects these boundaries:
+
+```python
+def chunk_structural_index(
+    structural_index: str,
+    max_chunk_tokens: int = 500,
+    overlap_tokens: int = 50,
+) -> List[Chunk]:
+    """
+    Split a Tier 1 structural index into chunks for vector DB storage.
+
+    Strategy:
+    1. Split on section headers (=== ... ===) into logical sections
+    2. If a section fits in one chunk, keep it whole
+    3. If a section exceeds max_chunk_tokens, split on paragraph
+       boundaries (\n\n) with overlap
+    4. Never split mid-line
+
+    Each chunk carries metadata for retrieval context.
+    """
+
+    sections = re.split(r'(===\s+.+?\s+===)', structural_index)
+
+    chunks = []
+    current_section_name = "HEADER"
+
+    for part in sections:
+        part = part.strip()
+        if not part:
+            continue
+
+        # Track current section name for metadata
+        if re.match(r'===\s+.+?\s+===', part):
+            current_section_name = part.strip('= ').strip()
+            continue
+
+        # If section fits in one chunk, emit as-is
+        if estimate_tokens(part) <= max_chunk_tokens:
+            chunks.append(Chunk(
+                text=part,
+                metadata={"section": current_section_name},
+            ))
+            continue
+
+        # Section too large — split on paragraph boundaries with overlap
+        paragraphs = part.split('\n\n')
+        buffer = ""
+
+        for para in paragraphs:
+            if estimate_tokens(buffer + para) > max_chunk_tokens and buffer:
+                chunks.append(Chunk(
+                    text=buffer.strip(),
+                    metadata={"section": current_section_name},
+                ))
+                # Overlap: keep the last ~overlap_tokens of buffer
+                overlap_text = get_last_n_tokens(buffer, overlap_tokens)
+                buffer = overlap_text + "\n\n" + para
+            else:
+                buffer = buffer + "\n\n" + para if buffer else para
+
+        if buffer.strip():
+            chunks.append(Chunk(
+                text=buffer.strip(),
+                metadata={"section": current_section_name},
+            ))
+
+    return chunks
+```
+
+#### Metadata Per Chunk
+
+Each chunk stored in ChromaDB carries metadata for filtering and context:
+
+```python
+{
+    "evidence_id": "ev_abc123",        # Link back to evidence record
+    "case_id": "case_456",             # For case-scoped queries
+    "data_type": "logs",               # DataType enum value
+    "section": "ERROR CLUSTERS",       # Section within structural index
+    "chunk_index": 3,                  # Position within document
+    "total_chunks": 12,                # Total chunks for this evidence
+    "upload_timestamp": "2025-11-01T14:00:00Z",
+}
+```
+
+This enables filtered queries like "search only error cluster chunks" or "search only anomaly sections across all evidence in this case."
+
+### 5.3 Implementation
 
 ```python
 async def store_in_vector_db_background(
     case_id: str,
-    data_id: str,
+    evidence_id: str,
     structural_index: str,
     data_type: DataType,
     metadata: Dict[str, Any],
     case_vector_store: CaseVectorStore,
 ):
     """
-    Background task: Store structural index in ChromaDB.
+    Background task: Chunk and store structural index in ChromaDB.
 
     User has already received response. This doesn't block upload.
     Silent failure — doesn't affect user experience.
     """
 
     try:
+        # 1. Chunk the structural index
+        chunks = chunk_structural_index(
+            structural_index,
+            max_chunk_tokens=500,
+            overlap_tokens=50,
+        )
+
+        # 2. Store each chunk with metadata
+        documents = []
+        for i, chunk in enumerate(chunks):
+            documents.append({
+                'id': f"{evidence_id}_chunk_{i}",
+                'content': chunk.text,
+                'metadata': {
+                    'evidence_id': evidence_id,
+                    'case_id': case_id,
+                    'data_type': data_type.value,
+                    'section': chunk.metadata.get('section', ''),
+                    'chunk_index': i,
+                    'total_chunks': len(chunks),
+                    'upload_timestamp': datetime.now(timezone.utc).isoformat(),
+                    **{k: v for k, v in metadata.items()
+                       if isinstance(v, (str, int, float, bool))},
+                }
+            })
+
         await case_vector_store.add_documents(
             case_id=case_id,
-            documents=[{
-                'id': data_id,
-                'content': structural_index,
-                'metadata': {
-                    'data_type': data_type.value,
-                    'upload_timestamp': datetime.now(timezone.utc).isoformat(),
-                    **metadata,
-                }
-            }]
+            documents=documents,
         )
-        logger.info(f"Structural index stored in vector DB for {data_id}")
+        logger.info(
+            f"Structural index stored in vector DB: {evidence_id} "
+            f"({len(chunks)} chunks)"
+        )
     except Exception as e:
-        logger.error(f"Failed to store in vector DB: {e}")
-        # Silent failure — evidence is still available via Evidence object
+        logger.error(
+            f"Failed to store in vector DB for {evidence_id}: {e}. "
+            f"Evidence is still available via the Evidence record, "
+            f"but semantic search will not find this file."
+        )
+        # Silent failure — evidence is still available via Evidence object.
+        # The agent can still use the Tier 1 structural_index passed in-memory
+        # during the upload turn. Only future semantic searches are affected.
 ```
 
 ### 5.3 Retrieval
@@ -1115,24 +1457,104 @@ async def retrieve_relevant_context(
 
 ## 6. Tier 2: Deep Analysis Service
 
-### 6.1 Purpose and Trigger Conditions
+### 6.1 Purpose, Responsibility Boundary, and Invocation Logic
 
 Tier 2 provides LLM-powered deep analysis of raw data. It runs **on-demand**, not at upload time.
 
-**Trigger conditions**:
-- User asks a follow-up question about uploaded data that Tier 1 can't answer
-- Agent decides a file is relevant to a hypothesis and needs deeper extraction
-- User explicitly requests detailed analysis of a file
-- Agent needs vision analysis of an image
+#### Responsibility Boundary
 
-**Examples**:
+**Tier 2 is NOT called by the preprocessing pipeline.** Preprocessing (Tier 0+1) runs synchronously at upload time and returns `PreprocessingResult`. Tier 2 is invoked later by the **investigation agent** during conversation turns, via an agent tool.
+
 ```
-User uploads 10 files → all get Tier 0 + Tier 1 (free)
-User asks: "what's causing the connection timeouts?"
-  → Agent searches vector DB, finds 2 relevant log files
-  → Tier 2 runs on those 2 files: "extract all connection timeout entries with context"
-  → Agent responds with deep analysis
-The other 8 files: never deep-processed. Cost saved.
+PREPROCESSING (this service):
+  process_upload() → PreprocessingResult     ← Tier 0+1 only
+
+INVESTIGATION ENGINE (separate service, in core/investigation/):
+  agent tool "deep_analyze_file" → Tier 2    ← Calls ITier2AnalysisService
+```
+
+The agent accesses Tier 2 through a tool registered in `modules/agent/tools/`. The tool wraps `ITier2AnalysisService.analyze()` and is available to the LLM as a function it can call during `process_turn()`.
+
+#### When Tier 2 Is Invoked (Agent Decision Logic)
+
+The investigation agent decides to call Tier 2 based on its reasoning about the current query and available evidence. There is no automatic trigger — the agent uses its judgment, guided by the system prompt.
+
+**Agent's decision criteria (encoded in system prompt)**:
+1. **Tier 1 index is insufficient**: The structural index (error clusters, statistical profile, etc.) doesn't contain enough detail to answer the user's question. Example: user asks "what's in the stack trace at line 12450?" but the Tier 1 index only has a cluster summary, not the full trace.
+2. **Hypothesis validation needs raw data**: The agent has a hypothesis and needs to verify it against actual log lines, metric values, or config entries — not just the summarized index.
+3. **User explicitly requests detail**: The user says "show me the actual logs between 14:00 and 14:15" or "can you look at the full config file?"
+4. **Image requires vision analysis**: An image was uploaded and the user asks about its visual content. Tier 1 only has metadata (dimensions, format).
+
+**Agent's decision process (per-turn)**:
+```
+1. Receive user query + case context
+2. Check if Tier 1 structural indexes (from evidence summaries
+   and vector DB search) can answer the query
+3. If YES → respond using Tier 1 data, no Tier 2 needed
+4. If NO → call deep_analyze_file tool with:
+   - file_ref: content_ref of the relevant evidence
+   - query: what the agent needs to know
+   - context: case summary, active hypotheses, investigation stage
+5. Tier 2 result becomes part of agent's context for the response
+```
+
+**What the agent sees** (in its tool definition):
+```python
+@tool(name="deep_analyze_file")
+async def deep_analyze_file(
+    evidence_id: str,
+    query: str,
+) -> str:
+    """
+    Perform deep analysis on a previously uploaded file.
+
+    Use this tool when:
+    - The structural index (evidence summary) doesn't answer the question
+    - You need specific lines, values, or sections from the raw file
+    - The user asks about visual content in an image
+
+    Do NOT use this tool when:
+    - The evidence summary already contains the answer
+    - The question is about investigation strategy, not file content
+    """
+    evidence = await evidence_repo.get(evidence_id)
+    result = await tier2_service.analyze(
+        file_ref=evidence.content_ref,
+        query=query,
+        context=AnalysisContext(
+            case_id=case.case_id,
+            case_summary=case.summary,
+            active_hypotheses=[h.description for h in case.active_hypotheses],
+            investigation_stage=case.current_stage.value,
+        ),
+        data_type=evidence.data_type,
+    )
+    return result.answer + "\n\nExcerpts:\n" + "\n".join(
+        f"Lines {e.line_start}-{e.line_end}: {e.content}" for e in result.excerpts
+    )
+```
+
+#### Tier 2 Availability
+
+If `TIER2_BACKEND=disabled` (default), the agent tool is not registered. The agent works exclusively from Tier 1 structural indexes and cannot request deeper analysis. This is sufficient for most investigations — Tier 1 captures error clusters, anomalies, config structure, and code signatures.
+
+#### Example End-to-End
+
+```
+Turn 1: User uploads 10 files → all get Tier 0 + Tier 1 (free)
+
+Turn 2: User asks "what's causing the connection timeouts?"
+  → Agent builds prompt with all 10 evidence summaries
+  → Agent searches vector DB → finds 2 relevant log files
+  → Agent reasons: "the structural index shows 201 ConnectionTimeout
+    errors clustered around lines 12400-12550, but I need the actual
+    stack traces to identify the root cause"
+  → Agent calls deep_analyze_file(evidence_id="ev_abc", query="...")
+  → Tier 2 runs on 1 file: extract connection timeout stack traces
+  → Agent responds with root cause analysis
+
+Cost: Tier 0+1 on 10 files = $0.00. Tier 2 on 1 file = ~$0.01.
+The other 9 files: never deep-processed.
 ```
 
 ### 6.2 Service Interface Contract
@@ -1466,26 +1888,57 @@ class DataExcerpt(BaseModel):
 
 ### 7.3 Integration with Evidence Architecture
 
+**PreprocessingResult → Evidence field mapping:**
+
+| PreprocessingResult Field | Evidence Field | Notes |
+|--------------------------|----------------|-------|
+| `summary` | `summary` | <500 char summary for display |
+| `data_type` | `data_type` | Unified DataType enum |
+| `content_ref` | `content_ref` | Raw file reference (S3 URI or local path) |
+| `content_size_bytes` | `content_size_bytes` | Size of raw file |
+| `content_type` | *(not stored)* | MIME type available from content_ref metadata |
+| `content_hash` | `content_hash` | SHA-256 for deduplication |
+| `extraction_method` | `extraction_method` | Tier 1 method name |
+| `structural_index` | *(vector DB only)* | Too large for DB — stored in ChromaDB async |
+| `compression_ratio` | *(not stored)* | Preprocessing metric, not needed in evidence |
+| `extraction_metadata` | *(not stored)* | Available via vector DB metadata |
+| `sanitization_applied` | *(not stored)* | Preprocessing metric, logged but not persisted |
+| `redactions_count` | *(not stored)* | Logged for audit trail, not in evidence table |
+| `processing_time_ms` | *(not stored)* | Preprocessing metric |
+
+**Fields set by LLM evaluation (not from PreprocessingResult):**
+
+| Evidence Field | Source |
+|----------------|--------|
+| `category` | LLM classification (SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED) |
+| `primary_purpose` | LLM-generated description |
+| `related_hypotheses` | LLM + system inference |
+| `advances_milestones` | System-inferred from category + completed milestones |
+| `form` | Input channel: `DOCUMENT` (file upload) or `USER_INPUT` (typed text) |
+
 ```python
 # After Tier 1 preprocessing completes:
 preprocessing_result = await preprocessing_service.process_upload(...)
 
 # Evidence Architecture uses these fields:
 evidence = Evidence(
+    # From PreprocessingResult:
     summary=preprocessing_result.summary,                    # <500 chars
     content_ref=preprocessing_result.content_ref,            # Raw file reference
     content_size_bytes=preprocessing_result.content_size_bytes,
-    content_type=preprocessing_result.content_type,
     data_type=preprocessing_result.data_type,                # Unified DataType enum
     content_hash=preprocessing_result.content_hash,          # SHA-256 for dedup
+    extraction_method=preprocessing_result.extraction_method, # Tier 1 method
     form=EvidenceForm.DOCUMENT,
-    preprocessed=True,
+    # From LLM evaluation:
+    category=llm_result.category,                            # Set by LLM
+    primary_purpose=llm_result.primary_purpose,              # Set by LLM
 )
 
-# The structural index is used:
-# 1. By the agent for initial response generation
-# 2. Stored in vector DB for semantic search
-# 3. NOT stored in the Evidence object (too large)
+# The structural index goes to vector DB (async, does NOT block response):
+# 1. Agent uses it for initial response generation (passed in-memory)
+# 2. Stored in ChromaDB for semantic search across case evidence
+# 3. NOT stored in the evidence table (too large — 50KB+ for logs)
 
 # The content_ref enables:
 # 1. Tier 2 deep analysis on-demand
@@ -1562,11 +2015,40 @@ PII_REDACT_PASSWORDS=true
 
 ## 9. Implementation Guide
 
-### 9.1 Service Architecture
+### 9.1 Deduplication Scope
+
+Deduplication uses `content_hash` (SHA-256) but the hashing scope differs by input channel:
+
+| Input Channel | What Gets Hashed | Scope | Rationale |
+|---------------|-----------------|-------|-----------|
+| **File upload** (`/data` endpoint) | Raw file bytes | Per-case | Same file uploaded twice → rejected. Different files are always unique regardless of accompanying message text. |
+| **Text message** (`/queries` endpoint) | Entire raw user message | Per-case | Same message resubmitted → rejected. Rephrased message with same data → accepted (intentionally different submission). |
+
+**File uploads** (this document's scope): `content_hash = SHA-256(raw_file_bytes)`. Computed early in `process_upload()`, before classification or extraction. The accompanying chat message is NOT included in the hash — deduplication is based purely on file content.
+
+**Text messages**: `content_hash = SHA-256(raw_message_text)`. Handled by the investigation service, not preprocessing. See [Evidence Failure Modes](./evidence-failure-modes.md) for the rationale on hashing the entire message vs. extracted data portions.
+
+**Key design choice**: Hashing raw content (not extracted content) ensures deduplication is stable even if extraction algorithms change. See the "Content Hash Strategy for Deduplication" section in [Evidence Failure Modes](./evidence-failure-modes.md) for detailed analysis.
+
+### 9.2 Service Architecture
 
 ```python
 class PreprocessingService:
-    """Tier 0 + Tier 1 preprocessing orchestrator."""
+    """
+    Tier 0 + Tier 1 preprocessing orchestrator.
+
+    This service handles file upload preprocessing only. For post-preprocessing
+    failures (LLM timeout, DB insert, orphaned files), see:
+    - Evidence Failure Modes: ./evidence-failure-modes.md
+    - Evidence Flow Architecture: ./evidence-flow-architecture.md
+
+    Exceptions that propagate from this service:
+    - FileTooLargeError: File exceeds MAX_UPLOAD_SIZE_MB
+    - DuplicateFileError: content_hash already exists for this case
+
+    All other errors (extraction failure, sanitization failure) are handled
+    internally via fallback strategies (see Section 4.9).
+    """
 
     async def process_upload(
         self,
@@ -1580,32 +2062,49 @@ class PreprocessingService:
         Returns PreprocessingResult with structural index.
         Never returns a "needs user decision" response —
         Tier 1 always completes without user interaction.
+
+        Guarantees:
+        - Completes in <2s (timeout-enforced extraction)
+        - Never fails due to extraction errors (fallback chain)
+        - Raises only FileTooLargeError or DuplicateFileError
         """
 
-        # Tier 0: Validate & Classify
+        # Step 0: Read file and validate size
         raw_content = await file.read()
 
         if len(raw_content) > self.config.max_upload_size:
             raise FileTooLargeError(len(raw_content), self.config.max_upload_size)
 
+        # Step 1: Compute content_hash early for deduplication
+        # Hashes raw file bytes (not extracted content). See Section 9.1.
+        content_hash = hashlib.sha256(raw_content).hexdigest()
+
+        # Step 2: Check for duplicate (early exit before any extraction work)
+        existing = await self.evidence_repo.find_by_content_hash(
+            case_id, content_hash
+        )
+        if existing:
+            raise DuplicateFileError(existing.evidence_id, content_hash)
+
+        # Tier 0: Classify (always <100ms, rule-based)
         classification = classify_data_type(
             filename=file.filename,
             content_sample=raw_content[:5000],
             mime_type=file.content_type,
         )
 
-        # Tier 1: Extract structural index
+        # Tier 1: Extract structural index (timeout-enforced, with fallback)
         if classification.data_type == DataType.IMAGE:
             extraction = extract_image_metadata(raw_content, file.filename)
         else:
             content_str = raw_content.decode('utf-8', errors='replace')
-            extraction = await self._extract_by_type(
-                data_type=classification.data_type,
-                content=content_str,
-                filename=file.filename,
+            extraction = await self._extract_with_timeout(
+                self._get_extractor(classification.data_type),
+                content_str,
+                file.filename,
             )
 
-        # Sanitize
+        # Sanitize (PII/secret redaction)
         sanitization = sanitize_content(
             content=extraction.content,
             config=self.sanitization_config,
@@ -1624,24 +2123,40 @@ class PreprocessingService:
             ),
             case_id=case_id,
             data_type=classification.data_type,
+            content_hash=content_hash,
         )
 
         return result
 
-    async def _extract_by_type(self, data_type, content, filename):
+    def _get_extractor(self, data_type: DataType) -> Callable:
+        """Get the appropriate Tier 1 extractor for a data type."""
         extractors = {
-            DataType.LOGS: build_log_structural_index,
-            DataType.METRICS: build_metrics_statistical_profile,
-            DataType.CONFIGURATION: parse_and_sanitize_config,
-            DataType.CODE: extract_code_ast,
-            DataType.TEXT: extract_text_structure,
+            DataType.LOGS: lambda c, f: build_log_structural_index(c, self.config),
+            DataType.METRICS: lambda c, f: build_metrics_statistical_profile(c, self.config),
+            DataType.CONFIGURATION: lambda c, f: parse_and_sanitize_config(c, f),
+            DataType.CODE: lambda c, f: extract_code_ast(c, f),
+            DataType.TEXT: lambda c, f: extract_text_structure(c),
         }
-        extractor = extractors.get(data_type, extract_text_structure)
-        return extractor(content, filename) if data_type == DataType.CODE \
-            else extractor(content, self.config)
+        return extractors.get(data_type, lambda c, f: extract_text_structure(c))
+
+    async def _extract_with_timeout(
+        self, extractor: Callable, content: str, filename: str,
+    ) -> ExtractionResult:
+        """
+        Run extractor with 2s timeout. Falls back to TEXT extraction on timeout.
+        See Section 4.9 for the full fallback chain.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(extractor, content, filename),
+                timeout=TIER1_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Tier 1 timed out for {filename}, falling back to TEXT")
+            return extract_text_structure(content)
 ```
 
-### 9.2 Tier 2 Client Factory
+### 9.3 Tier 2 Client Factory
 
 ```python
 def create_tier2_service(config: Settings) -> Optional[ITier2AnalysisService]:
@@ -1726,6 +2241,19 @@ Cluster 2: lines 18900-19100 (12 errors, severity=50)
     content_type="text/plain",
     extraction_method="structural_index",
     compression_ratio=0.005,
+    extraction_metadata={
+        "total_lines": 250000,
+        "total_errors": 847,
+        "error_clusters": 23,
+        "severity_distribution": {"ERROR": 823, "FATAL": 2, "CRITICAL": 22},
+        "unique_error_types": 15,
+        "state_transitions": 3,
+        "time_range": {"first": "2025-11-01T14:00:00", "last": "2025-11-01T15:30:00"},
+        "crime_scene_line": 12450,
+    },
+    content_hash="a1b2c3d4e5f6...sha256...of_raw_file_content",
+    sanitization_applied=True,
+    redactions_count=2,
     processing_time_ms=520,
 )
 ```
@@ -1769,8 +2297,15 @@ preprocessing_result = PreprocessingResult(
     structural_index="[Full YAML with secrets redacted]",
     content_ref="local://data/case_123/database_yaml_ghi.yaml",
     content_size_bytes=5120,
+    content_type="application/yaml",
     extraction_method="parse_and_sanitize",
     compression_ratio=1.0,
+    extraction_metadata={
+        "format": "yaml",
+        "secrets_redacted": 3,
+        "keys_count": 42,
+    },
+    content_hash="f7e8d9c0...sha256...of_raw_yaml_content",
     sanitization_applied=True,
     redactions_count=3,
     processing_time_ms=230,
@@ -1779,6 +2314,6 @@ preprocessing_result = PreprocessingResult(
 
 ---
 
-**Document Version**: 3.1
+**Document Version**: 3.2
 **Last Updated**: 2026-02-12
 **Status**: Design Specification
