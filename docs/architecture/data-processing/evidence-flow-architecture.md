@@ -1,6 +1,6 @@
 # Evidence Flow Architecture
 
-**Version:** 2.1
+**Version:** 2.2
 **Date:** 2026-02-12
 **Status:** Design Specification
 
@@ -8,7 +8,7 @@
 
 ## Overview
 
-This document describes the complete evidence flow architecture in FaultMaven. Evidence is created in a **single phase** after LLM evaluation. File preprocessing follows the [three-tier model](./data-preprocessing-design-specification.md) (Tier 0 classification + Tier 1 mechanical extraction).
+This document describes the complete evidence flow architecture in FaultMaven. Evidence is created in a **single phase** after LLM evaluation. File preprocessing follows the [three-tier model](./data-preprocessing-design-specification.md) (Tier 0 classification + Tier 1 mechanical extraction). Tier 2 deep analysis is invoked on-demand by the investigation agent, not at upload time.
 
 ---
 
@@ -79,8 +79,8 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 │  │ Analyzes:                                                           │ │
 │  │ - Full case context (existing evidence, hypotheses, milestones)   │ │
 │  │ - User message content                                             │ │
-│  │ - Attachment metadata (if file upload)                            │ │
-│  │ - Extracted file content                                           │ │
+│  │ - PreprocessingResult.structural_index (if file upload)           │ │
+│  │ - PreprocessingResult.summary (<500 chars, always included)       │ │
 │  │                                                                     │ │
 │  │ Returns:                                                            │ │
 │  │ - submission_classification (user_chat/external_data/mixed)       │ │
@@ -432,6 +432,65 @@ User          API          Investigation    LLM         Job Queue       Worker
 
 ---
 
+## Sequence Diagram: Tier 2 Deep Analysis (On-Demand)
+
+```
+User          API          Investigation    Vector DB    Tier2 Service   Storage
+ │              │                │             │             │             │
+ │─POST query──>│                │             │             │             │
+ │ "What's in   │                │             │             │             │
+ │  the stack   │                │             │             │             │
+ │  trace at    │                │             │             │             │
+ │  line 12450?"│                │             │             │             │
+ │              │                │             │             │             │
+ │              │─process_turn──>│             │             │             │
+ │              │                │             │             │             │
+ │              │                │─search──────>│             │             │
+ │              │                │  "stack      │             │             │
+ │              │                │   trace      │             │             │
+ │              │                │   12450"     │             │             │
+ │              │                │             │             │             │
+ │              │                │<────────────│             │             │
+ │              │                │  ev_abc:     │             │             │
+ │              │                │  Cluster 1   │             │             │
+ │              │                │             │             │             │
+ │              │                │ (Agent reasons: "Tier 1    │             │
+ │              │                │  index has cluster summary │             │
+ │              │                │  but not the actual stack  │             │
+ │              │                │  trace. Need Tier 2.")     │             │
+ │              │                │             │             │             │
+ │              │                │─analyze(────────────────-->│             │
+ │              │                │  ev_abc,    │             │             │
+ │              │                │  "extract   │             │             │
+ │              │                │   stack     │             │             │
+ │              │                │   trace")   │             │             │
+ │              │                │             │             │             │
+ │              │                │             │             │─retrieve───>│
+ │              │                │             │             │  raw file   │
+ │              │                │             │             │<────────────│
+ │              │                │             │             │             │
+ │              │                │             │             │─LLM/search─│
+ │              │                │             │             │  raw file   │
+ │              │                │             │             │             │
+ │              │                │<──────────────────────────│             │
+ │              │                │  DeepAnalysisResult       │             │
+ │              │                │  {answer, excerpts}       │             │
+ │              │                │             │             │             │
+ │              │                │ (Agent incorporates Tier 2│             │
+ │              │                │  result into response)    │             │
+ │              │                │             │             │             │
+ │              │<─response──────│             │             │             │
+ │              │                │             │             │             │
+ │<─200 OK─────│                │             │             │             │
+ │  {analysis   │                │             │             │             │
+ │   with stack │                │             │             │             │
+ │   trace}     │                │             │             │             │
+```
+
+**Key**: Tier 2 is invoked by the investigation agent as a tool call during `process_turn()`. The preprocessing service is NOT involved — it completed during the original file upload. See [Data Preprocessing v3.2](./data-preprocessing-design-specification.md) Section 6.1 for full invocation logic.
+
+---
+
 ## Data Flow: INQUIRY Phase Classification
 
 **Scenario:** User uploads log file during INQUIRY phase (before investigation starts)
@@ -769,6 +828,6 @@ evidence.storage_size_bytes
 
 ---
 
-**Document Version:** 2.1
+**Document Version:** 2.2
 **Last Updated:** 2026-02-12
 **Status:** Design Specification
