@@ -88,6 +88,51 @@ class InternalReasoning(BaseModel):
     )
 
 
+class SubmissionClassification(BaseModel):
+    """
+    Classification of user's submission content.
+
+    This schema implements single-phase evidence creation: the LLM classifies
+    the user's submission to determine if it contains external data that should
+    become an evidence record.
+
+    Classification Types:
+    - user_chat: Pure conversational text (questions, updates, clarifications)
+      → NO evidence record created
+    - external_data: Data from external systems (logs, configs, metrics, screenshots)
+      → Evidence record created with appropriate category
+    - mixed: Both conversation AND external data
+      → Evidence record created (extract the data portion)
+
+    Design Reference:
+    - docs/working/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md
+    - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md Section "INQUIRY Phase Classification"
+    """
+
+    type: Literal["user_chat", "external_data", "mixed"] = Field(
+        description=(
+            "user_chat: Pure conversation → NO evidence record\n"
+            "external_data: Data from elsewhere → Evidence record\n"
+            "mixed: Both chat and data → Evidence record (extract data)"
+        )
+    )
+
+    confidence: Literal["high", "medium", "low"] = Field(
+        description="Confidence in classification (high = clear, medium = likely, low = ambiguous)"
+    )
+
+    reasoning: str = Field(
+        description="Brief explanation of classification decision (max 200 chars)",
+        max_length=200,
+    )
+
+    external_data_summary: Optional[str] = Field(
+        None,
+        description="If external_data or mixed, summarize what data is present (max 200 chars)",
+        max_length=200,
+    )
+
+
 class ProblemConfirmation(BaseModel):
     """Agent's initial understanding of the problem."""
 
@@ -160,7 +205,27 @@ class ProblemVerificationUpdate(BaseModel):
 
 
 class EvidenceToAdd(BaseModel):
-    """Evidence to be added to the case."""
+    """Evidence to be added to the case.
+
+    Milestone Attribution (Option 2.5 - Three-Tier Logic):
+
+    Tier 1: MilestoneUpdates drives milestone state (turn-level, LLM specifies)
+    Tier 2: System infers advances_milestones from category (automatic, handles 90%)
+    Tier 3: LLM overrides via advances_milestones field (optional, handles 10%)
+
+    The advances_milestones field is OPTIONAL. If omitted, the system will automatically
+    infer milestone attribution based on the evidence category and milestones completed
+    this turn using the CATEGORY_MILESTONE_MAP.
+
+    Only provide advances_milestones explicitly when:
+    - The automatic inference would be wrong (rare edge case)
+    - You need to specify a subset of eligible milestones
+    - The evidence contributed to a milestone outside normal category mapping
+
+    Design Reference:
+    - docs/working/MILESTONE-ADVANCEMENT-ANALYSIS.md (Option 2.5)
+    - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md
+    """
 
     summary: str
     content_ref: Optional[str] = Field(
@@ -170,6 +235,46 @@ class EvidenceToAdd(BaseModel):
     category: EvidenceCategory
     source_type: EvidenceSourceType
     likelihood: float = Field(0.8, ge=0.0, le=1.0)
+    advances_milestones: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "OPTIONAL: Override system-inferred milestone attribution. "
+            "If omitted, system infers from category + milestones completed this turn. "
+            "Only specify when automatic inference is incorrect (rare edge case)."
+        ),
+    )
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def validate_category(cls, v):
+        """
+        Fallback to CONTEXTUAL_EVIDENCE for unrecognized categories.
+
+        This handles LLM returning invalid category values due to prompt drift
+        or schema mismatch. Instead of failing validation, we fallback to a safe
+        default and log a warning for monitoring.
+
+        Reference: EVIDENCE-CREATION-FAILURE-MODES.md Scenario 3
+        """
+        if isinstance(v, str):
+            try:
+                return EvidenceCategory(v)
+            except ValueError:
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"LLM returned unrecognized category '{v}', "
+                    f"falling back to CONTEXTUAL_EVIDENCE",
+                    extra={
+                        "category_attempted": v,
+                        "alert_team": "llm_integration",
+                        "severity": "warning",
+                        "metric": "evidence.category_fallback",
+                    },
+                )
+                return EvidenceCategory.CONTEXTUAL_EVIDENCE
+        return v
 
     @field_validator("likelihood")
     @classmethod
@@ -214,10 +319,14 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
 
 
 class WorkingConclusionUpdate(BaseModel):
-    """Current working theory of the case."""
+    """Current working theory of the case.
 
-    summary: str
-    likelihood: float = Field(ge=0.0, le=1.0)
+    All fields are optional to allow empty working_conclusion during early INQUIRY phase
+    when the agent doesn't yet have enough information to form a theory.
+    """
+
+    summary: Optional[str] = None
+    likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     next_steps: Optional[List[str]] = Field(default_factory=list)
     blockers: Optional[List[str]] = Field(default_factory=list)
 
@@ -288,9 +397,7 @@ class ProposedTransition(BaseModel):
     trigger an irreversible state change. The user must confirm the proposal.
     """
 
-    to_status: str = Field(
-        description="Target status: 'resolved' or 'closed'"
-    )
+    to_status: str = Field(description="Target status: 'resolved' or 'closed'")
     reason: str = Field(
         description="Why the agent believes this transition is appropriate"
     )
@@ -336,12 +443,20 @@ class InquiryResponse(BaseInteractionResponse):
     """Response schema for INQUIRY status."""
 
     class InquiryStateUpdate(BaseModel):
+        submission_classification: Optional[SubmissionClassification] = Field(
+            None,
+            description="Classification of user's submission (chat vs external data)",
+        )
         problem_confirmation: Optional[ProblemConfirmation] = None
         proposed_problem_statement: Optional[str] = None
         preliminary_urgency: Optional[PreliminaryUrgency] = None
         knowledge_match: Optional[KnowledgeMatch] = None
         knowledge_resolution: Optional[KnowledgeResolution] = None
         quick_suggestions: Optional[List[str]] = Field(default_factory=list)
+        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
+            default_factory=list,
+            description="Evidence to create from user's submission (when submission_classification is external_data/mixed)",
+        )
 
     state_updates: InquiryStateUpdate
 
@@ -365,6 +480,10 @@ class InvestigationResponse_Verification(BaseInteractionResponse):
     """Schema optimized for SYMPTOM_VERIFICATION stage (Focus: Evidence, Verification)."""
 
     class VerificationStateUpdate(BaseModel):
+        submission_classification: Optional[SubmissionClassification] = Field(
+            None,
+            description="Classification of user's submission (chat vs external data)",
+        )
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
@@ -392,6 +511,10 @@ class InvestigationResponse_Hypothesis(BaseInteractionResponse):
     """Schema optimized for HYPOTHESIS_FORMULATION/VALIDATION (Focus: Hypotheses, Linking)."""
 
     class HypothesisStateUpdate(BaseModel):
+        submission_classification: Optional[SubmissionClassification] = Field(
+            None,
+            description="Classification of user's submission (chat vs external data)",
+        )
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
@@ -422,6 +545,10 @@ class InvestigationResponse_Resolution(BaseInteractionResponse):
     """Schema optimized for SOLUTION stage (Focus: Solutions, Verification)."""
 
     class ResolutionStateUpdate(BaseModel):
+        submission_classification: Optional[SubmissionClassification] = Field(
+            None,
+            description="Classification of user's submission (chat vs external data)",
+        )
         milestones: Optional[MilestoneUpdates] = None
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         solution_feedback: Optional[str] = None  # User feedback on applied solution
@@ -449,6 +576,10 @@ class InvestigationResponse_General(BaseInteractionResponse):
     """Fallback 'Full' schema if stage is ambiguous or degraded."""
 
     class GeneralStateUpdate(BaseModel):
+        submission_classification: Optional[SubmissionClassification] = Field(
+            None,
+            description="Classification of user's submission (chat vs external data)",
+        )
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)

@@ -103,7 +103,7 @@ async def test_path_selection_triggered_after_verification(
             summary="s",
             content_ref="r",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.LOG_FILE,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(),
             collected_by="u",
             collected_at_turn=0,
@@ -154,7 +154,7 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
             summary="s",
             content_ref="r",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.LOG_FILE,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(),
             collected_by="u",
             collected_at_turn=0,
@@ -182,7 +182,7 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
                         "summary": "Log file",
                         "content_ref": "log.txt",
                         "category": "symptom_evidence",
-                        "source_type": "log_file",
+                        "source_type": "logs",
                         "likelihood": 0.9,
                     }
                 ],
@@ -195,16 +195,14 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
     result = await engine.process_turn(base_case, "Check logs")
     case = result["case_updated"]
 
-    # Evidence count: 1 initial + 1 auto-created from user message + 1 from LLM response = 3
-    assert len(case.evidence) == 3
-    # The user message evidence is auto-created (second one)
-    user_msg_ev = case.evidence[1]
-    assert user_msg_ev.source_type.value == "user_report"
+    # Evidence count: 1 initial + 1 from LLM response = 2
+    # Note: User messages NO LONGER create automatic UNCLASSIFIED evidence
+    assert len(case.evidence) == 2
 
-    # The LLM response evidence is the third one (last appended)
-    ev = case.evidence[2]
+    # The LLM response evidence is the second one (last appended)
+    ev = case.evidence[1]
 
-    # heuristic check
+    # Verify it was linked to the milestone
     assert "symptom_verified" in ev.advances_milestones
 
 
@@ -220,7 +218,7 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
             summary="s",
             content_ref="r",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.LOG_FILE,
+            source_type=EvidenceSourceType.LOGS,
             collected_at=datetime.now(),
             collected_by="u",
             collected_at_turn=0,
@@ -267,7 +265,7 @@ async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
                         "summary": "ev",
                         "content_ref": "ref",
                         "category": "symptom_evidence",
-                        "source_type": "log_file",
+                        "source_type": "logs",
                     }
                 ],
                 "outcome": "conversation",

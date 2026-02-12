@@ -48,7 +48,10 @@ MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
     },
     "changes_identified": {
         "min_evidence": 1,
-        "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE, EvidenceCategory.CAUSAL_EVIDENCE],
+        "expected_categories": [
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            EvidenceCategory.CAUSAL_EVIDENCE,
+        ],
         "description": "At least 1 evidence item linking to recent changes",
     },
     "root_cause_identified": {
@@ -134,7 +137,9 @@ def validate_milestone_claims(
                     expected_min=0,
                     expected_categories=[],
                     actual_categories=list(cited_evidence_by_category.keys()),
-                    warnings=[f"No validation expectations defined for milestone '{milestone}'"],
+                    warnings=[
+                        f"No validation expectations defined for milestone '{milestone}'"
+                    ],
                 )
             )
             continue
@@ -147,13 +152,11 @@ def validate_milestone_claims(
         for cat in expected_cats:
             relevant_evidence.extend(cited_evidence_by_category.get(cat, []))
 
-        # Also count UNCLASSIFIED evidence as potentially relevant
-        # (user data that hasn't been promoted yet)
-        unclassified = cited_evidence_by_category.get(
-            EvidenceCategory.UNCLASSIFIED.value, []
-        )
+        # Note: UNCLASSIFIED category removed in Evidence Classification Redesign (Phase 4)
+        # Evidence is now created AFTER LLM evaluation with proper classification
+        # No need to count UNCLASSIFIED as it no longer exists
 
-        total_relevant = len(relevant_evidence) + len(unclassified)
+        total_relevant = len(relevant_evidence)
         is_valid = total_relevant >= expected_min
 
         warnings = []

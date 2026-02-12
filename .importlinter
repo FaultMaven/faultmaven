@@ -236,6 +236,10 @@ source_modules =
 forbidden_modules =
     faultmaven.modules.case.infrastructure
 allow_indirect_imports = false
+ignore_imports =
+    # Container is the composition root - allowed to wire infrastructure
+    faultmaven.container.providers.infrastructure -> faultmaven.modules.case.infrastructure.sessionless_case_repository
+    faultmaven.container.providers.infrastructure -> faultmaven.modules.case.infrastructure.case_repository
 
 # ============================================================================
 # CONTRACT 13: Other Modules Use Case Contracts Only

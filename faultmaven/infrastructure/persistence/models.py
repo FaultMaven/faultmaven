@@ -281,7 +281,16 @@ class CaseModel(Base):
 
 
 class EvidenceModel(Base):
-    """Evidence collected during investigation."""
+    """
+    Evidence collected during investigation.
+
+    Post-redesign (2026-02-11):
+    - Tracks both valid evidence (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL) and
+      rejected submissions (REJECTED category)
+    - Includes deduplication via content_hash
+    - Unique constraints ensure one evidence per turn and no duplicate uploads per case
+    - New source_type field uses simplified 5-value enum (logs, metrics, configuration, visual, user_description)
+    """
 
     __tablename__ = "evidence"
 
@@ -298,12 +307,24 @@ class EvidenceModel(Base):
         index=True,
         default="00000000-0000-0000-0000-000000000001",
     )
+
+    # Classification fields
     category = Column(String(50), nullable=False, index=True)
+    # New: source_type_new field (simplified 5 values: logs, metrics, configuration, visual, user_description)
+    source_type = Column(String(50), name="source_type_new", nullable=True)
+
+    # Content fields
     summary = Column(String(500), nullable=False)
     preprocessed_content = Column(Text, nullable=False)
     content_ref = Column(String(1000))
     file_size = Column(Integer)
     filename = Column(String(255))
+
+    # Deduplication and turn tracking (NEW in redesign)
+    content_hash = Column(String(64), nullable=True, index=True)
+    collected_at_turn = Column(Integer, nullable=True, index=True)
+
+    # Timestamps
     upload_timestamp = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -313,10 +334,19 @@ class EvidenceModel(Base):
     case = relationship("CaseModel", back_populates="evidence")
 
     __table_args__ = (
+        # Data validation constraints
         CheckConstraint("LENGTH(TRIM(summary)) > 0", name="evidence_summary_not_empty"),
         CheckConstraint(
             "LENGTH(TRIM(preprocessed_content)) > 0", name="evidence_content_not_empty"
         ),
+        # Unique constraints (via indexes for SQLite compatibility)
+        # Note: These are implemented as unique indexes in the migration
+        # uq_evidence_case_turn - one evidence per turn per case
+        # uq_evidence_case_hash - no duplicate uploads per case
+        # Performance indexes:
+        # idx_evidence_case_category - case + category queries
+        # idx_evidence_case_turn - case + turn queries
+        # idx_evidence_content_hash - deduplication lookups
     )
 
     def __repr__(self) -> str:

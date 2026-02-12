@@ -7,6 +7,20 @@
 
 **Role in Three-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) three-tier model. Tier 0 runs on every upload, completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
 
+> **IMPORTANT CONTEXT UPDATE** (2026-02-11):
+>
+> This document addresses **data type classification** (determining what kind of data: LOG_FILE vs METRICS_DATA, etc.).
+>
+> This is separate from **evidence classification**, which has been **IMPLEMENTED**:
+> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](./EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)**
+>
+> **Evidence Classification Changes (IMPLEMENTED 2026-02-11)**:
+>
+> - `EvidenceSourceType` simplified: 12 types → **5 types** (LOGS, METRICS, CONFIGURATION, VISUAL, USER_DESCRIPTION)
+> - The data types identified by this document (LOG_FILE, METRICS_DATA, etc.) now map to the new simplified source types
+> - Evidence categories changed: UNCLASSIFIED removed, OTHER → CONTEXTUAL_EVIDENCE, REJECTED added
+> - Single-phase evidence creation (after LLM evaluation, no placeholders)
+
 **Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the QueryClassifier design in the [Data Submission Design v4.1](./data-submission-design.md#52-query-classification-3-tier-system). The QueryClassifier is not yet implemented as a standalone module.
 
 ---
