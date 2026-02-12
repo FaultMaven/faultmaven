@@ -1,27 +1,15 @@
 # Data Classification Strategy: Highly Effective Rules and Fallback Design
 
-**Version**: 1.2
+**Version**: 2.0
 **Status**: Design Specification
-**Date**: 2026-02-10 (Updated)
-**Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-tier fallback for accurate data type detection
+**Date**: 2026-02-12
+**Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-level fallback for accurate data type detection
 
 **Role in Three-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) three-tier model. Tier 0 runs on every upload, completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
 
-> **IMPORTANT CONTEXT UPDATE** (2026-02-11):
->
-> This document addresses **data type classification** (determining what kind of data: LOG_FILE vs METRICS_DATA, etc.).
->
-> This is separate from **evidence classification**, which has been **IMPLEMENTED**:
-> **[evidence-classification-design.md](./evidence-classification-design.md)**
->
-> **Evidence Classification Changes (IMPLEMENTED 2026-02-11)**:
->
-> - `EvidenceSourceType` simplified: 12 types → **5 types** (LOGS, METRICS, CONFIGURATION, VISUAL, USER_DESCRIPTION)
-> - The data types identified by this document (LOG_FILE, METRICS_DATA, etc.) now map to the new simplified source types
-> - Evidence categories changed: UNCLASSIFIED removed, OTHER → CONTEXTUAL_EVIDENCE, REJECTED added
-> - Single-phase evidence creation (after LLM evaluation, no placeholders)
+**Scope**: This document addresses **data type classification** — determining what kind of data has been submitted (LOGS vs METRICS vs CONFIGURATION etc.). This is separate from **evidence classification** (SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED) which is described in [evidence-classification-design.md](./evidence-classification-design.md).
 
-**Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the QueryClassifier design in the data submission layer. The QueryClassifier is not yet implemented as a standalone module.
+**Note**: For **query classification** (human question vs machine data), see the QueryClassifier design in the data submission layer. The QueryClassifier is not yet implemented as a standalone module.
 
 ---
 
@@ -58,10 +46,19 @@ Data submitted to FaultMaven can have:
 4. **Explainability**: Clear reasoning for classification decisions
 5. **Adaptability**: Learn from user corrections
 
-### Classification Scope (v1.2 Clarification)
+### Unified DataType Enum (6 Types)
 
-This document addresses **data type classification** — determining what **kind** of data has been submitted:
-- LOGS_AND_ERRORS vs METRICS_AND_PERFORMANCE vs STRUCTURED_CONFIG vs SOURCE_CODE vs UNSTRUCTURED_TEXT vs VISUAL_EVIDENCE
+This document classifies data into the unified `DataType` enum shared across preprocessing and evidence:
+
+```python
+class DataType(str, Enum):
+    LOGS = "logs"                    # Time-ordered diagnostic output
+    METRICS = "metrics"              # Quantitative measurements
+    CONFIGURATION = "configuration"  # Structured system/app config
+    CODE = "code"                    # Source code
+    TEXT = "text"                    # Unstructured prose
+    IMAGE = "image"                  # Visual content
+```
 
 This is **Tier 0** in the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) three-tier model:
 
@@ -72,12 +69,12 @@ This is **Tier 0** in the [Data Preprocessing v3.0](./data-preprocessing-design-
 Tier 0: DataClassifier (THIS DOC): "What type of data?" → DataType + confidence
          ↓
 Tier 1: Type-specific Mechanical Extraction (0 LLM, <2s)
-  - LOGS_AND_ERRORS → Structural Index (error clusters, timeline)
-  - METRICS_AND_PERFORMANCE → Statistical Profile (anomalies, distributions)
-  - STRUCTURED_CONFIG → Parse & Sanitize (redact secrets)
-  - SOURCE_CODE → AST Extraction (functions, classes, imports)
-  - UNSTRUCTURED_TEXT → Structure Extraction (headings, key sentences)
-  - VISUAL_EVIDENCE → Metadata Extraction (format, dimensions)
+  - LOGS → Structural Index (error clusters, timeline)
+  - METRICS → Statistical Profile (anomalies, distributions)
+  - CONFIGURATION → Parse & Sanitize (redact secrets)
+  - CODE → AST Extraction (functions, classes, imports)
+  - TEXT → Structure Extraction (headings, key sentences)
+  - IMAGE → Metadata Extraction (format, dimensions)
          ↓
 Evidence Architecture → Agent Response
 ```
@@ -86,39 +83,59 @@ Evidence Architecture → Agent Response
 
 **Hint Passing**: QueryClassifier's `detected_data_type` field (if present) can be passed as a hint to DataClassifier to improve accuracy.
 
+### How Fine-Grained Subtypes Map to DataType
+
+The classification algorithm uses detailed pattern detection internally, but the output is always one of the 6 `DataType` values. Fine-grained distinctions are captured in `ClassificationResult.metadata`:
+
+| Internal Subtype | DataType | Metadata Example |
+|-----------------|----------|-----------------|
+| Application log, syslog, dmesg, journalctl | `LOGS` | `{"subtype": "application_log"}` |
+| Error report, stack trace | `LOGS` | `{"subtype": "error_report"}` |
+| Distributed trace (OpenTelemetry, Jaeger) | `LOGS` | `{"subtype": "distributed_trace"}` |
+| Command output (top, ps, iostat, strace) | `METRICS` or `LOGS` | `{"subtype": "command_output", "command": "top"}` |
+| Time-series metrics, dashboards | `METRICS` | `{"subtype": "time_series"}` |
+| Profiling data (cProfile, perf) | `METRICS` | `{"subtype": "profiling_data"}` |
+| Config files (YAML, JSON, TOML, INI) | `CONFIGURATION` | `{"subtype": "yaml_config"}` |
+| Infrastructure definitions (K8s, Terraform) | `CONFIGURATION` | `{"subtype": "infrastructure"}` |
+| Source code files | `CODE` | `{"subtype": "python", "language": "python"}` |
+| Documentation, runbooks | `TEXT` | `{"subtype": "documentation"}` |
+| Screenshots, diagrams | `IMAGE` | `{"subtype": "screenshot"}` |
+
 ---
 
 ## Classification Hierarchy
 
-### Tier 1: Definitive Indicators (99%+ Confidence)
+The classification algorithm uses a multi-level approach internally. These levels are **internal to the classification algorithm** and are distinct from the system-level Tiers (Tier 0/1/2).
+
+### Level 1: Definitive Indicators (99%+ Confidence)
 
 These are unambiguous markers that definitively identify a data type:
 
 ```python
 DEFINITIVE_INDICATORS = {
-    DataType.SCREENSHOT: [
+    DataType.IMAGE: [
         # Binary image magic numbers
         (r"^\x89PNG\r\n\x1a\n", "PNG magic number"),
         (r"^\xff\xd8\xff", "JPEG magic number"),
         # Base64 image data
         (r"^data:image/(png|jpeg|gif);base64,", "Base64 image prefix"),
     ],
-    
-    DataType.TRACE_DATA: [
-        # OpenTelemetry trace IDs (32-char hex)
+
+    DataType.LOGS: [
+        # OpenTelemetry trace IDs → classified as LOGS (subtype: distributed_trace)
         (r'"traceId":\s*"[a-f0-9]{32}"', "OpenTelemetry trace format"),
         # Jaeger trace structure
         (r'"operationName".*"spans":\s*\[', "Jaeger trace structure"),
     ],
-    
-    DataType.PROFILING_DATA: [
-        # Python cProfile header
+
+    DataType.METRICS: [
+        # Python cProfile header → classified as METRICS (subtype: profiling_data)
         (r"^\s*ncalls\s+tottime\s+percall\s+cumtime", "cProfile header"),
         # Flame graph format
         (r"^[\w\.]+(?:;[\w\.]+)+\s+\d+$", "Flame graph stack notation", "MULTILINE"),
     ],
-    
-    DataType.CONFIG_FILE: [
+
+    DataType.CONFIGURATION: [
         # Valid JSON object spanning >50% of content
         ("is_valid_json_object", "Valid JSON structure"),
         # Valid YAML with --- separator
@@ -127,13 +144,13 @@ DEFINITIVE_INDICATORS = {
 }
 ```
 
-### Tier 2: Strong Indicators (85-98% Confidence)
+### Level 2: Strong Indicators (85-98% Confidence)
 
 Multiple strong signals that together indicate a type:
 
 ```python
 STRONG_INDICATORS = {
-    DataType.LOG_FILE: {
+    DataType.LOGS: {
         "required": [
             ("has_timestamps", "Timestamps present"),
             ("has_log_levels", "Log levels (INFO, ERROR, etc.)"),
@@ -142,23 +159,16 @@ STRONG_INDICATORS = {
             ("sequential_entries", "Sequential log entries"),
             ("logger_names", "Logger/module names"),
             ("request_ids", "Correlation IDs"),
-        ],
-        "min_score": 2,  # At least 2 required + 0 bonus
-    },
-    
-    DataType.ERROR_REPORT: {
-        "required": [
-            ("has_exception_keyword", "Exception/Error keyword"),
             ("has_stack_trace", "Stack trace structure"),
         ],
-        "bonus": [
-            ("has_line_numbers", "File:line references"),
-            ("has_error_codes", "HTTP or system error codes"),
-        ],
-        "min_score": 2,
+        "min_score": 2,  # At least 2 required + 0 bonus
+        "subtypes": {
+            "error_report": ["has_exception_keyword", "has_stack_trace", "no_timestamps"],
+            "distributed_trace": ["has_trace_ids", "has_span_ids"],
+        },
     },
-    
-    DataType.METRICS_DATA: {
+
+    DataType.METRICS: {
         "required": [
             ("has_numeric_columns", "Numeric data columns"),
             ("has_metric_keywords", "Performance keywords"),
@@ -173,21 +183,21 @@ STRONG_INDICATORS = {
 }
 ```
 
-### Tier 3: Weak Indicators (50-84% Confidence)
+### Level 3: Weak Indicators (50-84% Confidence)
 
 Suggestive but not conclusive patterns:
 
 ```python
 WEAK_INDICATORS = {
-    DataType.DOCUMENTATION: [
+    DataType.TEXT: [
         ("markdown_syntax", 0.3),  # Weight
         ("prose_paragraphs", 0.2),
         ("code_blocks", 0.2),
         ("section_headings", 0.3),
     ],
-    
-    DataType.OTHER: [
-        # Default when no clear pattern
+
+    DataType.TEXT: [
+        # Default when no clear pattern — fallback to TEXT
         ("no_clear_structure", 0.5),
         ("mixed_formats", 0.5),
     ],
@@ -200,59 +210,61 @@ WEAK_INDICATORS = {
 
 ### Primary Classification Flow
 
+> **Note:** The "Level 1/2/3" labels below refer to **classification algorithm levels** (internal to Tier 0), not system-level Tiers (Tier 0/1/2). Levels 1-4 execute within Tier 0's <100ms zero-LLM budget. Level 5 (LLM) and Level 6 (user) are optional fallbacks that operate outside the Tier 0 guarantee.
+
 ```mermaid
 graph TD
     START[Raw Content + Metadata]
-    
-    %% Tier 1: Definitive
-    START --> T1_CHECK{Tier 1:<br/>Definitive<br/>Indicators?}
-    T1_CHECK -->|Yes| T1_MATCH[Matched Type<br/>99% Confidence]
-    T1_CHECK -->|No| T2_CHECK
-    
-    %% Tier 2: Strong
-    T2_CHECK{Tier 2:<br/>Strong<br/>Indicators?}
-    T2_CHECK -->|Score ≥ threshold| DISAMBIG
-    T2_CHECK -->|No clear match| T3_CHECK
-    
+
+    %% Level 1: Definitive
+    START --> L1_CHECK{Level 1:<br/>Definitive<br/>Indicators?}
+    L1_CHECK -->|Yes| L1_MATCH[Matched Type<br/>99% Confidence]
+    L1_CHECK -->|No| L2_CHECK
+
+    %% Level 2: Strong
+    L2_CHECK{Level 2:<br/>Strong<br/>Indicators?}
+    L2_CHECK -->|Score ≥ threshold| DISAMBIG
+    L2_CHECK -->|No clear match| L3_CHECK
+
     %% Disambiguation
     DISAMBIG{Multiple<br/>Types<br/>Match?}
-    DISAMBIG -->|No| T2_MATCH[Single Type<br/>85-98% Confidence]
+    DISAMBIG -->|No| L2_MATCH[Single Type<br/>85-98% Confidence]
     DISAMBIG -->|Yes| PRIORITY[Apply Priority Rules]
     PRIORITY --> RESOLVED[Resolved Type<br/>80-95% Confidence]
-    
-    %% Tier 3: Weak
-    T3_CHECK{Tier 3:<br/>Weak<br/>Indicators?}
-    T3_CHECK -->|Score > 0.5| T3_MATCH[Tentative Type<br/>50-84% Confidence]
-    T3_CHECK -->|No match| CONTEXT
-    
-    %% Contextual
-    CONTEXT{Contextual<br/>Hints?}
+
+    %% Level 3: Weak
+    L3_CHECK{Level 3:<br/>Weak<br/>Indicators?}
+    L3_CHECK -->|Score > 0.5| L3_MATCH[Tentative Type<br/>50-84% Confidence]
+    L3_CHECK -->|No match| CONTEXT
+
+    %% Level 4: Contextual
+    CONTEXT{Level 4:<br/>Contextual<br/>Hints?}
     CONTEXT -->|Filename| FILENAME[Use Filename Hint]
     CONTEXT -->|User Description| USER_DESC[Use Description]
     CONTEXT -->|None| LLM
-    
-    %% LLM Fallback
-    LLM{LLM<br/>Classification}
+
+    %% Level 5: LLM Fallback (OPTIONAL — outside Tier 0 zero-LLM guarantee)
+    LLM{Level 5:<br/>LLM Classification<br/>OPTIONAL}
     LLM -->|Confidence > 0.7| LLM_MATCH[LLM Type<br/>70-90% Confidence]
     LLM -->|Confidence ≤ 0.7| ASK_USER
-    
-    %% User Confirmation
-    ASK_USER[Ask User<br/>100% Confidence]
-    
+
+    %% Level 6: User Confirmation
+    ASK_USER[Level 6:<br/>Ask User<br/>100% Confidence]
+
     %% Outcomes
-    T1_MATCH --> RETURN[Return DataType]
-    T2_MATCH --> RETURN
+    L1_MATCH --> RETURN[Return DataType]
+    L2_MATCH --> RETURN
     RESOLVED --> RETURN
-    T3_MATCH --> RETURN
+    L3_MATCH --> RETURN
     FILENAME --> RETURN
     USER_DESC --> RETURN
     LLM_MATCH --> RETURN
     ASK_USER --> RETURN
-    
-    style T1_MATCH fill:#2e7d32
-    style T2_MATCH fill:#43a047
+
+    style L1_MATCH fill:#2e7d32
+    style L2_MATCH fill:#43a047
     style RESOLVED fill:#66bb6a
-    style T3_MATCH fill:#fdd835
+    style L3_MATCH fill:#fdd835
     style LLM_MATCH fill:#fb8c00
     style ASK_USER fill:#e53935
 ```
@@ -261,11 +273,11 @@ graph TD
 
 ## Type-Specific Rules
 
-### 1. LOG_FILE Detection
+### 1. LOGS Detection (subtype: application_log)
 
 **Definitive Markers**:
 ```python
-def is_log_file_definitive(content: str) -> bool:
+def is_logs_definitive(content: str) -> bool:
     """
     Returns True if content has definitive log file markers.
     
@@ -303,11 +315,11 @@ Oct 14 14:32:01 hostname service[1234]: Log message
 
 ---
 
-### 2. METRICS_DATA Detection
+### 2. METRICS Detection
 
 **Definitive Markers**:
 ```python
-def is_metrics_data_definitive(content: str) -> bool:
+def is_metrics_definitive(content: str) -> bool:
     """
     Returns True if content has definitive metrics markers.
     
@@ -416,53 +428,59 @@ def detect_command_output(content: str) -> Optional[Tuple[str, float]]:
 
 ---
 
-### 3. ERROR_REPORT vs LOG_FILE Disambiguation
+### 3. Error Report vs Application Log Disambiguation
 
-**Priority Rule**:
+Both map to `DataType.LOGS`, but the subtype determines context. This disambiguation sets `metadata.subtype`:
+
 ```python
-def disambiguate_error_vs_log(content: str, 
-                               error_score: float, 
-                               log_score: float) -> DataType:
+def disambiguate_error_vs_log(content: str,
+                               error_score: float,
+                               log_score: float) -> ClassificationResult:
     """
-    Disambiguate between ERROR_REPORT and LOG_FILE.
-    
+    Both map to DataType.LOGS. Disambiguate subtype for metadata.
+
     Decision Logic:
-    1. If has_timestamps AND has_log_levels → LOG_FILE
-       (errors within a log context)
-    2. If has_stack_trace but NO timestamps → ERROR_REPORT
-       (standalone error dump)
-    3. If error_score > log_score * 2 → ERROR_REPORT
-       (error-dominated content)
-    4. Otherwise → LOG_FILE (default to broader category)
+    1. If has_timestamps AND has_log_levels → LOGS (subtype: application_log)
+    2. If has_stack_trace but NO timestamps → LOGS (subtype: error_report)
+    3. If error_score > log_score * 2 → LOGS (subtype: error_report)
+    4. Otherwise → LOGS (subtype: application_log, default)
     """
     has_ts = has_timestamps(content)
     has_levels = has_log_levels(content)
     has_trace = has_stack_trace(content)
-    
-    # Rule 1: Temporal context → LOG
+
+    # Rule 1: Temporal context → application log
     if has_ts and has_levels:
-        return DataType.LOG_FILE
-    
-    # Rule 2: Standalone error → ERROR
+        return ClassificationResult(
+            data_type=DataType.LOGS, metadata={"subtype": "application_log"}
+        )
+
+    # Rule 2: Standalone error → error report
     if has_trace and not has_ts:
-        return DataType.ERROR_REPORT
-    
-    # Rule 3: Error-dominated → ERROR
+        return ClassificationResult(
+            data_type=DataType.LOGS, metadata={"subtype": "error_report"}
+        )
+
+    # Rule 3: Error-dominated → error report
     if error_score > log_score * 2:
-        return DataType.ERROR_REPORT
-    
-    # Rule 4: Default to LOG
-    return DataType.LOG_FILE
+        return ClassificationResult(
+            data_type=DataType.LOGS, metadata={"subtype": "error_report"}
+        )
+
+    # Rule 4: Default to application log
+    return ClassificationResult(
+        data_type=DataType.LOGS, metadata={"subtype": "application_log"}
+    )
 ```
 
 ---
 
-### 4. PROFILING_DATA vs TRACE_DATA Disambiguation
+### 4. Profiling Data vs Distributed Trace Disambiguation
 
-**Key Differentiators**:
+Both map to one of the 6 DataType values. Profiling data → `METRICS` (subtype: profiling_data). Distributed traces → `LOGS` (subtype: distributed_trace).
 
-| Feature | PROFILING_DATA | TRACE_DATA |
-|---------|----------------|------------|
+| Feature | Profiling Data → `METRICS` | Distributed Trace → `LOGS` |
+|---------|---------------------------|---------------------------|
 | **Focus** | Function timing | Request flow |
 | **IDs** | Function names | Trace/Span IDs |
 | **Structure** | Call tree, flat list | Nested spans |
@@ -470,9 +488,10 @@ def disambiguate_error_vs_log(content: str,
 | **Scope** | Single process | Distributed system |
 
 ```python
-def disambiguate_profiling_vs_trace(content: str) -> DataType:
+def disambiguate_profiling_vs_trace(content: str) -> ClassificationResult:
     """
-    Differentiate profiling data from distributed traces.
+    Profiling data → METRICS (subtype: profiling_data)
+    Distributed trace → LOGS (subtype: distributed_trace)
     """
     # Check for distributed trace IDs (32-char hex)
     has_trace_ids = bool(re.search(
@@ -480,65 +499,69 @@ def disambiguate_profiling_vs_trace(content: str) -> DataType:
         content,
         re.IGNORECASE
     ))
-    
-    # Check for span IDs
+
     has_span_ids = bool(re.search(
         r'(spanId|span_id|parentId)["\s:]+[a-f0-9]{16,}',
         content,
         re.IGNORECASE
     ))
-    
-    # Check for service mesh indicators
+
     has_service_names = bool(re.search(
         r'(serviceName|service\.name)',
         content,
         re.IGNORECASE
     ))
-    
-    # Distributed trace → TRACE_DATA
+
+    # Distributed trace → LOGS
     if (has_trace_ids and has_span_ids) or has_service_names:
-        return DataType.TRACE_DATA
-    
+        return ClassificationResult(
+            data_type=DataType.LOGS, metadata={"subtype": "distributed_trace"}
+        )
+
     # Check for profiling indicators
     has_profiling_header = bool(re.search(
         r'(ncalls|tottime|percall|cumtime|filename:lineno)',
         content,
         re.IGNORECASE
     ))
-    
+
     has_call_counts = bool(re.search(
         r'\d+\s+calls?\s+in\s+[\d\.]+\s+seconds',
         content,
         re.IGNORECASE
     ))
-    
-    # Profiling data → PROFILING_DATA
+
+    # Profiling data → METRICS
     if has_profiling_header or has_call_counts:
-        return DataType.PROFILING_DATA
-    
-    # Default: if has function names and timing → PROFILING
-    # Otherwise → TRACE (more general)
+        return ClassificationResult(
+            data_type=DataType.METRICS, metadata={"subtype": "profiling_data"}
+        )
+
     function_pattern = r'[\w\.]+\([\w\s,]*\)\s+[\d\.]+'
     if re.search(function_pattern, content):
-        return DataType.PROFILING_DATA
-    
-    return DataType.TRACE_DATA
+        return ClassificationResult(
+            data_type=DataType.METRICS, metadata={"subtype": "profiling_data"}
+        )
+
+    return ClassificationResult(
+        data_type=DataType.LOGS, metadata={"subtype": "distributed_trace"}
+    )
 ```
 
 ---
 
-### 5. CONFIG_FILE vs DOCUMENTATION
+### 5. CONFIGURATION vs TEXT
 
 **Disambiguation Strategy**:
 
 ```python
-def disambiguate_config_vs_docs(content: str) -> DataType:
+def disambiguate_config_vs_text(content: str) -> DataType:
     """
-    Differentiate configuration files from documentation.
-    
+    Differentiate configuration files from documentation/prose.
+
     Key Indicators:
-    - CONFIG: Structured syntax, key-value pairs, parseable
-    - DOCS: Prose, explanations, markdown, code examples
+    - CONFIGURATION: Structured syntax, key-value pairs, parseable
+    - TEXT: Prose, explanations, markdown, code examples
     """
     # Check if parseable as config format
     is_json = is_valid_json(content)
@@ -548,7 +571,7 @@ def disambiguate_config_vs_docs(content: str) -> DataType:
     
     if any([is_json, is_yaml, is_ini, is_toml]):
         # Parseable → CONFIG
-        return DataType.CONFIG_FILE
+        return DataType.CONFIGURATION
     
     # Check prose density
     prose_indicators = [
@@ -576,16 +599,18 @@ def disambiguate_config_vs_docs(content: str) -> DataType:
     
     # Decision
     if prose_score > structure_score * 2:
-        return DataType.DOCUMENTATION
+        return DataType.TEXT
     else:
-        return DataType.CONFIG_FILE
+        return DataType.CONFIGURATION
 ```
 
 ---
 
-## Multi-Tier Fallback Chain
+## Multi-Level Fallback Chain
 
 ### Complete Fallback Strategy
+
+> **Tier 0 Guarantee:** Levels 1-4 (heuristic) complete in <100ms with zero LLM calls. Level 5 (LLM) and Level 6 (user confirmation) are **optional** fallbacks that operate outside the Tier 0 zero-LLM guarantee. If LLM fallback is disabled, the classifier returns the best heuristic result with its confidence score.
 
 ```python
 class EnhancedDataClassifier:
@@ -611,32 +636,33 @@ class EnhancedDataClassifier:
             source_metadata=source_metadata,
         )
         
-        # Tier 1: Definitive indicators (99%+)
+        # Level 1: Definitive indicators (99%+)
         result = self._check_definitive_indicators(context)
         if result.confidence >= 0.99:
             return result
-        
-        # Tier 2: Strong indicators (85-98%)
+
+        # Level 2: Strong indicators (85-98%)
         result = self._check_strong_indicators(context)
         if result.confidence >= 0.85:
             return result
-        
-        # Tier 3: Weak indicators (50-84%)
+
+        # Level 3: Weak indicators (50-84%)
         result = self._check_weak_indicators(context)
         if result.confidence >= 0.50:
             return result
-        
-        # Tier 4: Contextual hints (variable)
+
+        # Level 4: Contextual hints (variable)
         result = self._check_contextual_hints(context)
         if result.confidence >= 0.60:
             return result
-        
-        # Tier 5: LLM classification (70-90%)
-        result = await self._llm_classify_with_examples(context)
-        if result.confidence >= 0.70:
-            return result
-        
-        # Tier 6: Request user confirmation
+
+        # Level 5: LLM classification (OPTIONAL — outside Tier 0 zero-LLM guarantee)
+        if self.llm_fallback_enabled:
+            result = await self._llm_classify_with_examples(context)
+            if result.confidence >= 0.70:
+                return result
+
+        # Level 6: Request user confirmation
         result = self._request_user_confirmation(context)
         return result  # 100% confidence after user input
     
@@ -652,14 +678,14 @@ class EnhancedDataClassifier:
                         data_type=data_type,
                         confidence=0.99,
                         reasoning=f"Definitive: {description}",
-                        fallback_tier=1,
+                        fallback_level=1,
                     )
         
         return ClassificationResult(
-            data_type=DataType.OTHER,
+            data_type=DataType.TEXT,
             confidence=0.0,
             reasoning="No definitive indicators found",
-            fallback_tier=0,
+            fallback_level=0,
         )
     
     async def _llm_classify_with_examples(
@@ -684,7 +710,7 @@ class EnhancedDataClassifier:
             data_type=parsed['type'],
             confidence=parsed['confidence'],
             reasoning=f"LLM: {parsed['reasoning']}",
-            fallback_tier=5,
+            fallback_level=5,
         )
     
     def _build_classification_prompt_with_examples(
@@ -710,7 +736,7 @@ Content (first 2000 chars):
 
 Respond in JSON format:
 {{
-  "type": "log_file|error_report|config_file|metrics_data|profiling_data|trace_data|documentation|screenshot|other",
+  "type": "logs|metrics|configuration|code|text|image",
   "confidence": 0.0-1.0,
   "reasoning": "Brief explanation of why this classification was chosen"
 }}
@@ -721,28 +747,28 @@ Respond in JSON format:
         return """
 Example 1:
 Content: "2025-10-14 10:00:00 INFO User logged in..."
-Type: log_file
+Type: logs
 Reasoning: Contains timestamps and log levels
 
 Example 2:
 Content: "PID   USER   %CPU  %MEM  COMMAND\\n1234  root   12.5  3.2   python..."
-Type: metrics_data
+Type: metrics
 Reasoning: Tabular process metrics with numeric values
 
 Example 3:
 Content: "Traceback (most recent call last):\\n  File \\"app.py\\", line 42..."
-Type: error_report
-Reasoning: Python stack trace with exception
+Type: logs
+Reasoning: Python stack trace / error output
 
 Example 4:
 Content: "database:\\n  host: localhost\\n  port: 5432..."
-Type: config_file
+Type: configuration
 Reasoning: YAML configuration structure
 
 Example 5:
-Content: "traceId: \\"a1b2c3d4...\\", spanId: \\"1234\\", serviceName: \\"api\\"..."
-Type: trace_data
-Reasoning: Distributed trace with trace/span IDs
+Content: "def calculate_total(items):\\n    return sum(i.price for i in items)"
+Type: code
+Reasoning: Python source code
 """
 ```
 
@@ -761,7 +787,7 @@ class ConfidenceScorer:
         data_type: DataType,
         matched_patterns: List[str],
         total_score: float,
-        fallback_tier: int,
+        fallback_level: int,
     ) -> float:
         """
         Calculate confidence based on multiple factors.
@@ -772,17 +798,17 @@ class ConfidenceScorer:
         3. Fallback tier used
         4. Disambiguation clarity
         """
-        # Base confidence from tier
-        tier_confidence = {
+        # Base confidence from classification level
+        level_confidence = {
             1: 0.99,  # Definitive
             2: 0.90,  # Strong
             3: 0.70,  # Weak
             4: 0.65,  # Contextual
-            5: 0.75,  # LLM
+            5: 0.75,  # LLM (optional)
             6: 1.00,  # User confirmed
         }
-        
-        base = tier_confidence.get(fallback_tier, 0.50)
+
+        base = level_confidence.get(fallback_level, 0.50)
         
         # Adjust for pattern count
         pattern_bonus = min(0.10, len(matched_patterns) * 0.02)
@@ -850,7 +876,7 @@ def should_use_llm_fallback(confidence: float) -> bool:
 COMMAND_OUTPUTS = {
     # Process & System Info
     'top': {
-        'type': DataType.METRICS_DATA,
+        'type': DataType.METRICS,
         'patterns': [
             r'top\s+-\s+\d{2}:\d{2}:\d{2}\s+up',
             r'Tasks:\s+\d+\s+total,\s+\d+\s+running',
@@ -862,7 +888,7 @@ COMMAND_OUTPUTS = {
     },
     
     'ps': {
-        'type': DataType.METRICS_DATA,
+        'type': DataType.METRICS,
         'patterns': [
             r'USER\s+PID\s+%CPU\s+%MEM\s+VSZ\s+RSS',
             r'^\s*[\w\-]+\s+\d+\s+[\d\.]+\s+[\d\.]+',
@@ -871,7 +897,7 @@ COMMAND_OUTPUTS = {
     },
     
     'vmstat': {
-        'type': DataType.METRICS_DATA,
+        'type': DataType.METRICS,
         'patterns': [
             r'procs\s+-+memory-+\s+-+swap-+\s+-+io-+',
             r'r\s+b\s+swpd\s+free\s+buff\s+cache',
@@ -880,7 +906,7 @@ COMMAND_OUTPUTS = {
     },
     
     'iostat': {
-        'type': DataType.METRICS_DATA,
+        'type': DataType.METRICS,
         'patterns': [
             r'avg-cpu:\s+%user\s+%nice\s+%system',
             r'Device.*tps.*kB_read/s.*kB_wrtn/s',
@@ -889,7 +915,7 @@ COMMAND_OUTPUTS = {
     },
     
     'netstat': {
-        'type': DataType.METRICS_DATA,
+        'type': DataType.METRICS,
         'patterns': [
             r'Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address',
             r'tcp\s+\d+\s+\d+\s+[\d\.:]+\s+[\d\.:]+',
@@ -898,7 +924,7 @@ COMMAND_OUTPUTS = {
     },
     
     'free': {
-        'type': DataType.METRICS_DATA,
+        'type': DataType.METRICS,
         'patterns': [
             r'total\s+used\s+free\s+shared\s+buff/cache\s+available',
             r'Mem:\s+\d+',
@@ -909,7 +935,7 @@ COMMAND_OUTPUTS = {
     
     # Logs
     'dmesg': {
-        'type': DataType.LOG_FILE,
+        'type': DataType.LOGS,
         'patterns': [
             r'^\[\s*[\d\.]+\]',  # Kernel timestamp
             r'\bkernel:\s',
@@ -919,7 +945,7 @@ COMMAND_OUTPUTS = {
     },
     
     'journalctl': {
-        'type': DataType.LOG_FILE,
+        'type': DataType.LOGS,
         'patterns': [
             r'^[A-Z][a-z]{2}\s+\d{2}\s+\d{2}:\d{2}:\d{2}',  # Oct 14 14:32:01
             r'systemd\[\d+\]:',
@@ -930,7 +956,7 @@ COMMAND_OUTPUTS = {
     
     # Trace
     'strace': {
-        'type': DataType.TRACE_DATA,
+        'type': DataType.LOGS,  # System call trace → LOGS (subtype: system_trace)
         'patterns': [
             r'\w+\([^)]*\)\s+=\s+-?\d+',  # syscall() = retval
             r'<\d+\.\d+>',  # Timing info
@@ -938,19 +964,19 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     'ltrace': {
-        'type': DataType.TRACE_DATA,
+        'type': DataType.LOGS,  # Library call trace → LOGS (subtype: system_trace)
         'patterns': [
             r'\w+\([^)]*\)\s+=\s+\w+',
             r'<\d+\.\d+>',
         ],
         'confidence': 0.90,
     },
-    
+
     # Profiling
     'perf': {
-        'type': DataType.PROFILING_DATA,
+        'type': DataType.METRICS,  # Performance counters → METRICS (subtype: profiling_data)
         'patterns': [
             r'Performance counter stats',
             r'seconds time elapsed',
@@ -961,7 +987,7 @@ COMMAND_OUTPUTS = {
     
     # Configuration
     'lsof': {
-        'type': DataType.METRICS_DATA,  # Process file descriptors
+        'type': DataType.METRICS,  # Process file descriptors
         'patterns': [
             r'COMMAND\s+PID\s+USER\s+FD\s+TYPE\s+DEVICE',
             r'^\w+\s+\d+\s+\w+\s+\d+[rwu]\s',
@@ -970,7 +996,7 @@ COMMAND_OUTPUTS = {
     },
     
     'lscpu': {
-        'type': DataType.CONFIG_FILE,  # CPU info
+        'type': DataType.CONFIGURATION,  # CPU info
         'patterns': [
             r'Architecture:\s+\w+',
             r'CPU\(s\):\s+\d+',
@@ -980,7 +1006,7 @@ COMMAND_OUTPUTS = {
     },
     
     'df': {
-        'type': DataType.METRICS_DATA,  # Disk usage
+        'type': DataType.METRICS,  # Disk usage
         'patterns': [
             r'Filesystem\s+1K-blocks\s+Used\s+Available\s+Use%',
             r'/dev/\w+\s+\d+\s+\d+\s+\d+\s+\d+%',
@@ -1009,7 +1035,7 @@ def detect_linux_command_output(content: str) -> Optional[ClassificationResult]:
                 data_type=signature['type'],
                 confidence=signature['confidence'],
                 reasoning=f"Detected {cmd_name} command output",
-                fallback_tier=1,  # Definitive
+                fallback_level=1,  # Definitive
                 metadata={'command': cmd_name, 'patterns': matched_patterns},
             )
     
@@ -1024,12 +1050,12 @@ def detect_linux_command_output(content: str) -> Optional[ClassificationResult]:
 
 **Scenario**: Application log file with error messages and stack traces.
 
-**Decision**: Classify as `LOG_FILE`
+**Decision**: Classify as `LOGS`
 
 **Reasoning**:
 - Temporal context (timestamps) → investigative narrative
 - Errors are events within the log stream
-- LOG_FILE is broader, more useful for troubleshooting
+- LOGS is the broader category, more useful for troubleshooting
 
 ```python
 # Example content
@@ -1043,18 +1069,18 @@ ConnectionRefusedError: [Errno 111] Connection refused
 2025-10-14 10:00:16 INFO Retrying connection...
 """
 
-# Classification: LOG_FILE (has timestamps + sequential events)
-# NOT ERROR_REPORT (errors are within log context)
+# Classification: LOGS (has timestamps + sequential events)
+# Error report subtype captured in metadata
 ```
 
 ### Case 2: Metrics Logged Over Time
 
 **Scenario**: Time-series metrics written as log entries.
 
-**Decision**: Classify as `METRICS_DATA` if tabular, `LOG_FILE` if sequential.
+**Decision**: Classify as `METRICS` if tabular, `LOGS` if sequential.
 
 ```python
-# Tabular metrics → METRICS_DATA
+# Tabular metrics → METRICS
 content_tabular = """
 timestamp          cpu_percent  mem_percent  disk_io
 2025-10-14 10:00   12.5        45.2         1024
@@ -1062,7 +1088,7 @@ timestamp          cpu_percent  mem_percent  disk_io
 2025-10-14 10:02   11.2        44.8         1536
 """
 
-# Sequential logged metrics → LOG_FILE
+# Sequential logged metrics → LOGS
 content_logged = """
 2025-10-14 10:00:00 INFO CPU: 12.5%, Memory: 45.2%
 2025-10-14 10:01:00 INFO CPU: 15.3%, Memory: 46.1%
@@ -1073,16 +1099,16 @@ content_logged = """
 **Disambiguation Rule**:
 ```python
 if has_tabular_structure(content) and has_high_numeric_density(content):
-    return DataType.METRICS_DATA
+    return DataType.METRICS  # Tabular data
 elif has_timestamps(content) and has_log_levels(content):
-    return DataType.LOG_FILE
+    return DataType.LOGS     # Sequential log entries
 ```
 
 ### Case 3: Configuration with Documentation
 
 **Scenario**: YAML config file with extensive comments and documentation.
 
-**Decision**: Classify as `CONFIG_FILE`
+**Decision**: Classify as `CONFIGURATION`
 
 **Reasoning**:
 - Primary purpose is configuration
@@ -1107,7 +1133,7 @@ database:
   port: 5432
 """
 
-# Classification: CONFIG_FILE (parseable YAML structure)
+# Classification: CONFIGURATION (parseable YAML structure)
 ```
 
 ### Case 4: Short Ambiguous Snippets
@@ -1123,7 +1149,7 @@ Retry attempt 3/5 failed
 """
 
 # Heuristic: Insufficient context
-# Contextual: Check filename (error.log → LOG_FILE)
+# Contextual: Check filename (error.log → LOGS)
 # LLM: Ask for classification with low confidence
 # Result: Suggest to user, allow override
 ```
@@ -1327,20 +1353,20 @@ Provide patterns as a JSON array:
 
 ### Accuracy Targets
 
-| Tier | Confidence Range | Target Accuracy | Measurement |
-|------|------------------|-----------------|-------------|
+| Level | Confidence Range | Target Accuracy | Measurement |
+|-------|------------------|-----------------|-------------|
 | 1 (Definitive) | 0.99-1.00 | >99% | Unit tests with known samples |
 | 2 (Strong) | 0.85-0.98 | >95% | Validation set (1000 samples) |
 | 3 (Weak) | 0.50-0.84 | >80% | User feedback validation |
 | 4 (Contextual) | 0.60-0.80 | >85% | With filename hints |
-| 5 (LLM) | 0.70-0.90 | >90% | LLM benchmark set |
+| 5 (LLM, optional) | 0.70-0.90 | >90% | LLM benchmark set |
 | 6 (User) | 1.00 | 100% | By definition |
 
 ### Performance Targets
 
-- **Heuristic Classification**: <50ms (Tiers 1-3)
-- **Contextual Analysis**: <100ms (Tier 4)
-- **LLM Fallback**: <2s (Tier 5)
+- **Heuristic Classification**: <50ms (Levels 1-3)
+- **Contextual Analysis**: <100ms (Level 4)
+- **LLM Fallback** (optional): <2s (Level 5)
 - **User Confirmation**: <30s avg response time
 
 ### Quality Metrics
@@ -1371,20 +1397,20 @@ KiB Swap:  4096000 total,  4096000 free,        0 used. 12288000 avail Mem
 
 # Classification Flow:
 
-# Tier 1: Definitive Indicators
+# Level 1: Definitive Indicators
 result = detect_linux_command_output(content)
 # → Matched: 'top' command
 #   Patterns: ["top\s+-\s+\d{2}:\d{2}:\d{2}", "Tasks:", "%Cpu", "KiB Mem", "PID\s+USER"]
-#   Type: METRICS_DATA
+#   Type: METRICS (subtype: command_output)
 #   Confidence: 0.95
-#   Fallback Tier: 1
+#   Classification Level: 1
 
 # Final Result:
 ClassificationResult(
-    data_type=DataType.METRICS_DATA,
+    data_type=DataType.METRICS,
     confidence=0.95,
     reasoning="Detected top command output (5 patterns matched)",
-    fallback_tier=1,
+    fallback_level=1,
     metadata={
         'command': 'top',
         'patterns': ['top timestamp', 'Tasks summary', 'CPU line', 'Memory line', 'PID header'],
@@ -1394,22 +1420,9 @@ ClassificationResult(
 
 ---
 
-**Document Version**: 1.2
-**Last Updated**: 2026-02-10
-**Changelog (v1.2)**:
-- Positioned this document as Tier 0 in the Data Preprocessing v3.0 three-tier model
-- Updated pipeline relationship diagram to show Tier 0 → Tier 1 flow
-- Fixed reference to QueryClassifier (not yet implemented as standalone module)
-- Updated cross-references to data-preprocessing-design-specification.md
-- No changes to classification rules or algorithms (still applicable)
-
-**Changelog (v1.1)**:
-- Added clarification: This document addresses data type classification, not query classification
-- Documented relationship with QueryClassifier
-- Added note about hint passing from QueryClassifier to DataClassifier
-
-**Next Review**: After Tier 0 implementation
-**Owner**: Data Processing Team
+**Document Version**: 2.0
+**Last Updated**: 2026-02-12
+**Status**: Design Specification
 
 
 

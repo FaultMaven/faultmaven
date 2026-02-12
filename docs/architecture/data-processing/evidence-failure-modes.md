@@ -1,8 +1,9 @@
 # Evidence Creation Failure Modes and Recovery
 
-**Date:** 2026-02-11
-**Context:** Single-phase evidence creation failure analysis
-**Status:** Design specification for error handling
+**Version:** 1.1
+**Date:** 2026-02-12
+**Status:** Design Specification (Deferred to post-MVP)
+**Context:** Failure analysis and recovery strategies for single-phase evidence creation
 
 ---
 
@@ -14,13 +15,7 @@ Single-phase evidence creation has a dependency chain:
 File upload → Storage (S3) → LLM analysis → DB insert
 ```
 
-Each step can fail, leaving the system in an inconsistent state. The two-phase design (with UNCLASSIFIED placeholder) had implicit fault tolerance:
-
-- UNCLASSIFIED record created **before** LLM call
-- If LLM failed, placeholder remained (degraded but consistent state)
-- User could see "analyzing..." state
-
-Single-phase design eliminates the placeholder, so we need **explicit error recovery**.
+Each step can fail, leaving the system in an inconsistent state. This document defines explicit error recovery strategies for each failure point.
 
 ---
 
@@ -692,7 +687,7 @@ async def process_turn_with_attachment(
                 content_ref=content_ref,
                 content_hash=content_hash,
                 category=llm_result.category,  # Validated with fallback
-                source_type=llm_result.source_type,
+                data_type=llm_result.data_type,
                 summary=llm_result.summary,
                 primary_purpose=llm_result.primary_purpose,
                 collected_at=datetime.now(UTC),
@@ -788,23 +783,14 @@ async def process_turn_with_attachment(
 
 ---
 
-## Comparison: Two-Phase vs Single-Phase
+## Related Documentation
 
-| Aspect | Two-Phase (UNCLASSIFIED) | Single-Phase (Proposed) |
-|--------|--------------------------|-------------------------|
-| **LLM failure** | Degraded state (UNCLASSIFIED remains) | Retry or cleanup |
-| **DB failure** | Less likely (placeholder before LLM) | More likely (after LLM) - needs retry |
-| **Orphaned files** | Less likely (evidence exists) | Possible (file uploaded before DB) - needs cleanup |
-| **User visibility** | "Analyzing..." state visible | "Processing..." message + async retry |
-| **Complexity** | Implicit (state machine) | Explicit (error handlers + retries) |
-| **Idempotency** | Harder (placeholder ID issues) | Easier (content_hash unique constraint) |
-
-**Verdict:** Single-phase with explicit error handling is **more robust** IF properly implemented:
-- Idempotency via content_hash (no duplicate evidence)
-- Async retries (no lost LLM work)
-- Storage cleanup (no orphaned files)
-- Better observability (explicit error tracking)
+- [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy and categories
+- [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline
+- [Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md) — Three-tier preprocessing model
 
 ---
 
-**Status:** Design specification complete, ready for implementation review
+**Document Version:** 1.1
+**Last Updated:** 2026-02-12
+**Status:** Design Specification

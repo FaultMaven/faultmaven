@@ -1,15 +1,14 @@
 # Evidence Flow Architecture
 
-**Date:** 2026-02-11
-**Implementation Date:** 2026-02-11
-**Status:** ✅ **IMPLEMENTED** (Core flow operational, failure handling deferred)
-**Version:** 2.0 (Evidence Classification Redesign)
+**Version:** 2.1
+**Date:** 2026-02-12
+**Status:** Design Specification
 
 ---
 
 ## Overview
 
-This document describes the complete evidence flow architecture in FaultMaven following the v2.0 redesign. Evidence is now created in a **single phase** after LLM evaluation, eliminating the UNCLASSIFIED placeholder pattern.
+This document describes the complete evidence flow architecture in FaultMaven. Evidence is created in a **single phase** after LLM evaluation. File preprocessing follows the [three-tier model](./data-preprocessing-design-specification.md) (Tier 0 classification + Tier 1 mechanical extraction).
 
 ---
 
@@ -38,13 +37,14 @@ This document describes the complete evidence flow architecture in FaultMaven fo
       │
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      File Preprocessing Layer                            │
+│              File Preprocessing Layer (Tier 0 + Tier 1)                  │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ 1. Compute content_hash (SHA-256)                                  │ │
 │  │ 2. Check for duplicate (early exit if hash exists)                │ │
-│  │ 3. Extract text (OCR, log parsers, etc.)                          │ │
-│  │ 4. Upload to S3 with TTL metadata (24h)                           │ │
-│  │ 5. Generate attachment metadata                                    │ │
+│  │ 3. Tier 0: Classify data type → DataType enum + confidence        │ │
+│  │ 4. Tier 1: Type-specific mechanical extraction (structural index) │ │
+│  │ 5. Upload raw file to S3 with TTL metadata (24h)                  │ │
+│  │ 6. Generate PreprocessingResult (summary, structural_index, etc.) │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
@@ -83,7 +83,7 @@ This document describes the complete evidence flow architecture in FaultMaven fo
 │  │                                                                     │ │
 │  │ Returns:                                                            │ │
 │  │ - submission_classification (user_chat/external_data/mixed)       │ │
-│  │ - evidence_to_add (category, source_type, summary, purpose)       │ │
+│  │ - evidence_to_add (category, data_type, summary, purpose)         │ │
 │  │ - state_updates (hypotheses, milestones, etc.)                    │ │
 │  │ - agent_response (natural language response)                      │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
@@ -120,7 +120,7 @@ This document describes the complete evidence flow architecture in FaultMaven fo
 │  │ - evidence_id (PK)                                                 │ │
 │  │ - case_id (FK → cases)                                             │ │
 │  │ - category (symptom/causal/resolution/contextual/rejected)        │ │
-│  │ - source_type (logs/metrics/configuration/visual/user_description)│ │
+│  │ - data_type (logs/metrics/configuration/code/text/image)         │ │
 │  │ - summary, primary_purpose                                         │ │
 │  │ - content_ref, content_hash                                        │ │
 │  │ - collected_at_turn, collected_at, collected_by                   │ │
@@ -668,54 +668,6 @@ Return to User          Queue Retry Job
 
 ---
 
-## Comparison: v1.0 vs v2.0
-
-### Old Flow (v1.0) - Two-Phase Creation
-
-```
-User Upload
-    ↓
-Preprocessing
-    ↓
-CREATE UNCLASSIFIED EVIDENCE  ← Phase 1 (before LLM)
-    ↓
-LLM Evaluation
-    ↓
-UPDATE to real category       ← Phase 2 (after LLM)
-    ↓
-Evidence Persisted
-```
-
-**Problems:**
-- UNCLASSIFIED placeholder needed cleanup
-- Evidence existed before LLM evaluation
-- Two-phase lifecycle complex to manage
-- Unclear semantics: Is UNCLASSIFIED "evidence"?
-
----
-
-### New Flow (v2.0) - Single-Phase Creation
-
-```
-User Upload
-    ↓
-Preprocessing
-    ↓
-LLM Evaluation
-    ↓
-CREATE EVIDENCE (with category)  ← Single phase (after LLM)
-    ↓
-Evidence Persisted
-```
-
-**Benefits:**
-- Simpler lifecycle (create once)
-- Evidence created with complete data
-- LLM classifies first, then create
-- Clearer semantics: Evidence = analyzed submission
-
----
-
 ## Key Design Decisions
 
 ### 1. Evidence Table Includes Rejected Submissions
@@ -809,15 +761,13 @@ evidence.storage_size_bytes
 
 ## Related Documentation
 
-- [Evidence Classification Design](./evidence-classification-design.md)
-- [Evidence Failure Modes](./evidence-failure-modes.md)
-- [Evidence Handling Developer Guide](../../development/evidence-handling-guide.md)
-- [Evidence API Documentation](../../api/evidence-api.md)
-- [Migration Runbook](../../operations/evidence-redesign-migration-runbook.md)
+- [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
+- [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
+- [Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md) — Three-tier preprocessing model
+- [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules
 
 ---
 
-**Document Status:** Production
-**Version:** 2.0
-**Last Updated:** 2026-02-11
-**Maintainer:** Architecture Team
+**Document Version:** 2.1
+**Last Updated:** 2026-02-12
+**Status:** Design Specification
