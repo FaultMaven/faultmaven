@@ -1231,7 +1231,7 @@ class DocumentType(str, Enum):
 > **DESIGN SUPERSEDED** (2026-02-10):
 >
 > Evidence classification has been completely redesigned. See the final approved design:
-> **[EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md](/home/swhouse/product/docs/working/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md)**
+> **[evidence-classification-design.md](../data-processing/evidence-classification-design.md)**
 >
 > **Critical Changes**:
 >

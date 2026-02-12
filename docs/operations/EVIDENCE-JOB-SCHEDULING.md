@@ -11,8 +11,7 @@
 This document describes the scheduling configuration for evidence processing background jobs, including storage cleanup, retry monitoring, and metrics collection.
 
 These jobs support the failure mode handling infrastructure documented in:
-- `docs/architecture/data-processing/EVIDENCE-CREATION-FAILURE-MODES.md`
-- `docs/architecture/data-processing/EVIDENCE-REDESIGN-IMPLEMENTATION-PLAN.md`
+- `docs/architecture/data-processing/evidence-failure-modes.md`
 
 ---
 
