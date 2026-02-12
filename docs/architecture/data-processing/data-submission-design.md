@@ -36,9 +36,9 @@ API/UX Layer              Transformation Layer      Analysis Layer     Generatio
 ```
 
 **Related Documents**:
-- [Data Preprocessing Architecture v2.0](./data-preprocessing-architecture.md) - How raw data transforms into insights
-- [Evidence Architecture v1.1](./evidence-architecture.md) - How insights link to hypotheses
-- [API Specification](../api/openapi.locked.yaml) - OpenAPI endpoint definitions
+- [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md) - Three-tier preprocessing model (Tier 0 classification, Tier 1 structural indexing, Tier 2 deep analysis)
+- [Data Classification Strategy v1.2](./data-classification-strategy.md) - Tier 0 classification rules and fallback chain
+- [Platform-Specific Extractors](./platform-specific-extractors.md) - Future: platform-aware extraction for Tier 2
 
 ---
 
@@ -81,14 +81,15 @@ Data Submission is the **API and UX layer** that handles user interactions with 
                        │ Routes to
                        ↓
 ┌──────────────────────────────────────────────────────────────┐
-│ DATA PREPROCESSING ARCHITECTURE v2.0                         │
-│ Layer: Transformation                                        │
-│ Responsibility: Extract insights from raw data               │
+│ DATA PREPROCESSING ARCHITECTURE v3.0                         │
+│ Layer: Transformation (Three-Tier Model)                     │
+│ Responsibility: Classify, extract structural index, store    │
 │                                                              │
-│ • Validate & classify data type (6 types)                    │
-│ • Type-specific extraction (Crime Scene, Anomaly Detection)  │
-│ • Sanitize PII/secrets                                       │
-│ • Output: PreprocessingResult                                │
+│ • Tier 0: Rule-based classification (6 types, <100ms)        │
+│ • Tier 1: Mechanical extraction (Structural Index, Stat      │
+│   Profile, Parse & Sanitize) — 0 LLM, <2s                   │
+│ • Tier 2: Deep analysis (on-demand, pluggable external)      │
+│ • Output: PreprocessingResult with structural_index           │
 └──────────────────────┬───────────────────────────────────────┘
                        │ PreprocessingResult
                        ↓
@@ -227,19 +228,25 @@ POST /data                       POST /queries
                       │
                       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ DATA PREPROCESSING (See: data-preprocessing-architecture.md)│
+│ DATA PREPROCESSING (See: data-preprocessing-design-spec.md) │
 │                                                              │
-│ 1. Validate (size ≤10MB, type allowed)                      │
-│ 2. Classify data type (LOGS_AND_ERRORS, METRICS, etc.)      │
-│ 3. Extract insights (Crime Scene, Anomaly Detection, etc.)  │
-│ 4. Sanitize (PII/secrets redacted)                          │
-│ 5. Package → PreprocessingResult                             │
-│    - summary: <500 chars (for Evidence.summary)             │
-│    - full_extraction: complete insights                      │
-│    - content_ref: s3://bucket/case/file                     │
-│    - extraction_metadata: {method, compression_ratio, ...}   │
+│ Tier 0: Classify data type (<100ms, 0 LLM)                  │
+│ Tier 1: Mechanical extraction (<2s, 0 LLM)                  │
+│   - LOGS: Structural index (error clusters, timeline,        │
+│     severity distribution, state transitions)                │
+│   - METRICS: Statistical profile (anomalies, distributions)  │
+│   - CONFIG: Parse structure, redact secrets                   │
+│   - CODE: AST extraction (functions, classes, imports)        │
+│   - TEXT: Structure extraction (headings, key sentences)      │
+│   - IMAGE: Metadata only (dimensions, format)                │
+│ Then: Sanitize PII/secrets → Store raw file → Package result │
 │                                                              │
-│ Time: 0.5-30s depending on type/size/user choices           │
+│ Output: PreprocessingResult                                  │
+│   - summary: <500 chars (for Evidence.summary)              │
+│   - structural_index: complete extraction                    │
+│   - content_ref: raw file reference (for Tier 2 access)     │
+│                                                              │
+│ Time: <2s | LLM Calls: 0 | Cost: ~$0                       │
 └─────────────────────┬───────────────────────────────────────┘
                       │ PreprocessingResult
                       ↓
@@ -286,20 +293,25 @@ POST /data                       POST /queries
 │ 2. AI message: [agent response content]                    │
 └─────────────────────────────────────────────────────────────┘
 
-                ┌─ PARALLEL ASYNC (Fire-and-forget) ─┐
-                ↓
+        ┌── PARALLEL ASYNC (Fire-and-forget) ──┐
+        ↓                                       ↓
+┌──────────────────────┐    ┌──────────────────────────────────┐
+│ VECTOR DB STORAGE     │    │ RAW FILE STORAGE                  │
+│ Store structural index│    │ Store raw file for Tier 2 access  │
+│ for semantic search   │    │ (local filesystem or S3)          │
+│                       │    │                                    │
+│ Time: 2-5s (async)   │    │ Time: 0.5-2s (async)              │
+└──────────────────────┘    └──────────────────────────────────┘
+
+                ... Later, when agent or user needs deeper analysis ...
+
 ┌─────────────────────────────────────────────────────────────┐
-│ VECTOR DB BACKGROUND STORAGE (Optional)                     │
+│ TIER 2: DEEP ANALYSIS SERVICE (On-Demand)                    │
+│ (See: data-preprocessing-design-specification.md §6)        │
 │                                                              │
-│ IF user chose caching mode:                                 │
-│   - Chunk full_extraction (512 tokens)                      │
-│   - Generate embeddings (BGE-M3)                            │
-│   - Store in case_{case_id} collection                      │
-│                                                              │
-│ Purpose: Long-term memory for forensic deep dives           │
-│ NOT for: Primary evidence storage (uses Evidence objects)   │
-│                                                              │
-│ Time: 2-5s (user doesn't wait)                              │
+│ Triggered when Tier 1 index can't answer a specific question│
+│ Backends: Gemini | OpenAI | Local RAG | Basic search         │
+│ Time: 2-30s | Cost: $0.003-$0.05 per query                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -307,7 +319,7 @@ POST /data                       POST /queries
 
 **Preprocessing Classification → Evidence Source Type Mapping**:
 
-From [Data Preprocessing v2.0 - Section 2.3](./data-preprocessing-architecture.md#23-data-type-mapping):
+From [Data Preprocessing v3.0 - Section 2.3](./data-preprocessing-design-specification.md#23-data-type-mapping):
 
 | Preprocessing DataType | Evidence SourceType | Example |
 |------------------------|---------------------|---------|
@@ -380,9 +392,9 @@ Content-Type: application/json
   "evidence_id": "ev_abc",
   "preprocessing": {
     "data_type": "logs_and_errors",
-    "extraction_method": "crime_scene_extraction",
+    "extraction_method": "structural_index",
     "compression_ratio": 0.005,
-    "summary": "Application log: 847 entries, 23 NullPointerExceptions in auth-service"
+    "summary": "Application log: 250K lines, 23 error clusters, 847 total errors. Highest severity: NullPointerException burst at line 12450."
   },
   "evidence": {
     "source_type": "log_file",
@@ -462,13 +474,13 @@ async def upload_case_data(
     # 2. Read file content
     file_content = await file.read()
     
-    # 3. Data Preprocessing (delegates to Data Preprocessing Architecture)
+    # 3. Data Preprocessing — Tier 0 + Tier 1 (see data-preprocessing-design-specification.md)
     preprocessing_result = await preprocessing_service.process_upload(
         file=file,
         case_id=case_id,
         source_metadata=parse_source_metadata(source_metadata),
     )
-    # Returns: PreprocessingResult with summary, full_extraction, content_ref
+    # Returns: PreprocessingResult with summary, structural_index, content_ref
     
     # 4. Evidence Classification (delegates to Evidence Architecture)
     classification = await evidence_service.classify_evidence(
@@ -503,13 +515,12 @@ async def upload_case_data(
     # Returns: AgentResponse with conversational insights
     
     # 8. Background: Vector DB storage (fire-and-forget)
-    if should_cache_in_vector_db(preprocessing_result):
-        background_tasks.add_task(
-            store_in_vector_db,
-            case_id=case_id,
-            evidence_id=evidence.evidence_id,
-            preprocessed_content=preprocessing_result.full_extraction,
-        )
+    background_tasks.add_task(
+        store_in_vector_db,
+        case_id=case_id,
+        evidence_id=evidence.evidence_id,
+        preprocessed_content=preprocessing_result.structural_index,
+    )
     
     # 9. Return response
     return DataUploadResponse(
@@ -533,10 +544,11 @@ async def upload_case_data(
 
 **Key Integration Points**:
 
-1. **Preprocessing Service** (Data Preprocessing v2.0)
-   - Handles: Validation, classification, extraction, sanitization
+1. **Preprocessing Service** (Data Preprocessing v3.0 — Tier 0 + Tier 1)
+   - Handles: Classification, structural indexing, sanitization, raw file storage
    - Input: Raw file + metadata
-   - Output: `PreprocessingResult`
+   - Output: `PreprocessingResult` (with `structural_index` and `content_ref`)
+   - Time: <2s, 0 LLM calls, $0
 
 2. **Evidence Service** (Evidence Architecture v1.1)
    - Handles: Classification, evidence creation, hypothesis analysis
@@ -544,9 +556,15 @@ async def upload_case_data(
    - Output: `Evidence` object + updated `Case`
 
 3. **Agent Service**
-   - Handles: Conversational response generation
+   - Handles: Conversational response generation from Tier 1 structural index
    - Input: `Evidence` + `Case`
    - Output: `AgentResponse`
+
+4. **Tier 2 Deep Analysis** (Data Preprocessing v3.0 — On-Demand)
+   - Handles: LLM-powered analysis of raw files for follow-up questions
+   - Input: `content_ref` + query + context
+   - Output: `DeepAnalysisResult`
+   - Time: 2-30s, triggered only when needed
 
 ---
 
@@ -861,7 +879,7 @@ interface AgentResponse {
 
 ### 6.3 Enum Definitions
 
-**DataType** (from Data Preprocessing v2.0):
+**DataType** (from [Data Preprocessing v3.0](./data-preprocessing-design-specification.md)):
 ```typescript
 enum DataType {
   LOGS_AND_ERRORS = "logs_and_errors",
@@ -1060,7 +1078,7 @@ from faultmaven.services.case.case_service import ICaseService
 
 **Query Endpoint Dependencies**:
 ```python
-from faultmaven.services.preprocessing.query_classifier import QueryClassifier
+from faultmaven.services.preprocessing.query_classifier import QueryClassifier  # To be implemented
 from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 ```
@@ -1081,8 +1099,8 @@ async def upload_case_data(
     # ... dependencies ...
 ):
     """Upload data with full pipeline integration."""
-    
-    # Step 1: Preprocessing (delegates to Data Preprocessing Architecture)
+
+    # Step 1: Tier 0 + Tier 1 Preprocessing (Data Preprocessing v3.0)
     preprocessing_result = await preprocessing_service.process_upload(
         file=file,
         case_id=case_id,
@@ -1091,8 +1109,8 @@ async def upload_case_data(
     # Output: PreprocessingResult
     #   - data_type: DataType enum (LOGS_AND_ERRORS, etc.)
     #   - summary: <500 chars
-    #   - full_extraction: complete insights
-    #   - content_ref: s3://...
+    #   - structural_index: complete extraction (error clusters, timeline, etc.)
+    #   - content_ref: raw file reference (s3:// or local://)
     
     # Step 2: Evidence Classification (delegates to Evidence Architecture)
     case = await case_service.get_case_with_relations(case_id)
@@ -1151,13 +1169,12 @@ async def upload_case_data(
     #   - confidence_score: 0.85
     
     # Step 6: Background Storage (fire-and-forget)
-    if should_cache_in_vector_db(preprocessing_result):
-        background_tasks.add_task(
-            store_in_vector_db,
-            case_id=case_id,
-            evidence_id=evidence.evidence_id,
-            preprocessed_content=preprocessing_result.full_extraction,
-        )
+    background_tasks.add_task(
+        store_in_vector_db,
+        case_id=case_id,
+        evidence_id=evidence.evidence_id,
+        preprocessed_content=preprocessing_result.structural_index,
+    )
     
     # Step 7: Return combined response
     return DataUploadResponse(
@@ -1439,7 +1456,7 @@ WHEN: User clicks "Upload File", selects application.log (45KB)
 THEN:
   1. Frontend creates case automatically
   2. POST /data uploads file
-  3. Preprocessing extracts crime scene (200:1 compression)
+  3. Tier 0+1 builds structural index (200:1 compression)
   4. Evidence created with source_type=LOG_FILE
   5. Hypothesis updated with evidence link
   6. Agent generates response: "Found 127 errors..."
@@ -1454,7 +1471,7 @@ GIVEN: Active case with conversation history
 WHEN: User pastes 3KB query log, clicks "Submit Data"
 THEN:
   1. POST /data uploads text
-  2. Preprocessing summarizes query patterns
+  2. Tier 0+1 builds structural index of query patterns
   3. Evidence created with source_type=DATABASE_QUERY
   4. Agent response references earlier conversation
   5. Frontend appends to conversation (not new case)
@@ -1593,26 +1610,20 @@ test("large paste triggers detection", async () => {
 ### 11.1 Related Documents
 
 **Primary Dependencies**:
-- [Data Preprocessing Architecture v2.0](./data-preprocessing-architecture.md)
-  - Section 3: Synchronous Pipeline (Steps 1-4)
-  - Section 4: Async Background Pipeline (Vector DB)
-  - Section 6: Data Type Specifications
-  - Section 7: Output Formats (PreprocessingResult)
+- [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md)
+  - Section 3: Tier 0 Classification
+  - Section 4: Tier 1 Mechanical Extraction (structural index, statistical profile, etc.)
+  - Section 5: Vector DB Storage
+  - Section 6: Tier 2 Deep Analysis Service
+  - Section 7: Output Formats (PreprocessingResult, DeepAnalysisResult)
 
-- [Evidence Architecture v1.1](./evidence-architecture.md)
-  - Section 4: Data Models - Layer 2 (Collection Workflow)
-  - Section 6: Evidence Evaluation (Classification, Analysis)
-  - Section 7: Investigation Strategies (Active Incident vs Post-Mortem)
-  - Section 9: Integration Points
+- [Data Classification Strategy v1.2](./data-classification-strategy.md)
+  - Tier 0 classification rules, disambiguation, fallback chain
+  - Command output classification
 
 **Secondary References**:
-- [Investigation State and Control Framework](./investigation-phases-and-ooda-integration.md)
-  - Phase definitions and transitions
-  - Working conclusion and progress tracking
-
-- [API Specification](../api/openapi.locked.yaml)
-  - POST /api/v1/cases/{case_id}/data (line 2294)
-  - POST /api/v1/cases/{case_id}/queries (line 2062)
+- [Platform-Specific Extractors](./platform-specific-extractors.md)
+  - Future enhancement: platform-aware extraction for Tier 2
 
 ### 11.2 Key Integration Points
 
@@ -1620,43 +1631,47 @@ test("large paste triggers detection", async () => {
 ```
 User Submits Data (THIS DOC)
     ↓
-Preprocessing Extracts Insights (Data Preprocessing v2.0)
-    ↓ PreprocessingResult
-Evidence Classification & Creation (Evidence Architecture v1.1)
+Tier 0 + Tier 1 Preprocessing (Data Preprocessing v3.0)
+    ↓ PreprocessingResult (structural_index + content_ref)
+Evidence Classification & Creation (Evidence Architecture)
     ↓ Evidence + Updated Hypotheses
-Agent Response Generation (Agent Service)
+Agent Response from Tier 1 Index (Agent Service)
     ↓ AgentResponse
 Frontend Conversation Update (THIS DOC)
+    ...later, when deeper analysis needed...
+Tier 2 Deep Analysis (Data Preprocessing v3.0)
+    ↓ DeepAnalysisResult
 ```
 
 **Schema Flow**:
 ```
 File/Text Input (THIS DOC)
     ↓
-PreprocessingResult (Data Preprocessing v2.0)
+PreprocessingResult (Data Preprocessing v3.0)
     - data_type: DataType enum
     - summary: <500 chars
-    - full_extraction: complete insights
-    - content_ref: S3 URI
+    - structural_index: complete extraction (error clusters, timeline, etc.)
+    - content_ref: raw file reference (for Tier 2 access)
     ↓
-Evidence (Evidence Architecture v1.1)
+Evidence (Evidence Architecture)
     - summary: from PreprocessingResult.summary
     - content_ref: from PreprocessingResult.content_ref
     - source_type: mapped from DataType
     - evidence_links: updated via hypothesis analysis
     ↓
 AgentResponse (Agent Service)
-    - content: conversational insights
+    - content: conversational insights from Tier 1 structural index
     - sources: includes evidence_id
 ```
 
 ### 11.3 Design Consistency Checklist
 
-✅ **Data Type Names**: Uses canonical `DataType` enum from Data Preprocessing v2.0  
-✅ **Evidence Source Types**: Maps to `EvidenceSourceType` enum from Evidence v1.1  
-✅ **PreprocessingResult Schema**: References Data Preprocessing v2.0 Section 7  
-✅ **Evidence Evaluation**: Delegates to Evidence Architecture v1.1 Section 6  
-✅ **Vector DB Role**: Clarified as async background (Data Preprocessing v2.0 Section 4)  
+✅ **Data Type Names**: Uses canonical `DataType` enum from Data Preprocessing v3.0
+✅ **Evidence Source Types**: Maps to `EvidenceSourceType` enum from Evidence Architecture
+✅ **PreprocessingResult Schema**: References Data Preprocessing v3.0 Section 7
+✅ **Structural Index**: Tier 1 output replaces v2.0 "Crime Scene" with comprehensive structural index
+✅ **Tier 2 Integration**: On-demand deep analysis via pluggable `ITier2AnalysisService`
+✅ **Vector DB Role**: Stores structural index (async), not raw content
 ✅ **No Duplicate Specs**: References other docs instead of redefining algorithms  
 
 ---
@@ -1699,7 +1714,7 @@ AgentResponse (Agent Service)
 - ✅ Both explicit upload and paste detection work seamlessly
 
 **Technical Integration**:
-- ✅ Preprocessing correctly extracts insights (Crime Scene, Anomaly Detection)
+- ✅ Tier 1 correctly builds structural index (log clusters, statistical profiles, etc.)
 - ✅ Evidence objects link to hypotheses with reasoning
 - ✅ Hypothesis status updates based on evidence (PROPOSED → VALIDATED)
 - ✅ Agent responses reference uploaded evidence
@@ -1712,22 +1727,22 @@ AgentResponse (Agent Service)
 
 ---
 
-**Document Version**: 4.0  
-**Last Updated**: 2025-11-01  
-**Status**: Production Ready  
-**Authors**: System Architecture Team  
-**Related Documents**: Data Preprocessing v2.0, Evidence Architecture v1.1
+**Document Version**: 4.1
+**Last Updated**: 2026-02-10
+**Status**: Design Specification
+**Authors**: System Architecture Team
+**Related Documents**: Data Preprocessing v3.0, Data Classification Strategy v1.2
 
 ---
 
-**Changes from v3.2**:
-1. ✅ Aligned with Data Preprocessing Architecture v2.0 schemas
-2. ✅ Aligned with Evidence Architecture v1.1 evaluation pipeline
-3. ✅ Removed redundant preprocessing implementation specs
-4. ✅ Clarified two-stage classification (data type vs evidence)
-5. ✅ Updated architecture diagrams with correct layer separation
-6. ✅ Added proper cross-references to authoritative sources
-7. ✅ Clarified vector DB role as async background storage
-8. ✅ Used canonical enum values throughout (DataType, EvidenceSourceType)
-9. ✅ Enhanced source metadata as optional backward-compatible feature
-10. ✅ Improved testing scenarios with complete pipeline validation
+**Changes from v4.0**:
+1. ✅ Aligned with Data Preprocessing Architecture v3.0 three-tier model
+2. ✅ Replaced "Crime Scene Extraction" references with "Structural Index"
+3. ✅ Updated `full_extraction` field references to `structural_index`
+4. ✅ Added Tier 2 deep analysis as an integration point
+5. ✅ Fixed cross-references to point to correct document filenames
+6. ✅ Updated architecture diagrams with Tier 0/1/2 labels and correct timings
+7. ✅ Vector DB now always stores structural index (no conditional "caching mode")
+8. ✅ Added raw file storage as async background task (for Tier 2 access)
+9. ✅ Aligned response examples with v3.0 extraction methods
+10. ✅ Updated design consistency checklist for three-tier model

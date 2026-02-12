@@ -28,22 +28,33 @@ Documentation for FaultMaven's data ingestion, preprocessing, and classification
 
 ---
 
-## Data Preprocessing & Classification
+## Three-Tier Processing Model
 
-### Active Documents
+FaultMaven uses a **three-tier data preprocessing model** to balance cost, speed, and depth of analysis:
 
-- **[Data Classification Strategy](./data-classification-strategy.md)** - Automatic data type classification algorithms
-- **[Data Preprocessing Design Specification](./data-preprocessing-design-specification.md)** - Data preprocessing pipeline architecture
-- **[Data Submission Design](./data-submission-design.md)** - File upload and submission processing (10K limit, async/sync)
-- **[Platform-Specific Extractors](./platform-specific-extractors.md)** - Platform-specific data extraction patterns
+| Tier | Purpose | Runs | LLM Calls | Cost |
+|------|---------|------|-----------|------|
+| **Tier 0: Classification** | Rule-based data type detection | Always (<100ms) | 0 | $0 |
+| **Tier 1: Mechanical Extraction** | Type-specific structural indexing | Always (<2s) | 0 | $0 |
+| **Tier 2: Deep Analysis** | LLM-powered analysis of raw files | On-demand | 1-25 | $0.003-$0.05 |
+
+## Documents
+
+- **[Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md)** — Core three-tier preprocessing architecture. Defines Tier 0 classification, Tier 1 mechanical extraction (structural index, statistical profile, AST extraction), Tier 2 pluggable deep analysis service, and output schemas.
+
+- **[Data Submission Design v4.1](./data-submission-design.md)** — API/UX layer for user data submission. Defines the two submission paths (explicit upload via `/data`, implicit paste detection via `/queries`), frontend conversation integration, and backend pipeline wiring.
+
+- **[Data Classification Strategy v1.2](./data-classification-strategy.md)** — Tier 0 classification rules. Comprehensive pattern matching, disambiguation strategies, confidence scoring, command output detection, and multi-tier fallback chain for determining data types.
+
+- **[Platform-Specific Extractors](./platform-specific-extractors.md)** — Future enhancement: platform-aware extraction for SRE/DevOps tools (Datadog, Grafana, PagerDuty, etc.). Can integrate as Tier 1 frontend extractors or Tier 2 backends.
 
 ---
 
 ## Purpose
 
-This section documents how FaultMaven:
+This section documents how FaultMaven ingests user-submitted data, preprocesses and classifies it, and extracts insights from various formats (logs, metrics, configs, code, images, etc.). The system performs two distinct but related classification tasks:
 
-1. **Ingests user submissions** - File uploads and text submissions with preprocessing
-2. **Classifies evidence** - LLM-based categorization into SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED
-3. **Processes data** - Extraction, transformation, and indexing for investigation
-4. **Handles failures** - Retry strategies, deduplication, and error recovery
+1. **Data type classification** (Tier 0) - Automatic detection of data types (logs, metrics, configs, etc.)
+2. **Evidence classification** (v2.0) - LLM-based categorization into SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED
+
+The tiered preprocessing model ensures every file is instantly queryable (Tier 1) while controlling costs by only running deep LLM analysis (Tier 2) on files that the investigation actually needs.
