@@ -18,10 +18,21 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 ### Operations
 
-### Operations
- 
- - **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, and Streaming
- - **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns and recovery strategies
+- **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, and Streaming
+- **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns and recovery strategies
+
+### Evidence Documentation (See Data Processing)
+
+Evidence classification, flow, and preprocessing are documented in the [Data Processing](../data-processing/) section:
+
+- **[Evidence Classification Design](../data-processing/evidence-classification-design.md)** - Evidence taxonomy, categories, and DataType enum
+- **[Evidence Flow Architecture](../data-processing/evidence-flow-architecture.md)** - System architecture and flow diagrams
+- **[Evidence Failure Modes](../data-processing/evidence-failure-modes.md)** - Failure handling for single-phase creation
+- **[Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md)** - Three-tier preprocessing model
+
+### Historical Documents
+
+- **[Workflow Design Review](./workflow-design-review.md)** - Historical design decisions (2026-02-09) - Some decisions superseded by later evidence model changes
 
 ## Purpose
 

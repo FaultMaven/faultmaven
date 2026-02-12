@@ -1228,168 +1228,74 @@ class DocumentType(str, Enum):
 
 ## 2. Evidence Model
 
-> **DESIGN SUPERSEDED** (2026-02-10):
+> **⚠️ EVIDENCE MODEL RELOCATED** (2026-02-12):
 >
-> Evidence classification has been completely redesigned. See the final approved design:
-> **[evidence-classification-design.md](../data-processing/evidence-classification-design.md)**
+> The complete evidence model specification has been moved to the Data Processing section.
+> See: **[Evidence Classification Design](../data-processing/evidence-classification-design.md)** (v2.0)
 >
-> **Critical Changes**:
+> **Current Evidence Categories (5 total)**:
 >
-> 1. `EvidenceCategory.UNCLASSIFIED` → **REMOVED** (single-phase creation AFTER LLM)
-> 2. `EvidenceCategory.OTHER` → **RENAMED** to `CONTEXTUAL_EVIDENCE`
-> 3. `EvidenceCategory.IRRELEVANT` → **ADDED** (track rejected submissions)
-> 4. `EvidenceSourceType`: 12 types → **5 types** (LOGS, METRICS, CONFIGURATION, VISUAL, USER_DESCRIPTION)
-> 5. Evidence table tracks ALL file submissions (including irrelevant)
-> 6. Pure chat never enters evidence table
+> - `SYMPTOM_EVIDENCE` - Problem manifestation
+> - `CAUSAL_EVIDENCE` - Root cause indicators
+> - `RESOLUTION_EVIDENCE` - Fix validation
+> - `CONTEXTUAL_EVIDENCE` - Baseline/environmental context (was: `OTHER`)
+> - `REJECTED` - Analyzed but not useful
 >
-> **The enum definitions below are outdated. See the final design document for current schemas.**
+> **Current Data Type (6 total, unified with preprocessing)**:
+>
+> - Uses `DataType` enum: `LOGS`, `METRICS`, `CONFIGURATION`, `CODE`, `TEXT`, `IMAGE`
+> - Replaces the old `EvidenceSourceType` enum
+>
+> **Key Changes from Previous Design**:
+>
+> - ❌ `UNCLASSIFIED` category **REMOVED** (single-phase creation)
+> - ❌ `EvidenceSourceType` **REPLACED** with `DataType`
+> - ✅ `OTHER` **RENAMED** to `CONTEXTUAL_EVIDENCE`
+> - ✅ `REJECTED` category **ADDED**
+>
+> For complete schemas, flows, and implementation details, see the canonical design documents:
+>
+> - [Evidence Classification Design](../data-processing/evidence-classification-design.md) - Categories, DataType, schemas
+> - [Evidence Flow Architecture](../data-processing/evidence-flow-architecture.md) - System flows and diagrams
+> - [Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md) - Three-tier processing
 
-### 2.1 Purpose-Driven Categories
+### 2.1 Evidence Fields Used by Investigation Engine
+
+The investigation engine primarily interacts with these evidence fields:
 
 ```python
-class EvidenceCategory(str, Enum):
-    """Evidence classification by investigation purpose"""
+# Evidence fields relevant to investigation logic
+evidence_id: str              # Reference in LLM responses
+category: EvidenceCategory    # Determines milestone advancement
+data_type: DataType           # Type of data (LOGS, METRICS, etc.)
+summary: str                  # Brief description (<500 chars)
+content_ref: str              # Storage location
 
-    UNCLASSIFIED = "unclassified"
-    """
-    Raw user-submitted data awaiting LLM classification.
-    NOT evidence yet — stored with ID so LLM can reference it.
-    Does NOT advance any milestones.
+# Hypothesis linkage (for CAUSAL_EVIDENCE)
+tests_hypothesis_id: Optional[str]
+stance: Optional[EvidenceStance]  # SUPPORTS, REFUTES, NEUTRAL
+stance_confidence: Optional[float]  # 0.0-1.0
 
-    DESIGN NOTE: This is a placeholder category used during two-phase evidence creation.
-    Evidence is created with UNCLASSIFIED before LLM processes, then updated with
-    proper category (SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE, etc.) after LLM analysis.
-    See evidence-classification-design.md for details.
-    """
-
-    SYMPTOM_EVIDENCE = "symptom_evidence"
-    """
-    Validates: Symptom, scope, timeline, changes
-    Advances: symptom_verified, scope_assessed, timeline_established, changes_identified
-    """
-
-    CAUSAL_EVIDENCE = "causal_evidence"
-    """
-    Validates: Root cause hypothesis
-    Advances: root_cause_identified
-    """
-
-    RESOLUTION_EVIDENCE = "resolution_evidence"
-    """
-    Validates: Solution effectiveness
-    Supports: User-Agent Handshake for solution_verified
-    Note: Does NOT directly advance solution_verified.
-    The agent uses this evidence to propose resolution via ProposedTransition.
-    """
-
-    OTHER = "other"
-    """
-    Evidence that doesn't fit above categories.
-    May be useful but doesn't directly advance standard milestones.
-    """
+# Milestone tracking
+advances_milestones: List[str]  # System-inferred from category
+collected_at_turn: int          # When evidence was added
 ```
 
-### 2.2 Evidence Schema
+### 2.2 Evidence Stance
 
 ```python
-class Evidence(BaseModel):
+class EvidenceStance(str, Enum):
     """
-    Evidence with purpose-driven categorization.
+    Simplified 3-state stance for LLM consistency.
 
-    Category Determination (with LLM override):
-    1. LLM may suggest category_override based on contextual analysis
-    2. System applies default rules if no override provided
-    3. LLM override is respected when provided (LLM has context awareness)
-
-    Default system rules (when no override):
-    - Which milestones are incomplete (if symptom not verified → SYMPTOM_EVIDENCE)
-    - Hypothesis linkage (if tests_hypothesis_id set → CAUSAL_EVIDENCE)
-    - Solution state (if solution proposed → RESOLUTION_EVIDENCE)
-
-    LLM provides: summary, analysis, tests_hypothesis_id, stance, stance_confidence, category_override
-    System infers: category (respecting override), advances_milestones
+    Use stance_confidence (0.0-1.0) for granularity instead of
+    STRONGLY_SUPPORTS vs SUPPORTS distinctions, which LLMs score inconsistently.
     """
+    SUPPORTS = "supports"
+    """Evidence supports the hypothesis"""
 
-    evidence_id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:12]}")
-
-    # ============================================================
-    # Purpose Classification
-    # ============================================================
-    category: EvidenceCategory = Field(
-        description="Final category (system-inferred or LLM-overridden)"
-    )
-
-    category_override: Optional[EvidenceCategory] = Field(
-        default=None,
-        description="""
-        LLM-suggested category override.
-
-        Use when LLM's contextual analysis identifies that evidence serves
-        a different purpose than system rules would infer. For example:
-        - Error log that CONTAINS causal config values → CAUSAL_EVIDENCE
-        - Metrics that SHOW symptom but REVEAL cause → CAUSAL_EVIDENCE
-
-        When set, system respects this override over default rules.
-        """
-    )
-
-    primary_purpose: str = Field(
-        description="What this evidence validates (milestone or hypothesis)"
-    )
-
-    # Content
-    summary: str = Field(max_length=500)
-    content_ref: str
-    analysis: Optional[str] = None
-
-    # Source information
-    source_type: EvidenceSourceType
-    form: EvidenceForm
-
-    # Hypothesis linkage (for CAUSAL_EVIDENCE)
-    tests_hypothesis_id: Optional[str] = None
-    stance: Optional[EvidenceStance] = None
-    stance_confidence: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="""
-        Confidence in the stance assessment (0.0-1.0).
-
-        Use this for granularity instead of STRONGLY_SUPPORTS vs SUPPORTS.
-        - 0.9+ : Very strong support/refutation
-        - 0.7-0.9: Moderate support/refutation
-        - 0.5-0.7: Weak support/refutation
-        - <0.5: Consider using NEUTRAL stance instead
-        """
-    )
-
-    # Milestone advancement
-    advances_milestones: List[str] = Field(default_factory=list)
-
-    # Metadata
-    collected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    collected_by: str
-    collected_at_turn: int
-    fulfills_request_id: Optional[str] = None
-
-class EvidenceSourceType(str, Enum):
-    LOG_FILE = "log_file"
-    METRICS_DATA = "metrics_data"
-    CONFIG_FILE = "config_file"
-    CODE_REVIEW = "code_review"
-    SCREENSHOT = "screenshot"
-    COMMAND_OUTPUT = "command_output"
-    DATABASE_QUERY = "database_query"
-    TRACE_DATA = "trace_data"
-    API_RESPONSE = "api_response"
-    USER_REPORT = "user_report"
-    MONITORING_ALERT = "monitoring_alert"
-    OTHER = "other"
-
-class EvidenceForm(str, Enum):
-    DOCUMENT = "document"
-    USER_INPUT = "user_input"
+    REFUTES = "refutes"
+    """Evidence contradicts the hypothesis"""
 
 class EvidenceStance(str, Enum):
     """

@@ -1680,7 +1680,7 @@ evidence = Evidence(
   collected_at=datetime.now(),  # ← System clock
   collected_at_turn=case.current_turn,  # ← System counter
   content_ref="s3://...",  # ← Upload system
-  source_type=EvidenceSourceType.METRICS_DATA,  # ← Detected
+  data_type=DataType.METRICS,  # ← Detected
   form=EvidenceForm.USER_INPUT  # ← Detected
 )
 ```
@@ -2719,7 +2719,7 @@ evidence = Evidence(
     collected_by=case.user_id,  # System fills
     collected_at_turn=5,  # System counter
     content_ref="s3://uploads/error.log",  # System upload
-    source_type=EvidenceSourceType.LOG_FILE,  # System detects
+    data_type=DataType.LOGS,  # System detects
     form=EvidenceForm.DOCUMENT  # System detects
 )
 case.evidence.append(evidence)
@@ -3346,9 +3346,6 @@ class BlockerType(str, Enum):
     DATA_INACCESSIBLE = "data_inaccessible"
     """Cannot access due to permissions/availability"""
 
-    DATA_IRRELEVANT = "data_irrelevant"
-    """Data provided doesn't match what was requested"""
-
     EXTERNAL_DEPENDENCY = "external_dependency"
     """Blocked by external system/team"""
 
@@ -3382,7 +3379,6 @@ When user provides evidence, assess its usability:
 | DATA_CORRUPTED | Binary garbage, encoding errors | Immediate blocker |
 | DATA_INCOMPLETE | Logs missing the incident timeframe | Partial blocker |
 | DATA_INACCESSIBLE | "I don't have access to that" | Immediate blocker |
-| DATA_IRRELEVANT | Asked for DB logs, got app logs | Request clarification |
 
 **When Setting Blocker:**
 ```json

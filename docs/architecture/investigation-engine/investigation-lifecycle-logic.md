@@ -1165,15 +1165,17 @@ MILESTONE_EVIDENCE_EXPECTATIONS = {
 
 **Evidence Classification**:
 
-User-submitted data is stored with an ID as `UNCLASSIFIED` until the LLM
-promotes it to a specific category via `evidence_to_add`:
+Evidence is created after LLM evaluation with a specific category assigned.
+See [Evidence Classification Design](../data-processing/evidence-classification-design.md) for complete details.
 
 | Category | Description |
 |----------|-------------|
-| `UNCLASSIFIED` | Raw user data, not yet classified as evidence |
 | `SYMPTOM_EVIDENCE` | Verifies symptoms, scope, timeline, changes |
 | `CAUSAL_EVIDENCE` | Tests hypotheses about root cause |
 | `RESOLUTION_EVIDENCE` | Verifies solution effectiveness |
+| `CONTEXTUAL_EVIDENCE` | Provides baseline/environmental context |
+| `REJECTED` | Analyzed but not useful for investigation |
+
 ```
 
 ### 3.2 Turn Recording and Progress Detection
