@@ -77,9 +77,7 @@ class BasicTier2Service(ITier2AnalysisService):
     async def is_available(self) -> bool:
         return True
 
-    def _keyword_search(
-        self, content: str, query: str
-    ) -> List[dict]:
+    def _keyword_search(self, content: str, query: str) -> List[dict]:
         """Find sections of content matching query keywords."""
         lines = content.split("\n")
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
@@ -94,12 +92,14 @@ class BasicTier2Service(ITier2AnalysisService):
             if matched_keywords:
                 start = max(0, i - self.context_lines)
                 end = min(len(lines), i + self.context_lines + 1)
-                matches.append({
-                    "text": "\n".join(lines[start:end]),
-                    "start": start + 1,
-                    "end": end,
-                    "relevance": len(matched_keywords) / len(keywords),
-                })
+                matches.append(
+                    {
+                        "text": "\n".join(lines[start:end]),
+                        "start": start + 1,
+                        "end": end,
+                        "relevance": len(matched_keywords) / len(keywords),
+                    }
+                )
 
         return self._merge_overlapping(matches)[: self.max_excerpts]
 
@@ -119,9 +119,7 @@ class BasicTier2Service(ITier2AnalysisService):
                 if current["end"] > prev["end"]:
                     # Re-build text from the wider range
                     prev["end"] = current["end"]
-                    prev["relevance"] = max(
-                        prev["relevance"], current["relevance"]
-                    )
+                    prev["relevance"] = max(prev["relevance"], current["relevance"])
                     # Text will be a superset; keep the longer one
                     if len(current["text"]) > len(prev["text"]):
                         prev["text"] = current["text"]

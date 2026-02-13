@@ -12,7 +12,6 @@ from faultmaven.core.preprocessing.vector_storage import (
     store_in_vector_db_background,
 )
 
-
 # =============================================================================
 # _estimate_tokens / _get_last_n_tokens
 # =============================================================================
@@ -85,10 +84,7 @@ class TestChunkStructuralIndex:
             assert chunk.metadata["section"] == "HEADER"
 
     def test_section_fits_in_one_chunk(self):
-        text = (
-            "=== Small Section ===\n"
-            "Just a few lines\nof content"
-        )
+        text = "=== Small Section ===\n" "Just a few lines\nof content"
         chunks = chunk_structural_index(text, max_chunk_tokens=500)
         assert len(chunks) == 1
         assert "Just a few lines" in chunks[0].text

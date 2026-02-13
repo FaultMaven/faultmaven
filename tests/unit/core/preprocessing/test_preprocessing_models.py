@@ -23,7 +23,6 @@ from faultmaven.core.preprocessing.models import (
 )
 from faultmaven.models.api import DataType as DetailedDataType
 
-
 # =============================================================================
 # UnifiedDataType Enum
 # =============================================================================

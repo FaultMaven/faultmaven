@@ -59,9 +59,7 @@ class ExternalTier2Client(ITier2AnalysisService):
         try:
             import httpx
 
-            async with httpx.AsyncClient(
-                timeout=self.timeout_seconds
-            ) as client:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.post(
                     f"{self.base_url}/analyze",
                     json={
@@ -124,9 +122,7 @@ class ExternalTier2Client(ITier2AnalysisService):
             logger.warning(f"File staging failed for {file_ref}: {e}")
             return file_ref
 
-    async def _upload_to_backend(
-        self, raw_content: bytes, file_ref: str
-    ) -> str:
+    async def _upload_to_backend(self, raw_content: bytes, file_ref: str) -> str:
         """Upload a file to the external backend for analysis."""
         import httpx
 

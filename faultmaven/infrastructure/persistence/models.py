@@ -310,8 +310,9 @@ class EvidenceModel(Base):
 
     # Classification fields
     category = Column(String(50), nullable=False, index=True)
-    # New: source_type_new field (simplified 5 values: logs, metrics, configuration, visual, user_description)
-    source_type = Column(String(50), name="source_type_new", nullable=True)
+    # DataType field (simplified 5 values: logs, metrics, configuration, image, text)
+    # Note: Column name is 'data_type' in database, not 'source_type_new'
+    source_type = Column(String(50), name="data_type", nullable=True)
 
     # Content fields
     summary = Column(String(500), nullable=False)

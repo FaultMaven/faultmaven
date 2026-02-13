@@ -72,9 +72,8 @@ class LocalTier2Service(ITier2AnalysisService):
             tokens_used = getattr(response, "tokens_used", 0)
         except Exception as e:
             logger.error(f"Local LLM analysis failed: {e}")
-            answer = (
-                f"LLM analysis failed. Raw excerpts below:\n\n"
-                + "\n---\n".join(s["text"][:500] for s in relevant_sections)
+            answer = f"LLM analysis failed. Raw excerpts below:\n\n" + "\n---\n".join(
+                s["text"][:500] for s in relevant_sections
             )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -104,9 +103,7 @@ class LocalTier2Service(ITier2AnalysisService):
         except Exception:
             return False
 
-    def _find_relevant_sections(
-        self, content: str, query: str
-    ) -> List[dict]:
+    def _find_relevant_sections(self, content: str, query: str) -> List[dict]:
         """Keyword/regex search to find sections relevant to the query."""
         lines = content.split("\n")
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
@@ -117,11 +114,13 @@ class LocalTier2Service(ITier2AnalysisService):
             if any(kw in line_lower for kw in keywords):
                 start = max(0, i - self.context_lines)
                 end = min(len(lines), i + self.context_lines + 1)
-                matches.append({
-                    "text": "\n".join(lines[start:end]),
-                    "start": start + 1,
-                    "end": end,
-                })
+                matches.append(
+                    {
+                        "text": "\n".join(lines[start:end]),
+                        "start": start + 1,
+                        "end": end,
+                    }
+                )
 
         return self._merge_overlapping(matches)[: self.max_excerpts]
 

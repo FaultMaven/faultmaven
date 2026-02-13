@@ -14,7 +14,9 @@ from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
 @pytest.fixture
 def mock_storage():
     storage = AsyncMock()
-    storage.retrieve = AsyncMock(return_value=b"line1\nline2 error\nline3\nline4 error warning\nline5")
+    storage.retrieve = AsyncMock(
+        return_value=b"line1\nline2 error\nline3\nline4 error warning\nline5"
+    )
     return storage
 
 
@@ -25,7 +27,9 @@ def context():
 
 @pytest.fixture
 def service(mock_storage):
-    return BasicTier2Service(storage_service=mock_storage, context_lines=2, max_excerpts=3)
+    return BasicTier2Service(
+        storage_service=mock_storage, context_lines=2, max_excerpts=3
+    )
 
 
 class TestBasicTier2ServiceInterface:
@@ -42,7 +46,10 @@ class TestBasicTier2Analyze:
     @pytest.mark.asyncio
     async def test_returns_matching_excerpts(self, service, context):
         result = await service.analyze(
-            file_ref="ref_1", query="error warning", context=context, data_type=UnifiedDataType.LOGS
+            file_ref="ref_1",
+            query="error warning",
+            context=context,
+            data_type=UnifiedDataType.LOGS,
         )
         assert result.backend_used == "basic_search"
         assert result.confidence == 0.3
@@ -52,7 +59,10 @@ class TestBasicTier2Analyze:
     async def test_no_matches_returns_zero_confidence(self, service, context):
         service.storage_service.retrieve.return_value = b"all good\nno problems here"
         result = await service.analyze(
-            file_ref="ref_1", query="critical failure", context=context, data_type=UnifiedDataType.LOGS
+            file_ref="ref_1",
+            query="critical failure",
+            context=context,
+            data_type=UnifiedDataType.LOGS,
         )
         assert result.confidence == 0.0
         assert "No matching sections" in result.answer
@@ -62,7 +72,10 @@ class TestBasicTier2Analyze:
     async def test_bytes_decoded(self, service, context):
         service.storage_service.retrieve.return_value = b"test error content"
         result = await service.analyze(
-            file_ref="ref_1", query="error", context=context, data_type=UnifiedDataType.LOGS
+            file_ref="ref_1",
+            query="error",
+            context=context,
+            data_type=UnifiedDataType.LOGS,
         )
         assert result.confidence == 0.3
 
@@ -70,14 +83,20 @@ class TestBasicTier2Analyze:
     async def test_string_content(self, service, context):
         service.storage_service.retrieve.return_value = "string error content"
         result = await service.analyze(
-            file_ref="ref_1", query="error", context=context, data_type=UnifiedDataType.LOGS
+            file_ref="ref_1",
+            query="error",
+            context=context,
+            data_type=UnifiedDataType.LOGS,
         )
         assert result.confidence == 0.3
 
     @pytest.mark.asyncio
     async def test_processing_time_tracked(self, service, context):
         result = await service.analyze(
-            file_ref="ref_1", query="error", context=context, data_type=UnifiedDataType.LOGS
+            file_ref="ref_1",
+            query="error",
+            context=context,
+            data_type=UnifiedDataType.LOGS,
         )
         assert result.processing_time_ms >= 0
 
@@ -111,7 +130,9 @@ class TestKeywordSearch:
         assert result[0]["relevance"] == pytest.approx(2 / 3, abs=0.01)
 
     def test_max_excerpts_limit(self):
-        s = BasicTier2Service(storage_service=AsyncMock(), context_lines=0, max_excerpts=2)
+        s = BasicTier2Service(
+            storage_service=AsyncMock(), context_lines=0, max_excerpts=2
+        )
         content = "\n".join(f"error line {i}" for i in range(100))
         result = s._keyword_search(content, "error line")
         assert len(result) <= 2
