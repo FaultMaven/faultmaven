@@ -252,6 +252,29 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 - Don't wait for investigation confirmation to classify symptom data
 ```
 
+### Category Stability
+
+**Design Rule:** The `category` field is **stable after initial assignment**. Once the LLM classifies a submission, that classification should not change under normal operation.
+
+**Rationale:**
+- Milestone attribution (`advances_milestones`) is inferred at creation time from the category; changing the category retroactively would invalidate attribution history
+- The `content_hash` deduplication constraint relies on stable category assignments — re-categorizing could create semantic duplicates
+- Investigation audit trails require a stable classification record
+
+**Exception — Un-rejecting:** As noted in the `REJECTED` category definition, rejected submissions can be "un-rejected" if investigation context changes (e.g., previously unrelated data becomes relevant after a new hypothesis emerges). This is the **only** supported category transition:
+- `REJECTED` → one of the 4 valid categories (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL)
+- All other category transitions are not supported
+
+**When un-rejecting occurs**, the system must:
+1. Update `category` to the new classification
+2. Recalculate `advances_milestones` using the category-milestone mapping
+3. Emit an audit event recording the reclassification and reasoning
+
+**For non-REJECTED misclassifications**, the intended remediation path is:
+1. The user or agent acknowledges the misclassification in the conversation
+2. A new submission with corrected context can be provided if needed
+3. The LLM accounts for the misclassified evidence when reasoning about hypotheses (e.g., "Evidence ev_abc was classified as SYMPTOM but appears to be baseline context")
+
 ---
 
 ### Decision 5: Unified DataType (Shared with Preprocessing)
