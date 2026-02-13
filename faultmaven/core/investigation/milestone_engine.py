@@ -82,6 +82,7 @@ from faultmaven.modules.case.contracts import (
     Solution,
     TurnOutcome,
     TurnProgress,
+    UrgencyLevel,
 )
 from faultmaven.modules.case.domain.services.investigation_router import (
     determine_investigation_path,
