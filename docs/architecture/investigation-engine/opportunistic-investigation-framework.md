@@ -123,7 +123,8 @@ The central orchestrator is `MilestoneEngine.process_turn()`. Each user message 
 
 ```mermaid
 flowchart TD
-    START([User Message Received]) --> INTENT_DETECT
+    START([User Message Received]) --> CASE_LOCK[Acquire Per-Case<br/>Asyncio Lock]
+    CASE_LOCK --> INTENT_DETECT
 
     %% ──────────────────────────────────────────────
     %% PHASE 1: Intent Detection & Early Routing
@@ -136,7 +137,7 @@ flowchart TD
         EXPLICIT_INTENT --> SAVE_EARLY[Save & Return<br/>Skip LLM]
 
         NLP_PATTERNS --> NLP_CHECK{Matches<br/>Terminal Pattern?}
-        NLP_CHECK -->|Abandonment<br/>pattern| FORCE_CLOSE[force_close_investigation<br/>→ CLOSED]
+        NLP_CHECK -->|Abandonment pattern<br/>+ no negation guard| FORCE_CLOSE[force_close_investigation<br/>→ CLOSED]
         NLP_CHECK -->|Resolution<br/>pattern| PROPOSE_RESOLVE[propose_transition<br/>→ pending]
         NLP_CHECK -->|Ambiguous<br/>close pattern| PROPOSE_AMBIGUOUS[propose_transition<br/>ask clarification]
         NLP_CHECK -->|No match| CONTINUE_NORMAL[Continue to<br/>LLM Pipeline]
@@ -190,7 +191,10 @@ flowchart TD
     subgraph PHASE3 [" Phase 3 — Response Processing "]
         direction TB
         POST_PROCESS[Post-Process LLM Response<br/>Pattern-Based Fallback<br/>Evidence Recovery] --> REASONING_VAL{Reasoning-First<br/>Validation}
-        REASONING_VAL -->|Invalid: no<br/>justification| REASONING_REJECT[Reject: Log Warning<br/>+ Raise ValueError]
+        REASONING_VAL -->|Invalid: no<br/>justification| SELF_CORRECT[Self-Correction Retry<br/>Feed violations back<br/>to LLM + re-invoke]
+        SELF_CORRECT --> REVALIDATE{Re-validate<br/>corrected response}
+        REVALIDATE -->|Still invalid| PROCEED_WITH_FEEDBACK[Proceed with response<br/>Wire violations to<br/>system_feedback for<br/>next turn]
+        REVALIDATE -->|Valid| DISPATCH
         REASONING_VAL -->|Valid or<br/>no milestones| DISPATCH{Dispatch by<br/>Response Type}
 
         DISPATCH -->|InquiryResponse| APPLY_INQUIRY[Apply Inquiry Updates<br/>Problem Confirmation<br/>Urgency Assessment<br/>KB Match]
@@ -225,12 +229,13 @@ flowchart TD
     EVIDENCE_CREATE --> PHASE4
     APPLY_TERMINAL --> PHASE4
     OUTCOME --> PHASE4
+    PROCEED_WITH_FEEDBACK --> PHASE4
 
     subgraph PHASE4 [" Phase 4 — Post-Processing & Housekeeping "]
         direction TB
-        DIAG_REASON[Validate Diagnostic<br/>Reasoning Quality] --> PROGRESS_CHECK{Progress<br/>Made?}
-        PROGRESS_CHECK -->|Yes| RESET_STAGNATION[Reset<br/>turns_without_progress = 0]
-        PROGRESS_CHECK -->|No| INC_STAGNATION[Increment<br/>turns_without_progress]
+        DIAG_REASON[Validate Diagnostic<br/>Reasoning Quality] --> PROGRESS_CHECK2{Progress<br/>Made?}
+        PROGRESS_CHECK2 -->|Yes| RESET_STAGNATION[Reset<br/>turns_without_progress = 0<br/>Exit degraded mode<br/>if active]
+        PROGRESS_CHECK2 -->|No| INC_STAGNATION[Increment<br/>turns_without_progress]
 
         RESET_STAGNATION --> AUTO_TRANSITIONS
         INC_STAGNATION --> AUTO_TRANSITIONS
@@ -252,8 +257,10 @@ flowchart TD
         WORKING_CONC --> STATE_VAL[Validate State<br/>Consistency]
         STATE_VAL --> STAGNATION_CHECK{Stagnation<br/>Detected?}
         STAGNATION_CHECK -->|No progress ≥3 turns<br/>Category anchoring<br/>Action loop<br/>Hypothesis deadlock| BREAKOUT[Execute Breakout<br/>Action + Enter<br/>Degraded Mode]
-        STAGNATION_CHECK -->|No| RECORD_TURN
-        BREAKOUT --> RECORD_TURN[Record Turn<br/>Progress]
+        STAGNATION_CHECK -->|No| WIRE_VIOLATIONS
+        BREAKOUT --> WIRE_BREAKOUT[Wire breakout prompt<br/>to system_feedback]
+        WIRE_BREAKOUT --> WIRE_VIOLATIONS[Wire diagnostic +<br/>reasoning violations<br/>to system_feedback]
+        WIRE_VIOLATIONS --> RECORD_TURN[Record Turn<br/>Progress]
         RECORD_TURN --> SAVE_CASE[Save Case<br/>to Repository]
     end
 
@@ -417,13 +424,14 @@ stateDiagram-v2
 
     ACTIVE --> VALIDATED: likelihood ≥ 0.7<br/>+ 2+ supporting evidence
     ACTIVE --> REFUTED: likelihood < 0.2<br/>+ refuting evidence
+    ACTIVE --> INCONCLUSIVE: likelihood 0.3–0.5<br/>+ stagnant 3+ turns
     ACTIVE --> RETIRED: stagnation decay<br/>below threshold
     ACTIVE --> ACTIVE: Evidence updates<br/>likelihood ± delta
 
     VALIDATED --> VALIDATED: Additional<br/>evidence strengthens
 
+    INCONCLUSIVE --> [*]: Terminal
     REFUTED --> [*]: Terminal
-
     RETIRED --> [*]: Terminal
 
     note right of ACTIVE
@@ -435,6 +443,10 @@ stateDiagram-v2
 
         Anchoring Detection:
         4+ hypotheses in same category refuted
+
+        NEUTRAL evidence stance:
+        Stored for audit trail but does
+        not affect confidence calculation
     end note
 ```
 
@@ -534,7 +546,13 @@ When investigation progress stalls, the stagnation detector identifies the patte
 
 ```mermaid
 flowchart TD
-    TURN_END[Turn Complete<br/>Progress Checked] --> STAG_CHECK{turns_without_progress<br/>≥ 3?}
+    TURN_END[Turn Complete<br/>Progress Checked] --> PROGRESS_CHECK{Progress<br/>made this turn?}
+    PROGRESS_CHECK -->|Yes| EXIT_DEGRADED{Currently in<br/>degraded mode?}
+    EXIT_DEGRADED -->|Yes| EXIT_DM[Exit Degraded Mode<br/>Set exited_at + clear<br/>degraded_mode]
+    EXIT_DEGRADED -->|No| HEALTHY[Continue Normally]
+    EXIT_DM --> HEALTHY
+
+    PROGRESS_CHECK -->|No| STAG_CHECK{turns_without_progress<br/>≥ 3?}
     STAG_CHECK -->|Yes| NO_PROGRESS[NO_PROGRESS<br/>Stagnation]
     STAG_CHECK -->|No| CAT_CHECK{4+ refuted/inconclusive<br/>hypotheses in<br/>same category?}
     CAT_CHECK -->|Yes| ANCHORING[HYPOTHESIS_ANCHORING<br/>Stagnation]
@@ -542,12 +560,17 @@ flowchart TD
     LOOP_CHECK -->|Yes| ACTION_LOOP[ACTION_LOOP<br/>Stagnation]
     LOOP_CHECK -->|No| DEAD_CHECK{3+ hypotheses<br/>all INCONCLUSIVE?}
     DEAD_CHECK -->|Yes| DEADLOCK[HYPOTHESIS_DEADLOCK<br/>Stagnation]
-    DEAD_CHECK -->|No| HEALTHY[No Stagnation<br/>Continue Normally]
+    DEAD_CHECK -->|No| HEALTHY
 
     NO_PROGRESS --> ENTER_DEGRADED[Enter Degraded Mode<br/>Offer fallback options<br/>Ask for user input]
     ANCHORING --> FORCE_ALT[Force Alternative<br/>Category Exploration<br/>Inject prompt override]
     ACTION_LOOP --> REQ_INPUT[Request User Input<br/>Suggest different<br/>approach]
     DEADLOCK --> RESET_HYP[Retire All<br/>Inconclusive Hypotheses<br/>Generate fresh set]
+
+    ENTER_DEGRADED --> WIRE_FEEDBACK[Wire breakout prompt<br/>to system_feedback<br/>for next turn LLM context]
+    FORCE_ALT --> WIRE_FEEDBACK
+    ACTION_LOOP --> WIRE_FEEDBACK
+    RESET_HYP --> WIRE_FEEDBACK
 ```
 
 ---
@@ -722,8 +745,22 @@ case.closure_reason = "escalated"
 
 ### Evidence Stances
 
-| Stance | Meaning | Use With |
-|--------|---------|----------|
-| `SUPPORTS` | Evidence supports hypothesis | `stance_confidence` 0.0-1.0 |
-| `REFUTES` | Evidence contradicts hypothesis | `stance_confidence` 0.0-1.0 |
-| `NEUTRAL` | Evidence neither supports nor refutes | — |
+| Stance | Meaning | Confidence Effect | Use With |
+|--------|---------|-------------------|----------|
+| `SUPPORTS` | Evidence supports hypothesis | Increases likelihood (+0.15 per) | `stance_confidence` 0.0-1.0 |
+| `REFUTES` | Evidence contradicts hypothesis | Decreases likelihood (-0.20 per) | `stance_confidence` 0.0-1.0 |
+| `NEUTRAL` | Evidence neither supports nor refutes | No effect (stored for audit trail) | — |
+
+---
+
+## Known Limitations & Deferred Items
+
+The following items were identified during the design review (2026-02-13) and are either known limitations or deferred to a future release:
+
+| ID | Item | Status | Notes |
+|----|------|--------|-------|
+| F2 | **Hypothesis confidence model composition** — Evidence-based update and stagnation decay operate independently. Evidence update resets likelihood from formula, erasing decay. Decay operates on current likelihood without knowing evidence adjustments. Creates sawtooth oscillation pattern. | Known Limitation | Consider composing as `(initial + evidence_delta) × decay_factor` or tracking contributions as separate signals. |
+| F7 | **Token budget non-Latin text** — `TokenBudget` uses 1:4 char-to-token ratio which underestimates tokens for CJK, code, and structured data. | Known Limitation | Consider provider-specific tokenizers or a 1:2 ratio as safer approximation. |
+| G2 | **`solution_verified` milestone evidence expectations** — `MILESTONE_EVIDENCE_EXPECTATIONS` defines requirements for 8 milestones but omits `solution_verified`. The User-Agent Handshake handles the transition, but no evidence validation is enforced. | Deferred | Add `solution_verified` with ≥1 RESOLUTION_EVIDENCE expectation. |
+| G5 | **Knowledge resolution fast-track wiring** — `KnowledgeResolution` model and `InquiryResponse.knowledge_resolution` exist in schema, but `_process_response_structured()` does not process this field. The INQUIRY→RESOLVED fast-track documented in lifecycle logic is not executed. | Deferred | Wire `knowledge_resolution` processing in milestone engine. |
+| G7 | **Checkpoint/time-travel** — `CaseCheckpoint` model is defined in contracts but not instantiated anywhere in the investigation flow. No snapshot serialization, diff engine, or replay capability exists. Turn progress is tracked via `TurnProgress` records. | Deferred | See [Orchestration Capabilities](./orchestration-capabilities.md) for design. |

@@ -6,34 +6,47 @@ These capabilities are implemented in the `AgentOrchestrationService` and suppor
 
 ## 1. State Checkpointing
 
-FaultMaven implements a robust **Turn-Based Checkpointing** system to ensure investigation state is durable, auditable, and restorable.
+> **Implementation Status: DEFERRED**
+>
+> The checkpointing system described below is designed but not yet implemented in code.
+> `CaseCheckpoint` is defined in contracts but not instantiated in the investigation flow.
+> Turn-level state is currently tracked via `TurnProgress` records in `case.turn_history`,
+> which provides partial auditability. Full checkpoint/snapshot/diff functionality is
+> planned for a future release.
 
-### 1.1 Mechanism
-*   **Trigger**: A checkpoint is automatically created at the end of every agent execution turn (`turn_complete`).
-*   **Storage**: The full state of the `Case` object is serialized and stored in the `CaseCheckpoint` table.
+FaultMaven's design includes a **Turn-Based Checkpointing** system to ensure investigation state is durable, auditable, and restorable.
+
+### 1.1 Mechanism (Design)
+*   **Trigger**: A checkpoint would be automatically created at the end of every agent execution turn (`turn_complete`).
+*   **Storage**: The full state of the `Case` object would be serialized and stored in the `CaseCheckpoint` table.
     *   **PostgreSQL**: Uses `JSONB` for efficient querying.
     *   **SQLite** (Dev): Uses `Text` (JSON string) for compatibility.
 *   **Immutability**: Checkpoints are append-only. Once a turn is completed, its state record is permanent.
 
-### 1.2 usage
-This happens automatically. No frontend intervention is required.
-*   **Backend Hook**: `AgentOrchestrationService.execute_agent` -> Step 9b.
+### 1.2 Current State
+Turn progress is recorded via `TurnProgress` entries in `case.turn_history`, which captures milestones completed, evidence added, hypotheses generated, and turn outcomes. This provides basic auditability but does not support full state snapshots or time travel.
 
 ## 2. Replay & Debugging (Time Travel)
 
-The system supports **Read-Only Time Travel**, allowing users and developers to inspect the exact state of an investigation at any previous turn.
+> **Implementation Status: DEFERRED**
+>
+> Time travel and semantic diffing are designed but not yet implemented.
+> The API endpoints described below do not exist yet. See Section 1 for
+> current state tracking via `TurnProgress`.
 
-### 2.1 State Restoration
-*   **Functionality**: Reconstructs a full `Case` object from a historical checkpoint.
-*   **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}`
+The design includes **Read-Only Time Travel**, allowing users and developers to inspect the exact state of an investigation at any previous turn.
+
+### 2.1 State Restoration (Design)
+*   **Functionality**: Would reconstruct a full `Case` object from a historical checkpoint.
+*   **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` (not yet implemented)
 *   **Frontend Use Case**:
     *   "View History": Allow users to click on a past message and see the "Context" (Hypotheses, Evidence, Status) as it existed *at that moment*.
     *   **Read-Only**: Restored cases are for inspection only. You cannot "resume" from a past state (no forking supported in v1).
 
-### 2.2 Semantic Diffing
-*   **Functionality**: Computes the semantic difference between two investigation states (e.g., Turn 2 vs Turn 5).
+### 2.2 Semantic Diffing (Design)
+*   **Functionality**: Would compute the semantic difference between two investigation states (e.g., Turn 2 vs Turn 5).
 *   **Logic**: Recursive comparison of fields, highlighting added hypotheses, status changes, or modified evidence.
-*   **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}`
+*   **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` (not yet implemented)
 *   **Frontend Use Case**:
     *   "What Changed?": detailed view showing exactly what the agent concluded between two points in time.
 
