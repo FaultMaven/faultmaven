@@ -425,22 +425,33 @@ class InvestigationProgress(BaseModel):
         - HYPOTHESIS_VALIDATION (stage 3): Testing hypotheses for root cause
         - SOLUTION (stage 4): Solution work (proposal, application, verification)
 
-        Note: This is a simplified mapping. The actual stage may differ based on path:
-        - MITIGATION_FIRST path may be in stage 4 (mitigation) before stage 2 (RCA)
-        - Tracking this requires additional path context beyond just milestones
+        MITIGATION_FIRST path handling:
+        When mitigation_applied=True but root_cause_identified=False, the case has
+        completed quick mitigation (stage 4) and needs to return to RCA (stage 2).
+        In this situation, current_stage returns HYPOTHESIS_FORMULATION so the LLM
+        receives the correct schema (with hypothesis fields) rather than being
+        locked into the SOLUTION schema.
         """
+
+        # MITIGATION_FIRST path: mitigation applied, now doing post-mitigation RCA
+        # mitigation_applied is only True for MITIGATION_FIRST cases.
+        # If mitigation is done but root cause is NOT identified, we need RCA.
+        if self.mitigation_applied and not self.root_cause_identified:
+            # If a full solution has also been proposed/applied (beyond just mitigation),
+            # stay in SOLUTION stage
+            if self.solution_proposed or self.solution_applied or self.solution_verified:
+                return InvestigationStage.SOLUTION
+            return InvestigationStage.HYPOTHESIS_FORMULATION
 
         # SOLUTION (Stage 4): Any solution work
         if self.solution_proposed or self.solution_applied or self.solution_verified:
             return InvestigationStage.SOLUTION
 
         # HYPOTHESIS_VALIDATION (Stage 3): Root cause identified or being validated
-        # (If root_cause_identified=True, we're past validation, but have not proposed solution yet)
         if self.root_cause_identified:
             return InvestigationStage.HYPOTHESIS_VALIDATION
 
         # HYPOTHESIS_FORMULATION (Stage 2): Symptom verified, working on "why"
-        # (This assumes hypotheses are being formulated; in reality, this might be stage 3)
         if self.symptom_verified:
             return InvestigationStage.HYPOTHESIS_FORMULATION
 
