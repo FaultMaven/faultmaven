@@ -1453,6 +1453,38 @@ async def retrieve_relevant_context(
     ]
 ```
 
+### 5.4 Index Versioning
+
+When Tier 1 extraction logic changes (e.g., new error cluster heuristics, updated anomaly detection thresholds, or additional section types), previously stored structural indexes become stale relative to the new logic.
+
+**Strategy: Manual/Triggered Re-Indexing**
+
+Structural indexes are **not automatically re-indexed** when extraction logic changes. Re-indexing is an explicit, operator-triggered action.
+
+**Rationale:**
+- Tier 1 changes are infrequent (tied to release cycles, not runtime)
+- Automatic re-indexing on deploy could overload the Vector DB during startup
+- Most extraction changes are additive (new sections) rather than corrective, so old indexes remain usable
+
+**Re-indexing process:**
+1. Operator runs a re-indexing job (CLI or admin API) targeting a specific case, a date range, or all evidence
+2. For each evidence record, the job retrieves the raw file via `content_ref`, reruns Tier 1 extraction, and replaces the Vector DB chunks
+3. Old chunks are deleted by `evidence_id` prefix before new chunks are inserted (atomic per-evidence swap)
+
+**Metadata tracking:**
+Each chunk stored in the Vector DB includes an `extraction_version` field (e.g., `"v3.1"`) derived from the Tier 1 extractor version. This enables:
+- Querying which evidence was indexed with an outdated extractor
+- Scoping re-indexing jobs to only stale records
+- Audit trail of extraction lineage
+
+```python
+# Added to chunk metadata (Section 5.2)
+{
+    ...
+    "extraction_version": "v3.1",  # Tier 1 extractor version
+}
+```
+
 ---
 
 ## 6. Tier 2: Deep Analysis Service

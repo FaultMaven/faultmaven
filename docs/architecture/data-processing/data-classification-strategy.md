@@ -194,9 +194,6 @@ WEAK_INDICATORS = {
         ("prose_paragraphs", 0.2),
         ("code_blocks", 0.2),
         ("section_headings", 0.3),
-    ],
-
-    DataType.TEXT: [
         # Default when no clear pattern — fallback to TEXT
         ("no_clear_structure", 0.5),
         ("mixed_formats", 0.5),
@@ -647,22 +644,27 @@ class EnhancedDataClassifier:
             return result
 
         # Level 3: Weak indicators (50-84%)
+        # Returns if any weak indicator pattern produces confidence ≥ 0.50
         result = self._check_weak_indicators(context)
         if result.confidence >= 0.50:
             return result
 
-        # Level 4: Contextual hints (variable)
+        # Level 4: Contextual hints (filename, user description)
+        # Only reached when Level 3 has no match (confidence < 0.50)
         result = self._check_contextual_hints(context)
         if result.confidence >= 0.60:
             return result
 
         # Level 5: LLM classification (OPTIONAL — outside Tier 0 zero-LLM guarantee)
+        # Only reached when both Level 3 AND Level 4 fail their thresholds
         if self.llm_fallback_enabled:
             result = await self._llm_classify_with_examples(context)
             if result.confidence >= 0.70:
                 return result
 
         # Level 6: Request user confirmation
+        # Only reached when LLM confidence ≤ 0.70, or LLM disabled and
+        # best heuristic confidence < 0.50
         result = self._request_user_confirmation(context)
         return result  # 100% confidence after user input
     
@@ -854,8 +856,22 @@ CONFIDENCE_THRESHOLDS = {
     'auto_accept': 0.85,      # Accept classification without confirmation
     'suggest': 0.60,          # Suggest to user with option to override
     'llm_fallback': 0.50,     # Trigger LLM classification
-    'user_required': 0.50,    # Below this, require user input
+    'user_required': 0.30,    # Below this, require user input
 }
+
+# Precedence rules:
+# - Level 3 (Weak Indicators) returns results in the 0.50-0.84 range.
+#   If a weak indicator matches (≥0.50), the result is returned immediately.
+# - Level 4 (Contextual Hints) checks filename/description when Level 3
+#   produces no match. If a contextual hint matches (≥0.60), it takes
+#   precedence and is returned.
+# - LLM fallback (Level 5) triggers only when BOTH Level 3 AND Level 4
+#   fail to reach their respective thresholds — i.e., the best heuristic
+#   confidence is below 0.50 (no weak indicator match) AND no contextual
+#   hint reached 0.60.
+# - User confirmation (Level 6) triggers when LLM confidence is ≤0.70
+#   or when LLM fallback is disabled and best confidence is below
+#   user_required (0.30).
 
 def should_request_user_confirmation(confidence: float) -> bool:
     """Determine if user confirmation is needed."""

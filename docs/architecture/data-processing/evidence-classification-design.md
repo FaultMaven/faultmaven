@@ -252,6 +252,22 @@ CRITICAL: Classify based on what the DATA CONTAINS, not the investigation phase.
 - Don't wait for investigation confirmation to classify symptom data
 ```
 
+### Category Immutability
+
+**Design Rule:** The `category` field is **immutable after initial assignment**. Once the LLM classifies a submission (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, or REJECTED), that classification is permanent for the lifetime of the evidence record.
+
+**Rationale:**
+- Milestone attribution (`advances_milestones`) is inferred at creation time from the category; changing the category retroactively would invalidate attribution history
+- The `content_hash` deduplication constraint relies on stable category assignments — re-categorizing could create semantic duplicates
+- Investigation audit trails require a stable classification record
+
+**No reclassification workflow exists by design.** If a submission was incorrectly classified, the intended remediation path is:
+1. The user or agent acknowledges the misclassification in the conversation
+2. A new submission with corrected context can be provided if needed
+3. The LLM accounts for the misclassified evidence when reasoning about hypotheses (e.g., "Evidence ev_abc was classified as SYMPTOM but appears to be baseline context")
+
+**Future consideration:** If reclassification becomes a validated need, it would require a dedicated "Reclassify" action that also updates `advances_milestones` and emits an audit event. This is not currently designed or planned.
+
 ---
 
 ### Decision 5: Unified DataType (Shared with Preprocessing)

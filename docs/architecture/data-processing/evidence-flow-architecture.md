@@ -231,7 +231,8 @@ User          API          Preprocessing    Storage    Investigation    LLM     
  │              │  {evidence_id, │             │            │             │             │
  │              │   category}    │             │            │             │             │
  │              │                │             │            │             │             │
- │<─200 OK─────│                │             │            │             │             │
+ │<─201────────│                │             │            │             │             │
+ │  Created     │                │             │            │             │             │
  │  {evidence}  │                │             │            │             │             │
  │              │                │             │            │             │             │
 ```
