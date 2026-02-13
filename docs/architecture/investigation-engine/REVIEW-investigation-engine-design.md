@@ -10,7 +10,7 @@
 
 The investigation engine is architecturally ambitious — a milestone-based, opportunistic investigation framework with hypothesis lifecycle management, degraded mode handling, and multi-LLM structured output. The core concepts are sound: data-driven milestone completion, User-Agent Handshake for terminal transitions, and three-tier milestone attribution.
 
-However, the review identified **7 major design flaws** and **12 significant gaps** spanning schema inconsistencies, unimplemented documented behavior, race conditions, and missing validation enforcement. The most critical issues are in the hypothesis confidence model, the `current_stage` computed property under MITIGATION_FIRST path, and the evidence validation pipeline being advisory-only.
+However, the review identified **7 major design flaws** and **11 significant gaps** spanning schema inconsistencies, unimplemented documented behavior, race conditions, and missing recovery mechanisms. The most critical issues are in the hypothesis confidence model, the `current_stage` computed property under MITIGATION_FIRST path, and the reasoning validation pipeline crashing the turn instead of self-correcting.
 
 ---
 
@@ -69,27 +69,37 @@ The two mechanisms have no coordination. The documentation (`hypothesis_manager.
 
 ---
 
-### 3. Evidence Validation Is Advisory-Only — Milestones Advance Regardless
+### 3. Reasoning Validation Crashes the Turn Instead of Self-Correcting
 
-**Location:** `evidence_processor.py:10-17` (design decision comment); `milestone_engine.py:197-390` (reasoning validation)
+**Location:** `milestone_engine.py:1547-1554` (reasoning validation); `evidence_processor.py:10-17` (milestone claim validation)
 
-**Problem:** The evidence processor documentation is explicit:
+**Problem:** The reasoning validation pipeline has two layers with different enforcement behaviors:
 
-> "The LLM is the sole authority for milestone advancement. If the LLM claims a milestone without citing evidence, the claim is logged as a warning but still applied."
+1. **`validate_reasoning_first()`** (`milestone_engine.py:1548-1554`) — **strict**: raises `ValueError` when the LLM fails to provide justification for milestone completions. This crashes the entire turn, surfacing as a 500 error to the user.
+2. **`validate_milestone_claims()`** (`milestone_engine.py:1903-1921`) — **advisory**: logs warnings when milestones lack sufficient cited evidence but allows the milestones to advance.
 
-Similarly, `validate_reasoning_first()` collects errors but the calling code in `_process_response_structured()` only logs them — it does not reject the milestone advancement.
+The strict layer is too strict — a single LLM failure to format reasoning correctly kills the turn with no recovery. The advisory layer is too lenient — milestones advance with zero supporting evidence.
 
-This means:
+More critically, neither layer attempts **self-correction**. When `validate_reasoning_first()` detects missing justification, the correct behavior is to feed the validation errors back to the LLM and retry the structured output generation, not to crash the application. The LLM produced a structurally valid response; it just omitted reasoning. A retry with the validation feedback as additional context would likely succeed.
 
-- LLM can complete `root_cause_identified` without any CAUSAL_EVIDENCE (logged warning, milestone still advances)
-- LLM can complete `symptom_verified` without analyzing any evidence (reasoning validation logs error, milestone still set)
-- `validate_milestone_claims()` results are purely informational
+```python
+# Current behavior (milestone_engine.py:1547-1554):
+is_valid, validation_errors = validate_reasoning_first(response_obj, case)
+if not is_valid:
+    raise ValueError(error_msg)  # Crashes the turn — user sees 500 error
 
-The documented expectation (`prompt-engineering-guide.md` Section 13) is that the Reasoning-First pattern prevents arbitrary milestone completion. But there is no enforcement gate — only observability.
+# Desired behavior:
+is_valid, validation_errors = validate_reasoning_first(response_obj, case)
+if not is_valid:
+    # Self-correction: retry LLM with validation feedback
+    correction_prompt = build_correction_prompt(prompt, validation_errors)
+    response_obj = await self._generate_structured_output(correction_prompt, schema_model)
+    # Re-validate, fail only after N retries exhausted
+```
 
-**Impact:** Investigation quality depends entirely on LLM prompt compliance. A poorly-performing LLM provider can advance milestones to RESOLVED without meaningful evidence, producing low-quality investigations with no system-level safeguard.
+**Impact:** Users experience intermittent 500 errors when the LLM omits reasoning fields. The error is recoverable (the LLM can self-correct) but the system treats it as fatal.
 
-**Recommendation:** Add a configurable enforcement level. At minimum, `root_cause_identified` (which requires 2+ CAUSAL_EVIDENCE per `MILESTONE_EVIDENCE_EXPECTATIONS`) should reject advancement when validation fails. A three-tier enforcement model (PERMISSIVE/WARNING/STRICT) would allow gradual tightening.
+**Recommendation:** Implement a self-correction loop: catch reasoning validation failures, inject the specific errors into a correction prompt, and re-invoke the LLM (with a retry cap of 1-2 attempts). Only raise after retries are exhausted. This aligns with the existing `LLMErrorHandler` retry pattern but applies it to validation failures rather than API errors.
 
 ---
 
@@ -230,25 +240,7 @@ The `error-handling-and-recovery.md` document (Section 5) describes a `check_deg
 
 ---
 
-### Gap 4: Stage-Specific Context Loading Is Not Actually Implemented
-
-**Location:** `context_builder.py:468-503`
-
-The code for "Gap #10: Stage-Specific Context Loading" contains only debug log statements and comments like "Already optimized" and "no change needed":
-
-```python
-if stage == InvestigationStage.SYMPTOM_VERIFICATION:
-    logger.debug("Stage-specific loading: SYMPTOM_VERIFICATION - skipping hypothesis details")
-    # This is a note for future optimization if needed
-```
-
-No context sections are actually suppressed or modified. Every stage loads the same context sections in the same order. The documentation (`prompt-engineering-guide.md` Section 11.4) describes aggressive stage-specific loading (e.g., skipping hypothesis details during verification, skipping evidence during solution stage), but none of it is implemented.
-
-**Recommendation:** Implement the actual filtering. For SYMPTOM_VERIFICATION, skip hypothesis_str. For SOLUTION, condense evidence to only RESOLUTION_EVIDENCE. This would meaningfully reduce token usage.
-
----
-
-### Gap 5: Post-Mitigation User Choice Point Lacks Schema Support
+### Gap 4: Post-Mitigation User Choice Point Lacks Schema Support
 
 **Location:** `investigation-lifecycle-logic.md` Section 4.4; no corresponding schema field
 
@@ -263,7 +255,7 @@ This means the MITIGATION_FIRST path has no mechanism to branch into RCA vs clos
 
 ---
 
-### Gap 6: Knowledge Resolution Fast-Track Is Documented But Never Populated
+### Gap 5: Knowledge Resolution Fast-Track Is Documented But Never Populated
 
 **Location:** `schemas.py:162-169` (KnowledgeResolution), `investigation-lifecycle-logic.md` Section 1.2
 
@@ -271,7 +263,7 @@ The `KnowledgeResolution` model and the `InquiryResponse.knowledge_resolution` f
 
 ---
 
-### Gap 7: HypothesisStatus.INCONCLUSIVE Used in Stagnation Detection But Not in Hypothesis Manager
+### Gap 6: HypothesisStatus.INCONCLUSIVE Used in Stagnation Detection But Not in Hypothesis Manager
 
 **Location:** `stagnation_detector.py:136-142,190-219` vs `hypothesis_manager.py:287-351`
 
@@ -281,7 +273,7 @@ The `KnowledgeResolution` model and the `InquiryResponse.knowledge_resolution` f
 
 ---
 
-### Gap 8: Checkpoint/Time-Travel Documented But Not Implemented
+### Gap 7: Checkpoint/Time-Travel Documented But Not Implemented
 
 **Location:** `orchestration-capabilities.md` Sections 1-2
 
@@ -294,7 +286,7 @@ None of this appears in the source code. `TurnProgress` records exist in `case.t
 
 ---
 
-### Gap 9: EvidenceStance.NEUTRAL Inconsistency Between Docs and Code
+### Gap 8: EvidenceStance.NEUTRAL Inconsistency Between Docs and Code
 
 **Location:** `investigation-data-models.md` (duplicate EvidenceStance definitions), `schemas.py:311` (HypothesisEvidenceLinkToAdd)
 
@@ -302,7 +294,7 @@ The data models document defines EvidenceStance twice — once with 2 values (SU
 
 ---
 
-### Gap 10: Diagnostic Reasoning Validator Is Post-Hoc Only
+### Gap 9: Diagnostic Reasoning Validator Is Post-Hoc Only
 
 **Location:** `milestone_engine.py:1166-1183`, `diagnostic_reasoning_validator.py`
 
@@ -310,7 +302,7 @@ The diagnostic reasoning validator runs after the LLM response is processed and 
 
 ---
 
-### Gap 11: No Concurrency Protection on Case State
+### Gap 10: No Concurrency Protection on Case State
 
 **Location:** `milestone_engine.py:677-1311` (process_turn)
 
@@ -324,7 +316,7 @@ The `repository.save()` call is a blind write. This can cause:
 
 ---
 
-### Gap 12: System Feedback Loop From Validation to Next Turn Is Incomplete
+### Gap 11: System Feedback Loop From Validation to Next Turn Is Incomplete
 
 **Location:** `context_builder.py:461-466`, `milestone_engine.py:1267-1284`
 
@@ -342,7 +334,7 @@ This means if the LLM fails reasoning validation (no justification for milestone
 |---|---------|----------|----------|
 | F1 | `current_stage` breaks under MITIGATION_FIRST | Major | Logic error |
 | F2 | Hypothesis confidence: decay vs evidence conflict | Major | Model flaw |
-| F3 | Evidence validation is advisory-only | Major | Missing enforcement |
+| F3 | Reasoning validation crashes turn instead of self-correcting | Major | Missing recovery |
 | F4 | Duplicate return in `create_hypothesis` | Major | Dead code |
 | F5 | Inconsistent stagnation tracking in hypothesis update | Major | Divergent behavior |
 | F6 | NLP intent patterns cause false positives | Major | Safety |
@@ -350,12 +342,11 @@ This means if the LLM fails reasoning validation (no justification for milestone
 | G1 | Breakout prompt injection never reaches LLM | Gap | Stagnation recovery |
 | G2 | `solution_verified` has no evidence expectations | Gap | Validation |
 | G3 | Degraded mode has no exit path in code | Gap | State machine |
-| G4 | Stage-specific context loading not implemented | Gap | Performance |
-| G5 | Post-mitigation path choice has no schema support | Gap | Schema |
-| G6 | Knowledge resolution fast-track not wired | Gap | Feature |
-| G7 | INCONCLUSIVE status referenced but never set | Gap | Dead code |
-| G8 | Checkpoint/time-travel documented but unimplemented | Gap | Feature |
-| G9 | NEUTRAL evidence stance stored but never processed | Gap | Data model |
-| G10 | Diagnostic reasoning validation has no enforcement | Gap | Quality |
-| G11 | No concurrency protection on case state | Gap | Data integrity |
-| G12 | Reasoning validation errors not fed back to LLM | Gap | Feedback loop |
+| G4 | Post-mitigation path choice has no schema support | Gap | Schema |
+| G5 | Knowledge resolution fast-track not wired | Gap | Feature |
+| G6 | INCONCLUSIVE status referenced but never set | Gap | Dead code |
+| G7 | Checkpoint/time-travel documented but unimplemented | Gap | Feature |
+| G8 | NEUTRAL evidence stance stored but never processed | Gap | Data model |
+| G9 | Diagnostic reasoning validation has no enforcement | Gap | Quality |
+| G10 | No concurrency protection on case state | Gap | Data integrity |
+| G11 | Reasoning validation errors not fed back to LLM | Gap | Feedback loop |
