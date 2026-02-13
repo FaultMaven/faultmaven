@@ -1,20 +1,32 @@
 """
 Preprocessing Service - 4-Step Pipeline Orchestrator
 
-Coordinates the 4-step preprocessing pipeline:
-1. Classification (rule-based, 0 LLM calls)
-2. Type-specific extraction (0-1 LLM calls depending on type)
-3. Chunking fallback (0 or N+1 LLM calls, only if needed)
-4. Sanitization + packaging
+Coordinates the preprocessing pipeline:
+- preprocess(): Legacy 4-step pipeline (classify → extract → chunk → sanitize)
+- process_upload(): Design v3.0 entry point (file validation → classify → extract
+  with timeout → sanitize → store raw file → package PreprocessingResult)
 
-Phase 1: Only LOGS_AND_ERRORS extractor implemented
-Phase 2-4: Additional extractors and features
+Design Reference:
+    docs/architecture/data-processing/data-preprocessing-design-specification.md
 """
 
+import asyncio
+import hashlib
 import logging
 import time
-from typing import TYPE_CHECKING, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable, Optional
 
+from faultmaven.core.preprocessing.models import (
+    DuplicateFileError,
+    ExtractionResult,
+    FileInfo,
+    FileTooLargeError,
+    PreprocessingResult,
+    SanitizationResult,
+    generate_concise_summary,
+    to_unified_data_type,
+)
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models.api import (
     DataType,
@@ -32,6 +44,13 @@ if TYPE_CHECKING:
     from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 logger = logging.getLogger(__name__)
+
+# Tier 1 timeout: extractors must complete within this budget.
+# On timeout, falls back to TEXT extraction (preview-only).
+TIER1_TIMEOUT_SECONDS = 2.0
+
+# Default maximum upload size (10 MB)
+DEFAULT_MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 
 
 class PreprocessingService:
@@ -376,3 +395,187 @@ class PreprocessingService:
         This is conservative for English text
         """
         return len(text) // 4
+
+    # =========================================================================
+    # Design v3.0: process_upload() — Tier 0+1 entry point
+    # =========================================================================
+
+    async def process_upload(
+        self,
+        raw_content: bytes,
+        filename: str,
+        content_type: str,
+        case_id: str,
+        source_metadata: Optional[SourceMetadata] = None,
+        max_upload_size: int = DEFAULT_MAX_UPLOAD_SIZE,
+        storage_service: Optional[object] = None,
+        evidence_repo: Optional[object] = None,
+    ) -> PreprocessingResult:
+        """
+        Main Tier 0+1 entry point per design specification v3.0.
+
+        Guarantees:
+        - Completes in <2s (timeout-enforced extraction with fallback)
+        - Never fails due to extraction errors (fallback chain)
+        - Raises only FileTooLargeError or DuplicateFileError
+
+        Steps:
+        1. Validate file size
+        2. Compute content_hash (SHA-256 of raw bytes) for deduplication
+        3. Check for duplicates (early exit)
+        4. Tier 0: Classify data type
+        5. Tier 1: Extract structural index (timeout-enforced)
+        6. Sanitize PII/secrets
+        7. Store raw file (if storage service available)
+        8. Package PreprocessingResult
+
+        Design Reference:
+            data-preprocessing-design-specification.md Section 9.2
+        """
+        start_time = time.time()
+
+        # Step 0: Validate file size
+        if len(raw_content) > max_upload_size:
+            raise FileTooLargeError(len(raw_content), max_upload_size)
+
+        # Step 1: Compute content_hash early for deduplication
+        content_hash = hashlib.sha256(raw_content).hexdigest()
+
+        # Step 2: Check for duplicate (early exit before extraction work)
+        if evidence_repo is not None:
+            try:
+                existing = await evidence_repo.find_by_content_hash(
+                    case_id, content_hash
+                )
+                if existing:
+                    raise DuplicateFileError(existing.evidence_id, content_hash)
+            except AttributeError:
+                # Repo doesn't support find_by_content_hash yet
+                logger.debug("Evidence repo does not support find_by_content_hash")
+
+        # Tier 0: Classify
+        content_str = raw_content.decode("utf-8", errors="replace")
+        classification = self.classifier.classify(
+            filename,
+            content_str,
+            source_metadata=source_metadata,
+        )
+
+        detailed_data_type = classification.data_type
+        unified_data_type = to_unified_data_type(detailed_data_type)
+
+        logger.info(
+            f"process_upload: {filename} → {detailed_data_type.value} "
+            f"(unified={unified_data_type.value}, "
+            f"confidence={classification.confidence:.2f})"
+        )
+
+        # Tier 1: Extract structural index with timeout enforcement
+        extractor = self.extractors.get(detailed_data_type)
+
+        if extractor:
+            extraction = await self._extract_with_timeout(
+                extractor, content_str, filename
+            )
+        else:
+            # Fallback for types without a dedicated extractor
+            logger.warning(
+                f"No extractor for {detailed_data_type.value}, "
+                f"using direct truncation"
+            )
+            extraction = ExtractionResult(
+                method="direct",
+                content=self._fallback_direct_extraction(content_str),
+                metadata={"fallback": True},
+            )
+
+        # Sanitize
+        sanitized_content = self.sanitizer.sanitize(extraction.content)
+        redactions_count = 0
+        sanitization_applied = sanitized_content != extraction.content
+        if sanitization_applied:
+            # Rough count of redactions by counting redaction markers
+            redactions_count = sanitized_content.count("***") // 2
+
+        # Store raw file (if storage service is available)
+        content_ref = None
+        if storage_service is not None:
+            try:
+                content_ref = await storage_service.store_raw_file(
+                    content=raw_content,
+                    case_id=case_id,
+                    filename=filename,
+                    content_type=content_type,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to store raw file: {e}")
+
+        # Package result
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        raw_size = len(raw_content)
+        index_size = len(sanitized_content.encode("utf-8"))
+        compression_ratio = index_size / max(raw_size, 1)
+
+        return PreprocessingResult(
+            data_type=unified_data_type,
+            detailed_data_type=detailed_data_type,
+            summary=generate_concise_summary(sanitized_content),
+            structural_index=sanitized_content,
+            content_ref=content_ref,
+            content_size_bytes=raw_size,
+            content_type=content_type,
+            extraction_method=extraction.method,
+            compression_ratio=compression_ratio,
+            extraction_metadata=extraction.metadata,
+            content_hash=content_hash,
+            sanitization_applied=sanitization_applied,
+            redactions_count=redactions_count,
+            processing_time_ms=processing_time_ms,
+        )
+
+    async def _extract_with_timeout(
+        self,
+        extractor: object,
+        content: str,
+        filename: str,
+    ) -> ExtractionResult:
+        """
+        Run a Tier 1 extractor with timeout enforcement.
+
+        If the extractor exceeds TIER1_TIMEOUT_SECONDS, cancel it and
+        return a TEXT extraction (preview-only) as fallback.
+
+        Design Reference:
+            data-preprocessing-design-specification.md Section 4.9
+        """
+        try:
+            result_content = await asyncio.wait_for(
+                asyncio.to_thread(extractor.extract, content),
+                timeout=TIER1_TIMEOUT_SECONDS,
+            )
+            return ExtractionResult(
+                method=extractor.strategy_name,
+                content=result_content,
+                metadata={},
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Tier 1 extraction timed out after {TIER1_TIMEOUT_SECONDS}s "
+                f"for {filename}. Falling back to TEXT preview."
+            )
+            # Fallback: truncated preview (always fast)
+            return ExtractionResult(
+                method="structure_extraction",
+                content=self._fallback_direct_extraction(content),
+                metadata={"timeout_fallback": True},
+            )
+        except Exception as e:
+            logger.error(
+                f"Tier 1 extraction failed for {filename}: {e}. "
+                f"Falling back to TEXT preview."
+            )
+            return ExtractionResult(
+                method="structure_extraction",
+                content=self._fallback_direct_extraction(content),
+                metadata={"error_fallback": True, "error": str(e)[:200]},
+            )

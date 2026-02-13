@@ -1582,6 +1582,37 @@ class Evidence(BaseModel):
     )
 
     # ============================================================
+    # Data Type & Deduplication (from Preprocessing Pipeline)
+    # ============================================================
+    data_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Unified data type from preprocessing (logs, metrics, configuration, "
+            "code, text, image). Maps to UnifiedDataType enum. None for legacy evidence."
+        ),
+        max_length=50,
+    )
+
+    content_hash: Optional[str] = Field(
+        default=None,
+        description=(
+            "SHA-256 hash of raw file content for deduplication. "
+            "Computed from raw bytes before any extraction. "
+            "UNIQUE per (case_id, content_hash) — prevents duplicate uploads."
+        ),
+        max_length=64,
+    )
+
+    extraction_method: Optional[str] = Field(
+        default=None,
+        description=(
+            "Tier 1 extraction method used: structural_index, statistical_profile, "
+            "parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction"
+        ),
+        max_length=100,
+    )
+
+    # ============================================================
     # Source Information
     # ============================================================
     source_type: EvidenceSourceType = Field(description="Type of evidence source")
@@ -3266,6 +3297,53 @@ class Case(BaseModel):
         if self.closed_at:
             return self.closed_at - self.created_at
         return None
+
+    @property
+    def valid_evidence(self) -> List[Evidence]:
+        """
+        Evidence with actionable categories (excludes REJECTED).
+
+        Returns the 4 valid categories: SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE,
+        RESOLUTION_EVIDENCE, CONTEXTUAL_EVIDENCE.
+
+        Design Reference:
+            evidence-classification-design.md Section 3.3
+        """
+        return [
+            ev for ev in self.evidence
+            if ev.category != EvidenceCategory.REJECTED
+        ]
+
+    @property
+    def rejected_submissions(self) -> List[Evidence]:
+        """
+        Submissions analyzed but rejected as not useful.
+
+        These exist for deduplication, audit trail, and cost avoidance.
+        They are NOT evidence in the investigative sense.
+
+        Design Reference:
+            evidence-classification-design.md Section 3.3
+        """
+        return [
+            ev for ev in self.evidence
+            if ev.category == EvidenceCategory.REJECTED
+        ]
+
+    @property
+    def acceptance_rate(self) -> float:
+        """
+        Percentage of submissions that became valid evidence.
+
+        Returns 1.0 if no evidence exists (avoid division by zero).
+
+        Design Reference:
+            evidence-classification-design.md Section 3.3
+        """
+        total = len(self.evidence)
+        if total == 0:
+            return 1.0
+        return len(self.valid_evidence) / total
 
     @property
     def evidence_count_by_category(self) -> Dict[str, int]:
