@@ -113,8 +113,6 @@ class HypothesisManager:
 
         return hypothesis
 
-        return hypothesis
-
     def create_validated_hypothesis(
         self,
         statement: str,
@@ -159,9 +157,24 @@ class HypothesisManager:
         turn: int,
         reasoning: str = "Linked by agent",
         stance_confidence: float = 1.0,
+        stance_override: Optional[EvidenceStance] = None,
     ) -> None:
-        """Link evidence to hypothesis."""
-        stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
+        """Link evidence to hypothesis.
+
+        Args:
+            hypothesis: Hypothesis to link evidence to
+            evidence_id: ID of evidence to link
+            supports: True for SUPPORTS, False for REFUTES (ignored if stance_override set)
+            turn: Current turn number
+            reasoning: Explanation of why evidence is linked
+            stance_confidence: Confidence in the stance (0.0-1.0)
+            stance_override: Optional explicit stance (SUPPORTS, REFUTES, or NEUTRAL).
+                           When set, the `supports` parameter is ignored.
+        """
+        if stance_override is not None:
+            stance = stance_override
+        else:
+            stance = EvidenceStance.SUPPORTS if supports else EvidenceStance.REFUTES
 
         if evidence_id not in hypothesis.evidence_links:
             link = HypothesisEvidenceLink(
@@ -172,8 +185,10 @@ class HypothesisManager:
                 stance_confidence=stance_confidence,
             )
             hypothesis.evidence_links[evidence_id] = link
+
+            stance_label = stance.value
             self.logger.info(
-                f"Linked {'supporting' if supports else 'refuting'} evidence to hypothesis: {evidence_id}",
+                f"Linked {stance_label} evidence to hypothesis: {evidence_id}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
                     "hypothesis": hypothesis.statement[:50],
@@ -181,6 +196,7 @@ class HypothesisManager:
             )
 
         # Update likelihood after linking evidence
+        # NEUTRAL links are stored for audit trail but do not affect confidence
         self.update_likelihood_from_evidence(hypothesis, turn)
 
     def update_likelihood_from_evidence(
@@ -263,17 +279,16 @@ class HypothesisManager:
         old_likelihood = hypothesis.likelihood
         hypothesis.likelihood = max(0.0, min(1.0, new_likelihood))  # Clamp to [0, 1]
         hypothesis.last_updated_turn = current_turn
-        # Check if this represents progress
+        # Check if this represents progress (consistent with update_likelihood_from_evidence)
         if abs(new_likelihood - old_likelihood) >= 0.05:  # 5% threshold
-            # hypothesis.last_progress_at_turn = current_turn # Removed from model
-            # hypothesis.iterations_without_progress = 0 # Removed from model
+            hypothesis.last_progress_at_turn = current_turn
+            hypothesis.iterations_without_progress = 0
             self.logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} likelihood updated: "
                 f"{old_likelihood:.2f} → {new_likelihood:.2f} ({reason})"
             )
         else:
-            # hypothesis.iterations_without_progress += 1
-            pass
+            hypothesis.iterations_without_progress += 1
             self.logger.debug(
                 f"Hypothesis {hypothesis.hypothesis_id}: minimal change, "
                 f"iterations_without_progress={hypothesis.iterations_without_progress}"
@@ -289,11 +304,12 @@ class HypothesisManager:
         hypothesis: Hypothesis,
         turn: int,
     ) -> None:
-        """Check if hypothesis should transition to VALIDATED or REFUTED
+        """Check if hypothesis should transition status.
 
         Transition criteria:
         - VALIDATED: likelihood >= 0.70 and at least 2 supporting evidence
         - REFUTED: likelihood <= 0.20 and at least 2 refuting evidence
+        - INCONCLUSIVE: likelihood between 0.3-0.5 for 3+ turns with no evidence progress
 
         Args:
             hypothesis: Hypothesis to check
@@ -336,6 +352,22 @@ class HypothesisManager:
                     "hypothesis_id": hypothesis.hypothesis_id,
                     "likelihood": hypothesis.likelihood,
                     "refuting_evidence": refuting_count,
+                },
+            )
+
+        # Check for inconclusive: stagnant in gray zone (0.3-0.5) for 3+ turns
+        elif (
+            0.3 <= hypothesis.likelihood <= 0.5
+            and hypothesis.iterations_without_progress >= 3
+        ):
+            hypothesis.status = HypothesisStatus.INCONCLUSIVE
+            self.logger.info(
+                f"Hypothesis INCONCLUSIVE: {hypothesis.statement} "
+                f"(likelihood={hypothesis.likelihood:.2f}, stagnant for "
+                f"{hypothesis.iterations_without_progress} turns)",
+                extra={
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "likelihood": hypothesis.likelihood,
                 },
             )
 

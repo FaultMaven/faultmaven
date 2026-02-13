@@ -21,8 +21,10 @@ Architecture:
 - Automatic status transitions (INVESTIGATING → RESOLVED)
 """
 
+import asyncio
 import json
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -672,6 +674,10 @@ class MilestoneEngine:
         self.stagnation_breaker = StagnationBreaker()
         self.llm_error_handler = LLMErrorHandler()
 
+        # G10: Per-case asyncio locks to prevent concurrent process_turn
+        # calls on the same case from interleaving and corrupting state
+        self._case_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
         logger.info("MilestoneEngine initialized with structured output engine")
 
     async def process_turn(
@@ -716,6 +722,22 @@ class MilestoneEngine:
         Raises:
             MilestoneEngineError: If processing fails
         """
+        # G10: Acquire per-case lock to prevent concurrent turns from
+        # interleaving reads/writes on the same case state
+        async with self._case_locks[case.case_id]:
+            return await self._process_turn_impl(
+                case, user_message, attachments, intent_type, intent_data
+            )
+
+    async def _process_turn_impl(
+        self,
+        case: Case,
+        user_message: str,
+        attachments: list[dict[str, Any]] | None = None,
+        intent_type: str | None = None,
+        intent_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Inner implementation of process_turn, called under per-case lock."""
         # Add intent information to logger for tracing
         # Note: current_turn has already been incremented by investigation_service before this point
         intent_info = f" [intent={intent_type}]" if intent_type else ""
@@ -980,26 +1002,41 @@ class MilestoneEngine:
                 # ========================================
                 elif case.status == CaseStatus.INVESTIGATING:
                     # Pattern matching for ABANDONMENT intent (CLOSED without solution)
-                    # These patterns indicate user wants to close WITHOUT confirming solution
-                    # Note: Use key phrases that can appear anywhere in the message
+                    # These patterns indicate user wants to close WITHOUT confirming solution.
+                    # Use multi-word phrases to avoid false positives from contextual mentions.
+                    # e.g., "abandon" alone would match "I don't want to abandon this".
                     abandonment_patterns = [
-                        "as unresolved",  # "close as unresolved", "close this case as unresolved"
-                        "without solution",  # "close without solution", "close this without solution"
+                        "as unresolved",  # "close as unresolved"
+                        "without solution",  # "close without solution"
                         "without resolving",  # "close without resolving"
                         "abandon this case",
                         "abandon the case",
-                        "abandon",  # Generic abandonment
-                        "give up",
-                        "can't solve",
-                        "cannot solve",
-                        "unable to resolve",
-                        "escalate this",
-                        "escalate to",
+                        "abandon this investigation",
+                        "give up on this",
+                        "i give up",
+                        "let's give up",
+                        "can't solve this",
+                        "cannot solve this",
+                        "unable to resolve this",
+                        "escalate this case",
+                        "escalate this to",
+                    ]
+
+                    # Negation patterns that indicate the user does NOT want to abandon
+                    abandonment_negations = [
+                        "don't abandon",
+                        "do not abandon",
+                        "don't want to abandon",
+                        "not abandon",
+                        "don't give up",
+                        "do not give up",
+                        "don't want to give up",
+                        "shouldn't escalate",
                     ]
 
                     # Pattern matching for RESOLUTION intent (RESOLVED with solution)
-                    # These patterns indicate user confirms problem is fixed
-                    # Use specific phrases that clearly indicate solution/resolution
+                    # These patterns indicate user confirms problem is fixed.
+                    # Use specific phrases that clearly indicate solution/resolution.
                     resolve_patterns = [
                         "mark as resolved",
                         "mark this resolved",
@@ -1012,8 +1049,9 @@ class MilestoneEngine:
                         "issue fixed",
                         "solution worked",
                         "solution works",
-                        "fixed now",
-                        "working now",
+                        "it's fixed now",
+                        "that fixed it",
+                        "the fix worked",
                     ]
 
                     # Ambiguous patterns that need context from abandonment keywords
@@ -1025,9 +1063,14 @@ class MilestoneEngine:
                     ]
 
                     # CHECK ABANDONMENT FIRST (highest priority)
-                    if any(
+                    # Guard: skip if message contains negation ("don't abandon", etc.)
+                    has_abandonment = any(
                         pattern in user_msg_lower for pattern in abandonment_patterns
-                    ):
+                    )
+                    has_negation = any(
+                        neg in user_msg_lower for neg in abandonment_negations
+                    )
+                    if has_abandonment and not has_negation:
                         logger.info(
                             f"🎯 Detected explicit user intent to ABANDON case {case.case_id} (CLOSED): '{user_message[:50]}...'"
                         )
@@ -1163,8 +1206,10 @@ class MilestoneEngine:
             # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
             metadata.update(response_metadata)
 
-            # 3b. Validate Diagnostic Reasoning (Section 3.3)
-            # Ensure agent provides context-specific reasoning before suggestions
+            # 3b. Validate Diagnostic Reasoning with Self-Correction (Section 3.3, F3)
+            # Ensure agent provides context-specific reasoning before suggestions.
+            # If validation fails, retry ONCE with a correction prompt that includes
+            # the specific violations, giving the LLM a chance to self-correct.
             from faultmaven.core.investigation.diagnostic_reasoning_validator import (
                 validate_diagnostic_reasoning,
             )
@@ -1177,10 +1222,68 @@ class MilestoneEngine:
             if not is_valid_reasoning:
                 logger.warning(
                     f"Diagnostic reasoning validation failed: {violations}. "
-                    "Agent response may contain generic advice without case-specific reasoning."
+                    "Attempting self-correction retry."
                 )
-                # Add violations to metadata for observability
-                metadata["diagnostic_reasoning_violations"] = violations
+
+                # Self-correction: retry once with violation feedback
+                try:
+                    correction_feedback = (
+                        "\n\n[SYSTEM CORRECTION REQUIRED]\n"
+                        "Your previous response failed diagnostic reasoning validation. "
+                        "You MUST fix these issues:\n"
+                        + "\n".join(f"- {v}" for v in violations)
+                        + "\n\nRewrite your response to address ALL violations above. "
+                        "Ground your reasoning in THIS case's specific evidence."
+                    )
+                    corrected_prompt = prompt + correction_feedback
+                    corrected_response = await self._generate_structured_output(
+                        corrected_prompt, schema_model
+                    )
+
+                    # Re-validate the corrected response
+                    is_valid_retry, retry_violations = validate_diagnostic_reasoning(
+                        case=case_updated,
+                        agent_response=corrected_response.agent_response,
+                        contains_suggestion=None,
+                    )
+
+                    if is_valid_retry:
+                        logger.info(
+                            "Self-correction succeeded: retried response passes validation."
+                        )
+                        # Re-process with corrected response
+                        response_obj = corrected_response
+                        case_updated, response_metadata = (
+                            await self._process_response_structured(
+                                case, user_message, corrected_response, attachments
+                            )
+                        )
+                        metadata.update(response_metadata)
+                        violations = []
+                    else:
+                        logger.warning(
+                            f"Self-correction retry also failed: {retry_violations}. "
+                            "Proceeding with retried response; violations fed back for next turn."
+                        )
+                        # Use the retried response (it may be partially improved)
+                        response_obj = corrected_response
+                        case_updated, response_metadata = (
+                            await self._process_response_structured(
+                                case, user_message, corrected_response, attachments
+                            )
+                        )
+                        metadata.update(response_metadata)
+                        violations = retry_violations
+                except Exception as e:
+                    logger.warning(
+                        f"Self-correction retry failed with error: {e}. "
+                        "Proceeding with original response."
+                    )
+                    # Keep original response_obj and case_updated as-is
+
+                # Add remaining violations to metadata for observability (G9+G11 wires them)
+                if violations:
+                    metadata["diagnostic_reasoning_violations"] = violations
 
             # Phase 1: No-Op Detection
             progress_made = self._check_if_progress_made(metadata)
@@ -1243,6 +1346,14 @@ class MilestoneEngine:
             # Step 5.8: Update progress tracking (before stagnation check)
             if metadata.get("progress_made", False):
                 case_updated.turns_without_progress = 0
+                # G3: Exit degraded mode when progress resumes
+                if case_updated.degraded_mode is not None:
+                    case_updated.degraded_mode.exited_at = datetime.now(UTC)
+                    logger.info(
+                        f"Exiting degraded mode for case {case_updated.case_id}: "
+                        f"progress resumed after {case_updated.degraded_mode.mode_type.value}"
+                    )
+                    case_updated.degraded_mode = None
             else:
                 case_updated.turns_without_progress += 1
 
@@ -1258,9 +1369,40 @@ class MilestoneEngine:
                 metadata["stagnation_type"] = stagnation_type.value
                 metadata["breakout_action"] = breakout_action.action
                 metadata["breakout_prompt_injection"] = breakout_action.prompt_injection
+                # G1: Store breakout prompt as system_feedback so it reaches
+                # the LLM in the next turn via build_investigation_context()
+                if breakout_action.prompt_injection:
+                    current_feedback = metadata.get("system_feedback", "") or ""
+                    breakout_msg = f"STAGNATION RECOVERY: {breakout_action.prompt_injection}"
+                    metadata["system_feedback"] = (
+                        f"{current_feedback}\n{breakout_msg}".strip()
+                    )
                 logger.info(
                     f"Stagnation detected: {stagnation_type.value}. "
                     f"Action: {breakout_action.action}"
+                )
+
+            # Step 5.9b: Wire validation errors into system_feedback (G9 + G11)
+            # Diagnostic reasoning violations and reasoning validation errors
+            # must propagate to the next turn so the LLM can self-correct.
+            feedback_parts = []
+            if metadata.get("diagnostic_reasoning_violations"):
+                violations = metadata["diagnostic_reasoning_violations"]
+                feedback_parts.append(
+                    f"DIAGNOSTIC REASONING ISSUES: {'; '.join(violations)}. "
+                    "Provide case-specific reasoning with evidence references."
+                )
+            if metadata.get("reasoning_validation_errors"):
+                errors = metadata["reasoning_validation_errors"]
+                feedback_parts.append(
+                    f"REASONING VALIDATION: {'; '.join(errors)}. "
+                    "Provide internal_reasoning with milestone_justifications."
+                )
+            if feedback_parts:
+                current_feedback = metadata.get("system_feedback", "") or ""
+                new_feedback = "\n".join(feedback_parts)
+                metadata["system_feedback"] = (
+                    f"{current_feedback}\n{new_feedback}".strip()
                 )
 
             # Step 6: Record turn progress
