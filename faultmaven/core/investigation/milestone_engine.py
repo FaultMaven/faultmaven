@@ -607,11 +607,10 @@ def _post_process_llm_response(
         # If no evidence but user message looks like external data, create fallback
         if not evidence_list or len(evidence_list) == 0:
             fallback_evidence = _detect_external_data_patterns(user_message)
-            if fallback_evidence:
-                if (
-                    not hasattr(updates, "evidence_to_add")
-                    or updates.evidence_to_add is None
-                ):
+            if fallback_evidence and hasattr(updates, "evidence_to_add"):
+                # Only add fallback evidence if the StateUpdate type supports it
+                # (TerminalStateUpdate doesn't have evidence_to_add field)
+                if updates.evidence_to_add is None:
                     updates.evidence_to_add = []
                 updates.evidence_to_add.append(fallback_evidence)
                 logger.warning(
