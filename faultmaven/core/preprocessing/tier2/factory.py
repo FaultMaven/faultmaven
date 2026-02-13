@@ -52,9 +52,7 @@ def create_tier2_service(
 
     if backend == "external":
         if not base_url:
-            raise ValueError(
-                "TIER2_URL required when TIER2_BACKEND=external"
-            )
+            raise ValueError("TIER2_URL required when TIER2_BACKEND=external")
         logger.info(f"Tier 2 deep analysis: external ({base_url})")
         return ExternalTier2Client(
             base_url=base_url,
@@ -65,9 +63,7 @@ def create_tier2_service(
 
     if backend == "local":
         if not llm_client:
-            raise ValueError(
-                "LLM client required when TIER2_BACKEND=local"
-            )
+            raise ValueError("LLM client required when TIER2_BACKEND=local")
         logger.info("Tier 2 deep analysis: local LLM")
         return LocalTier2Service(
             llm_client=llm_client,
@@ -76,9 +72,7 @@ def create_tier2_service(
 
     if backend == "basic":
         if not storage_service:
-            raise ValueError(
-                "Storage service required when TIER2_BACKEND=basic"
-            )
+            raise ValueError("Storage service required when TIER2_BACKEND=basic")
         logger.info("Tier 2 deep analysis: basic keyword search")
         return BasicTier2Service(
             storage_service=storage_service,

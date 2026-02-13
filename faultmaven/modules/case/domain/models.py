@@ -439,7 +439,11 @@ class InvestigationProgress(BaseModel):
         if self.mitigation_applied and not self.root_cause_identified:
             # If a full solution has also been proposed/applied (beyond just mitigation),
             # stay in SOLUTION stage
-            if self.solution_proposed or self.solution_applied or self.solution_verified:
+            if (
+                self.solution_proposed
+                or self.solution_applied
+                or self.solution_verified
+            ):
                 return InvestigationStage.SOLUTION
             return InvestigationStage.HYPOTHESIS_FORMULATION
 
@@ -3320,10 +3324,7 @@ class Case(BaseModel):
         Design Reference:
             evidence-classification-design.md Section 3.3
         """
-        return [
-            ev for ev in self.evidence
-            if ev.category != EvidenceCategory.REJECTED
-        ]
+        return [ev for ev in self.evidence if ev.category != EvidenceCategory.REJECTED]
 
     @property
     def rejected_submissions(self) -> List[Evidence]:
@@ -3336,10 +3337,7 @@ class Case(BaseModel):
         Design Reference:
             evidence-classification-design.md Section 3.3
         """
-        return [
-            ev for ev in self.evidence
-            if ev.category == EvidenceCategory.REJECTED
-        ]
+        return [ev for ev in self.evidence if ev.category == EvidenceCategory.REJECTED]
 
     @property
     def acceptance_rate(self) -> float:

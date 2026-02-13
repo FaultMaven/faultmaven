@@ -1373,7 +1373,9 @@ class MilestoneEngine:
                 # the LLM in the next turn via build_investigation_context()
                 if breakout_action.prompt_injection:
                     current_feedback = metadata.get("system_feedback", "") or ""
-                    breakout_msg = f"STAGNATION RECOVERY: {breakout_action.prompt_injection}"
+                    breakout_msg = (
+                        f"STAGNATION RECOVERY: {breakout_action.prompt_injection}"
+                    )
                     metadata["system_feedback"] = (
                         f"{current_feedback}\n{breakout_msg}".strip()
                     )

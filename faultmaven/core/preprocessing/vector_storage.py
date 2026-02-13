@@ -165,8 +165,7 @@ async def store_in_vector_db_background(
 
         if not chunks:
             logger.info(
-                f"No chunks generated for {evidence_id} — "
-                f"structural index is empty"
+                f"No chunks generated for {evidence_id} — " f"structural index is empty"
             )
             return
 
@@ -188,11 +187,13 @@ async def store_in_vector_db_background(
                 if isinstance(v, (str, int, float, bool)):
                     chunk_metadata[k] = v
 
-            documents.append({
-                "id": f"{evidence_id}_chunk_{i}",
-                "content": chunk.text,
-                "metadata": chunk_metadata,
-            })
+            documents.append(
+                {
+                    "id": f"{evidence_id}_chunk_{i}",
+                    "content": chunk.text,
+                    "metadata": chunk_metadata,
+                }
+            )
 
         # 3. Store in vector DB
         await case_vector_store.add_documents(

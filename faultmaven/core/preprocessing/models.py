@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 
 from faultmaven.models.api import DataType as DetailedDataType
 
-
 # =============================================================================
 # Unified DataType (6 types — shared across preprocessing and evidence)
 # =============================================================================
@@ -45,7 +44,9 @@ class UnifiedDataType(str, Enum):
 
     LOGS = "logs"  # Time-ordered diagnostic output (logs, traces, command output)
     METRICS = "metrics"  # Quantitative measurements (time-series, dashboards, alerts)
-    CONFIGURATION = "configuration"  # Structured system/app config (YAML, JSON, TOML, env)
+    CONFIGURATION = (
+        "configuration"  # Structured system/app config (YAML, JSON, TOML, env)
+    )
     CODE = "code"  # Source code files
     TEXT = "text"  # Unstructured prose (docs, runbooks, descriptions)
     IMAGE = "image"  # Visual content (screenshots, diagrams)
@@ -93,9 +94,7 @@ class ExtractionResult(BaseModel):
             "metadata_extraction"
         )
     )
-    content: str = Field(
-        description="Extracted structural index / processed content"
-    )
+    content: str = Field(description="Extracted structural index / processed content")
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Type-specific extraction metadata",
@@ -106,9 +105,7 @@ class SanitizationResult(BaseModel):
     """Output from the sanitization step."""
 
     content: str = Field(description="Content with PII/secrets redacted")
-    redactions_made: int = Field(
-        default=0, description="Number of redactions applied"
-    )
+    redactions_made: int = Field(default=0, description="Number of redactions applied")
     redactions: List[tuple] = Field(
         default_factory=list,
         description="List of (type, count) redaction details",
@@ -261,9 +258,7 @@ class DeepAnalysisResult(BaseModel):
     )
     tokens_used: int = Field(default=0)
     processing_time_ms: int = Field(default=0)
-    backend_used: str = Field(
-        default="", description="Which Tier 2 backend was used"
-    )
+    backend_used: str = Field(default="", description="Which Tier 2 backend was used")
 
 
 # =============================================================================
