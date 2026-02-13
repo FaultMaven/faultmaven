@@ -856,22 +856,27 @@ CONFIDENCE_THRESHOLDS = {
     'auto_accept': 0.85,      # Accept classification without confirmation
     'suggest': 0.60,          # Suggest to user with option to override
     'llm_fallback': 0.50,     # Trigger LLM classification
-    'user_required': 0.30,    # Below this, require user input
+    'user_required': 0.50,    # Below this, require user input
 }
 
-# Precedence rules:
+# Note: llm_fallback and user_required share the same threshold (0.50).
+# These are NOT competing triggers — they are used by separate helper
+# functions (should_use_llm_fallback / should_request_user_confirmation)
+# for callers outside the main classify_with_fallback() method.
+# Within classify_with_fallback(), the fallback chain has its own inline
+# thresholds and precedence: LLM (Level 5) is attempted first, and user
+# confirmation (Level 6) is the last resort when LLM also fails.
+#
+# Precedence within classify_with_fallback():
 # - Level 3 (Weak Indicators) returns results in the 0.50-0.84 range.
 #   If a weak indicator matches (≥0.50), the result is returned immediately.
 # - Level 4 (Contextual Hints) checks filename/description when Level 3
 #   produces no match. If a contextual hint matches (≥0.60), it takes
 #   precedence and is returned.
 # - LLM fallback (Level 5) triggers only when BOTH Level 3 AND Level 4
-#   fail to reach their respective thresholds — i.e., the best heuristic
-#   confidence is below 0.50 (no weak indicator match) AND no contextual
-#   hint reached 0.60.
+#   fail to reach their respective thresholds.
 # - User confirmation (Level 6) triggers when LLM confidence is ≤0.70
-#   or when LLM fallback is disabled and best confidence is below
-#   user_required (0.30).
+#   or when LLM fallback is disabled and best confidence is below 0.50.
 
 def should_request_user_confirmation(confidence: float) -> bool:
     """Determine if user confirmation is needed."""
