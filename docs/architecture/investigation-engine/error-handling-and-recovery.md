@@ -1,7 +1,7 @@
 # Error Handling and Recovery Patterns
 
-**Version**: 2.0
-**Last Updated**: 2026-02-01
+**Version**: 2.1
+**Last Updated**: 2026-02-13
 **Status**: Operational Design
 **Architecture**: Milestone-Based Investigation Framework
 
@@ -286,6 +286,58 @@ class ResponseParser:
             _parse_fallback=True
         )
 ```
+
+### 3.2 Reasoning Validation with Self-Correction
+
+When the LLM produces a structurally valid response but omits required reasoning justifications for milestone completions, the engine uses a **self-correction retry loop** rather than crashing the turn with a 500 error.
+
+```python
+# Self-correction flow (milestone_engine.py):
+is_valid, violations = validate_reasoning_first(response_obj, case)
+if not is_valid:
+    # Build correction prompt with specific violations
+    correction_feedback = (
+        "[SYSTEM CORRECTION REQUIRED]\n"
+        "Your previous response failed diagnostic reasoning validation.\n"
+        "You MUST fix these issues:\n"
+        + "\n".join(f"- {v}" for v in violations)
+        + "\nRewrite your response to address ALL violations above."
+    )
+    corrected_prompt = original_prompt + correction_feedback
+
+    # Retry once with violation feedback
+    corrected_response = await generate_structured_output(corrected_prompt, schema)
+
+    # Re-validate
+    is_valid_retry, retry_violations = validate_reasoning(corrected_response)
+    if is_valid_retry:
+        # Use corrected response
+        response_obj = corrected_response
+    else:
+        # Proceed with corrected response anyway (may be partially improved)
+        # Wire remaining violations to system_feedback for next turn
+        response_obj = corrected_response
+        metadata["diagnostic_reasoning_violations"] = retry_violations
+```
+
+**Key behaviors:**
+- Maximum 1 self-correction retry per turn (prevents infinite loops)
+- If retry also fails, the retried response is used (may be partially improved)
+- Remaining violations are wired to `system_feedback` so the next turn's LLM context includes the correction instructions
+- Never crashes the turn with a 500 error for reasoning validation failures
+
+### 3.3 System Feedback Loop
+
+Validation errors from multiple sources are merged into `system_feedback` on the turn record, which `build_investigation_context()` includes in the next turn's prompt:
+
+| Source | Feedback Key | Content |
+|--------|-------------|---------|
+| Diagnostic reasoning validator | `diagnostic_reasoning_violations` | Case-specific reasoning issues |
+| Reasoning-first validator | `reasoning_validation_errors` | Missing milestone justifications |
+| Stagnation breaker | `breakout_prompt_injection` | Recovery instructions (e.g., "try different category") |
+| State validator | `validation_repairs` | Automatic state corrections applied |
+
+This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.
 
 ---
 
@@ -597,6 +649,8 @@ class StagnationType(str, Enum):
 
 ### 5.2 Breaking Out of Stagnation
 
+When stagnation is detected, the breaker creates a `BreakoutAction` with a `prompt_injection` string. This injection is wired into the turn record's `system_feedback` field, which `build_investigation_context()` includes in the next turn's prompt. This ensures the LLM receives the corrective instruction.
+
 ```python
 class StagnationBreaker:
     """Strategies to break out of stagnation."""
@@ -610,6 +664,8 @@ class StagnationBreaker:
         Determine action to break out of stagnation.
 
         Returns recommended action and updated case state.
+        The caller (MilestoneEngine) wires prompt_injection into
+        system_feedback for next-turn LLM consumption.
         """
 
         if stagnation_type == StagnationType.NO_PROGRESS:
@@ -948,6 +1004,33 @@ class ErrorTracker:
 
 ---
 
+## 8. Concurrency Protection
+
+### 8.1 Per-Case Asyncio Locks
+
+The `process_turn()` method performs read-modify-write on case state across an LLM invocation that takes seconds. Without protection, concurrent requests for the same case can interleave and corrupt state (lost evidence, milestone regression, duplicate hypotheses).
+
+```python
+class MilestoneEngine:
+    def __init__(self):
+        # Per-case asyncio locks (defaultdict creates lock on first access)
+        self._case_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    async def process_turn(self, case: Case, ...) -> dict:
+        # Acquire per-case lock — concurrent turns on DIFFERENT cases proceed in parallel
+        async with self._case_locks[case.case_id]:
+            return await self._process_turn_impl(case, ...)
+```
+
+**Key characteristics:**
+- Locks are per-case, not global — different cases process concurrently
+- Uses `asyncio.Lock` (cooperative, not OS-level) — suitable for the async architecture
+- Lock is acquired at the top of `process_turn()` before any state reads
+- `defaultdict(asyncio.Lock)` creates locks lazily on first access
+- Concurrent requests for the same case queue and execute sequentially
+
+---
+
 ## Summary
 
 This error handling framework provides:
@@ -958,18 +1041,25 @@ This error handling framework provides:
 
 3. **Graceful parsing fallback** - Extract meaningful responses even when JSON parsing fails
 
-4. **Milestone-based state validation** - Ensure investigation state consistency
+4. **Reasoning self-correction** - Feed validation errors back to LLM for retry before failing
 
-5. **Stagnation detection** - Identify when investigation is stuck (no progress, anchoring, loops)
+5. **System feedback loop** - Wire validation errors, reasoning issues, and breakout prompts to next-turn context
 
-6. **Recovery strategies** - Memory compression, hypothesis simplification, fallback prompts
+6. **Milestone-based state validation** - Ensure investigation state consistency
 
-7. **Error context propagation** - Comprehensive error tracking for debugging
+7. **Stagnation detection** - Identify when investigation is stuck (no progress, anchoring, loops)
+
+8. **Recovery strategies** - Memory compression, hypothesis simplification, fallback prompts
+
+9. **Error context propagation** - Comprehensive error tracking for debugging
+
+10. **Concurrency protection** - Per-case asyncio locks prevent state corruption from concurrent turns
 
 **Integration Points**:
-- `MilestoneEngine.process_turn()` - Calls StateValidator and StagnationDetector
+- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, StagnationDetector, and self-correction retry
 - `LLMProvider.generate()` - Uses LLMErrorHandler for retry logic
 - `ResponseParser.parse()` - Handles parsing failures gracefully
+- `build_investigation_context()` - Consumes system_feedback from previous turn for LLM context
 
 ---
 

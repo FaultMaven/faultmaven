@@ -237,7 +237,22 @@ class InvestigationProgress(BaseModel):
         - HYPOTHESIS_FORMULATION: Generating theories (why)
         - HYPOTHESIS_VALIDATION: Testing theories (why really)
         - SOLUTION: Applying fix (how)
+
+        MITIGATION_FIRST path handling:
+        When mitigation_applied=True but root_cause_identified=False, the case
+        has completed quick mitigation and needs to return to RCA. In this
+        situation, current_stage returns HYPOTHESIS_FORMULATION so the LLM
+        receives the correct schema (with hypothesis fields) rather than being
+        locked into the SOLUTION schema which lacks RCA fields.
         """
+        # MITIGATION_FIRST path: post-mitigation RCA routing
+        # If mitigation is done but root cause is NOT identified, route to RCA
+        if self.mitigation_applied and not self.root_cause_identified:
+            # Unless a full solution (beyond mitigation) has been proposed
+            if self.solution_proposed or self.solution_applied or self.solution_verified:
+                return InvestigationStage.SOLUTION
+            return InvestigationStage.HYPOTHESIS_FORMULATION
+
         # Stage 4: Solution phase
         if (self.solution_proposed or
             self.solution_applied or
@@ -1290,28 +1305,20 @@ class EvidenceStance(str, Enum):
 
     Use stance_confidence (0.0-1.0) for granularity instead of
     STRONGLY_SUPPORTS vs SUPPORTS distinctions, which LLMs score inconsistently.
+
+    NEUTRAL stance handling:
+    NEUTRAL evidence links are stored for audit trail completeness but do NOT
+    affect hypothesis confidence calculations. Only SUPPORTS and REFUTES stances
+    modify the hypothesis likelihood score.
     """
     SUPPORTS = "supports"
-    """Evidence supports the hypothesis"""
+    """Evidence supports the hypothesis. Increases likelihood by +0.15."""
 
     REFUTES = "refutes"
-    """Evidence contradicts the hypothesis"""
-
-class EvidenceStance(str, Enum):
-    """
-    Simplified 3-state stance for LLM consistency.
-
-    Use stance_confidence (0.0-1.0) for granularity instead of
-    STRONGLY_SUPPORTS vs SUPPORTS distinctions, which LLMs score inconsistently.
-    """
-    SUPPORTS = "supports"
-    """Evidence supports the hypothesis"""
-
-    REFUTES = "refutes"
-    """Evidence contradicts the hypothesis"""
+    """Evidence contradicts the hypothesis. Decreases likelihood by -0.20."""
 
     NEUTRAL = "neutral"
-    """Evidence neither supports nor refutes"""
+    """Evidence neither supports nor refutes. Stored for audit trail, no confidence effect."""
 ```
 
 ---
@@ -1358,12 +1365,13 @@ class HypothesisCategory(str, Enum):
     OTHER = "other"  # Doesn't fit above categories
 
 class HypothesisStatus(str, Enum):
-    CAPTURED = "captured"
-    ACTIVE = "active"
-    VALIDATED = "validated"
-    REFUTED = "refuted"
-    INCONCLUSIVE = "inconclusive"
-    RETIRED = "retired"
+    CAPTURED = "captured"       # Initial state, just recorded
+    ACTIVE = "active"           # Under active investigation
+    VALIDATED = "validated"     # likelihood ≥ 0.70 + 2+ supporting evidence
+    REFUTED = "refuted"         # likelihood ≤ 0.20 + 2+ refuting evidence
+    INCONCLUSIVE = "inconclusive"  # likelihood 0.3–0.5 + stagnant 3+ turns (no evidence change)
+    RETIRED = "retired"         # Confidence decayed below threshold
+    SUPERSEDED = "superseded"   # Replaced by another hypothesis
 
 class HypothesisGenerationMode(str, Enum):
     OPPORTUNISTIC = "opportunistic"
@@ -1402,7 +1410,13 @@ class EvidenceRequirement(BaseModel):
 
 ```python
 def detect_category_anchoring(case: Case) -> Optional[str]:
-    """Detect if agent stuck testing same hypothesis category"""
+    """
+    Detect if agent stuck testing same hypothesis category.
+
+    Checks both REFUTED and INCONCLUSIVE hypotheses. INCONCLUSIVE status is
+    assigned when a hypothesis has likelihood 0.3–0.5 for 3+ turns with no
+    evidence change (see HypothesisManager._check_status_transition).
+    """
 
     category_counts = {}
     for h in case.hypotheses.values():
@@ -1447,6 +1461,10 @@ class DegradedMode(BaseModel):
     """
     Investigation is blocked or struggling.
     Agent needs to offer fallback options.
+
+    Exit behavior: Degraded mode is automatically exited when progress_made=True
+    on any subsequent turn. The engine sets exited_at and clears degraded_mode
+    on the case when progress resumes.
     """
 
     mode_type: DegradedModeType
@@ -1511,4 +1529,20 @@ def should_enter_degraded_mode(case: Case) -> Optional[DegradedModeType]:
             return DegradedModeType.HYPOTHESIS_DEADLOCK
 
     return None
+
+
+def check_degraded_mode_exit(case: Case, progress_made: bool) -> bool:
+    """
+    Exit degraded mode when progress resumes.
+
+    Called after each turn. If progress was made and case is in degraded mode,
+    sets exited_at and clears degraded_mode on the case.
+
+    Returns True if degraded mode was exited.
+    """
+    if progress_made and case.degraded_mode is not None:
+        case.degraded_mode.exited_at = datetime.now(timezone.utc)
+        case.degraded_mode = None
+        return True
+    return False
 ```
