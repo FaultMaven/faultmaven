@@ -1369,6 +1369,174 @@ class DatabaseCaseRepository(CaseRepository):
                 f"Failed to create agent execution {execution.execution_id}: {e}"
             ) from e
 
+    async def get_agent_execution(self, execution_id: str) -> Optional[Any]:
+        """Get agent execution by ID with tool calls loaded (database implementation).
+
+        Args:
+            execution_id: Execution identifier
+
+        Returns:
+            AgentExecution with tool_calls loaded, or None if not found
+
+        Raises:
+            RepositoryException: If retrieval fails
+        """
+        try:
+            from faultmaven.infrastructure.persistence.models import (
+                AgentExecutionModel,
+                AgentToolCallV2Model,
+            )
+            from faultmaven.modules.case.domain.owned_models.agent_execution import (
+                AgentExecution,
+                AgentToolCall,
+                AgentType,
+                ExecutionStatus,
+            )
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
+            # Query with eager loading of tool_calls relationship
+            stmt = (
+                select(AgentExecutionModel)
+                .options(selectinload(AgentExecutionModel.tool_calls_v2))
+                .where(AgentExecutionModel.execution_id == execution_id)
+            )
+
+            result = await self.db.execute(stmt)
+            execution_model = result.scalar_one_or_none()
+
+            if execution_model is None:
+                return None
+
+            # Convert ORM model to domain model
+            tool_calls = []
+            if execution_model.tool_calls_v2:
+                for tc_model in execution_model.tool_calls_v2:
+                    tool_call = AgentToolCall(
+                        tool_call_id=tc_model.tool_call_id,
+                        execution_id=tc_model.execution_id,
+                        tool_name=tc_model.tool_name,
+                        tool_input=(
+                            json.loads(tc_model.tool_input)
+                            if tc_model.tool_input
+                            else {}
+                        ),
+                        tool_output=tc_model.tool_output,
+                        status=tc_model.status,
+                        started_at=tc_model.started_at,
+                        completed_at=tc_model.completed_at,
+                        duration_ms=tc_model.duration_ms,
+                        error_message=tc_model.error_message,
+                        created_at=tc_model.created_at,
+                        updated_at=tc_model.updated_at,
+                    )
+                    tool_calls.append(tool_call)
+
+            execution = AgentExecution(
+                execution_id=execution_model.execution_id,
+                case_id=execution_model.case_id,
+                agent_type=AgentType(execution_model.agent_type),
+                agent_model=execution_model.agent_model,
+                status=ExecutionStatus(execution_model.status),
+                started_at=execution_model.started_at,
+                completed_at=execution_model.completed_at,
+                execution_duration_ms=execution_model.execution_duration_ms,
+                prompt=execution_model.prompt,
+                response=execution_model.response,
+                error_message=execution_model.error_message,
+                token_usage=(
+                    json.loads(execution_model.token_usage)
+                    if execution_model.token_usage
+                    else None
+                ),
+                tool_calls=tool_calls,
+                metadata=(
+                    json.loads(execution_model.execution_metadata)
+                    if execution_model.execution_metadata
+                    else {}
+                ),
+                created_at=execution_model.created_at,
+                updated_at=execution_model.updated_at,
+            )
+
+            return execution
+
+        except Exception as e:
+            logger.error(f"Failed to get agent execution {execution_id}: {e}")
+            raise RepositoryException(
+                f"Failed to get agent execution {execution_id}: {e}"
+            ) from e
+
+    async def update_agent_execution(self, execution: Any) -> Any:
+        """Update agent execution status and results (database implementation).
+
+        Args:
+            execution: AgentExecution domain object with updates
+
+        Returns:
+            Updated AgentExecution
+
+        Raises:
+            RepositoryException: If update fails
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from faultmaven.infrastructure.persistence.models import AgentExecutionModel
+            from sqlalchemy import update
+
+            # Update timestamp
+            execution.updated_at = datetime.now(timezone.utc)
+
+            # Prepare update data
+            token_usage_json = (
+                json.dumps(execution.token_usage) if execution.token_usage else None
+            )
+            metadata_json = (
+                json.dumps(execution.metadata) if execution.metadata else None
+            )
+
+            # Update the execution record
+            stmt = (
+                update(AgentExecutionModel)
+                .where(AgentExecutionModel.execution_id == execution.execution_id)
+                .values(
+                    status=(
+                        execution.status.value
+                        if hasattr(execution.status, "value")
+                        else str(execution.status)
+                    ),
+                    completed_at=execution.completed_at,
+                    execution_duration_ms=execution.execution_duration_ms,
+                    response=execution.response,
+                    error_message=execution.error_message,
+                    token_usage=token_usage_json,
+                    execution_metadata=metadata_json,
+                    updated_at=execution.updated_at,
+                )
+            )
+
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            await self.db.commit()
+
+            if result.rowcount == 0:
+                raise RepositoryException(
+                    f"Agent execution {execution.execution_id} not found"
+                )
+
+            logger.debug(f"Updated agent execution {execution.execution_id}")
+            return execution
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(
+                f"Failed to update agent execution {execution.execution_id}: {e}"
+            )
+            raise RepositoryException(
+                f"Failed to update agent execution {execution.execution_id}: {e}"
+            ) from e
+
     # ========================================================================
     # Clear (Testing Utility)
     # ========================================================================
