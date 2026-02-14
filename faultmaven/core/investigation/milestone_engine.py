@@ -295,7 +295,10 @@ def validate_reasoning_first(
         if milestone not in internal_reasoning.milestone_justifications:
             errors.append(
                 f"Milestone '{milestone}' completed without justification. "
-                "Add justification to internal_reasoning.milestone_justifications."
+                f"You MUST add an entry to internal_reasoning.milestone_justifications. "
+                f"Required format: milestone_justifications: {{{milestone}: 'justification citing specific evidence IDs'}}. "
+                f"Example: {{{milestone}: 'Confirmed via ev_abc123 (logs) showing X and ev_def456 (metrics) showing Y'}}. "
+                "DO NOT leave milestone_justifications as empty {{}}."
             )
 
     # Check 1.5: Warn if trying to complete milestones with no evidence in case
@@ -543,11 +546,12 @@ def _post_process_llm_response(
 
     Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md (Strategy 4)
     """
+    evidence_to_add = getattr(updates, "evidence_to_add", []) or []
     logger.debug(
         f"Post-processing LLM response: "
         f"has_submission_classification={hasattr(updates, 'submission_classification')}, "
         f"submission_classification_value={getattr(updates, 'submission_classification', None)}, "
-        f"evidence_to_add_count={len(getattr(updates, 'evidence_to_add', []))}"
+        f"evidence_to_add_count={len(evidence_to_add)}"
     )
 
     # Check if response has submission_classification (INQUIRY phase)
@@ -1535,14 +1539,26 @@ class MilestoneEngine:
             # Provider supports strict json_schema - no need for schema in prompt
             final_prompt = prompt
 
+        # Track max_tokens across retries (will be increased if truncation detected)
+        max_tokens_state = {"value": 8000}  # Increased from 4000 base
+
         # Define the LLM operation for retry
         async def llm_operation():
             # Build generate parameters based on strategy mode
+            # CRITICAL FIX: Increased from 4000 to 8000 tokens to prevent JSON truncation
+            # Investigation schemas (especially _Verification) can be large, and Turn 2+
+            # requires substantial context. 4000 tokens was insufficient, causing:
+            # "EOF while parsing a value at line 4 column 24" errors
+            current_max_tokens = max_tokens_state["value"]
             generate_params = {
                 "prompt": final_prompt,
-                "max_tokens": 4000,
+                "max_tokens": current_max_tokens,
                 "temperature": 0.2,  # Lower temperature for structured output
             }
+
+            logger.debug(
+                f"Structured output generation attempt with max_tokens={current_max_tokens}"
+            )
 
             # Apply strategy-specific parameters
             if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
@@ -1603,7 +1619,193 @@ class MilestoneEngine:
                                 lines = lines[:-1]
                             content = "\n".join(lines).strip()
 
-            return schema_model.model_validate_json(content)
+            # PROVIDER-AGNOSTIC FIX: Parse nested JSON strings in function call arguments
+            # Some LLMs return nested objects as JSON strings instead of dicts
+            # E.g., {'state_updates': '{"field": "value"}'} instead of {'state_updates': {"field": "value"}}
+            def parse_nested_json(obj):
+                """Recursively parse JSON strings in a dict/list structure."""
+                if isinstance(obj, dict):
+                    return {k: parse_nested_json(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [parse_nested_json(item) for item in obj]
+                elif isinstance(obj, str):
+                    # Try to parse as JSON
+                    try:
+                        parsed = json.loads(obj)
+                        # Recursively parse the parsed object
+                        return parse_nested_json(parsed)
+                    except (json.JSONDecodeError, TypeError):
+                        # Not JSON, return as-is
+                        return obj
+                else:
+                    return obj
+
+            # PROVIDER-AGNOSTIC FIX: Validate and fix hallucinated enum values
+            # LLMs using function calling (not strict JSON mode) can hallucinate enum values
+            # that aren't in the schema. We detect and auto-correct these.
+            def fix_enum_violations(obj, schema_dict, root_defs=None):
+                """Recursively fix enum violations in the response object.
+
+                Args:
+                    obj: The object to fix
+                    schema_dict: Schema for this level of the object
+                    root_defs: Root-level $defs (carried through recursion for $ref resolution)
+                """
+                import difflib
+
+                if not isinstance(obj, dict):
+                    return obj
+
+                # Get the schema for this object type
+                properties = schema_dict.get("properties", {})
+
+                # Use root_defs if provided, otherwise use local defs
+                if root_defs is None:
+                    root_defs = schema_dict.get("$defs", {})
+
+                # Also check for local defs
+                local_defs = schema_dict.get("$defs", {})
+                # Merge: root defs take precedence
+                all_defs = {**local_defs, **root_defs}
+
+                fixed_obj = {}
+                for key, value in obj.items():
+                    if key not in properties:
+                        fixed_obj[key] = value
+                        continue
+
+                    prop_schema = properties[key]
+
+                    # Check if this property has enum constraints
+                    if "enum" in prop_schema and isinstance(value, str):
+                        valid_values = prop_schema["enum"]
+                        if value not in valid_values:
+                            # Find closest match using fuzzy matching
+                            closest_match = difflib.get_close_matches(
+                                value, valid_values, n=1, cutoff=0.6
+                            )
+                            if closest_match:
+                                corrected = closest_match[0]
+                                logger.warning(
+                                    f"Auto-correcting hallucinated enum value: "
+                                    f"'{value}' → '{corrected}' for field '{key}'"
+                                )
+                                fixed_obj[key] = corrected
+                            else:
+                                # No close match, use first valid value as fallback
+                                fallback = valid_values[0]
+                                logger.warning(
+                                    f"No close match for hallucinated enum '{value}', "
+                                    f"using fallback '{fallback}' for field '{key}'"
+                                )
+                                fixed_obj[key] = fallback
+                        else:
+                            fixed_obj[key] = value
+
+                    # Recursively process nested objects
+                    elif isinstance(value, dict):
+                        # Find the schema for this nested object
+                        nested_schema = None
+                        if "$ref" in prop_schema:
+                            ref_name = prop_schema["$ref"].split("/")[-1]
+                            nested_schema = all_defs.get(ref_name, {})
+                        elif "anyOf" in prop_schema:
+                            # Handle Optional fields with anyOf
+                            for option in prop_schema["anyOf"]:
+                                if "$ref" in option:
+                                    ref_name = option["$ref"].split("/")[-1]
+                                    nested_schema = all_defs.get(ref_name, {})
+                                    break
+                                elif option.get("type") != "null":
+                                    nested_schema = option
+                                    break
+                        elif "properties" in prop_schema:
+                            nested_schema = prop_schema
+
+                        if nested_schema:
+                            # Pass root_defs through recursion for $ref resolution
+                            fixed_obj[key] = fix_enum_violations(
+                                value, nested_schema, root_defs
+                            )
+                        else:
+                            fixed_obj[key] = value
+
+                    # Recursively process lists
+                    elif isinstance(value, list):
+                        fixed_list = []
+                        for item in value:
+                            if isinstance(item, dict):
+                                # Find item schema
+                                item_schema = None
+                                if "items" in prop_schema:
+                                    if "$ref" in prop_schema["items"]:
+                                        ref_name = prop_schema["items"]["$ref"].split(
+                                            "/"
+                                        )[-1]
+                                        item_schema = all_defs.get(ref_name, {})
+                                    else:
+                                        item_schema = prop_schema["items"]
+
+                                if item_schema:
+                                    # Pass root_defs through recursion
+                                    fixed_list.append(
+                                        fix_enum_violations(
+                                            item, item_schema, root_defs
+                                        )
+                                    )
+                                else:
+                                    fixed_list.append(item)
+                            else:
+                                fixed_list.append(item)
+                        fixed_obj[key] = fixed_list
+
+                    else:
+                        fixed_obj[key] = value
+
+                return fixed_obj
+
+            try:
+                # First, try to load content as JSON if it's a string
+                if isinstance(content, str):
+                    content_obj = json.loads(content)
+                else:
+                    content_obj = content
+
+                # Parse any nested JSON strings
+                content_obj = parse_nested_json(content_obj)
+
+                # Fix any hallucinated enum values
+                schema_dict = schema_model.model_json_schema()
+                logger.debug(
+                    f"🔍 Schema has $defs: {list(schema_dict.get('$defs', {}).keys())}"
+                )
+                logger.debug(
+                    f"🔍 Content before enum fix: {json.dumps(content_obj, indent=2)[:500]}"
+                )
+                content_obj = fix_enum_violations(
+                    content_obj, schema_dict, root_defs=schema_dict.get("$defs")
+                )
+                logger.debug(
+                    f"🔍 Content after enum fix: {json.dumps(content_obj, indent=2)[:500]}"
+                )
+
+                # Convert back to JSON string for Pydantic validation
+                content = json.dumps(content_obj)
+
+                return schema_model.model_validate_json(content)
+            except Exception as validation_error:
+                # If JSON validation fails due to truncation, increase max_tokens for retry
+                error_str = str(validation_error).lower()
+                if "eof while parsing" in error_str or "truncated" in error_str:
+                    # Double max_tokens for next retry attempt
+                    old_max = max_tokens_state["value"]
+                    max_tokens_state["value"] = min(old_max * 2, 16000)  # Cap at 16k
+                    logger.warning(
+                        f"JSON truncation detected, increasing max_tokens: "
+                        f"{old_max} → {max_tokens_state['value']}"
+                    )
+                # Re-raise to trigger retry
+                raise
 
         # Execute with retry and error handling
         result, error_result = await self.llm_error_handler.with_retry(
@@ -1684,8 +1886,11 @@ class MilestoneEngine:
                 user_message=user_message,
                 case=case,
             )
+            # None-safe logging
+            evidence_list = getattr(response_obj.state_updates, "evidence_to_add", [])
+            evidence_count = len(evidence_list) if evidence_list is not None else 0
             logger.debug(
-                f"Post-processing complete, evidence_to_add count: {len(getattr(response_obj.state_updates, 'evidence_to_add', []))}"
+                f"Post-processing complete, evidence_to_add count: {evidence_count}"
             )
 
         # Validate reasoning-first requirement (AFTER post-processing to allow fallback evidence creation)

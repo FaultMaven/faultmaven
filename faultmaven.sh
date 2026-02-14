@@ -253,9 +253,15 @@ check_docker_ports() {
     local ports_in_use=()
 
     for port in "${ports_to_check[@]}"; do
-        if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-            local pids=$(lsof -ti :$port | tr '\n' ' ')
-            ports_in_use+=("$port (PID(s): $pids)")
+        # Use ss first (works without special privileges), fallback to lsof
+        if ss -tlnp 2>/dev/null | grep -q ":$port "; then
+            # Extract PIDs from ss output
+            local pids=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ' || echo "unknown")
+            ports_in_use+=("$port (PID(s): ${pids:-unknown})")
+        elif command -v lsof >/dev/null 2>&1 && lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+            # Fallback to lsof if ss didn't find anything
+            local pids=$(lsof -ti :$port 2>/dev/null | tr '\n' ' ' || echo "unknown")
+            ports_in_use+=("$port (PID(s): ${pids:-unknown})")
         fi
     done
 
@@ -268,12 +274,12 @@ check_docker_ports() {
         echo "To resolve this:"
         echo "  1. Check what's using the ports:"
         for port in "${ports_to_check[@]}"; do
-            if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-                echo "     lsof -i :$port"
-            fi
+            echo "     ss -tlnp | grep :$port"
+            echo "     (or) lsof -i :$port"
         done
         echo "  2. Stop existing FaultMaven containers: ./faultmaven.sh stop"
-        echo "  3. Or stop local processes using those ports"
+        echo "  3. Or stop local processes using those ports:"
+        echo "     ./scripts/faultmaven-dev.sh stop"
         return 1
     fi
     return 0
@@ -403,7 +409,7 @@ cmd_start() {
         print_success "FaultMaven services started successfully! (${duration}s)"
         echo ""
         echo "Next steps:"
-        echo "  1. Check status:  ./faultmaven.sh status"
+        echo "  1. Check health:  ./faultmaven.sh health"
         echo "  2. View logs:     ./faultmaven.sh logs"
         echo "  3. Access services:"
         echo "     - Dashboard: http://localhost:3333"
@@ -420,7 +426,7 @@ cmd_start() {
         echo "Recent logs:"
         docker compose logs --tail 30
         echo ""
-        print_info "Run './faultmaven.sh logs' for full logs or './faultmaven.sh status' to check health"
+        print_info "Run './faultmaven.sh logs' for full logs or './faultmaven.sh health' to check health"
         exit 1
     fi
 }
@@ -442,12 +448,14 @@ cmd_stop() {
     fi
 }
 
-cmd_status() {
+cmd_health() {
     print_header
-    echo "Service Status:"
+    echo "Running comprehensive health checks..."
     echo ""
 
-    # Get container status
+    # Container Status
+    echo "Container Status:"
+    echo "-----------------"
     local container_output
     container_output=$(docker compose ps 2>/dev/null || true)
     echo "$container_output"
@@ -462,30 +470,54 @@ cmd_status() {
     if [ "$running_containers" -eq "0" ]; then
         print_warning "No containers are running"
         echo ""
+        print_info "Start services with: ./faultmaven.sh start"
+        print_info ""
         print_info "If you're running services locally (not in Docker), use:"
-        echo "  ./scripts/faultmaven-dev.sh status  # Check local process status"
+        echo "  ./scripts/faultmaven-dev.sh health  # Check local process health"
         echo ""
-    else
-        echo "Health Checks:"
-        echo ""
-
-        for service in "${HEALTH_CHECK_SERVICES[@]}"; do
-            local port="${service%%:*}"
-            local name="${service#*:}"
-
-            if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
-                print_success "$name (port $port)"
-            else
-                print_error "$name (port $port) - Not responding"
-            fi
-        done
-        echo ""
+        exit 1
     fi
+
+    echo "HTTP Health Checks:"
+    echo "-------------------"
+    local failed=0
+
+    for service in "${HEALTH_CHECK_SERVICES[@]}"; do
+        local port="${service%%:*}"
+        local name="${service#*:}"
+
+        echo -n "$name (port $port)... "
+        if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+            print_success "OK"
+        else
+            print_error "NOT RESPONDING"
+            ((failed++))
+        fi
+    done
+
+    echo ""
 
     # Check data directory
     if [ -d ./data ]; then
         local db_size=$(du -sh ./data 2>/dev/null | cut -f1)
         print_info "Data directory size: $db_size"
+    fi
+
+    echo ""
+    if [ $failed -eq 0 ]; then
+        print_success "All health checks passed!"
+        echo ""
+        echo "Access points:"
+        echo "  • Dashboard: http://localhost:3333"
+        echo "  • API:       http://localhost:8090"
+        echo "  • API Docs:  http://localhost:8090/docs"
+    else
+        print_error "$failed service(s) not responding"
+        echo ""
+        echo "Troubleshooting:"
+        echo "  • Check logs: ./faultmaven.sh logs"
+        echo "  • Restart:    ./faultmaven.sh restart"
+        exit 1
     fi
 }
 
@@ -547,7 +579,7 @@ cmd_restart() {
         if docker compose restart; then
             print_success "All services restarted"
             echo ""
-            print_info "Run './faultmaven.sh status' to verify health"
+            print_info "Run './faultmaven.sh health' to verify health"
         else
             print_error "Failed to restart services"
             exit 1
@@ -559,7 +591,7 @@ cmd_restart() {
         if docker compose restart "$service"; then
             print_success "$service restarted"
             echo ""
-            print_info "Run './faultmaven.sh status' to verify health"
+            print_info "Run './faultmaven.sh health' to verify health"
         else
             print_error "Failed to restart $service"
             exit 1
@@ -658,26 +690,6 @@ cmd_clean() {
         print_info "Data preserved in ./data directory"
     fi
 
-    echo ""
-    print_info "Docker images preserved - restart will be fast"
-    print_info "Run './faultmaven.sh start' to start fresh"
-}
-        if [ "$confirm" != "DELETE" ]; then
-            print_info "Clean cancelled"
-            return
-        fi
-    fi
-
-    echo ""
-    print_info "Stopping services..."
-    docker compose down -v --remove-orphans
-
-    if [ -d ./data ]; then
-        print_info "Removing data directory..."
-        rm -rf ./data
-    fi
-
-    print_success "FaultMaven data has been deleted"
     echo ""
     print_info "Docker images preserved - restart will be fast"
     print_info "Run './faultmaven.sh start' to start fresh"
@@ -971,7 +983,7 @@ cmd_help() {
     echo "  start [--demo]              Start all FaultMaven services"
     echo "  stop                        Stop all services (preserves data)"
     echo "  restart [service]           Restart all or specific service"
-    echo "  status                      Show service status and health checks"
+    echo "  health                      Run comprehensive health checks"
     echo "  logs [service] [--tail N]   Stream logs from services"
     echo "  ps                          Show running containers"
     echo ""
@@ -1004,13 +1016,16 @@ cmd_help() {
     echo "  ./faultmaven.sh create-user        # Create user account"
     echo "  ./faultmaven.sh list-users         # List all users"
     echo "  ./faultmaven.sh delete-user bob    # Delete user 'bob'"
-    echo "  ./faultmaven.sh status             # Check service health"
+    echo "  ./faultmaven.sh health             # Run health checks"
     echo "  ./faultmaven.sh logs api           # View API logs"
     echo "  ./faultmaven.sh logs --tail 100    # View last 100 lines"
     echo "  ./faultmaven.sh restart dashboard  # Restart dashboard only"
     echo ""
     echo "Alternative: Process-based Local Deployment (no Docker):"
     echo "  ./scripts/faultmaven-dev.sh start  # Start API as local Python process"
+    echo "  ./scripts/faultmaven-dev.sh health # Check process health"
+    echo ""
+    echo "Note: The 'status' command has been replaced with 'health' for consistency."
     echo ""
 }
 
@@ -1093,8 +1108,14 @@ case "${COMMAND:-}" in
     restart)
         cmd_restart "${ARGS[0]:-}"
         ;;
+    health)
+        cmd_health
+        ;;
     status)
-        cmd_status
+        # Redirect old status command to health
+        print_warning "'status' command is deprecated. Use 'health' instead."
+        echo ""
+        cmd_health
         ;;
     logs)
         cmd_logs "${ARGS[0]:-}"

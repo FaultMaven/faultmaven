@@ -55,6 +55,8 @@ class RetryConfig:
         "connection",
         "temporary",
         "overloaded",
+        "truncated",  # Added for MAX_TOKENS truncation detection
+        "finishreason=max_tokens",  # Gemini-specific truncation
     )
 
 
@@ -112,11 +114,21 @@ class LLMErrorHandler:
         )
 
     def is_token_limit_error(self, error: Exception) -> bool:
-        """Check if error is related to token limits."""
+        """Check if error is related to token limits or JSON truncation."""
         error_str = str(error).lower()
+        # Check for token limit errors OR JSON truncation errors
+        # JSON truncation errors manifest as: "EOF while parsing", "truncated", etc.
         return any(
             pattern in error_str
-            for pattern in ("token", "context length", "too long", "max_tokens")
+            for pattern in (
+                "token",
+                "context length",
+                "too long",
+                "max_tokens",
+                "truncated",
+                "eof while parsing",  # Pydantic JSON validation error
+                "finishreason=max_tokens",  # Gemini-specific
+            )
         )
 
     def calculate_delay(self, retry_count: int) -> float:

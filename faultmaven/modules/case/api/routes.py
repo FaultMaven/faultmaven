@@ -2084,14 +2084,19 @@ async def submit_case_query(
         # REMOVED: Redundant call. InvestigationService.process_turn handles message addition.
         # await case_service.add_case_query(case_id, message_text, current_user.user_id)
 
-        # 6. Process turn with MilestoneEngine (with 35s timeout)
+        # 6. Process turn with MilestoneEngine (with configurable agent timeout)
         try:
-            logger.info(f"Processing turn for case {case_id} with 35s timeout")
+            from faultmaven.config.settings import get_settings
+
+            agent_timeout = float(get_settings().agent.agent_request_timeout)
+            logger.info(
+                f"Processing turn for case {case_id} with {agent_timeout}s timeout"
+            )
             response = await asyncio.wait_for(
                 investigation_service.process_turn(
                     case_id=case_id, user_id=current_user.user_id, request=request
                 ),
-                timeout=35.0,
+                timeout=agent_timeout,
             )
 
             # 7. Store idempotency result if key provided
@@ -2106,7 +2111,12 @@ async def submit_case_query(
             return response
 
         except asyncio.TimeoutError:
-            logger.error(f"Turn processing timed out for case {case_id} after 35s")
+            from faultmaven.config.settings import get_settings
+
+            agent_timeout = float(get_settings().agent.agent_request_timeout)
+            logger.error(
+                f"Turn processing timed out for case {case_id} after {agent_timeout}s"
+            )
             # Return 504 Gateway Timeout - upstream service (LLM) took too long
             raise HTTPException(
                 status_code=504,  # Gateway Timeout - more accurate than 500

@@ -97,7 +97,7 @@ Convenient scripts for managing the Docker-based stack:
 # Main CLI for Docker-based deployment
 ./faultmaven.sh start              # Start services
 ./faultmaven.sh start --demo       # Start with demo data
-./faultmaven.sh status             # Check service health
+./faultmaven.sh health             # Check service health
 ./faultmaven.sh logs               # View all logs
 ./faultmaven.sh logs api           # View specific service logs
 ./faultmaven.sh restart            # Restart all services
@@ -165,7 +165,6 @@ Convenient scripts for managing the local development environment:
 ./scripts/faultmaven-dev.sh start   # Start API as local process
 ./scripts/faultmaven-dev.sh stop    # Stop the API
 ./scripts/faultmaven-dev.sh restart # Restart the API
-./scripts/faultmaven-dev.sh status  # Show service status
 ./scripts/faultmaven-dev.sh health  # Run comprehensive health checks
 ./scripts/faultmaven-dev.sh logs    # Stream application logs
 ./scripts/faultmaven-dev.sh test    # Run tests (delegates to scripts/tests.py)

@@ -166,6 +166,20 @@ class GeminiProvider(BaseLLMProvider):
                 elif finish_reason == "MAX_TOKENS":
                     content = "[Response truncated due to token limit]"
 
+        # CRITICAL FIX: Check for MAX_TOKENS even when content exists
+        # Gemini can return partial JSON that looks complete but is truncated.
+        # This causes Pydantic validation errors: "EOF while parsing a value"
+        if content and "candidates" in response_data:
+            candidate = response_data["candidates"][0]
+            finish_reason = candidate.get("finishReason", "")
+            if finish_reason == "MAX_TOKENS":
+                # Raise exception to trigger retry with higher max_tokens
+                raise LLMException(
+                    f"Response truncated due to token limit (finishReason=MAX_TOKENS). "
+                    f"Response length: {len(content)} chars. "
+                    "Increase max_tokens parameter or simplify prompt."
+                )
+
         # Calculate metrics
         response_time_ms = int((time.time() - start_time) * 1000)
 

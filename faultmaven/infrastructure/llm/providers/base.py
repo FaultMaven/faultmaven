@@ -30,8 +30,129 @@ class ToolCall:
 
 
 @dataclass
+class NormalizedResponse:
+    """
+    Normalized LLM response with validity checking.
+
+    This replaces the old confidence-based system with explicit validity checks.
+    Provider layer determines if response is actionable; orchestration layer
+    assesses quality on normalized output.
+
+    Design principles:
+    - Binary validity check: is_valid property
+    - Separates network/API failures from content refusals
+    - Distinguishes hard refusals from helpful hedged responses
+    - Provider-agnostic structure
+    """
+
+    provider: str
+    model: str
+    content: str = ""
+    tool_calls: List[ToolCall] = None
+    usage: Dict[str, int] = None
+    response_time_ms: int = 0
+    cached: bool = False
+    raw_response: Any = None
+
+    def __post_init__(self):
+        if self.tool_calls is None:
+            self.tool_calls = []
+        if self.usage is None:
+            self.usage = {}
+
+    @property
+    def is_valid(self) -> bool:
+        """
+        Determines if the response is actionable.
+
+        A response is VALID if:
+        - Has non-empty content OR has tool_calls
+        - Does not contain a hard refusal
+
+        A response is INVALID if:
+        - Both content and tool_calls are empty
+        - Contains hard refusal ("I cannot help", "I'm unable to assist")
+
+        IMPORTANT: Hedged responses are VALID:
+        - "I cannot verify X without Y, but here's what I can tell you..."
+        - "I'm not able to see Z, but based on the evidence..."
+
+        Returns:
+            bool: True if response is actionable, False otherwise
+        """
+        # Check for empty response
+        has_content = bool(self.content.strip())
+        has_tool_calls = bool(self.tool_calls)
+
+        if not has_content and not has_tool_calls:
+            return False
+
+        # Check for hard refusals (complete inability to help)
+        if has_content:
+            content_lower = self.content.lower()
+
+            # Hard refusal patterns - these invalidate the entire response
+            hard_refusal_patterns = [
+                "i cannot help",
+                "i'm unable to assist",
+                "i can't assist",
+                "i'm not able to help",
+                "i don't have access to",
+                "i'm sorry, but i cannot",
+                "i apologize, but i cannot",
+            ]
+
+            # Check if response starts with hard refusal (first 200 chars)
+            response_start = content_lower[:200]
+            for pattern in hard_refusal_patterns:
+                if pattern in response_start:
+                    # Check if there's substantial content after the hedge
+                    # If response is short (<150 chars), it's a pure refusal
+                    if len(self.content.strip()) < 150:
+                        return False
+
+                    # If response is longer, check if it's actually providing value
+                    # Look for value indicators after the hedge
+                    value_indicators = [
+                        "however",
+                        "but",
+                        "although",
+                        "based on",
+                        "here's what",
+                        "i can tell you",
+                        "i notice",
+                        "the evidence shows",
+                    ]
+
+                    has_value_after_hedge = any(
+                        indicator in content_lower for indicator in value_indicators
+                    )
+
+                    if not has_value_after_hedge:
+                        return False
+
+        # Response is valid if we got here
+        return True
+
+    @property
+    def has_structured_output(self) -> bool:
+        """Check if response contains structured output (tool calls)."""
+        return bool(self.tool_calls)
+
+    @property
+    def is_text_only(self) -> bool:
+        """Check if response is text-only (no tool calls)."""
+        return bool(self.content.strip()) and not self.tool_calls
+
+
+@dataclass
 class LLMResponse:
-    """Response from LLM provider"""
+    """
+    Legacy response structure - DEPRECATED
+
+    This will be replaced by NormalizedResponse in upcoming refactor.
+    Kept for backward compatibility during migration.
+    """
 
     content: str
     confidence: float

@@ -88,7 +88,21 @@ is_running() {
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE")
         if ps -p "$pid" > /dev/null 2>&1; then
-            return 0
+            # Verify the process actually owns the port
+            local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+            port=${port:-$DEFAULT_PORT}
+
+            # Check if this specific PID is listening on the expected port
+            # Use ss because it doesn't require sudo and works reliably
+            if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid"; then
+                return 0
+            else
+                # Process exists but not listening on expected port
+                # This happens when startup failed (port conflict, etc.)
+                print_warning "Process $pid exists but not listening on port $port (stale PID file)"
+                rm -f "$PID_FILE"
+                return 1
+            fi
         else
             rm -f "$PID_FILE"
             return 1
@@ -99,15 +113,38 @@ is_running() {
 
 check_port_available() {
     local port=$1
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-        local pids=$(lsof -ti :$port | tr '\n' ' ')
-        print_error "Port $port is already in use by process(es): $pids"
+
+    # Use ss to check port (works without sudo)
+    if ss -tlnp 2>/dev/null | grep -q ":$port "; then
+        print_error "Port $port is already in use"
         echo ""
-        echo "To resolve this:"
-        echo "  1. Check what's using the port: lsof -i :$port"
-        echo "  2. If it's a previous FaultMaven instance, stop it:"
-        echo "     ./scripts/faultmaven-dev.sh stop"
-        echo "  3. Or manually stop the process(es): kill $pids"
+
+        # Try to identify what's using the port
+        echo "Diagnosing port conflict..."
+        echo ""
+
+        # Check if it's Docker (requires sudo for lsof, but we can detect docker-proxy)
+        local docker_check=$(sudo lsof -i :$port 2>/dev/null | grep docker-proxy | wc -l)
+
+        if [ "$docker_check" -gt 0 ]; then
+            print_error "Port $port is in use by Docker containers (docker-proxy)"
+            echo ""
+            echo "You have two options:"
+            echo "  1. Stop Docker deployment:"
+            echo "     ./faultmaven.sh stop"
+            echo ""
+            echo "  2. Use a different port for process-based deployment:"
+            echo "     - Edit .env and change PORT=$port to PORT=$((port+1))"
+            echo "     - Then run: $0 start"
+        else
+            echo "Port $port is in use. Details:"
+            ss -tlnp 2>/dev/null | grep ":$port " || true
+            echo ""
+            echo "To resolve this:"
+            echo "  1. Check what's using the port: ss -tlnp | grep :$port"
+            echo "  2. If it's a previous FaultMaven instance: $0 stop"
+            echo "  3. Or use a different port in .env: PORT=$((port+1))"
+        fi
         return 1
     fi
     return 0
@@ -115,25 +152,32 @@ check_port_available() {
 
 wait_for_service() {
     local port=$1
+    local pid=$2
     local max_wait=60
     local elapsed=0
     local check_interval=1
 
     print_info "Waiting for service to become ready..."
-    
+
     while [ $elapsed -lt $max_wait ]; do
         # Check if process is still running
-        if ! is_running; then
+        if ! ps -p "$pid" > /dev/null 2>&1; then
+            echo ""
+            print_error "Process terminated unexpectedly"
             return 1
         fi
 
-        # Check if service is responding
+        # Check if service is responding on HTTP
         if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
-            # Service is responding, wait a bit more to ensure stability
-            sleep 2
-            # Verify it's still responding after the stability check
-            if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
-                return 0
+            # Service is responding, verify port ownership
+            if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid,"; then
+                # Wait a bit more to ensure stability
+                sleep 2
+                # Final verification
+                if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+                    echo ""
+                    return 0
+                fi
             fi
         fi
 
@@ -154,6 +198,15 @@ start_app() {
     if is_running; then
         local existing_pid=$(cat "$PID_FILE")
         print_warning "FaultMaven is already running (PID $existing_pid)"
+
+        # Show connection info
+        local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+        port=${port:-$DEFAULT_PORT}
+        echo ""
+        print_info "Access points:"
+        echo "  • API:      http://localhost:$port"
+        echo "  • API Docs: http://localhost:$port/docs"
+        echo "  • Logs:     tail -f $LOG_FILE"
         return 0
     fi
 
@@ -175,25 +228,50 @@ start_app() {
     echo "$pid" > "$PID_FILE"
 
     # Wait for service to become ready and stable
-    if wait_for_service "$port"; then
-        print_success "FaultMaven started and ready (PID $pid)"
-        echo ""
-        print_info "Access points:"
-        echo "  • API:      http://localhost:$port"
-        echo "  • API Docs: http://localhost:$port/docs"
-        echo "  • Logs:     tail -f $LOG_FILE"
+    if wait_for_service "$port" "$pid"; then
+        # Double-check port ownership after successful start
+        if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid,"; then
+            print_success "FaultMaven started and ready (PID $pid)"
+            echo ""
+            print_info "Access points:"
+            echo "  • API:      http://localhost:$port"
+            echo "  • API Docs: http://localhost:$port/docs"
+            echo "  • Logs:     tail -f $LOG_FILE"
+        else
+            print_error "Service started but not owned by our process (port conflict)"
+            echo ""
+            echo "Another service may have claimed the port during startup."
+            kill "$pid" 2>/dev/null || true
+            rm -f "$PID_FILE"
+            exit 1
+        fi
     else
         print_error "Failed to start FaultMaven - service did not become ready"
         echo ""
-        echo "Possible issues:"
-        echo "  • Port conflict (check if another service is using port $port)"
-        echo "  • Startup error (check logs below)"
+
+        # Check logs for specific error patterns
+        if grep -q "address already in use" "$LOG_FILE" 2>/dev/null; then
+            print_error "Port $port is already in use by another service"
+            echo ""
+            echo "Check what's using the port:"
+            echo "  ss -tlnp | grep :$port"
+            echo "  sudo lsof -i :$port"
+        elif grep -q "error while attempting to bind" "$LOG_FILE" 2>/dev/null; then
+            print_error "Failed to bind to port $port"
+            tail -10 "$LOG_FILE" 2>/dev/null | grep -i "error" || true
+        else
+            echo "Possible issues:"
+            echo "  • Port conflict (check if another service is using port $port)"
+            echo "  • Startup error (check logs below)"
+        fi
+
         echo ""
         echo "Last 20 lines of logs:"
         tail -20 "$LOG_FILE" 2>/dev/null || echo "  (log file not found)"
         echo ""
+
         # Clean up failed process
-        if is_running; then
+        if ps -p "$pid" > /dev/null 2>&1; then
             kill "$pid" 2>/dev/null || true
         fi
         rm -f "$PID_FILE"
@@ -210,7 +288,7 @@ stop_app() {
     if is_running; then
         local pid=$(cat "$PID_FILE")
         print_info "Stopping FaultMaven (PID $pid)..."
-        
+
         # Kill the main process and its children
         kill "$pid" 2>/dev/null || true
         sleep 2
@@ -231,29 +309,32 @@ stop_app() {
     # Also check for processes using the port (in case PID file is missing)
     local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
     port=${port:-$DEFAULT_PORT}
-    
-    local port_pids=$(lsof -ti :$port 2>/dev/null || true)
+
+    # Extract PIDs from ss output (more reliable than lsof without sudo)
+    local port_pids=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | sort -u | tr '\n' ' ')
+
     if [ -n "$port_pids" ]; then
         print_warning "Found process(es) still using port $port: $port_pids"
         print_info "Stopping process(es) on port $port..."
-        
+
         # Kill all processes using the port
-        echo "$port_pids" | while read -r pid; do
+        for pid in $port_pids; do
             [ -z "$pid" ] && continue
-            kill "$pid" 2>/dev/null || true
+            if ps -p "$pid" > /dev/null 2>&1; then
+                kill "$pid" 2>/dev/null || true
+            fi
         done
-        
+
         sleep 2
-        
+
         # Force kill if still running
-        port_pids=$(lsof -ti :$port 2>/dev/null || true)
-        if [ -n "$port_pids" ]; then
-            echo "$port_pids" | while read -r pid; do
-                [ -z "$pid" ] && continue
+        for pid in $port_pids; do
+            [ -z "$pid" ] && continue
+            if ps -p "$pid" > /dev/null 2>&1; then
                 kill -9 "$pid" 2>/dev/null || true
-            done
-        fi
-        
+            fi
+        done
+
         stopped_any=true
     fi
 
@@ -274,33 +355,9 @@ restart_app() {
     start_app
 }
 
-status_app() {
-    print_header
-
-    if is_running; then
-        local pid=$(cat "$PID_FILE")
-        print_success "FaultMaven is running (PID $pid)"
-
-        # Extract port
-        local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
-        port=${port:-$DEFAULT_PORT}
-
-        echo ""
-        print_info "Testing health endpoint..."
-
-        if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
-            print_success "Health check passed"
-        else
-            print_error "Health check failed"
-        fi
-    else
-        print_warning "FaultMaven is not running"
-    fi
-}
-
 health_check() {
     print_header
-    echo "Running health checks..."
+    echo "Running comprehensive health checks..."
     echo ""
 
     local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
@@ -311,7 +368,8 @@ health_check() {
     # Check if process is running
     echo -n "Checking process... "
     if is_running; then
-        print_success "Running (PID $(cat $PID_FILE))"
+        local pid=$(cat "$PID_FILE")
+        print_success "Running (PID $pid)"
     else
         print_error "Not running"
         ((failed++))
@@ -320,13 +378,20 @@ health_check() {
         exit 1
     fi
 
-    # Check if port is listening
-    echo -n "Checking port $port... "
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-        print_success "Listening"
+    # Check if port is listening (owned by our PID)
+    local pid=$(cat "$PID_FILE")
+    echo -n "Checking port $port ownership... "
+    if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid"; then
+        print_success "Listening (owned by PID $pid)"
     else
-        print_error "Not listening"
+        print_error "Process running but not listening on port $port"
         ((failed++))
+        echo ""
+        echo "This usually means:"
+        echo "  • Port conflict during startup"
+        echo "  • Service failed to bind"
+        echo ""
+        echo "Check logs: tail -f $LOG_FILE"
     fi
 
     echo ""
@@ -637,7 +702,6 @@ usage() {
     echo "  start       Start FaultMaven API as local process"
     echo "  stop        Stop the API"
     echo "  restart     Restart the API"
-    echo "  status      Show service status"
     echo "  health      Run comprehensive health checks"
     echo "  logs        Stream application logs"
     echo ""
@@ -677,9 +741,6 @@ case "${1:-}" in
     restart)
         restart_app
         ;;
-    status)
-        status_app
-        ;;
     health)
         health_check
         ;;
@@ -698,6 +759,12 @@ case "${1:-}" in
     test)
         shift
         run_tests "$@"
+        ;;
+    status)
+        # Redirect old status command to health
+        print_warning "'status' command is deprecated. Use 'health' instead."
+        echo ""
+        health_check
         ;;
     help|--help|-h|"")
         usage

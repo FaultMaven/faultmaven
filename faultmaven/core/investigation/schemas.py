@@ -80,7 +80,13 @@ class InternalReasoning(BaseModel):
     )
     milestone_justifications: Dict[str, str] = Field(
         default_factory=dict,
-        description="For each milestone being completed, explain why based on evidence",
+        description=(
+            "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "
+            "Format: {milestone_name: 'justification citing specific evidence IDs'}. "
+            "Example: {'scope_assessed': 'All 20 pods affected per ev_abc123', "
+            "'timeline_established': 'Started at 17:44 UTC per ev_def456'}. "
+            "DO NOT leave empty {} when completing milestones - validation will reject."
+        ),
     )
     uncertainties: Optional[List[str]] = Field(
         default_factory=list,
@@ -93,15 +99,15 @@ class SubmissionClassification(BaseModel):
     Classification of user's submission content.
 
     This schema implements single-phase evidence creation: the LLM classifies
-    the user's submission to determine if it contains external data that should
+    the user's submission to determine if it contains technical data that should
     become an evidence record.
 
     Classification Types:
-    - user_chat: Pure conversational text (questions, updates, clarifications)
+    - user_text: Text composed by user (questions, updates, clarifications, observations)
       → NO evidence record created
-    - external_data: Data from external systems (logs, configs, metrics, screenshots)
+    - submitted_data: Technical data for evidence evaluation (logs, configs, metrics, screenshots)
       → Evidence record created with appropriate category
-    - mixed: Both conversation AND external data
+    - mixed: Both user text AND submitted data
       → Evidence record created (extract the data portion)
 
     Design Reference:
@@ -109,11 +115,11 @@ class SubmissionClassification(BaseModel):
     - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md Section "INQUIRY Phase Classification"
     """
 
-    type: Literal["user_chat", "external_data", "mixed"] = Field(
+    type: Literal["submitted_data", "user_text", "mixed"] = Field(
         description=(
-            "user_chat: Pure conversation → NO evidence record\n"
-            "external_data: Data from elsewhere → Evidence record\n"
-            "mixed: Both chat and data → Evidence record (extract data)"
+            "submitted_data: Technical data for evidence evaluation → Create evidence record\n"
+            "user_text: Text composed by user → No evidence record\n"
+            "mixed: Both submitted data and user text → Extract data as evidence"
         )
     )
 
@@ -126,9 +132,9 @@ class SubmissionClassification(BaseModel):
         max_length=200,
     )
 
-    external_data_summary: Optional[str] = Field(
+    data_summary: Optional[str] = Field(
         None,
-        description="If external_data or mixed, summarize what data is present (max 200 chars)",
+        description="If submitted_data or mixed, summarize what technical data is present (max 200 chars)",
         max_length=200,
     )
 
@@ -235,6 +241,32 @@ class EvidenceToAdd(BaseModel):
     category: EvidenceCategory
     source_type: EvidenceSourceType
     likelihood: float = Field(0.8, ge=0.0, le=1.0)
+
+    @field_validator("content_ref", mode="before")
+    @classmethod
+    def stringify_content_ref(cls, v):
+        """
+        Convert dict objects to JSON strings for content_ref.
+
+        When LLMs use structured output (tool calling), they may populate content_ref
+        with dict objects instead of JSON strings. This validator automatically
+        converts dict/list objects to JSON strings, ensuring compatibility with
+        the string type constraint.
+
+        Examples:
+            - {"key": "value"} → '{"key": "value"}'
+            - [1, 2, 3] → '[1, 2, 3]'
+            - "already a string" → "already a string"
+            - None → None
+        """
+        if v is None:
+            return v
+        if isinstance(v, (dict, list)):
+            import json
+
+            return json.dumps(v, indent=2)
+        return v
+
     advances_milestones: Optional[List[str]] = Field(
         default=None,
         description=(

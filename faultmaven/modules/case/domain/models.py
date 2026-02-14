@@ -1332,19 +1332,20 @@ class EvidenceSourceType(str, Enum):
     """
     Fundamental type of data source.
 
-    Post-redesign (2026-02-11): Simplified from 12 types to 5 clear categories.
+    Post-redesign (2026-02-14): Updated to align with data-classification-strategy.md (6 types).
 
     Migration mapping:
     - log_file, command_output, trace_data, api_response, other → LOGS
     - metrics_data, monitoring_alert → METRICS
-    - config_file, code_review, database_query → CONFIGURATION
-    - screenshot → VISUAL
-    - user_report → USER_DESCRIPTION
+    - config_file, database_query → CONFIGURATION
+    - code_review → CODE
+    - user_report → TEXT
+    - screenshot → IMAGE
     """
 
     LOGS = "logs"
     """
-    Any textual diagnostic output.
+    Time-ordered diagnostic output.
 
     Includes:
     - Application logs
@@ -1373,11 +1374,10 @@ class EvidenceSourceType(str, Enum):
 
     CONFIGURATION = "configuration"
     """
-    System/application configuration.
+    Structured system/application configuration.
 
     Includes:
     - Config files (YAML, JSON, TOML, env vars)
-    - Code snippets
     - Database schema
     - Infrastructure definitions (Kubernetes manifests, Terraform)
     - Dependency lists
@@ -1385,24 +1385,26 @@ class EvidenceSourceType(str, Enum):
     Characteristics: Defines how system should behave
     """
 
-    VISUAL = "visual"
+    CODE = "code"
     """
-    Visual representations.
+    Source code.
 
     Includes:
-    - Screenshots (errors, dashboards, terminals)
-    - Architecture diagrams
-    - Graphs and charts
-    - Images
+    - Application code snippets
+    - Code reviews
+    - Function definitions
+    - Scripts
+    - SQL queries
 
-    Characteristics: Requires visual interpretation
+    Characteristics: Executable or interpretable program text
     """
 
-    USER_DESCRIPTION = "user_description"
+    TEXT = "text"
     """
-    User's typed narrative.
+    Unstructured prose.
 
     Includes:
+    - User's typed narrative
     - Problem descriptions
     - Observations
     - Impact reports
@@ -1410,6 +1412,19 @@ class EvidenceSourceType(str, Enum):
     - Context explanations
 
     Characteristics: Human-written context, not machine-generated data
+    """
+
+    IMAGE = "image"
+    """
+    Visual content.
+
+    Includes:
+    - Screenshots (errors, dashboards, terminals)
+    - Architecture diagrams
+    - Graphs and charts
+    - Photos
+
+    Characteristics: Requires visual interpretation
     """
 
 

@@ -131,6 +131,15 @@ class AnthropicProvider(BaseLLMProvider):
 
                 response_data = await response.json()
 
+        # DEBUG: Log raw response to understand what Anthropic returns
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔍 RAW ANTHROPIC RESPONSE: {response_data}")
+        logger.info(f"🔍 Response keys: {response_data.keys()}")
+        if "content" in response_data:
+            logger.info(f"🔍 Content blocks: {response_data['content']}")
+
         # Extract content from Anthropic response format
         content = ""
         tool_calls = None
@@ -165,7 +174,11 @@ class AnthropicProvider(BaseLLMProvider):
         tokens_used = response_data.get("usage", {}).get("output_tokens", 0)
 
         # Calculate confidence based on model and response quality
-        confidence = self._calculate_confidence(selected_model, content, response_data)
+        # For structured output (tool calls), content may be empty - that's expected
+        has_valid_tool_calls = tool_calls is not None and len(tool_calls) > 0
+        confidence = self._calculate_confidence(
+            selected_model, content, response_data, has_valid_tool_calls
+        )
 
         return LLMResponse(
             content=content,
@@ -179,7 +192,11 @@ class AnthropicProvider(BaseLLMProvider):
         )
 
     def _calculate_confidence(
-        self, model: str, content: str, response_data: dict
+        self,
+        model: str,
+        content: str,
+        response_data: dict,
+        has_valid_tool_calls: bool = False,
     ) -> float:
         """
         Calculate confidence score for Anthropic response
@@ -188,6 +205,7 @@ class AnthropicProvider(BaseLLMProvider):
             model: Model used for generation
             content: Generated content
             response_data: Full API response
+            has_valid_tool_calls: Whether the response has valid tool calls (structured output)
 
         Returns:
             Confidence score (0.0-1.0)
@@ -214,8 +232,12 @@ class AnthropicProvider(BaseLLMProvider):
         # Adjust based on content quality
         content_length = len(content.strip())
 
-        if content_length == 0:
+        # For structured output (function calling), empty content is expected and valid
+        if content_length == 0 and not has_valid_tool_calls:
             return 0.0
+        elif content_length == 0 and has_valid_tool_calls:
+            # Valid structured output with no text content - use base model confidence
+            return model_confidence
         elif content_length < 50:
             # Very short responses might be less reliable
             model_confidence *= 0.8
