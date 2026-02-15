@@ -97,33 +97,51 @@ def validate_milestone_claims(
     reasoning: Optional[object] = None,
 ) -> List[MilestoneValidationResult]:
     """
-    Validate that LLM milestone claims are supported by cited evidence.
+    Validate that LLM milestone claims are supported by evidence.
 
     This does NOT advance milestones. It checks whether the LLM's claims
-    are justified by the evidence IDs cited in internal_reasoning.
+    are justified by evidence in the current turn or by cited turn numbers.
+
+    Validation Strategy:
+    - Current-turn evidence: Check if evidence with correct category exists
+      in current turn (no ID citation needed)
+    - Historical evidence (optional): LLM can cite turn numbers via
+      evidence_analyzed: ["turn_2"] to reference past evidence
 
     Args:
         case: Current case state
         milestones_claimed: Milestone names the LLM is claiming as completed
-        reasoning: InternalReasoning object with evidence_analyzed IDs
+        reasoning: InternalReasoning object (evidence_analyzed optional)
 
     Returns:
         List of validation results, one per claimed milestone
     """
     results = []
 
-    # Extract cited evidence IDs from reasoning
-    cited_ids: List[str] = []
-    if reasoning and hasattr(reasoning, "evidence_analyzed"):
-        cited_ids = reasoning.evidence_analyzed or []
+    # Build lookup of ALL evidence by category (not just cited)
+    # This allows category-based validation for current-turn evidence
+    all_evidence_by_category: Dict[str, List[str]] = {}
+    current_turn_evidence_by_category: Dict[str, List[str]] = {}
 
-    # Build lookup of cited evidence by category
-    cited_evidence_by_category: Dict[str, List[str]] = {}
-    for ev_id in cited_ids:
-        ev = next((e for e in case.evidence if e.evidence_id == ev_id), None)
-        if ev:
-            cat = ev.category.value if ev.category else "unknown"
-            cited_evidence_by_category.setdefault(cat, []).append(ev_id)
+    for ev in case.evidence:
+        cat = ev.category.value if ev.category else "unknown"
+        all_evidence_by_category.setdefault(cat, []).append(ev.evidence_id)
+
+        # Track current-turn evidence separately
+        if ev.collected_at_turn == case.current_turn:
+            current_turn_evidence_by_category.setdefault(cat, []).append(ev.evidence_id)
+
+    # Extract cited turn numbers from reasoning (optional for historical references)
+    cited_turns: List[int] = []
+    if reasoning and hasattr(reasoning, "evidence_analyzed"):
+        evidence_refs = reasoning.evidence_analyzed or []
+        for ref in evidence_refs:
+            if isinstance(ref, str) and ref.startswith("turn_"):
+                try:
+                    turn_num = int(ref.split("_")[1])
+                    cited_turns.append(turn_num)
+                except (IndexError, ValueError):
+                    logger.warning(f"Invalid turn reference format: {ref}")
 
     for milestone in milestones_claimed:
         expectations = MILESTONE_EVIDENCE_EXPECTATIONS.get(milestone)
@@ -132,11 +150,11 @@ def validate_milestone_claims(
                 MilestoneValidationResult(
                     milestone=milestone,
                     is_valid=True,
-                    cited_evidence_ids=cited_ids,
-                    cited_count=len(cited_ids),
+                    cited_evidence_ids=[],
+                    cited_count=0,
                     expected_min=0,
                     expected_categories=[],
-                    actual_categories=list(cited_evidence_by_category.keys()),
+                    actual_categories=list(all_evidence_by_category.keys()),
                     warnings=[
                         f"No validation expectations defined for milestone '{milestone}'"
                     ],
@@ -147,14 +165,22 @@ def validate_milestone_claims(
         expected_min = expectations["min_evidence"]
         expected_cats = [c.value for c in expectations["expected_categories"]]
 
-        # Count evidence in expected categories
+        # Count evidence in expected categories from:
+        # 1. Current turn (primary validation path)
+        # 2. Cited historical turns (optional, for referencing past evidence)
         relevant_evidence = []
-        for cat in expected_cats:
-            relevant_evidence.extend(cited_evidence_by_category.get(cat, []))
 
-        # Note: UNCLASSIFIED category removed in Evidence Classification Redesign (Phase 4)
-        # Evidence is now created AFTER LLM evaluation with proper classification
-        # No need to count UNCLASSIFIED as it no longer exists
+        # Check current turn first (most common case)
+        for cat in expected_cats:
+            relevant_evidence.extend(current_turn_evidence_by_category.get(cat, []))
+
+        # If not enough evidence from current turn, check cited historical turns
+        if len(relevant_evidence) < expected_min and cited_turns:
+            for ev in case.evidence:
+                if ev.collected_at_turn in cited_turns:
+                    cat = ev.category.value if ev.category else "unknown"
+                    if cat in expected_cats and ev.evidence_id not in relevant_evidence:
+                        relevant_evidence.append(ev.evidence_id)
 
         total_relevant = len(relevant_evidence)
         is_valid = total_relevant >= expected_min
@@ -165,7 +191,8 @@ def validate_milestone_claims(
                 f"Milestone '{milestone}' claimed with {total_relevant} relevant evidence "
                 f"(expected >= {expected_min}). "
                 f"Expected categories: {expected_cats}. "
-                f"Cited: {cited_ids}"
+                f"Current turn evidence: {list(current_turn_evidence_by_category.keys())}. "
+                f"Cited turns: {cited_turns}"
             )
             logger.warning(warnings[-1])
         else:
@@ -174,14 +201,14 @@ def validate_milestone_claims(
                 f"(expected >= {expected_min})"
             )
 
-        # Check milestone justification in reasoning
+        # Check milestone justification in reasoning (optional but recommended)
         if reasoning and hasattr(reasoning, "milestone_justifications"):
             justifications = reasoning.milestone_justifications or {}
             if milestone not in justifications:
-                warnings.append(
+                # Don't fail validation, just log a warning
+                logger.debug(
                     f"Milestone '{milestone}' claimed without justification in internal_reasoning"
                 )
-                logger.warning(warnings[-1])
 
         results.append(
             MilestoneValidationResult(
@@ -191,7 +218,7 @@ def validate_milestone_claims(
                 cited_count=total_relevant,
                 expected_min=expected_min,
                 expected_categories=expected_cats,
-                actual_categories=list(cited_evidence_by_category.keys()),
+                actual_categories=list(current_turn_evidence_by_category.keys()),
                 warnings=warnings,
             )
         )

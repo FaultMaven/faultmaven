@@ -281,6 +281,7 @@
   "modules/case/test_sqlite_case_repository.py::TestSQLiteCaseRepository::test_case_list_sqlite_compatible",
   "modules/case/test_sqlite_case_repository.py::TestSQLiteCaseRepository::test_case_retrieval_sqlite_compatible",
   "modules/case/test_sqlite_case_repository.py::TestSQLiteCaseRepository::test_case_search_sqlite_compatible",
+  "modules/case/test_sqlite_case_repository.py::TestSQLiteCaseRepository::test_hypothesis_with_evidence_links_persistence",
   "modules/case/test_sqlite_case_repository.py::TestSQLiteCaseRepository::test_message_operations_sqlite_compatible",
   "test_agent_api_integration.py::TestE2EAgentTypes::test_agent_type_passed_correctly[debugger-debugger]",
   "test_agent_api_integration.py::TestE2EAgentTypes::test_agent_type_passed_correctly[investigator-investigator]",

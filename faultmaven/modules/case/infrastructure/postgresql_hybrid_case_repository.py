@@ -965,39 +965,39 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 "last_activity_at": case.last_activity_at,
                 "resolved_at": case.resolved_at,
                 "closed_at": case.closed_at,
-                "inquiry": json.dumps(case.inquiry.model_dump()),
+                "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
                 "problem_verification": (
-                    json.dumps(case.problem_verification.model_dump())
+                    json.dumps(case.problem_verification.model_dump(mode="json"))
                     if case.problem_verification
                     else None
                 ),
                 "working_conclusion": (
-                    json.dumps(case.working_conclusion.model_dump())
+                    json.dumps(case.working_conclusion.model_dump(mode="json"))
                     if case.working_conclusion
                     else None
                 ),
                 "root_cause_conclusion": (
-                    json.dumps(case.root_cause_conclusion.model_dump())
+                    json.dumps(case.root_cause_conclusion.model_dump(mode="json"))
                     if case.root_cause_conclusion
                     else None
                 ),
                 "path_selection": (
-                    json.dumps(case.path_selection.model_dump())
+                    json.dumps(case.path_selection.model_dump(mode="json"))
                     if case.path_selection
                     else None
                 ),
                 "degraded_mode": (
-                    json.dumps(case.degraded_mode.model_dump())
+                    json.dumps(case.degraded_mode.model_dump(mode="json"))
                     if case.degraded_mode
                     else None
                 ),
                 "escalation_state": (
-                    json.dumps(case.escalation_state.model_dump())
+                    json.dumps(case.escalation_state.model_dump(mode="json"))
                     if case.escalation_state
                     else None
                 ),
-                "documentation": json.dumps(case.documentation.model_dump()),
-                "progress": json.dumps(case.progress.model_dump()),
+                "documentation": json.dumps(case.documentation.model_dump(mode="json")),
+                "progress": json.dumps(case.progress.model_dump(mode="json")),
                 "metadata": json.dumps({}),  # Reserved for future use
             },
         )
@@ -1114,13 +1114,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "retirement_reason": hypothesis.retirement_reason,
                     "evidence_links": json.dumps(
                         {
-                            eid: link.model_dump()
+                            eid: link.model_dump(mode="json")
                             for eid, link in hypothesis.evidence_links.items()
                         }
                     ),
                     "tested_at": hypothesis.tested_at,
                     "concluded_at": hypothesis.concluded_at,
-                    "proposed_at": hypothesis.proposed_at or datetime.now(timezone.utc),
+                    "proposed_at": getattr(hypothesis, "proposed_at", None)
+                    or datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps(hypothesis.metadata),
                 },
@@ -1558,7 +1559,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         # Insert report
         metadata_json = (
-            json.dumps(report.metadata.model_dump()) if report.metadata else "{}"
+            json.dumps(report.metadata.model_dump(mode="json"))
+            if report.metadata
+            else "{}"
         )
 
         insert_query = text("""
@@ -1729,7 +1732,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         # Update report
         metadata_json = (
-            json.dumps(report.metadata.model_dump()) if report.metadata else "{}"
+            json.dumps(report.metadata.model_dump(mode="json"))
+            if report.metadata
+            else "{}"
         )
         now = datetime.now(timezone.utc)
         # Use report.updated_at if set, otherwise use current time (for updates, always refresh)

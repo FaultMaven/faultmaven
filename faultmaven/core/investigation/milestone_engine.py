@@ -193,6 +193,48 @@ def _infer_milestones(
 
 
 # =============================================================================
+# Content Sanitization
+# =============================================================================
+
+
+def _truncate_content_ref(
+    content_ref: str | None, max_length: int = 4950
+) -> str | None:
+    """
+    Defensively truncate content_ref to prevent ValidationError from max_length constraint.
+
+    The Evidence domain model enforces max_length=5000 for content_ref. This helper
+    ensures content never exceeds the limit, preventing crashes while preserving
+    data quality.
+
+    Args:
+        content_ref: The content reference string (log excerpt, file ref, etc.)
+        max_length: Maximum allowed length (default 4950 to leave room for suffix)
+
+    Returns:
+        Truncated string with "..." suffix if truncation occurred, or None if input is None
+
+    Design Decision:
+        - Truncate at 4950 chars (leaving 50-char buffer below 5000 limit)
+        - Add "..." suffix to indicate truncation
+        - Log warning when truncation occurs for observability
+    """
+    if content_ref is None:
+        return None
+
+    if len(content_ref) <= max_length:
+        return content_ref
+
+    # Truncation needed
+    truncated = content_ref[:max_length] + "..."
+    logger.warning(
+        f"content_ref truncated from {len(content_ref)} to {len(truncated)} chars "
+        f"(max_length={max_length})"
+    )
+    return truncated
+
+
+# =============================================================================
 # Reasoning Validation
 # =============================================================================
 
@@ -315,83 +357,24 @@ def validate_reasoning_first(
             "before attempting to complete milestones. Use data_requests in state_updates to ask for evidence."
         )
 
-    # Check 2: Justifications must reference analyzed evidence
-    if (
-        internal_reasoning.milestone_justifications
-        and not internal_reasoning.evidence_analyzed
-    ):
-        # Build list of available evidence IDs to help LLM
-        available_ids = [e.evidence_id for e in case.evidence]
-        available_ids_str = (
-            ", ".join(f'"{eid}"' for eid in available_ids) if available_ids else "none"
-        )
+    # Check 2: REMOVED - Category-based validation no longer requires evidence_analyzed
+    # evidence_analyzed is now OPTIONAL and only used for historical turn references
+    # Milestone validation is done via evidence categories in evidence_processor.py
 
-        errors.append(
-            f"Milestone justifications provided but no evidence_analyzed listed. "
-            f"You MUST populate evidence_analyzed with IDs of evidence you considered. "
-            f"Available evidence IDs in this case: [{available_ids_str}]. "
-            f"Copy the relevant IDs from <evidence_collected> section and add them to evidence_analyzed."
-        )
-
-    # Check 3: Evidence IDs must exist in case
-    # Exception: If evidence is being added this turn, allow invented IDs from LLM
-    case_evidence_ids = {e.evidence_id for e in case.evidence}
-    evidence_being_added = (
-        getattr(response_obj.state_updates, "evidence_to_add", []) or []
-    )
-    has_evidence_being_added = bool(evidence_being_added)
-
-    for evidence_id in internal_reasoning.evidence_analyzed:
-        # Skip "new_index_N" references (evidence being added this turn)
-        if evidence_id.startswith("new_index_"):
-            continue
-
-        # LENIENT MODE: If evidence is being added this turn, allow any evidence_id references
-        # The LLM may invent IDs for evidence it's creating (e.g., 'ev_018e211833f48202')
-        # since evidence_to_add doesn't have IDs yet (IDs are generated on creation)
-        if has_evidence_being_added and evidence_id.startswith("ev_"):
-            logger.debug(
-                f"Allowing evidence_id '{evidence_id}' reference because evidence is being added this turn"
-            )
-            continue
-
-        # STRICT VALIDATION: All evidence IDs must be real
-        # No more USER_MESSAGE_* pseudo-IDs - user messages are now auto-created as Evidence
-        if evidence_id not in case_evidence_ids:
-            errors.append(
-                f"internal_reasoning references evidence_id '{evidence_id}' which doesn't exist in case. "
-                f"Available evidence IDs: {list(case_evidence_ids)}"
-            )
-
-    # Check 4: Enforce evidence ID format (must start with "ev_")
-    for evidence_id in internal_reasoning.evidence_analyzed:
-        if evidence_id.startswith("new_index_"):
-            continue  # These are valid temporary references
-        if not evidence_id.startswith("ev_"):
-            errors.append(
-                f"Invalid evidence ID format: '{evidence_id}'. "
-                f"Evidence IDs must start with 'ev_' prefix (e.g., 'ev_a1b2c3d4e5f6'). "
-                f"Do not use placeholder IDs or descriptive labels."
-            )
-
-    # Check 5: Cannot complete milestones without evidence
-    if internal_reasoning.milestone_justifications:
-        if not internal_reasoning.evidence_analyzed:
-            # Build list of available evidence IDs to help LLM
-            available_ids = [e.evidence_id for e in case.evidence]
-            available_ids_str = (
-                ", ".join(f'"{eid}"' for eid in available_ids)
-                if available_ids
-                else "none"
-            )
-
-            errors.append(
-                f"Cannot complete milestones without analyzing evidence. "
-                f"The evidence_analyzed list is empty, but milestone_justifications are provided. "
-                f"You MUST cite specific evidence IDs to support milestone completion. "
-                f"Available evidence IDs in this case: [{available_ids_str}]. "
-                f"Look at the <evidence_collected> section, find the relevant evidence, and copy the IDs to evidence_analyzed."
-            )
+    # Check 3: Validate turn references if provided (optional)
+    # If evidence_analyzed contains turn references (e.g., "turn_2"), validate format
+    for ref in internal_reasoning.evidence_analyzed:
+        if isinstance(ref, str) and ref.startswith("turn_"):
+            try:
+                turn_num = int(ref.split("_")[1])
+                if turn_num < 0 or turn_num > case.current_turn:
+                    errors.append(
+                        f"Invalid turn reference '{ref}': turn number must be between 0 and current turn ({case.current_turn})"
+                    )
+            except (IndexError, ValueError):
+                errors.append(
+                    f"Invalid turn reference format: '{ref}'. Expected format: 'turn_N' where N is a number"
+                )
 
     return len(errors) == 0, errors
 
@@ -1200,7 +1183,7 @@ class MilestoneEngine:
 
             # Debug: Log what type was actually returned
             logger.info(
-                f"🔍 Turn {case.current_turn + 1} response type: {type(response_obj).__name__}"
+                f"🔍 Turn {case.current_turn} response type: {type(response_obj).__name__}"
             )
 
             # 3. Process response and update case state
@@ -2027,6 +2010,16 @@ class MilestoneEngine:
         # This code is shared between INQUIRY and INVESTIGATING phases
         from uuid import uuid4
 
+        # Log submission classification for debugging
+        classification_type = getattr(updates, "submission_classification", None)
+        if classification_type:
+            logger.info(
+                f"🔍 Submission classification: "
+                f"type={classification_type.type}, "
+                f"confidence={classification_type.confidence}, "
+                f"reasoning={classification_type.reasoning}"
+            )
+
         has_attr = hasattr(updates, "evidence_to_add")
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
@@ -2047,7 +2040,7 @@ class MilestoneEngine:
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
-                    content_ref=ev_item.content_ref,
+                    content_ref=_truncate_content_ref(ev_item.content_ref),
                     category=ev_item.category,
                     source_type=ev_item.source_type,
                     collected_at=datetime.now(UTC),
@@ -2223,7 +2216,7 @@ class MilestoneEngine:
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
-                    content_ref=ev_item.content_ref,
+                    content_ref=_truncate_content_ref(ev_item.content_ref),
                     category=ev_item.category,
                     source_type=ev_item.source_type,
                     collected_at=datetime.now(UTC),
@@ -2294,11 +2287,12 @@ class MilestoneEngine:
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
 
         # 4. Link Evidence (Partial Application Check)
+        # Note: Hypothesis-evidence linking is best-effort. The LLM may reference
+        # evidence IDs that don't exist yet (timing issue), so we silently skip failed links.
         if (
             hasattr(updates, "hypothesis_evidence_links")
             and updates.hypothesis_evidence_links
         ):
-            feedback = []
             for link in updates.hypothesis_evidence_links:
                 # Resolve partial IDs like 'new_index_0' to actual IDs if we just created them
                 h_id = self._resolve_id_ref(
@@ -2312,17 +2306,33 @@ class MilestoneEngine:
 
                 # Check existence
                 if h_id not in case.hypotheses:
-                    msg = f"Validation Error: Hypothesis ID '{h_id}' not found (resolved from '{link.hypothesis_id_ref}'). Cannot link evidence."
-                    feedback.append(msg)
-                    logger.warning(msg)
+                    # Hypothesis ID validation failed - log warning but don't add to system_feedback
+                    logger.warning(
+                        f"Hypothesis-evidence link skipped: Hypothesis ID '{h_id}' not found "
+                        f"(resolved from '{link.hypothesis_id_ref}'). "
+                        f"Available hypotheses: {list(case.hypotheses.keys())}, "
+                        f"Hypotheses added this turn: {metadata.get('hypotheses_generated', [])}"
+                    )
                     continue
 
                 # Check evidence existence (scan list)
                 ev_exists = any(e.evidence_id == e_id for e in case.evidence)
                 if not ev_exists:
-                    msg = f"Validation Error: Evidence ID '{e_id}' not found (resolved from '{link.evidence_id_ref}'). Cannot link to hypothesis."
-                    feedback.append(msg)
-                    logger.warning(msg)
+                    # Evidence reference failed to resolve
+                    # This is only a problem if LLM tried to link evidence but used wrong format/ID
+                    # It's acceptable if no evidence exists (e.g., user_text message)
+
+                    # Build diagnostic info
+                    evidence_this_turn = metadata.get("evidence_added", [])
+                    all_evidence_ids = [e.evidence_id for e in case.evidence]
+
+                    logger.warning(
+                        f"Hypothesis-evidence link validation failed: "
+                        f"Cannot resolve reference '{link.evidence_id_ref}' to evidence ID '{e_id}'. "
+                        f"Evidence created this turn: {evidence_this_turn}. "
+                        f"Recent evidence IDs: {all_evidence_ids[-5:] if len(all_evidence_ids) > 5 else all_evidence_ids}. "
+                        f"Note: This is expected if no evidence was created (user_text messages)."
+                    )
                     continue
 
                 self.hypothesis_manager.link_evidence(
@@ -2332,14 +2342,6 @@ class MilestoneEngine:
                     case.current_turn,
                     reasoning=link.reasoning,
                     stance_confidence=link.stance_confidence,
-                )
-
-            if feedback:
-                current_feedback = metadata.get("system_feedback", "")
-                metadata["system_feedback"] = (
-                    (current_feedback + "\n" + "\n".join(feedback))
-                    if current_feedback
-                    else "\n".join(feedback)
                 )
 
         # 5. Solutions

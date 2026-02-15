@@ -98,14 +98,14 @@ class InvestigationService(BaseService):
             from datetime import datetime, timezone
             from uuid import uuid4
 
-            # Increment turn number
-            case.current_turn += 1
+            # Calculate next turn number (don't commit yet - only after successful processing)
+            next_turn = case.current_turn + 1
 
             # Per case-storage-design.md Section 4.7, use "timestamp" not "created_at"
             # Preserve intent metadata for debugging, analytics, and audit trail
             user_message_obj = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
-                "turn_number": case.current_turn,
+                "turn_number": next_turn,
                 "role": "user",
                 "message_type": "user_query",
                 "content": request.message,
@@ -127,7 +127,7 @@ class InvestigationService(BaseService):
             case.messages.append(user_message_obj)
             case.message_count += 1
 
-            # Persist user message and new turn number immediately
+            # Persist user message (but NOT turn increment yet - that happens after success)
             await self.repository.save(case)
 
             # 4. Route based on structured intent (clean, no keyword matching)
@@ -190,11 +190,15 @@ class InvestigationService(BaseService):
             else:
                 raise ValueError(f"Unknown intent type: {intent_type}")
 
-            # 5. Build response
+            # 5. Processing succeeded - commit turn increment
+            # Only commit after successful processing to avoid gaps in audit trail on crashes
+            result["case_updated"].current_turn = next_turn
+
+            # 6. Build response
             updated_case = result["case_updated"]
             agent_response_text = result["agent_response"]
 
-            # 6. Save agent response to conversation history
+            # 7. Save agent response to conversation history
             from datetime import datetime, timezone
             from uuid import uuid4
 

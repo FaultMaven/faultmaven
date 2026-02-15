@@ -522,59 +522,67 @@ class PostgreSQLCaseRepository(CaseRepository):
             "title": case.title,
             "description": case.description,
             "status": case.status.value,
-            "status_history": json.dumps([t.model_dump() for t in case.status_history]),
+            "status_history": json.dumps(
+                [t.model_dump(mode="json") for t in case.status_history]
+            ),
             "closure_reason": case.closure_reason,
             # Progress (JSONB)
-            "progress": json.dumps(case.progress.model_dump()),
+            "progress": json.dumps(case.progress.model_dump(mode="json")),
             # Turn tracking
             "current_turn": case.current_turn,
             "turns_without_progress": case.turns_without_progress,
-            "turn_history": json.dumps([t.model_dump() for t in case.turn_history]),
+            "turn_history": json.dumps(
+                [t.model_dump(mode="json") for t in case.turn_history]
+            ),
             # Path and strategy
             "path_selection": (
-                json.dumps(case.path_selection.model_dump())
+                json.dumps(case.path_selection.model_dump(mode="json"))
                 if case.path_selection
                 else None
             ),
             "investigation_strategy": case.investigation_strategy.value,
             # Problem context
-            "inquiry": json.dumps(case.inquiry.model_dump()),
+            "inquiry": json.dumps(case.inquiry.model_dump(mode="json")),
             "problem_verification": (
-                json.dumps(case.problem_verification.model_dump())
+                json.dumps(case.problem_verification.model_dump(mode="json"))
                 if case.problem_verification
                 else None
             ),
             # Investigation data (JSONB arrays)
-            "uploaded_files": json.dumps([f.model_dump() for f in case.uploaded_files]),
-            "evidence": json.dumps([e.model_dump() for e in case.evidence]),
-            "hypotheses": json.dumps(
-                {k: v.model_dump() for k, v in case.hypotheses.items()}
+            "uploaded_files": json.dumps(
+                [f.model_dump(mode="json") for f in case.uploaded_files]
             ),
-            "solutions": json.dumps([s.model_dump() for s in case.solutions]),
+            "evidence": json.dumps([e.model_dump(mode="json") for e in case.evidence]),
+            "hypotheses": json.dumps(
+                {k: v.model_dump(mode="json") for k, v in case.hypotheses.items()}
+            ),
+            "solutions": json.dumps(
+                [s.model_dump(mode="json") for s in case.solutions]
+            ),
             # Conclusions
             "working_conclusion": (
-                json.dumps(case.working_conclusion.model_dump())
+                json.dumps(case.working_conclusion.model_dump(mode="json"))
                 if case.working_conclusion
                 else None
             ),
             "root_cause_conclusion": (
-                json.dumps(case.root_cause_conclusion.model_dump())
+                json.dumps(case.root_cause_conclusion.model_dump(mode="json"))
                 if case.root_cause_conclusion
                 else None
             ),
             # Special states
             "degraded_mode": (
-                json.dumps(case.degraded_mode.model_dump())
+                json.dumps(case.degraded_mode.model_dump(mode="json"))
                 if case.degraded_mode
                 else None
             ),
             "escalation_state": (
-                json.dumps(case.escalation_state.model_dump())
+                json.dumps(case.escalation_state.model_dump(mode="json"))
                 if case.escalation_state
                 else None
             ),
             # Documentation
-            "documentation": json.dumps(case.documentation.model_dump()),
+            "documentation": json.dumps(case.documentation.model_dump(mode="json")),
             # Timestamps
             "created_at": case.created_at,
             "updated_at": case.updated_at,

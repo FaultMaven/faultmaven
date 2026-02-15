@@ -335,7 +335,7 @@ class InvestigationProgress(BaseModel):
 
     root_cause_method: Optional[str] = Field(
         default=None,
-        description="How root cause was identified: direct_analysis | hypothesis_validation | correlation | other",
+        description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | other",
     )
 
     # ============================================================
@@ -551,6 +551,7 @@ class InvestigationProgress(BaseModel):
             allowed = [
                 "direct_analysis",
                 "hypothesis_validation",
+                "single_shot_validation",
                 "correlation",
                 "other",
             ]
@@ -1510,7 +1511,7 @@ class UploadedFile(BaseModel):
     content_ref: Optional[str] = Field(
         default=None,
         description="Reference to stored file content (S3 URI or data_id). May be None if processing pending.",
-        max_length=1000,
+        max_length=5000,
     )
 
 
@@ -1585,7 +1586,7 @@ class Evidence(BaseModel):
     content_ref: Optional[str] = Field(
         default=None,
         description="S3 URI to original raw file (1-10MB) for audit, compliance, and deep dive analysis. May be None for user-typed evidence.",
-        max_length=1000,
+        max_length=5000,
     )
 
     content_size_bytes: int = Field(

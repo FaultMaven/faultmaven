@@ -4,7 +4,7 @@
 
 The Structured Output Capability System provides a **provider-agnostic** approach to handling structured output across all LLM providers (OpenAI, Groq, Anthropic, Gemini, Cohere, local models, etc.).
 
-Instead of hardcoding provider-specific logic throughout the codebase, this system centralizes capability detection and automatically adjusts prompts and API parameters based on what each provider/model supports.
+Instead of hardcoding provider-specific logic throughout the codebase, this system uses the **Template Method pattern** where each provider implements its own capability detection logic, and the system automatically adjusts prompts and API parameters based on what each provider/model supports.
 
 ## Architecture
 
@@ -14,14 +14,17 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
    - `StructuredOutputCapability` enum (STRICT, BEST_EFFORT, FUNCTION_CALLING, NONE)
    - `StructuredOutputMode` enum (JSON_SCHEMA_STRICT, JSON_OBJECT, FUNCTION_CALLING, PROMPT_ONLY)
    - `StructuredOutputStrategy` dataclass
-   - `get_capability_for_provider_and_model()` - Centralized capability registry
    - `create_strategy_for_capability()` - Strategy factory
 
-2. **`base.py`** - Base provider class with capability methods
-   - `get_structured_output_capability()` - Detects capability for model
+2. **`base.py`** - Base provider class with Template Method pattern
+   - `get_structured_output_capability()` - Template method (providers override this)
    - `get_structured_output_strategy()` - Creates strategy for schema
 
-3. **`milestone_engine.py`** - Consumer of capability system
+3. **Provider classes** - Each provider implements capability detection
+   - `OpenAIProvider`, `AnthropicProvider`, `GroqProvider`, etc.
+   - Each overrides `get_structured_output_capability()` with provider-specific logic
+
+4. **`milestone_engine.py`** - Consumer of capability system
    - Uses `get_structured_output_strategy()` to determine approach
    - Conditionally includes schema in prompt
    - Uses strategy-determined `response_format`
@@ -35,7 +38,7 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
 | **FUNCTION_CALLING** | Uses tool/function calling for structured output | Anthropic Claude, some local models | `tools: [...]` parameter |
 | **NONE** | No API support, schema only in prompt | Legacy/small models | Prompt engineering only |
 
-### How It Works
+### How It Works (Template Method Pattern)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -46,14 +49,13 @@ Instead of hardcoding provider-specific logic throughout the codebase, this syst
                              │ get_structured_output_strategy(schema)
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      BaseLLMProvider                                 │
-│                         (base.py)                                    │
+│                    Specific Provider                                 │
+│        (OpenAIProvider, AnthropicProvider, etc.)                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │ get_structured_output_capability()                            │  │
-│  │   └─> get_capability_for_provider_and_model()                │  │
-│  │         (centralized registry)                                │  │
+│  │ get_structured_output_capability() [OVERRIDDEN]               │  │
+│  │   Provider-specific logic (e.g., pattern matching on models) │  │
 │  │                                                                │  │
-│  │ get_structured_output_strategy()                              │  │
+│  │ get_structured_output_strategy() [INHERITED]                  │  │
 │  │   └─> create_strategy_for_capability()                       │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └────────────────────────────┬────────────────────────────────────────┘
@@ -185,73 +187,91 @@ if "response_format" in kwargs:
 
 ## Adding Support for New Providers
 
-### Step 1: Update Capability Registry
-
-Edit `structured_output_capability.py`:
-
-```python
-def get_capability_for_provider_and_model(
-    provider_name: str, model_name: str
-) -> StructuredOutputCapability:
-    """Centralized capability registry"""
-
-    # ... existing providers ...
-
-    # NEW PROVIDER
-    elif provider_name == "new_provider":
-        if "advanced-model" in model_name:
-            return StructuredOutputCapability.STRICT
-        return StructuredOutputCapability.BEST_EFFORT
-
-    # Default fallback
-    return StructuredOutputCapability.BEST_EFFORT
-```
-
-### Step 2: Implement Provider Class
+### Step 1: Implement Provider Class with Capability Override
 
 Create `new_provider.py`:
 
 ```python
+from typing import Optional
 from .base import BaseLLMProvider
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 class NewProvider(BaseLLMProvider):
     @property
     def provider_name(self) -> str:
         return "new_provider"
 
-    # Capability methods inherited from BaseLLMProvider - no code needed!
-    # get_structured_output_capability() and get_structured_output_strategy()
-    # automatically work via the centralized registry
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for this provider's models.
+
+        IMPORTANT: All providers MUST override this method to implement
+        provider-specific capability detection logic.
+        """
+        effective_model = self.get_effective_model(model)
+        model_lower = effective_model.lower()
+
+        # Provider-specific logic - pattern matching, whitelists, etc.
+        if "advanced-model" in model_lower:
+            return StructuredOutputCapability.STRICT
+        elif "pro-model" in model_lower:
+            return StructuredOutputCapability.FUNCTION_CALLING
+        else:
+            return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(self, prompt: str, **kwargs):
-        # Handle response_format from strategy
-        strategy = self.get_structured_output_strategy(schema)
+        # The strategy methods are inherited from BaseLLMProvider
+        # and automatically use your overridden capability detection!
 
-        # Use strategy.response_format in API call
+        # Handle response_format from strategy if needed
         response = await api_call(
             prompt=prompt,
-            response_format=strategy.response_format
+            response_format=kwargs.get("response_format")
         )
         return response
 ```
 
-### Step 3: Add Tests
+### Step 2: Add Provider Override Tests
 
 Create `test_new_provider_capability.py`:
 
 ```python
+from faultmaven.infrastructure.llm.providers.new_provider import NewProvider
+from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
+
 def test_new_provider_advanced_model_strict():
     """New provider's advanced model should support STRICT"""
-    capability = get_capability_for_provider_and_model(
-        "new_provider", "advanced-model"
+    config = ProviderConfig(
+        name="new_provider",
+        api_key="test-key",
+        base_url="https://api.newprovider.com/v1",
+        models=["advanced-model-v2"],
+        default_model="advanced-model-v2",
     )
+    provider = NewProvider(config)
+
+    capability = provider.get_structured_output_capability("advanced-model-v2")
     assert capability == StructuredOutputCapability.STRICT
 
 def test_new_provider_basic_model_best_effort():
     """New provider's basic model should use BEST_EFFORT"""
-    capability = get_capability_for_provider_and_model(
-        "new_provider", "basic-model"
+    config = ProviderConfig(
+        name="new_provider",
+        api_key="test-key",
+        base_url="https://api.newprovider.com/v1",
+        models=["basic-model"],
+        default_model="basic-model",
     )
+    provider = NewProvider(config)
+
+    capability = provider.get_structured_output_capability("basic-model")
     assert capability == StructuredOutputCapability.BEST_EFFORT
 ```
 
@@ -268,22 +288,22 @@ def test_new_provider_basic_model_best_effort():
 
 ## Design Principles
 
-### 1. Centralized Registry
-All capability information lives in one place: `get_capability_for_provider_and_model()`
+### 1. Template Method Pattern
+Base class provides overridable `get_structured_output_capability()` method that providers customize with their own detection logic (Open/Closed Principle)
 
-### 2. Provider Inheritance
-Providers inherit capability methods from `BaseLLMProvider` - no per-provider implementation needed
+### 2. Encapsulation
+Each provider encapsulates its own capability detection logic - no centralized registry needed
 
 ### 3. Strategy Pattern
-Different capability levels get different strategies with appropriate configuration
+Different capability levels get different strategies with appropriate configuration via `create_strategy_for_capability()`
 
 ### 4. Separation of Concerns
-- **Detection**: `get_capability_for_provider_and_model()`
-- **Strategy**: `create_strategy_for_capability()`
+- **Detection**: Provider-specific `get_structured_output_capability()` override
+- **Strategy**: `create_strategy_for_capability()` (shared utility)
 - **Execution**: Consumer code (milestone_engine)
 
 ### 5. Fail-Safe Defaults
-Unknown providers default to `BEST_EFFORT` - always functional, never broken
+Base class returns `BEST_EFFORT` if provider doesn't override - always functional, never broken
 
 ## Performance Considerations
 

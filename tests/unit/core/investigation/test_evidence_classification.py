@@ -216,7 +216,7 @@ class TestEvidenceClassificationBasics:
         evidence_to_add = EvidenceToAdd(
             summary="Unrelated screenshot",
             category=EvidenceCategory.REJECTED,
-            source_type=EvidenceSourceType.VISUAL,
+            source_type=EvidenceSourceType.IMAGE,
         )
 
         # Act
@@ -375,7 +375,7 @@ class TestContextualEvidence:
         evidence_to_add = EvidenceToAdd(
             summary="System architecture diagram showing microservices",
             category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
-            source_type=EvidenceSourceType.VISUAL,
+            source_type=EvidenceSourceType.IMAGE,
         )
 
         # Act
@@ -398,7 +398,7 @@ class TestContextualEvidence:
 
         # Assert
         assert case.evidence[0].category == EvidenceCategory.CONTEXTUAL_EVIDENCE
-        assert case.evidence[0].source_type == EvidenceSourceType.VISUAL
+        assert case.evidence[0].source_type == EvidenceSourceType.IMAGE
         assert "architecture" in case.evidence[0].summary.lower()
 
     @pytest.mark.asyncio
@@ -525,7 +525,7 @@ class TestSourceTypeClassification:
         evidence = Evidence(
             evidence_id="ev_123456789abc",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.VISUAL,
+            source_type=EvidenceSourceType.IMAGE,
             form=EvidenceForm.DOCUMENT,
             summary="Screenshot of error dialog",
             primary_purpose="Shows user-visible error message",
@@ -538,7 +538,7 @@ class TestSourceTypeClassification:
             preprocessed_content="Error dialog: Connection failed",
         )
 
-        assert evidence.source_type == EvidenceSourceType.VISUAL
+        assert evidence.source_type == EvidenceSourceType.IMAGE
 
     @pytest.mark.asyncio
     async def test_user_description_source_type(self):
@@ -546,7 +546,7 @@ class TestSourceTypeClassification:
         evidence = Evidence(
             evidence_id="ev_123456789abc",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            source_type=EvidenceSourceType.TEXT,
             form=EvidenceForm.USER_INPUT,
             summary="User report of intermittent timeouts",
             primary_purpose="User observed timeouts every 5 minutes during peak hours",
@@ -559,7 +559,7 @@ class TestSourceTypeClassification:
             preprocessed_content="Timeouts every 5 minutes during peak hours",
         )
 
-        assert evidence.source_type == EvidenceSourceType.USER_DESCRIPTION
+        assert evidence.source_type == EvidenceSourceType.TEXT
         assert evidence.form == EvidenceForm.USER_INPUT
 
 
@@ -593,7 +593,7 @@ class TestEvidenceHelperMethods:
                 Evidence(
                     evidence_id="ev_000000000002",
                     category=EvidenceCategory.REJECTED,
-                    source_type=EvidenceSourceType.VISUAL,
+                    source_type=EvidenceSourceType.IMAGE,
                     form=EvidenceForm.DOCUMENT,
                     summary="Rejected submission",
                     primary_purpose="Unrelated image",

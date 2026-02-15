@@ -1,7 +1,11 @@
 """
 Unit tests for Structured Output Capability Detection System
 
-Tests the provider-agnostic capability detection and strategy creation.
+Tests the provider-agnostic strategy creation.
+
+Note: Provider-specific capability detection is now tested in
+test_provider_capability_overrides.py as each provider implements
+its own get_structured_output_capability() method.
 """
 
 import pytest
@@ -12,7 +16,6 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
     StructuredOutputStrategy,
     create_strategy_for_capability,
-    get_capability_for_provider_and_model,
 )
 
 
@@ -21,103 +24,6 @@ class SimpleTestModel(BaseModel):
 
     name: str
     value: int
-
-
-class TestCapabilityDetection:
-    """Test capability detection for different providers"""
-
-    def test_openai_gpt4o_strict_support(self):
-        """OpenAI GPT-4o should support STRICT mode"""
-        capability = get_capability_for_provider_and_model("openai", "gpt-4o")
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_openai_gpt4o_mini_strict_support(self):
-        """OpenAI GPT-4o-mini should support STRICT mode"""
-        capability = get_capability_for_provider_and_model("openai", "gpt-4o-mini")
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_openai_gpt4_turbo_strict_support(self):
-        """OpenAI GPT-4-turbo should support STRICT mode"""
-        capability = get_capability_for_provider_and_model("openai", "gpt-4-turbo")
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_openai_legacy_function_calling(self):
-        """Older OpenAI models should use FUNCTION_CALLING"""
-        capability = get_capability_for_provider_and_model("openai", "gpt-3.5-turbo")
-        assert capability == StructuredOutputCapability.FUNCTION_CALLING
-
-    def test_groq_gpt_oss_20b_strict_support(self):
-        """Groq gpt-oss-20b should support STRICT mode"""
-        capability = get_capability_for_provider_and_model("groq", "openai/gpt-oss-20b")
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_groq_gpt_oss_120b_strict_support(self):
-        """Groq gpt-oss-120b should support STRICT mode"""
-        capability = get_capability_for_provider_and_model(
-            "groq", "openai/gpt-oss-120b"
-        )
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_groq_llama_best_effort(self):
-        """Groq Llama models should use BEST_EFFORT mode"""
-        capability = get_capability_for_provider_and_model(
-            "groq", "meta-llama/Llama-3.3-70b-versatile"
-        )
-        assert capability == StructuredOutputCapability.BEST_EFFORT
-
-    def test_groq_mixtral_best_effort(self):
-        """Groq Mixtral models should use BEST_EFFORT mode"""
-        capability = get_capability_for_provider_and_model("groq", "mixtral-8x7b-32768")
-        assert capability == StructuredOutputCapability.BEST_EFFORT
-
-    def test_anthropic_function_calling(self):
-        """Anthropic Claude should use FUNCTION_CALLING"""
-        capability = get_capability_for_provider_and_model(
-            "anthropic", "claude-3-opus-20240229"
-        )
-        assert capability == StructuredOutputCapability.FUNCTION_CALLING
-
-    def test_gemini_2_strict_support(self):
-        """Gemini 2.0 should support STRICT mode"""
-        capability = get_capability_for_provider_and_model("gemini", "gemini-2.0-pro")
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_gemini_15_strict_support(self):
-        """Gemini 1.5 should support STRICT mode"""
-        capability = get_capability_for_provider_and_model("gemini", "gemini-1.5-pro")
-        assert capability == StructuredOutputCapability.STRICT
-
-    def test_gemini_legacy_best_effort(self):
-        """Older Gemini models should use BEST_EFFORT"""
-        capability = get_capability_for_provider_and_model("gemini", "gemini-1.0-pro")
-        assert capability == StructuredOutputCapability.BEST_EFFORT
-
-    def test_cohere_best_effort(self):
-        """Cohere should use BEST_EFFORT mode"""
-        capability = get_capability_for_provider_and_model("cohere", "command-r")
-        assert capability == StructuredOutputCapability.BEST_EFFORT
-
-    def test_local_model_best_effort(self):
-        """Local models should default to BEST_EFFORT"""
-        capability = get_capability_for_provider_and_model("local", "llama3-8b")
-        assert capability == StructuredOutputCapability.BEST_EFFORT
-
-    def test_local_functionary_function_calling(self):
-        """Local functionary models should use FUNCTION_CALLING"""
-        capability = get_capability_for_provider_and_model("local", "functionary-7b-v2")
-        assert capability == StructuredOutputCapability.FUNCTION_CALLING
-
-    def test_local_hermes_function_calling(self):
-        """Local Hermes models should use FUNCTION_CALLING"""
-        capability = get_capability_for_provider_and_model(
-            "local", "hermes-2-pro-llama"
-        )
-        assert capability == StructuredOutputCapability.FUNCTION_CALLING
-
-    def test_unknown_provider_best_effort(self):
-        """Unknown providers should default to BEST_EFFORT"""
-        capability = get_capability_for_provider_and_model("unknown", "unknown-model")
-        assert capability == StructuredOutputCapability.BEST_EFFORT
 
 
 class TestStrategyCreation:

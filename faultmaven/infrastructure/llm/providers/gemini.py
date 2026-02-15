@@ -12,6 +12,9 @@ from typing import List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
@@ -30,6 +33,32 @@ class GeminiProvider(BaseLLMProvider):
     def get_supported_models(self) -> List[str]:
         """Get list of supported Gemini models"""
         return self.config.models.copy()
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for Gemini models.
+
+        Gemini models have version-based structured output support:
+        - STRICT: Gemini 2.0 and 1.5 (supports controlled generation)
+        - BEST_EFFORT: Gemini 1.0 (prompt-based JSON generation)
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability: STRICT for 2.0/1.5, BEST_EFFORT for 1.0
+        """
+        effective_model = self.get_effective_model(model)
+        model_lower = effective_model.lower()
+
+        # Gemini 2.0 and 1.5 support STRICT mode (controlled generation)
+        if "2.0" in model_lower or "1.5" in model_lower:
+            return StructuredOutputCapability.STRICT
+
+        # Gemini 1.0 uses BEST_EFFORT (prompt-based)
+        return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(
         self,

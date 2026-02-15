@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
@@ -38,6 +41,24 @@ class CohereProvider(BaseLLMProvider):
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for Cohere models.
+
+        All Cohere Command-R models use BEST_EFFORT mode (prompt-based JSON generation).
+        Cohere doesn't currently support strict json_schema enforcement.
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability: Always BEST_EFFORT for all Cohere models
+        """
+        # All Cohere models use BEST_EFFORT mode
+        return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(
         self,

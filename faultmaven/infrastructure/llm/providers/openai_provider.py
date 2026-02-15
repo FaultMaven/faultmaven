@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
@@ -28,6 +31,40 @@ class OpenAIProvider(BaseLLMProvider):
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for OpenAI models.
+
+        OpenAI provides different levels of structured output support:
+        - STRICT: Modern models with json_schema support (gpt-4o, gpt-4-turbo, etc.)
+        - FUNCTION_CALLING: Legacy models with function calling but not strict json_schema
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability: STRICT or FUNCTION_CALLING
+        """
+        effective_model = self.get_effective_model(model)
+        model_lower = effective_model.lower()
+
+        # Modern models with strict json_schema support (response_format.type = "json_schema")
+        # These support the strict parameter for guaranteed schema compliance
+        strict_indicators = [
+            "gpt-4o",  # GPT-4 Omni models
+            "gpt-4-turbo",  # GPT-4 Turbo models
+            "gpt-4-2024",  # GPT-4 2024+ models
+            "gpt-3.5-turbo-0125",  # GPT-3.5 Turbo with structured output
+        ]
+
+        if any(indicator in model_lower for indicator in strict_indicators):
+            return StructuredOutputCapability.STRICT
+
+        # All other OpenAI models support function calling as fallback
+        return StructuredOutputCapability.FUNCTION_CALLING
 
     async def generate(
         self,

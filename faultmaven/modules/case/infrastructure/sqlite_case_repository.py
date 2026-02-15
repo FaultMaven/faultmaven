@@ -1299,13 +1299,14 @@ class SQLiteCaseRepository(CaseRepository):
                     "retirement_reason": hypothesis.retirement_reason,
                     "evidence_links": json.dumps(
                         {
-                            eid: link.model_dump()
+                            eid: link.model_dump(mode="json")
                             for eid, link in hypothesis.evidence_links.items()
                         }
                     ),
                     "tested_at": hypothesis.tested_at,
                     "concluded_at": hypothesis.concluded_at,
-                    "proposed_at": hypothesis.proposed_at or datetime.now(UTC),
+                    "proposed_at": getattr(hypothesis, "proposed_at", None)
+                    or datetime.now(UTC),
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
                 },

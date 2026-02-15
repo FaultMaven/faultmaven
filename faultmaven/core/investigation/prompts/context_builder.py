@@ -367,12 +367,12 @@ def build_investigation_context(
         milestones_str += "</milestones_completed>"
 
     # 4. Evidence Summary
+    # Note: Evidence IDs removed from LLM context (category-based validation)
+    # Evidence is created AFTER LLM response, so IDs don't exist yet
     evidence_str = "<evidence_collected>\n"
     if case.evidence:
         for i, ev in enumerate(case.evidence[-10:]):  # Last 10 evidence items
-            evidence_str += (
-                f"- [{ev.category.value}] {ev.summary} (ID: {ev.evidence_id})\n"
-            )
+            evidence_str += f"- [{ev.category.value}] {ev.summary}\n"
     else:
         evidence_str += "No formal evidence collected yet.\n"
     evidence_str += "</evidence_collected>"

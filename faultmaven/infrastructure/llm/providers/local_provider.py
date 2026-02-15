@@ -12,6 +12,9 @@ from typing import List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
@@ -34,6 +37,32 @@ class LocalProvider(BaseLLMProvider):
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for local models.
+
+        Local models have varying structured output support:
+        - FUNCTION_CALLING: functionary and hermes models (native function calling)
+        - BEST_EFFORT: All other local models (prompt-based JSON generation)
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability: FUNCTION_CALLING or BEST_EFFORT
+        """
+        effective_model = self.get_effective_model(model)
+        model_lower = effective_model.lower()
+
+        # Models with native function calling support
+        if "functionary" in model_lower or "hermes" in model_lower:
+            return StructuredOutputCapability.FUNCTION_CALLING
+
+        # All other local models use BEST_EFFORT (prompt-based)
+        return StructuredOutputCapability.BEST_EFFORT
 
     async def generate(
         self,

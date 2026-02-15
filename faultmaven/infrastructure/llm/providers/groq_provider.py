@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
@@ -38,6 +41,35 @@ class GroqProvider(BaseLLMProvider):
     @property
     def provider_name(self) -> str:
         return "groq"
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for Groq models.
+
+        Groq provides STRICT mode (json_schema with strict:true) only for specific models:
+        - openai/gpt-oss-20b
+        - openai/gpt-oss-120b
+
+        All other models (Llama, Mixtral, etc.) use BEST_EFFORT mode (json_object).
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability: STRICT for gpt-oss models, BEST_EFFORT for others
+        """
+        effective_model = self.get_effective_model(model)
+
+        # Only gpt-oss-20b and gpt-oss-120b support STRICT mode
+        strict_models = {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+
+        if effective_model in strict_models:
+            return StructuredOutputCapability.STRICT
+
+        # All other Groq models use BEST_EFFORT (json_object mode)
+        return StructuredOutputCapability.BEST_EFFORT
 
     def is_available(self) -> bool:
         """Check if Groq provider is properly configured"""

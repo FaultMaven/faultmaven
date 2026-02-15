@@ -16,7 +16,6 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputStrategy,
     create_strategy_for_capability,
-    get_capability_for_provider_and_model,
 )
 
 
@@ -274,28 +273,49 @@ class BaseLLMProvider(ABC):
         """
         Get the structured output capability for this provider/model.
 
+        **IMPORTANT: All provider subclasses MUST override this method.**
+
         This method determines what level of structured output support is available
-        for the given model. Providers can override this to provide custom logic,
-        or rely on the centralized capability registry.
+        for the given model. Each provider implements provider-specific logic to
+        detect capabilities based on model names and features.
+
+        **Provider Override Pattern:**
+        Subclasses MUST override this method to provide accurate capability detection:
+
+        ```python
+        def get_structured_output_capability(
+            self, model: Optional[str] = None
+        ) -> StructuredOutputCapability:
+            effective_model = self.get_effective_model(model)
+
+            # Provider-specific logic
+            if "model-with-strict-support" in effective_model:
+                return StructuredOutputCapability.STRICT
+            elif "model-with-function-calling" in effective_model:
+                return StructuredOutputCapability.FUNCTION_CALLING
+            else:
+                return StructuredOutputCapability.BEST_EFFORT
+        ```
+
+        **Default Behavior:**
+        If not overridden, returns BEST_EFFORT as a conservative fallback and logs
+        a warning that the provider should implement this method.
 
         Args:
             model: Model name to check (uses default if None)
 
         Returns:
-            StructuredOutputCapability level
+            StructuredOutputCapability: One of STRICT, FUNCTION_CALLING, BEST_EFFORT, or NONE
+
+        Design Reference:
+            Template Method pattern - base provides default, subclasses specialize
         """
-        effective_model = self.get_effective_model(model)
-        capability = get_capability_for_provider_and_model(
-            self.provider_name, effective_model
+        # Conservative fallback for providers that haven't implemented this yet
+        self.logger.warning(
+            f"{self.provider_name} provider has not overridden get_structured_output_capability(). "
+            f"Returning BEST_EFFORT as conservative default. Provider should implement this method."
         )
-
-        # Log capability for visibility
-        self.logger.debug(
-            f"Structured output capability for {self.provider_name}/{effective_model}: "
-            f"{capability.value}"
-        )
-
-        return capability
+        return StructuredOutputCapability.BEST_EFFORT
 
     def get_structured_output_strategy(
         self, schema: Dict[str, Any], model: Optional[str] = None

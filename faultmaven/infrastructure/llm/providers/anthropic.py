@@ -12,6 +12,9 @@ from typing import List, Optional
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+)
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
@@ -30,6 +33,25 @@ class AnthropicProvider(BaseLLMProvider):
     def get_supported_models(self) -> List[str]:
         """Get list of supported Claude models"""
         return self.config.models.copy()
+
+    def get_structured_output_capability(
+        self, model: Optional[str] = None
+    ) -> StructuredOutputCapability:
+        """
+        Determine structured output capability for Anthropic Claude models.
+
+        All Claude models support function calling (tools API) but do not support
+        strict json_schema enforcement like OpenAI's STRICT mode.
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            StructuredOutputCapability: Always FUNCTION_CALLING for all Claude models
+        """
+        # All Anthropic models support function calling via the tools API
+        # No model-specific logic needed - all Claude models have the same capability
+        return StructuredOutputCapability.FUNCTION_CALLING
 
     async def generate(
         self,
