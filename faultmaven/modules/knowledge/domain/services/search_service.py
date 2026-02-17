@@ -33,12 +33,11 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
 
-class KnowledgeSearchService(BaseService):
+class KnowledgeSearchService:
     """Service for searching knowledge base with hybrid search.
 
     This service orchestrates the full search workflow:
@@ -75,7 +74,6 @@ class KnowledgeSearchService(BaseService):
         Raises:
             ValueError: If required dependencies are not provided
         """
-        super().__init__("knowledge_search_service")
         self.knowledge_repo = knowledge_repo
 
         # Require explicit dependency injection
@@ -124,9 +122,7 @@ class KnowledgeSearchService(BaseService):
             VectorStoreException: If vector search fails
             KnowledgeBaseException: If item retrieval fails
         """
-        return await self.execute_operation(
-            "semantic_search",
-            self._semantic_search_impl,
+        return await self._semantic_search_impl(
             query,
             organization_id,
             n_results,
@@ -203,15 +199,7 @@ class KnowledgeSearchService(BaseService):
                 logger.warning(f"Failed to fetch item {item_id}: {e}")
                 continue
 
-        self.log_metric(
-            "semantic_search_performed",
-            1,
-            unit="count",
-            tags={
-                "organization_id": organization_id,
-                "results_count": len(results),
-            },
-        )
+        logger.info("Metric: semantic_search_performed")
 
         return results
 
@@ -250,9 +238,7 @@ class KnowledgeSearchService(BaseService):
             VectorStoreException: If vector search fails
             KnowledgeBaseException: If item retrieval fails
         """
-        return await self.execute_operation(
-            "hybrid_search",
-            self._hybrid_search_impl,
+        return await self._hybrid_search_impl(
             query,
             organization_id,
             n_results,
@@ -360,17 +346,7 @@ class KnowledgeSearchService(BaseService):
                         f"Failed to mark item {item.item_id} as retrieved: {e}"
                     )
 
-        self.log_metric(
-            "hybrid_search_performed",
-            1,
-            unit="count",
-            tags={
-                "organization_id": organization_id,
-                "results_count": len(combined_results),
-                "semantic_weight": sem_weight,
-                "text_weight": txt_weight,
-            },
-        )
+        logger.info("Metric: hybrid_search_performed")
 
         return combined_results
 
@@ -391,11 +367,7 @@ class KnowledgeSearchService(BaseService):
             VectorStoreException: If vector store operation fails
             KnowledgeBaseException: If repository operation fails
         """
-        return await self.execute_operation(
-            "index_item",
-            self._index_item_impl,
-            item,
-        )
+        return await self._index_item_impl(item)
 
     async def _index_item_impl(self, item: KnowledgeItem) -> None:
         """Internal implementation of index_item."""
@@ -452,15 +424,7 @@ class KnowledgeSearchService(BaseService):
                 details={"item_id": item.item_id, "error_type": type(e).__name__},
             ) from e
 
-        self.log_business_event(
-            "knowledge_item_indexed",
-            severity="info",
-            data={
-                "item_id": item.item_id,
-                "organization_id": item.organization_id,
-                "item_type": item.item_type.value,
-            },
-        )
+        logger.info("Business event: knowledge_item_indexed")
 
     async def index_items_batch(
         self,
@@ -480,12 +444,7 @@ class KnowledgeSearchService(BaseService):
             EmbeddingException: If embedding generation fails
             VectorStoreException: If vector store operation fails
         """
-        return await self.execute_operation(
-            "index_items_batch",
-            self._index_items_batch_impl,
-            items,
-            batch_size,
-        )
+        return await self._index_items_batch_impl(items, batch_size)
 
     async def _index_items_batch_impl(
         self,
@@ -563,16 +522,7 @@ class KnowledgeSearchService(BaseService):
                     )
                     # Items are already in repo, just log the error
 
-        self.log_metric(
-            "batch_indexing_completed",
-            succeeded,
-            unit="count",
-            tags={
-                "total": len(items),
-                "succeeded": succeeded,
-                "failed": failed,
-            },
-        )
+        logger.info("Metric: batch_indexing_completed")
 
         return {
             "processed": len(items),
@@ -592,11 +542,7 @@ class KnowledgeSearchService(BaseService):
             EmbeddingException: If embedding generation fails
             VectorStoreException: If vector store operation fails
         """
-        return await self.execute_operation(
-            "reindex_item",
-            self._reindex_item_impl,
-            item_id,
-        )
+        return await self._reindex_item_impl(item_id)
 
     async def _reindex_item_impl(self, item_id: str) -> None:
         """Internal implementation of reindex_item."""
@@ -614,14 +560,7 @@ class KnowledgeSearchService(BaseService):
         # Index the item
         await self._index_item_impl(item)
 
-        self.log_business_event(
-            "knowledge_item_reindexed",
-            severity="info",
-            data={
-                "item_id": item_id,
-                "new_version": item.embedding_version,
-            },
-        )
+        logger.info("Business event: knowledge_item_reindexed")
 
     async def delete_item(self, item_id: str) -> bool:
         """Delete item from repository and vector store.
@@ -636,11 +575,7 @@ class KnowledgeSearchService(BaseService):
             VectorStoreException: If vector store operation fails
             KnowledgeBaseException: If repository operation fails
         """
-        return await self.execute_operation(
-            "delete_item",
-            self._delete_item_impl,
-            item_id,
-        )
+        return await self._delete_item_impl(item_id)
 
     async def _delete_item_impl(self, item_id: str) -> bool:
         """Internal implementation of delete_item."""
@@ -660,11 +595,7 @@ class KnowledgeSearchService(BaseService):
             ) from e
 
         if deleted:
-            self.log_business_event(
-                "knowledge_item_deleted",
-                severity="info",
-                data={"item_id": item_id},
-            )
+            logger.info("Business event: knowledge_item_deleted")
 
         return deleted
 
@@ -684,11 +615,7 @@ class KnowledgeSearchService(BaseService):
             - pending_items: Items without embeddings
             - vector_store_count: Items in vector store
         """
-        return await self.execute_operation(
-            "get_indexing_stats",
-            self._get_indexing_stats_impl,
-            organization_id,
-        )
+        return await self._get_indexing_stats_impl(organization_id)
 
     async def _get_indexing_stats_impl(
         self,
@@ -745,7 +672,7 @@ class KnowledgeSearchService(BaseService):
         Returns:
             Dictionary with health status
         """
-        base_health = await super().health_check()
+        base_health = {"service": "knowledge_search_service", "status": "healthy"}
 
         # Check embedding service
         try:

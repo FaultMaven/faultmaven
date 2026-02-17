@@ -447,8 +447,8 @@ flowchart TD
     subgraph CLASSIFICATION [" Single-Phase Evidence Creation "]
         direction TB
         USER_MSG[User Submission] --> LLM_CLASSIFY{LLM Classifies<br/>Submission}
-        LLM_CLASSIFY -->|user_chat| NO_EVIDENCE[No Evidence<br/>Record Created]
-        LLM_CLASSIFY -->|external_data| CREATE_EV[Create Evidence<br/>Record]
+        LLM_CLASSIFY -->|user_text| NO_EVIDENCE[No Evidence<br/>Record Created]
+        LLM_CLASSIFY -->|submitted_data| CREATE_EV[Create Evidence<br/>Record]
         LLM_CLASSIFY -->|mixed| CREATE_EV
 
         LLM_CLASSIFY -.->|Misclassification<br/>Fallback| PATTERN_DETECT{Pattern Detection<br/>Logs? Metrics?<br/>Config?}
@@ -734,10 +734,10 @@ case.closure_reason = "escalated"
 
 The following items were identified during the design review (2026-02-13) and are either known limitations or deferred to a future release:
 
-| ID | Item | Status | Notes |
-|----|------|--------|-------|
-| F2 | **Hypothesis confidence model composition** — Evidence-based update and stagnation decay operate independently. Evidence update resets likelihood from formula, erasing decay. Decay operates on current likelihood without knowing evidence adjustments. Creates sawtooth oscillation pattern. | Known Limitation | Consider composing as `(initial + evidence_delta) × decay_factor` or tracking contributions as separate signals. |
-| F7 | **Token budget non-Latin text** — `TokenBudget` uses 1:4 char-to-token ratio which underestimates tokens for CJK, code, and structured data. | Known Limitation | Consider provider-specific tokenizers or a 1:2 ratio as safer approximation. |
-| G2 | **`solution_verified` milestone evidence expectations** — `MILESTONE_EVIDENCE_EXPECTATIONS` defines requirements for 8 milestones but omits `solution_verified`. The User-Agent Handshake handles the transition, but no evidence validation is enforced. | Deferred | Add `solution_verified` with ≥1 RESOLUTION_EVIDENCE expectation. |
-| G5 | **Knowledge resolution fast-track wiring** — `KnowledgeResolution` model and `InquiryResponse.knowledge_resolution` exist in schema, but `_process_response_structured()` does not process this field. The INQUIRY→RESOLVED fast-track documented in lifecycle logic is not executed. | Deferred | Wire `knowledge_resolution` processing in milestone engine. |
-| G7 | **Checkpoint/time-travel** — `CaseCheckpoint` model is defined in contracts but not instantiated anywhere in the investigation flow. No snapshot serialization, diff engine, or replay capability exists. Turn progress is tracked via `TurnProgress` records. | Deferred | See [Orchestration Capabilities](./orchestration-capabilities.md) for design. |
+| ID | Item | Status | Priority | Notes |
+|----|------|--------|----------|-------|
+| F2 | **Hypothesis confidence model composition** — Evidence-based update and stagnation decay operate independently. Evidence update resets likelihood from formula, erasing decay. Decay operates on current likelihood without knowing evidence adjustments. Creates sawtooth oscillation pattern. | Known Limitation | Low | Consider composing as `(initial + evidence_delta) × decay_factor` or tracking contributions as separate signals. |
+| F7 | **Token budget non-Latin text** — `TokenBudget` uses 1:4 char-to-token ratio which underestimates tokens for CJK, code, and structured data. | Known Limitation | Medium | Consider provider-specific tokenizers or a 1:2 ratio as safer approximation. |
+| G2 | **`solution_verified` milestone evidence expectations** — `MILESTONE_EVIDENCE_EXPECTATIONS` defines requirements for 8 of the 9 milestones but omits `solution_verified`. The User-Agent Handshake handles the transition, but no evidence validation is enforced. | Deferred | Low | Add `solution_verified` with ≥1 RESOLUTION_EVIDENCE expectation. |
+| G5 | **Knowledge resolution fast-track wiring** — `KnowledgeResolution` model and `InquiryResponse.knowledge_resolution` exist in schema, but `_process_response_structured()` does not process this field. The INQUIRY→RESOLVED fast-track documented in lifecycle logic is not executed. | Deferred | High | Wire `knowledge_resolution` processing in milestone engine. |
+| G7 | **Checkpoint/time-travel** — `CaseCheckpoint` model is defined in contracts but not instantiated anywhere in the investigation flow. No snapshot serialization, diff engine, or replay capability exists. Turn progress is tracked via `TurnProgress` records. | Deferred | Low | See [Orchestration Capabilities](./orchestration-capabilities.md) for design. |

@@ -19,7 +19,7 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 import asyncio
-import hashlib
+
 import logging
 import time
 from dataclasses import dataclass, field
@@ -60,9 +60,7 @@ from faultmaven.modules.agent.tools.base import (
     ToolContext,
 )
 from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
-from faultmaven.modules.case.contracts import CaseCheckpoint
 from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +86,24 @@ When investigating:
 Available tools:
 - list_evidence: List all evidence files uploaded for this case
 - read_file: Read the contents of an evidence file by ID
-- search_knowledge: Search the knowledge base for relevant information (coming soon)
+- search_file: Search a file for specific keywords, regex patterns, or re-run extractors with different parameters (free, fast)
+- deep_analysis: Get LLM-interpreted analysis of specific data sections (costs ~$0.01, slower)
+- vectorize_file: Vectorize a large file for semantic search (costs ~$0.05+, ask user first)
+- knowledge_base_search: Search the knowledge base for relevant information
+
+## Data Access Strategy
+
+When a user asks about uploaded data, follow this escalation order:
+
+1. **Check summaries first** (free, instant): Review the evidence summaries and structural indexes already in your context. Most questions can be answered from the Tier 1 structural index alone.
+
+2. **search_file** (free, fast): If summaries lack detail, use search_file to grep for specific keywords, patterns, or timestamps in the raw file. Use extractor mode to re-run analysis with different parameters.
+
+3. **deep_analysis** (low cost, slower): If you need LLM interpretation of specific data sections — root cause analysis, correlation detection, or synthesizing findings across file sections.
+
+4. **vectorize_file** (higher cost, rare): Only suggest when the user is repeatedly asking questions about a large file and point queries are insufficient. Always ask the user before vectorizing.
+
+Never skip tiers. Always try the cheaper option first.
 
 Always explain your reasoning and next steps clearly.""",
     AgentType.DEBUGGER: """You are a debugging specialist focused on code and log analysis.
@@ -169,7 +184,7 @@ class ExecutionResult:
     error_message: Optional[str] = None
 
 
-class AgentOrchestrationService(BaseService):
+class AgentOrchestrationService:
     """Service for AI agent orchestration and execution.
 
     This service coordinates the execution of AI agents for troubleshooting
@@ -199,6 +214,7 @@ class AgentOrchestrationService(BaseService):
         retry_initial_delay: float = 1.0,
         tool_timeout: int = 30,
         max_parallel_tools: int = 5,
+        checkpoint_service: Any = None,
     ):
         """Initialize agent orchestration service.
 
@@ -216,7 +232,6 @@ class AgentOrchestrationService(BaseService):
         Raises:
             ValueError: If required dependencies are not provided
         """
-        super().__init__("agent_orchestration_service")
         self.case_repo = case_repo
 
         # Require explicit dependency injection
@@ -238,6 +253,7 @@ class AgentOrchestrationService(BaseService):
         self.retry_initial_delay = retry_initial_delay
         self.tool_timeout = tool_timeout
         self.max_parallel_tools = max_parallel_tools
+        self.checkpoint_service = checkpoint_service
 
     @property
     def llm_client(self) -> LLMClient:
@@ -289,12 +305,14 @@ class AgentOrchestrationService(BaseService):
             ValidationException: Invalid input
             ServiceError: LLM or tool execution failure
         """
-        self.log_operation(
+        logger.info(
             "execute_agent",
-            session_id=session_id,
-            organization_id=organization_id,
-            agent_type=agent_type.value,
-            message_length=len(user_message),
+            extra={
+                "session_id": session_id,
+                "organization_id": organization_id,
+                "agent_type": agent_type.value,
+                "message_length": len(user_message),
+            },
         )
 
         start_time = time.time()
@@ -440,48 +458,11 @@ class AgentOrchestrationService(BaseService):
 
             # Step 9b: Create checkpoint (fail-safe)
             # We capture the state AFTER the turn is complete and messages are saved
-            if session and session.case_id:
-                try:
-                    # Re-fetch case to get latest state including new messages
-                    current_case = await self.case_repo.get(session.case_id)
-                    if current_case:
-                        # Serialize case for snapshot
-                        # model_dump is standard Pydantic v2, but using to_dict or similar depending on Case implementation
-                        # Assuming Pydantic BaseModel for Case
-                        case_snapshot = (
-                            current_case.model_dump()
-                            if hasattr(current_case, "model_dump")
-                            else current_case.__dict__
-                        )
-
-                        # Calculate hash for drift detection
-                        snapshot_json = (
-                            current_case.model_dump_json()
-                            if hasattr(current_case, "model_dump_json")
-                            else str(case_snapshot)
-                        )
-                        snapshot_hash = hashlib.sha256(
-                            snapshot_json.encode()
-                        ).hexdigest()
-
-                        checkpoint = CaseCheckpoint(
-                            checkpoint_id=f"{current_case.case_id}:turn:{current_case.current_turn}",
-                            case_id=current_case.case_id,
-                            turn_number=current_case.current_turn,
-                            case_snapshot=case_snapshot,
-                            snapshot_hash=snapshot_hash,
-                            trigger="turn_complete",
-                            created_at=datetime.now(timezone.utc),
-                        )
-
-                        await self.case_repo.create_checkpoint(checkpoint)
-                        logger.debug(
-                            f"Created checkpoint for case {current_case.case_id} turn {current_case.current_turn}"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to create checkpoint for case {session.case_id}: {e}",
-                        exc_info=True,
+            if session and session.case_id and self.checkpoint_service:
+                current_case = await self.case_repo.get(session.case_id)
+                if current_case:
+                    await self.checkpoint_service.create_checkpoint(
+                        current_case, trigger="turn_complete"
                     )
 
             # Step 10: Check if budget now exceeded and pause if needed

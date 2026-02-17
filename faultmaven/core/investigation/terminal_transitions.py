@@ -125,6 +125,14 @@ def _execute_resolved_transition(case: Case, user_id: str, reason: str):
         f"Executing INVESTIGATING → RESOLVED transition."
     )
 
+    # Gap #8: Warn if resolving with no evidence (non-blocking)
+    if not case.evidence:
+        logger.warning(
+            f"Case {case.case_id} resolving with zero evidence records. "
+            f"User confirmed resolution but no evidence was collected during investigation.",
+            extra={"case_id": case.case_id, "metric": "case.resolved_without_evidence"},
+        )
+
     # Set solution_verified since user confirmed
     case.progress.solution_verified = True
 

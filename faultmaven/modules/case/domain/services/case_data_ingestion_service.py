@@ -38,8 +38,11 @@ from faultmaven.models.interfaces import (
     IStorageBackend,
     ITracer,
 )
-from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Import enhanced components (if available)
 try:
@@ -89,7 +92,7 @@ class EnhancedIngestionResult:
             self.learning_opportunities = []
 
 
-class CaseDataIngestionService(BaseService):
+class CaseDataIngestionService:
     """Service for managing case data ingestion and evidence extraction workflows
 
     Part of the Case module - handles file uploads, data classification, and
@@ -124,7 +127,6 @@ class CaseDataIngestionService(BaseService):
             memory_service: Optional memory service for enhanced context-aware processing
             pattern_learner: Optional pattern learning service for adaptive processing
         """
-        super().__init__()
         self._classifier = data_classifier
         self._processor = log_processor
         self._sanitizer = sanitizer
@@ -146,7 +148,7 @@ class CaseDataIngestionService(BaseService):
                     self._pattern_learner = PatternLearner(memory_service)
                 self._enhanced_mode = True
             except Exception as e:
-                self.logger.warning(f"Enhanced components initialization failed: {e}")
+                logger.warning(f"Enhanced components initialization failed: {e}")
                 self._enhanced_mode = False
         else:
             self._enhanced_mode = False
@@ -213,18 +215,11 @@ class CaseDataIngestionService(BaseService):
             if not session_id or not session_id.strip():
                 raise ValidationException("Session ID cannot be empty")
 
-        return await self.execute_operation(
-            "ingest_data",
-            self._execute_data_ingestion,
-            content,
-            session_id,
-            file_name,
-            file_size,
-            data_type,
-            context,
-            validate_inputs=lambda c, s, f, fs, dt, ctx: _validate_ingest_inputs(
-                c, s, f, fs, dt, ctx
-            ),
+        _validate_ingest_inputs(
+            content, session_id, file_name, file_size, data_type, context
+        )
+        return await self._execute_data_ingestion(
+            content, session_id, file_name, file_size, data_type, context
         )
 
     async def _execute_data_ingestion(
@@ -245,7 +240,7 @@ class CaseDataIngestionService(BaseService):
         if self._storage:
             existing_data = await self._storage.get(data_id)
             if existing_data:
-                self.logger.info(
+                logger.info(
                     f"Duplicate file detected: {data_id} (hash match)",
                     extra={
                         "data_id": data_id,
@@ -267,16 +262,7 @@ class CaseDataIngestionService(BaseService):
 
         # Not a duplicate - proceed with normal processing
         # Log business event
-        self.log_business_event(
-            "data_ingestion_started",
-            "info",
-            {
-                "data_id": data_id,
-                "session_id": session_id,
-                "file_name": file_name,
-                "content_size": len(content),
-            },
-        )
+        logger.info("Business event: data_ingestion_started")
 
         # Sanitize content using interface
         sanitized_content = self._sanitizer.sanitize(content)
@@ -305,12 +291,7 @@ class CaseDataIngestionService(BaseService):
                 classified_data_type = classification_result.data_type
 
         # Log classification metric
-        self.log_metric(
-            "data_classified",
-            1,
-            "count",
-            {"data_type": classified_data_type.value, "session_id": session_id},
-        )
+        logger.info("Metric: data_classified")
 
         # Process data to extract insights using interface
         try:
@@ -351,7 +332,7 @@ class CaseDataIngestionService(BaseService):
                     "confidence_score": 0.5,
                 }
         except Exception as e:
-            self.logger.warning(f"Failed to extract detailed insights: {e}")
+            logger.warning(f"Failed to extract detailed insights: {e}")
             detailed_insights = {
                 "processed": True,
                 "processing_timestamp": to_json_compatible(datetime.now(timezone.utc)),
@@ -386,16 +367,7 @@ class CaseDataIngestionService(BaseService):
             await self._storage.store(data_id, uploaded_data)
 
         # Log successful ingestion
-        self.log_business_event(
-            "data_ingestion_completed",
-            "info",
-            {
-                "data_id": data_id,
-                "session_id": session_id,
-                "data_type": classified_data_type.value,
-                "processing_status": "completed",  # Fixed status since new model doesn't have this field
-            },
-        )
+        logger.info("Business event: data_ingestion_completed")
 
         # Record operation in session if session service is available
         if self._session_service and session_id:
@@ -420,11 +392,11 @@ class CaseDataIngestionService(BaseService):
                         metadata=record_metadata,
                     )
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to record data upload operation in session: {e}"
                     )
             else:
-                self.logger.debug(
+                logger.debug(
                     "Session service does not support data upload tracking (MinimalSessionService)"
                 )
 
@@ -498,18 +470,7 @@ class CaseDataIngestionService(BaseService):
             data_id = self._generate_data_id(content)
 
             # Log enhanced business event
-            self.log_business_event(
-                "enhanced_data_ingestion_started",
-                "info",
-                {
-                    "data_id": data_id,
-                    "session_id": session_id,
-                    "file_name": file_name,
-                    "content_size": len(content),
-                    "memory_enhanced": True,
-                    "pattern_learning_enabled": True,
-                },
-            )
+            logger.info("Business event: enhanced_data_ingestion_started")
 
             # Sanitize content
             sanitized_content = self._sanitizer.sanitize(content)
@@ -612,36 +573,15 @@ class CaseDataIngestionService(BaseService):
                 await self._record_enhanced_operation(enhanced_result)
 
             # Log completion
-            self.log_business_event(
-                "enhanced_data_ingestion_completed",
-                "info",
-                {
-                    "data_id": data_id,
-                    "session_id": session_id,
-                    "processing_time_ms": enhanced_result.processing_time_ms,
-                    "memory_enhanced": enhanced_result.memory_enhanced,
-                    "patterns_applied": len(enhanced_result.patterns_applied),
-                    "learning_opportunities": len(
-                        enhanced_result.learning_opportunities
-                    ),
-                },
-            )
+            logger.info("Business event: enhanced_data_ingestion_completed")
 
             return enhanced_result
 
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"Enhanced data ingestion failed for session {session_id}: {e}"
             )
-            self.log_business_event(
-                "enhanced_data_ingestion_failed",
-                "error",
-                {
-                    "session_id": session_id,
-                    "error": str(e),
-                    "processing_time_ms": (time.time() - start_time) * 1000,
-                },
-            )
+            logger.info("Business event: enhanced_data_ingestion_failed")
             raise ServiceException(
                 f"Enhanced data ingestion failed: {str(e)}",
                 details={"session_id": session_id, "error": str(e)},
@@ -675,13 +615,8 @@ class CaseDataIngestionService(BaseService):
             ):
                 raise ValidationException("Session ID cannot be empty")
 
-        return await self.execute_operation(
-            "analyze_data",
-            self._execute_data_analysis,
-            data_id,
-            session_id,
-            validate_inputs=lambda di, si: _validate_analyze_inputs(di, si),
-        )
+        _validate_analyze_inputs(data_id, session_id)
+        return await self._execute_data_analysis(data_id, session_id)
 
     async def _execute_data_analysis(
         self, data_id: str, session_id: str
@@ -710,15 +645,7 @@ class CaseDataIngestionService(BaseService):
         data_type_value = self._get_data_attribute(data, "data_type")
         if hasattr(data_type_value, "value"):
             data_type_value = data_type_value.value
-        self.log_business_event(
-            "data_analysis_started",
-            "info",
-            {
-                "data_id": data_id,
-                "session_id": session_id,
-                "data_type": data_type_value,
-            },
-        )
+        logger.info("Business event: data_analysis_started")
 
         # Process using interface with tracing
         start_time = datetime.now(timezone.utc)
@@ -735,7 +662,7 @@ class CaseDataIngestionService(BaseService):
                 )
             except Exception as e:
                 # Wrap external processor exceptions in ServiceException
-                self.logger.error(f"Data analysis failed for {data_id}: {e}")
+                logger.error(f"Data analysis failed for {data_id}: {e}")
                 raise ServiceException(
                     f"Data analysis processing failed: {str(e)}",
                     details={
@@ -763,12 +690,7 @@ class CaseDataIngestionService(BaseService):
             processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
 
         # Log processing time metric
-        self.log_metric(
-            "data_analysis_processing_time",
-            processing_time_ms,
-            "milliseconds",
-            {"data_id": data_id, "data_type": data_type_value},
-        )
+        logger.info("Metric: data_analysis_processing_time")
 
         # Sanitize insights
         sanitized_insights = self._sanitizer.sanitize(insights)
@@ -814,16 +736,7 @@ class CaseDataIngestionService(BaseService):
             ) from e
 
         # Log completion event
-        self.log_business_event(
-            "data_analysis_completed",
-            "info",
-            {
-                "data_id": data_id,
-                "session_id": session_id,
-                "confidence_score": confidence_score,
-                "anomalies_count": len(anomalies),
-            },
-        )
+        logger.info("Business event: data_analysis_completed")
 
         return response
 
@@ -840,9 +753,7 @@ class CaseDataIngestionService(BaseService):
         Returns:
             List of processed UploadedData
         """
-        return await self.execute_operation(
-            "batch_process", self._execute_batch_processing, data_items, session_id
-        )
+        return await self._execute_batch_processing(data_items, session_id)
 
     async def _execute_batch_processing(
         self, data_items: List[tuple[str, Optional[str]]], session_id: str
@@ -852,11 +763,7 @@ class CaseDataIngestionService(BaseService):
             return []
 
         # Log batch start event
-        self.log_business_event(
-            "batch_processing_started",
-            "info",
-            {"session_id": session_id, "batch_size": len(data_items)},
-        )
+        logger.info("Business event: batch_processing_started")
 
         results = []
         for i, (content, filename) in enumerate(data_items):
@@ -869,27 +776,13 @@ class CaseDataIngestionService(BaseService):
                 results.append(result)
             except Exception as e:
                 # Log individual item failure but continue with batch
-                self.logger.error(f"Failed to process item {i+1} ({filename}): {e}")
+                logger.error(f"Failed to process item {i+1} ({filename}): {e}")
                 # Continue with other items - don't fail entire batch
 
         # Log batch completion metrics
-        self.log_metric(
-            "batch_processing_success_rate",
-            len(results) / len(data_items) * 100,
-            "percent",
-            {"session_id": session_id},
-        )
+        logger.info("Metric: batch_processing_success_rate")
 
-        self.log_business_event(
-            "batch_processing_completed",
-            "info",
-            {
-                "session_id": session_id,
-                "successful_items": len(results),
-                "total_items": len(data_items),
-                "success_rate": len(results) / len(data_items),
-            },
-        )
+        logger.info("Business event: batch_processing_completed")
 
         return results
 
@@ -908,12 +801,8 @@ class CaseDataIngestionService(BaseService):
             if not session_id or not session_id.strip():
                 raise ValidationException("Session ID cannot be empty")
 
-        return await self.execute_operation(
-            "get_session_data",
-            self._execute_session_data_retrieval,
-            session_id,
-            validate_inputs=lambda sid: _validate_session_inputs(sid),
-        )
+        _validate_session_inputs(session_id)
+        return await self._execute_session_data_retrieval(session_id)
 
     async def _execute_session_data_retrieval(
         self, session_id: str
@@ -1132,7 +1021,7 @@ class CaseDataIngestionService(BaseService):
                     )
 
         except Exception as e:
-            self.logger.warning(f"Anomaly detection failed: {e}")
+            logger.warning(f"Anomaly detection failed: {e}")
 
         return anomalies
 
@@ -1254,7 +1143,7 @@ class CaseDataIngestionService(BaseService):
                 base_score += 0.05
 
         except Exception as e:
-            self.logger.warning(f"Confidence calculation failed: {e}")
+            logger.warning(f"Confidence calculation failed: {e}")
 
         return min(base_score, 1.0)
 
@@ -1281,13 +1170,8 @@ class CaseDataIngestionService(BaseService):
             if not session_id or not session_id.strip():
                 raise ValidationException("Session ID cannot be empty")
 
-        return await self.execute_operation(
-            "delete_data",
-            self._execute_data_deletion,
-            data_id,
-            session_id,
-            validate_inputs=lambda di, si: _validate_delete_inputs(di, si),
-        )
+        _validate_delete_inputs(data_id, session_id)
+        return await self._execute_data_deletion(data_id, session_id)
 
     async def _execute_data_deletion(self, data_id: str, session_id: str) -> bool:
         """Execute the core data deletion logic"""
@@ -1317,15 +1201,7 @@ class CaseDataIngestionService(BaseService):
         data_type_value = self._get_data_attribute(data, "data_type")
         if hasattr(data_type_value, "value"):
             data_type_value = data_type_value.value
-        self.log_business_event(
-            "data_deleted",
-            "info",
-            {
-                "data_id": data_id,
-                "session_id": session_id,
-                "data_type": data_type_value,
-            },
-        )
+        logger.info("Business event: data_deleted")
 
         return True
 
@@ -1336,8 +1212,7 @@ class CaseDataIngestionService(BaseService):
         Returns:
             Dictionary with health status and component details
         """
-        # Get base health from BaseService
-        base_health = await super().health_check()
+        base_health = {"service": "data_service", "status": "healthy"}
 
         # Add component-specific health checks
         components = {
@@ -1447,7 +1322,7 @@ class CaseDataIngestionService(BaseService):
             LearningResult with learning outcome details (if enhanced mode available)
         """
         if not self._enhanced_mode or not self._pattern_learner:
-            self.logger.warning(
+            logger.warning(
                 "Learning from feedback requested but enhanced mode not available"
             )
             return None
@@ -1488,24 +1363,12 @@ class CaseDataIngestionService(BaseService):
             self._metrics["learning_sessions"] += 1
 
             # Log learning session
-            self.log_business_event(
-                "pattern_learning_completed",
-                "info",
-                {
-                    "data_id": data_id,
-                    "session_id": session_id,
-                    "patterns_learned": getattr(learning_result, "patterns_learned", 0),
-                    "patterns_updated": getattr(learning_result, "patterns_updated", 0),
-                    "learning_confidence": getattr(
-                        learning_result, "learning_confidence", 0.0
-                    ),
-                },
-            )
+            logger.info("Business event: pattern_learning_completed")
 
             return learning_result
 
         except Exception as e:
-            self.logger.error(f"Learning from feedback failed: {e}")
+            logger.error(f"Learning from feedback failed: {e}")
             raise ServiceException(
                 f"Pattern learning failed: {str(e)}",
                 details={"data_id": data_id, "session_id": session_id},
@@ -1613,7 +1476,7 @@ class CaseDataIngestionService(BaseService):
                     pattern_stats = self._pattern_learner.get_pattern_statistics()
                     insights["pattern_utilization"] = pattern_stats
                 except Exception as e:
-                    self.logger.warning(f"Failed to get pattern statistics: {e}")
+                    logger.warning(f"Failed to get pattern statistics: {e}")
                     insights["pattern_utilization"] = {}
 
             # Generate recommendations
@@ -1624,7 +1487,7 @@ class CaseDataIngestionService(BaseService):
             return insights
 
         except Exception as e:
-            self.logger.error(f"Failed to get processing insights: {e}")
+            logger.error(f"Failed to get processing insights: {e}")
             return {"error": str(e)}
 
     # Enhanced helper methods
@@ -1779,7 +1642,7 @@ class CaseDataIngestionService(BaseService):
         """Record enhanced operation in session service"""
         # Check if session service has the record method (not available in MinimalSessionService)
         if not hasattr(self._session_service, "record_data_upload_operation"):
-            self.logger.debug(
+            logger.debug(
                 "Session service does not support data upload tracking (MinimalSessionService)"
             )
             return
@@ -1818,7 +1681,7 @@ class CaseDataIngestionService(BaseService):
                 metadata=metadata,
             )
         except Exception as e:
-            self.logger.warning(f"Failed to record enhanced operation: {e}")
+            logger.warning(f"Failed to record enhanced operation: {e}")
 
     def _generate_processing_recommendations(
         self, insights: Dict[str, Any], processing_history: List[Dict[str, Any]]
@@ -1908,7 +1771,7 @@ class CaseDataIngestionService(BaseService):
                 # Run preprocessing to create LLM-friendly summary
                 llm_summary = preprocessor(insights, raw_content)
 
-                self.logger.info(
+                logger.info(
                     f"Preprocessed data {data_id}: {len(raw_content)} → {len(llm_summary)} chars",
                     extra={
                         "data_id": data_id,
@@ -1922,7 +1785,7 @@ class CaseDataIngestionService(BaseService):
                 return llm_summary
             else:
                 # No preprocessor available - return basic summary
-                self.logger.warning(
+                logger.warning(
                     f"No preprocessor for {data_type}, using basic summary",
                     extra={"data_id": data_id, "data_type": data_type},
                 )
@@ -1941,7 +1804,7 @@ Raw content has been analyzed, but detailed formatting is pending implementation
                 return basic_summary
 
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"Failed to preprocess data {data_id}: {e}",
                 extra={"data_id": data_id, "data_type": data_type},
                 exc_info=True,

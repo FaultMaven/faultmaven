@@ -103,14 +103,14 @@ User submits → LLM evaluates → If relevant: Create Evidence(category)
 **Three submission types:**
 ```python
 class SubmissionClassification(str, Enum):
-    USER_CHAT = "user_chat"           # Pure conversation → NO evidence record
-    EXTERNAL_DATA = "external_data"   # Data from elsewhere → Evidence record
+    USER_TEXT = "user_text"           # Pure conversation → NO evidence record
+    SUBMITTED_DATA = "submitted_data"   # Data from elsewhere → Evidence record
     MIXED = "mixed"                   # Chat + data → Evidence record (extract data portion)
 ```
 
 **Handling:**
-- `USER_CHAT`: Stays in `case.messages[]` only, never enters `evidence` table
-- `EXTERNAL_DATA`: Always creates evidence record
+- `USER_TEXT`: Stays in `case.messages[]` only, never enters `evidence` table
+- `SUBMITTED_DATA`: Always creates evidence record
 - `MIXED`: Creates evidence record for data portion, chat stays in messages
 
 ---
@@ -407,7 +407,7 @@ User: "Can you check this log file?"
 *uploads app.log with connection timeout errors*
 
 LLM Classification:
-- submission_classification: "external_data"
+- submission_classification: "submitted_data"
 - category: SYMPTOM_EVIDENCE  ← Classified based on content
 - summary: "Application logs showing database connection timeouts"
 - primary_purpose: "Shows repeated connection timeout errors during peak hours"
@@ -655,7 +655,7 @@ ORDER BY count DESC;
    - File content (preprocessed text)
    ↓
 6. LLM returns structured response with:
-   - submission_classification: {type: "external_data", reasoning: "..."}
+   - submission_classification: {type: "submitted_data", reasoning: "..."}
    - state_updates.evidence_to_add: [{
        category: "symptom_evidence",  # or "rejected" if not useful
        data_type: "logs",
@@ -691,7 +691,7 @@ ORDER BY count DESC;
    - User message text only (no attachments)
    ↓
 5. LLM returns:
-   - submission_classification: {type: "user_chat"}
+   - submission_classification: {type: "user_text"}
    - agent_response: "..."
    - NO evidence_to_add
    ↓

@@ -1064,7 +1064,7 @@ def get_hypothesis_formulation_instructions(case: Case) -> str:
    → Generate: hypotheses_to_add (2-4 hypotheses)
    → Ensure diversity: At least 2 different HypothesisCategory
    → When user provides evidence: Evaluate against ALL hypotheses
-   → Update hypothesis.status based on evidence: TESTING → VALIDATED/REFUTED
+   → Update hypothesis.status based on evidence: ACTIVE → VALIDATED/REFUTED
 
 **TOOL CHECK** (before requesting user data):
 □ Search KB for this error message / symptom pattern
@@ -1093,7 +1093,7 @@ def get_hypothesis_validation_instructions(case: Case) -> str:
 
 **Your Task:**
 - Evaluate new evidence against all active hypotheses
-- Update hypothesis status based on evidence (VALIDATED/REFUTED/TESTING)
+- Update hypothesis status based on evidence (VALIDATED/REFUTED/ACTIVE)
 - Mark root_cause_identified = True when hypothesis validated with high confidence
 
 **Evidence Evaluation:**

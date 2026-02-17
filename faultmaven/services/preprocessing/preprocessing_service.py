@@ -533,6 +533,89 @@ class PreprocessingService:
             processing_time_ms=processing_time_ms,
         )
 
+    async def classify_and_extract(
+        self,
+        content: str,
+        filename: str = "pasted_content.txt",
+        source_metadata: Optional[SourceMetadata] = None,
+    ) -> PreprocessingResult:
+        """
+        Classify content and run the matched extractor.
+
+        Used for pasted text that the LLM classified as submitted_data/mixed.
+        Same Tier 0+1 pipeline as process_upload() but without file validation,
+        deduplication, raw file storage, or bytes handling.
+
+        Returns:
+            PreprocessingResult with structural_index, summary, and extraction metadata.
+        """
+        start_time = time.time()
+
+        # Tier 0: Classify
+        classification = self.classifier.classify(
+            filename,
+            content,
+            source_metadata=source_metadata,
+        )
+
+        detailed_data_type = classification.data_type
+        unified_data_type = to_unified_data_type(detailed_data_type)
+
+        logger.info(
+            f"classify_and_extract: {filename} → {detailed_data_type.value} "
+            f"(unified={unified_data_type.value}, "
+            f"confidence={classification.confidence:.2f})"
+        )
+
+        # Tier 1: Extract structural index with timeout enforcement
+        extractor = self.extractors.get(detailed_data_type)
+
+        if extractor:
+            extraction = await self._extract_with_timeout(extractor, content, filename)
+        else:
+            logger.warning(
+                f"No extractor for {detailed_data_type.value}, "
+                f"using direct truncation"
+            )
+            extraction = ExtractionResult(
+                method="direct",
+                content=self._fallback_direct_extraction(content),
+                metadata={"fallback": True},
+            )
+
+        # Sanitize
+        sanitized_content = self.sanitizer.sanitize(extraction.content)
+        sanitization_applied = sanitized_content != extraction.content
+        redactions_count = 0
+        if sanitization_applied:
+            redactions_count = sanitized_content.count("***") // 2
+
+        # Compute content hash from text (not raw bytes like process_upload)
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        # Package result
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        content_size = len(content.encode("utf-8"))
+        index_size = len(sanitized_content.encode("utf-8"))
+        compression_ratio = index_size / max(content_size, 1)
+
+        return PreprocessingResult(
+            data_type=unified_data_type,
+            detailed_data_type=detailed_data_type,
+            summary=generate_concise_summary(sanitized_content),
+            structural_index=sanitized_content,
+            content_ref=None,
+            content_size_bytes=content_size,
+            content_type="text/plain",
+            extraction_method=extraction.method,
+            compression_ratio=compression_ratio,
+            extraction_metadata=extraction.metadata,
+            content_hash=content_hash,
+            sanitization_applied=sanitization_applied,
+            redactions_count=redactions_count,
+            processing_time_ms=processing_time_ms,
+        )
+
     async def _extract_with_timeout(
         self,
         extractor: object,

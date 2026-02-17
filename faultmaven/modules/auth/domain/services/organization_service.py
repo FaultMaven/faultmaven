@@ -13,6 +13,7 @@ Core Responsibilities:
 - Multi-tenancy isolation
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -27,10 +28,11 @@ from faultmaven.modules.auth.domain.models.organization import (
     OrganizationMember,
     OrgPlanTier,
 )
-from faultmaven.services.base import BaseService
+
+logger = logging.getLogger(__name__)
 
 
-class OrganizationService(BaseService):
+class OrganizationService:
     """Service for organization management and RBAC."""
 
     def __init__(
@@ -47,7 +49,6 @@ class OrganizationService(BaseService):
             audit_repository: Optional audit repository for logging
             settings: Configuration settings for the service
         """
-        super().__init__("organization_service")
         self.repository = organization_repository
         self.audit_repository = audit_repository
         self._settings = settings
@@ -129,9 +130,7 @@ class OrganizationService(BaseService):
                 details={"name": name, "slug": slug, "plan_tier": plan_tier.value},
             )
 
-        self.logger.info(
-            f"Created organization {org_id} ({name}) by user {creator_user_id}"
-        )
+        logger.info(f"Created organization {org_id} ({name}) by user {creator_user_id}")
         return created_org
 
     @trace("org_service_get_organization")

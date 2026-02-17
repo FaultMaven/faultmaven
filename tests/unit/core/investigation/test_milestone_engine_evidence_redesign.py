@@ -434,7 +434,6 @@ class TestMixedSubmissions:
                         "category": "symptom_evidence",
                         "source_type": "logs",
                         "primary_purpose": "Shows connection timeout errors",
-                        "form": "user_input",  # Mixed: data extracted from chat
                         "content_ref": "turn_5_user_message",
                     }
                 ],
@@ -453,7 +452,8 @@ class TestMixedSubmissions:
         updated_case = result["case_updated"]
         assert len(updated_case.evidence) == 1
         assert updated_case.evidence[0].category == EvidenceCategory.SYMPTOM_EVIDENCE
-        assert updated_case.evidence[0].form == "user_input"
+        # "mixed" classification → SUBMITTED_DATA form
+        assert updated_case.evidence[0].form.value == "submitted_data"
 
 
 class TestEvidenceCategoryImmutability:

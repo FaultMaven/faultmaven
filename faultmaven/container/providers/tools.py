@@ -187,4 +187,61 @@ def register_tools(container: BaseDIContainer) -> None:
 
     container.tools.extend([t for t in tools_to_add if t is not None])
 
+    # Deep analysis tool (Tier 3 deep LLM analysis, Gap #1)
+    tier2_service = (
+        container.get_service("tier2_service")
+        if hasattr(container, "get_service")
+        else None
+    )
+    if tier2_service:
+        from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
+
+        deep_analysis_tool = DeepAnalysisTool(tier2_service=tier2_service)
+        container.deep_analysis_tool = deep_analysis_tool
+        container.tools.append(deep_analysis_tool)
+        logger.info("Deep analysis tool registered (Tier 3 backend active)")
+
+    # Search file tool (Tier 2 mechanical search, v4.0)
+    preprocessing_service = (
+        container.get_service("preprocessing_service")
+        if hasattr(container, "get_service")
+        else None
+    )
+    storage_service = (
+        container.get_service("storage_service")
+        if hasattr(container, "get_service")
+        else None
+    )
+    try:
+        from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
+
+        search_file_tool = SearchFileTool(
+            storage_service=storage_service,
+            preprocessing_service=preprocessing_service,
+        )
+        container.search_file_tool = search_file_tool
+        container.tools.append(search_file_tool)
+        logger.info("Search file tool registered (Tier 2 mechanical search)")
+    except Exception as e:
+        logger.warning(f"Search file tool registration failed: {e}")
+
+    # Vectorize file tool (Tier 4 on-demand vectorization, v4.0)
+    case_vector_store = (
+        container.get_service("case_vector_store")
+        if hasattr(container, "get_service")
+        else None
+    )
+    try:
+        from faultmaven.modules.agent.tools.vectorize_file_tool import VectorizeFileTool
+
+        vectorize_file_tool = VectorizeFileTool(
+            case_vector_store=case_vector_store,
+            storage_service=storage_service,
+        )
+        container.vectorize_file_tool = vectorize_file_tool
+        container.tools.append(vectorize_file_tool)
+        logger.info("Vectorize file tool registered (Tier 4 on-demand)")
+    except Exception as e:
+        logger.warning(f"Vectorize file tool registration failed: {e}")
+
     logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")

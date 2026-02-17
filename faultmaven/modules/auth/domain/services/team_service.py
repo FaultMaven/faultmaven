@@ -12,6 +12,7 @@ Core Responsibilities:
 - Team settings and configuration
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -26,10 +27,11 @@ from faultmaven.modules.auth.domain.models.organization import (
     Team,
     TeamMember,
 )
-from faultmaven.services.base import BaseService
+
+logger = logging.getLogger(__name__)
 
 
-class TeamService(BaseService):
+class TeamService:
     """Service for team management and collaboration."""
 
     def __init__(
@@ -48,7 +50,6 @@ class TeamService(BaseService):
             audit_repository: Optional audit repository for logging
             settings: Configuration settings for the service
         """
-        super().__init__("team_service")
         self.repository = team_repository
         self.org_repository = organization_repository
         self.audit_repository = audit_repository
@@ -115,7 +116,7 @@ class TeamService(BaseService):
                 details={"name": name},
             )
 
-        self.logger.info(f"Created team {team_id} ({name}) in org {org_id}")
+        logger.info(f"Created team {team_id} ({name}) in org {org_id}")
         return created_team
 
     @trace("team_service_get_team")

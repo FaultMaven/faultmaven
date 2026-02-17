@@ -38,10 +38,10 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.infrastructure.persistence.hypothesis_repository import (
-    HypothesisRepository,
+from faultmaven.modules.case.contracts import (
+    IHypothesisRepository,
+    ISolutionRepository,
 )
-from faultmaven.infrastructure.persistence.solution_repository import SolutionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,8 @@ class InvestigationOrchestrator:
 
     def __init__(
         self,
-        hypothesis_repo: HypothesisRepository,
-        solution_repo: SolutionRepository,
+        hypothesis_repo: IHypothesisRepository,
+        solution_repo: ISolutionRepository,
     ):
         """
         Initialize Investigation Orchestrator.

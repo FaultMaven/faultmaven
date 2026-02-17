@@ -46,13 +46,12 @@ from faultmaven.modules.report.domain.models import (
     RunbookMetadata,
     RunbookSource,
 )
-from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
 
-class ReportGenerationService(BaseService):
+class ReportGenerationService:
     """
     Generate professional case documentation using LLM.
 
@@ -85,7 +84,6 @@ class ReportGenerationService(BaseService):
             lock_manager: Optional lock manager for concurrency control
             pii_redactor: Optional PII redactor for sanitization
         """
-        super().__init__("report_generation_service")
         self.llm_router = llm_router
         self.case_repository = case_repository
         self.runbook_kb = runbook_kb

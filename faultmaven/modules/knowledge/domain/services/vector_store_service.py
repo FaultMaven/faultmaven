@@ -28,12 +28,11 @@ from faultmaven.exceptions import (
     VectorStoreConnectionError,
     VectorStoreOperationError,
 )
-from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
 
-class VectorStoreService(BaseService):
+class VectorStoreService:
     """Service for managing vector embeddings using ChromaDB.
 
     This service handles vector storage and retrieval with:
@@ -60,7 +59,6 @@ class VectorStoreService(BaseService):
             collection_name: Name of ChromaDB collection
             persist_directory: Directory for ChromaDB persistence
         """
-        super().__init__("vector_store_service")
         self.collection_name = collection_name
         self.persist_directory = persist_directory
 
@@ -114,14 +112,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If add operation fails
         """
-        return await self.execute_operation(
-            "add_item",
-            self._add_item_impl,
-            item_id,
-            embedding,
-            metadata,
-            document,
-        )
+        return await self._add_item_impl(item_id, embedding, metadata, document)
 
     async def _add_item_impl(
         self,
@@ -143,12 +134,7 @@ class VectorStoreService(BaseService):
                 documents=[document],
             )
 
-            self.log_metric(
-                "vector_item_added",
-                1,
-                unit="count",
-                tags={"collection": self.collection_name},
-            )
+            logger.info("Metric: vector_item_added")
 
         except Exception as e:
             logger.error(f"Failed to add item {item_id} to vector store: {e}")
@@ -174,12 +160,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If batch add operation fails
         """
-        return await self.execute_operation(
-            "add_items_batch",
-            self._add_items_batch_impl,
-            items,
-            batch_size,
-        )
+        return await self._add_items_batch_impl(items, batch_size)
 
     async def _add_items_batch_impl(
         self,
@@ -209,15 +190,7 @@ class VectorStoreService(BaseService):
                     documents=documents,
                 )
 
-                self.log_metric(
-                    "vector_batch_added",
-                    len(batch),
-                    unit="count",
-                    tags={
-                        "collection": self.collection_name,
-                        "batch_index": i // batch_size,
-                    },
-                )
+                logger.info("Metric: vector_batch_added")
 
         except Exception as e:
             logger.error(f"Failed to add batch to vector store: {e}")
@@ -250,13 +223,8 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If search operation fails
         """
-        return await self.execute_operation(
-            "search_similar",
-            self._search_similar_impl,
-            query_embedding,
-            organization_id,
-            n_results,
-            filters,
+        return await self._search_similar_impl(
+            query_embedding, organization_id, n_results, filters
         )
 
     async def _search_similar_impl(
@@ -326,15 +294,7 @@ class VectorStoreService(BaseService):
                         }
                     )
 
-            self.log_metric(
-                "vector_search_performed",
-                1,
-                unit="count",
-                tags={
-                    "collection": self.collection_name,
-                    "results_count": len(formatted_results),
-                },
-            )
+            logger.info("Metric: vector_search_performed")
 
             return formatted_results
 
@@ -358,23 +318,14 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If delete operation fails
         """
-        return await self.execute_operation(
-            "delete_item",
-            self._delete_item_impl,
-            item_id,
-        )
+        return await self._delete_item_impl(item_id)
 
     async def _delete_item_impl(self, item_id: str) -> None:
         """Internal implementation of delete_item."""
         try:
             self.collection.delete(ids=[item_id])
 
-            self.log_metric(
-                "vector_item_deleted",
-                1,
-                unit="count",
-                tags={"collection": self.collection_name},
-            )
+            logger.info("Metric: vector_item_deleted")
 
         except Exception as e:
             logger.error(f"Failed to delete item {item_id} from vector store: {e}")
@@ -395,11 +346,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If batch delete operation fails
         """
-        return await self.execute_operation(
-            "delete_items_batch",
-            self._delete_items_batch_impl,
-            item_ids,
-        )
+        return await self._delete_items_batch_impl(item_ids)
 
     async def _delete_items_batch_impl(self, item_ids: List[str]) -> None:
         """Internal implementation of batch delete."""
@@ -409,12 +356,7 @@ class VectorStoreService(BaseService):
         try:
             self.collection.delete(ids=item_ids)
 
-            self.log_metric(
-                "vector_items_deleted",
-                len(item_ids),
-                unit="count",
-                tags={"collection": self.collection_name},
-            )
+            logger.info("Metric: vector_items_deleted")
 
         except Exception as e:
             logger.error(f"Failed to delete batch from vector store: {e}")
@@ -444,14 +386,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If update operation fails
         """
-        return await self.execute_operation(
-            "update_item",
-            self._update_item_impl,
-            item_id,
-            embedding,
-            metadata,
-            document,
-        )
+        return await self._update_item_impl(item_id, embedding, metadata, document)
 
     async def _update_item_impl(
         self,
@@ -472,12 +407,7 @@ class VectorStoreService(BaseService):
                 documents=[document],
             )
 
-            self.log_metric(
-                "vector_item_updated",
-                1,
-                unit="count",
-                tags={"collection": self.collection_name},
-            )
+            logger.info("Metric: vector_item_updated")
 
         except Exception as e:
             logger.error(f"Failed to update item {item_id} in vector store: {e}")
@@ -501,11 +431,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If get operation fails
         """
-        return await self.execute_operation(
-            "get_item",
-            self._get_item_impl,
-            item_id,
-        )
+        return await self._get_item_impl(item_id)
 
     async def _get_item_impl(self, item_id: str) -> Optional[Dict[str, Any]]:
         """Internal implementation of get_item."""
@@ -559,10 +485,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If stats retrieval fails
         """
-        return await self.execute_operation(
-            "get_collection_stats",
-            self._get_collection_stats_impl,
-        )
+        return await self._get_collection_stats_impl()
 
     async def _get_collection_stats_impl(self) -> Dict[str, Any]:
         """Internal implementation of get_collection_stats."""
@@ -591,10 +514,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If clear operation fails
         """
-        return await self.execute_operation(
-            "clear_collection",
-            self._clear_collection_impl,
-        )
+        return await self._clear_collection_impl()
 
     async def _clear_collection_impl(self) -> None:
         """Internal implementation of clear_collection."""
@@ -606,11 +526,7 @@ class VectorStoreService(BaseService):
                 metadata={"hnsw:space": "cosine"},
             )
 
-            self.log_business_event(
-                "vector_collection_cleared",
-                severity="warning",
-                data={"collection": self.collection_name},
-            )
+            logger.info("Business event: vector_collection_cleared")
 
         except Exception as e:
             logger.error(f"Failed to clear collection: {e}")
@@ -631,11 +547,7 @@ class VectorStoreService(BaseService):
         Raises:
             VectorStoreOperationError: If delete operation fails
         """
-        return await self.execute_operation(
-            "delete_by_organization",
-            self._delete_by_organization_impl,
-            organization_id,
-        )
+        return await self._delete_by_organization_impl(organization_id)
 
     async def _delete_by_organization_impl(self, organization_id: str) -> int:
         """Internal implementation of delete_by_organization."""
@@ -653,15 +565,7 @@ class VectorStoreService(BaseService):
             self.collection.delete(ids=result["ids"])
             deleted_count = len(result["ids"])
 
-            self.log_metric(
-                "vector_items_deleted_by_org",
-                deleted_count,
-                unit="count",
-                tags={
-                    "collection": self.collection_name,
-                    "organization_id": organization_id,
-                },
-            )
+            logger.info("Metric: vector_items_deleted_by_org")
 
             return deleted_count
 
@@ -711,7 +615,7 @@ class VectorStoreService(BaseService):
         Returns:
             Dictionary with health status
         """
-        base_health = await super().health_check()
+        base_health = {"service": "vector_store_service", "status": "healthy"}
 
         try:
             stats = await self._get_collection_stats_impl()

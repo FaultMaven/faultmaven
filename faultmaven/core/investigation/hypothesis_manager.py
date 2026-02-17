@@ -60,7 +60,7 @@ class HypothesisManager:
 
     def __init__(self):
         """Initialize hypothesis manager"""
-        self.logger = logging.getLogger(__name__)
+        pass
 
     @staticmethod
     def calculate_evidence_ratio(hypothesis: Hypothesis) -> float:
@@ -106,7 +106,7 @@ class HypothesisManager:
             rationale=rationale or "Initial hypothesis",
         )
 
-        self.logger.info(
+        logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
             f"{statement[:50]}... (category={category}, likelihood={initial_likelihood}, turn={current_turn})"
         )
@@ -142,7 +142,7 @@ class HypothesisManager:
         for ev_id in supporting_evidence_ids:
             self.link_evidence(hypothesis, ev_id, True, current_turn)
 
-        self.logger.info(
+        logger.info(
             f"Created VALIDATED hypothesis {hypothesis.hypothesis_id}: "
             f"{statement[:50]}... (likelihood={likelihood:.2f})"
         )
@@ -187,7 +187,7 @@ class HypothesisManager:
             hypothesis.evidence_links[evidence_id] = link
 
             stance_label = stance.value
-            self.logger.info(
+            logger.info(
                 f"Linked {stance_label} evidence to hypothesis: {evidence_id}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
@@ -247,7 +247,7 @@ class HypothesisManager:
         else:
             hypothesis.iterations_without_progress += 1
 
-        self.logger.info(
+        logger.info(
             f"Updated hypothesis likelihood: {old_likelihood:.2f} -> {new_likelihood:.2f}",
             extra={
                 "hypothesis_id": hypothesis.hypothesis_id,
@@ -283,13 +283,13 @@ class HypothesisManager:
         if abs(new_likelihood - old_likelihood) >= 0.05:  # 5% threshold
             hypothesis.last_progress_at_turn = current_turn
             hypothesis.iterations_without_progress = 0
-            self.logger.info(
+            logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} likelihood updated: "
                 f"{old_likelihood:.2f} → {new_likelihood:.2f} ({reason})"
             )
         else:
             hypothesis.iterations_without_progress += 1
-            self.logger.debug(
+            logger.debug(
                 f"Hypothesis {hypothesis.hypothesis_id}: minimal change, "
                 f"iterations_without_progress={hypothesis.iterations_without_progress}"
             )
@@ -333,7 +333,7 @@ class HypothesisManager:
         # Check for validation
         if hypothesis.likelihood >= 0.70 and supporting_count >= 2:
             hypothesis.status = HypothesisStatus.VALIDATED
-            self.logger.info(
+            logger.info(
                 f"Hypothesis VALIDATED: {hypothesis.statement}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
@@ -346,7 +346,7 @@ class HypothesisManager:
         elif hypothesis.likelihood <= 0.20 and refuting_count >= 2:
             hypothesis.status = HypothesisStatus.REFUTED
             hypothesis.retirement_reason = "Refuted by evidence"
-            self.logger.info(
+            logger.info(
                 f"Hypothesis REFUTED: {hypothesis.statement}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
@@ -361,7 +361,7 @@ class HypothesisManager:
             and hypothesis.iterations_without_progress >= 3
         ):
             hypothesis.status = HypothesisStatus.INCONCLUSIVE
-            self.logger.info(
+            logger.info(
                 f"Hypothesis INCONCLUSIVE: {hypothesis.statement} "
                 f"(likelihood={hypothesis.likelihood:.2f}, stagnant for "
                 f"{hypothesis.iterations_without_progress} turns)",
@@ -378,7 +378,7 @@ class HypothesisManager:
         ):
             hypothesis.status = HypothesisStatus.RETIRED
             hypothesis.rationale = "Low confidence after testing"  # Mapped retirement_reason to rationale or logging
-            self.logger.info(
+            logger.info(
                 f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)"
             )
 
@@ -400,7 +400,7 @@ class HypothesisManager:
             decay_factor = 0.85**hypothesis.iterations_without_progress
             hypothesis.likelihood = max(0.1, hypothesis.likelihood * decay_factor)
 
-            self.logger.info(
+            logger.info(
                 f"Applied likelihood decay to hypothesis {hypothesis.hypothesis_id}: "
                 f"{old_likelihood:.2f} -> {hypothesis.likelihood:.2f} "
                 f"(stagnant for {hypothesis.iterations_without_progress} turns)"
@@ -441,7 +441,7 @@ class HypothesisManager:
         hypothesis.retirement_reason = reason
         hypothesis.last_updated_turn = current_turn
 
-        self.logger.info(
+        logger.info(
             f"Hypothesis {hypothesis.hypothesis_id} REFUTED: {reason} "
             f"(evidence: {refuting_evidence_ids})"
         )
@@ -564,7 +564,7 @@ class HypothesisManager:
                 h.last_updated_turn = current_turn
                 retired_count += 1
 
-        self.logger.warning(
+        logger.warning(
             f"Anchoring prevention triggered: retired {retired_count} hypotheses "
             f"from over-represented category '{dominant_category}'"
         )

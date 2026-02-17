@@ -13,6 +13,8 @@ Tests cover:
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+from faultmaven.exceptions import EmbeddingInvalidInputError
+
 import pytest
 
 from faultmaven.exceptions import (
@@ -175,8 +177,8 @@ class TestGenerateEmbeddingValidation:
 
     @pytest.mark.asyncio
     async def test_generate_embedding_empty_text_raises_error(self, embedding_service):
-        """Test that empty text raises RuntimeError (wrapped validation error)."""
-        with pytest.raises(RuntimeError) as exc_info:
+        """Test that empty text raises EmbeddingInvalidInputError."""
+        with pytest.raises(EmbeddingInvalidInputError) as exc_info:
             await embedding_service.generate_embedding("")
 
         assert "cannot be empty" in str(exc_info.value).lower()
@@ -186,7 +188,7 @@ class TestGenerateEmbeddingValidation:
         self, embedding_service
     ):
         """Test that whitespace-only text raises error."""
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(EmbeddingInvalidInputError) as exc_info:
             await embedding_service.generate_embedding("   \n\t  ")
 
         assert "whitespace" in str(exc_info.value).lower()
@@ -194,9 +196,11 @@ class TestGenerateEmbeddingValidation:
     @pytest.mark.asyncio
     async def test_generate_embedding_too_long_raises_error(self, embedding_service):
         """Test that text exceeding max length raises error."""
+        from faultmaven.exceptions import EmbeddingInvalidInputError
+
         long_text = "a" * 10000  # Exceeds 8191 limit
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(EmbeddingInvalidInputError) as exc_info:
             await embedding_service.generate_embedding(long_text)
 
         assert "exceeds maximum length" in str(exc_info.value).lower()
@@ -204,13 +208,13 @@ class TestGenerateEmbeddingValidation:
     @pytest.mark.asyncio
     async def test_generate_embedding_none_raises_error(self, embedding_service):
         """Test that None raises RuntimeError (wrapped validation error)."""
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EmbeddingInvalidInputError):
             await embedding_service.generate_embedding(None)
 
     @pytest.mark.asyncio
     async def test_generate_embedding_non_string_raises_error(self, embedding_service):
         """Test that non-string input raises error."""
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(EmbeddingInvalidInputError) as exc_info:
             await embedding_service.generate_embedding(12345)
 
         assert "must be a string" in str(exc_info.value).lower()
@@ -475,7 +479,7 @@ class TestGenerateEmbeddingsBatchValidation:
         """Test that empty text in batch raises error."""
         texts = ["Valid text", "", "Another valid text"]
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(EmbeddingInvalidInputError) as exc_info:
             await embedding_service.generate_embeddings_batch(texts)
 
         assert "index 1" in str(exc_info.value).lower()
@@ -485,13 +489,13 @@ class TestGenerateEmbeddingsBatchValidation:
         """Test that too long text in batch raises error."""
         texts = ["Valid", "a" * 10000, "Valid"]
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EmbeddingInvalidInputError):
             await embedding_service.generate_embeddings_batch(texts)
 
     @pytest.mark.asyncio
     async def test_batch_with_non_list_raises_error(self, embedding_service):
         """Test that non-list input raises error."""
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EmbeddingInvalidInputError):
             await embedding_service.generate_embeddings_batch("not a list")
 
 

@@ -51,7 +51,6 @@ from faultmaven.modules.auth.infrastructure.repositories.user_repository import 
 from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
     UserRepository,
 )
-from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
     validate_password_strength,
@@ -81,7 +80,7 @@ PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
 RESET_TOKEN_PREFIX = "password_reset:"
 
 
-class UserService(BaseService):
+class UserService:
     """User management service.
 
     Handles all user-related operations including registration,
@@ -110,7 +109,6 @@ class UserService(BaseService):
         Raises:
             ValueError: If auth_service is not provided (Composition Root principle)
         """
-        super().__init__("user_service")
         self.user_repo = user_repo
 
         # Composition Root principle: dependencies must be explicitly injected
@@ -165,7 +163,7 @@ class UserService(BaseService):
             5. Create user record
             6. Return created user
         """
-        self.logger.info(f"Registering new user: {email}")
+        logger.info(f"Registering new user: {email}")
 
         # Validate email format
         self._validate_email(email)
@@ -199,13 +197,13 @@ class UserService(BaseService):
         # Save user
         try:
             created_user = await self.user_repo.create(user)
-            self.logger.info(f"User registered successfully: {created_user.user_id}")
+            logger.info(f"User registered successfully: {created_user.user_id}")
             return created_user
         except ConflictError:
             # Re-raise conflict errors
             raise
         except Exception as e:
-            self.logger.error(f"Failed to register user: {e}")
+            logger.error(f"Failed to register user: {e}")
             raise
 
     # ============================================================
@@ -244,12 +242,12 @@ class UserService(BaseService):
         # Lazy import of AuthenticationError
         AuthenticationError = _get_authentication_error()
 
-        self.logger.debug(f"Authenticating user: {email}")
+        logger.debug(f"Authenticating user: {email}")
 
         # Get user by email
         user = await self.user_repo.get_by_email(email)
         if not user:
-            self.logger.debug(f"User not found: {email}")
+            logger.debug(f"User not found: {email}")
             raise AuthenticationError(
                 "Invalid email or password",
                 error_code="INVALID_CREDENTIALS",
@@ -257,7 +255,7 @@ class UserService(BaseService):
 
         # Verify user is active
         if not user.is_active:
-            self.logger.debug(f"Inactive user attempted login: {email}")
+            logger.debug(f"Inactive user attempted login: {email}")
             raise AuthenticationError(
                 "Account is deactivated. Please contact support.",
                 error_code="ACCOUNT_INACTIVE",
@@ -267,7 +265,7 @@ class UserService(BaseService):
         if not user.hashed_password or not verify_password(
             password, user.hashed_password
         ):
-            self.logger.debug(f"Invalid password for user: {email}")
+            logger.debug(f"Invalid password for user: {email}")
             raise AuthenticationError(
                 "Invalid email or password",
                 error_code="INVALID_CREDENTIALS",
@@ -296,7 +294,7 @@ class UserService(BaseService):
             permissions=permissions,
         )
 
-        self.logger.info(f"User authenticated successfully: {user.user_id}")
+        logger.info(f"User authenticated successfully: {user.user_id}")
 
         return user, token_pair.access_token, token_pair.refresh_token
 
@@ -327,7 +325,7 @@ class UserService(BaseService):
             4. Store reset token in Redis with TTL
             5. Return reset token
         """
-        self.logger.debug(f"Password reset requested for: {email}")
+        logger.debug(f"Password reset requested for: {email}")
 
         # Get user by email
         user = await self.user_repo.get_by_email(email)
@@ -335,7 +333,7 @@ class UserService(BaseService):
         if not user:
             # Return a dummy token to prevent email enumeration
             # In production, this would still trigger a "check your email" message
-            self.logger.debug(f"Password reset for non-existent email: {email}")
+            logger.debug(f"Password reset for non-existent email: {email}")
             return self._generate_dummy_reset_token()
 
         # Generate reset token
@@ -363,7 +361,7 @@ class UserService(BaseService):
             ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
             await self.redis_client.setex(key, ttl_seconds, user.user_id)
 
-        self.logger.info(f"Password reset token generated for user: {user.user_id}")
+        logger.info(f"Password reset token generated for user: {user.user_id}")
         return reset_token
 
     async def reset_password(
@@ -395,13 +393,13 @@ class UserService(BaseService):
             8. Mark reset token as used (remove from Redis)
             9. Return updated user
         """
-        self.logger.debug("Processing password reset")
+        logger.debug("Processing password reset")
 
         # Verify reset token
         try:
             claims = self._verify_reset_token(reset_token)
         except Exception as e:
-            self.logger.debug(f"Invalid reset token: {e}")
+            logger.debug(f"Invalid reset token: {e}")
             raise AuthenticationError(
                 "Invalid or expired password reset token",
                 error_code="INVALID_RESET_TOKEN",
@@ -452,7 +450,7 @@ class UserService(BaseService):
         # Revoke all user's JWT tokens (force re-login)
         await self.auth_service.revoke_user_tokens(user_id)
 
-        self.logger.info(f"Password reset successfully for user: {user_id}")
+        logger.info(f"Password reset successfully for user: {user_id}")
         return updated_user
 
     # ============================================================
@@ -489,7 +487,7 @@ class UserService(BaseService):
             6. Revoke all user's JWT tokens (force re-login)
             7. Return updated user
         """
-        self.logger.debug(f"Password change requested for user: {user_id}")
+        logger.debug(f"Password change requested for user: {user_id}")
 
         # Get user
         user = await self.user_repo.get(user_id)
@@ -519,7 +517,7 @@ class UserService(BaseService):
         # Revoke all user's JWT tokens (force re-login)
         await self.auth_service.revoke_user_tokens(user_id)
 
-        self.logger.info(f"Password changed successfully for user: {user_id}")
+        logger.info(f"Password changed successfully for user: {user_id}")
         return updated_user
 
     # ============================================================
@@ -560,7 +558,7 @@ class UserService(BaseService):
             5. Save user record
             6. Return updated user
         """
-        self.logger.debug(f"Updating profile for user: {user_id}")
+        logger.debug(f"Updating profile for user: {user_id}")
 
         # Get user
         user = await self.user_repo.get(user_id)
@@ -595,11 +593,9 @@ class UserService(BaseService):
         updated_user = await self.user_repo.save(user)
 
         if email_changed:
-            self.logger.info(
-                f"Email updated for user: {user_id} (verification required)"
-            )
+            logger.info(f"Email updated for user: {user_id} (verification required)")
         else:
-            self.logger.info(f"Profile updated for user: {user_id}")
+            logger.info(f"Profile updated for user: {user_id}")
 
         return updated_user
 
@@ -630,7 +626,7 @@ class UserService(BaseService):
             5. Save user record
             6. Return deactivated user
         """
-        self.logger.info(f"Deactivating user: {user_id}")
+        logger.info(f"Deactivating user: {user_id}")
 
         # Get user
         user = await self.user_repo.get(user_id)
@@ -648,7 +644,7 @@ class UserService(BaseService):
         # Revoke all user's JWT tokens
         await self.auth_service.revoke_user_tokens(user_id)
 
-        self.logger.info(f"User deactivated: {user_id}")
+        logger.info(f"User deactivated: {user_id}")
         return deactivated_user
 
     async def activate_user(
@@ -666,7 +662,7 @@ class UserService(BaseService):
         Raises:
             NotFoundError: User not found
         """
-        self.logger.info(f"Activating user: {user_id}")
+        logger.info(f"Activating user: {user_id}")
 
         # Get user
         user = await self.user_repo.get(user_id)
@@ -681,7 +677,7 @@ class UserService(BaseService):
         # Save user
         activated_user = await self.user_repo.save(user)
 
-        self.logger.info(f"User activated: {user_id}")
+        logger.info(f"User activated: {user_id}")
         return activated_user
 
     # ============================================================
@@ -881,7 +877,7 @@ class UserService(BaseService):
         # Revoke all user tokens (roles changed, tokens stale)
         tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
 
-        self.logger.info(
+        logger.info(
             f"Role assigned: {user_id} -> {role}, tokens revoked: {tokens_revoked}"
         )
         return updated_user
@@ -943,7 +939,7 @@ class UserService(BaseService):
         # Revoke all user tokens (roles changed, tokens stale)
         tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
 
-        self.logger.info(
+        logger.info(
             f"Role removed: {user_id}, role={role}, downgraded to viewer, "
             f"tokens revoked: {tokens_revoked}"
         )

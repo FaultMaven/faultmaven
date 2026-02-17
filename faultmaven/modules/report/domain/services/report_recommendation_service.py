@@ -23,12 +23,11 @@ from faultmaven.modules.report.domain.models import (
     RunbookRecommendation,
     SimilarRunbook,
 )
-from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
 
-class ReportRecommendationService(BaseService):
+class ReportRecommendationService:
     """
     Determines which reports to offer for generation.
 
@@ -56,7 +55,6 @@ class ReportRecommendationService(BaseService):
             runbook_kb: RunbookKnowledgeBase for similarity search
             embedding_service: Optional service for generating embeddings
         """
-        super().__init__("report_recommendation_service")
         self.runbook_kb = runbook_kb
         self.embedding_service = embedding_service
 

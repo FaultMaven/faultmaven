@@ -288,7 +288,7 @@ class EvidenceModel(Base):
     - Tracks both valid evidence (SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL) and
       rejected submissions (REJECTED category)
     - Includes deduplication via content_hash
-    - Unique constraints ensure one evidence per turn and no duplicate uploads per case
+    - Unique constraint prevents duplicate uploads per case (content_hash)
     - New source_type field uses simplified 5-value enum (logs, metrics, configuration, visual, user_description)
     """
 
@@ -325,6 +325,9 @@ class EvidenceModel(Base):
     content_hash = Column(String(64), nullable=True, index=True)
     collected_at_turn = Column(Integer, nullable=True, index=True)
 
+    # Source file linkage (Gap #20: Unified Data Processing)
+    source_file_id = Column(String(20), nullable=True)
+
     # Timestamps
     upload_timestamp = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -342,8 +345,8 @@ class EvidenceModel(Base):
         ),
         # Unique constraints (via indexes for SQLite compatibility)
         # Note: These are implemented as unique indexes in the migration
-        # uq_evidence_case_turn - one evidence per turn per case
         # uq_evidence_case_hash - no duplicate uploads per case
+        # Note: uq_evidence_case_turn removed (Gap #20) - multiple evidence per turn allowed
         # Performance indexes:
         # idx_evidence_case_category - case + category queries
         # idx_evidence_case_turn - case + turn queries

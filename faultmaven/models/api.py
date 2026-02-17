@@ -833,9 +833,13 @@ class ClassificationResult(BaseModel):
     confidence: float = Field(
         ..., description="Classification confidence score (0.0-1.0)", ge=0.0, le=1.0
     )
-    source: Literal["user_override", "agent_hint", "browser_context", "rule_based"] = (
-        Field(..., description="How the classification was determined")
-    )
+    source: Literal[
+        "user_override",
+        "agent_hint",
+        "browser_context",
+        "rule_based",
+        "rule_based_best_effort",
+    ] = Field(..., description="How the classification was determined")
     classification_failed: bool = Field(
         default=False,
         description="True if confidence below threshold, triggers user fallback modal",

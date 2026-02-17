@@ -10,6 +10,7 @@ This service wraps the MilestoneEngine and provides:
 - Integration with session management
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -25,11 +26,12 @@ from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse, In
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
-from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
+logger = logging.getLogger(__name__)
 
-class InvestigationService(BaseService):
+
+class InvestigationService:
     """
     Service for managing investigation turns and milestone progress.
 
@@ -49,7 +51,6 @@ class InvestigationService(BaseService):
             milestone_engine: Core investigation engine with LLM integration
             case_repository: Case persistence layer
         """
-        super().__init__("investigation_service")
         self.engine = milestone_engine
         self.repository = case_repository
 
@@ -87,7 +88,7 @@ class InvestigationService(BaseService):
 
             # 2. Check permissions (simple owner check)
             if case.user_id != user_id:
-                self.logger.warning(
+                logger.warning(
                     f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
                 )
                 raise PermissionDeniedException(
@@ -140,7 +141,7 @@ class InvestigationService(BaseService):
                 heuristic_intent = self._detect_intent_heuristic(request.message)
                 if heuristic_intent:
                     intent_type = heuristic_intent
-                    self.logger.info(
+                    logger.info(
                         f"Heuristic detected intent {intent_type.value} for message: '{request.message}'"
                     )
 
@@ -236,7 +237,7 @@ class InvestigationService(BaseService):
                 ),
             )
 
-            self.logger.info(
+            logger.info(
                 f"Processed turn {response.turn_number} for case {case_id}, "
                 f"status={response.case_status}, milestones={len(response.milestones_completed)}, "
                 f"messages={updated_case.message_count}"
@@ -247,7 +248,7 @@ class InvestigationService(BaseService):
         except (NotFoundError, PermissionDeniedException):
             raise
         except Exception as e:
-            self.logger.error(f"Failed to process turn for case {case_id}: {e}")
+            logger.error(f"Failed to process turn for case {case_id}: {e}")
             raise ServiceException(f"Turn processing failed: {str(e)}") from e
 
     @trace("investigation_service_get_progress")
@@ -277,7 +278,7 @@ class InvestigationService(BaseService):
 
             # Check permissions
             if case.user_id != user_id:
-                self.logger.warning(
+                logger.warning(
                     f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
                 )
                 raise PermissionDeniedException(
@@ -305,7 +306,7 @@ class InvestigationService(BaseService):
         except (NotFoundError, PermissionDeniedException):
             raise
         except Exception as e:
-            self.logger.error(f"Failed to get progress for case {case_id}: {e}")
+            logger.error(f"Failed to get progress for case {case_id}: {e}")
             raise ServiceException(f"Progress retrieval failed: {str(e)}") from e
 
     # ============================================================
@@ -332,7 +333,7 @@ class InvestigationService(BaseService):
         Returns:
             Result dict with agent response and updated case
         """
-        self.logger.info(
+        logger.info(
             f"Processing status transition: {from_status} → {to_status} "
             f"(confirmed={user_confirmed}) for case {case.case_id}"
         )
@@ -369,7 +370,7 @@ class InvestigationService(BaseService):
         Returns:
             Result dict with agent response and updated case
         """
-        self.logger.info(
+        logger.info(
             f"Processing confirmation: {confirmation_value} for case {case.case_id}"
         )
 
@@ -401,7 +402,7 @@ class InvestigationService(BaseService):
         Returns:
             Result dict with agent response and updated case
         """
-        self.logger.info(
+        logger.info(
             f"Processing hypothesis action: {action} on {hypothesis_id} for case {case.case_id}"
         )
 
@@ -429,7 +430,7 @@ class InvestigationService(BaseService):
         Returns:
             Result dict with static agent response and updated case
         """
-        self.logger.info(f"Processing greeting for case {case.case_id}")
+        logger.info(f"Processing greeting for case {case.case_id}")
 
         # Static response (saving tokens and latency)
         agent_response = (
@@ -535,7 +536,7 @@ class InvestigationService(BaseService):
             # Save
             updated_case = await self.repository.save(case)
 
-            self.logger.info(
+            logger.info(
                 f"Transitioned case {case_id} to INVESTIGATING with description: "
                 f"{confirmed_description[:100]}..."
             )
@@ -545,9 +546,7 @@ class InvestigationService(BaseService):
         except (NotFoundError, PermissionDeniedException, ServiceException):
             raise
         except Exception as e:
-            self.logger.error(
-                f"Failed to transition case {case_id} to INVESTIGATING: {e}"
-            )
+            logger.error(f"Failed to transition case {case_id} to INVESTIGATING: {e}")
             raise ServiceException(f"Status transition failed: {str(e)}") from e
 
     @trace("investigation_service_close_case")
@@ -594,12 +593,12 @@ class InvestigationService(BaseService):
             # Save
             updated_case = await self.repository.save(updated_case_data)
 
-            self.logger.info(f"Closed case {case_id}, reason: {closure_reason}")
+            logger.info(f"Closed case {case_id}, reason: {closure_reason}")
 
             return updated_case
 
         except (NotFoundError, PermissionDeniedException):
             raise
         except Exception as e:
-            self.logger.error(f"Failed to close case {case_id}: {e}")
+            logger.error(f"Failed to close case {case_id}: {e}")
             raise ServiceException(f"Case closure failed: {str(e)}") from e

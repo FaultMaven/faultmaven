@@ -39,12 +39,11 @@ from faultmaven.exceptions import (
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
 )
-from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
 
-class EmbeddingService(BaseService):
+class EmbeddingService:
     """Service for generating text embeddings using OpenAI.
 
     This service handles embedding generation with:
@@ -84,7 +83,6 @@ class EmbeddingService(BaseService):
             timeout: Timeout for API calls in seconds
             max_text_length: Maximum text length for embedding
         """
-        super().__init__("embedding_service")
         self.client = AsyncOpenAI(api_key=api_key, timeout=timeout)
         self.model = model
         self.dimensions = dimensions
@@ -108,12 +106,8 @@ class EmbeddingService(BaseService):
             EmbeddingRateLimitError: If API rate limit is exceeded
             EmbeddingGenerationError: If embedding generation fails
         """
-        return await self.execute_operation(
-            "generate_embedding",
-            self._generate_embedding_impl,
-            text,
-            validate_inputs=lambda t: self._validate_text(t),
-        )
+        self._validate_text(text)
+        return await self._generate_embedding_impl(text)
 
     async def _generate_embedding_impl(self, text: str) -> List[float]:
         """Internal implementation of embedding generation with retries."""
@@ -133,12 +127,7 @@ class EmbeddingService(BaseService):
 
                 embedding = response.data[0].embedding
 
-                self.log_metric(
-                    "embedding_generated",
-                    1,
-                    unit="count",
-                    tags={"model": self.model},
-                )
+                logger.info("Metric: embedding_generated")
 
                 return embedding
 
@@ -224,13 +213,8 @@ class EmbeddingService(BaseService):
             EmbeddingRateLimitError: If API rate limit is exceeded
             EmbeddingGenerationError: If embedding generation fails
         """
-        return await self.execute_operation(
-            "generate_embeddings_batch",
-            self._generate_embeddings_batch_impl,
-            texts,
-            batch_size,
-            validate_inputs=lambda t, _: self._validate_texts(t),
-        )
+        self._validate_texts(texts)
+        return await self._generate_embeddings_batch_impl(texts, batch_size)
 
     async def _generate_embeddings_batch_impl(
         self,
@@ -249,12 +233,7 @@ class EmbeddingService(BaseService):
             batch_embeddings = await self._process_batch(batch)
             all_embeddings.extend(batch_embeddings)
 
-            self.log_metric(
-                "embedding_batch_processed",
-                len(batch),
-                unit="count",
-                tags={"model": self.model, "batch_index": i // batch_size},
-            )
+            logger.info("Metric: embedding_batch_processed")
 
         return all_embeddings
 
@@ -442,7 +421,7 @@ class EmbeddingService(BaseService):
         Returns:
             Dictionary with health status
         """
-        base_health = await super().health_check()
+        base_health = {"service": "embedding_service", "status": "healthy"}
 
         try:
             # Try generating a simple embedding to verify API connectivity

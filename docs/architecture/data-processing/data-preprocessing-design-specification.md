@@ -260,7 +260,7 @@ Preprocessing and evidence share a single `DataType` enum. No mapping is needed 
 | `TEXT` | Unstructured prose (docs, runbooks, descriptions) | `DOCUMENT` |
 | `IMAGE` | Visual content (screenshots, diagrams) | `DOCUMENT` |
 
-All file uploads have `form=DOCUMENT`. Text entered via query endpoint has `form=USER_INPUT`.
+All file uploads have `form=DOCUMENT`. Text entered via query endpoint has `form=USER_TEXT` or `form=SUBMITTED_DATA` (determined by LLM's `submission_classification`).
 
 ---
 
@@ -1946,7 +1946,7 @@ class DataExcerpt(BaseModel):
 | `primary_purpose` | LLM-generated description |
 | `related_hypotheses` | LLM + system inference |
 | `advances_milestones` | System-inferred from category + completed milestones |
-| `form` | Input channel: `DOCUMENT` (file upload) or `USER_INPUT` (typed text) |
+| `form` | Input channel: `DOCUMENT` (file upload), `USER_TEXT` (typed text), or `SUBMITTED_DATA` (pasted data) |
 
 ```python
 # After Tier 1 preprocessing completes:
@@ -1961,7 +1961,8 @@ evidence = Evidence(
     data_type=preprocessing_result.data_type,                # Unified DataType enum
     content_hash=preprocessing_result.content_hash,          # SHA-256 for dedup
     extraction_method=preprocessing_result.extraction_method, # Tier 1 method
-    form=EvidenceForm.DOCUMENT,
+    form=EvidenceForm.DOCUMENT,                              # File upload; text uses USER_TEXT or SUBMITTED_DATA
+    source_file_id=uploaded_file.file_id,                    # Link to UploadedFile
     # From LLM evaluation:
     category=llm_result.category,                            # Set by LLM
     primary_purpose=llm_result.primary_purpose,              # Set by LLM

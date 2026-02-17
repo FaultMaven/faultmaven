@@ -20,6 +20,7 @@ Version: 2.0 (Spec-Compliant Refactor - 2025-10-23)
 Reference: docs/architecture/case-and-session-concepts.md
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -27,11 +28,12 @@ from uuid import uuid4
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import SessionContext
-from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
+logger = logging.getLogger(__name__)
 
-class AuthSessionService(BaseService):
+
+class AuthSessionService:
     """Service for authentication session management (spec-compliant)
 
     Implements multi-device session support per spec lines 88-92, 213-246.
@@ -55,7 +57,6 @@ class AuthSessionService(BaseService):
             inactive_threshold_hours: Hours before marking session inactive
             session_ttl_hours: Session expiration TTL
         """
-        super().__init__("auth_session_service")
         self.session_store = session_store
         self._settings = settings
 
@@ -122,7 +123,7 @@ class AuthSessionService(BaseService):
                 # Session resumption - extend expiry and return
                 await self.extend_session(existing_session.session_id)
                 existing_session.session_resumed = True
-                self.logger.info(
+                logger.info(
                     f"Session resumed for user {user_id}, client {client_id}: {existing_session.session_id}"
                 )
                 return existing_session, True
@@ -164,9 +165,7 @@ class AuthSessionService(BaseService):
                     user_id, client_id, session.session_id, int(ttl_seconds)
                 )
 
-        self.logger.info(
-            f"Created new session for user {user_id}: {session.session_id}"
-        )
+        logger.info(f"Created new session for user {user_id}: {session.session_id}")
         return session, False
 
     @trace("session_service_get_session")
@@ -191,7 +190,7 @@ class AuthSessionService(BaseService):
 
         # Check if session is expired
         if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
-            self.logger.info(f"Session {session_id} has expired, deleting")
+            logger.info(f"Session {session_id} has expired, deleting")
             await self.delete_session(session_id)
             return None
 
@@ -299,7 +298,7 @@ class AuthSessionService(BaseService):
         if self.session_store:
             await self.session_store.save(session)
 
-        self.logger.debug(f"Extended session {session_id} by {extend_by_hours} hours")
+        logger.debug(f"Extended session {session_id} by {extend_by_hours} hours")
         return True
 
     @trace("session_service_update_last_activity")
@@ -343,7 +342,7 @@ class AuthSessionService(BaseService):
         success = await self.session_store.delete(session_id)
 
         if success:
-            self.logger.info(f"Deleted session {session_id}")
+            logger.info(f"Deleted session {session_id}")
 
         return success
 
@@ -422,7 +421,7 @@ class AuthSessionService(BaseService):
                 cleaned += 1
 
         if cleaned > 0:
-            self.logger.info(f"Cleaned up {cleaned} expired sessions")
+            logger.info(f"Cleaned up {cleaned} expired sessions")
 
         return cleaned
 
@@ -447,7 +446,7 @@ class AuthSessionService(BaseService):
                 cleaned += 1
 
         if cleaned > 0:
-            self.logger.info(f"Cleaned up {cleaned} inactive sessions")
+            logger.info(f"Cleaned up {cleaned} inactive sessions")
 
         return cleaned
 
@@ -595,7 +594,7 @@ class AuthSessionService(BaseService):
             # Clean up oldest session
             oldest_session = min(user_sessions, key=lambda s: s.last_activity)
             await self.delete_session(oldest_session.session_id)
-            self.logger.info(
+            logger.info(
                 f"Deleted oldest session for user {user_id} to enforce limit: {oldest_session.session_id}"
             )
 
@@ -698,5 +697,5 @@ class AuthSessionService(BaseService):
         if self.session_store:
             await self.session_store.save(session)
 
-        self.logger.info(f"Session {session_id} archived")
+        logger.info(f"Session {session_id} archived")
         return True

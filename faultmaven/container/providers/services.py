@@ -56,6 +56,7 @@ def create_case_service(
 def create_milestone_engine(
     llm_provider: Any,
     case_repository: Any | None,
+    preprocessing_service: Any | None = None,
 ) -> Any | None:
     """Create milestone engine for investigation workflow."""
     if not case_repository:
@@ -68,6 +69,7 @@ def create_milestone_engine(
             llm_provider=llm_provider,
             repository=case_repository,
             trace_enabled=True,
+            preprocessing_service=preprocessing_service,
         )
         logger.debug("MilestoneEngine initialized")
         return engine
@@ -725,7 +727,10 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Milestone Engine
     llm_provider = container.get_service("llm_provider")
-    milestone_engine = create_milestone_engine(llm_provider, case_repository)
+    preprocessing_service = container.get_service("preprocessing_service")
+    milestone_engine = create_milestone_engine(
+        llm_provider, case_repository, preprocessing_service
+    )
     container.milestone_engine = milestone_engine
     if milestone_engine:
         container._register_service("milestone_engine", milestone_engine)

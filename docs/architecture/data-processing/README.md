@@ -59,3 +59,17 @@ All documents in this section share a single DataType taxonomy:
 - **[Evidence Flow Architecture](./evidence-flow-architecture.md)** — System architecture and flow diagrams for the evidence pipeline. Covers file upload through Tier 0+1 preprocessing, LLM evaluation, to persistence, including sequence diagrams, state machines, and monitoring.
 
 - **[Evidence Failure Modes](./evidence-failure-modes.md)** — Failure handling design for single-phase evidence creation. Covers LLM timeout recovery, DB insert retries, storage cleanup, and deduplication strategies. *(Deferred to post-MVP)*
+
+---
+
+## Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Three-Tier Processing Model (Tier 0+1) | Implemented | Classification + mechanical extraction at upload |
+| Tier 2: Deep Analysis | Partial | On-demand LLM analysis; pluggable backend interface defined, limited backends |
+| Evidence Classification | Implemented | Single-phase creation with LLM evaluation |
+| Evidence Flow Architecture | Implemented | File upload through persistence pipeline operational |
+| Evidence Failure Modes | Design Complete | Async retry, orphan cleanup designed; deferred to post-MVP |
+| Platform-Specific Extractors | Planned | Future enhancement for SRE/DevOps tool parsing |
+| Pattern Learning System | Planned | Adaptive classification from user corrections (Phase 3) |

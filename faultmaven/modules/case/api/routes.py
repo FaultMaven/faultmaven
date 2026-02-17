@@ -2511,28 +2511,11 @@ async def upload_case_data(
             case_id=case_id, user_id=current_user.user_id, request=query_request
         )
 
-        # 7. Store evidence in vector DB (background task - async)
-        # This implements Step 5 from data-preprocessing-design-specification.md
-        if case_vector_store and uploaded_data.get("data_id"):
-            # Fire-and-forget background task for vector storage
-            # Using FastAPI's BackgroundTasks ensures task runs AFTER response is sent
-            background_tasks.add_task(
-                _store_evidence_in_vector_db,
-                case_id=case_id,
-                data_id=uploaded_data["data_id"],
-                content=uploaded_data.get("content", ""),
-                data_type=uploaded_data.get("data_type", "unknown"),
-                metadata={
-                    "filename": file.filename,
-                    "file_size": len(content),
-                    "case_id": case_id,
-                    "session_id": session_id,
-                },
-                case_vector_store=case_vector_store,
-            )
-            logger.debug(
-                f"Background vectorization task scheduled for evidence {uploaded_data['data_id']}"
-            )
+        # 7. Vectorization: Removed (v4.0)
+        # Auto-vectorization after every upload was removed in v4.0.
+        # Vectorization is now on-demand via the agent's vectorize_file tool,
+        # triggered only when cheaper tiers (search_file, deep_analysis) are insufficient.
+        # See: docs/working/DRAFT-data-preprocessing-spec-v4.md Section 5
 
         # 8. Combine preprocessing metadata with agent response
         from datetime import datetime, timedelta, timezone
@@ -3364,15 +3347,33 @@ async def get_evidence_details(
 
         # Find source file (if evidence was derived from uploaded file)
         source_file = None
-        if evidence.content_ref:
-            for uploaded_file in case.uploaded_files:
-                if uploaded_file.content_ref == evidence.content_ref:
-                    source_file = SourceFileReference(
-                        file_id=uploaded_file.file_id,
-                        filename=uploaded_file.filename,
-                        uploaded_at_turn=uploaded_file.uploaded_at_turn,
-                    )
-                    break
+        matched_file = None
+        if getattr(evidence, "source_file_id", None):
+            # Primary: direct link via source_file_id
+            matched_file = next(
+                (
+                    f
+                    for f in case.uploaded_files
+                    if f.file_id == evidence.source_file_id
+                ),
+                None,
+            )
+        if not matched_file and evidence.content_ref:
+            # Legacy fallback: match via content_ref
+            matched_file = next(
+                (
+                    f
+                    for f in case.uploaded_files
+                    if f.content_ref == evidence.content_ref
+                ),
+                None,
+            )
+        if matched_file:
+            source_file = SourceFileReference(
+                file_id=matched_file.file_id,
+                filename=matched_file.filename,
+                uploaded_at_turn=matched_file.uploaded_at_turn,
+            )
 
         # Find related hypotheses
         related_hypotheses = []

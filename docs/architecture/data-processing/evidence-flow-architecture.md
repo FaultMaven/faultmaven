@@ -83,7 +83,7 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 │  │ - PreprocessingResult.summary (<500 chars, always included)       │ │
 │  │                                                                     │ │
 │  │ Returns:                                                            │ │
-│  │ - submission_classification (user_chat/external_data/mixed)       │ │
+│  │ - submission_classification (user_text/submitted_data/mixed)       │ │
 │  │ - evidence_to_add (category, data_type, summary, purpose)         │ │
 │  │ - state_updates (hypotheses, milestones, etc.)                    │ │
 │  │ - agent_response (natural language response)                      │ │
@@ -96,15 +96,16 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Evidence Creation Decision Layer                      │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ if submission_classification.type == "user_chat":                  │ │
+│  │ if submission_classification.type == "user_text":                  │ │
 │  │     NO evidence created                                            │ │
 │  │     Message stays in case.messages[] only                          │ │
 │  │                                                                     │ │
-│  │ elif submission_classification.type in ["external_data", "mixed"]: │ │
+│  │ elif submission_classification.type in ["submitted_data", "mixed"]: │ │
 │  │     Create evidence record:                                        │ │
 │  │     1. Check for duplicate (content_hash)                         │ │
 │  │     2. If duplicate: Create REJECTED with reference               │ │
 │  │     3. If unique: Create with LLM-provided category               │ │
+│  │        (invalid categories fall back to CONTEXTUAL_EVIDENCE)     │ │
 │  │     4. Infer milestone advancement                                │ │
 │  │     5. Insert into database                                        │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
@@ -257,7 +258,7 @@ User          API          Investigation    LLM         Database
  │              │                │<────────────│             │
  │              │                │  response   │             │
  │              │                │  {type:     │             │
- │              │                │   user_chat}│             │
+ │              │                │   user_text}│             │
  │              │                │             │             │
  │              │                │─decision────│             │
  │              │                │  NO evidence│             │
@@ -388,7 +389,7 @@ User          API          Investigation    LLM         Job Queue       Worker
               │              │              │
               ↓              ↓              ↓
      submission_type   submission_type   submission_type
-     = user_chat       = external_data  = mixed
+     = user_text       = submitted_data  = mixed
               │              │              │
               ↓              ↓              ↓
      ┌──────────┐    ┌─────────────┐  ┌─────────────┐
@@ -747,7 +748,33 @@ Return to User          Queue Retry Job
 
 ---
 
-### 2. Classification Based on Content, Not Phase
+### 2. Category Validation with Fallback
+
+**Decision:** Use `CONTEXTUAL_EVIDENCE` as fallback for unrecognized LLM-generated categories.
+
+**Rationale:**
+- Not REJECTED (user uploaded intentionally)
+- Not SYMPTOM/CAUSAL/RESOLUTION (avoid false positive milestone advancement)
+- CONTEXTUAL is neutral ("we have this data, classification unclear")
+
+**Implementation:**
+```python
+@validator('category', pre=True)
+def validate_category(cls, v):
+    if isinstance(v, str):
+        try:
+            return EvidenceCategory(v)
+        except ValueError:
+            logger.warning(f"LLM returned unrecognized category '{v}', falling back to CONTEXTUAL_EVIDENCE")
+            return EvidenceCategory.CONTEXTUAL_EVIDENCE
+    return v
+```
+
+See [Evidence Failure Modes - Scenario 3](./evidence-failure-modes.md) for full failure recovery details.
+
+---
+
+### 3. Classification Based on Content, Not Phase
 
 **Decision:** Classify evidence based on what the data CONTAINS, not the investigation phase.
 
@@ -760,7 +787,7 @@ Return to User          Queue Retry Job
 
 ---
 
-### 3. System-Inferred Milestone Advancement (Option 2.5)
+### 4. System-Inferred Milestone Advancement (Option 2.5)
 
 **Decision:** System infers `advances_milestones` by default, LLM can override.
 

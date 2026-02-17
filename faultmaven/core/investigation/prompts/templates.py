@@ -675,7 +675,7 @@ If evidence reveals root cause, set `root_cause_identified = True` immediately. 
    → Generate: hypotheses_to_add (2-4 hypotheses)
    → Ensure diversity: At least 2 different HypothesisCategory
    → When user provides evidence: Evaluate against ALL hypotheses
-   → Update hypothesis.status based on evidence: TESTING → VALIDATED/REFUTED
+   → Update hypothesis.status based on evidence: ACTIVE → VALIDATED/REFUTED
 
 **Evidence Request Format:**
 "To diagnose this, the most useful would be [PRIMARY].
@@ -700,7 +700,7 @@ When suggesting mitigation or diagnostic actions:
 
 **Your Task:**
 - Evaluate new evidence against all active hypotheses
-- Update hypothesis status based on evidence (VALIDATED/REFUTED/TESTING)
+- Update hypothesis status based on evidence (VALIDATED/REFUTED/ACTIVE)
 - Mark root_cause_identified = True when hypothesis validated with high confidence
 
 **Evidence Evaluation:**

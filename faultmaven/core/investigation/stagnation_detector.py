@@ -418,24 +418,3 @@ class StagnationBreaker:
             if cat.lower() != exclude_category.lower()
         ]
         return ", ".join(alternatives[:4])  # Top 4 alternatives
-
-
-# Create singleton instances for convenience
-_default_detector: Optional[StagnationDetector] = None
-_default_breaker: Optional[StagnationBreaker] = None
-
-
-def get_stagnation_detector() -> StagnationDetector:
-    """Get default StagnationDetector instance."""
-    global _default_detector
-    if _default_detector is None:
-        _default_detector = StagnationDetector()
-    return _default_detector
-
-
-def get_stagnation_breaker() -> StagnationBreaker:
-    """Get default StagnationBreaker instance."""
-    global _default_breaker
-    if _default_breaker is None:
-        _default_breaker = StagnationBreaker()
-    return _default_breaker

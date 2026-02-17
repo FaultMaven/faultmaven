@@ -253,6 +253,8 @@ def close_from_inquiry(case: Case, user_id: str):
 
 #### INQUIRY → RESOLVED (Terminal, Fast-Track)
 
+> **Implementation Status:** Design complete, wiring deferred. The `KnowledgeResolution` model exists in contracts and the `InquiryResponse.knowledge_resolution` field is in the schema, but `_process_response_structured()` does not yet process this field. See limitation G5 in [Opportunistic Investigation Framework](./opportunistic-investigation-framework.md#known-limitations--deferred-items).
+
 **Trigger**: Knowledge base match resolves issue without formal investigation
 
 This "Fast-Track" path allows instant resolution when the knowledge base contains

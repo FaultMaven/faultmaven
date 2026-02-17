@@ -22,6 +22,7 @@ Architecture:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections import defaultdict
@@ -77,6 +78,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationMomentum,
     InvestigationProgress,
     InvestigationStage,
+    KnowledgeMatch,
     KnowledgeResolution,
     ProblemVerification,
     Solution,
@@ -232,6 +234,22 @@ def _truncate_content_ref(
         f"(max_length={max_length})"
     )
     return truncated
+
+
+def _determine_evidence_form(submission_classification: Any) -> EvidenceForm:
+    """Map LLM's submission_classification.type to the correct EvidenceForm.
+
+    - submitted_data / mixed → SUBMITTED_DATA (technical data pasted by user)
+    - user_text / absent     → USER_TEXT (conversational text)
+
+    Called at each evidence creation site in place of a hardcoded default.
+    """
+    if not submission_classification:
+        return EvidenceForm.USER_TEXT
+    sc_type = getattr(submission_classification, "type", None)
+    if sc_type in ("submitted_data", "mixed"):
+        return EvidenceForm.SUBMITTED_DATA
+    return EvidenceForm.USER_TEXT
 
 
 # =============================================================================
@@ -545,8 +563,8 @@ def _post_process_llm_response(
         classification = updates.submission_classification
         evidence_list = getattr(updates, "evidence_to_add", [])
 
-        # Rule 1: If external_data/mixed but no evidence, try fallback
-        if classification.type in ["external_data", "mixed"]:
+        # Rule 1: If submitted_data/mixed but no evidence, try fallback
+        if classification.type in ["submitted_data", "mixed"]:
             if not evidence_list or len(evidence_list) == 0:
                 # Try automatic pattern detection
                 fallback_evidence = _detect_external_data_patterns(user_message)
@@ -564,8 +582,8 @@ def _post_process_llm_response(
                         f"(category={fallback_evidence.category.value})"
                     )
 
-        # Rule 2: If LLM said "user_chat" but we detect external data patterns
-        elif classification.type == "user_chat":
+        # Rule 2: If LLM said "user_text" but we detect external data patterns
+        elif classification.type == "user_text":
             fallback_evidence = _detect_external_data_patterns(user_message)
             if fallback_evidence:
                 # Override LLM classification - create fallback evidence
@@ -576,7 +594,7 @@ def _post_process_llm_response(
                     updates.evidence_to_add = []
                 updates.evidence_to_add.append(fallback_evidence)
                 logger.warning(
-                    f"LLM misclassified external data as 'user_chat'. "
+                    f"LLM misclassified external data as 'user_text'. "
                     f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
                     f"(category={fallback_evidence.category.value}). "
                     f"Message preview: {user_message[:100]}..."
@@ -642,6 +660,8 @@ class MilestoneEngine:
         repository: Any,  # Case repository abstraction (duck typing)
         knowledge_service: IKnowledgeService | None = None,
         trace_enabled: bool = True,
+        checkpoint_service: Any | None = None,
+        preprocessing_service: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -650,11 +670,15 @@ class MilestoneEngine:
             repository: Case repository with save/get methods
             knowledge_service: Optional knowledge service for KB searches
             trace_enabled: Enable observability tracing
+            checkpoint_service: Optional CheckpointService for state snapshots
+            preprocessing_service: Optional PreprocessingService for pasted text Tier 0+1
         """
         self.llm_provider = llm_provider
         self.repository = repository
         self.knowledge_service = knowledge_service
         self.trace_enabled = trace_enabled
+        self.checkpoint_service = checkpoint_service
+        self.preprocessing_service = preprocessing_service
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.stagnation_detector = StagnationDetector()
@@ -1137,7 +1161,11 @@ class MilestoneEngine:
                         f"KB Search found {len(kb_results) if kb_results else 0} results"
                     )
                 except Exception as e:
-                    logger.warning(f"KB Search failed: {e}")
+                    logger.warning(
+                        f"KB Search failed (non-critical, continuing without KB): {e}",
+                        exc_info=True,
+                        extra={"case_id": case.case_id, "turn": case.current_turn},
+                    )
 
             # Build prompt using the adaptive template system
             # Gap #6: Pass provider info for dynamic token budget calculation
@@ -1263,8 +1291,10 @@ class MilestoneEngine:
                         violations = retry_violations
                 except Exception as e:
                     logger.warning(
-                        f"Self-correction retry failed with error: {e}. "
-                        "Proceeding with original response."
+                        f"Self-correction retry failed: {e}. "
+                        "Proceeding with original response.",
+                        exc_info=True,
+                        extra={"case_id": case.case_id, "turn": case.current_turn},
                     )
                     # Keep original response_obj and case_updated as-is
 
@@ -1442,31 +1472,19 @@ class MilestoneEngine:
             }
 
         except Exception as e:
-            error_str = str(e)
+            # Use LLMErrorHandler's classification instead of duplicating patterns
+            is_external = self.llm_error_handler.is_retryable_error(e)
 
-            # Classify error types to determine logging level
-            is_external_service_error = any(
-                indicator in error_str.lower()
-                for indicator in [
-                    "over capacity",
-                    "503",
-                    "rate limit",
-                    "429",
-                    "timeout",
-                    "all providers failed",
-                    "api error",
-                ]
-            )
-
-            if is_external_service_error:
-                # External service errors are expected - log without stack trace
+            if is_external:
                 logger.warning(
-                    f"External service error for case {case.case_id}: {error_str[:200]}"
+                    f"External service error for case {case.case_id}: {str(e)[:200]}",
+                    extra={"case_id": case.case_id, "turn": case.current_turn},
                 )
             else:
-                # Unexpected errors - log with full stack trace for debugging
                 logger.error(
-                    f"Error processing turn for case {case.case_id}: {e}", exc_info=True
+                    f"Error processing turn for case {case.case_id}: {e}",
+                    exc_info=True,
+                    extra={"case_id": case.case_id, "turn": case.current_turn},
                 )
 
             raise MilestoneEngineError(f"Turn processing failed: {e}") from e
@@ -1888,7 +1906,7 @@ class MilestoneEngine:
         # Dispatch based on response type
         if isinstance(response_obj, InquiryResponse):
             await self._apply_inquiry_updates(
-                case, response_obj.state_updates, metadata
+                case, response_obj.state_updates, metadata, user_message
             )
         elif isinstance(response_obj, TerminalResponse):
             # Terminal updates typically just documentation, no deep state change
@@ -1897,13 +1915,26 @@ class MilestoneEngine:
             # Investigation updates (Verification, Hypothesis, Resolution, General)
             # All check 'state_updates' which matches InvestigationStateUpdate structure
             await self._apply_investigation_updates(
-                case, response_obj.state_updates, metadata, attachments, response_obj
+                case,
+                response_obj.state_updates,
+                metadata,
+                attachments,
+                response_obj,
+                user_message,
             )
+
+        # Store response_obj in metadata so _check_automatic_transitions can
+        # access ProposedTransition for the User-Agent Handshake flow
+        metadata["response_obj"] = response_obj
 
         return case, metadata
 
     async def _apply_inquiry_updates(
-        self, case: Case, updates: Any, metadata: dict[str, Any]
+        self,
+        case: Case,
+        updates: Any,
+        metadata: dict[str, Any],
+        user_message: str = "",
     ) -> None:
         """Apply updates during INQUIRY phase."""
         if updates.proposed_problem_statement:
@@ -1996,6 +2027,28 @@ class MilestoneEngine:
         # This is handled by the Prompt (asking for confirmation).
         # We ensure metadata reflects the state.
 
+        # Store KB match on case when LLM identifies one (Gap #5a)
+        # This populates InquiryData.knowledge_matches so we can validate
+        # confidence thresholds when knowledge_resolution arrives (possibly in a later turn)
+        if updates.knowledge_match:
+            km = updates.knowledge_match
+            case.inquiry.knowledge_matches.append(
+                KnowledgeMatch(
+                    match_id=km.match_type
+                    + "_"
+                    + str(len(case.inquiry.knowledge_matches)),
+                    match_type=km.match_type,
+                    relevance_score=km.match_likelihood,
+                    summary=km.match_summary,
+                    potential_solution=km.suggested_solution,
+                )
+            )
+            logger.info(
+                f"KB match stored: type={km.match_type}, "
+                f"likelihood={km.match_likelihood:.2f}, "
+                f"summary={km.match_summary[:80]}"
+            )
+
         # Check for KB Resolution
         if updates.knowledge_resolution:
             case.inquiry.knowledge_resolution = KnowledgeResolution(
@@ -2030,12 +2083,51 @@ class MilestoneEngine:
             f"count={evidence_count}"
         )
 
+        # v4.0: Preprocess pasted text through Tier 0+1 when submitted_data/mixed
+        preprocessing_result = None
+        if (
+            classification_type
+            and getattr(classification_type, "type", None)
+            in ("submitted_data", "mixed")
+            and user_message
+            and self.preprocessing_service
+        ):
+            try:
+                preprocessing_result = (
+                    await self.preprocessing_service.classify_and_extract(
+                        content=user_message,
+                    )
+                )
+                logger.info(
+                    f"Pasted text preprocessed: type={preprocessing_result.detailed_data_type.value}, "
+                    f"method={preprocessing_result.extraction_method}"
+                )
+            except Exception as e:
+                logger.warning(f"Pasted text preprocessing failed: {e}")
+
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
             for ev_item in updates.evidence_to_add:
                 # During INQUIRY phase, milestones are not yet being tracked,
                 # so we don't infer milestone attribution (advances_milestones will be empty)
                 # Evidence will be available for milestone validation once case transitions to INVESTIGATING
                 advances_milestones = []  # INQUIRY phase: No milestone tracking yet
+
+                # v4.0: Use preprocessing result for pasted data evidence
+                if preprocessing_result:
+                    evidence_content = preprocessing_result.structural_index
+                    content_hash = preprocessing_result.content_hash
+                    preprocessed_content = preprocessing_result.structural_index
+                    content_size_bytes = preprocessing_result.content_size_bytes
+                    preprocessing_method = preprocessing_result.extraction_method
+                    data_type = preprocessing_result.data_type.value
+                else:
+                    # Gap #2: Compute content hash for deduplication of inline evidence
+                    evidence_content = ev_item.summary or ""
+                    content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
+                    preprocessed_content = ev_item.summary
+                    content_size_bytes = len(ev_item.summary)
+                    preprocessing_method = "none"
+                    data_type = None
 
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
@@ -2046,18 +2138,21 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=EvidenceForm.USER_INPUT,
+                    form=_determine_evidence_form(classification_type),
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
-                    preprocessed_content=ev_item.summary,
-                    content_size_bytes=len(ev_item.summary),
-                    preprocessing_method="none",
+                    preprocessed_content=preprocessed_content,
+                    content_size_bytes=content_size_bytes,
+                    preprocessing_method=preprocessing_method,
+                    data_type=data_type,
+                    content_hash=content_hash,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
                 logger.info(
                     f"✅ Created evidence (INQUIRY): {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
+                    f"form={ev.form.value}, method={preprocessing_method}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
@@ -2068,6 +2163,7 @@ class MilestoneEngine:
         metadata: dict[str, Any],
         attachments: list[dict[str, Any]] | None = None,
         response_obj: Any | None = None,
+        user_message: str = "",
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
         from faultmaven.modules.case.domain.services.investigation_router import (
@@ -2189,6 +2285,30 @@ class MilestoneEngine:
             f"count={evidence_count}"
         )
 
+        # v4.0: Preprocess pasted text through Tier 0+1 when submitted_data/mixed
+        inv_classification = getattr(updates, "submission_classification", None)
+        preprocessing_result = None
+        if (
+            inv_classification
+            and getattr(inv_classification, "type", None) in ("submitted_data", "mixed")
+            and user_message
+            and self.preprocessing_service
+            and not attachments  # Skip if file attachments are present (already preprocessed)
+        ):
+            try:
+                preprocessing_result = (
+                    await self.preprocessing_service.classify_and_extract(
+                        content=user_message,
+                    )
+                )
+                logger.info(
+                    f"Pasted text preprocessed (INVESTIGATING): "
+                    f"type={preprocessing_result.detailed_data_type.value}, "
+                    f"method={preprocessing_result.extraction_method}"
+                )
+            except Exception as e:
+                logger.warning(f"Pasted text preprocessing failed: {e}")
+
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
             for ev_item in updates.evidence_to_add:
                 # Option 2.5: Infer milestone attribution (Tier 2 + Tier 3)
@@ -2212,7 +2332,23 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
-                # Deduplication logic (basic)
+                # v4.0: Use preprocessing result for pasted data evidence
+                if preprocessing_result:
+                    evidence_content = preprocessing_result.structural_index
+                    content_hash = preprocessing_result.content_hash
+                    preprocessed_content = preprocessing_result.structural_index
+                    content_size_bytes = preprocessing_result.content_size_bytes
+                    preprocessing_method = preprocessing_result.extraction_method
+                    data_type = preprocessing_result.data_type.value
+                else:
+                    # Gap #2: Compute content hash for deduplication of inline evidence
+                    evidence_content = ev_item.summary or ""
+                    content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
+                    preprocessed_content = ev_item.summary
+                    content_size_bytes = len(ev_item.summary)
+                    preprocessing_method = "none"
+                    data_type = None
+
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
@@ -2222,19 +2358,21 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=EvidenceForm.USER_INPUT,  # Default
-                    advances_milestones=advances_milestones,  # NEW: Option 2.5
-                    # Mandatory fields
+                    form=_determine_evidence_form(inv_classification),
+                    advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
-                    preprocessed_content=ev_item.summary,  # Use summary as content for text evidence
-                    content_size_bytes=len(ev_item.summary),
-                    preprocessing_method="none",
+                    preprocessed_content=preprocessed_content,
+                    content_size_bytes=content_size_bytes,
+                    preprocessing_method=preprocessing_method,
+                    data_type=data_type,
+                    content_hash=content_hash,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
                 logger.info(
                     f"✅ Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
+                    f"form={ev.form.value}, method={preprocessing_method}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
@@ -2383,6 +2521,17 @@ class MilestoneEngine:
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
+        # Gap #6: Checkpoint before status change
+        if self.checkpoint_service:
+            await self.checkpoint_service.create_checkpoint(
+                case,
+                trigger="pre_status_change",
+                metadata={
+                    "from_status": case.status.value,
+                    "to_status": "investigating",
+                },
+            )
+
         # Copy confirmed problem statement to description BEFORE changing status
         # (Pydantic validation requires description to be set before INVESTIGATING status)
         if case.inquiry.proposed_problem_statement:
@@ -2429,8 +2578,28 @@ class MilestoneEngine:
             f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
         )
 
-        # Initialize empty collections (already defaults in Case model)
-        # case.evidence, case.hypotheses, case.solutions, case.turn_history are defaults
+        # Gap #4: Retroactively attribute milestones to INQUIRY-phase evidence.
+        # During INQUIRY, evidence was created with advances_milestones=[] because
+        # milestone tracking wasn't active yet. Now that we've initialized progress,
+        # we can infer milestone attribution based on evidence categories.
+        if case.evidence:
+            # Check which milestones are already satisfied from the transition itself
+            initial_milestones = []
+            if case.progress.verification_complete:
+                initial_milestones.append("symptom_verified")
+            if case.progress.scope_assessed:
+                initial_milestones.append("scope_assessed")
+
+            for ev in case.evidence:
+                if not ev.advances_milestones:
+                    inferred = _infer_milestones(ev.category, initial_milestones)
+                    if inferred:
+                        ev.advances_milestones = inferred
+                        logger.info(
+                            f"Gap #4: Retroactively attributed milestones {inferred} "
+                            f"to INQUIRY evidence {ev.evidence_id} "
+                            f"(category={ev.category.value})"
+                        )
 
     async def _check_automatic_transitions(
         self, case: Case, metadata: dict[str, Any], user_message: str = ""
@@ -2469,6 +2638,17 @@ class MilestoneEngine:
 
                 # Use the user_message parameter directly, not from metadata
                 if self._user_confirms_transition(user_message):
+                    # Gap #6: Checkpoint before terminal transition
+                    if self.checkpoint_service:
+                        to_status = case.pending_transition.get("to_status", "unknown")
+                        await self.checkpoint_service.create_checkpoint(
+                            case,
+                            trigger="pre_status_change",
+                            metadata={
+                                "from_status": case.status.value,
+                                "to_status": to_status,
+                            },
+                        )
                     confirm_pending_transition(case, case.user_id)
                     metadata["status_transitioned"] = True
                     return case
@@ -2577,6 +2757,12 @@ class MilestoneEngine:
         ]
         return any(msg.startswith(p) or msg == p for p in decline_patterns)
 
+    # Documented >70% confidence threshold for KB fast-track resolution
+    # References: opportunistic-investigation-framework.md line 111,
+    #             investigation-lifecycle-logic.md line 277,
+    #             templates.py line 50
+    KB_FAST_TRACK_THRESHOLD = 0.7
+
     def _check_fast_track_resolution(self, case: Case) -> bool:
         """Check if case can be Fast-Track resolved via KB match.
 
@@ -2584,17 +2770,60 @@ class MilestoneEngine:
         because a solution WAS found (via knowledge base). The distinction between
         fast-track and normal resolution is captured in case.inquiry.knowledge_resolution
         and status transition history.
+
+        Gap #5b: Validates that a stored KB match meets the >70% confidence threshold
+        before allowing fast-track resolution. If no stored matches exist (edge case),
+        the resolution proceeds with a warning log.
         """
         if case.inquiry.knowledge_resolution:
+            # Gap #5b: Validate confidence threshold against stored matches
+            resolution = case.inquiry.knowledge_resolution
+            best_match = max(
+                case.inquiry.knowledge_matches,
+                key=lambda m: m.relevance_score,
+                default=None,
+            )
+
+            if best_match and best_match.relevance_score < self.KB_FAST_TRACK_THRESHOLD:
+                logger.warning(
+                    f"KB fast-track blocked for case {case.case_id}: "
+                    f"best match confidence {best_match.relevance_score:.2f} "
+                    f"< threshold {self.KB_FAST_TRACK_THRESHOLD}. "
+                    f"match_id={resolution.match_id}",
+                    extra={
+                        "case_id": case.case_id,
+                        "match_confidence": best_match.relevance_score,
+                        "threshold": self.KB_FAST_TRACK_THRESHOLD,
+                        "metric": "kb.fast_track_blocked",
+                    },
+                )
+                return False
+
+            if not best_match:
+                # Edge case: resolution without stored match (shouldn't happen with 5a fix,
+                # but could occur if knowledge_match wasn't in the LLM response)
+                logger.warning(
+                    f"KB fast-track for case {case.case_id} proceeding without stored match "
+                    f"confidence validation. match_id={resolution.match_id}",
+                    extra={
+                        "case_id": case.case_id,
+                        "metric": "kb.fast_track_no_match",
+                    },
+                )
+
             case.status = CaseStatus.RESOLVED
             case.resolved_at = datetime.now(UTC)
             case.closed_at = datetime.now(UTC)
             case.closure_reason = "resolved"  # KB match = solution found = resolved
+            case.progress.solution_verified = True
 
             # Log transition
+            match_confidence = (
+                f", confidence={best_match.relevance_score:.2f}" if best_match else ""
+            )
             logger.info(
                 f"Case {case.case_id} Fast-Track resolved via KB match: "
-                f"{case.inquiry.knowledge_resolution.match_id}"
+                f"{case.inquiry.knowledge_resolution.match_id}{match_confidence}"
             )
             return True
         return False
@@ -2714,6 +2943,7 @@ class MilestoneEngine:
             category=category,
             source_type=EvidenceSourceType.LOGS,  # Default (simplified from LOG_FILE)
             form=EvidenceForm.DOCUMENT,
+            source_file_id=attachment.get("file_id"),
             advances_milestones=[],  # Calculated later
             collected_at=datetime.now(UTC),
             collected_by=case.user_id,

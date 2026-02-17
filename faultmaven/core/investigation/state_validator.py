@@ -371,15 +371,3 @@ class StateValidator:
             if i.severity in (ValidationSeverity.ERROR, ValidationSeverity.CRITICAL)
         ]
         return len(blocking) == 0, issues
-
-
-# Create singleton instance for convenience
-_default_validator: Optional[StateValidator] = None
-
-
-def get_state_validator() -> StateValidator:
-    """Get default StateValidator instance."""
-    global _default_validator
-    if _default_validator is None:
-        _default_validator = StateValidator()
-    return _default_validator

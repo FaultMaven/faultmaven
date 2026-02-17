@@ -39,10 +39,13 @@ from faultmaven.modules.case.infrastructure.case_repository import CaseRepositor
 from faultmaven.modules.case.infrastructure.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.services.base import BaseService
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-class APIInvestigationSessionService(BaseService):
+class APIInvestigationSessionService:
     """Service for API investigation session management operations.
 
     This service provides a clean API layer for investigation session management with:
@@ -71,7 +74,6 @@ class APIInvestigationSessionService(BaseService):
             execution_repo: Agent execution repository
             case_repo: Case repository (for authorization)
         """
-        super().__init__("api_investigation_session_service")
         self.session_repo = session_repo
         self.execution_repo = execution_repo
         self.case_repo = case_repo
@@ -177,11 +179,13 @@ class APIInvestigationSessionService(BaseService):
             ConflictError: If active session already exists for case
             ValidationException: If inputs invalid
         """
-        self.log_operation(
+        logger.info(
             "create_session",
-            case_id=case_id,
-            organization_id=organization_id,
-            user_id=user_id,
+            extra={
+                "case_id": case_id,
+                "organization_id": organization_id,
+                "user_id": user_id,
+            },
         )
 
         # Validate inputs
@@ -235,10 +239,9 @@ class APIInvestigationSessionService(BaseService):
             # Save the session
             saved_session = await self.session_repo.create(session)
 
-            self.log_operation(
+            logger.info(
                 "create_session_success",
-                session_id=saved_session.session_id,
-                case_id=case_id,
+                extra={"session_id": saved_session.session_id, "case_id": case_id},
             )
 
             return saved_session
@@ -246,7 +249,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException, ConflictError):
             raise
         except Exception as e:
-            self.log_error("create_session", e, case_id=case_id, user_id=user_id)
+            logger.error("create_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to create session: {e}")
 
     async def get_session(
@@ -265,10 +268,9 @@ class APIInvestigationSessionService(BaseService):
         Returns:
             Session if found and authorized, None otherwise
         """
-        self.log_operation(
+        logger.info(
             "get_session",
-            session_id=session_id,
-            organization_id=organization_id,
+            extra={"session_id": session_id, "organization_id": organization_id},
         )
 
         if not session_id or not session_id.strip():
@@ -286,20 +288,20 @@ class APIInvestigationSessionService(BaseService):
                 return None
 
             if case.organization_id != organization_id:
-                self.log_operation(
+                logger.info(
                     "get_session_unauthorized",
-                    session_id=session_id,
-                    organization_id=organization_id,
-                    case_org_id=case.organization_id,
+                    extra={
+                        "session_id": session_id,
+                        "organization_id": organization_id,
+                        "case_org_id": case.organization_id,
+                    },
                 )
                 return None
 
             return session
 
         except Exception as e:
-            self.log_error(
-                "get_session", e, session_id=session_id, organization_id=organization_id
-            )
+            logger.error("get_session failed: %s", e, exc_info=True)
             return None
 
     async def update_session(
@@ -328,11 +330,13 @@ class APIInvestigationSessionService(BaseService):
             AuthorizationError: If organization doesn't own case
             ValidationException: If updates invalid
         """
-        self.log_operation(
+        logger.info(
             "update_session",
-            session_id=session_id,
-            organization_id=organization_id,
-            update_fields=list(updates.keys()) if updates else [],
+            extra={
+                "session_id": session_id,
+                "organization_id": organization_id,
+                "update_fields": list(updates.keys()),
+            },
         )
 
         if not session_id or not session_id.strip():
@@ -373,10 +377,9 @@ class APIInvestigationSessionService(BaseService):
             # Save updated session
             saved_session = await self.session_repo.update(session)
 
-            self.log_operation(
+            logger.info(
                 "update_session_success",
-                session_id=session_id,
-                organization_id=organization_id,
+                extra={"session_id": session_id, "organization_id": organization_id},
             )
 
             return saved_session
@@ -384,12 +387,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error(
-                "update_session",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("update_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to update session: {e}")
 
     # ============================================================
@@ -415,10 +413,9 @@ class APIInvestigationSessionService(BaseService):
             AuthorizationError: If organization doesn't own case
             ValidationException: If session not active
         """
-        self.log_operation(
+        logger.info(
             "pause_session",
-            session_id=session_id,
-            organization_id=organization_id,
+            extra={"session_id": session_id, "organization_id": organization_id},
         )
 
         try:
@@ -439,10 +436,9 @@ class APIInvestigationSessionService(BaseService):
             # Save updated session
             saved_session = await self.session_repo.update(session)
 
-            self.log_operation(
+            logger.info(
                 "pause_session_success",
-                session_id=session_id,
-                status=saved_session.status.value,
+                extra={"session_id": session_id, "status": saved_session.status.value},
             )
 
             return saved_session
@@ -450,12 +446,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error(
-                "pause_session",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("pause_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to pause session: {e}")
 
     async def resume_session(
@@ -477,10 +468,9 @@ class APIInvestigationSessionService(BaseService):
             AuthorizationError: If organization doesn't own case
             ValidationException: If session not paused
         """
-        self.log_operation(
+        logger.info(
             "resume_session",
-            session_id=session_id,
-            organization_id=organization_id,
+            extra={"session_id": session_id, "organization_id": organization_id},
         )
 
         try:
@@ -501,10 +491,9 @@ class APIInvestigationSessionService(BaseService):
             # Save updated session
             saved_session = await self.session_repo.update(session)
 
-            self.log_operation(
+            logger.info(
                 "resume_session_success",
-                session_id=session_id,
-                status=saved_session.status.value,
+                extra={"session_id": session_id, "status": saved_session.status.value},
             )
 
             return saved_session
@@ -512,12 +501,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error(
-                "resume_session",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("resume_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to resume session: {e}")
 
     async def complete_session(
@@ -549,10 +533,9 @@ class APIInvestigationSessionService(BaseService):
             AuthorizationError: If organization doesn't own case
             ValidationException: If session already completed/abandoned or findings empty
         """
-        self.log_operation(
+        logger.info(
             "complete_session",
-            session_id=session_id,
-            organization_id=organization_id,
+            extra={"session_id": session_id, "organization_id": organization_id},
         )
 
         # Validate findings
@@ -579,11 +562,13 @@ class APIInvestigationSessionService(BaseService):
             # Save updated session
             saved_session = await self.session_repo.update(session)
 
-            self.log_operation(
+            logger.info(
                 "complete_session_success",
-                session_id=session_id,
-                status=saved_session.status.value,
-                total_duration_ms=saved_session.total_duration_ms,
+                extra={
+                    "session_id": session_id,
+                    "status": saved_session.status.value,
+                    "total_duration_ms": saved_session.total_duration_ms,
+                },
             )
 
             return saved_session
@@ -591,12 +576,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error(
-                "complete_session",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("complete_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to complete session: {e}")
 
     async def abandon_session(
@@ -618,10 +598,9 @@ class APIInvestigationSessionService(BaseService):
             AuthorizationError: If organization doesn't own case
             ValidationException: If session already completed
         """
-        self.log_operation(
+        logger.info(
             "abandon_session",
-            session_id=session_id,
-            organization_id=organization_id,
+            extra={"session_id": session_id, "organization_id": organization_id},
         )
 
         try:
@@ -642,10 +621,9 @@ class APIInvestigationSessionService(BaseService):
             # Save updated session
             saved_session = await self.session_repo.update(session)
 
-            self.log_operation(
+            logger.info(
                 "abandon_session_success",
-                session_id=session_id,
-                status=saved_session.status.value,
+                extra={"session_id": session_id, "status": saved_session.status.value},
             )
 
             return saved_session
@@ -653,12 +631,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error(
-                "abandon_session",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("abandon_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to abandon session: {e}")
 
     # ============================================================
@@ -683,10 +656,9 @@ class APIInvestigationSessionService(BaseService):
             NotFoundError: If case not found
             AuthorizationError: If organization doesn't own case
         """
-        self.log_operation(
+        logger.info(
             "get_active_session",
-            case_id=case_id,
-            organization_id=organization_id,
+            extra={"case_id": case_id, "organization_id": organization_id},
         )
 
         try:
@@ -701,12 +673,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError):
             raise
         except Exception as e:
-            self.log_error(
-                "get_active_session",
-                e,
-                case_id=case_id,
-                organization_id=organization_id,
-            )
+            logger.error("get_active_session failed: %s", e, exc_info=True)
             return None
 
     async def list_sessions(
@@ -733,13 +700,15 @@ class APIInvestigationSessionService(BaseService):
             NotFoundError: If case not found
             AuthorizationError: If organization doesn't own case
         """
-        self.log_operation(
+        logger.info(
             "list_sessions",
-            case_id=case_id,
-            organization_id=organization_id,
-            status=status.value if status else None,
-            limit=limit,
-            offset=offset,
+            extra={
+                "case_id": case_id,
+                "organization_id": organization_id,
+                "status": status.value if status else None,
+                "limit": limit,
+                "offset": offset,
+            },
         )
 
         try:
@@ -752,11 +721,13 @@ class APIInvestigationSessionService(BaseService):
             # Apply pagination manually since repository may not support it
             paginated = sessions[offset : offset + limit]
 
-            self.log_operation(
+            logger.info(
                 "list_sessions_result",
-                case_id=case_id,
-                count=len(paginated),
-                total=len(sessions),
+                extra={
+                    "case_id": case_id,
+                    "count": len(paginated),
+                    "total": len(sessions),
+                },
             )
 
             return paginated
@@ -764,9 +735,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError):
             raise
         except Exception as e:
-            self.log_error(
-                "list_sessions", e, case_id=case_id, organization_id=organization_id
-            )
+            logger.error("list_sessions failed: %s", e, exc_info=True)
             return []
 
     async def get_session_with_executions(
@@ -785,11 +754,13 @@ class APIInvestigationSessionService(BaseService):
         Returns:
             Dictionary with session and executions, or None if not found/authorized
         """
-        self.log_operation(
+        logger.info(
             "get_session_with_executions",
-            session_id=session_id,
-            organization_id=organization_id,
-            include_tool_calls=include_tool_calls,
+            extra={
+                "session_id": session_id,
+                "organization_id": organization_id,
+                "include_tool_calls": include_tool_calls,
+            },
         )
 
         try:
@@ -823,18 +794,13 @@ class APIInvestigationSessionService(BaseService):
                                 )
                             )
             except Exception as e:
-                self.log_error("get_session_executions", e, session_id=session_id)
+                logger.error("get_session_executions failed: %s", e, exc_info=True)
                 result["executions"] = []
 
             return result
 
         except Exception as e:
-            self.log_error(
-                "get_session_with_executions",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("get_session_with_executions failed: %s", e, exc_info=True)
             return None
 
     # ============================================================
@@ -871,12 +837,14 @@ class APIInvestigationSessionService(BaseService):
             AuthorizationError: If organization doesn't own case
             ValidationException: If session not active or token_usage negative
         """
-        self.log_operation(
+        logger.info(
             "add_execution_to_session",
-            session_id=session_id,
-            organization_id=organization_id,
-            execution_id=execution_id,
-            token_usage=token_usage,
+            extra={
+                "session_id": session_id,
+                "organization_id": organization_id,
+                "execution_id": execution_id,
+                "token_usage": token_usage,
+            },
         )
 
         if token_usage < 0:
@@ -906,12 +874,14 @@ class APIInvestigationSessionService(BaseService):
             # Save updated session
             saved_session = await self.session_repo.update(session)
 
-            self.log_operation(
+            logger.info(
                 "add_execution_to_session_success",
-                session_id=session_id,
-                execution_id=execution_id,
-                total_token_usage=saved_session.total_token_usage,
-                total_agent_executions=saved_session.total_agent_executions,
+                extra={
+                    "session_id": session_id,
+                    "execution_id": execution_id,
+                    "total_token_usage": saved_session.total_token_usage,
+                    "total_agent_executions": saved_session.total_agent_executions,
+                },
             )
 
             return saved_session
@@ -919,12 +889,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error(
-                "add_execution_to_session",
-                e,
-                session_id=session_id,
-                execution_id=execution_id,
-            )
+            logger.error("add_execution_to_session failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to add execution to session: {e}")
 
     async def check_budget_exceeded(
@@ -949,10 +914,9 @@ class APIInvestigationSessionService(BaseService):
             NotFoundError: If session not found
             AuthorizationError: If organization doesn't own case
         """
-        self.log_operation(
+        logger.info(
             "check_budget_exceeded",
-            session_id=session_id,
-            organization_id=organization_id,
+            extra={"session_id": session_id, "organization_id": organization_id},
         )
 
         try:
@@ -970,11 +934,13 @@ class APIInvestigationSessionService(BaseService):
                 "usage_percentage": usage_percentage,
             }
 
-            self.log_operation(
+            logger.info(
                 "check_budget_exceeded_result",
-                session_id=session_id,
-                is_over_budget=is_over_budget,
-                usage_percentage=usage_percentage,
+                extra={
+                    "session_id": session_id,
+                    "is_over_budget": is_over_budget,
+                    "usage_percentage": usage_percentage,
+                },
             )
 
             return result
@@ -982,12 +948,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError):
             raise
         except Exception as e:
-            self.log_error(
-                "check_budget_exceeded",
-                e,
-                session_id=session_id,
-                organization_id=organization_id,
-            )
+            logger.error("check_budget_exceeded failed: %s", e, exc_info=True)
             raise ServiceError(f"Failed to check budget status: {e}")
 
     # ============================================================
@@ -1009,10 +970,9 @@ class APIInvestigationSessionService(BaseService):
             - total_agent_executions_all_sessions
             - avg_session_duration_ms
         """
-        self.log_operation(
+        logger.info(
             "get_session_statistics",
-            case_id=case_id,
-            organization_id=organization_id,
+            extra={"case_id": case_id, "organization_id": organization_id},
         )
 
         try:
@@ -1059,10 +1019,9 @@ class APIInvestigationSessionService(BaseService):
                 "computed_at": datetime.now(timezone.utc).isoformat(),
             }
 
-            self.log_operation(
+            logger.info(
                 "get_session_statistics_success",
-                case_id=case_id,
-                total_sessions=len(sessions),
+                extra={"case_id": case_id, "total_sessions": len(sessions)},
             )
 
             return statistics
@@ -1070,12 +1029,7 @@ class APIInvestigationSessionService(BaseService):
         except (NotFoundError, AuthorizationError):
             raise
         except Exception as e:
-            self.log_error(
-                "get_session_statistics",
-                e,
-                case_id=case_id,
-                organization_id=organization_id,
-            )
+            logger.error("get_session_statistics failed: %s", e, exc_info=True)
             return {
                 "total_sessions": 0,
                 "by_status": {},

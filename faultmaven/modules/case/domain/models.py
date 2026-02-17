@@ -1430,13 +1430,22 @@ class EvidenceSourceType(str, Enum):
 
 
 class EvidenceForm(str, Enum):
-    """How evidence was provided by user"""
+    """How evidence was provided by user.
+
+    Maps to SubmissionClassification.type from LLM response:
+    - DOCUMENT: uploaded file via /data endpoint
+    - USER_TEXT: user-composed text (matches 'user_text' classification)
+    - SUBMITTED_DATA: pasted/injected technical data (matches 'submitted_data'/'mixed')
+    """
 
     DOCUMENT = "document"
     """Uploaded file (log, screenshot, config, etc.)"""
 
-    USER_INPUT = "user_input"
-    """Typed text answer or description"""
+    USER_TEXT = "user_text"
+    """Text composed by user (questions, descriptions, observations)"""
+
+    SUBMITTED_DATA = "submitted_data"
+    """Technical data pasted or injected by user (logs, configs, metrics, error output)"""
 
 
 class EvidenceStance(str, Enum):
@@ -1649,7 +1658,12 @@ class Evidence(BaseModel):
     source_type: EvidenceSourceType = Field(description="Type of evidence source")
 
     form: EvidenceForm = Field(
-        description="How evidence was provided: DOCUMENT (uploaded) or USER_INPUT (typed)"
+        description="How evidence was provided: DOCUMENT, USER_TEXT, or SUBMITTED_DATA"
+    )
+
+    source_file_id: Optional[str] = Field(
+        default=None,
+        description="ID of the UploadedFile this evidence was derived from (None if from user input)",
     )
 
     # ============================================================

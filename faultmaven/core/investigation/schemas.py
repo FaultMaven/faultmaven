@@ -42,6 +42,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     HypothesisCategory,
+    HypothesisStatus,
     InvestigationStage,
     SolutionType,
     TurnOutcome,
@@ -327,8 +328,44 @@ class HypothesisUpdate(BaseModel):
     """Update to existing hypothesis."""
 
     likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
-    status: Optional[str] = None  # ACTIVE, VALIDATED, REFUTED, RETIRED
+    status: Optional[HypothesisStatus] = None
     reason: Optional[str] = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, v):
+        """
+        Validate hypothesis status against HypothesisStatus enum.
+
+        Maps known LLM aliases (e.g., "TESTING" -> ACTIVE) and rejects
+        unrecognized values by returning None (no status update).
+        """
+        if v is None:
+            return None
+        if isinstance(v, HypothesisStatus):
+            return v
+        if isinstance(v, str):
+            # Map known LLM aliases to valid enum values
+            aliases = {"TESTING": "active", "testing": "active"}
+            mapped = aliases.get(v, v.lower())
+            try:
+                return HypothesisStatus(mapped)
+            except ValueError:
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"LLM returned unrecognized hypothesis status '{v}', "
+                    f"ignoring status update",
+                    extra={
+                        "status_attempted": v,
+                        "alert_team": "llm_integration",
+                        "severity": "warning",
+                        "metric": "hypothesis.status_fallback",
+                    },
+                )
+                return None
+        return v
 
 
 class HypothesisEvidenceLinkToAdd(BaseModel):

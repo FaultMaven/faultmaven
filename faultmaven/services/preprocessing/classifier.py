@@ -9,7 +9,7 @@ Fast, rule-based classification (0 LLM calls) with 5-tier prioritization:
 5. Rule-based patterns with file upload boost (confidence=0.60-0.98)
 
 Optimized for /data endpoint (file uploads + page captures).
-Copy&paste text is handled by /queries endpoint with separate classification.
+Also used for pasted text when LLM's submission_classification indicates submitted_data/mixed (v4.0).
 """
 
 import re
@@ -595,16 +595,29 @@ class DataClassifier:
                 classification_failed=False,
             )
 
-        # 7. Fallback: Low confidence - trigger user modal
-        # Default to UNSTRUCTURED_TEXT but request confirmation
+        # 7. Best-effort fallback: use highest-scoring candidate type (v4.0)
+        # Instead of always falling back to UNSTRUCTURED_TEXT, give the
+        # best-matching extractor a chance — extractors handle mismatches gracefully.
+        scores = {
+            DataType.LOGS_AND_ERRORS: text_score + structured_score,
+            DataType.METRICS_AND_PERFORMANCE: metrics_score,
+            DataType.STRUCTURED_CONFIG: config_score,
+            DataType.SOURCE_CODE: code_score,
+        }
+        best_type, best_score = max(scores.items(), key=lambda x: x[1])
+
+        if best_score >= 1:
+            return ClassificationResult(
+                data_type=best_type,
+                confidence=0.50,
+                source="rule_based_best_effort",
+                classification_failed=True,
+            )
+
+        # 8. True fallback: nothing matched at all
         return ClassificationResult(
             data_type=DataType.UNSTRUCTURED_TEXT,
-            confidence=0.50,  # Below threshold
+            confidence=0.30,
             source="rule_based",
-            classification_failed=True,  # Trigger user fallback modal
-            suggested_types=[
-                DataType.LOGS_AND_ERRORS,
-                DataType.UNSTRUCTURED_TEXT,
-                DataType.STRUCTURED_CONFIG,
-            ],
+            classification_failed=True,
         )

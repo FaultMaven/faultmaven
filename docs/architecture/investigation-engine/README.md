@@ -30,6 +30,23 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 - **[Evidence Failure Modes](../data-processing/evidence-failure-modes.md)** - Failure handling for single-phase creation
 - **[Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md)** - Three-tier preprocessing model
 
+## Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Opportunistic Investigation Framework | Implemented | Milestone-based architecture operational |
+| Investigation Data Models | Implemented | All core models in production |
+| Investigation Lifecycle Logic | Implemented | Status transitions, path routing functional |
+| Prompt Engineering System | Implemented | Three-template system with adaptive schemas |
+| Error Handling and Recovery | Implemented | LLM retry, stagnation detection, degraded mode |
+| Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated (G7) |
+| Knowledge Fast-Track Resolution | Design Complete | Data model exists, milestone engine wiring deferred (G5) |
+| `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles transition, no evidence check (G2) |
+
+See [Known Limitations & Deferred Items](./opportunistic-investigation-framework.md#known-limitations--deferred-items) for details.
+
+---
+
 ## Purpose
 
 This section covers FaultMaven's investigation engine - the opportunistic framework that guides AI agents through problem diagnosis and resolution, including prompt engineering and context management.

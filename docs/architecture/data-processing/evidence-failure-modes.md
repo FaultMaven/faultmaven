@@ -431,7 +431,7 @@ Result: Different hashes, deduplication fails
 ```python
 async def compute_content_hash(
     user_message: str,
-    submission_type: Literal["user_chat", "external_data", "mixed"]
+    submission_type: Literal["user_text", "submitted_data", "mixed"]
 ) -> str:
     """
     Compute content hash for deduplication.

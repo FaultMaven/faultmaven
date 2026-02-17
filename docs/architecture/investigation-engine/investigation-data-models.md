@@ -301,7 +301,33 @@ class InvestigationProgress(BaseModel):
 
     # completion_percentage removed — inaccurate and non-essential.
     # Milestone completion tracked via completed_milestones/pending_milestones.
+```
 
+#### Current Milestone Validation Rules
+
+The milestone engine validates evidence claims using a category-count check for 8 of the 9 milestones:
+
+| Milestone | Min Evidence | Expected Categories |
+|-----------|-------------|---------------------|
+| `symptom_verified` | 1 | SYMPTOM |
+| `scope_assessed` | 1 | SYMPTOM |
+| `timeline_established` | 1 | SYMPTOM |
+| `changes_identified` | 1 | SYMPTOM, CAUSAL |
+| `root_cause_identified` | 2 | CAUSAL |
+| `solution_proposed` | 1 | CAUSAL |
+| `solution_applied` | 0 | (user confirmation) |
+| `mitigation_applied` | 0 | (user confirmation) |
+| `solution_verified` | — | Not validated (set via User-Agent Handshake, see G2) |
+
+**How validation works:**
+1. LLM sets milestone = True in structured output
+2. System extracts evidence IDs from `internal_reasoning.evidence_analyzed`
+3. System counts cited evidence matching expected categories
+4. If count < minimum: warning logged (milestone still set, but flagged)
+
+Validation is **advisory, not blocking**. The LLM's milestone assertions are trusted, with validation providing quality feedback for monitoring.
+
+```python
 class InvestigationStage(str, Enum):
     """
     Investigation stage within INVESTIGATING phase (4 stages).
@@ -1533,16 +1559,25 @@ def should_enter_degraded_mode(case: Case) -> Optional[DegradedModeType]:
 
 def check_degraded_mode_exit(case: Case, progress_made: bool) -> bool:
     """
-    Exit degraded mode when progress resumes.
+    Exit degraded mode when progress resumes (canonical implementation).
 
     Called after each turn. If progress was made and case is in degraded mode,
-    sets exited_at and clears degraded_mode on the case.
+    sets exited_at, records exit_reason, clears degraded_mode, and resets
+    turns_without_progress counter.
+
+    Entry condition: turns_without_progress >= 3
+    Exit condition: progress_made = True on any subsequent turn
+    Progress = ANY milestone, evidence, hypothesis, or solution activity.
+
+    See also: error-handling-and-recovery.md for stagnation detection patterns.
 
     Returns True if degraded mode was exited.
     """
     if progress_made and case.degraded_mode is not None:
         case.degraded_mode.exited_at = datetime.now(timezone.utc)
+        case.degraded_mode.exit_reason = "Progress resumed"
         case.degraded_mode = None
+        case.turns_without_progress = 0  # Reset counter on recovery
         return True
     return False
 ```

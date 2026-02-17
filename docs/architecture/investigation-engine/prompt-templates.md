@@ -698,7 +698,7 @@ def _get_hypothesis_formulation_instructions(case: Case) -> str:
 │ → Ensure diversity: At least 2 different categories     │
 │ → When user provides evidence: Evaluate against ALL     │
 │             active hypotheses (hypothesis_evidence_links)│
-│ → Update hypothesis.status: TESTING → VALIDATED/REFUTED │
+│ → Update hypothesis.status: ACTIVE → VALIDATED/REFUTED  │
 └─────────────────────────────────────────────────────────┘
 
 **TOOL CHECK** (before requesting user data):

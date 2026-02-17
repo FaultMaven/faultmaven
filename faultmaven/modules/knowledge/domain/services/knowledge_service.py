@@ -42,8 +42,11 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
-from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Import enhanced components if available
 try:
@@ -58,7 +61,7 @@ except ImportError:
     ENHANCED_RETRIEVAL_AVAILABLE = False
 
 
-class KnowledgeService(BaseService):
+class KnowledgeService:
     """Knowledge service using interface dependencies"""
 
     def __init__(
@@ -89,7 +92,6 @@ class KnowledgeService(BaseService):
             memory_service: Optional memory service for enhanced context-aware search
             llm_provider: Optional LLM for intelligent query processing
         """
-        super().__init__("knowledge_service")
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
         self._tracer = tracer
@@ -109,7 +111,7 @@ class KnowledgeService(BaseService):
                 )
                 self._enhanced_mode = True
             except Exception as e:
-                self.logger.warning(f"Advanced retrieval initialization failed: {e}")
+                logger.warning(f"Advanced retrieval initialization failed: {e}")
                 self._advanced_retrieval = None
                 self._enhanced_mode = False
         else:
@@ -192,7 +194,7 @@ class KnowledgeService(BaseService):
             RuntimeError: If ingestion fails
         """
         with self._tracer.trace("knowledge_service_ingest_document"):
-            self.logger.info(f"Ingesting document: {title}")
+            logger.info(f"Ingesting document: {title}")
 
             # Validate input
             self._validate_document_data(title, content)
@@ -229,7 +231,7 @@ class KnowledgeService(BaseService):
                 raise
             except Exception as e:
                 # Wrap external ingester exceptions in ServiceException
-                self.logger.error(f"Knowledge ingestion failed: {e}")
+                logger.error(f"Knowledge ingestion failed: {e}")
                 raise ServiceException(
                     f"Document ingestion failed: {str(e)}",
                     details={
@@ -260,7 +262,7 @@ class KnowledgeService(BaseService):
             if self._vector_store:
                 await self._index_document_in_vector_store(document)
 
-            self.logger.info(f"Successfully ingested document {result_id}")
+            logger.info(f"Successfully ingested document {result_id}")
             return document
 
     async def search_knowledge(
@@ -281,7 +283,7 @@ class KnowledgeService(BaseService):
             ValueError: If query is empty or invalid
         """
         with self._tracer.trace("knowledge_service_search"):
-            self.logger.debug(f"Searching knowledge base: {query}")
+            logger.debug(f"Searching knowledge base: {query}")
 
             # Validate and sanitize query
             if not query or not query.strip():
@@ -315,19 +317,17 @@ class KnowledgeService(BaseService):
                         )
                         search_results.append(search_result)
 
-                    self.logger.info(
+                    logger.info(
                         f"Found {len(search_results)} results for query: {query}"
                     )
                     return search_results
                 else:
                     # Fallback when no vector store available
-                    self.logger.warning(
-                        "No vector store available, returning empty results"
-                    )
+                    logger.warning("No vector store available, returning empty results")
                     return []
 
             except Exception as e:
-                self.logger.error(f"Search failed: {e}")
+                logger.error(f"Search failed: {e}")
                 raise
 
     async def search_with_reasoning_context(
@@ -362,7 +362,7 @@ class KnowledgeService(BaseService):
         try:
             search_start = time.time()
 
-            self.logger.info(
+            logger.info(
                 f"Enhanced knowledge search: {query[:100]}... (type: {reasoning_type})"
             )
 
@@ -424,9 +424,7 @@ class KnowledgeService(BaseService):
                 self._metrics["cache_hits"] += 1
                 cache_time = (time.time() - search_start) * 1000
                 self._metrics["optimization_time_saved"] += cache_time
-                self.logger.info(
-                    f"Optimized cache hit for query: {sanitized_query[:50]}..."
-                )
+                logger.info(f"Optimized cache hit for query: {sanitized_query[:50]}...")
                 return cached_result
 
             self._metrics["cache_misses"] += 1
@@ -446,7 +444,7 @@ class KnowledgeService(BaseService):
                         domain_context = conversation_context.domain_context
                     self._metrics["memory_integrations"] += 1
                 except Exception as e:
-                    self.logger.warning(f"Memory context retrieval failed: {e}")
+                    logger.warning(f"Memory context retrieval failed: {e}")
 
             # Create retrieval context
             retrieval_context = (
@@ -525,7 +523,7 @@ class KnowledgeService(BaseService):
             search_time = (time.time() - search_start) * 1000
             self._update_search_metrics(search_time, final_results["confidence_score"])
 
-            self.logger.info(
+            logger.info(
                 f"Enhanced search completed in {search_time:.2f}ms with confidence {final_results['confidence_score']:.3f}"
             )
 
@@ -534,7 +532,7 @@ class KnowledgeService(BaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Enhanced knowledge search failed: {e}")
+            logger.error(f"Enhanced knowledge search failed: {e}")
             raise ServiceException(f"Knowledge search failed: {str(e)}")
 
     async def discover_related_knowledge(
@@ -556,9 +554,7 @@ class KnowledgeService(BaseService):
             Dictionary with related knowledge discoveries
         """
         try:
-            self.logger.info(
-                f"Discovering related knowledge for document: {document_id}"
-            )
+            logger.info(f"Discovering related knowledge for document: {document_id}")
 
             if not self._vector_store:
                 return {"related_documents": [], "knowledge_paths": []}
@@ -628,7 +624,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Knowledge discovery failed: {e}")
+            logger.error(f"Knowledge discovery failed: {e}")
             return {"related_documents": [], "knowledge_paths": []}
 
     async def curate_knowledge_for_reasoning(
@@ -650,7 +646,7 @@ class KnowledgeService(BaseService):
             Dictionary with curated knowledge for the reasoning type
         """
         try:
-            self.logger.info(f"Curating knowledge for {reasoning_type} reasoning")
+            logger.info(f"Curating knowledge for {reasoning_type} reasoning")
 
             # Define reasoning-specific knowledge requirements
             knowledge_requirements = {
@@ -751,7 +747,7 @@ class KnowledgeService(BaseService):
                         "domain": getattr(conversation_context, "domain_context", {}),
                     }
                 except Exception as e:
-                    self.logger.warning(f"Memory context retrieval failed: {e}")
+                    logger.warning(f"Memory context retrieval failed: {e}")
 
             # Perform curated search
             curated_content = []
@@ -776,7 +772,7 @@ class KnowledgeService(BaseService):
                             }
                             curated_content.append(curated_item)
                     except Exception as e:
-                        self.logger.warning(f"Search failed for concept {concept}: {e}")
+                        logger.warning(f"Search failed for concept {concept}: {e}")
 
             # Sort by relevance and remove duplicates
             unique_content = {}
@@ -839,7 +835,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Knowledge curation failed: {e}")
+            logger.error(f"Knowledge curation failed: {e}")
             return {"curated_content": [], "curation_metadata": {}}
 
     async def update_document(
@@ -865,7 +861,7 @@ class KnowledgeService(BaseService):
             ValidationException: If document_id is invalid or no updates provided
         """
         with self._tracer.trace("knowledge_service_update_document"):
-            self.logger.info(f"Updating document {document_id}")
+            logger.info(f"Updating document {document_id}")
 
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -922,7 +918,7 @@ class KnowledgeService(BaseService):
                 if content and self._vector_store:
                     await self._index_document_in_vector_store(updated_document)
 
-                self.logger.info(f"Successfully updated document {document_id}")
+                logger.info(f"Successfully updated document {document_id}")
                 return updated_document
 
             except ValidationException:
@@ -932,7 +928,7 @@ class KnowledgeService(BaseService):
                 # Re-raise runtime exceptions without wrapping
                 raise
             except Exception as e:
-                self.logger.error(f"Failed to update document {document_id}: {e}")
+                logger.error(f"Failed to update document {document_id}: {e}")
                 raise RuntimeError(f"Document update failed: {str(e)}") from e
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
@@ -950,7 +946,7 @@ class KnowledgeService(BaseService):
             FileNotFoundError: If document not found
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            self.logger.info(f"Deleting document {document_id}")
+            logger.info(f"Deleting document {document_id}")
 
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -978,7 +974,7 @@ class KnowledgeService(BaseService):
                             pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
                         await pipe.execute()
                     except Exception as e:
-                        self.logger.warning(
+                        logger.warning(
                             f"Failed to delete KB metadata in Redis for {document_id}: {e}"
                         )
                     # Also remove from memory if cached
@@ -987,9 +983,7 @@ class KnowledgeService(BaseService):
                 else:
                     # No Redis; operate on in-memory store
                     if document_id not in self._documents_store:
-                        self.logger.warning(
-                            f"Document {document_id} not found in store"
-                        )
+                        logger.warning(f"Document {document_id} not found in store")
                         return {
                             "success": False,
                             "error": f"Document {document_id} not found",
@@ -1005,9 +999,7 @@ class KnowledgeService(BaseService):
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 
-                self.logger.info(
-                    f"Successfully deleted document {document_id} from store"
-                )
+                logger.info(f"Successfully deleted document {document_id} from store")
                 return {"success": True, "document_id": document_id}
 
             except ValidationException:
@@ -1017,7 +1009,7 @@ class KnowledgeService(BaseService):
                 # Re-raise file not found exceptions without wrapping
                 raise
             except Exception as e:
-                self.logger.error(f"Failed to delete document {document_id}: {e}")
+                logger.error(f"Failed to delete document {document_id}: {e}")
                 raise RuntimeError(f"Document deletion failed: {str(e)}") from e
 
     async def get_document_statistics(self) -> Dict[str, Any]:
@@ -1053,7 +1045,7 @@ class KnowledgeService(BaseService):
                     "vector_store_enabled": self._vector_store is not None,
                 }
             except Exception as e:
-                self.logger.error(f"Failed to get statistics: {e}")
+                logger.error(f"Failed to get statistics: {e}")
                 raise
 
     def _generate_document_id(self, title: str, document_type: str) -> str:
@@ -1130,7 +1122,7 @@ class KnowledgeService(BaseService):
 
             await self._vector_store.add_documents([doc_dict])
             # INFO: file-level event + embedding count (1 per upload in current flow)
-            self.logger.info(
+            logger.info(
                 f"Indexed document into vector store",
                 extra={
                     "document_id": document.document_id,
@@ -1139,12 +1131,12 @@ class KnowledgeService(BaseService):
                 },
             )
             # DEBUG: detailed indexing record
-            self.logger.debug(
+            logger.debug(
                 f"Vector indexing details: id={document.document_id}, title={document.title[:120]}"
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to index document in vector store: {e}")
+            logger.error(f"Failed to index document in vector store: {e}")
             # Don't raise exception here as indexing failure shouldn't block ingestion
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
@@ -1160,10 +1152,10 @@ class KnowledgeService(BaseService):
         try:
             # Vector store interface doesn't have delete method in current interface
             # This would need to be added to IVectorStore in a future phase
-            self.logger.debug(f"Would remove document {document_id} from vector store")
+            logger.debug(f"Would remove document {document_id} from vector store")
 
         except Exception as e:
-            self.logger.error(f"Failed to remove document from vector store: {e}")
+            logger.error(f"Failed to remove document from vector store: {e}")
 
     # API-compatible methods that match the router expectations
     async def upload_document(
@@ -1232,7 +1224,7 @@ class KnowledgeService(BaseService):
                     try:
                         raw_ids = await self._redis.smembers(self._kb_docs_set)
                         ids_count = len(raw_ids or [])
-                        self.logger.info(
+                        logger.info(
                             f"KB metadata persisted to Redis",
                             extra={
                                 "document_id": document_id,
@@ -1243,11 +1235,9 @@ class KnowledgeService(BaseService):
                         )
                     except Exception:
                         pass
-                    self.logger.info(
-                        f"Persisted KB metadata in Redis for {document_id}"
-                    )
+                    logger.info(f"Persisted KB metadata in Redis for {document_id}")
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to persist KB metadata in Redis, falling back to memory: {e}"
                     )
                     self._documents_store[document_id] = document_data
@@ -1290,11 +1280,9 @@ class KnowledgeService(BaseService):
                     await self._index_document_in_vector_store(doc_model)
             except Exception as e:
                 # Do not fail the upload if indexing fails; it will be retried later
-                self.logger.error(
-                    f"Failed to index uploaded document {document_id}: {e}"
-                )
+                logger.error(f"Failed to index uploaded document {document_id}: {e}")
 
-            self.logger.info(
+            logger.info(
                 f"Successfully stored document {document_id} in {'Redis' if self._redis else 'memory'} store"
             )
 
@@ -1312,7 +1300,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to upload document: {e}")
+            logger.error(f"Failed to upload document: {e}")
             raise
 
     async def list_documents(
@@ -1342,7 +1330,7 @@ class KnowledgeService(BaseService):
                                 except Exception:
                                     continue
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to read KB metadata from Redis, using memory store: {e}"
                     )
                     all_documents = list(self._documents_store.values())
@@ -1375,7 +1363,7 @@ class KnowledgeService(BaseService):
                 if "tags" in doc:
                     doc["tags"] = normalize_tags_field(doc["tags"])
 
-            self.logger.info(f"Listed {len(paginated_docs)} documents (total: {total})")
+            logger.info(f"Listed {len(paginated_docs)} documents (total: {total})")
 
             return {
                 "documents": paginated_docs,
@@ -1386,7 +1374,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to list documents: {e}")
+            logger.error(f"Failed to list documents: {e}")
             return {
                 "documents": [],
                 "total_count": 0,
@@ -1415,7 +1403,7 @@ class KnowledgeService(BaseService):
                             document["tags"] = normalize_tags_field(document["tags"])
                         return document
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to read KB document {document_id} from Redis: {e}"
                     )
             # Fallback to in-memory store
@@ -1428,7 +1416,7 @@ class KnowledgeService(BaseService):
 
                 if "tags" in document:
                     document["tags"] = normalize_tags_field(document["tags"])
-                self.logger.info(f"Retrieved document {document_id} from store")
+                logger.info(f"Retrieved document {document_id} from store")
                 return document
 
             # For testing, return a mock document if the ID looks valid and not in store
@@ -1457,7 +1445,7 @@ class KnowledgeService(BaseService):
             return None
 
         except Exception as e:
-            self.logger.error(f"Failed to get document {document_id}: {e}")
+            logger.error(f"Failed to get document {document_id}: {e}")
             return None
 
     async def get_semantic_snippet(
@@ -1547,7 +1535,7 @@ class KnowledgeService(BaseService):
                             "relevance_score": min(best_score, 1.0),
                         }
                 except Exception as e:
-                    self.logger.warning(f"Vector-based semantic search failed: {e}")
+                    logger.warning(f"Vector-based semantic search failed: {e}")
 
             # Fallback: simple text matching
             query_lower = query.lower()
@@ -1573,7 +1561,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to get semantic snippet for {document_id}: {e}")
+            logger.error(f"Failed to get semantic snippet for {document_id}: {e}")
             return None
 
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -1582,7 +1570,7 @@ class KnowledgeService(BaseService):
             # Check stored jobs first
             if job_id in self._jobs_store:
                 job = self._jobs_store[job_id]
-                self.logger.info(f"Retrieved job {job_id} from store")
+                logger.info(f"Retrieved job {job_id} from store")
                 return job
 
             if job_id.startswith("job_"):
@@ -1609,7 +1597,7 @@ class KnowledgeService(BaseService):
             return None
 
         except Exception as e:
-            self.logger.error(f"Failed to get job status {job_id}: {e}")
+            logger.error(f"Failed to get job status {job_id}: {e}")
             return None
 
     async def search_documents(
@@ -1644,7 +1632,7 @@ class KnowledgeService(BaseService):
                             for rid in (raw_ids or set())
                         ]
                     )
-                    self.logger.info(
+                    logger.info(
                         f"KB list: base candidate count",
                         extra={"count": len(candidate_ids)},
                     )
@@ -1687,7 +1675,7 @@ class KnowledgeService(BaseService):
                                 if candidate_ids
                                 else tag_ids
                             )
-                    self.logger.info(
+                    logger.info(
                         f"KB list: filtered candidate count",
                         extra={"count": len(candidate_ids)},
                     )
@@ -1701,12 +1689,12 @@ class KnowledgeService(BaseService):
                                 all_documents.append(_json.loads(raw))
                             except Exception:
                                 continue
-                    self.logger.info(
+                    logger.info(
                         f"KB list: loaded documents",
                         extra={"count": len(all_documents)},
                     )
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to read KB metadata from Redis, using memory store: {e}"
                     )
                     all_documents = list(self._documents_store.values())
@@ -1782,7 +1770,7 @@ class KnowledgeService(BaseService):
             # Limit results
             limited_results = scored_results[:limit]
 
-            self.logger.info(
+            logger.info(
                 f"Search query '{query}' returned {len(limited_results)} results"
             )
 
@@ -1809,7 +1797,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Search failed: {e}")
+            logger.error(f"Search failed: {e}")
             return {"query": query, "total_results": 0, "results": [], "error": str(e)}
 
     async def update_document_metadata(
@@ -1819,9 +1807,7 @@ class KnowledgeService(BaseService):
         try:
             # Check if document exists in store
             if document_id not in self._documents_store:
-                self.logger.warning(
-                    f"Document {document_id} not found in store for update"
-                )
+                logger.warning(f"Document {document_id} not found in store for update")
                 return None  # Will cause 404 in the router
 
             # Get current document
@@ -1909,7 +1895,7 @@ class KnowledgeService(BaseService):
                             self._kb_index_tag.format(tag=added), document_id
                         )
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to persist updated KB metadata in Redis for {document_id}: {e}"
                     )
                     # Fallback to memory
@@ -1918,7 +1904,7 @@ class KnowledgeService(BaseService):
                 # Fallback to in-memory
                 self._documents_store[document_id] = document
 
-            self.logger.info(f"Successfully updated document {document_id} in store")
+            logger.info(f"Successfully updated document {document_id} in store")
 
             return {
                 "document_id": document_id,
@@ -1932,7 +1918,7 @@ class KnowledgeService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to update document metadata {document_id}: {e}")
+            logger.error(f"Failed to update document metadata {document_id}: {e}")
             raise
 
     async def bulk_update_documents(
@@ -1951,9 +1937,9 @@ class KnowledgeService(BaseService):
                     errors.append(f"Document {doc_id} not found")
             except Exception as e:
                 errors.append(f"Failed to update document {doc_id}: {e}")
-                self.logger.error(f"Failed to update document {doc_id}: {e}")
+                logger.error(f"Failed to update document {doc_id}: {e}")
 
-        self.logger.info(
+        logger.info(
             f"Bulk update completed: {updated_count}/{len(document_ids)} documents updated"
         )
 
@@ -1980,9 +1966,9 @@ class KnowledgeService(BaseService):
                     )
             except Exception as e:
                 errors.append(f"Failed to delete document {doc_id}: {e}")
-                self.logger.error(f"Failed to delete document {doc_id}: {e}")
+                logger.error(f"Failed to delete document {doc_id}: {e}")
 
-        self.logger.info(
+        logger.info(
             f"Bulk delete completed: {deleted_count}/{len(document_ids)} documents deleted"
         )
 
@@ -2038,10 +2024,10 @@ class KnowledgeService(BaseService):
             # Background cache optimization
             asyncio.create_task(self._background_cache_optimization())
 
-            self.logger.info("Background optimization processes started")
+            logger.info("Background optimization processes started")
 
         except Exception as e:
-            self.logger.warning(f"Background optimization startup failed: {e}")
+            logger.warning(f"Background optimization startup failed: {e}")
 
     async def _background_vector_indexing(self):
         """Background process for vector index optimization"""
@@ -2050,7 +2036,7 @@ class KnowledgeService(BaseService):
                 await asyncio.sleep(300)  # Run every 5 minutes
 
                 if self._background_indexing_queue:
-                    self.logger.debug("Processing background vector indexing queue")
+                    logger.debug("Processing background vector indexing queue")
 
                     # Process up to 10 items from the queue
                     for _ in range(min(10, len(self._background_indexing_queue))):
@@ -2065,14 +2051,14 @@ class KnowledgeService(BaseService):
                             self._metrics["index_optimizations"] += 1
 
                         except Exception as e:
-                            self.logger.warning(f"Background indexing task failed: {e}")
+                            logger.warning(f"Background indexing task failed: {e}")
 
                         await asyncio.sleep(0.1)  # Small delay between tasks
 
         except asyncio.CancelledError:
-            self.logger.info("Background vector indexing cancelled")
+            logger.info("Background vector indexing cancelled")
         except Exception as e:
-            self.logger.error(f"Background vector indexing error: {e}")
+            logger.error(f"Background vector indexing error: {e}")
 
     async def _background_content_clustering(self):
         """Background process for content clustering optimization"""
@@ -2083,17 +2069,15 @@ class KnowledgeService(BaseService):
                 if len(self._semantic_clusters) > 100:  # Only if we have enough content
                     try:
                         await self._optimize_content_clusters()
-                        self.logger.debug("Content clusters optimized")
+                        logger.debug("Content clusters optimized")
 
                     except Exception as e:
-                        self.logger.warning(
-                            f"Content clustering optimization failed: {e}"
-                        )
+                        logger.warning(f"Content clustering optimization failed: {e}")
 
         except asyncio.CancelledError:
-            self.logger.info("Background content clustering cancelled")
+            logger.info("Background content clustering cancelled")
         except Exception as e:
-            self.logger.error(f"Background content clustering error: {e}")
+            logger.error(f"Background content clustering error: {e}")
 
     async def _background_cache_optimization(self):
         """Background process for cache optimization"""
@@ -2107,15 +2091,15 @@ class KnowledgeService(BaseService):
                     await self._optimize_vector_cache()
                     await self._optimize_cluster_cache()
 
-                    self.logger.debug("Cache optimization completed")
+                    logger.debug("Cache optimization completed")
 
                 except Exception as e:
-                    self.logger.warning(f"Cache optimization failed: {e}")
+                    logger.warning(f"Cache optimization failed: {e}")
 
         except asyncio.CancelledError:
-            self.logger.info("Background cache optimization cancelled")
+            logger.info("Background cache optimization cancelled")
         except Exception as e:
-            self.logger.error(f"Background cache optimization error: {e}")
+            logger.error(f"Background cache optimization error: {e}")
 
     async def _validate_search_inputs(
         self, query: str, session_id: str, reasoning_type: str
@@ -2208,7 +2192,7 @@ class KnowledgeService(BaseService):
                     retrieval_context_or_query, limit
                 )
             except Exception as e:
-                self.logger.warning(
+                logger.warning(
                     f"Advanced retrieval failed: {e}, falling back to basic search"
                 )
 
@@ -2387,7 +2371,7 @@ class KnowledgeService(BaseService):
                 if results:
                     return results[0]
             except Exception as e:
-                self.logger.warning(f"Failed to get document from vector store: {e}")
+                logger.warning(f"Failed to get document from vector store: {e}")
 
         # Fallback to metadata storage
         try:
@@ -2399,7 +2383,7 @@ class KnowledgeService(BaseService):
             else:
                 return self._documents_store.get(document_id)
         except Exception as e:
-            self.logger.warning(f"Failed to get document from metadata storage: {e}")
+            logger.warning(f"Failed to get document from metadata storage: {e}")
 
         return None
 
@@ -2563,19 +2547,19 @@ class KnowledgeService(BaseService):
                 await self._cleanup_stale_caches()
 
         except Exception as e:
-            self.logger.warning(f"Background indexing task failed: {e}")
+            logger.warning(f"Background indexing task failed: {e}")
 
     async def _optimize_vector_indices(self) -> None:
         """Optimize vector search indices"""
         # This would implement vector index optimization
         # For now, just log the operation
-        self.logger.debug("Vector indices optimization completed")
+        logger.debug("Vector indices optimization completed")
 
     async def _update_semantic_clusters(self, data: Optional[Any]) -> None:
         """Update semantic content clusters"""
         # This would implement semantic clustering
         # For now, just log the operation
-        self.logger.debug("Semantic clusters updated")
+        logger.debug("Semantic clusters updated")
 
     async def _cleanup_stale_caches(self) -> None:
         """Clean up stale cache entries"""
@@ -2599,31 +2583,31 @@ class KnowledgeService(BaseService):
         for key in stale_keys:
             del self._frequent_query_cache[key]
 
-        self.logger.debug(f"Cleaned up {len(stale_keys)} stale cache entries")
+        logger.debug(f"Cleaned up {len(stale_keys)} stale cache entries")
 
     async def _optimize_content_clusters(self) -> None:
         """Optimize content clustering for better search performance"""
         # This would implement content clustering optimization
         # For now, just log the operation
-        self.logger.debug("Content clusters optimization completed")
+        logger.debug("Content clusters optimization completed")
 
     async def _optimize_query_cache(self) -> None:
         """Optimize query cache performance"""
         # This would implement query cache optimization
         # For now, just log the operation
-        self.logger.debug("Query cache optimization completed")
+        logger.debug("Query cache optimization completed")
 
     async def _optimize_vector_cache(self) -> None:
         """Optimize vector cache performance"""
         # This would implement vector cache optimization
         # For now, just log the operation
-        self.logger.debug("Vector cache optimization completed")
+        logger.debug("Vector cache optimization completed")
 
     async def _optimize_cluster_cache(self) -> None:
         """Optimize cluster cache performance"""
         # This would implement cluster cache optimization
         # For now, just log the operation
-        self.logger.debug("Cluster cache optimization completed")
+        logger.debug("Cluster cache optimization completed")
 
 
 # Phase 4 Complete: Adapter classes have been removed as core components now implement interfaces directly

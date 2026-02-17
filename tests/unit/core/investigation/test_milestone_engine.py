@@ -117,7 +117,7 @@ class TestMilestoneEngine:
                 preprocessed_content="Log content",
                 content_size_bytes=100,
                 preprocessing_method="manual",
-                form=EvidenceForm.USER_INPUT,
+                form=EvidenceForm.USER_TEXT,
                 collected_at_turn=1,
             )
         )
@@ -249,7 +249,7 @@ class TestMilestoneEngine:
                 preprocessed_content="Log content",
                 content_size_bytes=100,
                 preprocessing_method="manual",
-                form=EvidenceForm.USER_INPUT,
+                form=EvidenceForm.USER_TEXT,
                 collected_at_turn=1,
             )
         )

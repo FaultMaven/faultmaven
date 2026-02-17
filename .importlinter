@@ -109,6 +109,7 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.models
+    faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
     faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.contracts
     faultmaven.modules.case.infrastructure.sessionless_case_repository -> faultmaven.modules.case.contracts
@@ -119,29 +120,41 @@ ignore_imports =
 # CONTRACT 6: Auth Module Layer Boundaries
 # ============================================================================
 # Enforce clean architecture within the Auth module vertical slice
-# TEMPORARILY DISABLED: Has violations that need architectural fixes
-# TODO: Fix violations and re-enable
-# [importlinter:contract:6]
-# name = Auth module layer boundaries
-# type = layers
-# layers =
-#     faultmaven.modules.auth.api
-#     faultmaven.modules.auth.domain
-#     faultmaven.modules.auth.infrastructure
+# Re-enabled with ignores for infrastructure → domain model imports (repositories need models)
+[importlinter:contract:6]
+name = Auth module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.auth.api
+    faultmaven.modules.auth.domain
+    faultmaven.modules.auth.infrastructure
+ignore_imports =
+    faultmaven.modules.auth.infrastructure.repositories.organization_repository -> faultmaven.modules.auth.domain.models.organization
+    faultmaven.modules.auth.infrastructure.repositories.team_repository -> faultmaven.modules.auth.domain.models.organization
+    faultmaven.modules.auth.infrastructure.repositories.session_repository -> faultmaven.modules.auth.domain.models.session
+    faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository -> faultmaven.modules.auth.contracts
+    faultmaven.modules.auth.infrastructure.stores.user_store -> faultmaven.modules.auth.domain.models.auth
+    # ITokenRevocationStore interface defined in jwt_token_generator (should be in contracts)
+    faultmaven.modules.auth.infrastructure.stores.token_revocation_store -> faultmaven.modules.auth.domain.services.jwt_token_generator
 
 # ============================================================================
 # CONTRACT 7: Agent Module Layer Boundaries
 # ============================================================================
 # Enforce clean architecture within the Agent module vertical slice
-# TEMPORARILY DISABLED: Has violations that need architectural fixes
-# TODO: Fix violations and re-enable
-# [importlinter:contract:7]
-# name = Agent module layer boundaries
-# type = layers
-# layers =
-#     faultmaven.modules.agent.api
-#     faultmaven.modules.agent.domain
-#     faultmaven.modules.agent.tools
+# Re-enabled after Gap #15/#16 fixes (removed infrastructure imports from domain layer)
+[importlinter:contract:7]
+name = Agent module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.agent.api
+    faultmaven.modules.agent.domain
+    faultmaven.modules.agent.tools
+ignore_imports =
+    # Indirect chain: tools → (various shared modules) → models → agent.domain.models.agentic
+    # The shared models package re-exports agent domain models for backward compatibility.
+    # This is a transitive dependency, not a direct layer violation.
+    faultmaven.models -> faultmaven.modules.agent.domain.models.agentic
+    faultmaven.models.api -> faultmaven.modules.agent.domain.models.agentic
 
 # ============================================================================
 # CONTRACT 8: Evidence Module Layer Boundaries
@@ -197,6 +210,12 @@ ignore_imports =
     faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.auth
     faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.user
     faultmaven.infrastructure.llm.router -> faultmaven.models
+    # Container is the composition root - allowed to wire all module internals
+    faultmaven.container.providers.services -> faultmaven.modules.auth.domain.services.*
+    faultmaven.container.providers.services -> faultmaven.modules.auth.infrastructure.repositories.*
+    faultmaven.container.providers.services -> faultmaven.modules.auth.infrastructure.stores.*
+    faultmaven.container.providers.infrastructure -> faultmaven.modules.auth.infrastructure.stores.*
+    faultmaven.container.providers.infrastructure -> faultmaven.infrastructure.auth.*
 
 # ============================================================================
 # CONTRACT 11: No Direct Database Access to Auth Tables
@@ -218,6 +237,10 @@ forbidden_modules =
     faultmaven.modules.auth.infrastructure.repositories.token_repository
     faultmaven.modules.auth.infrastructure.repositories.user_repository
 allow_indirect_imports = false
+ignore_imports =
+    # Container is the composition root - allowed to wire all module internals
+    faultmaven.container.providers.services -> faultmaven.modules.auth.domain.services.*
+    faultmaven.container.providers.services -> faultmaven.modules.auth.infrastructure.repositories.*
 
 # ============================================================================
 # CONTRACT 12: Domain Services Cannot Bypass Case Contracts

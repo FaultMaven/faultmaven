@@ -15,6 +15,7 @@ Core Responsibilities:
 - Case analytics and metrics
 """
 
+import logging
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -36,12 +37,13 @@ from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
 from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.services.base import BaseService
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
+logger = logging.getLogger(__name__)
 
-class CaseService(BaseService, ICaseService):
+
+class CaseService(ICaseService):
     """Service for centralized case management and coordination"""
 
     def __init__(
@@ -64,7 +66,6 @@ class CaseService(BaseService, ICaseService):
             max_cases_per_user: Maximum cases per user
             tenant_provider: Optional tenant provider for deployment-neutral organization context
         """
-        super().__init__("case_service")
         self.repository = case_repository
         self.session_store = session_store
         self.case_vector_store = case_vector_store
@@ -143,7 +144,7 @@ class CaseService(BaseService, ICaseService):
                             seq_key, ttl=172800
                         )
                     except Exception as e:
-                        self.logger.warning(
+                        logger.warning(
                             f"Failed to increment atomic counter (Redis): {e}"
                         )
 
@@ -155,7 +156,7 @@ class CaseService(BaseService, ICaseService):
                         owner_id.strip(), now.date()
                     )
                 except Exception as e:
-                    self.logger.error(f"Failed to count cases in DB: {e}")
+                    logger.error(f"Failed to count cases in DB: {e}")
 
                 # 3. Hybrid Strategy: Max of both
                 # - If Redis is fresh (0) but DB has 5 cases, we start at 6.
@@ -167,7 +168,7 @@ class CaseService(BaseService, ICaseService):
                     sequence = 1
 
                 title = f"Case-{date_str}-{sequence}"
-                self.logger.debug(f"Auto-generated title: {title}")
+                logger.debug(f"Auto-generated title: {title}")
             else:
                 title = title.strip()
                 if len(title) > 200:
@@ -187,7 +188,7 @@ class CaseService(BaseService, ICaseService):
                     resolved_org_id = organization.org_id
                 except Exception as e:
                     # If get_default_organization fails, use default org_id
-                    self.logger.debug(
+                    logger.debug(
                         f"TenantProvider.get_default_organization() failed: {e}. "
                         f"Using default organization_id: {resolved_org_id}"
                     )
@@ -224,18 +225,18 @@ class CaseService(BaseService, ICaseService):
                         ttl=86400,  # 24 hours
                     )
                 except Exception as e:
-                    self.logger.warning(f"Failed to update session with case ID: {e}")
+                    logger.warning(f"Failed to update session with case ID: {e}")
 
             # Save the case using repository
             saved_case = await self.repository.save(case)
 
-            self.logger.info(f"Created case {saved_case.case_id} with title '{title}'")
+            logger.info(f"Created case {saved_case.case_id} with title '{title}'")
             return saved_case
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to create case: {e}")
+            logger.error(f"Failed to create case: {e}")
             raise ServiceException(f"Case creation failed: {str(e)}") from e
 
     @trace("case_service_get_case")
@@ -263,7 +264,7 @@ class CaseService(BaseService, ICaseService):
             # Apply access control if user_id provided
             # Simple check: must be case owner
             if user_id and case.user_id != user_id:
-                self.logger.warning(
+                logger.warning(
                     f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
                 )
                 return None
@@ -271,7 +272,7 @@ class CaseService(BaseService, ICaseService):
             return case
 
         except Exception as e:
-            self.logger.error(f"Failed to get case {case_id}: {e}")
+            logger.error(f"Failed to get case {case_id}: {e}")
             return None
 
     @trace("case_service_update_case")
@@ -311,13 +312,13 @@ class CaseService(BaseService, ICaseService):
             # Save updated case
             saved_case = await self.repository.save(case)
 
-            self.logger.info(f"Updated case {case_id}")
+            logger.info(f"Updated case {case_id}")
             return saved_case is not None
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to update case {case_id}: {e}")
+            logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
 
     @trace("case_service_add_message")
@@ -358,7 +359,7 @@ class CaseService(BaseService, ICaseService):
                     last_msg.get("role") == message_role
                     and last_msg.get("content") == message.content
                 ):
-                    self.logger.warning(
+                    logger.warning(
                         f"Skipping duplicate message for case {case_id} (content hash match)",
                         extra={"case_id": case_id, "message_id": message.message_id},
                     )
@@ -405,14 +406,14 @@ class CaseService(BaseService, ICaseService):
             success = await self.repository.add_message(case_id, message_dict)
 
             if success:
-                self.logger.debug(f"Added message to case {case_id}")
+                logger.debug(f"Added message to case {case_id}")
 
             return success
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to add message to case {case_id}: {e}")
+            logger.error(f"Failed to add message to case {case_id}: {e}")
             return False
 
     @trace("case_service_get_or_create_case_for_session")
@@ -449,12 +450,12 @@ class CaseService(BaseService, ICaseService):
                         # Verify case still exists and is accessible
                         case = await self.get_case(existing_case_id, user_id)
                         if case:
-                            self.logger.debug(
+                            logger.debug(
                                 f"Using existing case {existing_case_id} for session {session_id}"
                             )
                             return existing_case_id
                 except Exception as e:
-                    self.logger.warning(f"Failed to get existing case for session: {e}")
+                    logger.warning(f"Failed to get existing case for session: {e}")
 
             # Create new case - pass title as-is to trigger auto-generation when None
             case = await self.create_case(
@@ -464,17 +465,13 @@ class CaseService(BaseService, ICaseService):
                 session_id=session_id,
             )
 
-            self.logger.info(
-                f"Created new case {case.case_id} for session {session_id}"
-            )
+            logger.info(f"Created new case {case.case_id} for session {session_id}")
             return case.case_id
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(
-                f"Failed to get/create case for session {session_id}: {e}"
-            )
+            logger.error(f"Failed to get/create case for session {session_id}: {e}")
             raise ServiceException(f"Case management failed: {str(e)}") from e
 
     @trace("case_service_link_session_to_case")
@@ -510,15 +507,15 @@ class CaseService(BaseService, ICaseService):
                         ttl=86400,  # 24 hours
                     )
                 except Exception as e:
-                    self.logger.warning(f"Failed to update session store: {e}")
+                    logger.warning(f"Failed to update session store: {e}")
 
-            self.logger.info(f"Linked session {session_id} to case {case_id}")
+            logger.info(f"Linked session {session_id} to case {case_id}")
             return True
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to link session to case: {e}")
+            logger.error(f"Failed to link session to case: {e}")
             return False
 
     @trace("case_service_get_conversation_context")
@@ -567,7 +564,7 @@ class CaseService(BaseService, ICaseService):
                     elif role == "system":
                         context_lines.append(f"{i}. [{timestamp}] System: {content}")
                 except Exception as e:
-                    self.logger.warning(f"Failed to format message {i} in context: {e}")
+                    logger.warning(f"Failed to format message {i} in context: {e}")
                     continue
 
             if len(context_lines) > 1:  # More than just header
@@ -578,7 +575,7 @@ class CaseService(BaseService, ICaseService):
                 return ""
 
         except Exception as e:
-            self.logger.warning(
+            logger.warning(
                 f"Failed to get conversation context for case {case_id}: {e}"
             )
             return ""
@@ -613,14 +610,14 @@ class CaseService(BaseService, ICaseService):
                 )
 
                 await self.add_message_to_case(case_id, resume_message, session_id)
-                self.logger.info(f"Resumed case {case_id} in session {session_id}")
+                logger.info(f"Resumed case {case_id} in session {session_id}")
 
             return success
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"Failed to resume case {case_id} in session {session_id}: {e}"
             )
             return False
@@ -662,7 +659,7 @@ class CaseService(BaseService, ICaseService):
 
                 # Check if user can delete (only owner can delete)
                 if case.user_id != user_id:
-                    self.logger.warning(
+                    logger.warning(
                         f"User {user_id} denied delete access to case {case_id} (not owner)"
                     )
                     return False
@@ -672,17 +669,17 @@ class CaseService(BaseService, ICaseService):
             success = await self.repository.delete(case_id)
 
             if success:
-                self.logger.info(f"Hard deleted case {case_id}")
+                logger.info(f"Hard deleted case {case_id}")
 
                 # Clean up Case Working Memory (delete vector store collection)
                 if self.case_vector_store:
                     try:
                         await self.case_vector_store.delete_case_collection(case_id)
-                        self.logger.info(
+                        logger.info(
                             f"Deleted Working Memory collection for deleted case {case_id}"
                         )
                     except Exception as e:
-                        self.logger.error(
+                        logger.error(
                             f"Failed to delete Working Memory for case {case_id}: {e}"
                         )
                         # Don't fail the delete operation if cleanup fails
@@ -701,7 +698,7 @@ class CaseService(BaseService, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to hard delete case {case_id}: {e}")
+            logger.error(f"Failed to hard delete case {case_id}: {e}")
             # For idempotent behavior, return True even on error
             # The case might not exist or might already be deleted
             return True
@@ -749,7 +746,7 @@ class CaseService(BaseService, ICaseService):
 
             # DEBUG: Log the types we are working with
             if cases_list:
-                self.logger.debug(
+                logger.debug(
                     f"DEBUG_CASE_LIST: Found {len(cases_list)} cases. First type: {type(cases_list[0])}"
                 )
 
@@ -758,20 +755,20 @@ class CaseService(BaseService, ICaseService):
                 try:
                     summaries.append(CaseSummary.from_case(case))
                 except Exception as e:
-                    self.logger.error(
+                    logger.error(
                         f"Failed to convert case {case.case_id} to summary: {e}"
                     )
                     # Continue best effort? Or fail? Best effort for list
 
             if summaries:
-                self.logger.debug(
+                logger.debug(
                     f"DEBUG_CASE_SUMMARIES: Returning {len(summaries)} summaries. First type: {type(summaries[0])}"
                 )
 
             return summaries
 
         except Exception as e:
-            self.logger.error(f"Failed to list cases for user {user_id}: {e}")
+            logger.error(f"Failed to list cases for user {user_id}: {e}")
             return []
 
     @trace("case_service_search_cases")
@@ -804,7 +801,7 @@ class CaseService(BaseService, ICaseService):
             return summaries
 
         except Exception as e:
-            self.logger.error(f"Failed to search cases: {e}")
+            logger.error(f"Failed to search cases: {e}")
             return []
 
     @trace("case_service_get_analytics")
@@ -823,7 +820,7 @@ class CaseService(BaseService, ICaseService):
             return await self.repository.get_analytics(case_id)
 
         except Exception as e:
-            self.logger.error(f"Failed to get analytics for case {case_id}: {e}")
+            logger.error(f"Failed to get analytics for case {case_id}: {e}")
             return {}
 
     @trace("case_service_cleanup_expired")
@@ -841,12 +838,12 @@ class CaseService(BaseService, ICaseService):
             )
 
             if cleaned_count > 0:
-                self.logger.info(f"Cleaned up {cleaned_count} expired cases")
+                logger.info(f"Cleaned up {cleaned_count} expired cases")
 
             return cleaned_count
 
         except Exception as e:
-            self.logger.error(f"Failed to cleanup expired cases: {e}")
+            logger.error(f"Failed to cleanup expired cases: {e}")
             return 0
 
     @trace("case_service_list_cases_by_session")
@@ -879,7 +876,7 @@ class CaseService(BaseService, ICaseService):
                     user_id = session_data.get("user_id")
 
             if not user_id:
-                self.logger.warning(f"No user_id found for session {session_id}")
+                logger.warning(f"No user_id found for session {session_id}")
                 return []
 
             # Step 2: Get user's cases (authorization via ownership)
@@ -889,7 +886,7 @@ class CaseService(BaseService, ICaseService):
             return cases
 
         except Exception as e:
-            self.logger.error(f"Failed to list cases for session {session_id}: {e}")
+            logger.error(f"Failed to list cases for session {session_id}: {e}")
             return []
 
     @trace("case_service_count_cases_by_session")
@@ -926,7 +923,7 @@ class CaseService(BaseService, ICaseService):
             return total_count
 
         except Exception as e:
-            self.logger.error(f"Failed to count cases for session {session_id}: {e}")
+            logger.error(f"Failed to count cases for session {session_id}: {e}")
             return 0
 
     async def get_case_health_status(self) -> Dict[str, Any]:
@@ -946,7 +943,7 @@ class CaseService(BaseService, ICaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to get case service health: {e}")
+            logger.error(f"Failed to get case service health: {e}")
             return {"service_status": "unhealthy", "error": str(e)}
 
     # Message and Query Management Methods
@@ -977,7 +974,7 @@ class CaseService(BaseService, ICaseService):
                 raise ValidationException(f"Case {case_id} not found")
 
             # DEBUG: Log case.messages length
-            self.logger.info(
+            logger.info(
                 f"Case {case_id} has {len(case.messages)} messages in case.messages array, message_count={case.message_count}"
             )
 
@@ -1001,14 +998,12 @@ class CaseService(BaseService, ICaseService):
                 case_messages.append(case_msg)
 
             # Log for observability
-            self.logger.debug(
-                f"Retrieved {len(case_messages)} messages for case {case_id}"
-            )
+            logger.debug(f"Retrieved {len(case_messages)} messages for case {case_id}")
 
             return case_messages
 
         except Exception as e:
-            self.logger.error(f"Failed to get messages for case {case_id}: {e}")
+            logger.error(f"Failed to get messages for case {case_id}: {e}")
             raise ServiceException(f"Failed to retrieve case messages: {str(e)}") from e
 
     @trace("case_service_add_case_query")
@@ -1053,14 +1048,14 @@ class CaseService(BaseService, ICaseService):
             success = await self.add_message_to_case(case_id, msg)
 
             if success:
-                self.logger.debug(f"Added user query to case {case_id}")
+                logger.debug(f"Added user query to case {case_id}")
 
             return success
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to add query to case {case_id}: {e}")
+            logger.error(f"Failed to add query to case {case_id}: {e}")
             raise ServiceException(f"Failed to add case query: {str(e)}") from e
 
     @trace("case_service_list_case_queries")
@@ -1113,13 +1108,13 @@ class CaseService(BaseService, ICaseService):
                 }
                 queries.append(query_dict)
 
-            self.logger.debug(f"Retrieved {len(queries)} queries for case {case_id}")
+            logger.debug(f"Retrieved {len(queries)} queries for case {case_id}")
             return queries
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to list queries for case {case_id}: {e}")
+            logger.error(f"Failed to list queries for case {case_id}: {e}")
             raise ServiceException(f"Failed to list case queries: {str(e)}") from e
 
     @trace("case_service_count_case_queries")
@@ -1147,13 +1142,13 @@ class CaseService(BaseService, ICaseService):
                 1 for msg in all_messages if msg.message_type == MessageType.USER_QUERY
             )
 
-            self.logger.debug(f"Counted {query_count} queries for case {case_id}")
+            logger.debug(f"Counted {query_count} queries for case {case_id}")
             return query_count
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to count queries for case {case_id}: {e}")
+            logger.error(f"Failed to count queries for case {case_id}: {e}")
             return 0  # Graceful degradation for pagination
 
     @trace("case_service_count_user_cases")
@@ -1181,13 +1176,13 @@ class CaseService(BaseService, ICaseService):
             cases = await self.list_user_cases(user_id, filters)
             count = len(cases) if cases else 0
 
-            self.logger.debug(f"Counted {count} cases for user {user_id}")
+            logger.debug(f"Counted {count} cases for user {user_id}")
             return count
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to count cases for user {user_id}: {e}")
+            logger.error(f"Failed to count cases for user {user_id}: {e}")
             return 0  # Graceful degradation for pagination
 
     @trace("case_service_get_query_result")
@@ -1228,7 +1223,7 @@ class CaseService(BaseService, ICaseService):
                     break
 
             if not query_message:
-                self.logger.debug(f"Query {query_id} not found in case {case_id}")
+                logger.debug(f"Query {query_id} not found in case {case_id}")
                 return None
 
             # Find the next agent response after this query
@@ -1246,13 +1241,11 @@ class CaseService(BaseService, ICaseService):
                         "response_id": msg.message_id,
                     }
 
-                    self.logger.debug(
-                        f"Found query result for {query_id} in case {case_id}"
-                    )
+                    logger.debug(f"Found query result for {query_id} in case {case_id}")
                     return response_dict
 
             # No agent response found after this query
-            self.logger.debug(
+            logger.debug(
                 f"No agent response found for query {query_id} in case {case_id}"
             )
             return None
@@ -1260,7 +1253,7 @@ class CaseService(BaseService, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"Failed to get query result for {query_id} in case {case_id}: {e}"
             )
             return None
@@ -1288,14 +1281,14 @@ class CaseService(BaseService, ICaseService):
 
             # Note: This is a simplified implementation
             # A full implementation would store in Redis with expiration
-            self.logger.debug(f"Checking idempotency key: {idempotency_key}")
+            logger.debug(f"Checking idempotency key: {idempotency_key}")
 
             # For now, always return None (no previous result)
             # This means idempotency is disabled until we implement Redis storage
             return None
 
         except Exception as e:
-            self.logger.error(f"Failed to check idempotency key {idempotency_key}: {e}")
+            logger.error(f"Failed to check idempotency key {idempotency_key}: {e}")
             return None
 
     @trace("case_service_store_idempotency_result")
@@ -1326,7 +1319,7 @@ class CaseService(BaseService, ICaseService):
             # For now, implement a simple logging approach
             # In production, this would be stored in Redis with TTL (e.g., 24 hours)
 
-            self.logger.debug(
+            logger.debug(
                 f"Storing idempotency result for key {idempotency_key}: {status_code}"
             )
 
@@ -1342,7 +1335,7 @@ class CaseService(BaseService, ICaseService):
             return True
 
         except Exception as e:
-            self.logger.error(
+            logger.error(
                 f"Failed to store idempotency result for {idempotency_key}: {e}"
             )
             return False
@@ -1417,7 +1410,7 @@ class CaseService(BaseService, ICaseService):
                             else:
                                 created_at_str = str(case_msg.created_at)
                         except Exception as e:
-                            self.logger.warning(
+                            logger.warning(
                                 f"Failed to format created_at for message {case_msg.message_id}: {e}"
                             )
                             created_at_str = str(case_msg.created_at)
@@ -1438,7 +1431,7 @@ class CaseService(BaseService, ICaseService):
 
                 except Exception as e:
                     message_parsing_errors += 1
-                    self.logger.warning(
+                    logger.warning(
                         f"Failed to convert message {getattr(case_msg, 'message_id', 'unknown')}: {e}"
                     )
                     if include_debug:
@@ -1473,7 +1466,7 @@ class CaseService(BaseService, ICaseService):
                 debug_info=debug_info,
             )
 
-            self.logger.debug(
+            logger.debug(
                 f"Retrieved {retrieved_count}/{total_count} messages for case {case_id} "
                 f"in {processing_time_ms}ms"
             )
@@ -1483,9 +1476,7 @@ class CaseService(BaseService, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(
-                f"Failed to get enhanced messages for case {case_id}: {e}"
-            )
+            logger.error(f"Failed to get enhanced messages for case {case_id}: {e}")
             # Return empty response with error info for graceful degradation
             if include_debug:
                 debug_info = MessageRetrievalDebugInfo(
@@ -1556,7 +1547,7 @@ class CaseService(BaseService, ICaseService):
         )
 
         if success:
-            self.logger.info(
+            logger.info(
                 f"Case {case_id} shared with user {target_user_id} as {role} "
                 f"by {sharer_user_id}"
             )
@@ -1605,7 +1596,7 @@ class CaseService(BaseService, ICaseService):
         )
 
         if success:
-            self.logger.info(
+            logger.info(
                 f"Case {case_id} unshared from user {target_user_id} "
                 f"by {unsharer_user_id}"
             )

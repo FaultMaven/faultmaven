@@ -286,15 +286,3 @@ class LLMErrorHandler:
             "error_counts": dict(self._error_counts),
             "total_errors": sum(self._error_counts.values()),
         }
-
-
-# Default singleton instance
-_default_handler: Optional[LLMErrorHandler] = None
-
-
-def get_llm_error_handler() -> LLMErrorHandler:
-    """Get default LLMErrorHandler instance."""
-    global _default_handler
-    if _default_handler is None:
-        _default_handler = LLMErrorHandler()
-    return _default_handler

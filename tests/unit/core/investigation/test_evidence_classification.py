@@ -547,7 +547,7 @@ class TestSourceTypeClassification:
             evidence_id="ev_123456789abc",
             category=EvidenceCategory.SYMPTOM_EVIDENCE,
             source_type=EvidenceSourceType.TEXT,
-            form=EvidenceForm.USER_INPUT,
+            form=EvidenceForm.USER_TEXT,
             summary="User report of intermittent timeouts",
             primary_purpose="User observed timeouts every 5 minutes during peak hours",
             content_ref="turn_1_user_message",
@@ -560,7 +560,7 @@ class TestSourceTypeClassification:
         )
 
         assert evidence.source_type == EvidenceSourceType.TEXT
-        assert evidence.form == EvidenceForm.USER_INPUT
+        assert evidence.form == EvidenceForm.USER_TEXT
 
 
 class TestEvidenceHelperMethods:
