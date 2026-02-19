@@ -64,15 +64,17 @@ MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
         "expected_categories": [EvidenceCategory.CAUSAL_EVIDENCE],
         "description": "At least 1 evidence item justifying the proposed solution",
     },
+    # Stage-gate milestones are NOT evidence-validated — they are set by
+    # compliance detection (post-LLM). Kept here for backward compat only.
     "solution_applied": {
         "min_evidence": 0,
         "expected_categories": [],
-        "description": "User confirmation that solution was applied (no evidence required)",
+        "description": "DEPRECATED: Now solution_accepted, set by compliance detection",
     },
     "mitigation_applied": {
         "min_evidence": 0,
         "expected_categories": [],
-        "description": "User confirmation that mitigation was applied (no evidence required)",
+        "description": "DEPRECATED: Now mitigation_accepted, set by compliance detection",
     },
 }
 

@@ -58,12 +58,9 @@ def determine_investigation_path(verification: ProblemVerification) -> PathSelec
             alternate_path=InvestigationPath.ROOT_CAUSE,
         )
 
-    # AUTO: Historical + Low/Medium Urgency -> ROOT_CAUSE (permanent solution)
-    # Take time to find root cause properly
-    if temporal == TemporalState.HISTORICAL and urgency in [
-        UrgencyLevel.LOW,
-        UrgencyLevel.MEDIUM,
-    ]:
+    # AUTO: Historical + any urgency -> ROOT_CAUSE (permanent solution)
+    # Historical issues don't need immediate mitigation
+    if temporal == TemporalState.HISTORICAL:
         return PathSelection(
             path=InvestigationPath.ROOT_CAUSE,
             auto_selected=True,
@@ -73,7 +70,6 @@ def determine_investigation_path(verification: ProblemVerification) -> PathSelec
 
     # USER CHOICE: Ambiguous cases
     # - Ongoing + Low/Medium: User might want quick fix OR proper fix
-    # - Historical + Critical/High: Odd combo, let user explain
     return PathSelection(
         path=InvestigationPath.USER_CHOICE,
         auto_selected=False,

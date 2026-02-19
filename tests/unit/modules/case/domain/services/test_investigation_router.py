@@ -70,7 +70,7 @@ class TestInvestigationRouter:
         assert selection.auto_selected is False
         assert "ambiguous" in selection.rationale.lower()
 
-        # Historical + Critical (Odd, maybe post-mortem of major incident?)
+        # Historical + Critical → ROOT_CAUSE (post-mortem always benefits from root cause)
         pv = ProblemVerification(
             symptom_statement="Major outage last year",
             severity="CRITICAL",
@@ -78,8 +78,8 @@ class TestInvestigationRouter:
             urgency_level=UrgencyLevel.CRITICAL,
         )
         selection = determine_investigation_path(pv)
-        assert selection.path == InvestigationPath.USER_CHOICE
-        assert selection.auto_selected is False
+        assert selection.path == InvestigationPath.ROOT_CAUSE
+        assert selection.auto_selected is True
 
     def test_unknown_urgency(self):
         """Test handling of unknown urgency."""

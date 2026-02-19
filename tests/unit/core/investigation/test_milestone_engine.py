@@ -278,7 +278,7 @@ class TestMilestoneEngine:
                 },
                 uncertainties=[],
             ),
-            state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+            state_updates=InvestigationResponse_Verification.DiagnosisStateUpdate(
                 milestones=MilestoneUpdates(symptom_verified=True),
                 outcome="milestone_completed",
             ),
@@ -302,7 +302,7 @@ class TestMilestoneEngine:
         # Create response with milestone but NO internal reasoning
         response = InvestigationResponse_Verification(
             agent_response="Symptom verified",
-            state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+            state_updates=InvestigationResponse_Verification.DiagnosisStateUpdate(
                 milestones=MilestoneUpdates(symptom_verified=True),
                 outcome="milestone_completed",
             ),
