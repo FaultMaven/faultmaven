@@ -3,7 +3,7 @@
 **Version**: 2.1
 **Last Updated**: 2026-02-13
 **Status**: Operational Design
-**Architecture**: Milestone-Based Investigation Framework
+**Architecture**: Evidence-Driven Investigation Framework
 
 ---
 
@@ -12,7 +12,7 @@
 This document defines error handling and recovery strategies for the FaultMaven investigation framework, ensuring graceful degradation and automatic recovery from failure conditions.
 
 **Related Documents**:
-- [Opportunistic Investigation Framework](./opportunistic-investigation-framework.md) - Core architecture
+- [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Core architecture
 - [Investigation Data Models](./investigation-data-models.md) - Data structures
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) - State transitions
 
@@ -60,7 +60,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 - No progress for 3+ turns
 - Hypothesis anchoring (same category tested repeatedly)
 - Evidence contradictions
-- Milestone dependencies violated
+- Stage-gate milestone dependencies violated
 
 **Strategy**: Detect and force alternative paths or enter degraded mode
 
@@ -343,9 +343,9 @@ This ensures the LLM receives corrective instructions for the next turn even whe
 
 ## 4. State Validation
 
-### 4.1 Milestone-Based State Validator
+### 4.1 Evidence-Driven State Validator
 
-The `StateValidator` validates investigation state consistency using the **milestone-based** architecture.
+The `StateValidator` validates investigation state consistency using the **evidence-driven** architecture with stage-gate milestones and progress indicators.
 
 ```python
 from enum import Enum
@@ -395,36 +395,40 @@ class StateValidator:
         progress: InvestigationProgress
     ) -> List[ValidationIssue]:
         """
-        Validate milestone dependencies are respected.
+        Validate stage-gate milestone and progress indicator dependencies.
+
+        Stage-gate milestones: mitigation_accepted, mitigation_verified,
+            solution_accepted, solution_verified
+        Progress indicators: symptom_verified, scope_assessed, etc.
 
         Milestones can only go False → True, never revert.
         Some milestones have logical dependencies.
         """
         issues = []
 
-        # solution_verified requires solution_proposed
+        # solution_verified requires solution_accepted (stage-gate dependency)
         # NOTE: solution_verified is set by User-Agent Handshake (confirm_pending_transition),
         # not directly by LLM. This constraint validates data consistency.
-        if progress.solution_verified and not progress.solution_proposed:
+        if progress.solution_verified and not progress.solution_accepted:
             issues.append(ValidationIssue(
                 code="MILESTONE_ORDER_001",
-                message="solution_verified=True but solution_proposed=False",
+                message="solution_verified=True but solution_accepted=False",
                 severity=ValidationSeverity.ERROR,
                 field="progress.solution_verified",
-                suggested_fix="Set solution_proposed=True or reset solution_verified=False"
+                suggested_fix="Set solution_accepted=True or reset solution_verified=False"
             ))
 
-        # solution_applied requires solution_proposed
-        if progress.solution_applied and not progress.solution_proposed:
+        # mitigation_verified requires mitigation_accepted (stage-gate dependency)
+        if progress.mitigation_verified and not progress.mitigation_accepted:
             issues.append(ValidationIssue(
                 code="MILESTONE_ORDER_002",
-                message="solution_applied=True but solution_proposed=False",
+                message="mitigation_verified=True but mitigation_accepted=False",
                 severity=ValidationSeverity.ERROR,
-                field="progress.solution_applied",
-                suggested_fix="Set solution_proposed=True"
+                field="progress.mitigation_verified",
+                suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False"
             ))
 
-        # root_cause_identified should have likelihood
+        # root_cause_identified should have likelihood (progress indicator consistency)
         if progress.root_cause_identified and progress.root_cause_likelihood is None:
             issues.append(ValidationIssue(
                 code="MILESTONE_INCOMPLETE_001",
@@ -539,7 +543,7 @@ class StateValidator:
 
 ### 5.1 Progress Stall Detection
 
-The system detects investigation stalls using **turn-based tracking**, not phase-based.
+The system detects investigation stalls using **turn-based tracking**, not stage-based.
 
 ```python
 class StagnationDetector:
@@ -1045,7 +1049,7 @@ This error handling framework provides:
 
 5. **System feedback loop** - Wire validation errors, reasoning issues, and breakout prompts to next-turn context
 
-6. **Milestone-based state validation** - Ensure investigation state consistency
+6. **Evidence-driven state validation** - Ensure stage-gate milestone and progress indicator consistency
 
 7. **Stagnation detection** - Identify when investigation is stuck (no progress, anchoring, loops)
 
@@ -1056,7 +1060,7 @@ This error handling framework provides:
 10. **Concurrency protection** - Per-case asyncio locks prevent state corruption from concurrent turns
 
 **Integration Points**:
-- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, StagnationDetector, and self-correction retry
+- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, StagnationDetector, compliance detection, and self-correction retry
 - `LLMProvider.generate()` - Uses LLMErrorHandler for retry logic
 - `ResponseParser.parse()` - Handles parsing failures gracefully
 - `build_investigation_context()` - Consumes system_feedback from previous turn for LLM context

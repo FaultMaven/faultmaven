@@ -184,14 +184,18 @@ class KnowledgeResolution(BaseModel):
 
 
 class MilestoneUpdates(BaseModel):
-    """Milestones LLM can set to True (never False).
+    """Progress indicators the LLM can set to True (never False).
+
+    These are PROGRESS INDICATORS only — they provide context and analytics
+    but do NOT drive stage transitions. Stage-gate milestones (mitigation_accepted,
+    mitigation_verified, solution_accepted, solution_verified) are set by
+    compliance detection, not by the LLM.
 
     NOTE: solution_verified is NOT settable here. It requires the User-Agent
-    Handshake pattern: the agent proposes resolution via ProposedTransition,
-    and the user confirms. Only then does the system set solution_verified=True
-    and transition to RESOLVED.
+    Handshake pattern via ProposedTransition.
     """
 
+    # Progress indicators (LLM-settable)
     symptom_verified: Optional[bool] = None
     scope_assessed: Optional[bool] = None
     timeline_established: Optional[bool] = None
@@ -199,14 +203,16 @@ class MilestoneUpdates(BaseModel):
     root_cause_identified: Optional[bool] = None
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     solution_proposed: Optional[bool] = None
-    solution_applied: Optional[bool] = None
-    # solution_verified is intentionally excluded — requires User-Agent Handshake
-    # via ProposedTransition. See terminal_transitions.py.
-    mitigation_applied: Optional[bool] = None
     root_cause_method: Optional[str] = Field(
         None,
         description="direct_analysis | hypothesis_validation | correlation | other",
     )
+
+    # Backward compatibility — these are now stage-gate milestones set by
+    # compliance detection. LLM values for these are ignored by the engine
+    # but kept here to avoid breaking LLM structured output parsing.
+    solution_applied: Optional[bool] = None
+    mitigation_applied: Optional[bool] = None
 
 
 class ProblemVerificationUpdate(BaseModel):
@@ -563,10 +569,10 @@ class TerminalResponse(BaseInteractionResponse):
 # =============================================================================
 
 
-class InvestigationResponse_Verification(BaseInteractionResponse):
-    """Schema optimized for SYMPTOM_VERIFICATION stage (Focus: Evidence, Verification)."""
+class InvestigationResponse_Diagnosis(BaseInteractionResponse):
+    """Schema for DIAGNOSIS stage — covers symptom verification, hypothesis work, and solution proposal."""
 
-    class VerificationStateUpdate(BaseModel):
+    class DiagnosisStateUpdate(BaseModel):
         submission_classification: Optional[SubmissionClassification] = Field(
             None,
             description="Classification of user's submission (chat vs external data)",
@@ -574,41 +580,12 @@ class InvestigationResponse_Verification(BaseInteractionResponse):
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
-        # Hypotheses allowed but secondary
-        hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        working_conclusion: Optional[WorkingConclusionUpdate] = None
-        missing_critical_data: Optional[MissingCriticalData] = Field(
-            None,
-            description="Proactive blocker detection. Triggers immediate degraded mode.",
-        )
-        evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
-            default_factory=list,
-            description="Quality issues with evidence that may limit investigation.",
-        )
-        outcome: TurnOutcome
-
-    internal_reasoning: Optional[InternalReasoning] = Field(
-        None,
-        description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
-    )
-    state_updates: VerificationStateUpdate
-
-
-class InvestigationResponse_Hypothesis(BaseInteractionResponse):
-    """Schema optimized for HYPOTHESIS_FORMULATION/VALIDATION (Focus: Hypotheses, Linking)."""
-
-    class HypothesisStateUpdate(BaseModel):
-        submission_classification: Optional[SubmissionClassification] = Field(
-            None,
-            description="Classification of user's submission (chat vs external data)",
-        )
-        milestones: Optional[MilestoneUpdates] = None
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
         hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
+        solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
         missing_critical_data: Optional[MissingCriticalData] = Field(
@@ -625,24 +602,63 @@ class InvestigationResponse_Hypothesis(BaseInteractionResponse):
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
-    state_updates: HypothesisStateUpdate
+    state_updates: DiagnosisStateUpdate
 
 
-class InvestigationResponse_Resolution(BaseInteractionResponse):
-    """Schema optimized for SOLUTION stage (Focus: Solutions, Verification)."""
+# Backward compatibility aliases for old schema names
+InvestigationResponse_Verification = InvestigationResponse_Diagnosis
+InvestigationResponse_Hypothesis = InvestigationResponse_Diagnosis
 
-    class ResolutionStateUpdate(BaseModel):
+
+class InvestigationResponse_Mitigation(BaseInteractionResponse):
+    """Schema for MITIGATION stage — applying and verifying temporary fix."""
+
+    class MitigationStateUpdate(BaseModel):
         submission_classification: Optional[SubmissionClassification] = Field(
             None,
             description="Classification of user's submission (chat vs external data)",
         )
         milestones: Optional[MilestoneUpdates] = None
+        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
-        solution_feedback: Optional[str] = None  # User feedback on applied solution
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
-            default_factory=list
-        )  # For verification evidence
+        solution_feedback: Optional[str] = None
         working_conclusion: Optional[WorkingConclusionUpdate] = None
+        missing_critical_data: Optional[MissingCriticalData] = Field(
+            None,
+            description="Proactive blocker detection. Triggers immediate degraded mode.",
+        )
+        evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
+            default_factory=list,
+            description="Quality issues with evidence that may limit investigation.",
+        )
+        outcome: TurnOutcome
+
+    internal_reasoning: Optional[InternalReasoning] = Field(
+        None,
+        description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
+    )
+    state_updates: MitigationStateUpdate
+
+
+class InvestigationResponse_Treatment(BaseInteractionResponse):
+    """Schema for TREATMENT stage — verifying fix, extended diagnosis if fix fails."""
+
+    class TreatmentStateUpdate(BaseModel):
+        submission_classification: Optional[SubmissionClassification] = Field(
+            None,
+            description="Classification of user's submission (chat vs external data)",
+        )
+        milestones: Optional[MilestoneUpdates] = None
+        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
+        hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
+        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
+            default_factory=list
+        )
+        solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
+        solution_feedback: Optional[str] = None
+        working_conclusion: Optional[WorkingConclusionUpdate] = None
+        root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
         proposed_transition: Optional[ProposedTransition] = Field(
             None,
             description=(
@@ -656,7 +672,11 @@ class InvestigationResponse_Resolution(BaseInteractionResponse):
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
-    state_updates: ResolutionStateUpdate
+    state_updates: TreatmentStateUpdate
+
+
+# Backward compatibility alias for old schema name
+InvestigationResponse_Resolution = InvestigationResponse_Treatment
 
 
 class InvestigationResponse_General(BaseInteractionResponse):
@@ -704,14 +724,11 @@ class InvestigationResponse_General(BaseInteractionResponse):
 
 def get_schema_for_stage(stage: Optional[InvestigationStage]) -> Any:
     """Factory to get the appropriate Pydantic model for the current stage."""
-    if stage == InvestigationStage.SYMPTOM_VERIFICATION:
-        return InvestigationResponse_Verification
-    elif stage in [
-        InvestigationStage.HYPOTHESIS_FORMULATION,
-        InvestigationStage.HYPOTHESIS_VALIDATION,
-    ]:
-        return InvestigationResponse_Hypothesis
-    elif stage == InvestigationStage.SOLUTION:
-        return InvestigationResponse_Resolution
+    if stage == InvestigationStage.DIAGNOSIS:
+        return InvestigationResponse_Diagnosis
+    elif stage == InvestigationStage.MITIGATION:
+        return InvestigationResponse_Mitigation
+    elif stage == InvestigationStage.TREATMENT:
+        return InvestigationResponse_Treatment
     else:
         return InvestigationResponse_General

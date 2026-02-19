@@ -1,9 +1,9 @@
 # Investigation Data Models
 
-This document defines the core data models used in FaultMaven's opportunistic investigation framework.
+This document defines the core data models used in FaultMaven's evidence-driven investigation framework.
 
 **Related Documents**:
-- [Opportunistic Investigation Framework](./opportunistic-investigation-framework.md) - Overview and philosophy
+- [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Overview and philosophy
 - [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md) - State transitions and path routing
 
 ---
@@ -97,14 +97,16 @@ class CaseStatus(str, Enum):
     TERMINAL STATE: Case closed WITHOUT solution.
     Investigation abandoned, escalated, or inquiry-only.
 
-    closure_reason = "abandoned" | "escalated" | "inquiry_only" | "duplicate" | "other"
+    closure_reason = "abandoned" | "escalated" | "mitigation_sufficient" | "inquiry_only" | "duplicate" | "other"
+    Note: "mitigation_sufficient" = user closed after mitigation without pursuing RCA.
+    UI renders as "Closed - Mitigated" (distinct from "Closed - Abandoned").
     """
 ```
 
 **Key Points**:
 - **RESOLVED** and **CLOSED** are both terminal (no further state)
-- **RESOLVED** = Problem fixed (has solution)
-- **CLOSED** = Problem not fixed (no solution, or inquiry-only)
+- **RESOLVED** = Problem fixed (has solution, solution_verified=True)
+- **CLOSED** = Problem not fixed (no solution, or mitigation-only, or inquiry-only)
 - Agent doesn't care about cases after they reach terminal state
 
 ### 1.2 InvestigationProgress
@@ -112,12 +114,54 @@ class CaseStatus(str, Enum):
 ```python
 class InvestigationProgress(BaseModel):
     """
-    Milestone-based progress tracking.
-    Tracks what's been completed, not what phase we're in.
+    Evidence-driven progress tracking with two distinct milestone types:
+
+    1. STAGE-GATE MILESTONES (4): Drive stage transitions.
+       Set by compliance detection (post-LLM), not directly by LLM.
+    2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
+       Set by LLM in structured output. Do NOT drive stage transitions.
     """
 
     # ============================================================
-    # Verification Milestones
+    # STAGE-GATE MILESTONES (drive stage transitions)
+    # Set by compliance detection, not directly by LLM.
+    # ============================================================
+    mitigation_accepted: bool = Field(
+        default=False,
+        description=(
+            "User complied with proposed temp fix (inferred from submission). "
+            "Triggers DIAGNOSIS → MITIGATION transition."
+        )
+    )
+
+    mitigation_verified: bool = Field(
+        default=False,
+        description=(
+            "User confirmed mitigation worked. "
+            "Triggers MITIGATION → DIAGNOSIS return for RCA."
+        )
+    )
+
+    solution_accepted: bool = Field(
+        default=False,
+        description=(
+            "User complied with proposed solution (inferred from submission). "
+            "Triggers DIAGNOSIS → TREATMENT transition."
+        )
+    )
+
+    solution_verified: bool = Field(
+        default=False,
+        description=(
+            "Solution effectiveness verified via User-Agent Handshake. "
+            "NOT directly settable by LLM — requires explicit user confirmation. "
+            "Triggers TREATMENT → RESOLVED transition."
+        )
+    )
+
+    # ============================================================
+    # PROGRESS INDICATORS (LLM context, non-stage-driving)
+    # Set by LLM in structured output. Advisory, not controlling.
     # ============================================================
     symptom_verified: bool = Field(
         default=False,
@@ -139,14 +183,22 @@ class InvestigationProgress(BaseModel):
         description="Recent changes identified"
     )
 
-    # ============================================================
-    # Investigation Milestones
-    # ============================================================
     root_cause_identified: bool = Field(
         default=False,
-        description="Root cause determined"
+        description="Root cause determined (hypothesis validated with high confidence)"
     )
 
+    solution_proposed: bool = Field(
+        default=False,
+        description=(
+            "Set programmatically when ProposedAction with action_type=SOLUTION "
+            "is created. Not directly set by LLM."
+        )
+    )
+
+    # ============================================================
+    # Root Cause Metadata (populated when root_cause_identified=True)
+    # ============================================================
     root_cause_likelihood: float = Field(
         default=0.0,
         ge=0.0,
@@ -160,197 +212,104 @@ class InvestigationProgress(BaseModel):
     )
 
     # ============================================================
-    # Resolution Milestones
-    # ============================================================
-    solution_proposed: bool = Field(
-        default=False,
-        description="Solution or mitigation proposed"
-    )
-
-    solution_applied: bool = Field(
-        default=False,
-        description="Solution has been applied"
-    )
-
-    solution_verified: bool = Field(
-        default=False,
-        description=(
-            "Solution effectiveness verified via User-Agent Handshake. "
-            "NOT directly settable by LLM — requires explicit user confirmation. "
-            "Set by confirm_pending_transition() after user approves resolution."
-        )
-    )
-
-    # ============================================================
-    # Mitigation Tracking (Available During Any Stage)
-    # ============================================================
-    mitigation_applied: bool = Field(
-        default=False,
-        description="""
-        Quick mitigation applied to stop immediate impact.
-
-        Mitigation is a TOOL available during diagnosis, not a stage jump.
-        Both paths follow linear progression: 1 → 2 → 3 → 4
-
-        MITIGATION_FIRST path:
-        - Mitigation applied opportunistically during stages 1-2 when
-          correlation is strong enough (e.g., recent deployment + error timing)
-        - Investigation continues to root cause for permanent fix
-
-        ROOT_CAUSE path:
-        - Mitigation typically not applied until root cause confirmed
-        - May still apply mitigation if situation becomes urgent
-
-        Note: Different from solution_applied - mitigation is quick correlation-based fix,
-        solution is comprehensive permanent fix after RCA.
-        """
-    )
-
-    mitigation_verified: bool = Field(
-        default=False,
-        description="Mitigation effectiveness confirmed (problem stopped)"
-    )
-
-    mitigation_effectiveness: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="How well mitigation worked: 1.0 = fully resolved, 0.5 = partially, 0.0 = ineffective"
-    )
-
-    mitigation_solution_id: Optional[str] = Field(
-        default=None,
-        description="Solution ID of applied mitigation (links to case.solutions)"
-    )
-
-    # ============================================================
     # Computed Properties
     # ============================================================
     @property
     def current_stage(self) -> InvestigationStage:
         """
-        Compute investigation stage from milestones.
-        For optional progress detail, not workflow control.
+        Compute investigation stage from STAGE-GATE MILESTONES only.
+        Progress indicators do NOT affect stage computation.
 
-        Returns one of the 4 InvestigationStage enum values:
-        - SYMPTOM_VERIFICATION: Initial verification (where/when)
-        - HYPOTHESIS_FORMULATION: Generating theories (why)
-        - HYPOTHESIS_VALIDATION: Testing theories (why really)
-        - SOLUTION: Applying fix (how)
+        Returns one of 3 InvestigationStage enum values:
+        - DIAGNOSIS: Understanding, diagnosing, proposing actions
+        - MITIGATION: Applying and verifying temporary fix
+        - TREATMENT: Applying permanent fix, verifying resolution
 
-        MITIGATION_FIRST path handling:
-        When mitigation_applied=True but root_cause_identified=False, the case
-        has completed quick mitigation and needs to return to RCA. In this
-        situation, current_stage returns HYPOTHESIS_FORMULATION so the LLM
-        receives the correct schema (with hypothesis fields) rather than being
-        locked into the SOLUTION schema which lacks RCA fields.
+        Stage transitions are inference-based (user compliance with
+        proposed actions). The stage determines which prompt template
+        the LLM receives.
         """
-        # MITIGATION_FIRST path: post-mitigation RCA routing
-        # If mitigation is done but root cause is NOT identified, route to RCA
-        if self.mitigation_applied and not self.root_cause_identified:
-            # Unless a full solution (beyond mitigation) has been proposed
-            if self.solution_proposed or self.solution_applied or self.solution_verified:
-                return InvestigationStage.SOLUTION
-            return InvestigationStage.HYPOTHESIS_FORMULATION
+        # TREATMENT: solution_accepted but not yet verified
+        if self.solution_accepted and not self.solution_verified:
+            return InvestigationStage.TREATMENT
 
-        # Stage 4: Solution phase
-        if (self.solution_proposed or
-            self.solution_applied or
-            self.solution_verified):
-            return InvestigationStage.SOLUTION
+        # MITIGATION: mitigation_accepted but not yet verified
+        if self.mitigation_accepted and not self.mitigation_verified:
+            return InvestigationStage.MITIGATION
 
-        # Stage 3: Hypothesis validation (root cause being identified)
-        if self.root_cause_identified:
-            return InvestigationStage.HYPOTHESIS_VALIDATION
-
-        # Stage 2: Hypothesis formulation (symptom verified, exploring cause)
-        if self.symptom_verified:
-            return InvestigationStage.HYPOTHESIS_FORMULATION
-
-        # Stage 1: Symptom verification (initial state)
-        return InvestigationStage.SYMPTOM_VERIFICATION
+        # Default: DIAGNOSIS (initial state, or returned from MITIGATION)
+        return InvestigationStage.DIAGNOSIS
 
     @property
     def stage_display_name(self) -> str:
         """
         User-facing stage name for UI display.
 
-        Maps internal 4-stage system to 3 user-friendly names:
-        - SYMPTOM_VERIFICATION → "Understanding"
-        - HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION → "Diagnosing"
-        - SOLUTION → "Resolving"
+        1:1 mapping (no collapsing needed):
+        - DIAGNOSIS → "Diagnosing"
+        - MITIGATION → "Mitigating"
+        - TREATMENT → "Resolving"
         """
         stage = self.current_stage
-        if stage == InvestigationStage.SYMPTOM_VERIFICATION:
-            return "Understanding"
-        elif stage in (InvestigationStage.HYPOTHESIS_FORMULATION,
-                      InvestigationStage.HYPOTHESIS_VALIDATION):
+        if stage == InvestigationStage.DIAGNOSIS:
             return "Diagnosing"
-        else:  # SOLUTION
+        elif stage == InvestigationStage.MITIGATION:
+            return "Mitigating"
+        else:  # TREATMENT
             return "Resolving"
-
-    @property
-    def verification_complete(self) -> bool:
-        """All verification milestones completed"""
-        return (
-            self.symptom_verified and
-            self.scope_assessed and
-            self.timeline_established and
-            self.changes_identified
-        )
-
-    # completion_percentage removed — inaccurate and non-essential.
-    # Milestone completion tracked via completed_milestones/pending_milestones.
 ```
 
-#### Current Milestone Validation Rules
+#### Progress Indicator Evidence Expectations
 
-The milestone engine validates evidence claims using a category-count check for 8 of the 9 milestones:
+The milestone engine validates evidence claims for **progress indicators** (non-stage-driving) using a category-count check:
 
-| Milestone | Min Evidence | Expected Categories |
-|-----------|-------------|---------------------|
+| Progress Indicator | Min Evidence | Expected Categories |
+|-------------------|-------------|---------------------|
 | `symptom_verified` | 1 | SYMPTOM |
 | `scope_assessed` | 1 | SYMPTOM |
 | `timeline_established` | 1 | SYMPTOM |
 | `changes_identified` | 1 | SYMPTOM, CAUSAL |
 | `root_cause_identified` | 2 | CAUSAL |
-| `solution_proposed` | 1 | CAUSAL |
-| `solution_applied` | 0 | (user confirmation) |
-| `mitigation_applied` | 0 | (user confirmation) |
-| `solution_verified` | — | Not validated (set via User-Agent Handshake, see G2) |
+| `solution_proposed` | 0 | (set programmatically when ProposedAction created) |
 
-**How validation works:**
-1. LLM sets milestone = True in structured output
+**Stage-gate milestones** are NOT evidence-validated — they are inferred from user compliance with a ProposedAction (post-LLM detection):
+
+| Stage-Gate Milestone | Trigger |
+|---------------------|---------|
+| `mitigation_accepted` | User complied with proposed temp fix (inferred from submission) |
+| `mitigation_verified` | User confirmed mitigation worked |
+| `solution_accepted` | User complied with proposed solution (inferred from submission) |
+| `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
+
+**How progress indicator validation works:**
+1. LLM sets progress indicator = True in structured output
 2. System extracts evidence IDs from `internal_reasoning.evidence_analyzed`
 3. System counts cited evidence matching expected categories
-4. If count < minimum: warning logged (milestone still set, but flagged)
+4. If count < minimum: warning logged (indicator still set, but flagged)
 
-Validation is **advisory, not blocking**. The LLM's milestone assertions are trusted, with validation providing quality feedback for monitoring.
+Validation is **advisory, not blocking**. The LLM's progress indicator assertions are trusted, with validation providing quality feedback for monitoring.
 
 ```python
 class InvestigationStage(str, Enum):
     """
-    Investigation stage within INVESTIGATING phase (4 stages).
-    Computed from milestones for optional progress detail.
+    Investigation stage within INVESTIGATING status (3 stages).
+    Computed from stage-gate milestones.
 
-    Stage Progression (Linear for Both Paths):
-    1 → 2 → 3 → 4 (Verify → Hypothesize → Validate → Resolve)
+    Stages:
+    - DIAGNOSIS: Understand, diagnose, propose actions
+    - MITIGATION: Apply and verify temporary fix (detour)
+    - TREATMENT: Apply permanent fix, verify resolution
 
-    Path Differences:
-    - MITIGATION_FIRST: Mitigation available as tool during stages 1-2
-    - ROOT_CAUSE: Full RCA before any fix applied
+    Stage transitions are inference-based (user compliance).
     """
-    SYMPTOM_VERIFICATION = "symptom_verification"
-    """Stage 1: Symptom verification (where and when)"""
+    DIAGNOSIS = "diagnosis"
+    """Understand problem, diagnose root cause, propose actions."""
 
-    HYPOTHESIS_FORMULATION = "hypothesis_formulation"
-    """Stage 2: Hypotheses formulation (why)"""
+    MITIGATION = "mitigation"
+    """Apply and verify temporary fix. Returns to DIAGNOSIS when verified."""
 
-    HYPOTHESIS_VALIDATION = "hypothesis_validation"
-    """Stage 3: Hypothesis validation (why really)"""
-
-    SOLUTION = "solution"
-    """Stage 4: Solution (how)"""
+    TREATMENT = "treatment"
+    """Apply permanent fix, verify resolution. Extended diagnosis if fix fails."""
 
 class TemporalState(str, Enum):
     """Problem temporal state for routing decisions"""
@@ -428,24 +387,24 @@ class InvestigationPath(str, Enum):
     """
     Investigation routing based on temporal state and urgency.
 
-    Both paths follow LINEAR stage progression: 1 → 2 → 3 → 4
-    (Verify → Hypothesize → Validate → Resolve)
+    Path determines WHETHER the agent proactively offers mitigation
+    during DIAGNOSIS, not which stages are available. Path is
+    advisory, not structural.
 
-    The difference is WHEN mitigation is applied:
-    - MITIGATION_FIRST: Mitigation available as tool during stages 1-2
-    - ROOT_CAUSE: Full RCA before any fix applied
+    Both paths use the same 3-stage model (DIAGNOSIS → MITIGATION → TREATMENT),
+    but differ in agent behavior during DIAGNOSIS.
     """
     MITIGATION_FIRST = "mitigation_first"
     """
     Mitigation-first path.
 
-    Stage Flow: 1 → 2 → 3 → 4 (linear, same as ROOT_CAUSE)
+    Stage Flow: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT → RESOLVED
 
-    Key Difference: Mitigation is available as a TOOL during early stages.
-    - Stage 1: Verify symptom + apply mitigation if correlation strong
-    - Stage 2: Continue formulating hypotheses (service now stable)
-    - Stage 3: Validate hypothesis for root cause
-    - Stage 4: Apply permanent solution
+    Key Behavior: Agent proactively offers temp fix during DIAGNOSIS.
+    - DIAGNOSIS: Agent proposes mitigation action (urgent, ongoing issue)
+    - MITIGATION: User complied → apply and verify temp fix
+    - DIAGNOSIS: Return for root cause analysis (reduced pressure)
+    - TREATMENT: Propose and verify permanent solution
 
     Use When: ONGOING + HIGH/CRITICAL urgency
     Benefit: Stops bleeding quickly while still pursuing full RCA
@@ -455,13 +414,13 @@ class InvestigationPath(str, Enum):
     """
     Traditional RCA path.
 
-    Stage Flow: 1 → 2 → 3 → 4
-    - Stage 1: Verify symptom (where/when)
-    - Stage 2: Formulate hypotheses (why)
-    - Stage 3: Validate hypothesis (why really)
-    - Stage 4: Apply solution (how)
+    Stage Flow: DIAGNOSIS → TREATMENT → RESOLVED
 
-    Use When: HISTORICAL + LOW/MEDIUM urgency
+    Key Behavior: No mitigation offered unless user requests it.
+    - DIAGNOSIS: Verify symptoms, diagnose root cause, propose solution
+    - TREATMENT: Verify fix, extended diagnosis if fix fails
+
+    Use When: HISTORICAL + LOW/MEDIUM/HIGH urgency
     Benefit: Thorough investigation without pressure
     """
 
@@ -507,7 +466,7 @@ class PathSelection(BaseModel):
 
 ```python
 class Case(BaseModel):
-    """Complete case model with opportunistic investigation architecture"""
+    """Complete case model with evidence-driven investigation architecture"""
 
     # ============================================================
     # Core Identity
@@ -529,7 +488,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="resolved | abandoned | escalated | inquiry_only | duplicate | other"
+        description="resolved | abandoned | escalated | mitigation_sufficient | inquiry_only | duplicate | other"
     )
 
     # ============================================================
@@ -565,6 +524,14 @@ class Case(BaseModel):
     evidence: List[Evidence] = Field(default_factory=list)
     hypotheses: Dict[str, Hypothesis] = Field(default_factory=dict)
     solutions: List[Solution] = Field(default_factory=list)
+    proposed_actions: List[ProposedAction] = Field(
+        default_factory=list,
+        description="Actions proposed by agent during DIAGNOSIS"
+    )
+    action_attempts: List[ActionAttempt] = Field(
+        default_factory=list,
+        description="History of all mitigation and solution attempts"
+    )
 
     # ============================================================
     # Cross-Cutting State
@@ -991,7 +958,63 @@ class SolutionType(str, Enum):
     OTHER = "other"                    # Other solution type
 ```
 
-### 1.9 WorkingConclusion
+### 1.9 ProposedAction and ActionAttempt
+
+```python
+class ActionType(str, Enum):
+    """Type of proposed action."""
+    MITIGATION = "mitigation"   # Temp fix → compliance triggers DIAGNOSIS → MITIGATION
+    SOLUTION = "solution"       # Permanent fix → compliance triggers DIAGNOSIS → TREATMENT
+
+class ProposedAction(BaseModel):
+    """
+    A concrete action proposed by the agent during DIAGNOSIS.
+
+    User compliance with a proposed action triggers inference-based
+    stage transitions. The user's action IS acceptance — no explicit
+    confirmation step required.
+    """
+    action_id: str = Field(default_factory=lambda: f"act_{uuid4().hex[:12]}")
+    action_type: ActionType
+    description: str = Field(description="What to do (specific command or action)")
+    rationale: str = Field(description="Why this action is proposed")
+    proposed_at_turn: int
+    proposed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Resolution tracking
+    complied: Optional[bool] = Field(
+        default=None,
+        description="True if user complied, False if refused, None if pending"
+    )
+    compliance_evidence_id: Optional[str] = Field(
+        default=None,
+        description="Evidence ID showing user compliance (submitted results)"
+    )
+
+class ActionAttempt(BaseModel):
+    """
+    Record of an action attempt (mitigation or solution).
+
+    This covers both TREATMENT cycles (solution attempts) and MITIGATION
+    cycles (mitigation attempts). The boolean flags on InvestigationProgress
+    represent the current cycle; the action_attempts list provides history.
+    When mitigation flags reset on return to DIAGNOSIS, the completed
+    mitigation attempt remains in the list.
+    """
+    attempt_id: str = Field(default_factory=lambda: f"att_{uuid4().hex[:12]}")
+    action_type: ActionType
+    proposed_action_id: str = Field(description="ID of the ProposedAction that triggered this")
+    description: str
+    attempted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    outcome: str = Field(description="success | partial | failed | abandoned")
+    outcome_evidence_id: Optional[str] = Field(
+        default=None,
+        description="Evidence ID showing outcome"
+    )
+    notes: Optional[str] = None
+```
+
+### 1.10 WorkingConclusion
 
 ```python
 class WorkingConclusion(BaseModel):
@@ -1035,7 +1058,7 @@ class WorkingConclusion(BaseModel):
     )
 ```
 
-### 1.10 RootCauseConclusion
+### 1.11 RootCauseConclusion
 
 ```python
 class RootCauseConclusion(BaseModel):
@@ -1108,7 +1131,7 @@ class ConfidenceLevel(str, Enum):
             return ConfidenceLevel.VERIFIED
 ```
 
-### 1.11 EscalationState
+### 1.12 EscalationState
 
 ```python
 class EscalationState(BaseModel):
@@ -1172,7 +1195,7 @@ class EscalationType(str, Enum):
     OTHER = "other"                                # Other escalation reason
 ```
 
-### 1.12 DocumentationData
+### 1.13 DocumentationData
 
 ```python
 class DocumentationData(BaseModel):
@@ -1274,12 +1297,13 @@ class DocumentType(str, Enum):
 > The complete evidence model specification has been moved to the Data Processing section.
 > See: **[Evidence Classification Design](../data-processing/evidence-classification-design.md)** (v2.0)
 >
-> **Current Evidence Categories (5 total)**:
+> **Current Evidence Categories (6 total)**:
 >
-> - `SYMPTOM_EVIDENCE` - Problem manifestation
-> - `CAUSAL_EVIDENCE` - Root cause indicators
-> - `RESOLUTION_EVIDENCE` - Fix validation
-> - `CONTEXTUAL_EVIDENCE` - Baseline/environmental context (was: `OTHER`)
+> - `SYMPTOM_EVIDENCE` - Problem manifestation (used in DIAGNOSIS, TREATMENT)
+> - `CAUSAL_EVIDENCE` - Root cause indicators (used in DIAGNOSIS, TREATMENT; requires hypothesis to exist)
+> - `MITIGATION_EVIDENCE` - Temp fix validation (used in MITIGATION)
+> - `SOLUTION_EVIDENCE` - Permanent fix validation (used in TREATMENT)
+> - `CONTEXTUAL_EVIDENCE` - Baseline/environmental context (used in DIAGNOSIS, TREATMENT)
 > - `REJECTED` - Analyzed but not useful
 >
 > **Current Data Type (6 total, unified with preprocessing)**:
@@ -1293,6 +1317,8 @@ class DocumentType(str, Enum):
 > - ❌ `EvidenceSourceType` **REPLACED** with `DataType`
 > - ✅ `OTHER` **RENAMED** to `CONTEXTUAL_EVIDENCE`
 > - ✅ `REJECTED` category **ADDED**
+> - ✅ `RESOLUTION_EVIDENCE` **RENAMED** to `SOLUTION_EVIDENCE`
+> - ✅ `MITIGATION_EVIDENCE` **ADDED** (evidence for temp fix validation)
 >
 > For complete schemas, flows, and implementation details, see the canonical design documents:
 >

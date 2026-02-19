@@ -125,8 +125,13 @@ CATEGORY_MILESTONE_MAP = {
         "root_cause_identified",  # Demonstrates root cause
         "solution_proposed",  # Justifies proposed solution
     ],
-    EvidenceCategory.RESOLUTION_EVIDENCE: [
-        "solution_applied",  # Demonstrates solution effectiveness
+    EvidenceCategory.MITIGATION_EVIDENCE: [
+        # Mitigation evidence verifies temp fix effectiveness
+        # mitigation_verified is a stage-gate milestone (set by compliance detection)
+    ],
+    EvidenceCategory.SOLUTION_EVIDENCE: [
+        # Solution evidence verifies permanent fix effectiveness
+        # solution_verified is a stage-gate milestone (set via User-Agent Handshake)
     ],
     EvidenceCategory.CONTEXTUAL_EVIDENCE: [
         # Contextual evidence provides baseline/environmental info
@@ -1199,7 +1204,7 @@ class MilestoneEngine:
                 )
             else:
                 schema_model = get_schema_for_stage(
-                    case.current_stage or InvestigationStage.SYMPTOM_VERIFICATION
+                    case.current_stage or InvestigationStage.DIAGNOSIS
                 )
                 logger.info(
                     f"🔍 Turn {case.current_turn} schema selection: "
@@ -1221,6 +1226,20 @@ class MilestoneEngine:
             )
             # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
             metadata.update(response_metadata)
+
+            # 3a. Compliance Detection (Evidence-Driven Framework)
+            # Post-LLM step: check if user's message shows compliance with
+            # a proposed action, and set stage-gate milestones if so.
+            if case_updated.status == CaseStatus.INVESTIGATING and case_updated.proposed_actions:
+                from faultmaven.core.investigation.compliance_detector import (
+                    detect_compliance,
+                )
+
+                attempt = detect_compliance(case_updated, user_message, response_obj)
+                if attempt and attempt.compliance_detected:
+                    metadata["compliance_detected"] = True
+                    metadata["compliance_action_type"] = attempt.action_id
+                    metadata["progress_made"] = True
 
             # 3b. Validate Diagnostic Reasoning with Self-Correction (Section 3.3, F3)
             # Ensure agent provides context-specific reasoning before suggestions.
@@ -2987,18 +3006,24 @@ class MilestoneEngine:
 
     def _infer_evidence_category(self, case: Case) -> EvidenceCategory:
         """
-        Infer evidence category from investigation state.
+        Infer evidence category from investigation stage.
 
         Rules:
-        - If verification incomplete → SYMPTOM_EVIDENCE
-        - If solution proposed → RESOLUTION_EVIDENCE
-        - Otherwise → CAUSAL_EVIDENCE
+        - MITIGATION stage → MITIGATION_EVIDENCE
+        - TREATMENT stage → SOLUTION_EVIDENCE
+        - DIAGNOSIS stage, verification incomplete → SYMPTOM_EVIDENCE
+        - DIAGNOSIS stage, otherwise → CAUSAL_EVIDENCE
         """
+        stage = case.progress.current_stage
+
+        if stage == InvestigationStage.MITIGATION:
+            return EvidenceCategory.MITIGATION_EVIDENCE
+
+        if stage == InvestigationStage.TREATMENT:
+            return EvidenceCategory.SOLUTION_EVIDENCE
+
         if not case.progress.verification_complete:
             return EvidenceCategory.SYMPTOM_EVIDENCE
-
-        if case.progress.solution_proposed:
-            return EvidenceCategory.RESOLUTION_EVIDENCE
 
         return EvidenceCategory.CAUSAL_EVIDENCE
 

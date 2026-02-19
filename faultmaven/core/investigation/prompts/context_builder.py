@@ -356,15 +356,44 @@ def build_investigation_context(
             core_context += f"TEMPORAL_STATE: {pv.temporal_state.value}\n"
     core_context += "</problem_context>"
 
-    # 3. Milestone Status
+    # 3. Milestone Status (separated into stage-gate and progress indicators)
     milestones_str = ""
     if case.status == CaseStatus.INVESTIGATING:
-        milestones_str = "<milestones_completed>\n"
         p = case.progress
-        for milestone, completed in p.dict().items():
-            if isinstance(completed, bool) and completed:
-                milestones_str += f"- {milestone}\n"
-        milestones_str += "</milestones_completed>"
+
+        # Stage-gate milestones (drive transitions)
+        stage_gates = {
+            "mitigation_accepted": p.mitigation_accepted,
+            "mitigation_verified": p.mitigation_verified,
+            "solution_accepted": p.solution_accepted,
+            "solution_verified": p.solution_verified,
+        }
+        active_gates = [k for k, v in stage_gates.items() if v]
+
+        # Progress indicators (LLM context)
+        indicators = {
+            "symptom_verified": p.symptom_verified,
+            "scope_assessed": p.scope_assessed,
+            "timeline_established": p.timeline_established,
+            "changes_identified": p.changes_identified,
+            "root_cause_identified": p.root_cause_identified,
+            "solution_proposed": p.solution_proposed,
+        }
+        active_indicators = [k for k, v in indicators.items() if v]
+
+        milestones_str = f"<current_stage>{p.stage_display_name}</current_stage>\n"
+        if active_gates:
+            milestones_str += "<stage_gate_milestones>\n"
+            for g in active_gates:
+                milestones_str += f"- {g}\n"
+            milestones_str += "</stage_gate_milestones>\n"
+        if active_indicators:
+            milestones_str += "<progress_indicators>\n"
+            for ind in active_indicators:
+                milestones_str += f"- {ind}\n"
+            milestones_str += "</progress_indicators>"
+        else:
+            milestones_str += "<progress_indicators>None yet</progress_indicators>"
 
     # 4. Evidence Summary
     # Note: Evidence IDs removed from LLM context (category-based validation)
@@ -468,39 +497,28 @@ def build_investigation_context(
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by skipping irrelevant sections based on investigation stage
     if enable_stage_specific_loading and case.status == CaseStatus.INVESTIGATING:
-        stage = case.current_stage or InvestigationStage.SYMPTOM_VERIFICATION
+        stage = case.current_stage or InvestigationStage.DIAGNOSIS
 
-        if stage == InvestigationStage.SYMPTOM_VERIFICATION:
-            # Early stage: Skip hypothesis and solution history (not relevant yet)
-            # Focus on: identity, core context, evidence, conversation
+        if stage == InvestigationStage.DIAGNOSIS:
+            # DIAGNOSIS covers symptom verification, hypothesis work, and solution proposal
             logger.debug(
-                f"Stage-specific loading: SYMPTOM_VERIFICATION - skipping hypothesis details"
+                f"Stage-specific loading: DIAGNOSIS - full context for diagnosis"
             )
-            # Hypotheses are already conditionally built above, so no change needed
-            # This is a note for future optimization if needed
+            # All context sections are relevant during diagnosis
 
-        elif stage == InvestigationStage.HYPOTHESIS_FORMULATION:
-            # Hypothesis generation: Focus on active hypotheses
-            # Evidence and milestones are essential
+        elif stage == InvestigationStage.MITIGATION:
+            # MITIGATION: Focus on the proposed mitigation and verification
             logger.debug(
-                f"Stage-specific loading: HYPOTHESIS_FORMULATION - focusing on hypothesis generation"
+                f"Stage-specific loading: MITIGATION - focusing on mitigation verification"
             )
-            # Already optimized: hypothesis_str only includes active hypotheses
+            # Hypotheses are less important during mitigation
 
-        elif stage == InvestigationStage.HYPOTHESIS_VALIDATION:
-            # Hypothesis validation: Focus on active hypotheses and evidence links
-            # Skip retired hypotheses
+        elif stage == InvestigationStage.TREATMENT:
+            # TREATMENT: Focus on solution verification, extended diagnosis if fix fails
             logger.debug(
-                f"Stage-specific loading: HYPOTHESIS_VALIDATION - focusing on active hypotheses"
+                f"Stage-specific loading: TREATMENT - focusing on solution verification"
             )
-            # Already optimized: active_h filters out retired hypotheses
-
-        elif stage == InvestigationStage.SOLUTION:
-            # Solution stage: Hypotheses are less important, focus on verified hypothesis and solution
-            logger.debug(
-                f"Stage-specific loading: SOLUTION - focusing on solution implementation"
-            )
-            # Already optimized: milestones show progress, hypotheses show validated
+            # All context sections relevant (may need extended diagnosis)
 
     # Assembly with budget check
     ctx = {

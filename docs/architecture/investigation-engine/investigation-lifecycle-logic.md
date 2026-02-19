@@ -1,9 +1,9 @@
 # Investigation Lifecycle Logic
 
-This document defines the state transitions, path routing, and turn tracking logic for FaultMaven's opportunistic investigation framework.
+This document defines the state transitions, path routing, and turn tracking logic for FaultMaven's evidence-driven investigation framework.
 
 **Related Documents**:
-- [Opportunistic Investigation Framework](./opportunistic-investigation-framework.md) - Overview and philosophy
+- [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) - Overview and philosophy
 - [Investigation Data Models](./investigation-data-models.md) - Core data structures
 
 ---
@@ -34,16 +34,16 @@ This document defines the state transitions, path routing, and turn tracking log
        │                              ┌────────────────────┐
        │                              │   INVESTIGATING    │
        │                              │                    │
-       │                              │ Verification       │
-       │                              │ Investigation      │
-       │                              │ Resolution         │
+       │                              │ Diagnosing         │
+       │                              │ Mitigating         │
+       │                              │ Resolving          │
        │                              └─────────┬──────────┘
        │                                        │
        │                              ┌─────────┴──────────┐
        │                              │                    │
        │                   (solution_verified)    (no solution,
-       │                              │            abandoned/escalated)
-       │                              │                    │
+       │                              │            abandoned/escalated/
+       │                              │            mitigation_sufficient)
        │                              ▼                    ▼
        │                      ┌──────────────┐    ┌──────────────┐
        │                      │   RESOLVED   │    │    CLOSED    │
@@ -234,8 +234,10 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     """User abandons investigation without solution"""
     case.status = CaseStatus.CLOSED
     case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = reason  # "abandoned" | "escalated" | "other"
+    case.closure_reason = reason  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
     # TERMINAL - no further transitions
+    # Note: "mitigation_sufficient" is used when user closes after mitigation
+    # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
 ```
 
 #### INQUIRY → CLOSED (Terminal)
@@ -349,9 +351,9 @@ VALID_TRANSITIONS = {
        │                             ┌────────────────────┐   │
        │                             │   INVESTIGATING    │   │
        │                             │                    │   │
-       │                             │ Verification       │   │
-       │                             │ Investigation      │   │
-       │                             │ Resolution         │   │
+       │                             │ Diagnosing         │   │
+       │                             │ Mitigating         │   │
+       │                             │ Resolving          │   │
        │                             └─────────┬──────────┘   │
        │                                       │              │
        │                             ┌─────────┴──────────┐   │
@@ -469,7 +471,9 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
 
     case.status = CaseStatus.CLOSED
     case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = reason  # "abandoned" | "escalated" | "other"
+    case.closure_reason = reason  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
+    # Note: "mitigation_sufficient" is used when user closes after mitigation
+    # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
     case.status_history.append(CaseStatusTransition(
         from_status=CaseStatus.INVESTIGATING,
         to_status=CaseStatus.CLOSED,
@@ -507,27 +511,38 @@ def close_from_inquiry(case: Case, user_id: str):
 
 State updates occur at specific points within a turn to ensure consistency:
 
-| Update Type | When | Trigger |
-|-------------|------|---------|
-| `proposed_problem_statement` | During INQUIRY turn | LLM generates from conversation |
-| `problem_statement_confirmed` | After user confirmation | User says "Yes" or equivalent |
-| `symptom_verified` | After evidence processing | Evidence validates symptom |
-| `path_selection` | After `symptom_verified = True` | Automatic |
-| `mitigation_applied` | During MITIGATION_FIRST path | After user confirms mitigation worked |
-| `root_cause_identified` | After hypothesis validation | Strong evidence supports hypothesis |
-| `solution_verified` | After user confirms fix | User confirms problem resolved |
-| Terminal transition | End of turn | After all other processing |
+| Update Type | Category | When | Trigger |
+|-------------|----------|------|---------|
+| `proposed_problem_statement` | — | During INQUIRY turn | LLM generates from conversation |
+| `problem_statement_confirmed` | — | After user confirmation | User says "Yes" or equivalent |
+| `symptom_verified` | Progress indicator | After evidence processing | LLM sets in structured output when symptoms confirmed |
+| `scope_assessed` | Progress indicator | After evidence processing | LLM sets in structured output when impact scope determined |
+| `timeline_established` | Progress indicator | After evidence processing | LLM sets in structured output when timeline understood |
+| `changes_identified` | Progress indicator | After evidence processing | LLM sets in structured output when changes correlated |
+| `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
+| `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
+| `path_selection` | — | During DIAGNOSIS (when temporal_state + urgency_level available) | Automatic from problem verification data |
+| `mitigation_accepted` | Stage-gate milestone | Post-LLM compliance detection | User complied with proposed temp fix (inferred from submission) |
+| `mitigation_verified` | Stage-gate milestone | Post-LLM compliance detection | User confirms mitigation worked → return to DIAGNOSIS |
+| `solution_accepted` | Stage-gate milestone | Post-LLM compliance detection | User complied with proposed solution (inferred from submission) |
+| `solution_verified` | Stage-gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
+| Terminal transition | — | End of turn | After all other processing |
+
+**Stage-gate milestones vs Progress indicators**:
+- **Stage-gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM based on detected user compliance with a ProposedAction — the LLM is the compliance detector, not the decision-maker.
+- **Progress indicators** (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
 
 **Order of Operations Within a Turn**:
 
 1. **Receive user message**
 2. **LLM processes** and generates response + `state_updates`
-3. **Apply non-terminal state updates** (milestones, evidence, hypotheses)
-4. **Record turn progress** (detect what changed)
-5. **Check terminal transitions** (RESOLVED/CLOSED) if conditions met
-6. **Return response to user**
+3. **Apply state updates**: progress indicators (non-driving), evidence, hypotheses
+4. **Compliance detection** (post-LLM): Detect stage-gate milestones from LLM structured output; stage transition takes effect next turn
+5. **Record turn progress** (detect what changed)
+6. **Check terminal transitions** (RESOLVED/CLOSED) if conditions met
+7. **Return response to user**
 
-**Rationale**: Terminal transitions happen last to ensure all state is consistent before case becomes immutable.
+**Rationale**: Terminal transitions happen last to ensure all state is consistent before case becomes immutable. Compliance detection happens post-LLM because the current turn runs with the current stage's prompt; the new stage's prompt takes effect on the next turn.
 
 ### 1.5 Manual Status Change Requests
 
@@ -930,35 +945,48 @@ def select_investigation_path(case: Case) -> PathSelection:
     return determine_investigation_path(case.problem_verification)
 ```
 
-#### Phase 3: Path Execution (INVESTIGATING Status)
+#### Phase 3: Path-Guided Agent Behavior (INVESTIGATING Status)
 
-**When**: Immediately after path selection
+**When**: After path selection, throughout DIAGNOSIS
 
-**Purpose**: Apply path-specific behavior (mitigation for MITIGATION_FIRST)
+**Purpose**: Path determines whether the agent proactively offers mitigation during DIAGNOSIS
 
-**Output**: `mitigation_applied = True` (if applicable)
+**Behavior**: The path is **advisory, not structural** — it influences what the agent proposes, not which milestones are available.
 
 ```python
-async def execute_path_behavior(case: Case):
+def apply_path_guidance(case: Case):
     """
-    Execute path-specific behavior immediately after selection.
+    Path guides agent behavior during DIAGNOSIS.
 
-    For MITIGATION_FIRST: Apply mitigation if correlation strong enough
-    For ROOT_CAUSE: Continue to hypothesis formulation
+    For MITIGATION_FIRST: Agent proactively offers temp fix during DIAGNOSIS.
+        Actual entry to MITIGATION stage is inferred from user compliance.
+    For ROOT_CAUSE: Agent proceeds with root cause analysis. Mitigation not
+        offered unless user requests it.
+    For USER_CHOICE: Agent presents both options and lets user decide.
     """
     if case.path_selection.path == InvestigationPath.MITIGATION_FIRST:
-        if case.problem_verification.correlation_confidence >= 0.7:
-            # Strong correlation → apply mitigation
-            await apply_mitigation(case)
-            case.progress.mitigation_applied = True
+        # Agent prompt includes urgency context and mitigation guidance.
+        # Agent proposes a concrete temp fix action during DIAGNOSIS.
+        # If user complies (executes and submits results) → system infers
+        # DIAGNOSIS → MITIGATION transition via mitigation_accepted milestone.
+        pass
+    elif case.path_selection.path == InvestigationPath.ROOT_CAUSE:
+        # Agent proceeds directly to root cause analysis in DIAGNOSIS.
+        # No mitigation offered unless user explicitly requests it.
+        pass
+    elif case.path_selection.path == InvestigationPath.USER_CHOICE:
+        # Agent presents both options: "Should I focus on a quick fix first,
+        # or go straight to finding the root cause?"
+        pass
 ```
 
 **Timeline Diagram**:
 
 ```
 Turn 1 (INQUIRY):     preliminary_urgency assessed → Early hint provided
-Turn 2 (INQUIRY→INVESTIGATING): Status transition
-Turn 3 (INVESTIGATING): symptom_verified = True → path_selection determined → mitigation applied (if MITIGATION_FIRST)
+Turn 2 (INQUIRY→INVESTIGATING): Status transition → enters DIAGNOSIS stage
+Turn 3 (INVESTIGATING/DIAGNOSIS): symptom_verified set → path_selection determined → agent behavior guided by path
+Turn N (INVESTIGATING/DIAGNOSIS): Agent proposes action → user complies → inferred transition to MITIGATION or TREATMENT
 ```
 
 ### 2.1 Path Selection Matrix
@@ -971,8 +999,8 @@ Based on **temporal_state × urgency_level**:
 | **Ongoing** | HIGH | MITIGATION_FIRST (auto) | Significant active impact - stop bleeding first |
 | **Ongoing** | MEDIUM | USER_CHOICE | User decides: quick mitigation or thorough RCA |
 | **Ongoing** | LOW | USER_CHOICE | Minor issue, user decides approach |
-| **Historical** | CRITICAL | USER_CHOICE | Clarify why critical if past issue |
-| **Historical** | HIGH | USER_CHOICE | High urgency for past issue? |
+| **Historical** | CRITICAL | USER_CHOICE | Clarify why critical if past issue — user knows whether speed or thoroughness matters more |
+| **Historical** | HIGH | ROOT_CAUSE (auto) | Past issue with high urgency — thorough investigation appropriate |
 | **Historical** | MEDIUM | ROOT_CAUSE (auto) | Standard post-mortem - find root cause |
 | **Historical** | LOW | ROOT_CAUSE (auto) | Thorough investigation - permanent solution |
 
@@ -996,8 +1024,8 @@ def determine_investigation_path(
             alternate_path=InvestigationPath.ROOT_CAUSE
         )
 
-    # AUTO: Historical + Low Urgency → ROOT_CAUSE (permanent solution)
-    if temporal == TemporalState.HISTORICAL and urgency in [UrgencyLevel.LOW, UrgencyLevel.MEDIUM]:
+    # AUTO: Historical + Low/Medium/High Urgency → ROOT_CAUSE (permanent solution)
+    if temporal == TemporalState.HISTORICAL and urgency in [UrgencyLevel.LOW, UrgencyLevel.MEDIUM, UrgencyLevel.HIGH]:
         return PathSelection(
             path=InvestigationPath.ROOT_CAUSE,
             auto_selected=True,
@@ -1016,86 +1044,66 @@ def determine_investigation_path(
 
 ### 2.3 Path Impact on Investigation
 
-**Both paths follow LINEAR stage progression: 1 → 2 → 3 → 4**
-
-The difference is WHEN mitigation is applied, not the stage flow.
+The path determines **whether the agent proactively offers mitigation** during DIAGNOSIS. Both paths use the same 3-stage model (DIAGNOSIS → MITIGATION → TREATMENT), but differ in agent behavior.
 
 ---
 
 **Path (a): MITIGATION_FIRST**
 
-Mitigation is a **tool available during early stages**, not a stage jump.
+MITIGATION is a **distinct stage** — a controlled detour to stabilize the situation before root cause analysis.
 
-- **Stage 1: Symptom Verification**
-  - Verify where and when problem is happening
-  - Assess urgency and temporal state
-  - **If correlation strong** (e.g., error started 2 min after deploy):
-    - Apply quick mitigation (rollback, restart, etc.)
-    - Mark `mitigation_applied = True`
-    - Service stabilized, pressure reduced
-  - Next: Agent offers user the choice (see below)
+- **DIAGNOSIS** (initial)
+  - Agent detects urgency from problem verification
+  - Agent proposes a concrete temp fix action (e.g., "Run `kubectl rollout undo deployment/payment-api`")
+  - If user complies (executes and submits results) → **inferred transition to MITIGATION**
+  - If user questions or refuses → stays in DIAGNOSIS, agent refines approach
 
-- **Post-Mitigation Decision Point**
-  After mitigation is applied and verified effective, the agent asks the user
-  whether to continue with root cause analysis or close the case. See Section 4.4
-  for the two sub-scenarios (Full Path vs. Quick Path).
+- **MITIGATION** (stabilize)
+  - Agent verifies whether the temp fix worked (asks for metrics/logs)
+  - If mitigation insufficient → agent adjusts approach, iterates within MITIGATION
+  - Once user verifies mitigation is effective → **return to DIAGNOSIS** for root cause analysis
+  - The system always directs toward RCA. The user can manually close via UI (→ CLOSED with `closure_reason="mitigation_sufficient"`), but the system does not offer a "mitigation-only resolution" flow path.
 
-- **If user chooses RCA (Full Path):**
-  - **Stage 2: Hypothesis Formulation**
-    - Generate theories about root cause
-    - Service is now stable, can take time for thorough analysis
-  - **Stage 3: Hypothesis Validation**
-    - Test hypotheses with diagnostic evidence
-    - Mark `root_cause_identified = True`
-  - **Stage 4: Solution**
-    - Apply permanent fix, verify effectiveness
-    - Agent proposes resolution via User-Agent Handshake
+- **DIAGNOSIS** (resumed)
+  - Agent resumes root cause analysis with reduced pressure (service stable)
+  - Forms hypotheses, tests against evidence, identifies root cause
+  - Proposes permanent solution action
+  - If user complies → **inferred transition to TREATMENT**
 
-- **If user chooses to close (Quick Path):**
-  - Agent proposes resolution via User-Agent Handshake
-  - Case transitions to RESOLVED with mitigation as the resolution
+- **TREATMENT**
+  - Agent verifies fix worked
+  - If fix failed → extended diagnosis within TREATMENT (failure analysis → new evidence → new hypothesis → revised fix)
+  - If fix worked → user confirms via User-Agent Handshake → **RESOLVED**
 
-**Full Path Milestones**: `symptom_verified` → `mitigation_applied` → `mitigation_verified` → `root_cause_identified` → `solution_applied` → `solution_verified`
+**Stage flow**: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT → RESOLVED
 
-**Quick Path Milestones**: `symptom_verified` → `mitigation_applied` → `mitigation_verified` → `solution_verified`
+**Stage-gate milestones**: `mitigation_accepted` → `mitigation_verified` → `solution_accepted` → `solution_verified`
 
-**Mitigation Follow-up Guidance (Advisory)**
-
-When a temporary workaround is applied, the agent SHOULD advise the user about
-follow-up even if they choose the quick path:
-
-> "The fraud check bypass stopped the immediate issue. If you close this case,
-> remember to re-enable the fraud check once the SSL cert is renewed. Would you
-> like help investigating why the cert wasn't monitored for expiration?"
-
-This is advisory — the system does not block resolution if the user declines RCA.
+**Progress indicators** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
 
 ---
 
 **Path (b): ROOT_CAUSE**
 
-Traditional RCA path - thorough investigation from start.
+Direct root cause analysis — no mitigation detour.
 
-- **Stage 1: Symptom Verification**
-  - Verify where and when (historical problem or low urgency)
-  - No immediate mitigation needed (no active impact)
-  - Next: Stage 2
+- **DIAGNOSIS**
+  - Verify symptoms, scope, timeline (no active impact or low urgency)
+  - Form hypotheses, test against evidence
+  - Identify root cause with sufficient confidence
+  - Propose permanent solution action
+  - If user complies → **inferred transition to TREATMENT**
 
-- **Stage 2: Hypothesis Formulation**
-  - Generate theories systematically
-  - Next: Stage 3
+- **TREATMENT**
+  - Agent verifies fix worked
+  - If fix failed → extended diagnosis within TREATMENT
+  - If fix worked → user confirms via User-Agent Handshake → **RESOLVED**
 
-- **Stage 3: Hypothesis Validation**
-  - Test hypotheses, identify root cause
-  - Mark `root_cause_identified = True`
-  - Next: Stage 4
+**Stage flow**: DIAGNOSIS → TREATMENT → RESOLVED
 
-- **Stage 4: Solution**
-  - Apply permanent solution based on root cause
-  - Verify effectiveness
-  - Case transitions to RESOLVED
+**Stage-gate milestones**: `solution_accepted` → `solution_verified`
 
-**Milestones**: `symptom_verified` → `root_cause_identified` → `solution_applied` → `solution_verified`
+**Progress indicators** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
 
 ---
 
@@ -1103,10 +1111,11 @@ Traditional RCA path - thorough investigation from start.
 
 | Aspect | MITIGATION_FIRST | ROOT_CAUSE |
 |--------|------------------|------------|
-| Stage flow | Linear: 1 → 2 → 3 → 4 | Linear: 1 → 2 → 3 → 4 |
-| Mitigation timing | During stages 1-2 (opportunistic) | Not applied (or only if urgent) |
-| Pressure | Reduced early (service stable) | Full pressure until resolution |
-| Use case | ONGOING + HIGH/CRITICAL | HISTORICAL + LOW/MEDIUM |
+| Stage flow | DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT | DIAGNOSIS → TREATMENT |
+| Mitigation | Agent proactively offers temp fix in DIAGNOSIS | Not offered unless user requests |
+| Stage transitions | Inference-based (user compliance) | Inference-based (user compliance) |
+| Pressure | Reduced early via MITIGATION detour | Full pressure until resolution |
+| Use case | ONGOING + HIGH/CRITICAL | HISTORICAL + LOW/MEDIUM/HIGH |
 
 ---
 
@@ -1151,18 +1160,24 @@ def validate_milestone_claims(
                 f"(expected >= {expectations['min_evidence']})"
             )
 
-# Minimum evidence expectations per milestone:
-MILESTONE_EVIDENCE_EXPECTATIONS = {
+# Minimum evidence expectations for PROGRESS INDICATORS (non-stage-driving):
+# These are validated when the LLM claims a progress indicator has been reached.
+PROGRESS_INDICATOR_EVIDENCE_EXPECTATIONS = {
     "symptom_verified":     {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
     "scope_assessed":       {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
     "timeline_established": {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
     "changes_identified":   {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE]},
     "root_cause_identified":{"min_evidence": 2, "categories": [CAUSAL_EVIDENCE]},
-    "solution_proposed":    {"min_evidence": 1, "categories": [CAUSAL_EVIDENCE]},
-    "solution_applied":     {"min_evidence": 0, "categories": []},  # User confirmation
-    "mitigation_applied":   {"min_evidence": 0, "categories": []},  # User confirmation
+    "solution_proposed":    {"min_evidence": 0, "categories": []},  # Set programmatically when
+                                                                     # ProposedAction with action_type=SOLUTION is created
 }
-# NOTE: solution_verified is not in this list — it requires the User-Agent Handshake.
+
+# STAGE-GATE MILESTONES are NOT evidence-validated — they are inferred from
+# user compliance with a ProposedAction (post-LLM detection):
+#   - mitigation_accepted: User complied with proposed temp fix
+#   - mitigation_verified: User confirmed mitigation worked
+#   - solution_accepted:   User complied with proposed solution
+#   - solution_verified:   User confirmed fix worked (User-Agent Handshake)
 ```
 
 **Evidence Classification**:
@@ -1170,13 +1185,14 @@ MILESTONE_EVIDENCE_EXPECTATIONS = {
 Evidence is created after LLM evaluation with a specific category assigned.
 See [Evidence Classification Design](../data-processing/evidence-classification-design.md) for complete details.
 
-| Category | Description |
-|----------|-------------|
-| `SYMPTOM_EVIDENCE` | Verifies symptoms, scope, timeline, changes |
-| `CAUSAL_EVIDENCE` | Tests hypotheses about root cause |
-| `RESOLUTION_EVIDENCE` | Verifies solution effectiveness |
-| `CONTEXTUAL_EVIDENCE` | Provides baseline/environmental context |
-| `REJECTED` | Analyzed but not useful for investigation |
+| Category | Description | Used In Stage |
+|----------|-------------|---------------|
+| `SYMPTOM_EVIDENCE` | Data showing the problem exists (verifies symptoms, scope, timeline, changes) | DIAGNOSIS, TREATMENT |
+| `CAUSAL_EVIDENCE` | Data explaining why the problem happened (requires hypothesis to exist) | DIAGNOSIS, TREATMENT |
+| `MITIGATION_EVIDENCE` | Data showing whether the temporary fix worked | MITIGATION |
+| `SOLUTION_EVIDENCE` | Data showing whether the permanent fix worked | TREATMENT |
+| `CONTEXTUAL_EVIDENCE` | Provides baseline/environmental context | DIAGNOSIS, TREATMENT |
+| `REJECTED` | Analyzed but not useful for investigation | Any |
 
 ```
 
@@ -1200,13 +1216,25 @@ async def record_turn(
     progress_after = case.progress.dict()
     evidence_count_after = len(case.evidence)
 
-    # Detect milestones completed
-    milestones_completed = [
+    # Detect state changes (both stage-gate milestones and progress indicators)
+    STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "solution_accepted", "solution_verified"}
+    PROGRESS_INDICATORS = {"symptom_verified", "scope_assessed", "timeline_established",
+                           "changes_identified", "root_cause_identified", "solution_proposed"}
+
+    all_changed = [
         key for key in progress_before
         if isinstance(progress_before[key], bool)
         and progress_before[key] == False
         and progress_after[key] == True
     ]
+
+    # Stage-gate milestone changes trigger stage recomputation
+    stage_gate_completed = [k for k in all_changed if k in STAGE_GATE_MILESTONES]
+
+    # Progress indicator changes are recorded but do NOT affect stage
+    indicators_completed = [k for k in all_changed if k in PROGRESS_INDICATORS]
+
+    milestones_completed = all_changed  # Both types are recorded in turn history
 
     # Detect evidence added
     evidence_added = []
@@ -1243,11 +1271,12 @@ async def record_turn(
     # ============================================================
     #
     # Progress IS made when ANY of the following occur:
-    # - Milestone transitions False → True
+    # - Stage-gate milestone transitions False → True (e.g., solution_accepted)
+    # - Progress indicator transitions False → True (e.g., symptom_verified)
     # - Evidence is added to the case
     # - New hypothesis is generated
     # - Hypothesis status changes (ACTIVE → VALIDATED/REFUTED)
-    # - Solution is proposed or verified
+    # - ProposedAction is created (agent proposed something actionable)
     # - User confirms problem statement or path selection
     #
     # Progress is NOT made when:
@@ -1478,8 +1507,8 @@ e8f3a92, that would validate this hypothesis."
 **ENFORCEMENT**:
 
 This requirement applies to ALL agent suggestions during INVESTIGATING state:
-- Mitigation proposals (MITIGATION_FIRST path)
-- Hypothesis generation (all paths)
+- Mitigation proposals (during DIAGNOSIS, primarily on MITIGATION_FIRST path but applicable whenever agent detects urgency)
+- Hypothesis generation (all paths, in DIAGNOSIS and extended diagnosis within TREATMENT)
 - Diagnostic command suggestions
 - Solution proposals
 - Evidence requests (explain WHY specific evidence is needed)
@@ -1523,7 +1552,7 @@ This section outlines all possible case lifecycles and their associated mileston
 
 ### 4.3 Standard Investigation (Root Cause Path)
 **User Goal**: Diagnosing a new or complex issue to find the root cause and fix it permanently.
-**Flow**: `INQUIRY` → `INVESTIGATING` → `RESOLVED`
+**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → TREATMENT) → `RESOLVED`
 
 #### Workflow Steps & Milestones
 
@@ -1531,26 +1560,32 @@ This section outlines all possible case lifecycles and their associated mileston
 *   **Goal**: Establish problem statement.
 *   **Transition Trigger**: User confirms problem statement and decides to investigate.
 
-**Phase 2: Investigation (Iterative)**
-The agent pursues milestones opportunistically.
+**Phase 2: Investigation**
 
-*   **Stage A: Understanding (Symptom Verification)**
-    *   `symptom_verified`: Confirmed via evidence (logs, metrics).
-    *   `scope_assessed`: Impact radius determined (e.g., "All regions", "Prod only").
-    *   `timeline_established`: Start time and duration identified.
-    *   `changes_identified`: Recent deployments or config changes mapped.
+*   **DIAGNOSIS Stage** (natural flow, not sequential sub-stages)
+    *   Agent verifies symptoms, scope, timeline using evidence
+    *   Progress indicators set by LLM: `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`
+    *   Agent forms hypotheses, tests against evidence
+    *   Progress indicator: `root_cause_identified` (when hypothesis validated with high confidence)
+    *   Agent proposes concrete solution action
+    *   Progress indicator: `solution_proposed` (when ProposedAction with action_type=SOLUTION created)
+    *   **Constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`
 
-*   **Stage B: Diagnosing (Hypothesis & Root Cause)**
-    *   `root_cause_identified`: Validated hypothesis explaining the issue.
-        *   *Method*: `hypothesis_validation` or `direct_analysis`.
+*   **DIAGNOSIS → TREATMENT transition** (inference-based)
+    *   User complies with proposed solution (executes and submits results)
+    *   System infers acceptance → stage-gate milestone: `solution_accepted`
+    *   If user questions or refuses → stays in DIAGNOSIS, agent refines approach
 
-*   **Stage C: Resolving (Solution)**
-    *   `solution_proposed`: Agent suggests a fix (e.g., "Scale up replicas").
-    *   `solution_applied`: User confirms action taken.
-    *   `solution_verified`: Evidence confirms system recovery.
+*   **TREATMENT Stage** (iterative resolution)
+    *   Agent verifies whether fix worked from submitted evidence
+    *   If fix worked → agent proposes resolution via User-Agent Handshake
+    *   If fix failed → extended diagnosis within TREATMENT:
+        *   Failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix
+        *   New evidence required (the original evidence produced a failed solution)
+        *   Escalation via degraded mode when no viable options remain
 
 **Phase 3: Resolution**
-*   **Transition Trigger**: `solution_verified` is True.
+*   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → stage-gate milestone: `solution_verified`
 *   **State**: `RESOLVED`.
 
 ---
@@ -1559,65 +1594,77 @@ The agent pursues milestones opportunistically.
 **User Goal**: Restore service availability immediately.
 **Trigger**: High Severity + Ongoing Outage (auto-selected or user-chosen path).
 
-After mitigation is applied and verified, the user decides whether to continue
-with root cause analysis or close the case. The system does not distinguish
-between these sub-scenarios — the milestone state captures what happened.
+After mitigation is verified, the system always directs toward root cause analysis.
+The user can manually close the case via UI at any point, but the system does not
+offer a "mitigation-only resolution" flow path.
 
-#### Sub-Scenario A: Full Path (Mitigation + RCA)
-**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation → RCA) → `RESOLVED`
+#### Full Path (Mitigation + RCA → RESOLVED)
+**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) → `RESOLVED`
 
-The user wants a permanent fix after the immediate fire is out.
-
-**Milestones**:
-*   `symptom_verified`: Problem confirmed.
-*   `mitigation_applied`: Temporary fix applied (e.g., rollback, restart).
-*   `mitigation_verified`: Service restored (root cause still unknown).
-*   `root_cause_identified`: Why did it fail?
-*   `solution_proposed`: Permanent fix proposed.
-*   `solution_applied`: Permanent fix deployed.
+**Stage-gate milestones**:
+*   `mitigation_accepted`: User complied with proposed temp fix (inferred from submission).
+*   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
+*   `solution_accepted`: User complied with proposed permanent solution (inferred from submission).
 *   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
 
-#### Sub-Scenario B: Quick Path (Mitigation Only)
-**Flow**: `INQUIRY` → `INVESTIGATING` (Mitigation) → `RESOLVED`
+**Progress indicators** (non-driving):
+*   `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`: Set during DIAGNOSIS.
+*   `root_cause_identified`: Set when hypothesis validated with high confidence.
+*   `solution_proposed`: Set when ProposedAction with action_type=SOLUTION created.
 
-The user is satisfied with the mitigation and does not need RCA. This is a
-valid outcome — not every incident requires a root cause investigation.
+#### Mitigation-Only Closure (User Override → CLOSED)
+**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS) → `CLOSED`
 
-**Milestones**:
-*   `symptom_verified`: Problem confirmed.
-*   `mitigation_applied`: Temporary fix applied.
-*   `mitigation_verified`: Service restored.
-*   `solution_verified`: User confirms resolution (via User-Agent Handshake).
-*   `root_cause_identified`: **Not set** (no RCA performed).
+The user decides the mitigation is sufficient and does not want RCA. This is a
+**user-initiated closure**, not a system-offered path. The system always returns
+to DIAGNOSIS after mitigation; the user closes via UI.
+
+**Stage-gate milestones**:
+*   `mitigation_accepted`: User complied with proposed temp fix.
+*   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
+*   `solution_accepted`: **Not set** (user closed before proposing permanent solution).
+*   `solution_verified`: **Not set** (no permanent fix).
+
+**Closure**: `CaseStatus.CLOSED` with `closure_reason="mitigation_sufficient"`.
+UI renders as "Closed - Mitigated" (distinct from "Closed - Abandoned").
 
 #### Agent Behavior After Mitigation
 
-After `mitigation_verified = True`, the agent MUST offer the user a choice:
+After `mitigation_verified` is set, the system returns to DIAGNOSIS for root cause
+analysis. The agent resumes investigation:
 
-> "The mitigation is working — [specific metric showing improvement]. Would you
-> like me to help investigate the root cause to prevent recurrence, or is this
-> sufficient to close the case?"
+> "The mitigation is working — [specific metric showing improvement]. Now let's
+> investigate the root cause to prevent recurrence. What additional data can you
+> share about what changed before this started?"
 
-The agent should factor in `mitigation_effectiveness`:
-- **1.0 (fully resolved)**: Both options equally valid. Offer choice neutrally.
-- **0.5-0.9 (partially resolved)**: Recommend RCA, noting residual risk.
-- **< 0.5 (mostly ineffective)**: Strongly recommend continuing investigation.
+The system pushes toward RCA. The user can always close via UI if they decide
+the mitigation is sufficient, but the agent does not offer closure as an option.
 
-#### How the System Distinguishes the Two Paths (Retrospectively)
+#### MITIGATION Is Iterative
 
-No additional code, data elements, or routing logic is needed. The milestone
-state IS the distinction:
+Mitigation is not assumed to be one-shot. Within the MITIGATION stage, the agent
+may adjust its approach and propose multiple temp fix attempts until the user
+verifies stabilization. When returning to DIAGNOSIS, the `mitigation_accepted`
+and `mitigation_verified` flags reset, allowing a new MITIGATION detour if a new
+urgent situation arises. The completed mitigation attempt is preserved in the
+`action_attempts` list for history and audit trail.
 
-| Field | Full Path | Quick Path |
-|-------|-----------|------------|
-| `mitigation_applied` | True | True |
+#### How the System Distinguishes Outcomes (Retrospectively)
+
+The milestone and status state IS the distinction:
+
+| Field | Full Path (RESOLVED) | Mitigation-Only (CLOSED) |
+|-------|---------------------|--------------------------|
+| `mitigation_accepted` | True | True |
 | `mitigation_verified` | True | True |
+| `solution_accepted` | True | False |
+| `solution_verified` | True | False |
 | `root_cause_identified` | True | False |
-| `solution_applied` | True | False |
-| `solution_verified` | True | True |
+| `CaseStatus` | RESOLVED | CLOSED |
+| `closure_reason` | "resolved" | "mitigation_sufficient" |
 
-Analytics and reporting can query these milestone combinations to classify
-resolved cases by path type after the fact.
+Analytics and reporting can query these combinations to classify cases by
+outcome type after the fact.
 
 ---
 
@@ -1626,13 +1673,16 @@ resolved cases by path type after the fact.
 **Flow**: `INQUIRY` → `INVESTIGATING` → `CLOSED`
 
 #### Workflow Steps
-1.  **Investigation Starts**: Milestones partially completed.
+1.  **Investigation Starts**: Stage-gate milestones and progress indicators partially set.
 2.  **Stall/Escalation**:
-    *   Agent cannot find root cause.
+    *   Agent cannot find root cause (enters degraded mode — no viable options).
     *   User stops responding.
     *   User explicitly requests escalation.
-3.  **Closure**: Case marked `CLOSED` with reason (e.g., `escalated`, `abandoned`).
+    *   User closes after mitigation without pursuing RCA (`closure_reason="mitigation_sufficient"`, UI renders as "Closed - Mitigated").
+3.  **Closure**: Case marked `CLOSED` with reason (e.g., `escalated`, `abandoned`, `mitigation_sufficient`).
 
 #### Milestones
-*   Partial completion of verification/diagnosis milestones.
+*   Partial completion of progress indicators (symptom_verified, scope_assessed, etc.).
+*   Stage-gate milestones may be partially set (e.g., mitigation_accepted/verified if mitigation was performed).
 *   `working_conclusion`: Summary of findings up to the point of closure.
+*   `action_attempts`: Complete record of all mitigation and solution actions attempted.

@@ -110,7 +110,7 @@ When submission_classification.type is "submitted_data" or "mixed":
 - Do NOT skip this step - evidence records are required for milestone completion
 - Specify all required fields:
   * summary: Brief description of the data (e.g., "Error logs showing 500 errors")
-  * category: Evidence category (symptom_evidence, causal_evidence, contextual_evidence, resolution_evidence, or rejected)
+  * category: Evidence category (symptom_evidence, causal_evidence, mitigation_evidence, solution_evidence, contextual_evidence, or rejected)
   * source_type: Where data came from (logs, metrics, configuration, code, text, image)
   * content_ref: Reference to the data (use user's message text for text-based submissions)
 
@@ -233,12 +233,18 @@ When submitted_data or mixed, classify evidence by what the data contains:
   - Root cause diagnostic data
   ⚠️ USE FOR LATER MILESTONES: changes_identified, root_cause_identified
 
-**resolution_evidence** - Data that PROVES THE FIX WORKED:
+**mitigation_evidence** - Data showing whether a TEMPORARY FIX worked:
+  - Post-mitigation metrics showing improvement
+  - Error rates dropping after temporary fix
+  - User confirmation that bleeding stopped
+  ⚠️ USED DURING MITIGATION STAGE ONLY
+
+**solution_evidence** - Data that PROVES THE PERMANENT FIX WORKED:
   - Clean logs after fix applied
-  - Normal metrics after mitigation
+  - Normal metrics after fix
   - User confirmation of resolution
   - Post-fix verification data
-  ⚠️ USE FOR SOLUTION MILESTONES: solution_applied, solution_verified
+  ⚠️ USED DURING TREATMENT STAGE
 
 **contextual_evidence** - Baseline/environmental data (doesn't show problem or cause):
   - System architecture diagrams
@@ -265,7 +271,7 @@ When submission_classification.type is "submitted_data" or "mixed":
 - Do NOT skip this step - evidence records are required for milestone completion
 - Specify all required fields:
   * summary: Brief description of the data (e.g., "Error logs showing 500 errors")
-  * category: Evidence category (symptom_evidence, causal_evidence, contextual_evidence, resolution_evidence, or rejected)
+  * category: Evidence category (symptom_evidence, causal_evidence, mitigation_evidence, solution_evidence, contextual_evidence, or rejected)
   * source_type: Where data came from (logs, metrics, configuration, code, text, image)
   * content_ref: Reference to the data (use user's message text for text-based submissions)
 
@@ -579,7 +585,7 @@ SUBMISSION CLASSIFICATION AND EVIDENCE CREATION (Required Connection):
 
 - **evidence_to_add**: Create evidence records for submitted_data or mixed submissions
   * Required fields: summary, category, source_type, content_ref
-  * Category options: symptom_evidence, causal_evidence, contextual_evidence, resolution_evidence, rejected
+  * Category options: symptom_evidence, causal_evidence, mitigation_evidence, solution_evidence, contextual_evidence, rejected
   * Source type options: logs, metrics, configuration, code, text, image
   * Content_ref: Either "file:filename" for attachments or excerpted text from user message
 
@@ -1282,10 +1288,17 @@ def get_prompt_for_case(
         return INQUIRY_TEMPLATE.format(**ctx)
 
     elif case.status == CaseStatus.INVESTIGATING:
-        stage = case.current_stage or InvestigationStage.SYMPTOM_VERIFICATION
-        adaptive_instr = STAGE_INSTRUCTIONS.get(
-            stage, STAGE_INSTRUCTIONS[InvestigationStage.SYMPTOM_VERIFICATION]
-        )
+        stage = case.current_stage or InvestigationStage.DIAGNOSIS
+
+        # Dispatch to 3-stage instructions
+        if stage == InvestigationStage.DIAGNOSIS:
+            adaptive_instr = DIAGNOSIS_INSTRUCTIONS
+        elif stage == InvestigationStage.MITIGATION:
+            adaptive_instr = MITIGATION_INSTRUCTIONS
+        elif stage == InvestigationStage.TREATMENT:
+            adaptive_instr = TREATMENT_INSTRUCTIONS
+        else:
+            adaptive_instr = DIAGNOSIS_INSTRUCTIONS
 
         # Add a note if it's MITIGATION_FIRST
         if case.path_selection and case.path_selection.path == "mitigation_first":
@@ -1300,7 +1313,7 @@ def get_prompt_for_case(
             adaptive_instr = degraded_mode_instr + "\n\n" + adaptive_instr
 
         # Add stage to context for schema reference
-        ctx["stage"] = stage.value if stage else "symptom_verification"
+        ctx["stage"] = stage.value if stage else "diagnosis"
         ctx["output_format"] = ctx.get("output_format", "")
 
         return INVESTIGATION_BASE.format(adaptive_instructions=adaptive_instr, **ctx)
