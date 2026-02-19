@@ -82,6 +82,7 @@ from faultmaven.modules.case.contracts import (
     KnowledgeResolution,
     ProblemVerification,
     Solution,
+    TemporalState,
     TurnOutcome,
     TurnProgress,
     UrgencyLevel,
@@ -1964,6 +1965,10 @@ class MilestoneEngine:
                 level=UrgencyLevel(
                     updates.preliminary_urgency.level.lower()
                 ),  # Convert uppercase to lowercase enum
+                is_ongoing=getattr(updates.preliminary_urgency, "is_ongoing", False),
+                is_incident_report=getattr(
+                    updates.preliminary_urgency, "is_incident_report", False
+                ),
                 impact_assessment=updates.preliminary_urgency.impact_assessment,
                 assessed_at_turn=case.current_turn,  # Use current turn number
             )
@@ -1981,51 +1986,68 @@ class MilestoneEngine:
             # If no preliminary_guidance but proposed_problem_statement exists in updates,
             # it was already set above at line 685-686
 
-        # STAGE 2: Conditional auto-confirm for urgent ongoing issues
-        # Only auto-confirm if ALL conditions are met:
-        # - Urgency is CRITICAL or HIGH
-        # - Problem is ongoing (not historical)
-        # - We have a proposed problem statement (non-empty)
-        # - Not already confirmed
+        # STAGE 2: Two-Step Confirmation (Design Doc Section 1.2)
+        #
+        # The design requires explicit user confirmation before INQUIRY → INVESTIGATING.
+        # Auto-confirm is NOT used — even for CRITICAL/HIGH urgency issues.
+        #
+        # Flow:
+        #   Turn N: User reports incident → Agent presents problem statement + asks "Is this accurate?"
+        #   Turn N+1: User confirms ("Yes") → LLM sets user_confirmed_investigation=True → transition fires
+        #
+        # This block handles two scenarios:
+        # (a) LLM signals user confirmation via user_confirmed_investigation=True
+        # (b) Logging for informational/urgent cases (no auto-transition)
+        _is_incident = updates.preliminary_urgency and getattr(
+            updates.preliminary_urgency, "is_incident_report", False
+        )
+
+        # Check if LLM detected user confirmation of the problem statement
         if (
-            updates.preliminary_urgency
-            and updates.preliminary_urgency.level in ["CRITICAL", "HIGH"]
-            and updates.preliminary_urgency.is_ongoing
+            getattr(updates, "user_confirmed_investigation", False)
             and case.inquiry.proposed_problem_statement
-            and case.inquiry.proposed_problem_statement.strip()  # Ensure non-empty
+            and case.inquiry.proposed_problem_statement.strip()
             and not case.inquiry.problem_statement_confirmed
         ):
-            # Auto-confirm for urgent ongoing production issues
             case.inquiry.problem_statement_confirmed = True
             case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
             case.inquiry.decided_to_investigate = True
             case.inquiry.decision_made_at = datetime.now(UTC)
             logger.info(
-                f"Auto-confirmed urgent issue: {updates.preliminary_urgency.level} + ongoing, "
-                f"problem_type={updates.problem_confirmation.problem_type if updates.problem_confirmation else 'unknown'}"
+                f"User confirmed problem statement — transitioning to INVESTIGATING. "
+                f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"
             )
         elif (
             updates.preliminary_urgency
             and updates.preliminary_urgency.level in ["CRITICAL", "HIGH"]
             and updates.preliminary_urgency.is_ongoing
-            and not case.inquiry.proposed_problem_statement
+            and not _is_incident
         ):
-            # Log info if we can't auto-confirm due to missing problem statement
-            # This is EXPECTED behavior when user query is urgent but vague - LLM will
-            # ask clarifying questions first, then auto-confirm on subsequent turn once
-            # it has enough information to formulate a clear problem statement
+            # LLM flagged HIGH urgency but did NOT mark as incident report.
+            # This typically means the user asked an informational/how-to question
+            # about a topic that involves failures (e.g., "How do I check logs of a
+            # restarting pod?"). Stay in INQUIRY.
             logger.info(
-                f"Urgent issue detected but cannot auto-confirm yet: proposed_problem_statement is missing. "
-                f"Will auto-confirm on next turn once LLM extracts clear problem statement from user responses."
+                f"Urgent signals detected but is_incident_report=False — "
+                f"treating as informational query, staying in INQUIRY. "
+                f"level={updates.preliminary_urgency.level}, "
+                f"problem_type={updates.problem_confirmation.problem_type if updates.problem_confirmation else 'unknown'}"
             )
-
-        # Handle explicit user confirmation/corrections logic (Bug #1)
-        # If the LLM has refined the statement based on user corrections, it will come through updates.proposed_problem_statement
-        # If the user explicitly confirmed (e.g. "Yes"), the LLM should have updated problem_confirmation or proposed_problem_statement
-
-        # If we have a problem statement but it's not confirmed yet, the Agent should ask.
-        # This is handled by the Prompt (asking for confirmation).
-        # We ensure metadata reflects the state.
+        elif (
+            _is_incident
+            and updates.preliminary_urgency
+            and updates.preliminary_urgency.level in ["CRITICAL", "HIGH"]
+            and updates.preliminary_urgency.is_ongoing
+            and not case.inquiry.problem_statement_confirmed
+        ):
+            # Urgent incident detected — agent should present problem statement
+            # and ask for confirmation in its response. Transition will happen on
+            # the NEXT turn when user confirms.
+            logger.info(
+                f"Urgent incident detected ({updates.preliminary_urgency.level} + ongoing). "
+                f"Agent will present problem statement for user confirmation. "
+                f"has_statement={bool(case.inquiry.proposed_problem_statement)}"
+            )
 
         # Store KB match on case when LLM identifies one (Gap #5a)
         # This populates InquiryData.knowledge_matches so we can validate
@@ -2377,9 +2399,9 @@ class MilestoneEngine:
                 )
 
         # 2b. Validate Milestone Claims Against Cited Evidence
-        # The LLM structured output is the sole authority for milestone advancement.
-        # The evidence processor validates that claims are supported by cited evidence
-        # but does NOT independently advance milestones.
+        # Milestones are applied optimistically from LLM output (step 1 above),
+        # then validated here. Invalid claims are REVERTED to prevent milestones
+        # advancing without supporting evidence.
         if metadata["milestones_completed"]:
             from faultmaven.core.investigation.evidence_processor import (
                 validate_milestone_claims,
@@ -2391,9 +2413,12 @@ class MilestoneEngine:
             )
             for result in validation_results:
                 if not result.is_valid:
+                    # Revert the milestone — evidence doesn't support the claim
+                    setattr(case.progress, result.milestone, False)
+                    metadata["milestones_completed"].remove(result.milestone)
                     logger.warning(
-                        f"Milestone '{result.milestone}' claimed with insufficient evidence: "
-                        f"{result.cited_count}/{result.expected_min} required. "
+                        f"Milestone '{result.milestone}' REVERTED: claimed with insufficient evidence "
+                        f"({result.cited_count}/{result.expected_min} required). "
                         f"Warnings: {result.warnings}"
                     )
                     metadata.setdefault("milestone_validation_warnings", []).extend(
@@ -2569,6 +2594,13 @@ class MilestoneEngine:
                     verification_kwargs["severity"] = (
                         pu.level.value.upper()
                     )  # Convert urgency level to uppercase for severity field
+            # Bug fix: Transfer temporal_state from preliminary urgency
+            # Without this, path selection receives Temporal:None and falls
+            # back to USER_CHOICE even when the urgency signals are clear.
+            if pu.is_ongoing:
+                verification_kwargs["temporal_state"] = TemporalState.ONGOING
+            else:
+                verification_kwargs["temporal_state"] = TemporalState.HISTORICAL
 
         case.problem_verification = ProblemVerification(**verification_kwargs)
 

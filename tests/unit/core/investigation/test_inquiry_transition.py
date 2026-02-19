@@ -1,16 +1,20 @@
-"""Tests for INQUIRY → INVESTIGATING transition logic (Option 4: Two-Stage Smart Heuristic)
+"""Tests for INQUIRY → INVESTIGATING transition logic (Two-Step Confirmation)
 
-This test suite validates the revised transition logic that prevents premature transitions
-while enabling auto-transitions for urgent production issues.
+This test suite validates the two-step confirmation flow where ALL transitions from
+INQUIRY → INVESTIGATING require explicit user confirmation (Design Doc Section 1.2).
 
 Test Coverage:
-1. Critical outage → Auto-transition (CRITICAL + ongoing)
+1. Critical outage → Stays INQUIRY on Turn 1 (waits for user confirmation)
 2. Vague query → No transition (no problem detected)
 3. Informational query → No transition (no problem)
 4. Post-mortem → No transition (not ongoing)
 5. Medium urgency → No transition (not CRITICAL/HIGH)
-6. Multi-turn escalation → Transition on Turn 2 when urgency emerges
+6. Multi-turn escalation → Stays INQUIRY until user confirms
 7. Original bug scenario → No transition (development context)
+8. HIGH + ongoing → Stays INQUIRY (waits for confirmation)
+9. Proposed problem statement fallback → Stays INQUIRY (waits for confirmation)
+10. User confirms → Transition to INVESTIGATING
+11. Multi-turn confirmation flow → Turn 1 present, Turn 2 confirm, transition fires
 """
 
 import json
@@ -92,16 +96,21 @@ class TestInquiryTransitionLogic:
     """Test suite for INQUIRY → INVESTIGATING transition logic"""
 
     @pytest.mark.asyncio
-    async def test_critical_outage_auto_transition(
+    async def test_critical_outage_stays_inquiry_until_confirmed(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Scenario 1: Critical outage → Auto-transition (CRITICAL + ongoing)"""
+        """Scenario 1: Critical outage → Stays INQUIRY (waits for user confirmation)
+
+        Even for CRITICAL + ongoing issues, the design requires two-step confirmation:
+        Turn N: Agent presents problem statement + asks for confirmation
+        Turn N+1: User confirms → transition fires
+        """
         engine = MilestoneEngine(mock_llm, mock_repo)
 
         # Mock LLM response for critical production outage
         mock_response = json.dumps(
             {
-                "agent_response": "I understand - production API is completely down. Let me start investigating immediately.",
+                "agent_response": "I understand - production API is completely down. Let me confirm: all requests returning 500 errors. Is this accurate?",
                 "state_updates": {
                     "problem_confirmation": {
                         "problem_type": "unavailability",
@@ -111,6 +120,7 @@ class TestInquiryTransitionLogic:
                     "preliminary_urgency": {
                         "level": "CRITICAL",
                         "is_ongoing": True,
+                        "is_incident_report": True,
                         "impact_assessment": "All users blocked from accessing production",
                         "mitigation_hint": "Consider rollback or service restart",
                     },
@@ -124,16 +134,16 @@ class TestInquiryTransitionLogic:
             "Production API is completely down. All requests returning 500 errors. Users can't log in.",
         )
 
-        # Verify auto-transition to INVESTIGATING
+        # Verify stays in INQUIRY — agent should ask for confirmation in response
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INVESTIGATING
-        assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.inquiry.decided_to_investigate is True
+        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.inquiry.problem_statement_confirmed is False
+        assert updated_case.inquiry.decided_to_investigate is False
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "Production API unavailable - all requests failing with 500 errors"
         )
-        assert result["metadata"]["status_transitioned"] is True
+        assert result["metadata"].get("status_transitioned", False) is False
 
     @pytest.mark.asyncio
     async def test_vague_query_no_transition(self, mock_llm, mock_repo, inquiry_case):
@@ -273,10 +283,10 @@ class TestInquiryTransitionLogic:
         assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
-    async def test_multiturn_urgency_escalation(
+    async def test_multiturn_urgency_escalation_stays_inquiry(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Scenario 6: Multi-turn escalation → Transition on Turn 2 when urgency emerges"""
+        """Scenario 6: Multi-turn escalation → Stays INQUIRY until user explicitly confirms"""
         engine = MilestoneEngine(mock_llm, mock_repo)
 
         # Turn 1: Vague initial query
@@ -307,9 +317,10 @@ class TestInquiryTransitionLogic:
         assert case_after_turn1.inquiry.problem_statement_confirmed is False
 
         # Turn 2: User clarifies it's a critical production issue
+        # Agent should present updated problem statement and ask for confirmation
         mock_response_turn2 = json.dumps(
             {
-                "agent_response": "Understood - this is critical. All users getting 403 errors. Let me investigate immediately.",
+                "agent_response": "This sounds critical. Let me confirm: all users are receiving 403 errors in production. Is this accurate? Should we investigate?",
                 "state_updates": {
                     "problem_confirmation": {
                         "problem_type": "error",
@@ -319,6 +330,7 @@ class TestInquiryTransitionLogic:
                     "preliminary_urgency": {
                         "level": "CRITICAL",
                         "is_ongoing": True,
+                        "is_incident_report": True,
                         "impact_assessment": "All users blocked from accessing production API",
                     },
                 },
@@ -331,16 +343,11 @@ class TestInquiryTransitionLogic:
             "Actually, all users are getting 403 errors right now. This is production!",
         )
 
-        # Verify Turn 2: auto-transitions to INVESTIGATING
+        # Verify Turn 2: STILL in INQUIRY — user hasn't confirmed yet
         case_after_turn2 = result2["case_updated"]
-        assert case_after_turn2.status == CaseStatus.INVESTIGATING
-        assert case_after_turn2.inquiry.problem_statement_confirmed is True
-        assert case_after_turn2.inquiry.decided_to_investigate is True
-        # Keeps the problem statement from Turn 1 (Stage 1 only runs if no proposed_problem_statement)
-        assert (
-            case_after_turn2.inquiry.proposed_problem_statement
-            == "API behavior anomaly - details unclear"
-        )
+        assert case_after_turn2.status == CaseStatus.INQUIRY
+        assert case_after_turn2.inquiry.problem_statement_confirmed is False
+        assert case_after_turn2.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_original_bug_scenario_no_premature_transition(
@@ -387,16 +394,16 @@ class TestInquiryTransitionLogic:
         assert result["metadata"].get("status_transitioned", False) is False
 
     @pytest.mark.asyncio
-    async def test_high_urgency_ongoing_auto_transition(
+    async def test_high_urgency_ongoing_stays_inquiry(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Test HIGH urgency + ongoing also triggers auto-transition"""
+        """Test HIGH urgency + ongoing stays in INQUIRY (waits for user confirmation)"""
         engine = MilestoneEngine(mock_llm, mock_repo)
 
         # Mock LLM response for HIGH urgency ongoing issue
         mock_response = json.dumps(
             {
-                "agent_response": "I understand - payment processing is failing. Let me investigate this urgently.",
+                "agent_response": "I understand - payment processing is failing. Let me confirm: customers can't complete purchases due to payment failures. Is this accurate?",
                 "state_updates": {
                     "problem_confirmation": {
                         "problem_type": "error",
@@ -406,6 +413,7 @@ class TestInquiryTransitionLogic:
                     "preliminary_urgency": {
                         "level": "HIGH",
                         "is_ongoing": True,
+                        "is_incident_report": True,
                         "impact_assessment": "Customer payments failing, revenue impact",
                     },
                 },
@@ -418,23 +426,23 @@ class TestInquiryTransitionLogic:
             "Our payment processing is failing. Customers can't complete purchases.",
         )
 
-        # Verify auto-transition (HIGH + ongoing should work)
+        # Verify stays in INQUIRY (user hasn't confirmed yet)
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INVESTIGATING
-        assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.inquiry.decided_to_investigate is True
+        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.inquiry.problem_statement_confirmed is False
+        assert updated_case.inquiry.decided_to_investigate is False
 
     @pytest.mark.asyncio
     async def test_fallback_to_proposed_problem_statement(
         self, mock_llm, mock_repo, inquiry_case
     ):
-        """Test Stage 1 fallback when preliminary_guidance is None"""
+        """Test Stage 1 fallback when preliminary_guidance is None — stays INQUIRY"""
         engine = MilestoneEngine(mock_llm, mock_repo)
 
         # Mock LLM response with proposed_problem_statement but no preliminary_guidance
         mock_response = json.dumps(
             {
-                "agent_response": "Let me help investigate this latency issue.",
+                "agent_response": "Let me confirm: API latency has spiked to 8 seconds affecting dashboards. Is this accurate?",
                 "state_updates": {
                     "problem_confirmation": {
                         "problem_type": "slowness",
@@ -445,6 +453,7 @@ class TestInquiryTransitionLogic:
                     "preliminary_urgency": {
                         "level": "HIGH",
                         "is_ongoing": True,
+                        "is_incident_report": True,
                         "impact_assessment": "Users experiencing slow dashboard loads",
                     },
                 },
@@ -457,12 +466,143 @@ class TestInquiryTransitionLogic:
             "API latency spiked from 200ms to 8 seconds. Customers complaining.",
         )
 
-        # Verify uses proposed_problem_statement (fallback works)
+        # Verify uses proposed_problem_statement (fallback works) but stays in INQUIRY
         updated_case = result["case_updated"]
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.status == CaseStatus.INQUIRY
         assert (
             updated_case.inquiry.proposed_problem_statement
             == "API latency spike to 8 seconds affecting dashboards"
         )
-        assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.inquiry.decided_to_investigate is True
+        assert updated_case.inquiry.problem_statement_confirmed is False
+        assert updated_case.inquiry.decided_to_investigate is False
+
+    @pytest.mark.asyncio
+    async def test_user_confirmation_triggers_transition(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Test 10: User confirms problem statement → transition to INVESTIGATING
+
+        This validates the two-step confirmation flow:
+        Turn 1: Agent presents problem statement (stays INQUIRY)
+        Turn 2: User confirms → LLM sets user_confirmed_investigation=True → transition fires
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Turn 1: Agent detects incident and presents problem statement
+        mock_response_turn1 = json.dumps(
+            {
+                "agent_response": "Let me confirm: production database is returning connection timeout errors. Is this accurate?",
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "unavailability",
+                        "severity_guess": "critical",
+                        "preliminary_guidance": "Database connection timeouts causing service failures",
+                    },
+                    "preliminary_urgency": {
+                        "level": "CRITICAL",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "All services failing due to database connection timeouts",
+                    },
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn1
+
+        result1 = await engine.process_turn(
+            inquiry_case,
+            "Production database is timing out. All services are failing.",
+        )
+
+        # Turn 1: stays in INQUIRY
+        case_after_turn1 = result1["case_updated"]
+        assert case_after_turn1.status == CaseStatus.INQUIRY
+        assert case_after_turn1.inquiry.problem_statement_confirmed is False
+
+        # Turn 2: User confirms → LLM signals confirmation
+        mock_response_turn2 = json.dumps(
+            {
+                "agent_response": "Confirmed. Starting investigation into database connection timeouts.",
+                "state_updates": {
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn2
+
+        result2 = await engine.process_turn(
+            case_after_turn1,
+            "Yes, that's correct. Please investigate.",
+        )
+
+        # Turn 2: transitions to INVESTIGATING
+        case_after_turn2 = result2["case_updated"]
+        assert case_after_turn2.status == CaseStatus.INVESTIGATING
+        assert case_after_turn2.inquiry.problem_statement_confirmed is True
+        assert case_after_turn2.inquiry.decided_to_investigate is True
+        assert result2["metadata"]["status_transitioned"] is True
+
+    @pytest.mark.asyncio
+    async def test_user_declines_investigation_stays_inquiry(
+        self, mock_llm, mock_repo, inquiry_case
+    ):
+        """Test: User declines investigation → stays in INQUIRY
+
+        When user says "No" or provides corrections, user_confirmed_investigation
+        stays False and case remains in INQUIRY.
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Turn 1: Agent detects incident and presents problem statement
+        mock_response_turn1 = json.dumps(
+            {
+                "agent_response": "Let me confirm: API is returning 503 errors. Is this accurate?",
+                "state_updates": {
+                    "problem_confirmation": {
+                        "problem_type": "error",
+                        "severity_guess": "high",
+                        "preliminary_guidance": "API 503 errors affecting users",
+                    },
+                    "preliminary_urgency": {
+                        "level": "HIGH",
+                        "is_ongoing": True,
+                        "is_incident_report": True,
+                        "impact_assessment": "Users getting 503 errors",
+                    },
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn1
+
+        result1 = await engine.process_turn(
+            inquiry_case, "Our API is returning 503 errors."
+        )
+        case_after_turn1 = result1["case_updated"]
+        assert case_after_turn1.status == CaseStatus.INQUIRY
+
+        # Turn 2: User corrects the problem statement
+        mock_response_turn2 = json.dumps(
+            {
+                "agent_response": "I see, it's actually 504 timeout errors, not 503. Let me update: API is returning 504 timeout errors. Is this accurate?",
+                "state_updates": {
+                    "user_confirmed_investigation": False,
+                    "proposed_problem_statement": "API returning 504 timeout errors affecting users",
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_turn2
+
+        result2 = await engine.process_turn(
+            case_after_turn1,
+            "No, it's actually 504 timeout errors, not 503.",
+        )
+
+        # Turn 2: stays in INQUIRY (user corrected, didn't confirm)
+        case_after_turn2 = result2["case_updated"]
+        assert case_after_turn2.status == CaseStatus.INQUIRY
+        assert case_after_turn2.inquiry.problem_statement_confirmed is False
+        assert case_after_turn2.inquiry.decided_to_investigate is False
+        assert (
+            case_after_turn2.inquiry.proposed_problem_statement
+            == "API returning 504 timeout errors affecting users"
+        )

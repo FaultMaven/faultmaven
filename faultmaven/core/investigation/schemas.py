@@ -153,6 +153,14 @@ class PreliminaryUrgency(BaseModel):
 
     level: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
     is_ongoing: bool
+    is_incident_report: bool = Field(
+        default=False,
+        description=(
+            "True ONLY when the user is actively reporting a current problem "
+            "affecting their systems. False for informational/how-to questions, "
+            "even if the topic involves failures or outages."
+        ),
+    )
     impact_assessment: str
     mitigation_hint: Optional[str] = None
 
@@ -521,6 +529,16 @@ class InquiryResponse(BaseInteractionResponse):
         preliminary_urgency: Optional[PreliminaryUrgency] = None
         knowledge_match: Optional[KnowledgeMatch] = None
         knowledge_resolution: Optional[KnowledgeResolution] = None
+        user_confirmed_investigation: bool = Field(
+            default=False,
+            description=(
+                "Set to True ONLY when the user explicitly confirms the problem "
+                "statement and agrees to investigate. Examples: 'Yes', 'Correct, "
+                "let's investigate', 'That's right'. Do NOT set True on the same "
+                "turn you first present the problem statement — wait for user's "
+                "confirmation response."
+            ),
+        )
         quick_suggestions: Optional[List[str]] = Field(default_factory=list)
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
             default_factory=list,

@@ -823,6 +823,8 @@ class PreliminaryUrgency(BaseModel):
     """Early urgency assessment using semantic business impact."""
 
     level: UrgencyLevel
+    is_ongoing: bool = False  # Whether the problem is currently happening
+    is_incident_report: bool = False  # Whether user is reporting an incident (not FAQ)
     impact_assessment: str  # Free-text business impact description
     assessed_at_turn: int
 

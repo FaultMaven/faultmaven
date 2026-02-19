@@ -142,7 +142,14 @@ class TestMilestoneEngine:
                 },
                 "state_updates": {
                     "milestones": {"symptom_verified": True},
-                    "evidence_to_add": [],
+                    "evidence_to_add": [
+                        {
+                            "summary": "Error logs showing 500 errors",
+                            "category": "symptom_evidence",
+                            "source_type": "logs",
+                            "content_ref": "ERROR 500 at /api/checkout",
+                        }
+                    ],
                     "hypotheses_to_add": [],
                     "outcome": "milestone_completed",
                 },

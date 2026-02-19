@@ -161,11 +161,11 @@ def _inquiry_response_low_urgency() -> InquiryResponse:
 
 
 def _inquiry_response_high_urgency() -> InquiryResponse:
-    """Inquiry response with HIGH urgency + ongoing → triggers auto-confirm."""
+    """Inquiry response with HIGH urgency + ongoing — presents problem, waits for confirmation."""
     return InquiryResponse(
         agent_response=(
-            "This is an urgent production issue. I'm auto-confirming the problem "
-            "and starting investigation immediately."
+            "This is an urgent production issue. Let me confirm my understanding: "
+            "API is experiencing critical latency spikes in production. Is this accurate?"
         ),
         state_updates=InquiryResponse.InquiryStateUpdate(
             submission_classification=SubmissionClassification(
@@ -182,8 +182,24 @@ def _inquiry_response_high_urgency() -> InquiryResponse:
             preliminary_urgency=PreliminaryUrgency(
                 level="HIGH",
                 is_ongoing=True,
+                is_incident_report=True,
                 impact_assessment="All production traffic affected with degraded user experience",
             ),
+        ),
+    )
+
+
+def _inquiry_response_user_confirms() -> InquiryResponse:
+    """Inquiry response where user confirmed the problem statement."""
+    return InquiryResponse(
+        agent_response=("Confirmed. Starting investigation into API latency spikes."),
+        state_updates=InquiryResponse.InquiryStateUpdate(
+            submission_classification=SubmissionClassification(
+                type="user_text",
+                confidence="high",
+                reasoning="User confirming problem statement",
+            ),
+            user_confirmed_investigation=True,
         ),
     )
 
@@ -515,24 +531,38 @@ class TestInvestigationLifecycle:
         assert persisted is not None
         assert persisted.status == CaseStatus.RESOLVED
 
-    async def test_high_urgency_auto_confirms_and_transitions(self, engine, case_repo):
-        """HIGH urgency + ongoing auto-confirms → auto-transitions to INVESTIGATING."""
+    async def test_high_urgency_stays_inquiry_until_confirmed(self, engine, case_repo):
+        """HIGH urgency + ongoing stays INQUIRY → user confirms → transitions to INVESTIGATING."""
         case = _make_inquiry_case(current_turn=1)
         await case_repo.save(case)
 
-        # HIGH urgency + is_ongoing=True → auto-confirm, decide_to_investigate
+        # Turn 1: HIGH urgency + is_ongoing=True → stays in INQUIRY (waits for confirmation)
         with patch.object(
             engine,
             "_generate_structured_output",
             return_value=_inquiry_response_high_urgency(),
         ):
-            result = await engine.process_turn(case, "Our API is down in production!")
+            result1 = await engine.process_turn(case, "Our API is down in production!")
 
-        updated = result["case_updated"]
-        # Auto-confirmed → should transition to INVESTIGATING
-        assert updated.status == CaseStatus.INVESTIGATING
-        assert updated.inquiry.problem_statement_confirmed is True
-        assert updated.inquiry.decided_to_investigate is True
+        updated1 = result1["case_updated"]
+        assert updated1.status == CaseStatus.INQUIRY
+        assert updated1.inquiry.problem_statement_confirmed is False
+        assert updated1.inquiry.decided_to_investigate is False
+
+        # Turn 2: User confirms → transitions to INVESTIGATING
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_inquiry_response_user_confirms(),
+        ):
+            result2 = await engine.process_turn(
+                updated1, "Yes, that's correct. Please investigate."
+            )
+
+        updated2 = result2["case_updated"]
+        assert updated2.status == CaseStatus.INVESTIGATING
+        assert updated2.inquiry.problem_statement_confirmed is True
+        assert updated2.inquiry.decided_to_investigate is True
 
     async def test_close_from_inquiry_via_intent(self, engine, case_repo):
         """Close case from INQUIRY without investigation via explicit intent."""
@@ -745,8 +775,8 @@ class TestEvidenceAccumulation:
                 milestones=MilestoneUpdates(timeline_established=True),
                 evidence_to_add=[
                     EvidenceToAdd(
-                        summary="Deployment timeline: v2.1.3 at 14:00, errors at 14:03",
-                        category=EvidenceCategory.CAUSAL_EVIDENCE,
+                        summary="Timeline: errors started at 14:03 after v2.1.3 deploy at 14:00",
+                        category=EvidenceCategory.SYMPTOM_EVIDENCE,
                         source_type=EvidenceSourceType.LOGS,
                         content_ref="deploy: 14:00:00 v2.1.3; errors: 14:03:21",
                     ),
