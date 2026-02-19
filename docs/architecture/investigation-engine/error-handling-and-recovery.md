@@ -1,7 +1,7 @@
 # Error Handling and Recovery Patterns
 
-**Version**: 2.1
-**Last Updated**: 2026-02-13
+**Version**: 3.0
+**Last Updated**: 2026-02-19
 **Status**: Operational Design
 **Architecture**: Evidence-Driven Investigation Framework
 

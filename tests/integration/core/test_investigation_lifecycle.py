@@ -28,8 +28,8 @@ from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     InquiryResponse,
     InternalReasoning,
-    InvestigationResponse_Resolution,
-    InvestigationResponse_Verification,
+    InvestigationResponse_Diagnosis,
+    InvestigationResponse_Treatment,
     MilestoneUpdates,
     PreliminaryUrgency,
     ProblemConfirmation,
@@ -229,9 +229,9 @@ def _inquiry_response_with_evidence() -> InquiryResponse:
     )
 
 
-def _investigation_verification_response() -> InvestigationResponse_Verification:
+def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
     """Investigation response with milestone progress (verification stage)."""
-    return InvestigationResponse_Verification(
+    return InvestigationResponse_Diagnosis(
         agent_response=(
             "Based on the logs, I can confirm the symptoms. The connection pool "
             "is being exhausted due to leaked connections from the new deployment. "
@@ -244,7 +244,7 @@ def _investigation_verification_response() -> InvestigationResponse_Verification
                 "scope_assessed": "Impact limited to database-connected API endpoints",
             },
         ),
-        state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+        state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
             submission_classification=SubmissionClassification(
                 type="submitted_data",
                 confidence="high",
@@ -267,9 +267,9 @@ def _investigation_verification_response() -> InvestigationResponse_Verification
     )
 
 
-def _investigation_propose_resolved_response() -> InvestigationResponse_Resolution:
+def _investigation_propose_resolved_response() -> InvestigationResponse_Treatment:
     """Investigation response: agent proposes resolution."""
-    return InvestigationResponse_Resolution(
+    return InvestigationResponse_Treatment(
         agent_response=(
             "The root cause has been identified: a connection leak in the new "
             "database connection pool configuration. Rolling back fixed the issue."
@@ -282,7 +282,7 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Resoluti
                 "solution_applied": "Configuration reverted; p99 returned to normal",
             },
         ),
-        state_updates=InvestigationResponse_Resolution.ResolutionStateUpdate(
+        state_updates=InvestigationResponse_Treatment.TreatmentStateUpdate(
             milestones=MilestoneUpdates(
                 root_cause_identified=True,
                 solution_proposed=True,
@@ -299,11 +299,11 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Resoluti
     )
 
 
-def _investigation_no_progress_response() -> InvestigationResponse_Verification:
+def _investigation_no_progress_response() -> InvestigationResponse_Diagnosis:
     """Investigation response with no milestone progress (conversation only)."""
-    return InvestigationResponse_Verification(
+    return InvestigationResponse_Diagnosis(
         agent_response="Can you provide more details about the issue?",
-        state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+        state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
             submission_classification=SubmissionClassification(
                 type="user_text",
                 confidence="high",
@@ -758,7 +758,7 @@ class TestEvidenceAccumulation:
 
         # Turn 4: More evidence (timeline)
         case.current_turn = 4
-        response_turn4 = InvestigationResponse_Verification(
+        response_turn4 = InvestigationResponse_Diagnosis(
             agent_response="Timeline data confirms the causal correlation.",
             internal_reasoning=InternalReasoning(
                 evidence_analyzed=["ev_placeholder"],
@@ -766,7 +766,7 @@ class TestEvidenceAccumulation:
                     "timeline_established": "Deployment at 14:00, first errors at 14:03",
                 },
             ),
-            state_updates=InvestigationResponse_Verification.VerificationStateUpdate(
+            state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
                 submission_classification=SubmissionClassification(
                     type="submitted_data",
                     confidence="high",

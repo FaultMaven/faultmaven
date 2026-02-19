@@ -529,7 +529,8 @@ State updates occur at specific points within a turn to ensure consistency:
 | Terminal transition | — | End of turn | After all other processing |
 
 **Stage-gate milestones vs Progress indicators**:
-- **Stage-gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM based on detected user compliance with a ProposedAction — the LLM is the compliance detector, not the decision-maker.
+
+- **Stage-gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by `compliance_detector.py` (post-LLM processing step) based on detected user compliance with a ProposedAction — the system detects compliance from structural signals, not the LLM.
 - **Progress indicators** (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
 
 **Order of Operations Within a Turn**:

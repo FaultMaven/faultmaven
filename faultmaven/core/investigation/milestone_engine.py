@@ -75,13 +75,17 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     HypothesisStatus,
+    InvestigationActionType,
     InvestigationMomentum,
+    InvestigationPath,
     InvestigationProgress,
     InvestigationStage,
     KnowledgeMatch,
     KnowledgeResolution,
     ProblemVerification,
+    ProposedAction,
     Solution,
+    SolutionType,
     TemporalState,
     TurnOutcome,
     TurnProgress,
@@ -138,6 +142,35 @@ CATEGORY_MILESTONE_MAP = {
         # It informs investigation but doesn't directly advance milestones
     ],
 }
+
+
+def _determine_action_type(
+    case: Case, solution_type: SolutionType
+) -> InvestigationActionType:
+    """
+    Determine whether a proposed solution is a MITIGATION or SOLUTION action.
+
+    Used when creating ProposedAction from SolutionToAdd. The action_type
+    determines which stage-gate milestone is set by compliance detection:
+    - MITIGATION → mitigation_accepted → enters MITIGATION stage
+    - SOLUTION → solution_accepted → enters TREATMENT stage
+
+    Logic:
+    1. WORKAROUND solution_type → always MITIGATION (explicitly temporary)
+    2. MITIGATION_FIRST path + no mitigation accepted yet → MITIGATION
+    3. Otherwise → SOLUTION
+    """
+    if solution_type == SolutionType.WORKAROUND:
+        return InvestigationActionType.MITIGATION
+
+    if (
+        case.path_selection
+        and case.path_selection.path == InvestigationPath.MITIGATION_FIRST
+        and not case.progress.mitigation_accepted
+    ):
+        return InvestigationActionType.MITIGATION
+
+    return InvestigationActionType.SOLUTION
 
 
 def _infer_milestones(
@@ -1230,7 +1263,10 @@ class MilestoneEngine:
             # 3a. Compliance Detection (Evidence-Driven Framework)
             # Post-LLM step: check if user's message shows compliance with
             # a proposed action, and set stage-gate milestones if so.
-            if case_updated.status == CaseStatus.INVESTIGATING and case_updated.proposed_actions:
+            if (
+                case_updated.status == CaseStatus.INVESTIGATING
+                and case_updated.proposed_actions
+            ):
                 from faultmaven.core.investigation.compliance_detector import (
                     detect_compliance,
                 )
@@ -2267,10 +2303,9 @@ class MilestoneEngine:
                 "timeline_established",
                 "changes_identified",
                 "root_cause_identified",
-                "mitigation_applied",
-                "solution_proposed",
-                "solution_applied",
-                # solution_verified excluded — requires User-Agent Handshake
+                # solution_proposed — set programmatically at ProposedAction creation (3F)
+                # mitigation_applied, solution_applied — deprecated, removed (2B)
+                # solution_verified — requires User-Agent Handshake
             ]
             for field in milestone_fields:
                 if getattr(m, field, False):
@@ -2539,6 +2574,34 @@ class MilestoneEngine:
                 )
                 case.solutions.append(sol)
                 metadata["solutions_proposed"].append(sol.solution_id)
+
+                # Gap 0: Create ProposedAction for compliance detection chain
+                action_type = _determine_action_type(case, s_item.solution_type)
+
+                # 3C: Hypothesis gate — SOLUTION requires at least one hypothesis.
+                # If no hypotheses exist, downgrade to DIAGNOSTIC to prevent
+                # premature TREATMENT entry.
+                if (
+                    action_type == InvestigationActionType.SOLUTION
+                    and not case.hypotheses
+                ):
+                    logger.warning(
+                        f"Downgrading SOLUTION to DIAGNOSTIC for case {case.case_id}: "
+                        f"no hypotheses exist yet"
+                    )
+                    action_type = InvestigationActionType.DIAGNOSTIC
+
+                proposed_action = ProposedAction(
+                    case_id=case.case_id,
+                    action_type=action_type,
+                    description=s_item.description,
+                    proposed_in_turn=case.current_turn,
+                )
+                case.proposed_actions.append(proposed_action)
+
+                # 3F: Set solution_proposed programmatically when SOLUTION action created
+                if action_type == InvestigationActionType.SOLUTION:
+                    case.progress.solution_proposed = True
 
         # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
         if metadata["milestones_completed"] and metadata["evidence_added"]:

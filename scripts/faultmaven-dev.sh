@@ -92,18 +92,26 @@ is_running() {
             local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
             port=${port:-$DEFAULT_PORT}
 
-            # Check if this specific PID is listening on the expected port
-            # Use ss because it doesn't require sudo and works reliably
-            if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid"; then
-                return 0
-            else
-                # Process exists but not listening on expected port
-                # This happens when startup failed (port conflict, etc.)
-                print_warning "Process $pid exists but not listening on port $port (stale PID file)"
-                rm -f "$PID_FILE"
-                return 1
-            fi
+            # Check if this specific PID is listening on the expected port.
+            # Use ss because it doesn't require sudo and works reliably.
+            # Retry once after a brief pause to handle transient failures
+            # (e.g., ss reading /proc while kernel socket state is updating).
+            local attempt
+            for attempt in 1 2; do
+                if ss -tlnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid"; then
+                    return 0
+                fi
+                [ "$attempt" -eq 1 ] && sleep 1
+            done
+
+            # Process exists but not listening on expected port after retries.
+            # Do NOT delete the PID file — the process is still alive and may
+            # reclaim the port (or the next check may succeed). Only stop_app
+            # and start_app failure paths should remove the PID file.
+            print_warning "Process $pid exists but not detected on port $port"
+            return 1
         else
+            # Process is dead — PID file is stale, clean up
             rm -f "$PID_FILE"
             return 1
         fi

@@ -2121,6 +2121,9 @@ class InvestigationActionType(str, Enum):
     SOLUTION = "solution"
     """Permanent fix based on root cause analysis."""
 
+    DIAGNOSTIC = "diagnostic"
+    """Data collection or investigation action (does not trigger stage-gate milestones)."""
+
 
 class ProposedAction(BaseModel):
     """
@@ -2189,9 +2192,7 @@ class ActionAttempt(BaseModel):
         description="Unique attempt identifier",
     )
 
-    action_id: str = Field(
-        description="ProposedAction this attempt relates to"
-    )
+    action_id: str = Field(description="ProposedAction this attempt relates to")
 
     user_message: str = Field(
         description="The user's message containing attempt results",

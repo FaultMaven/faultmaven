@@ -252,7 +252,7 @@ Extended diagnosis proceeds:
 5. **New solution proposal** — Derived from the new hypothesis, with specific commands/steps
 6. **User complies → verify again** (loop back to primary path)
 
-Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers after 2-3 complete **solution cycles** (propose → verify → fail), not individual turns.
+Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers via **degraded mode** — when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). In practice, this typically occurs after 2-3 solution cycles, but the threshold is capability-based, not a fixed counter.
 
 **Evidence types accepted**:
 - `solution_evidence` — data showing whether the fix worked (post-fix metrics, logs, user confirmation)
@@ -736,35 +736,46 @@ The agent's proposed action must be tracked as structured data so the system can
 (b) match user submissions against the proposed action for compliance detection.
 
 ```python
-class ActionType(str, Enum):
+class InvestigationActionType(str, Enum):
     MITIGATION = "mitigation"   # Temp fix → compliance triggers DIAGNOSIS → MITIGATION
     SOLUTION = "solution"       # Permanent fix → compliance triggers DIAGNOSIS → TREATMENT
-    DIAGNOSTIC = "diagnostic"   # Diagnostic command → no stage transition on compliance
+    DIAGNOSTIC = "diagnostic"   # Data collection → no stage transition on compliance
 
 class ProposedAction(BaseModel):
-    action_type: ActionType               # What kind of action this is
-    description: str                      # What the agent proposed (human-readable)
-    expected_command: Optional[str]       # Specific command proposed, if any
-    proposed_at_turn: int                 # Turn number when proposed
+    action_id: str                        # Unique action identifier (auto-generated)
+    case_id: str                          # Case this action belongs to
+    action_type: InvestigationActionType  # What kind of action this is
+    description: str                      # What the agent proposed (human-readable, max 2000)
+    commands: List[str]                   # Specific commands for the user to execute
+    proposed_at: datetime                 # When the action was proposed (auto-set)
+    proposed_in_turn: int                 # Turn number when proposed
+    status: str                           # "pending" | "accepted" | "rejected" | "superseded"
 ```
 
-The LLM sets `action_type` in its structured output when proposing an action. The system uses this to determine which stage transition to make when user compliance is detected. This avoids relying on inference for both "did the user comply?" AND "what kind of action was this?" — only the former is inferred, the latter is explicit.
+The `action_type` is determined by the system when creating the ProposedAction from a SolutionToAdd:
+
+- `WORKAROUND` solution type → `MITIGATION`
+- `MITIGATION_FIRST` path + no mitigation accepted yet → `MITIGATION`
+- Otherwise → `SOLUTION`
+- Downgraded to `DIAGNOSTIC` if no hypothesis exists (prevents premature TREATMENT entry)
+
+The system uses `action_type` to determine which stage-gate milestone to set when user compliance is detected.
 
 ### 10.6 Action Attempt Tracking (New)
 
-Track both solution and mitigation attempts for LLM context, analytics, and degraded mode detection:
+Track user attempts to execute proposed actions. Compliance detection analyzes attempts to determine if stage-gate milestones should be set:
 
 ```python
 class ActionAttempt(BaseModel):
-    action_type: ActionType               # "solution" or "mitigation" (reuses ActionType from 10.5)
-    hypothesis_id: Optional[str]          # Which hypothesis this attempt was based on (solutions)
-    proposed_action: str                  # What was proposed
-    outcome: Optional[str]                # "success", "failure", "partial"
-    failure_reason: Optional[str]         # Why it failed (implementation error, wrong RCA, ineffective)
-    turn_proposed: int                    # Turn number when proposed
-    turn_resolved: Optional[int]          # Turn number when outcome determined
+    attempt_id: str                       # Unique attempt identifier (auto-generated)
+    action_id: str                        # ProposedAction this attempt relates to
+    user_message: str                     # The user's message containing attempt results (max 10000)
+    submitted_at: datetime                # When the attempt was submitted (auto-set)
+    compliance_detected: bool             # Whether user appears to have executed the proposed action
+    compliance_confidence: float          # Confidence score (0.0-1.0)
 
-# On InvestigationProgress or Case:
+# On Case:
+proposed_actions: list[ProposedAction] = []
 action_attempts: list[ActionAttempt] = []
 ```
 

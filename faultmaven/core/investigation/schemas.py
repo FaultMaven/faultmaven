@@ -202,7 +202,7 @@ class MilestoneUpdates(BaseModel):
     changes_identified: Optional[bool] = None
     root_cause_identified: Optional[bool] = None
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
-    solution_proposed: Optional[bool] = None
+    # solution_proposed removed (3F) — set programmatically at ProposedAction creation
     root_cause_method: Optional[str] = Field(
         None,
         description="direct_analysis | hypothesis_validation | correlation | other",

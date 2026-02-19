@@ -58,14 +58,30 @@ def determine_investigation_path(verification: ProblemVerification) -> PathSelec
             alternate_path=InvestigationPath.ROOT_CAUSE,
         )
 
-    # AUTO: Historical + any urgency -> ROOT_CAUSE (permanent solution)
-    # Historical issues don't need immediate mitigation
-    if temporal == TemporalState.HISTORICAL:
+    # AUTO: Historical + Low/Medium -> ROOT_CAUSE (permanent solution)
+    # Historical issues at low/medium urgency don't need mitigation path
+    if temporal == TemporalState.HISTORICAL and urgency in [
+        UrgencyLevel.LOW,
+        UrgencyLevel.MEDIUM,
+    ]:
         return PathSelection(
             path=InvestigationPath.ROOT_CAUSE,
             auto_selected=True,
             rationale=f"Historical {urgency.value} issue allows thorough investigation with permanent solution",
             alternate_path=InvestigationPath.MITIGATION_FIRST,
+        )
+
+    # USER_CHOICE: Historical + High/Critical
+    # Even historical critical issues may benefit from mitigation-first approach
+    if temporal == TemporalState.HISTORICAL and urgency in [
+        UrgencyLevel.HIGH,
+        UrgencyLevel.CRITICAL,
+    ]:
+        return PathSelection(
+            path=InvestigationPath.USER_CHOICE,
+            auto_selected=False,
+            rationale=f"Historical {urgency.value} issue: User chooses (a) mitigation first or (b) root cause analysis",
+            alternate_path=None,
         )
 
     # USER CHOICE: Ambiguous cases

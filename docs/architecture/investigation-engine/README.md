@@ -12,14 +12,17 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 ### Prompt Engineering
 
-- **[Prompt Engineering Guide](./prompt-engineering-guide.md)** - Three-template prompt system and LLM interaction patterns
-- **[Prompt Templates](./prompt-templates.md)** - Implementation-ready prompt templates
-- **[Prompt Implementation Examples](./prompt-implementation-examples.md)** - Complete integration code examples
+- **[Prompt Templates](./prompt-templates.md)** - Implementation-ready prompt templates and three-template system
 
 ### Operations
 
 - **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, and Streaming
 - **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns and recovery strategies
+- **[Implementation Gap Analysis](./implementation-gap-analysis.md)** - Design vs implementation alignment tracker
+
+### Deprecated
+
+- **[Prompt Engineering Guide](./prompt-engineering-guide.md)** - Deprecated (old 4-stage model). See Prompt Templates instead.
 
 ### Evidence Documentation (See Data Processing)
 

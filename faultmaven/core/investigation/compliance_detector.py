@@ -190,6 +190,14 @@ def _apply_stage_gate_milestone(case: Case, action: ProposedAction) -> None:
             # User verified mitigation → MITIGATION → DIAGNOSIS (return for RCA)
             case.progress.mitigation_verified = True
             logger.info(f"Set mitigation_verified=True for case {case.case_id}")
+            # 3B: Reset mitigation flags so the mitigation path can be re-entered
+            # if a future mitigation is needed. Without this reset, mitigation_accepted
+            # stays True and current_stage would never return to MITIGATION.
+            case.progress.mitigation_accepted = False
+            case.progress.mitigation_verified = False
+            logger.info(
+                f"Reset mitigation flags for case {case.case_id} (return to DIAGNOSIS)"
+            )
 
     elif action.action_type == InvestigationActionType.SOLUTION:
         if current_stage == InvestigationStage.DIAGNOSIS:

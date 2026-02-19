@@ -961,57 +961,48 @@ class SolutionType(str, Enum):
 ### 1.9 ProposedAction and ActionAttempt
 
 ```python
-class ActionType(str, Enum):
+class InvestigationActionType(str, Enum):
     """Type of proposed action."""
     MITIGATION = "mitigation"   # Temp fix → compliance triggers DIAGNOSIS → MITIGATION
     SOLUTION = "solution"       # Permanent fix → compliance triggers DIAGNOSIS → TREATMENT
+    DIAGNOSTIC = "diagnostic"   # Data collection → no stage transition on compliance
 
 class ProposedAction(BaseModel):
     """
-    A concrete action proposed by the agent during DIAGNOSIS.
+    A concrete action proposed by the agent for the user to execute.
 
-    User compliance with a proposed action triggers inference-based
-    stage transitions. The user's action IS acceptance — no explicit
-    confirmation step required.
+    ProposedActions are created when the agent proposes a solution (via SolutionToAdd).
+    User compliance with a proposed action triggers stage-gate milestone
+    transitions via compliance detection. The user's action IS acceptance —
+    no explicit confirmation step required.
     """
     action_id: str = Field(default_factory=lambda: f"act_{uuid4().hex[:12]}")
-    action_type: ActionType
-    description: str = Field(description="What to do (specific command or action)")
-    rationale: str = Field(description="Why this action is proposed")
-    proposed_at_turn: int
+    case_id: str = Field(description="Case this action belongs to")
+    action_type: InvestigationActionType
+    description: str = Field(description="Human-readable description of the proposed action", max_length=2000)
+    commands: List[str] = Field(default_factory=list, description="Specific commands for the user to execute")
     proposed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    # Resolution tracking
-    complied: Optional[bool] = Field(
-        default=None,
-        description="True if user complied, False if refused, None if pending"
-    )
-    compliance_evidence_id: Optional[str] = Field(
-        default=None,
-        description="Evidence ID showing user compliance (submitted results)"
-    )
+    proposed_in_turn: int = Field(description="Turn number when this action was proposed")
+    status: str = Field(default="pending", description="pending | accepted | rejected | superseded")
 
 class ActionAttempt(BaseModel):
     """
-    Record of an action attempt (mitigation or solution).
+    Records a user's attempt to execute a ProposedAction.
 
-    This covers both TREATMENT cycles (solution attempts) and MITIGATION
-    cycles (mitigation attempts). The boolean flags on InvestigationProgress
-    represent the current cycle; the action_attempts list provides history.
-    When mitigation flags reset on return to DIAGNOSIS, the completed
-    mitigation attempt remains in the list.
+    When the user submits results after executing (or attempting to execute)
+    a proposed action, an ActionAttempt is created. Compliance detection
+    analyzes the attempt to determine if stage-gate milestones should be set.
+
+    The boolean flags on InvestigationProgress represent the current cycle;
+    the action_attempts list provides history. When mitigation flags reset
+    on return to DIAGNOSIS, the completed mitigation attempt remains in the list.
     """
     attempt_id: str = Field(default_factory=lambda: f"att_{uuid4().hex[:12]}")
-    action_type: ActionType
-    proposed_action_id: str = Field(description="ID of the ProposedAction that triggered this")
-    description: str
-    attempted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    outcome: str = Field(description="success | partial | failed | abandoned")
-    outcome_evidence_id: Optional[str] = Field(
-        default=None,
-        description="Evidence ID showing outcome"
-    )
-    notes: Optional[str] = None
+    action_id: str = Field(description="ProposedAction this attempt relates to")
+    user_message: str = Field(description="The user's message containing attempt results", max_length=10000)
+    submitted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    compliance_detected: bool = Field(default=False, description="Whether user appears to have executed the proposed action")
+    compliance_confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Confidence that user complied")
 ```
 
 ### 1.10 WorkingConclusion
