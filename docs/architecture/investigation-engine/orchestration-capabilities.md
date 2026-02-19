@@ -24,7 +24,7 @@ FaultMaven's design includes a **Turn-Based Checkpointing** system to ensure inv
 *   **Immutability**: Checkpoints are append-only. Once a turn is completed, its state record is permanent.
 
 ### 1.2 Current State
-Turn progress is recorded via `TurnProgress` entries in `case.turn_history`, which captures milestones completed, evidence added, hypotheses generated, and turn outcomes. This provides basic auditability but does not support full state snapshots or time travel.
+Turn progress is recorded via `TurnProgress` entries in `case.turn_history`, which captures stage-gate milestones, progress indicators, evidence added, hypotheses generated, and turn outcomes. This provides basic auditability but does not support full state snapshots or time travel.
 
 ## 2. Replay & Debugging (Time Travel)
 
@@ -60,13 +60,13 @@ Human-in-the-Loop (HIL) is enforced via **Design Pattern** rather than explicit 
 
 ### 3.2 The "Recommend-Verify-Act" Workflow
 Instead of the Agent executing a fix (especially with future write-capable tools), the workflow forces user interaction:
-1.  **Recommend**: Agent proposes a solution (e.g., "I recommend rolling back deployment X").
+1.  **Recommend**: Agent proposes a specific action during DIAGNOSIS (e.g., "Run `kubectl rollout undo deployment/payment-api`").
 2.  **Verify**: The Agent provides the reasoning and evidence for this recommendation.
-3.  **Act**: The **User** must physically perform the action (or click a "Confirm" button in the UI that triggers a separate execution flow).
+3.  **Act**: The **User** must physically perform the action and submit results. User compliance (executing and pasting output) triggers inference-based stage transitions (DIAGNOSIS → TREATMENT or DIAGNOSIS → MITIGATION).
 
 ### 3.3 Frontend Implementation
 *   **No "Resume" API needed**: The frontend does not need to "resume" a suspended thread.
-*   **Confirmation UI**: If the Agent asks for confirmation (e.g., "Shall I close the case?"), the UI simply sends the user's "Yes" or "No" as a standard user message in the next turn.
+*   **Confirmation UI**: Terminal transitions (RESOLVED/CLOSED) use the User-Agent Handshake pattern — the agent proposes resolution and the user confirms via standard message. Intermediate stage transitions (DIAGNOSIS → TREATMENT, DIAGNOSIS → MITIGATION) are inference-based — the user's compliance (executing an action and submitting results) IS acceptance, no explicit confirmation step required.
 
 ## 4. Streaming Support
 

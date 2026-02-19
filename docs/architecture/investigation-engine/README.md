@@ -6,8 +6,8 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 ### Core Architecture
 
-- **[Opportunistic Investigation Framework](./opportunistic-investigation-framework.md)** - Overview and philosophy of the opportunistic investigation approach
-- **[Investigation Data Models](./investigation-data-models.md)** - Core data structures (CaseStatus, Evidence, Hypothesis, Solution, etc.)
+- **[Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md)** - Overview and philosophy of the evidence-driven investigation approach
+- **[Investigation Data Models](./investigation-data-models.md)** - Core data structures (CaseStatus, Evidence, Hypothesis, Solution, ProposedAction, etc.)
 - **[Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)** - State transitions, path routing, and turn tracking
 
 ### Prompt Engineering
@@ -34,28 +34,30 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Opportunistic Investigation Framework | Implemented | Milestone-based architecture operational |
-| Investigation Data Models | Implemented | All core models in production |
-| Investigation Lifecycle Logic | Implemented | Status transitions, path routing functional |
-| Prompt Engineering System | Implemented | Three-template system with adaptive schemas |
-| Error Handling and Recovery | Implemented | LLM retry, stagnation detection, degraded mode |
-| Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated (G7) |
-| Knowledge Fast-Track Resolution | Design Complete | Data model exists, milestone engine wiring deferred (G5) |
-| `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles transition, no evidence check (G2) |
+| Evidence-Driven Investigation Framework | Implemented | 3-stage model (DIAGNOSIS, MITIGATION, TREATMENT) operational |
+| Investigation Data Models | Implemented | All core models in production (stage-gate milestones + progress indicators) |
+| Investigation Lifecycle Logic | Implemented | Status transitions, inference-based stage transitions, path routing |
+| Prompt Engineering System | Implemented | Three-template system (DIAGNOSIS, MITIGATION, TREATMENT prompts) |
+| Error Handling and Recovery | Implemented | LLM retry, stagnation detection, compliance detection, degraded mode |
+| Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated |
+| Knowledge Fast-Track Resolution | Design Complete | Data model exists, milestone engine wiring deferred |
+| `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles transition, no evidence check |
 
-See [Known Limitations & Deferred Items](./opportunistic-investigation-framework.md#known-limitations--deferred-items) for details.
+See [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) for full design details.
 
 ---
 
 ## Purpose
 
-This section covers FaultMaven's investigation engine - the opportunistic framework that guides AI agents through problem diagnosis and resolution, including prompt engineering and context management.
+This section covers FaultMaven's investigation engine — the evidence-driven framework that guides AI agents through problem diagnosis and resolution, including prompt engineering and context management.
 
 ## Key Concepts
 
-- **Opportunistic completion**: Agent completes multiple milestones in one turn if data allows
+- **Evidence-driven investigation**: Agent processes evidence naturally within the current stage; transitions happen when the user acts
 - **4 case statuses**: INQUIRY, INVESTIGATING, RESOLVED, CLOSED
-- **3 user-facing stages**: UNDERSTANDING, DIAGNOSING, RESOLVING
-- **4 internal stages**: SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION, SOLUTION
-- **2 investigation paths**: MITIGATION_FIRST (1-4-2-3-4) and ROOT_CAUSE (1-2-3-4)
-- **Three-template prompt system**: Context, instructions, and reasoning templates
+- **3 stages**: DIAGNOSIS (understand & diagnose), MITIGATION (temp fix), TREATMENT (permanent fix & resolution)
+- **3 user-facing stage names**: "Diagnosing", "Mitigating", "Resolving"
+- **2 milestone types**: 4 stage-gate milestones (drive transitions) + 6 progress indicators (LLM context)
+- **Inference-based transitions**: User compliance with proposed actions triggers stage transitions
+- **2 investigation paths**: MITIGATION_FIRST (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) and ROOT_CAUSE (DIAGNOSIS → TREATMENT)
+- **Three-template prompt system**: DIAGNOSIS, MITIGATION, and TREATMENT stage instructions
