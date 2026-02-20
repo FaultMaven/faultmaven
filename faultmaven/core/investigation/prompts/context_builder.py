@@ -420,16 +420,26 @@ def build_investigation_context(
     if case.proposed_actions:
         for action in reversed(case.proposed_actions):
             if action.status == "pending":
+                action_type_upper = action.action_type.value.upper()
                 pending_action_str = "<pending_action>\n"
-                pending_action_str += (
-                    f"ACTION_TYPE: {action.action_type.value.upper()}\n"
-                )
+                pending_action_str += f"ACTION_TYPE: {action_type_upper}\n"
                 pending_action_str += f"DESCRIPTION: {action.description}\n"
+                if action.commands:
+                    pending_action_str += "COMMANDS:\n"
+                    for cmd in action.commands:
+                        pending_action_str += f"  - {cmd}\n"
                 pending_action_str += f"PROPOSED_IN_TURN: {action.proposed_in_turn}\n"
-                pending_action_str += (
-                    "When the user submits results of executing this action, "
-                    "set the corresponding stage-gate milestone in your milestones output.\n"
-                )
+                # Map action type → milestone so the LLM knows exactly what to set
+                if action_type_upper == "MITIGATION":
+                    pending_action_str += (
+                        "MILESTONE_TO_SET: mitigation_accepted (set True when user "
+                        "submits results of executing this mitigation)\n"
+                    )
+                elif action_type_upper == "SOLUTION":
+                    pending_action_str += (
+                        "MILESTONE_TO_SET: solution_accepted (set True when user "
+                        "submits results of executing this solution)\n"
+                    )
                 pending_action_str += "</pending_action>"
                 break
 

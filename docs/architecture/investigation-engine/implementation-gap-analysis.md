@@ -14,7 +14,7 @@ The 3-stage evidence-driven investigation framework is **fully implemented**. Th
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| InvestigationStage enum | **Implemented** | 3 new values (DIAGNOSIS, MITIGATION, TREATMENT) + backward-compat aliases |
+| InvestigationStage enum | **Implemented** | 3 values: DIAGNOSIS, MITIGATION, TREATMENT |
 | InvestigationProgress model | **Implemented** | 4 stage-gate milestones + 6 progress indicators + computed properties |
 | EvidenceCategory enum | **Implemented** | 5 categories (SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL) |
 | Compliance detection | **Implemented** | LLM structured output — stage-gate milestones set by LLM when it detects user compliance (Framework §4.1) |
@@ -23,7 +23,7 @@ The 3-stage evidence-driven investigation framework is **fully implemented**. Th
 | 3-stage prompt instructions | **Implemented** | DIAGNOSIS_INSTRUCTIONS, MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS active at runtime |
 | Context builder | **Implemented** | Separates stage-gate milestones from progress indicators |
 | Path routing | **Implemented** | HISTORICAL+HIGH/CRITICAL → USER_CHOICE (updated from blanket ROOT_CAUSE) |
-| Milestone processing | **Implemented** | Progress indicators from LLM; stage-gates from compliance detection |
+| Milestone processing | **Implemented** | Progress indicators and stage-gate milestones both from LLM structured output (Framework §4.1) |
 | State checkpointing / time travel | **Design Only** | `CaseCheckpoint` model defined, not instantiated |
 | Knowledge fast-track resolution | **Design Only** | Data model exists, milestone engine wiring deferred |
 
@@ -59,7 +59,7 @@ The 3-stage evidence-driven investigation framework is **fully implemented**. Th
 | DIAGNOSTIC action type missing | Added to `InvestigationActionType` enum |
 | No hypothesis gate on SOLUTION actions | Added at ProposedAction creation — downgrades to DIAGNOSTIC if no hypothesis |
 | `solution_proposed` dual ownership | Removed from `MilestoneUpdates`; set programmatically at ProposedAction creation |
-| Mitigation flag reset missing | Added reset after `mitigation_verified=True` in `compliance_detector.py` |
+| Mitigation flag reset missing | Added reset after `mitigation_verified=True` in `milestone_engine.py::_apply_stage_gate_side_effects()` |
 | HISTORICAL+CRITICAL routing | Changed from blanket ROOT_CAUSE to USER_CHOICE for HIGH/CRITICAL |
 | Deprecated fields in milestone processing | Removed `mitigation_applied`, `solution_applied` from `milestone_fields` |
 | Escalation criteria contradiction | Fixed "2-3 cycles" to "degraded mode (capability-based)" in framework doc |

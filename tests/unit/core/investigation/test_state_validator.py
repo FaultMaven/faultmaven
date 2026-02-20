@@ -64,6 +64,7 @@ class TestMilestoneOrdering:
         """Valid milestone ordering should have no errors."""
         base_case.progress.symptom_verified = True
         base_case.progress.solution_proposed = True
+        base_case.progress.solution_accepted = True
         base_case.progress.solution_verified = True
 
         issues = validator._validate_milestone_ordering(base_case.progress)
@@ -71,15 +72,19 @@ class TestMilestoneOrdering:
         assert len(errors) == 0
 
     def test_solution_verified_without_proposed(self, validator, base_case):
-        """solution_verified requires solution_proposed."""
+        """solution_verified requires solution_proposed and solution_accepted."""
         base_case.progress.solution_verified = True
         base_case.progress.solution_proposed = False
 
         issues = validator._validate_milestone_ordering(base_case.progress)
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
 
-        assert len(errors) == 1
-        assert errors[0].code == "MILESTONE_ORDER_001"
+        # Triggers MILESTONE_ORDER_001 (no solution_proposed) and
+        # MILESTONE_ORDER_003 (no solution_accepted)
+        assert len(errors) == 2
+        error_codes = {e.code for e in errors}
+        assert "MILESTONE_ORDER_001" in error_codes
+        assert "MILESTONE_ORDER_003" in error_codes
 
     def test_solution_accepted_without_proposed(self, validator, base_case):
         """solution_accepted requires solution_proposed."""

@@ -406,12 +406,30 @@ class StateValidator:
         """
         issues = []
 
-        # solution_verified requires solution_accepted (stage-gate dependency)
-        # NOTE: solution_verified is set by User-Agent Handshake (confirm_pending_transition),
-        # not directly by LLM. This constraint validates data consistency.
-        if progress.solution_verified and not progress.solution_accepted:
+        # solution_verified requires solution_proposed
+        if progress.solution_verified and not progress.solution_proposed:
             issues.append(ValidationIssue(
                 code="MILESTONE_ORDER_001",
+                message="solution_verified=True but solution_proposed=False",
+                severity=ValidationSeverity.ERROR,
+                field="progress.solution_verified",
+                suggested_fix="Set solution_proposed=True or reset solution_verified=False"
+            ))
+
+        # solution_accepted requires solution_proposed
+        if progress.solution_accepted and not progress.solution_proposed:
+            issues.append(ValidationIssue(
+                code="MILESTONE_ORDER_002",
+                message="solution_accepted=True but solution_proposed=False",
+                severity=ValidationSeverity.ERROR,
+                field="progress.solution_accepted",
+                suggested_fix="Set solution_proposed=True"
+            ))
+
+        # solution_verified requires solution_accepted (stage-gate dependency)
+        if progress.solution_verified and not progress.solution_accepted:
+            issues.append(ValidationIssue(
+                code="MILESTONE_ORDER_003",
                 message="solution_verified=True but solution_accepted=False",
                 severity=ValidationSeverity.ERROR,
                 field="progress.solution_verified",
@@ -421,7 +439,7 @@ class StateValidator:
         # mitigation_verified requires mitigation_accepted (stage-gate dependency)
         if progress.mitigation_verified and not progress.mitigation_accepted:
             issues.append(ValidationIssue(
-                code="MILESTONE_ORDER_002",
+                code="MILESTONE_ORDER_004",
                 message="mitigation_verified=True but mitigation_accepted=False",
                 severity=ValidationSeverity.ERROR,
                 field="progress.mitigation_verified",
@@ -1060,7 +1078,8 @@ This error handling framework provides:
 10. **Concurrency protection** - Per-case asyncio locks prevent state corruption from concurrent turns
 
 **Integration Points**:
-- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, StagnationDetector, compliance detection, and self-correction retry
+
+- `MilestoneEngine.process_turn()` - Per-case lock, calls StateValidator, StagnationDetector, stage-gate side effects, and self-correction retry
 - `LLMProvider.generate()` - Uses LLMErrorHandler for retry logic
 - `ResponseParser.parse()` - Handles parsing failures gracefully
 - `build_investigation_context()` - Consumes system_feedback from previous turn for LLM context

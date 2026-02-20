@@ -95,8 +95,9 @@ class StateValidator:
 
         Milestones can only go False -> True, never revert.
         Some milestones have logical dependencies:
-        - solution_verified requires solution_proposed
+        - solution_verified requires solution_proposed and solution_accepted
         - solution_accepted requires solution_proposed
+        - mitigation_verified requires mitigation_accepted
         - root_cause_identified should have root_cause_likelihood
         """
         issues: List[ValidationIssue] = []
@@ -114,17 +115,40 @@ class StateValidator:
             )
 
         # solution_accepted requires solution_proposed
-        if progress.solution_accepted:
-            if not progress.solution_proposed:
-                issues.append(
-                    ValidationIssue(
-                        code="MILESTONE_ORDER_002",
-                        message="solution_accepted=True but solution_proposed=False",
-                        severity=ValidationSeverity.ERROR,
-                        field="progress.solution_accepted",
-                        suggested_fix="Set solution_proposed=True",
-                    )
+        if progress.solution_accepted and not progress.solution_proposed:
+            issues.append(
+                ValidationIssue(
+                    code="MILESTONE_ORDER_002",
+                    message="solution_accepted=True but solution_proposed=False",
+                    severity=ValidationSeverity.ERROR,
+                    field="progress.solution_accepted",
+                    suggested_fix="Set solution_proposed=True",
                 )
+            )
+
+        # solution_verified requires solution_accepted (stage-gate dependency)
+        if progress.solution_verified and not progress.solution_accepted:
+            issues.append(
+                ValidationIssue(
+                    code="MILESTONE_ORDER_003",
+                    message="solution_verified=True but solution_accepted=False",
+                    severity=ValidationSeverity.ERROR,
+                    field="progress.solution_verified",
+                    suggested_fix="Set solution_accepted=True or reset solution_verified=False",
+                )
+            )
+
+        # mitigation_verified requires mitigation_accepted (stage-gate dependency)
+        if progress.mitigation_verified and not progress.mitigation_accepted:
+            issues.append(
+                ValidationIssue(
+                    code="MILESTONE_ORDER_004",
+                    message="mitigation_verified=True but mitigation_accepted=False",
+                    severity=ValidationSeverity.ERROR,
+                    field="progress.mitigation_verified",
+                    suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False",
+                )
+            )
 
         # root_cause_identified should have likelihood
         if progress.root_cause_identified:

@@ -2354,8 +2354,28 @@ class MilestoneEngine:
                 "mitigation_verified",
                 "solution_accepted",
             ]
+            stage_gate_fields = {
+                "mitigation_accepted",
+                "mitigation_verified",
+                "solution_accepted",
+            }
+
+            # Guard: check if a pending ProposedAction exists before allowing
+            # stage-gate milestones. Prevents LLM hallucinating compliance
+            # when no action was proposed.
+            has_pending_action = any(
+                a.status == "pending" for a in case.proposed_actions
+            )
+
             for field in milestone_fields:
                 if getattr(m, field, False):
+                    # Guard: reject stage-gate milestones if no pending action
+                    if field in stage_gate_fields and not has_pending_action:
+                        logger.warning(
+                            f"Rejected stage-gate milestone '{field}' for case "
+                            f"{case.case_id}: no pending ProposedAction exists"
+                        )
+                        continue
                     # Only append if transitioning from False to True
                     if not getattr(p, field, False):
                         setattr(p, field, True)
@@ -2657,6 +2677,7 @@ class MilestoneEngine:
                     case_id=case.case_id,
                     action_type=action_type,
                     description=s_item.description,
+                    commands=s_item.commands or [],
                     proposed_in_turn=case.current_turn,
                 )
                 case.proposed_actions.append(proposed_action)

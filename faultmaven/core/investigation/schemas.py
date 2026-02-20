@@ -514,6 +514,10 @@ class SolutionToAdd(BaseModel):
     solution_type: SolutionType
     estimated_impact: str
     risks: str
+    commands: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Specific commands for the user to execute",
+    )
 
 
 # =============================================================================
