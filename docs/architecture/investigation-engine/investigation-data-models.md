@@ -117,14 +117,16 @@ class InvestigationProgress(BaseModel):
     Evidence-driven progress tracking with two distinct milestone types:
 
     1. STAGE-GATE MILESTONES (4): Drive stage transitions.
-       Set by compliance detection (post-LLM), not directly by LLM.
+       Set by the LLM in structured output when it detects user compliance
+       with a ProposedAction (Framework §4.1). The LLM is the compliance
+       detector — the user's action is the trigger; the LLM recognizes it.
     2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
        Set by LLM in structured output. Do NOT drive stage transitions.
     """
 
     # ============================================================
     # STAGE-GATE MILESTONES (drive stage transitions)
-    # Set by compliance detection, not directly by LLM.
+    # Set by the LLM in structured output (Framework §4.1).
     # ============================================================
     mitigation_accepted: bool = Field(
         default=False,
@@ -272,7 +274,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 | `root_cause_identified` | 2 | CAUSAL |
 | `solution_proposed` | 0 | (set programmatically when ProposedAction created) |
 
-**Stage-gate milestones** are NOT evidence-validated — they are inferred from user compliance with a ProposedAction (post-LLM detection):
+**Stage-gate milestones** are NOT evidence-validated — they are set by the LLM in structured output when it detects user compliance with a ProposedAction (Framework §4.1):
 
 | Stage-Gate Milestone | Trigger |
 |---------------------|---------|

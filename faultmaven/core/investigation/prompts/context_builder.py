@@ -415,6 +415,24 @@ def build_investigation_context(
             hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
         hypothesis_str += "</working_hypotheses>"
 
+    # 5b. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
+    pending_action_str = ""
+    if case.proposed_actions:
+        for action in reversed(case.proposed_actions):
+            if action.status == "pending":
+                pending_action_str = "<pending_action>\n"
+                pending_action_str += (
+                    f"ACTION_TYPE: {action.action_type.value.upper()}\n"
+                )
+                pending_action_str += f"DESCRIPTION: {action.description}\n"
+                pending_action_str += f"PROPOSED_IN_TURN: {action.proposed_in_turn}\n"
+                pending_action_str += (
+                    "When the user submits results of executing this action, "
+                    "set the corresponding stage-gate milestone in your milestones output.\n"
+                )
+                pending_action_str += "</pending_action>"
+                break
+
     # 6. Conversation History
     # Gap #8: State Summary + Last Turn pattern for long conversations
     # Use compact state summary for conversations >15 turns to save tokens
@@ -527,6 +545,7 @@ def build_investigation_context(
         "milestones": budget.use(milestones_str),
         "evidence": budget.use(evidence_str),
         "hypotheses": budget.use(hypothesis_str),
+        "pending_action": budget.use(pending_action_str),
         "kb_results": budget.use(kb_str),
         "system_feedback": feedback_str,  # Prioritize feedback
         "conversation_history": budget.use(recent_history),

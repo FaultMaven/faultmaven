@@ -518,7 +518,8 @@ def _format_milestones(progress) -> str:
     """Format milestone completion status.
 
     Two types displayed separately:
-    - Stage-gate milestones: Drive stage transitions (compliance-based)
+    - Stage-gate milestones: Drive stage transitions. Set by the LLM in
+      structured output when it detects user compliance (Framework §4.1).
     - Progress indicators: LLM context (non-stage-driving)
 
     Note: solution_verified is set via User-Agent Handshake
@@ -910,11 +911,12 @@ verified actual pool metrics yet - that would increase confidence to 85%+."
 • Never set to False (indicators only advance forward)
 • These provide context, they do NOT drive stage transitions
 
-**Stage-Gate Milestones:**
-• Inferred from user compliance — NOT directly set by you
-• mitigation_accepted/verified: Set by compliance detection
-• solution_accepted: Set by compliance detection
-• solution_verified: Set via User-Agent Handshake
+**Stage-Gate Milestones (set when you detect user compliance):**
+• mitigation_accepted: Set True when user submits results of executing proposed mitigation
+• mitigation_verified: Set True when user confirms mitigation stabilized the situation
+• solution_accepted: Set True when user submits results of executing proposed solution
+• solution_verified: Set via User-Agent Handshake (not directly settable)
+• ONLY set these when a <pending_action> exists AND the user's message shows they executed it
 
 **Conversation Style:**
 • Never mention: "milestones", "stages", "phases", "verification"

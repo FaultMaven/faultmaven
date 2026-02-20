@@ -522,28 +522,28 @@ State updates occur at specific points within a turn to ensure consistency:
 | `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
 | `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
 | `path_selection` | — | During DIAGNOSIS (when temporal_state + urgency_level available) | Automatic from problem verification data |
-| `mitigation_accepted` | Stage-gate milestone | Post-LLM compliance detection | User complied with proposed temp fix (inferred from submission) |
-| `mitigation_verified` | Stage-gate milestone | Post-LLM compliance detection | User confirms mitigation worked → return to DIAGNOSIS |
-| `solution_accepted` | Stage-gate milestone | Post-LLM compliance detection | User complied with proposed solution (inferred from submission) |
+| `mitigation_accepted` | Stage-gate milestone | LLM structured output | LLM detects user complied with proposed temp fix (submitted results) |
+| `mitigation_verified` | Stage-gate milestone | LLM structured output | LLM detects user confirms mitigation worked → return to DIAGNOSIS |
+| `solution_accepted` | Stage-gate milestone | LLM structured output | LLM detects user complied with proposed solution (submitted results) |
 | `solution_verified` | Stage-gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
 | Terminal transition | — | End of turn | After all other processing |
 
 **Stage-gate milestones vs Progress indicators**:
 
-- **Stage-gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by `compliance_detector.py` (post-LLM processing step) based on detected user compliance with a ProposedAction — the system detects compliance from structural signals, not the LLM.
+- **Stage-gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM in structured output when it detects user compliance with a ProposedAction. The LLM is the compliance detector — the user's action is the trigger; the LLM recognizes it (Framework §4.1).
 - **Progress indicators** (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
 
 **Order of Operations Within a Turn**:
 
 1. **Receive user message**
 2. **LLM processes** and generates response + `state_updates`
-3. **Apply state updates**: progress indicators (non-driving), evidence, hypotheses
-4. **Compliance detection** (post-LLM): Detect stage-gate milestones from LLM structured output; stage transition takes effect next turn
+3. **Apply state updates**: progress indicators, stage-gate milestones, evidence, hypotheses (all from LLM structured output)
+4. **Stage-gate side effects**: When a stage-gate milestone is set, mark the corresponding ProposedAction as accepted; stage transition takes effect next turn
 5. **Record turn progress** (detect what changed)
 6. **Check terminal transitions** (RESOLVED/CLOSED) if conditions met
 7. **Return response to user**
 
-**Rationale**: Terminal transitions happen last to ensure all state is consistent before case becomes immutable. Compliance detection happens post-LLM because the current turn runs with the current stage's prompt; the new stage's prompt takes effect on the next turn.
+**Rationale**: Terminal transitions happen last to ensure all state is consistent before case becomes immutable. Stage-gate milestones are applied from the LLM's structured output alongside progress indicators; the new stage's prompt takes effect on the next turn.
 
 ### 1.5 Manual Status Change Requests
 
@@ -1173,8 +1173,8 @@ PROGRESS_INDICATOR_EVIDENCE_EXPECTATIONS = {
                                                                      # ProposedAction with action_type=SOLUTION is created
 }
 
-# STAGE-GATE MILESTONES are NOT evidence-validated — they are inferred from
-# user compliance with a ProposedAction (post-LLM detection):
+# STAGE-GATE MILESTONES are NOT evidence-validated — they are set by
+# the LLM in structured output when it detects user compliance (Framework §4.1):
 #   - mitigation_accepted: User complied with proposed temp fix
 #   - mitigation_verified: User confirmed mitigation worked
 #   - solution_accepted:   User complied with proposed solution

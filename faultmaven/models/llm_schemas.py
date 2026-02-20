@@ -49,8 +49,19 @@ class MilestoneUpdates(BaseModel):
         default=None, description="Solution or mitigation proposed"
     )
 
-    solution_applied: Optional[bool] = Field(
-        default=None, description="Solution applied by user"
+    # Stage-gate milestones (set by LLM when it detects user compliance)
+    mitigation_accepted: Optional[bool] = Field(
+        default=None,
+        description="User submitted results of executing proposed mitigation",
+    )
+
+    mitigation_verified: Optional[bool] = Field(
+        default=None, description="User confirmed mitigation stabilized the situation"
+    )
+
+    solution_accepted: Optional[bool] = Field(
+        default=None,
+        description="User submitted results of executing proposed solution",
     )
 
     solution_verified: Optional[bool] = Field(

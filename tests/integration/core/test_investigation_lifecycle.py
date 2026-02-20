@@ -279,14 +279,14 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
             milestone_justifications={
                 "root_cause_identified": "Connection pool config change in v2.1.3 caused leak",
                 "solution_proposed": "Rollback connection pool settings",
-                "solution_applied": "Configuration reverted; p99 returned to normal",
+                "solution_accepted": "Configuration reverted; p99 returned to normal",
             },
         ),
         state_updates=InvestigationResponse_Treatment.TreatmentStateUpdate(
             milestones=MilestoneUpdates(
                 root_cause_identified=True,
                 solution_proposed=True,
-                solution_applied=True,
+                solution_accepted=True,
             ),
             proposed_transition=ProposedTransition(
                 to_status="resolved",

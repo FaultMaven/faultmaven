@@ -119,9 +119,10 @@ def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrate
             "changes_identified": "Identify recent changes (deployments, configs)",
             "root_cause_identified": "Identify and validate root cause",
             "solution_proposed": "Propose solution or mitigation",
-            "solution_applied": "Apply solution or mitigation",
+            "solution_accepted": "User submitted results of executing solution",
             "solution_verified": "Verify solution effectiveness",
-            "mitigation_applied": "Apply quick mitigation (MITIGATION_FIRST path)",
+            "mitigation_accepted": "User submitted results of executing mitigation",
+            "mitigation_verified": "User confirmed mitigation stabilized the situation",
         }
         next_steps = [
             milestone_steps.get(m, f"Complete {m.replace('_', ' ')}")

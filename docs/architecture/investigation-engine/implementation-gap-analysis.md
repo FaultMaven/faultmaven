@@ -17,7 +17,7 @@ The 3-stage evidence-driven investigation framework is **fully implemented**. Th
 | InvestigationStage enum | **Implemented** | 3 new values (DIAGNOSIS, MITIGATION, TREATMENT) + backward-compat aliases |
 | InvestigationProgress model | **Implemented** | 4 stage-gate milestones + 6 progress indicators + computed properties |
 | EvidenceCategory enum | **Implemented** | 5 categories (SYMPTOM, CAUSAL, MITIGATION, SOLUTION, CONTEXTUAL) |
-| Compliance detection | **Implemented** | `compliance_detector.py` — post-LLM step, structural signal analysis |
+| Compliance detection | **Implemented** | LLM structured output — stage-gate milestones set by LLM when it detects user compliance (Framework §4.1) |
 | ProposedAction/ActionAttempt models | **Implemented** | Domain models + compliance chain wired via SolutionToAdd processing |
 | InvestigationActionType enum | **Implemented** | MITIGATION, SOLUTION, DIAGNOSTIC |
 | 3-stage prompt instructions | **Implemented** | DIAGNOSIS_INSTRUCTIONS, MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS active at runtime |

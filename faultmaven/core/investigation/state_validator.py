@@ -96,7 +96,7 @@ class StateValidator:
         Milestones can only go False -> True, never revert.
         Some milestones have logical dependencies:
         - solution_verified requires solution_proposed
-        - solution_applied requires solution_proposed
+        - solution_accepted requires solution_proposed
         - root_cause_identified should have root_cause_likelihood
         """
         issues: List[ValidationIssue] = []
@@ -113,15 +113,15 @@ class StateValidator:
                 )
             )
 
-        # solution_applied requires solution_proposed
-        if hasattr(progress, "solution_applied") and progress.solution_applied:
+        # solution_accepted requires solution_proposed
+        if progress.solution_accepted:
             if not progress.solution_proposed:
                 issues.append(
                     ValidationIssue(
                         code="MILESTONE_ORDER_002",
-                        message="solution_applied=True but solution_proposed=False",
+                        message="solution_accepted=True but solution_proposed=False",
                         severity=ValidationSeverity.ERROR,
-                        field="progress.solution_applied",
+                        field="progress.solution_accepted",
                         suggested_fix="Set solution_proposed=True",
                     )
                 )

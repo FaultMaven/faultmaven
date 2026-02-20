@@ -184,18 +184,22 @@ class KnowledgeResolution(BaseModel):
 
 
 class MilestoneUpdates(BaseModel):
-    """Progress indicators the LLM can set to True (never False).
+    """Milestones the LLM can set to True (never False).
 
-    These are PROGRESS INDICATORS only — they provide context and analytics
-    but do NOT drive stage transitions. Stage-gate milestones (mitigation_accepted,
-    mitigation_verified, solution_accepted, solution_verified) are set by
-    compliance detection, not by the LLM.
+    Two categories:
+
+    1. PROGRESS INDICATORS — provide context and analytics, do not drive
+       stage transitions.
+    2. STAGE-GATE MILESTONES — drive stage transitions when set. The LLM is
+       the compliance detector: it sets these in structured output when it
+       recognizes that the user has complied with a ProposedAction
+       (Framework doc §4.1).
 
     NOTE: solution_verified is NOT settable here. It requires the User-Agent
     Handshake pattern via ProposedTransition.
     """
 
-    # Progress indicators (LLM-settable)
+    # Progress indicators (LLM-settable, non-stage-driving)
     symptom_verified: Optional[bool] = None
     scope_assessed: Optional[bool] = None
     timeline_established: Optional[bool] = None
@@ -208,11 +212,12 @@ class MilestoneUpdates(BaseModel):
         description="direct_analysis | hypothesis_validation | correlation | other",
     )
 
-    # Backward compatibility — these are now stage-gate milestones set by
-    # compliance detection. LLM values for these are ignored by the engine
-    # but kept here to avoid breaking LLM structured output parsing.
-    solution_applied: Optional[bool] = None
-    mitigation_applied: Optional[bool] = None
+    # Stage-gate milestones (LLM-settable, drive stage transitions)
+    # The LLM sets these when it detects user compliance with a pending
+    # ProposedAction — the user's action is the trigger, the LLM recognizes it.
+    mitigation_accepted: Optional[bool] = None
+    mitigation_verified: Optional[bool] = None
+    solution_accepted: Optional[bool] = None
 
 
 class ProblemVerificationUpdate(BaseModel):
@@ -605,11 +610,6 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
     state_updates: DiagnosisStateUpdate
 
 
-# Backward compatibility aliases for old schema names
-InvestigationResponse_Verification = InvestigationResponse_Diagnosis
-InvestigationResponse_Hypothesis = InvestigationResponse_Diagnosis
-
-
 class InvestigationResponse_Mitigation(BaseInteractionResponse):
     """Schema for MITIGATION stage — applying and verifying temporary fix."""
 
@@ -673,10 +673,6 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
     state_updates: TreatmentStateUpdate
-
-
-# Backward compatibility alias for old schema name
-InvestigationResponse_Resolution = InvestigationResponse_Treatment
 
 
 class InvestigationResponse_General(BaseInteractionResponse):

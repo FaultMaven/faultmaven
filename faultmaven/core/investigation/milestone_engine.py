@@ -64,6 +64,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 )
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
+    ActionAttempt,
     Case,
     CaseStatus,
     CaseStatusTransition,
@@ -171,6 +172,60 @@ def _determine_action_type(
         return InvestigationActionType.MITIGATION
 
     return InvestigationActionType.SOLUTION
+
+
+def _apply_stage_gate_side_effects(
+    case: Case,
+    completed_gates: set[str],
+    user_message: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Apply side effects when stage-gate milestones are completed.
+
+    When the LLM sets a stage-gate milestone, we:
+    1. Mark the corresponding pending ProposedAction as "accepted"
+    2. Create an ActionAttempt audit record
+    3. Handle mitigation flag reset for re-entry (3B)
+
+    This replaces the old compliance_detector.py logic — the LLM now
+    detects compliance per Framework §4.1.
+    """
+    # Find the most recent pending action
+    pending_action = None
+    for action in reversed(case.proposed_actions):
+        if action.status == "pending":
+            pending_action = action
+            break
+
+    if pending_action:
+        pending_action.status = "accepted"
+        # Create audit trail
+        attempt = ActionAttempt(
+            action_id=pending_action.action_id,
+            user_message=user_message[:10000],
+            submitted_at=datetime.now(UTC),
+            compliance_detected=True,
+            compliance_confidence=1.0,  # LLM-detected = full confidence
+        )
+        case.action_attempts.append(attempt)
+        logger.info(
+            f"Stage-gate milestone(s) {completed_gates} set by LLM for case "
+            f"{case.case_id} (action {pending_action.action_id}, "
+            f"type={pending_action.action_type.value})"
+        )
+
+    # 3B: Mitigation flag reset for re-entry
+    # When mitigation_verified is set, both mitigation flags reset so the
+    # mitigation path can be re-entered if a future mitigation is needed.
+    if "mitigation_verified" in completed_gates:
+        case.progress.mitigation_accepted = False
+        case.progress.mitigation_verified = False
+        logger.info(
+            f"Reset mitigation flags for case {case.case_id} (return to DIAGNOSIS)"
+        )
+
+    metadata["compliance_detected"] = True
+    metadata["progress_made"] = True
 
 
 def _infer_milestones(
@@ -1260,22 +1315,10 @@ class MilestoneEngine:
             # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
             metadata.update(response_metadata)
 
-            # 3a. Compliance Detection (Evidence-Driven Framework)
-            # Post-LLM step: check if user's message shows compliance with
-            # a proposed action, and set stage-gate milestones if so.
-            if (
-                case_updated.status == CaseStatus.INVESTIGATING
-                and case_updated.proposed_actions
-            ):
-                from faultmaven.core.investigation.compliance_detector import (
-                    detect_compliance,
-                )
-
-                attempt = detect_compliance(case_updated, user_message, response_obj)
-                if attempt and attempt.compliance_detected:
-                    metadata["compliance_detected"] = True
-                    metadata["compliance_action_type"] = attempt.action_id
-                    metadata["progress_made"] = True
+            # 3a. Stage-gate compliance is now handled via LLM milestone output
+            # (Framework §4.1). The LLM sets stage-gate milestones in its
+            # structured response; side effects are applied in
+            # _apply_investigation_updates → _apply_stage_gate_side_effects.
 
             # 3b. Validate Diagnostic Reasoning with Self-Correction (Section 3.3, F3)
             # Ensure agent provides context-specific reasoning before suggestions.
@@ -2298,14 +2341,18 @@ class MilestoneEngine:
             p = case.progress
             # Only set to True (never revert)
             milestone_fields = [
+                # Progress indicators (LLM context, non-stage-driving)
                 "symptom_verified",
                 "scope_assessed",
                 "timeline_established",
                 "changes_identified",
                 "root_cause_identified",
                 # solution_proposed — set programmatically at ProposedAction creation (3F)
-                # mitigation_applied, solution_applied — deprecated, removed (2B)
                 # solution_verified — requires User-Agent Handshake
+                # Stage-gate milestones (LLM detects user compliance — Framework §4.1)
+                "mitigation_accepted",
+                "mitigation_verified",
+                "solution_accepted",
             ]
             for field in milestone_fields:
                 if getattr(m, field, False):
@@ -2333,6 +2380,21 @@ class MilestoneEngine:
                 p.root_cause_likelihood = m.root_cause_likelihood
             if m.root_cause_method:
                 p.root_cause_method = m.root_cause_method
+
+            # Stage-gate side effects (Framework §4.1)
+            # When the LLM sets a stage-gate milestone, apply corresponding
+            # side effects: mark the pending ProposedAction as accepted and
+            # create an ActionAttempt audit record.
+            stage_gate_completed = {
+                "mitigation_accepted",
+                "mitigation_verified",
+                "solution_accepted",
+            } & set(metadata["milestones_completed"])
+
+            if stage_gate_completed:
+                _apply_stage_gate_side_effects(
+                    case, stage_gate_completed, user_message, metadata
+                )
 
         # 2. Add Evidence
         # a) From attachments (REMOVED - Single-phase evidence creation)

@@ -292,14 +292,16 @@ class InvestigationProgress(BaseModel):
     Evidence-driven progress tracking with two distinct milestone types:
 
     1. STAGE-GATE MILESTONES (4): Drive stage transitions.
-       Set by compliance detection (post-LLM), not directly by LLM.
+       Set by the LLM in structured output when it detects user compliance
+       with a ProposedAction (Framework §4.1). The LLM is the compliance
+       detector — the user's action is the trigger; the LLM recognizes it.
     2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
        Set by LLM in structured output. Do NOT drive stage transitions.
     """
 
     # ============================================================
     # STAGE-GATE MILESTONES (drive stage transitions)
-    # Set by compliance detection, not directly by LLM.
+    # Set by the LLM in structured output (Framework §4.1).
     # ============================================================
     mitigation_accepted: bool = Field(
         default=False,
@@ -384,19 +386,6 @@ class InvestigationProgress(BaseModel):
     root_cause_method: Optional[str] = Field(
         default=None,
         description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | other",
-    )
-
-    # ============================================================
-    # Backward Compatibility Fields (deprecated, kept for migration)
-    # ============================================================
-    solution_applied: bool = Field(
-        default=False,
-        description="DEPRECATED: Use solution_accepted instead. Kept for DB/serialization compat.",
-    )
-
-    mitigation_applied: bool = Field(
-        default=False,
-        description="DEPRECATED: Use mitigation_accepted instead. Kept for DB/serialization compat.",
     )
 
     # ============================================================
@@ -585,9 +574,8 @@ class InvestigationStage(str, Enum):
     """
     Understand the problem, diagnose root cause, propose actions.
 
-    This is the default and starting stage. Covers what was previously
-    spread across SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, and
-    HYPOTHESIS_VALIDATION.
+    This is the default and starting stage. Covers symptom verification,
+    hypothesis formulation, hypothesis validation, and root cause analysis.
 
     Activities (natural flow, not rigid steps):
     - Verify symptoms with evidence (logs, metrics, user reports)
@@ -636,14 +624,6 @@ class InvestigationStage(str, Enum):
     - User confirms fix worked → RESOLVED (solution_verified via User-Agent Handshake)
     - Fix failed → stay in TREATMENT, iterate with new evidence
     """
-
-    # === Backward compatibility aliases ===
-    # These allow existing code referencing old names to continue working
-    # during migration. They map to the new stage values.
-    SYMPTOM_VERIFICATION = "diagnosis"
-    HYPOTHESIS_FORMULATION = "diagnosis"
-    HYPOTHESIS_VALIDATION = "diagnosis"
-    SOLUTION = "treatment"
 
 
 class TemporalState(str, Enum):

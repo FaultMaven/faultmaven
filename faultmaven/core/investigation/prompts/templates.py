@@ -185,6 +185,8 @@ STATUS: INVESTIGATING
 
 {hypotheses}
 
+{pending_action}
+
 CONVERSATION HISTORY:
 {conversation_history}
 
@@ -535,6 +537,9 @@ You MUST respond with valid JSON matching these fields:
     * If milestones.scope_assessed=true, then milestone_justifications MUST contain scope_assessed key with justification
     * If milestones.timeline_established=true, then milestone_justifications MUST contain timeline_established key with justification
     * If milestones.root_cause_identified=true, then milestone_justifications MUST contain root_cause_identified key with justification
+    * If milestones.mitigation_accepted=true, then milestone_justifications MUST contain mitigation_accepted key (cite user's submitted results)
+    * If milestones.mitigation_verified=true, then milestone_justifications MUST contain mitigation_verified key (cite user's confirmation)
+    * If milestones.solution_accepted=true, then milestone_justifications MUST contain solution_accepted key (cite user's submitted results)
     * Must reference specific evidence IDs from evidence_analyzed
     * Format: {{milestone_name: "justification with evidence ID citations"}}
     * Each justification must cite concrete evidence, not generic reasoning
@@ -553,7 +558,7 @@ You MUST respond with valid JSON matching these fields:
        }}
   - uncertainties: What remains unclear after analyzing available evidence.
 - **state_updates**:
-  - milestones: Map of milestone flags (set True where data allows).
+  - milestones: Map of milestone flags (set True where data allows). Includes both progress indicators AND stage-gate milestones. Set stage-gate milestones when you detect user compliance with a pending action (see <pending_action> in context).
   - outcome: REQUIRED field - one of: milestone_completed | data_requested | hypothesis_validated | conversation | blocked
 
 EVIDENCE ID LOOKUP:
@@ -600,208 +605,6 @@ CORRECT Examples (Classification with Evidence):
   ]  ✅ CORRECT
 """
 
-
-# Adaptive instructions by stage
-STAGE_INSTRUCTIONS = {
-    InvestigationStage.SYMPTOM_VERIFICATION: """
-**FOCUS: SYMPTOM_VERIFICATION** (Goal: Confirm problem & context)
-
-**Priority Actions (MUST focus on these):**
-1. **Verification**: Confirm symptom with logs, metrics, or user reports.
-2. **Impact**: Assess scope (blast radius) and urgency (CRITICAL/HIGH/MEDIUM/LOW).
-3. **Timeline**: Establish when it started and if it's currently ONGOING.
-4. **Changes**: Identify recent deployments or configuration changes.
-
-**EVIDENCE CLASSIFICATION FOR THIS STAGE:**
-⚠️ CRITICAL: Early verification milestones require **symptom_evidence**
-- When user provides error logs, metrics, or diagnostic data → classify as **symptom_evidence**
-- Even if the data contains causal insights, use **symptom_evidence** first
-- Reason: symptom_verified, scope_assessed, timeline_established require symptom_evidence category
-- You can complete root_cause_identified simultaneously if the data reveals the cause
-
-**Example:**
-User provides: "Memory dump showing OOM + ChromaDB using 1.2GB after v3.2.1 upgrade"
-→ Classify as: symptom_evidence (not causal_evidence)
-→ Can complete: symptom_verified=True AND root_cause_identified=True in same turn
-→ The data shows both symptom (OOM) and cause (ChromaDB leak), but use symptom category for validation
-
-**URGENCY RECOGNITION:**
-Watch for high-impact signals (revenue, production, data loss, or broad customer complaints).
-If production or customers are actively affected:
-→ Acknowledge urgency IMMEDIATELY.
-→ Offer **MITIGATION_FIRST** path (stop the bleeding before deep RCA).
-
-**DATA COLLECTION:**
-- Update ProblemVerification fields in `verification_updates`.
-- Add newly provided data to `evidence_to_add` with correct category (symptom_evidence for early milestones).
-
-**NOTE: YOU CAN JUMP AHEAD!**
-If evidence reveals root cause, set `root_cause_identified = True` immediately. Do not stay in verification if the answer is clear.
-""",
-    InvestigationStage.HYPOTHESIS_FORMULATION: """
-**FOCUS: HYPOTHESIS GENERATION** (Finding Why)
-**Goal**: Generate theories about why the problem is happening
-
-✅ **VERIFICATION COMPLETE**
-
-**ROOT CAUSE IDENTIFICATION - Decision Tree:**
-
-**Option A: SINGLE-SHOT VALIDATION** (if root cause obvious from evidence)
-
-   ✅ Use when ALL of these are true:
-   - Single clear error pointing to specific cause
-   - Strong timing correlation (change → error within minutes)
-   - Mechanism is understandable (you can explain HOW)
-   - No conflicting evidence
-
-   Example: "Deployment at 14:10, NullPointerException at 14:15 = deployment bug"
-
-   **CRITICAL: Preserve audit trail by creating hypothesis record!**
-
-   In ONE turn, do ALL of the following:
-   1. CREATE hypothesis (hypotheses_to_add)
-      - statement: The identified root cause
-      - category: Appropriate HypothesisCategory
-      - initial_likelihood: 0.90+ (high confidence)
-   2. LINK evidence (hypothesis_evidence_links) - OPTIONAL, skip if uncertain
-      - For current-turn evidence: Use "new_index_0", "new_index_1", etc.
-      - For historical evidence: Leave empty (automatic linking via category)
-      - stance: SUPPORTS with high confidence
-   3. SET hypothesis status = VALIDATED
-   4. SET root_cause_identified = True
-   5. SET root_cause_method = "single_shot_validation"
-
-   **Why not skip hypothesis?** The hypothesis record serves as structured
-   documentation of WHY you concluded the root cause. Without it, you have
-   a "magic answer" that can't be audited later.
-
-**Option B: MULTI-HYPOTHESIS TESTING** (if root cause unclear)
-
-   ✅ Use when ANY of the above is false:
-   - Multiple possible causes
-   - Weak timing correlation
-   - Symptoms could match several theories
-   - Need diagnostic data to differentiate
-
-   Example: "Could be pool exhaustion OR memory leak OR query timeout"
-
-   Actions:
-   → Generate: hypotheses_to_add (2-4 hypotheses)
-   → Ensure diversity: At least 2 different HypothesisCategory
-   → When user provides evidence: Evaluate against ALL hypotheses
-   → Update hypothesis.status based on evidence: ACTIVE → VALIDATED/REFUTED
-
-**Evidence Request Format:**
-"To diagnose this, the most useful would be [PRIMARY].
-If that's difficult to obtain, [ALTERNATIVE] would also help.
-Why: [diagnostic value]"
-
-**DIAGNOSTIC REASONING (before suggesting actions):**
-When suggesting mitigation or diagnostic actions:
-1. Reason through the specific symptoms: timing, scope, what changed
-2. Explain WHY your suggestion fits the symptoms
-3. Anticipate what different outcomes would mean
-4. Example: "The sudden onset at 9am with no deployments suggests something external changed.
-   Scaling might help if it's a load issue, but if scaling only partially helps,
-   that would indicate a shared resource bottleneck like database or downstream service."
-""",
-    InvestigationStage.HYPOTHESIS_VALIDATION: """
-**FOCUS: HYPOTHESIS VALIDATION** (Testing Theories)
-**Goal**: Test and validate hypotheses to confirm root cause
-
-✅ **VERIFICATION COMPLETE**
-✅ **HYPOTHESES GENERATED**
-
-**Your Task:**
-- Evaluate new evidence against all active hypotheses
-- Update hypothesis status based on evidence (VALIDATED/REFUTED/ACTIVE)
-- Mark root_cause_identified = True when hypothesis validated with high confidence
-
-**Evidence Evaluation:**
-- Link evidence to specific hypotheses via hypothesis_evidence_links
-  - For current-turn evidence: Use "new_index_0", "new_index_1", etc.
-  - For historical evidence: Leave empty (automatic linking via category)
-- Update hypothesis confidence scores based on supporting/contradicting evidence
-- Refute hypotheses that contradict evidence
-
-**Completion:**
-When hypothesis validated with sufficient confidence:
-→ Set root_cause_identified = True
-→ Fill root_cause_conclusion with validated hypothesis
-→ Advance to SOLUTION stage
-""",
-    InvestigationStage.SOLUTION: """
-**FOCUS: SOLUTION** (Fixing the Problem)
-**Goal**: Guide user to apply solution and verify effectiveness
-
-✅ **VERIFICATION COMPLETE**
-✅ **ROOT CAUSE IDENTIFIED**
-
-**Solution Actions:**
-
-**1. Propose Solution:**
-
-   Path-specific guidance:
-   - **MITIGATION_FIRST path**: Quick fix first (immediate_action), then longterm_fix after RCA
-   - **ROOT_CAUSE path**: Comprehensive fix (longterm_fix + immediate_action)
-
-   Fill out: solutions_to_add
-
-**2. Guide Implementation (SUGGEST, don't execute):**
-   - Provide: implementation_steps (numbered list of steps for USER to follow)
-   - Suggest: commands the USER should run (e.g., "You can run: kubectl scale...")
-   - Warn: risks (potential side effects, rollback plan)
-   - NEVER say "I will run" or "Let me execute" - you are an ADVISOR
-   - ALWAYS end with: "Let me know the result after you try this"
-
-**3. Track Progress:**
-   - solution_proposed: Set to True when you propose solution
-   - solution_applied: Set to True when user confirms they applied it
-   - solution_verified: Set to True when user confirms it worked
-
-**4. Verify Effectiveness:**
-   - Ask user for: verification evidence (metrics, error rates, logs)
-   - Analyze what user reports: Did solution fix the problem?
-   - Compare: Before/after metrics based on what user shares
-   - ACCEPT SUBJECTIVE CONFIRMATION: If user says "it's working now" or "looks good",
-     that's sufficient to mark solution_verified = True. Don't demand hard metrics
-     if user confirms improvement.
-
-**5. Suggest Interim Workarounds:**
-   - While implementing permanent fix (e.g., adding index), suggest temporary mitigations
-   - Example: "While the index builds, you could temporarily increase query timeout"
-
-**6. MITIGATION_FIRST Follow-up (Critical):**
-   When a temporary workaround was applied to stop the bleeding:
-   - Remind user that the fix is temporary and follow-up is needed
-   - State what still needs to be done: "Once [X] is fixed, remember to [re-enable/revert/remove] the temporary workaround"
-   - Offer to help with root cause investigation if not yet done
-   - Example: "The fraud check bypass is a temporary fix. Once the SSL cert is renewed,
-     make sure to re-enable it. Would you like help investigating why the cert wasn't
-     monitored for expiration?"
-
-**Completion:**
-When solution_verified = True:
-→ Case will auto-transition to RESOLVED
-→ Celebrate the fix! 🎉
-""",
-}
-
-# =============================================================================
-# NEW MODEL: TWO-MILESTONE STAGE INSTRUCTIONS
-# =============================================================================
-# Replaces STAGE_INSTRUCTIONS above with a simplified 3-stage model:
-#   DIAGNOSIS → (optional MITIGATION →) TREATMENT
-#
-# Two user-confirmed milestones:
-#   - solution_accepted: user approves the proposed solution → enter TREATMENT
-#   - solution_verified: user confirms the fix worked → RESOLVED
-#
-# One optional milestone for mitigation-first path:
-#   - mitigation_accepted: user approves temp fix → enter MITIGATION
-#
-# Evidence types: symptom_evidence, causal_evidence, mitigation_evidence,
-#                 solution_evidence, contextual_evidence
 
 DIAGNOSIS_INSTRUCTIONS = """
 **FOCUS: DIAGNOSIS** (Understand the problem, find the cause, propose a solution)

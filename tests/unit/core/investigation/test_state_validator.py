@@ -81,9 +81,9 @@ class TestMilestoneOrdering:
         assert len(errors) == 1
         assert errors[0].code == "MILESTONE_ORDER_001"
 
-    def test_solution_applied_without_proposed(self, validator, base_case):
-        """solution_applied requires solution_proposed."""
-        base_case.progress.solution_applied = True
+    def test_solution_accepted_without_proposed(self, validator, base_case):
+        """solution_accepted requires solution_proposed."""
+        base_case.progress.solution_accepted = True
         base_case.progress.solution_proposed = False
 
         issues = validator._validate_milestone_ordering(base_case.progress)

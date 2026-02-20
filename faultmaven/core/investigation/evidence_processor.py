@@ -65,16 +65,16 @@ MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
         "description": "At least 1 evidence item justifying the proposed solution",
     },
     # Stage-gate milestones are NOT evidence-validated — they are set by
-    # compliance detection (post-LLM). Kept here for backward compat only.
-    "solution_applied": {
+    # the LLM in structured output when it detects user compliance (Framework §4.1).
+    "solution_accepted": {
         "min_evidence": 0,
         "expected_categories": [],
-        "description": "DEPRECATED: Now solution_accepted, set by compliance detection",
+        "description": "Stage-gate: LLM sets when user submits solution execution results",
     },
-    "mitigation_applied": {
+    "mitigation_accepted": {
         "min_evidence": 0,
         "expected_categories": [],
-        "description": "DEPRECATED: Now mitigation_accepted, set by compliance detection",
+        "description": "Stage-gate: LLM sets when user submits mitigation execution results",
     },
 }
 

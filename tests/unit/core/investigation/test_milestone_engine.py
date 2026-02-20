@@ -232,7 +232,7 @@ class TestMilestoneEngine:
         )
         from faultmaven.core.investigation.schemas import (
             InternalReasoning,
-            InvestigationResponse_Verification,
+            InvestigationResponse_Diagnosis,
             ReasoningConclusion,
         )
         from faultmaven.modules.case.contracts import (
@@ -262,7 +262,7 @@ class TestMilestoneEngine:
         )
 
         # Create response with proper internal reasoning
-        response = InvestigationResponse_Verification(
+        response = InvestigationResponse_Diagnosis(
             agent_response="Symptom verified",
             internal_reasoning=InternalReasoning(
                 evidence_analyzed=["ev_001122334455"],
@@ -278,7 +278,7 @@ class TestMilestoneEngine:
                 },
                 uncertainties=[],
             ),
-            state_updates=InvestigationResponse_Verification.DiagnosisStateUpdate(
+            state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
                 milestones=MilestoneUpdates(symptom_verified=True),
                 outcome="milestone_completed",
             ),
@@ -295,14 +295,14 @@ class TestMilestoneEngine:
             validate_reasoning_first,
         )
         from faultmaven.core.investigation.schemas import (
-            InvestigationResponse_Verification,
+            InvestigationResponse_Diagnosis,
             MilestoneUpdates,
         )
 
         # Create response with milestone but NO internal reasoning
-        response = InvestigationResponse_Verification(
+        response = InvestigationResponse_Diagnosis(
             agent_response="Symptom verified",
-            state_updates=InvestigationResponse_Verification.DiagnosisStateUpdate(
+            state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
                 milestones=MilestoneUpdates(symptom_verified=True),
                 outcome="milestone_completed",
             ),
