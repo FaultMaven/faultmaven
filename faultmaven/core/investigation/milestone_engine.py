@@ -2000,7 +2000,22 @@ class MilestoneEngine:
             logger.warning(
                 f"Reasoning validation failed for case {case.case_id}: {error_msg}"
             )
-            raise ValueError(error_msg)
+            # Degrade gracefully: strip milestone completions and continue with the response
+            # instead of crashing with a 500 error
+            if (
+                hasattr(response_obj, "internal_reasoning")
+                and response_obj.internal_reasoning
+            ):
+                response_obj.internal_reasoning.milestone_justifications = {}
+            if hasattr(response_obj, "state_updates"):
+                milestones = getattr(response_obj.state_updates, "milestones", None)
+                if milestones:
+                    # Reset all milestone booleans to None (uncompleted)
+                    for field_name in milestones.model_fields:
+                        setattr(milestones, field_name, None)
+            logger.info(
+                f"Stripped invalid milestones for case {case.case_id}, continuing with response"
+            )
 
         # Dispatch based on response type
         if isinstance(response_obj, InquiryResponse):
@@ -2401,6 +2416,14 @@ class MilestoneEngine:
             if m.root_cause_method:
                 p.root_cause_method = m.root_cause_method
 
+            # Ensure consistency: if root_cause_identified was just set,
+            # root_cause_method and root_cause_likelihood must also be set
+            if p.root_cause_identified:
+                if not p.root_cause_method:
+                    p.root_cause_method = m.root_cause_method or "direct_analysis"
+                if p.root_cause_likelihood == 0.0:
+                    p.root_cause_likelihood = m.root_cause_likelihood or 0.8
+
             # Stage-gate side effects (Framework §4.1)
             # When the LLM sets a stage-gate milestone, apply corresponding
             # side effects: mark the pending ProposedAction as accepted and
@@ -2648,10 +2671,11 @@ class MilestoneEngine:
             for s_item in updates.solutions_to_add:
                 sol = Solution(
                     solution_id=f"sol_{uuid4().hex[:12]}",
-                    description=s_item.description,
-                    title=f"Solution: {s_item.solution_type}",  # Added missing title
-                    type=s_item.solution_type,
-                    status="proposed",
+                    solution_type=s_item.solution_type,
+                    title=f"Solution: {s_item.solution_type}",
+                    immediate_action=s_item.description,
+                    commands=s_item.commands or [],
+                    risks=[s_item.risks] if s_item.risks else [],
                     proposed_at=datetime.now(UTC),
                 )
                 case.solutions.append(sol)

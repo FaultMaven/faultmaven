@@ -1528,7 +1528,8 @@ class Evidence(BaseModel):
         max_length=500,
     )
 
-    preprocessed_content: str = Field(description="""
+    preprocessed_content: str = Field(
+        description="""
         Extracted relevant diagnostic information from preprocessing pipeline.
 
         This is what the agent uses for hypothesis evaluation and evidence analysis.
@@ -1546,7 +1547,8 @@ class Evidence(BaseModel):
         Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
 
         This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-        """)
+        """
+    )
 
     content_ref: Optional[str] = Field(
         default=None,
@@ -1558,11 +1560,13 @@ class Evidence(BaseModel):
         ge=0, description="Size of original raw file in bytes"
     )
 
-    preprocessing_method: str = Field(description="""
+    preprocessing_method: str = Field(
+        description="""
         Preprocessing method used to extract preprocessed_content from raw file.
         Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
         ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-        """)
+        """
+    )
 
     compression_ratio: Optional[float] = Field(
         default=None,

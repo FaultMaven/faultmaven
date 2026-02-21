@@ -118,11 +118,13 @@ class SQLiteCaseRepository(CaseRepository):
         """Retrieve case by ID using separate queries for normalized tables."""
         try:
             # Main case query (no JSON aggregation - SQLite doesn't support it well)
-            query = text("""
+            query = text(
+                """
                 SELECT *
                 FROM cases
                 WHERE case_id = :case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             row = result.fetchone()
@@ -152,14 +154,17 @@ class SQLiteCaseRepository(CaseRepository):
 
     async def _load_hypotheses(self, case_id: str) -> list[dict]:
         """Load hypotheses for a case."""
-        query = text("""
+        query = text(
+            """
             SELECT hypothesis_id, statement, status, likelihood, initial_likelihood,
-                   last_updated_turn, last_progress_at_turn, iterations_without_progress,
+                   generated_at_turn, last_updated_turn, last_progress_at_turn,
+                   iterations_without_progress,
                    category, generation_mode, rationale, retirement_reason,
                    evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata
             FROM hypotheses
             WHERE case_id = :case_id
-        """)
+        """
+        )
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
@@ -172,32 +177,35 @@ class SQLiteCaseRepository(CaseRepository):
                     "status": row[2],
                     "likelihood": row[3],
                     "initial_likelihood": row[4],
-                    "last_updated_turn": row[5],
-                    "last_progress_at_turn": row[6],
-                    "iterations_without_progress": row[7],
-                    "category": row[8],
-                    "generation_mode": row[9],
-                    "rationale": row[10],
-                    "retirement_reason": row[11],
-                    "evidence_links": json.loads(row[12]) if row[12] else {},
-                    "tested_at": row[13],
-                    "concluded_at": row[14],
-                    "proposed_at": row[15],
-                    "updated_at": row[16],
-                    "metadata": json.loads(row[17]) if row[17] else {},
+                    "generated_at_turn": row[5] or 0,
+                    "last_updated_turn": row[6],
+                    "last_progress_at_turn": row[7],
+                    "iterations_without_progress": row[8],
+                    "category": row[9],
+                    "generation_mode": row[10],
+                    "rationale": row[11],
+                    "retirement_reason": row[12],
+                    "evidence_links": json.loads(row[13]) if row[13] else {},
+                    "tested_at": row[14],
+                    "concluded_at": row[15],
+                    "proposed_at": row[16],
+                    "updated_at": row[17],
+                    "metadata": json.loads(row[18]) if row[18] else {},
                 }
             )
         return hypotheses
 
     async def _load_solutions(self, case_id: str) -> list[dict]:
         """Load solutions for a case."""
-        query = text("""
-            SELECT solution_id, description, status, implementation_steps,
-                   risk_level, estimated_effort, verification_result, verification_timestamp,
-                   proposed_at, implemented_at, updated_at, metadata
+        query = text(
+            """
+            SELECT solution_id, solution_type, title, immediate_action, longterm_fix,
+                   implementation_steps, commands, risks,
+                   proposed_at, updated_at, metadata
             FROM solutions
             WHERE case_id = :case_id
-        """)
+        """
+        )
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
@@ -206,17 +214,16 @@ class SQLiteCaseRepository(CaseRepository):
             solutions.append(
                 {
                     "solution_id": row[0],
-                    "description": row[1],
-                    "status": row[2],
-                    "implementation_steps": json.loads(row[3]) if row[3] else [],
-                    "risk_level": row[4],
-                    "estimated_effort": row[5],
-                    "verification_result": row[6],
-                    "verification_timestamp": row[7],
+                    "solution_type": row[1] or "other",
+                    "title": row[2] or "Untitled solution",
+                    "immediate_action": row[3],
+                    "longterm_fix": row[4],
+                    "implementation_steps": json.loads(row[5]) if row[5] else [],
+                    "commands": json.loads(row[6]) if row[6] else [],
+                    "risks": json.loads(row[7]) if row[7] else [],
                     "proposed_at": row[8],
-                    "implemented_at": row[9],
-                    "updated_at": row[10],
-                    "metadata": json.loads(row[11]) if row[11] else {},
+                    "updated_at": row[9],
+                    "metadata": json.loads(row[10]) if row[10] else {},
                 }
             )
         return solutions
@@ -227,12 +234,14 @@ class SQLiteCaseRepository(CaseRepository):
         Schema per design spec (case-schema.md §4.6):
         - size_bytes, data_type, content_ref, uploaded_at_turn, source_type, preprocessing_summary
         """
-        query = text("""
+        query = text(
+            """
             SELECT file_id, filename, size_bytes, data_type, uploaded_at_turn,
                    uploaded_at, source_type, content_ref, preprocessing_summary, metadata
             FROM uploaded_files
             WHERE case_id = :case_id
-        """)
+        """
+        )
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
@@ -264,12 +273,14 @@ class SQLiteCaseRepository(CaseRepository):
         Schema per design spec (case-schema.md §4.7):
         - message_id, turn_number, role, content, created_at, token_count, metadata
         """
-        query = text("""
+        query = text(
+            """
             SELECT message_id, turn_number, role, content, created_at, token_count, metadata
             FROM case_messages
             WHERE case_id = :case_id
             ORDER BY created_at ASC
-        """)
+        """
+        )
         result = await self.db.execute(query, {"case_id": case_id})
         rows = result.fetchall()
 
@@ -310,7 +321,8 @@ class SQLiteCaseRepository(CaseRepository):
     async def _load_evidence_for_case(self, case: Case) -> None:
         """Load evidence for case directly from evidence_artifacts table."""
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT
                     evidence_id, case_id, user_id, organization_id,
                     original_filename, stored_filename, file_path,
@@ -321,7 +333,8 @@ class SQLiteCaseRepository(CaseRepository):
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
                 LIMIT 1000
-            """)
+            """
+            )
             result = await self.db.execute(query, {"case_id": case.case_id})
             rows = result.fetchall()
 
@@ -378,13 +391,15 @@ class SQLiteCaseRepository(CaseRepository):
             total_count = count_result.scalar()
 
             # List query
-            list_query = text(f"""
+            list_query = text(
+                f"""
                 SELECT case_id
                 FROM cases
                 {where_sql}
                 ORDER BY updated_at DESC
                 LIMIT :limit OFFSET :offset
-            """)
+            """
+            )
 
             result = await self.db.execute(list_query, params)
             case_ids = [row[0] for row in result.fetchall()]
@@ -417,12 +432,14 @@ class SQLiteCaseRepository(CaseRepository):
             else:
                 date_str = str(date)
 
-            query = text("""
+            query = text(
+                """
                 SELECT COUNT(*)
                 FROM cases
                 WHERE user_id = :user_id
                 AND date(created_at) = :date_str
-                """)
+                """
+            )
             result = await self.db.execute(
                 query, {"user_id": user_id, "date_str": date_str}
             )
@@ -471,13 +488,15 @@ class SQLiteCaseRepository(CaseRepository):
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
             # Search query using LIKE (SQLite-compatible)
-            search_query = text(f"""
+            search_query = text(
+                f"""
                 SELECT case_id
                 FROM cases
                 {where_sql}
                 ORDER BY updated_at DESC
                 LIMIT :limit
-            """)
+            """
+            )
 
             result = await self.db.execute(search_query, params)
             case_ids = [row[0] for row in result.fetchall()]
@@ -514,10 +533,12 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
             # SQLite-compatible: no ::jsonb type cast
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_messages (message_id, case_id, turn_number, role, content, created_at, token_count, metadata)
                 VALUES (:message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata)
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -549,7 +570,8 @@ class SQLiteCaseRepository(CaseRepository):
         """Add report using hybrid design (SQLite-compatible)."""
         try:
             # SQLite: no ::jsonb type cast
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_reports (
                     report_id, case_id, type, status, title, summary,
                     author_id, runbook, recommendations, created_at,
@@ -559,7 +581,8 @@ class SQLiteCaseRepository(CaseRepository):
                     :author_id, :runbook, :recommendations, :created_at,
                     :updated_at, :metadata
                 )
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -598,13 +621,15 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_report(self, report_id: str) -> Optional[CaseReport]:
         """Get report by ID (SQLite-compatible)."""
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT report_id, case_id, type, status, title, summary,
                        author_id, runbook, recommendations, created_at,
                        updated_at, metadata
                 FROM case_reports
                 WHERE report_id = :report_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"report_id": report_id})
             row = result.fetchone()
@@ -640,14 +665,16 @@ class SQLiteCaseRepository(CaseRepository):
 
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
-            query = text(f"""
+            query = text(
+                f"""
                 SELECT report_id, case_id, type, status, title, summary,
                        author_id, runbook, recommendations, created_at,
                        updated_at, metadata
                 FROM case_reports
                 {where_sql}
                 ORDER BY created_at DESC
-            """)
+            """
+            )
 
             result = await self.db.execute(query, params)
             rows = result.fetchall()
@@ -663,7 +690,8 @@ class SQLiteCaseRepository(CaseRepository):
         """Update report (SQLite-compatible)."""
         try:
             # SQLite: no ::jsonb type cast
-            query = text("""
+            query = text(
+                """
                 UPDATE case_reports
                 SET type = :type,
                     status = :status,
@@ -675,7 +703,8 @@ class SQLiteCaseRepository(CaseRepository):
                     updated_at = :updated_at,
                     metadata = :metadata
                 WHERE report_id = :report_id
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -771,7 +800,8 @@ class SQLiteCaseRepository(CaseRepository):
     async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
         """Create a new case checkpoint (SQLite-compatible)."""
         try:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_checkpoints (
                     checkpoint_id, case_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
@@ -779,7 +809,8 @@ class SQLiteCaseRepository(CaseRepository):
                     :checkpoint_id, :case_id, :turn_number, :case_snapshot,
                     :snapshot_hash, :trigger, :created_at, :metadata
                 )
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -808,12 +839,14 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
         """Get a checkpoint by ID (SQLite-compatible)."""
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT checkpoint_id, case_id, turn_number, case_snapshot,
                        snapshot_hash, trigger, created_at, metadata
                 FROM case_checkpoints
                 WHERE checkpoint_id = :checkpoint_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"checkpoint_id": checkpoint_id})
             row = result.fetchone()
@@ -831,13 +864,15 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
         """Get all checkpoints for a case (SQLite-compatible)."""
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT checkpoint_id, case_id, turn_number, case_snapshot,
                        snapshot_hash, trigger, created_at, metadata
                 FROM case_checkpoints
                 WHERE case_id = :case_id
                 ORDER BY turn_number ASC
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             rows = result.fetchall()
@@ -911,13 +946,15 @@ class SQLiteCaseRepository(CaseRepository):
         - message_id, turn_number, role, content, created_at, token_count, metadata
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT message_id, turn_number, role, content, created_at, token_count, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
                 LIMIT :limit OFFSET :offset
-            """)
+            """
+            )
 
             result = await self.db.execute(
                 query, {"case_id": case_id, "limit": limit, "offset": offset}
@@ -970,11 +1007,13 @@ class SQLiteCaseRepository(CaseRepository):
         """Update last_activity_at timestamp."""
         try:
             # SQLite: use datetime('now') instead of NOW()
-            query = text("""
+            query = text(
+                """
                 UPDATE cases
                 SET last_activity_at = datetime('now')
                 WHERE case_id = :case_id
-            """)
+            """
+            )
             result = await self.db.execute(query, {"case_id": case_id})
             await self.db.commit()
             return result.rowcount > 0
@@ -994,7 +1033,8 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             # SQLite-compatible: Use separate COUNT queries instead of FILTER
             # Note: file size computed separately for schema compatibility
-            query = text("""
+            query = text(
+                """
                 SELECT
                     (SELECT COUNT(*) FROM hypotheses WHERE case_id = :case_id) as hypothesis_count,
                     (SELECT COUNT(*) FROM hypotheses WHERE case_id = :case_id AND status = 'validated') as validated_hypotheses,
@@ -1002,7 +1042,8 @@ class SQLiteCaseRepository(CaseRepository):
                     (SELECT COUNT(*) FROM solutions WHERE case_id = :case_id AND status = 'implemented') as implemented_solutions,
                     (SELECT COUNT(*) FROM case_messages WHERE case_id = :case_id) as message_count,
                     (SELECT COUNT(*) FROM uploaded_files WHERE case_id = :case_id) as file_count
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             row = result.fetchone()
@@ -1055,7 +1096,8 @@ class SQLiteCaseRepository(CaseRepository):
         """Clean up expired/old cases."""
         try:
             # SQLite: use datetime() function instead of INTERVAL
-            query = text("""
+            query = text(
+                """
                 DELETE FROM cases
                 WHERE case_id IN (
                     SELECT case_id
@@ -1064,7 +1106,8 @@ class SQLiteCaseRepository(CaseRepository):
                     AND closed_at < datetime('now', '-' || :max_age_days || ' days')
                     LIMIT :batch_size
                 )
-            """)
+            """
+            )
 
             result = await self.db.execute(
                 query, {"max_age_days": max_age_days, "batch_size": batch_size}
@@ -1082,7 +1125,8 @@ class SQLiteCaseRepository(CaseRepository):
 
     async def _upsert_case_record(self, case: Case) -> None:
         """Upsert main cases table (SQLite-compatible - no type casts)."""
-        query = text("""
+        query = text(
+            """
             INSERT INTO cases (
                 case_id, user_id, organization_id, title,
                 status, created_at, updated_at,
@@ -1112,7 +1156,8 @@ class SQLiteCaseRepository(CaseRepository):
                 documentation = EXCLUDED.documentation,
                 progress = EXCLUDED.progress,
                 metadata = EXCLUDED.metadata
-        """)
+        """
+        )
 
         await self.db.execute(
             query,
@@ -1193,11 +1238,13 @@ class SQLiteCaseRepository(CaseRepository):
         if current_ids:
             # SQLite: Use explicit IN clause instead of != ALL(array)
             placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
+            delete_query = text(
+                f"""
                 DELETE FROM evidence
                 WHERE case_id = :case_id
                 AND evidence_id NOT IN ({placeholders})
-            """)
+            """
+            )
             params = {"case_id": case_id}
             for i, eid in enumerate(current_ids):
                 params[f"id_{i}"] = eid
@@ -1205,7 +1252,8 @@ class SQLiteCaseRepository(CaseRepository):
 
         # Upsert each evidence record (no ::jsonb type cast)
         for evidence in evidence_list:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO evidence (
                     evidence_id, case_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata
@@ -1219,7 +1267,8 @@ class SQLiteCaseRepository(CaseRepository):
                     preprocessed_content = EXCLUDED.preprocessed_content,
                     content_ref = EXCLUDED.content_ref,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1244,26 +1293,31 @@ class SQLiteCaseRepository(CaseRepository):
         current_ids = list(hypotheses_dict.keys())
         if current_ids:
             placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
+            delete_query = text(
+                f"""
                 DELETE FROM hypotheses
                 WHERE case_id = :case_id
                 AND hypothesis_id NOT IN ({placeholders})
-            """)
+            """
+            )
             params = {"case_id": case_id}
             for i, hid in enumerate(current_ids):
                 params[f"id_{i}"] = hid
             await self.db.execute(delete_query, params)
 
         for hypothesis_id, hypothesis in hypotheses_dict.items():
-            query = text("""
+            query = text(
+                """
                 INSERT INTO hypotheses (
                     hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
-                    last_updated_turn, last_progress_at_turn, iterations_without_progress,
+                    generated_at_turn, last_updated_turn, last_progress_at_turn,
+                    iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason, evidence_links,
                     tested_at, concluded_at, proposed_at, updated_at, metadata
                 ) VALUES (
                     :hypothesis_id, :case_id, :statement, :status, :likelihood, :initial_likelihood,
-                    :last_updated_turn, :last_progress_at_turn, :iterations_without_progress,
+                    :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
+                    :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason, :evidence_links,
                     :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata
                 )
@@ -1271,6 +1325,7 @@ class SQLiteCaseRepository(CaseRepository):
                     statement = EXCLUDED.statement,
                     status = EXCLUDED.status,
                     likelihood = EXCLUDED.likelihood,
+                    generated_at_turn = EXCLUDED.generated_at_turn,
                     last_updated_turn = EXCLUDED.last_updated_turn,
                     last_progress_at_turn = EXCLUDED.last_progress_at_turn,
                     iterations_without_progress = EXCLUDED.iterations_without_progress,
@@ -1279,7 +1334,8 @@ class SQLiteCaseRepository(CaseRepository):
                     concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1290,6 +1346,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "status": hypothesis.status.value,
                     "likelihood": hypothesis.likelihood,
                     "initial_likelihood": hypothesis.initial_likelihood,
+                    "generated_at_turn": hypothesis.generated_at_turn,
                     "last_updated_turn": hypothesis.last_updated_turn,
                     "last_progress_at_turn": hypothesis.last_progress_at_turn,
                     "iterations_without_progress": hypothesis.iterations_without_progress,
@@ -1321,11 +1378,13 @@ class SQLiteCaseRepository(CaseRepository):
         ]
         if current_ids:
             placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
+            delete_query = text(
+                f"""
                 DELETE FROM solutions
                 WHERE case_id = :case_id
                 AND solution_id NOT IN ({placeholders})
-            """)
+            """
+            )
             params = {"case_id": case_id}
             for i, sid in enumerate(current_ids):
                 params[f"id_{i}"] = sid
@@ -1338,53 +1397,75 @@ class SQLiteCaseRepository(CaseRepository):
                 else f"sol_{uuid4().hex[:12]}"
             )
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO solutions (
-                    solution_id, case_id, description, status, implementation_steps,
-                    risk_level, estimated_effort, verification_result, verification_timestamp,
-                    proposed_at, implemented_at, updated_at, metadata
+                    solution_id, case_id, solution_type, title, immediate_action,
+                    longterm_fix, implementation_steps, commands, risks,
+                    description, status,
+                    proposed_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :description, :status, :implementation_steps,
-                    :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
-                    :proposed_at, :implemented_at, :updated_at, :metadata
+                    :solution_id, :case_id, :solution_type, :title, :immediate_action,
+                    :longterm_fix, :implementation_steps, :commands, :risks,
+                    :description, :status,
+                    :proposed_at, :updated_at, :metadata
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
+                    solution_type = EXCLUDED.solution_type,
+                    title = EXCLUDED.title,
+                    immediate_action = EXCLUDED.immediate_action,
+                    longterm_fix = EXCLUDED.longterm_fix,
+                    implementation_steps = EXCLUDED.implementation_steps,
+                    commands = EXCLUDED.commands,
+                    risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
                     status = EXCLUDED.status,
-                    implementation_steps = EXCLUDED.implementation_steps,
-                    risk_level = EXCLUDED.risk_level,
-                    estimated_effort = EXCLUDED.estimated_effort,
-                    verification_result = EXCLUDED.verification_result,
-                    verification_timestamp = EXCLUDED.verification_timestamp,
-                    implemented_at = EXCLUDED.implemented_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
                 {
                     "solution_id": solution_id,
                     "case_id": case_id,
+                    "solution_type": (
+                        solution.solution_type.value
+                        if hasattr(solution, "solution_type") and solution.solution_type
+                        else "other"
+                    ),
+                    "title": (
+                        solution.title
+                        if hasattr(solution, "title") and solution.title
+                        else "Untitled solution"
+                    ),
+                    "immediate_action": getattr(solution, "immediate_action", None),
+                    "longterm_fix": getattr(solution, "longterm_fix", None),
+                    "implementation_steps": json.dumps(
+                        solution.implementation_steps
+                        if hasattr(solution, "implementation_steps")
+                        else []
+                    ),
+                    "commands": json.dumps(
+                        solution.commands if hasattr(solution, "commands") else []
+                    ),
+                    "risks": json.dumps(
+                        solution.risks if hasattr(solution, "risks") else []
+                    ),
                     "description": (
-                        solution.description
-                        if hasattr(solution, "description")
-                        else str(solution)
+                        solution.immediate_action
+                        if hasattr(solution, "immediate_action")
+                        and solution.immediate_action
+                        else (
+                            solution.title
+                            if hasattr(solution, "title")
+                            else str(solution)
+                        )
                     ),
                     "status": "proposed",
-                    "implementation_steps": json.dumps(
-                        solution.steps if hasattr(solution, "steps") else []
-                    ),
-                    "risk_level": (
-                        solution.risk_level if hasattr(solution, "risk_level") else None
-                    ),
-                    "estimated_effort": (
-                        solution.effort if hasattr(solution, "effort") else None
-                    ),
-                    "verification_result": None,
-                    "verification_timestamp": None,
-                    "proposed_at": datetime.now(UTC),
-                    "implemented_at": None,
+                    "proposed_at": getattr(solution, "proposed_at", None)
+                    or datetime.now(UTC),
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
                 },
@@ -1397,18 +1478,21 @@ class SQLiteCaseRepository(CaseRepository):
         current_ids = [f.file_id for f in files_list]
         if current_ids:
             placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
+            delete_query = text(
+                f"""
                 DELETE FROM uploaded_files
                 WHERE case_id = :case_id
                 AND file_id NOT IN ({placeholders})
-            """)
+            """
+            )
             params = {"case_id": case_id}
             for i, fid in enumerate(current_ids):
                 params[f"id_{i}"] = fid
             await self.db.execute(delete_query, params)
 
         for file in files_list:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO uploaded_files (
                     file_id, case_id, filename, size_bytes, data_type,
                     uploaded_at_turn, uploaded_at, source_type,
@@ -1427,7 +1511,8 @@ class SQLiteCaseRepository(CaseRepository):
                     content_ref = EXCLUDED.content_ref,
                     preprocessing_summary = EXCLUDED.preprocessing_summary,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1462,11 +1547,13 @@ class SQLiteCaseRepository(CaseRepository):
         if current_ids:
             # Delete messages not in current list
             placeholders = ", ".join([f":id_{i}" for i in range(len(current_ids))])
-            delete_query = text(f"""
+            delete_query = text(
+                f"""
                 DELETE FROM case_messages
                 WHERE case_id = :case_id
                 AND message_id NOT IN ({placeholders})
-            """)
+            """
+            )
             params = {"case_id": case_id}
             for i, mid in enumerate(current_ids):
                 params[f"id_{i}"] = mid
@@ -1478,7 +1565,8 @@ class SQLiteCaseRepository(CaseRepository):
             if not msg.get("message_id"):
                 continue
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_messages (
                     message_id, case_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
@@ -1491,7 +1579,8 @@ class SQLiteCaseRepository(CaseRepository):
                     created_at = EXCLUDED.created_at,
                     token_count = EXCLUDED.token_count,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1512,14 +1601,16 @@ class SQLiteCaseRepository(CaseRepository):
     ) -> None:
         """Append status transitions (SQLite-compatible)."""
         for transition in transitions:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_status_transitions (
                     case_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
                     :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata
                 )
                 ON CONFLICT DO NOTHING
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1726,13 +1817,15 @@ class SQLiteCaseRepository(CaseRepository):
         """Add report to reports table (SQLite-compatible)."""
 
         if report.is_current:
-            unmark_query = text("""
+            unmark_query = text(
+                """
                 UPDATE reports
                 SET is_current = 0, updated_at = datetime('now')
                 WHERE case_id = :case_id
                   AND report_type = :report_type
                   AND is_current = 1
-            """)
+            """
+            )
             await self.db.execute(
                 unmark_query,
                 {"case_id": report.case_id, "report_type": report.report_type.value},
@@ -1743,7 +1836,8 @@ class SQLiteCaseRepository(CaseRepository):
         )
 
         # SQLite-compatible: no type casts
-        insert_query = text("""
+        insert_query = text(
+            """
             INSERT INTO reports (
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -1766,7 +1860,8 @@ class SQLiteCaseRepository(CaseRepository):
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
-        """)
+        """
+        )
 
         now = datetime.now(UTC)
         generated_at = (
@@ -1806,7 +1901,8 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_report(self, report_id: str) -> Optional["CaseReport"]:
         """Get report by ID from SQLite."""
 
-        query = text("""
+        query = text(
+            """
             SELECT
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -1814,7 +1910,8 @@ class SQLiteCaseRepository(CaseRepository):
                 generated_at, updated_at
             FROM reports
             WHERE report_id = :report_id
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"report_id": report_id})
         row = result.fetchone()
@@ -1844,7 +1941,8 @@ class SQLiteCaseRepository(CaseRepository):
 
         where_clause = " AND ".join(conditions)
 
-        query = text(f"""
+        query = text(
+            f"""
             SELECT
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -1853,7 +1951,8 @@ class SQLiteCaseRepository(CaseRepository):
             FROM reports
             WHERE {where_clause}
             ORDER BY report_type, version DESC
-        """)
+        """
+        )
 
         result = await self.db.execute(query, params)
         rows = result.fetchall()
@@ -1863,14 +1962,16 @@ class SQLiteCaseRepository(CaseRepository):
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in SQLite."""
         if report.is_current:
-            unmark_query = text("""
+            unmark_query = text(
+                """
                 UPDATE reports
                 SET is_current = 0, updated_at = datetime('now')
                 WHERE case_id = :case_id
                   AND report_type = :report_type
                   AND report_id != :report_id
                   AND is_current = 1
-            """)
+            """
+            )
             await self.db.execute(
                 unmark_query,
                 {
@@ -1890,7 +1991,8 @@ class SQLiteCaseRepository(CaseRepository):
             else now
         )
 
-        update_query = text("""
+        update_query = text(
+            """
             UPDATE reports
             SET version = :version,
                 is_current = :is_current,
@@ -1903,7 +2005,8 @@ class SQLiteCaseRepository(CaseRepository):
                 metadata = :metadata,
                 updated_at = :updated_at
             WHERE report_id = :report_id
-        """)
+        """
+        )
 
         result = await self.db.execute(
             update_query,

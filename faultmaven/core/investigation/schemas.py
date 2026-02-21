@@ -79,7 +79,7 @@ class InternalReasoning(BaseModel):
         default_factory=list,
         description="Step-by-step reasoning from evidence to conclusions",
     )
-    milestone_justifications: Dict[str, str] = Field(
+    milestone_justifications: Dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "

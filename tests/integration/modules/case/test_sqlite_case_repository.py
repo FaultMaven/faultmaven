@@ -67,7 +67,9 @@ async def sqlite_session(sqlite_engine):
 async def create_test_schema(session: AsyncSession):
     """Create minimal schema required for case repository testing."""
     # Create cases table
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS cases (
             case_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -92,10 +94,14 @@ async def create_test_schema(session: AsyncSession):
             progress TEXT,
             metadata TEXT
         )
-    """))
+    """
+        )
+    )
 
     # Create evidence table
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS evidence (
             evidence_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -109,10 +115,14 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     # Create hypotheses table
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS hypotheses (
             hypothesis_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -120,6 +130,7 @@ async def create_test_schema(session: AsyncSession):
             status TEXT DEFAULT 'captured',
             likelihood REAL,
             initial_likelihood REAL,
+            generated_at_turn INTEGER DEFAULT 0,
             last_updated_turn INTEGER DEFAULT 0,
             last_progress_at_turn INTEGER DEFAULT 0,
             iterations_without_progress INTEGER DEFAULT 0,
@@ -135,16 +146,26 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     # Create solutions table
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS solutions (
             solution_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
+            solution_type TEXT DEFAULT 'other',
+            title TEXT DEFAULT '',
             description TEXT,
             status TEXT DEFAULT 'proposed',
+            immediate_action TEXT,
+            longterm_fix TEXT,
             implementation_steps TEXT,
+            commands TEXT,
+            risks TEXT,
             risk_level TEXT,
             estimated_effort TEXT,
             verification_result TEXT,
@@ -155,10 +176,14 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     # Create uploaded_files table (per case-schema.md §4.6)
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -173,10 +198,14 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     # Create case_messages table (per case-schema.md §4.7)
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS case_messages (
             message_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -188,10 +217,14 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     # Create case_status_transitions table
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS case_status_transitions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             case_id TEXT NOT NULL,
@@ -202,10 +235,14 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     # Create evidence_artifacts table (used by _load_evidence_for_case)
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS evidence_artifacts (
             evidence_id TEXT PRIMARY KEY,
             case_id TEXT,
@@ -225,10 +262,14 @@ async def create_test_schema(session: AsyncSession):
             is_primary INTEGER DEFAULT 0,
             tags TEXT
         )
-    """))
+    """
+        )
+    )
 
     # Create reports table
-    await session.execute(text("""
+    await session.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS reports (
             report_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -246,7 +287,9 @@ async def create_test_schema(session: AsyncSession):
             updated_at TIMESTAMP,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """))
+    """
+        )
+    )
 
     await session.commit()
 

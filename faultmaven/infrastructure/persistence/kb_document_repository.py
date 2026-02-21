@@ -41,7 +41,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         """Create KB document metadata."""
         import json
 
-        query = text("""
+        query = text(
+            """
             INSERT INTO kb_documents (
                 doc_id, owner_user_id, organization_id, title, description, document_type,
                 chromadb_collection, chromadb_doc_count, visibility, tags,
@@ -54,7 +55,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 :metadata, :created_at, :updated_at
             )
             RETURNING doc_id
-        """)
+        """
+        )
 
         await self.db.execute(
             query,
@@ -85,14 +87,16 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def get_document(self, doc_id: str) -> Optional[KBDocument]:
         """Get KB document by ID."""
-        query = text("""
+        query = text(
+            """
             SELECT doc_id, owner_user_id, organization_id, title, description, document_type,
                    chromadb_collection, chromadb_doc_count, visibility, tags,
                    file_size, original_filename, content_type, storage_path,
                    metadata, created_at, updated_at, deleted_at
             FROM kb_documents
             WHERE doc_id = :doc_id AND deleted_at IS NULL
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"doc_id": doc_id})
         row = result.fetchone()
@@ -108,7 +112,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
         doc.updated_at = datetime.now(timezone.utc)
 
-        query = text("""
+        query = text(
+            """
             UPDATE kb_documents
             SET title = :title,
                 description = :description,
@@ -119,7 +124,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 metadata = :metadata,
                 updated_at = :updated_at
             WHERE doc_id = :doc_id AND deleted_at IS NULL
-        """)
+        """
+        )
 
         result = await self.db.execute(
             query,
@@ -141,11 +147,13 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def delete_document(self, doc_id: str) -> bool:
         """Soft delete KB document."""
-        query = text("""
+        query = text(
+            """
             UPDATE kb_documents
             SET deleted_at = :deleted_at
             WHERE doc_id = :doc_id AND deleted_at IS NULL
-        """)
+        """
+        )
 
         result = await self.db.execute(
             query, {"doc_id": doc_id, "deleted_at": datetime.now(timezone.utc)}
@@ -159,7 +167,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     ) -> List[KBDocument]:
         """List KB documents owned by user."""
         if include_shared:
-            query = text("""
+            query = text(
+                """
                 SELECT DISTINCT d.doc_id, d.owner_user_id, d.organization_id, d.title, d.description,
                        d.document_type, d.chromadb_collection, d.chromadb_doc_count,
                        d.visibility, d.tags, d.file_size, d.original_filename,
@@ -172,9 +181,11 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 WHERE (d.owner_user_id = :user_id OR ds.shared_with_user_id = :user_id OR tm.user_id = :user_id)
                   AND d.deleted_at IS NULL
                 ORDER BY d.created_at DESC
-            """)
+            """
+            )
         else:
-            query = text("""
+            query = text(
+                """
                 SELECT doc_id, owner_user_id, organization_id, title, description, document_type,
                        chromadb_collection, chromadb_doc_count, visibility, tags,
                        file_size, original_filename, content_type, storage_path,
@@ -182,7 +193,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 FROM kb_documents
                 WHERE owner_user_id = :user_id AND deleted_at IS NULL
                 ORDER BY created_at DESC
-            """)
+            """
+            )
 
         result = await self.db.execute(query, {"user_id": user_id})
         rows = result.fetchall()
@@ -203,7 +215,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     ) -> List[KBDocument]:
         """Search KB documents by text."""
         # Simplified search - full-text search on title and description
-        sql_query = text("""
+        sql_query = text(
+            """
             SELECT doc_id, owner_user_id, organization_id, title, description, document_type,
                    chromadb_collection, chromadb_doc_count, visibility, tags,
                    file_size, original_filename, content_type, storage_path,
@@ -213,7 +226,8 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
               AND (title ILIKE :query OR description ILIKE :query)
             ORDER BY created_at DESC
             LIMIT :limit
-        """)
+        """
+        )
 
         result = await self.db.execute(
             sql_query, {"query": f"%{query}%", "limit": limit}
@@ -232,14 +246,16 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         shared_by: str,
     ) -> bool:
         """Share document with specific user."""
-        query = text("""
+        query = text(
+            """
             SELECT share_kb_document_with_user(
                 :doc_id,
                 :shared_with_user_id,
                 :permission::kb_share_permission,
                 :shared_by
             )
-        """)
+        """
+        )
 
         await self.db.execute(
             query,
@@ -259,13 +275,15 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         self, doc_id: str, user_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from user."""
-        query = text("""
+        query = text(
+            """
             SELECT unshare_kb_document_from_user(
                 :doc_id,
                 :user_id,
                 :unshared_by
             )
-        """)
+        """
+        )
 
         await self.db.execute(
             query, {"doc_id": doc_id, "user_id": user_id, "unshared_by": unshared_by}
@@ -278,14 +296,16 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         self, doc_id: str, team_id: str, permission: KBSharePermission, shared_by: str
     ) -> bool:
         """Share document with team."""
-        query = text("""
+        query = text(
+            """
             SELECT share_kb_document_with_team(
                 :doc_id,
                 :team_id,
                 :permission::kb_share_permission,
                 :shared_by
             )
-        """)
+        """
+        )
 
         await self.db.execute(
             query,
@@ -306,10 +326,12 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     ) -> bool:
         """Unshare document from team."""
         # Use SQL function from migration 004
-        query = text("""
+        query = text(
+            """
             DELETE FROM kb_document_team_shares
             WHERE doc_id = :doc_id AND team_id = :team_id
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"doc_id": doc_id, "team_id": team_id})
         await self.db.commit()
@@ -320,12 +342,14 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         self, doc_id: str, org_id: str, permission: KBSharePermission, shared_by: str
     ) -> bool:
         """Share document with entire organization."""
-        query = text("""
+        query = text(
+            """
             INSERT INTO kb_document_org_shares (doc_id, organization_id, permission, shared_by, shared_at)
             VALUES (:doc_id, :org_id, :permission::kb_share_permission, :shared_by, :shared_at)
             ON CONFLICT (doc_id, organization_id) DO UPDATE
             SET permission = EXCLUDED.permission
-        """)
+        """
+        )
 
         await self.db.execute(
             query,
@@ -346,10 +370,12 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         self, doc_id: str, org_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from organization."""
-        query = text("""
+        query = text(
+            """
             DELETE FROM kb_document_org_shares
             WHERE doc_id = :doc_id AND organization_id = :org_id
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"doc_id": doc_id, "org_id": org_id})
         await self.db.commit()
@@ -359,29 +385,35 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     async def list_document_shares(self, doc_id: str) -> Dict[str, Any]:
         """List all shares for a document."""
         # Get user shares
-        user_query = text("""
+        user_query = text(
+            """
             SELECT shared_with_user_id, permission, shared_at, shared_by
             FROM kb_document_shares
             WHERE doc_id = :doc_id
-        """)
+        """
+        )
         user_result = await self.db.execute(user_query, {"doc_id": doc_id})
         user_shares = user_result.fetchall()
 
         # Get team shares
-        team_query = text("""
+        team_query = text(
+            """
             SELECT team_id, permission, shared_at, shared_by
             FROM kb_document_team_shares
             WHERE doc_id = :doc_id
-        """)
+        """
+        )
         team_result = await self.db.execute(team_query, {"doc_id": doc_id})
         team_shares = team_result.fetchall()
 
         # Get org shares
-        org_query = text("""
+        org_query = text(
+            """
             SELECT organization_id, permission, shared_at, shared_by
             FROM kb_document_org_shares
             WHERE doc_id = :doc_id
-        """)
+        """
+        )
         org_result = await self.db.execute(org_query, {"doc_id": doc_id})
         org_shares = org_result.fetchall()
 
@@ -393,9 +425,11 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def user_can_access_document(self, user_id: str, doc_id: str) -> bool:
         """Check if user has access to document."""
-        query = text("""
+        query = text(
+            """
             SELECT user_can_access_kb_document(:user_id, :doc_id)
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"user_id": user_id, "doc_id": doc_id})
         row = result.fetchone()
@@ -406,9 +440,11 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         self, user_id: str, doc_id: str
     ) -> Optional[KBSharePermission]:
         """Get user's permission level for document."""
-        query = text("""
+        query = text(
+            """
             SELECT get_user_kb_document_permission(:user_id, :doc_id)
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"user_id": user_id, "doc_id": doc_id})
         row = result.fetchone()

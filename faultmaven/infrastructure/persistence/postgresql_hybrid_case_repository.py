@@ -153,7 +153,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Main query with LEFT JOINs for normalized tables
-            query = text("""
+            query = text(
+                """
                 SELECT
                     c.*,
 
@@ -240,7 +241,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 LEFT JOIN uploaded_files f ON c.case_id = f.case_id
                 WHERE c.case_id = :case_id
                 GROUP BY c.case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             row = result.fetchone()
@@ -302,13 +304,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             total_count = count_result.scalar()
 
             # List query (simplified - just get case IDs, then fetch full cases)
-            list_query = text(f"""
+            list_query = text(
+                f"""
                 SELECT case_id
                 FROM cases
                 {where_sql}
                 ORDER BY updated_at DESC
                 LIMIT :limit OFFSET :offset
-            """)
+            """
+            )
 
             result = await self.db.execute(list_query, params)
             case_ids = [row[0] for row in result.fetchall()]
@@ -369,14 +373,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Use the upsert_case_participant function from migration 002
-            query = text("""
+            query = text(
+                """
                 SELECT upsert_case_participant(
                     :case_id,
                     :user_id,
                     :role::participant_role,
                     :added_by
                 )
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -414,13 +420,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Use the remove_case_participant function from migration 002
-            query = text("""
+            query = text(
+                """
                 SELECT remove_case_participant(
                     :case_id,
                     :user_id,
                     :removed_by
                 )
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -450,12 +458,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             List of participants with their roles
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT user_id, role, added_at, added_by, last_accessed_at
                 FROM case_participants
                 WHERE case_id = :case_id
                 ORDER BY added_at DESC
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             rows = result.fetchall()
@@ -520,7 +530,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
             # Search query with relevance ranking
-            search_query = text(f"""
+            search_query = text(
+                f"""
                 SELECT DISTINCT c.case_id,
                     ts_rank(to_tsvector('english', c.title), plainto_tsquery('english', :query)) as rank
                 FROM cases c
@@ -528,7 +539,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {where_sql}
                 ORDER BY rank DESC, c.updated_at DESC
                 LIMIT :limit
-            """)
+            """
+            )
 
             result = await self.db.execute(search_query, params)
             case_ids = [row[0] for row in result.fetchall()]
@@ -563,10 +575,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         try:
             message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_messages (message_id, case_id, role, content, metadata)
                 VALUES (:message_id, :case_id, :role, :content, :metadata)
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -603,13 +617,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             List of message dictionaries
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT message_id, role, content, created_at, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
                 LIMIT :limit OFFSET :offset
-            """)
+            """
+            )
 
             result = await self.db.execute(
                 query, {"case_id": case_id, "limit": limit, "offset": offset}
@@ -649,11 +665,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             True if updated
         """
         try:
-            query = text("""
+            query = text(
+                """
                 UPDATE cases
                 SET last_activity_at = NOW()
                 WHERE case_id = :case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             await self.db.commit()
@@ -674,7 +692,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             Dictionary with analytics data
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT
                     COUNT(DISTINCT e.evidence_id) as evidence_count,
                     COUNT(DISTINCT h.hypothesis_id) as hypothesis_count,
@@ -692,7 +711,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 LEFT JOIN uploaded_files f ON c.case_id = f.case_id
                 WHERE c.case_id = :case_id
                 GROUP BY c.case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             row = result.fetchone()
@@ -730,7 +750,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             Number of cases deleted
         """
         try:
-            query = text("""
+            query = text(
+                """
                 DELETE FROM cases
                 WHERE case_id IN (
                     SELECT case_id
@@ -739,7 +760,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     AND closed_at < NOW() - INTERVAL ':max_age_days days'
                     LIMIT :batch_size
                 )
-            """)
+            """
+            )
 
             result = await self.db.execute(
                 query, {"max_age_days": max_age_days, "batch_size": batch_size}
@@ -758,7 +780,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def _upsert_case_record(self, case: Case) -> None:
         """Upsert main cases table (JSONB columns for flexible data)."""
-        query = text("""
+        query = text(
+            """
             INSERT INTO cases (
                 case_id, user_id, title, status, created_at, updated_at,
                 inquiry, problem_verification, working_conclusion,
@@ -785,7 +808,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 documentation = EXCLUDED.documentation,
                 progress = EXCLUDED.progress,
                 metadata = EXCLUDED.metadata
-        """)
+        """
+        )
 
         await self.db.execute(
             query,
@@ -840,18 +864,21 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         # Delete existing evidence not in current list
         current_ids = [e.evidence_id for e in evidence_list]
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM evidence
                 WHERE case_id = :case_id
                 AND evidence_id != ALL(:current_ids)
-            """)
+            """
+            )
             await self.db.execute(
                 delete_query, {"case_id": case_id, "current_ids": current_ids}
             )
 
         # Upsert each evidence record
         for evidence in evidence_list:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO evidence (
                     evidence_id, case_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata
@@ -865,7 +892,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     preprocessed_content = EXCLUDED.preprocessed_content,
                     content_ref = EXCLUDED.content_ref,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -890,18 +918,21 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         # Delete existing hypotheses not in current dict
         current_ids = list(hypotheses_dict.keys())
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM hypotheses
                 WHERE case_id = :case_id
                 AND hypothesis_id != ALL(:current_ids)
-            """)
+            """
+            )
             await self.db.execute(
                 delete_query, {"case_id": case_id, "current_ids": current_ids}
             )
 
         # Upsert each hypothesis
         for hypothesis_id, hypothesis in hypotheses_dict.items():
-            query = text("""
+            query = text(
+                """
                 INSERT INTO hypotheses (
                     hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
                     last_updated_turn, last_progress_at_turn, iterations_without_progress,
@@ -925,7 +956,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     concluded_at = EXCLUDED.concluded_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -966,11 +998,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             s.solution_id for s in solutions_list if hasattr(s, "solution_id")
         ]
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM solutions
                 WHERE case_id = :case_id
                 AND solution_id != ALL(:current_ids)
-            """)
+            """
+            )
             await self.db.execute(
                 delete_query, {"case_id": case_id, "current_ids": current_ids}
             )
@@ -983,7 +1017,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 else f"sol_{uuid4().hex[:12]}"
             )
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO solutions (
                     solution_id, case_id, description, status, implementation_steps,
                     risk_level, estimated_effort, verification_result, verification_timestamp,
@@ -1004,7 +1039,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     implemented_at = EXCLUDED.implemented_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1042,18 +1078,21 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         # Delete existing files not in current list
         current_ids = [f.file_id for f in files_list]
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM uploaded_files
                 WHERE case_id = :case_id
                 AND file_id != ALL(:current_ids)
-            """)
+            """
+            )
             await self.db.execute(
                 delete_query, {"case_id": case_id, "current_ids": current_ids}
             )
 
         # Upsert each file (field names match Pydantic model exactly)
         for file in files_list:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO uploaded_files (
                     file_id, case_id, filename, size_bytes, data_type,
                     uploaded_at_turn, uploaded_at, source_type,
@@ -1072,7 +1111,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     content_ref = EXCLUDED.content_ref,
                     preprocessing_summary = EXCLUDED.preprocessing_summary,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1112,11 +1152,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         if current_ids:
             # Delete messages not in current list (PostgreSQL array syntax)
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM case_messages
                 WHERE case_id = :case_id
                 AND message_id != ALL(:current_ids)
-            """)
+            """
+            )
             await self.db.execute(
                 delete_query, {"case_id": case_id, "current_ids": current_ids}
             )
@@ -1127,7 +1169,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if not msg.get("message_id"):
                 continue
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_messages (
                     message_id, case_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
@@ -1140,7 +1183,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     created_at = EXCLUDED.created_at,
                     token_count = EXCLUDED.token_count,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1161,14 +1205,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     ) -> None:
         """Append status transitions (append-only audit trail)."""
         for transition in transitions:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_status_transitions (
                     case_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
                     :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata::jsonb
                 )
                 ON CONFLICT DO NOTHING
-            """)
+            """
+            )
 
             await self.db.execute(
                 query,
@@ -1367,12 +1413,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # PostgreSQL driver (asyncpg) handles date objects correctly
             date_val = date
 
-            query = text("""
+            query = text(
+                """
                 SELECT COUNT(*)
                 FROM cases
                 WHERE user_id = :user_id
                 AND created_at::date = :date
-                """)
+                """
+            )
             result = await self.db.execute(
                 query, {"user_id": user_id, "date": date_val}
             )
@@ -1394,13 +1442,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
-            unmark_query = text("""
+            unmark_query = text(
+                """
                 UPDATE reports
                 SET is_current = FALSE, updated_at = NOW()
                 WHERE case_id = :case_id
                   AND report_type = :report_type
                   AND is_current = TRUE
-            """)
+            """
+            )
             await self.db.execute(
                 unmark_query,
                 {"case_id": report.case_id, "report_type": report.report_type.value},
@@ -1413,7 +1463,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             else "{}"
         )
 
-        insert_query = text("""
+        insert_query = text(
+            """
             INSERT INTO reports (
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -1436,7 +1487,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
-        """)
+        """
+        )
 
         now = datetime.now(timezone.utc)
         generated_at = (
@@ -1487,7 +1539,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         )
         from faultmaven.utils.serialization import to_json_compatible
 
-        query = text("""
+        query = text(
+            """
             SELECT
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -1495,7 +1548,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 generated_at, updated_at
             FROM reports
             WHERE report_id = :report_id
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"report_id": report_id})
         row = result.fetchone()
@@ -1533,7 +1587,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         where_clause = " AND ".join(conditions)
 
-        query = text(f"""
+        query = text(
+            f"""
             SELECT
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
@@ -1542,7 +1597,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             FROM reports
             WHERE {where_clause}
             ORDER BY report_type, version DESC
-        """)
+        """
+        )
 
         result = await self.db.execute(query, params)
         rows = result.fetchall()
@@ -1562,14 +1618,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
-            unmark_query = text("""
+            unmark_query = text(
+                """
                 UPDATE reports
                 SET is_current = FALSE, updated_at = NOW()
                 WHERE case_id = :case_id
                   AND report_type = :report_type
                   AND report_id != :report_id
                   AND is_current = TRUE
-            """)
+            """
+            )
             await self.db.execute(
                 unmark_query,
                 {
@@ -1596,7 +1654,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         else:
             updated_at = now  # Default to current time if not set
 
-        update_query = text("""
+        update_query = text(
+            """
             UPDATE reports
             SET version = :version,
                 is_current = :is_current,
@@ -1609,7 +1668,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 metadata = :metadata::jsonb,
                 updated_at = :updated_at::timestamptz
             WHERE report_id = :report_id
-        """)
+        """
+        )
 
         result = await self.db.execute(
             update_query,
@@ -1637,10 +1697,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def delete_report(self, report_id: str) -> bool:
         """Delete report from PostgreSQL."""
-        delete_query = text("""
+        delete_query = text(
+            """
             DELETE FROM reports
             WHERE report_id = :report_id
-        """)
+        """
+        )
 
         result = await self.db.execute(delete_query, {"report_id": report_id})
         await self.db.commit()

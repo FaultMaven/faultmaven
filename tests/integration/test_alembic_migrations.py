@@ -159,10 +159,10 @@ class TestAlembicMigrationInfrastructure:
         # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (gap20_unified_data_processing)
+        # Verify revision ID matches the latest migration (add_solution_type_and_title)
         assert (
-            revision == "c7f8e3a1d9b4"
-        ), f"Expected revision c7f8e3a1d9b4 (gap20_unified_data_processing), got {revision}"
+            revision == "e9b4c2d1f7a6"
+        ), f"Expected revision e9b4c2d1f7a6 (add_solution_type_and_title), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Test 4: Migration can be rolled back successfully."""
@@ -175,22 +175,22 @@ class TestAlembicMigrationInfrastructure:
             len(tables_before) == 30
         ), f"Expected 30 tables initially, got {len(tables_before)}"
 
-        # Rollback latest migration (gap20_unified_data_processing)
-        # Should revert to evidence_classification_redesign (a32b2452ebb2)
+        # Rollback latest migration (add_solution_type_and_title)
+        # Should revert to add_hypothesis_generated_at_turn (d8a3f1b2c4e5)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify tables still exist (we're back at evidence_classification_redesign)
+        # Verify tables still exist (we're back at add_hypothesis_generated_at_turn)
         tables_after = get_tables(TEST_DB)
         assert (
             len(tables_after) == 30
         ), f"Expected 30 tables after rollback, got {len(tables_after)}: {tables_after}"
 
-        # Verify revision moved back to evidence_classification_redesign
+        # Verify revision moved back to add_hypothesis_generated_at_turn
         revision = get_current_revision(database_url)
         assert (
-            revision == "a32b2452ebb2"
-        ), f"Expected revision a32b2452ebb2 (evidence_classification_redesign) after rollback, got {revision}"
+            revision == "d8a3f1b2c4e5"
+        ), f"Expected revision d8a3f1b2c4e5 (add_hypothesis_generated_at_turn) after rollback, got {revision}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Test 5: Migration can be re-applied after rollback."""
@@ -214,11 +214,11 @@ class TestAlembicMigrationInfrastructure:
         ), "knowledge_suggestions table should be restored"
         assert "organizations" in tables, "organizations table should be restored"
 
-        # Verify revision (should be back at head: gap20_unified_data_processing)
+        # Verify revision (should be back at head: add_solution_type_and_title)
         revision = get_current_revision(database_url)
         assert (
-            revision == "c7f8e3a1d9b4"
-        ), f"Expected revision c7f8e3a1d9b4 (gap20_unified_data_processing), got {revision}"
+            revision == "e9b4c2d1f7a6"
+        ), f"Expected revision e9b4c2d1f7a6 (add_solution_type_and_title), got {revision}"
 
     def test_migration_history_command(self, database_url):
         """Test 6: Alembic history command works."""
