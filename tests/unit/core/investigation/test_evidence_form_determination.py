@@ -3,15 +3,13 @@
 Tests:
 - EvidenceForm enum has all expected values
 - Evidence model accepts source_file_id (optional)
-- _determine_evidence_form() maps classification objects to correct EvidenceForm
+- Payload-driven form assignment: attachments → DOCUMENT, agent findings → SUBMITTED_DATA
 """
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import _determine_evidence_form
 from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
@@ -88,43 +86,67 @@ class TestEvidenceSourceFileId:
         assert restored.source_file_id is None
 
 
-class TestDetermineEvidenceForm:
-    """Test _determine_evidence_form() helper function."""
+class TestPayloadDrivenFormAssignment:
+    """Test that evidence form is determined by payload context, not LLM classification.
 
-    def test_none_returns_user_text(self):
-        """No classification → default to USER_TEXT."""
-        assert _determine_evidence_form(None) is EvidenceForm.USER_TEXT
+    In the unified turn pipeline:
+    - Attachments (file uploads, pasted data) → DOCUMENT (set in _preprocess_attachment)
+    - Agent-derived findings (evidence_to_add) → SUBMITTED_DATA (set in milestone engine)
+    - Query-only turns with no evidence → USER_TEXT (not created as evidence)
+    """
 
-    def test_user_text_classification(self):
-        """'user_text' classification → USER_TEXT form."""
-        sc = SimpleNamespace(type="user_text")
-        assert _determine_evidence_form(sc) is EvidenceForm.USER_TEXT
+    def _make_evidence(self, **overrides) -> Evidence:
+        defaults = {
+            "evidence_id": "ev_abcdef012345",
+            "summary": "Test evidence",
+            "category": EvidenceCategory.SYMPTOM_EVIDENCE,
+            "source_type": EvidenceSourceType.LOGS,
+            "form": EvidenceForm.SUBMITTED_DATA,
+            "collected_at": datetime.now(UTC),
+            "collected_by": "user_123",
+            "collected_at_turn": 1,
+            "primary_purpose": "Investigation context",
+            "preprocessed_content": "test content",
+            "content_size_bytes": 12,
+            "preprocessing_method": "none",
+        }
+        defaults.update(overrides)
+        return Evidence(**defaults)
 
-    def test_submitted_data_classification(self):
-        """'submitted_data' classification → SUBMITTED_DATA form."""
-        sc = SimpleNamespace(type="submitted_data")
-        assert _determine_evidence_form(sc) is EvidenceForm.SUBMITTED_DATA
+    def test_attachment_evidence_is_document(self):
+        """Evidence created from attachments has form=DOCUMENT."""
+        ev = self._make_evidence(form=EvidenceForm.DOCUMENT)
+        assert ev.form == EvidenceForm.DOCUMENT
 
-    def test_mixed_classification(self):
-        """'mixed' classification → SUBMITTED_DATA form (data takes priority)."""
-        sc = SimpleNamespace(type="mixed")
-        assert _determine_evidence_form(sc) is EvidenceForm.SUBMITTED_DATA
+    def test_agent_finding_evidence_is_submitted_data(self):
+        """Evidence from evidence_to_add (agent findings) has form=SUBMITTED_DATA."""
+        ev = self._make_evidence(form=EvidenceForm.SUBMITTED_DATA)
+        assert ev.form == EvidenceForm.SUBMITTED_DATA
 
-    def test_unknown_type_defaults_user_text(self):
-        """Unknown classification type → USER_TEXT (safe default)."""
-        sc = SimpleNamespace(type="something_unknown")
-        assert _determine_evidence_form(sc) is EvidenceForm.USER_TEXT
+    def test_user_text_evidence(self):
+        """USER_TEXT form is valid for conversational evidence."""
+        ev = self._make_evidence(form=EvidenceForm.USER_TEXT)
+        assert ev.form == EvidenceForm.USER_TEXT
 
-    def test_missing_type_attr_defaults_user_text(self):
-        """Object without .type attribute → USER_TEXT (safe default)."""
-        sc = SimpleNamespace()  # no type attribute
-        assert _determine_evidence_form(sc) is EvidenceForm.USER_TEXT
-
-    def test_with_dict_like_classification(self):
-        """Works with any object that has a .type attribute."""
-        sc = SimpleNamespace(
-            type="submitted_data",
-            confidence="high",
-            reasoning="User pasted log data",
+    def test_attachment_evidence_has_preprocessing(self):
+        """Attachment evidence should have preprocessing metadata."""
+        ev = self._make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            preprocessing_method="crime_scene",
+            data_type="LOGS",
+            content_size_bytes=5000,
         )
-        assert _determine_evidence_form(sc) is EvidenceForm.SUBMITTED_DATA
+        assert ev.form == EvidenceForm.DOCUMENT
+        assert ev.preprocessing_method == "crime_scene"
+        assert ev.data_type == "LOGS"
+
+    def test_agent_finding_has_no_preprocessing(self):
+        """Agent-derived evidence has preprocessing_method='none'."""
+        ev = self._make_evidence(
+            form=EvidenceForm.SUBMITTED_DATA,
+            preprocessing_method="none",
+            data_type=None,
+        )
+        assert ev.form == EvidenceForm.SUBMITTED_DATA
+        assert ev.preprocessing_method == "none"
+        assert ev.data_type is None

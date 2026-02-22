@@ -1,10 +1,14 @@
 """
-Preprocessing Service - 4-Step Pipeline Orchestrator
+Preprocessing Service - Tier 0+1 Pipeline Orchestrator
 
 Coordinates the preprocessing pipeline:
-- preprocess(): Legacy 4-step pipeline (classify → extract → chunk → sanitize)
-- process_upload(): Design v3.0 entry point (file validation → classify → extract
+- classify_and_extract(): Unified entry point for all attachments
+  (classify → extract with timeout → sanitize → package PreprocessingResult)
+- process_upload(): File upload entry point (file validation → classify → extract
   with timeout → sanitize → store raw file → package PreprocessingResult)
+
+Called from _preprocess_attachment() in the unified turn pipeline (Step 1,
+before LLM inference).
 
 Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md
@@ -542,9 +546,9 @@ class PreprocessingService:
         """
         Classify content and run the matched extractor.
 
-        Used for pasted text that the LLM classified as submitted_data/mixed.
-        Same Tier 0+1 pipeline as process_upload() but without file validation,
-        deduplication, raw file storage, or bytes handling.
+        Called from _preprocess_attachment() for all attachments in the unified
+        turn pipeline. Same Tier 0+1 pipeline as process_upload() but without
+        file validation, deduplication, raw file storage, or bytes handling.
 
         Returns:
             PreprocessingResult with structural_index, summary, and extraction metadata.

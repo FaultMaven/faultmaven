@@ -8,7 +8,7 @@ Priority:
 2. Case Definition & Core Identity
 3. Recent Conversation History (Last N turns)
 4. Knowledge Base Search Results
-5. Detailed Evidence Summaries
+5. Evidence Context (Sliding Window: Tier A structural index + Tier B/C summaries)
 6. Older Conversation History (Truncated)
 
 Gap #6: Token Budget Dynamic Loading
@@ -23,11 +23,31 @@ Gap #9: Input Sanitization
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from faultmaven.modules.case.contracts import Case, CaseStatus, InvestigationStage
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    EvidenceForm,
+    InvestigationStage,
+)
+
+# =============================================================================
+# Evidence Context Sliding Window Configuration
+# =============================================================================
+# How many recent data evidence items get full structural_index (Tier A)
+EVIDENCE_CONTEXT_RECENT_COUNT = int(os.getenv("EVIDENCE_CONTEXT_RECENT_COUNT", "3"))
+# Max chars per Tier A evidence item's structural_index
+EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM = int(
+    os.getenv("EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM", "4000")
+)
+# Max total chars for the entire evidence context section
+EVIDENCE_CONTEXT_MAX_TOTAL_CHARS = int(
+    os.getenv("EVIDENCE_CONTEXT_MAX_TOTAL_CHARS", "16000")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +302,105 @@ Turns: {turns_total} total, {turns_since_progress} since last progress
     return summary
 
 
+def _build_evidence_context(case: Case) -> str:
+    """
+    Build the evidence context section using a three-tier sliding window.
+
+    This replaces the simple last-10 evidence list with a tiered system that
+    includes structural indexes for recent data evidence, fixing the
+    "I don't have access to file content" bug.
+
+    Tier A: Last N data evidence items (form=DOCUMENT or SUBMITTED_DATA)
+            → Include preprocessed_content (structural index), capped per item.
+    Tier B: Older data evidence → summary only.
+    Tier C: USER_TEXT evidence → summary only, always.
+
+    Token budget: ~4000 tokens dedicated. Worst case: 3 Tier A items x 4000
+    chars = 12,000 chars (~3000 tokens).
+    """
+    if not case.evidence:
+        return (
+            "<evidence_collected>\n"
+            "No formal evidence collected yet.\n"
+            "</evidence_collected>"
+        )
+
+    # Separate evidence by form for tiered treatment
+    data_evidence = []  # DOCUMENT or SUBMITTED_DATA
+    text_evidence = []  # USER_TEXT
+    for ev in case.evidence:
+        if ev.form in (EvidenceForm.DOCUMENT, EvidenceForm.SUBMITTED_DATA):
+            data_evidence.append(ev)
+        else:
+            text_evidence.append(ev)
+
+    # Split data evidence into recent (Tier A) and older (Tier B)
+    tier_a = data_evidence[-EVIDENCE_CONTEXT_RECENT_COUNT:]
+    tier_b = (
+        data_evidence[:-EVIDENCE_CONTEXT_RECENT_COUNT]
+        if len(data_evidence) > EVIDENCE_CONTEXT_RECENT_COUNT
+        else []
+    )
+
+    result = "<evidence_collected>\n"
+    total_chars = 0
+
+    # Tier A: Recent data evidence with structural index
+    for ev in tier_a:
+        structural_index = ev.preprocessed_content or ""
+        truncated = False
+
+        # Per-item cap
+        if len(structural_index) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
+            remaining_chars = (
+                len(structural_index) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
+            )
+            structural_index = structural_index[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
+            truncated = True
+
+        # Total budget cap
+        entry_estimate = (
+            len(structural_index) + len(ev.summary or "") + 200
+        )  # overhead for XML tags
+        if total_chars + entry_estimate > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
+            # Downgrade remaining Tier A to Tier B (summary only)
+            tier_b.append(ev)
+            continue
+
+        data_type_attr = f' data_type="{ev.data_type}"' if ev.data_type else ""
+        result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}>\n'
+        result += f"    <summary>{ev.summary}</summary>\n"
+        if structural_index.strip():
+            result += "    <structural_index>\n"
+            result += structural_index
+            if truncated:
+                result += f"\n[TRUNCATED: {remaining_chars:,} more characters. Use search_file or read_file to query the full content.]"
+            result += "\n    </structural_index>\n"
+        result += "  </evidence>\n"
+        total_chars += entry_estimate
+
+    # Tier B: Older data evidence (summary only)
+    for ev in tier_b:
+        entry = f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}">'
+        entry += f"<summary>{ev.summary}</summary></evidence>\n"
+        if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
+            break
+        result += entry
+        total_chars += len(entry)
+
+    # Tier C: USER_TEXT evidence (summary only, always)
+    for ev in text_evidence[-5:]:  # Cap at 5 most recent text items
+        entry = f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}">'
+        entry += f"<summary>{ev.summary}</summary></evidence>\n"
+        if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
+            break
+        result += entry
+        total_chars += len(entry)
+
+    result += "</evidence_collected>"
+    return result
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -395,16 +514,12 @@ def build_investigation_context(
         else:
             milestones_str += "<progress_indicators>None yet</progress_indicators>"
 
-    # 4. Evidence Summary
-    # Note: Evidence IDs removed from LLM context (category-based validation)
-    # Evidence is created AFTER LLM response, so IDs don't exist yet
-    evidence_str = "<evidence_collected>\n"
-    if case.evidence:
-        for i, ev in enumerate(case.evidence[-10:]):  # Last 10 evidence items
-            evidence_str += f"- [{ev.category.value}] {ev.summary}\n"
-    else:
-        evidence_str += "No formal evidence collected yet.\n"
-    evidence_str += "</evidence_collected>"
+    # 4. Evidence Context (Sliding Window)
+    # Three-tier system: Tier A (recent data with structural index),
+    # Tier B (older data, summary only), Tier C (user text, summary only).
+    # Fixes "I don't have access to file content" bug by including
+    # structural indexes in the LLM context for recent evidence.
+    evidence_str = _build_evidence_context(case)
 
     # 5. Hypothesis Summary
     hypothesis_str = ""

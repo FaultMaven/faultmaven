@@ -89,9 +89,9 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — progr
 
 1. **Start cheap, escalate on demand.** Tier 0+1 runs on every submission. Tiers 2-4 run only when the user's questions can't be answered by cheaper tiers.
 
-2. **Classification-driven, not pipeline-driven.** Evidence form (`USER_TEXT` vs `SUBMITTED_DATA` vs `DOCUMENT`) is determined by the LLM's `submission_classification`, not by which endpoint received the data.
+2. **Payload-driven evidence form.** Evidence form (`USER_TEXT` vs `SUBMITTED_DATA` vs `DOCUMENT`) is determined by payload context: attachments present → `DOCUMENT`, agent tool findings → `SUBMITTED_DATA`, query-only → `USER_TEXT`. *(Updated v4.1: was classification-driven via `submission_classification`, now payload-driven via unified turn pipeline.)*
 
-3. **Endpoint-agnostic processing.** Whether data arrives via `/queries` (text) or `/data` (file upload) does not determine the processing tier. The three factors for escalation are: (a) data size, (b) user query demand, (c) max size cap.
+3. **Single unified endpoint.** All turns arrive via `POST /cases/{id}/turns` as `{query?, attachments?[]}`. Preprocessing runs before LLM inference (Step 1), not after. *(Updated v4.1: was endpoint-agnostic with `/queries` and `/data`.)*
 
 4. **Re-runnable extractors.** Domain-specific extractors (Crime Scene, Anomaly Detection, etc.) can be re-invoked with different parameters on follow-up queries, not just at upload time.
 
@@ -203,82 +203,51 @@ return ClassificationResult(
 
 The extractor fallback chain (Section 4.9 of v3.2) ensures no extractor propagates errors. Best-effort dispatch gives the specialized extractor a *chance* to find something valuable, with the same safety net as before.
 
-### 2.4 Pasted Text Processing (NEW)
+### 2.4 Pasted Text Processing
 
-**Problem**: In v3.2, pasted text via `/queries` bypasses Tier 0+1 entirely. The LLM sees raw pasted data without structural indexing, error clustering, anomaly detection, or secret redaction. A user pasting 500 lines of logs gets no crime scene extraction.
+> **Updated v4.1**: Pasted text is now submitted as an attachment via the unified
+> `POST /cases/{id}/turns` endpoint (using the `pasted_content` form field). It is
+> preprocessed in Step 1 of `process_turn()` alongside file uploads — **before** the
+> LLM runs. The old `submission_classification`-driven routing was removed.
 
-**Solution**: When the LLM's `submission_classification.type` is `submitted_data` or `mixed`, route the text content through `DataClassifier.classify()` + Tier 1 extraction before the LLM processes it for evidence creation.
-
-#### Flow: Pasted Text Through Tier 0+1
+#### Flow: All Attachments Through Tier 0+1 (Unified Pipeline)
 
 ```
-User sends message via /queries
-  │
+User submits turn via POST /cases/{id}/turns
+  │  {query?, files[]?, pasted_content?}
   ▼
-MilestoneEngine.process_turn()
+investigation_service.process_turn(payload: TurnPayload)
   │
-  ├─ LLM processes message → generates response
-  │   └─ submission_classification.type = ?
+  ├─ STEP 1: PRE-LLM PREPROCESSING
+  │   for attachment in payload.attachments:
+  │       _preprocess_attachment(case, attachment)
+  │           → DataClassifier.classify(content, filename)
+  │           → extractor.extract(content)
+  │           → sanitize(result)
+  │           → Evidence(form=DOCUMENT, preprocessed_content=structural_index)
   │
-  ├─ If "user_text" → No extraction needed. Normal conversation flow.
+  ├─ STEP 2: LLM INFERENCE
+  │   Context includes structural indexes via Context Sliding Window
+  │   (Tier A: recent data evidence with full structural_index)
+  │   → LLM responds with evidence_to_add (agent findings → SUBMITTED_DATA)
   │
-  ├─ If "submitted_data" or "mixed":
-  │   │
-  │   ▼
-  │   DataClassifier.classify(
-  │       filename="pasted_content.txt",   # synthetic filename
-  │       content=user_message,            # full message text (*)
-  │   )
-  │   │
-  │   ▼ DetailedDataType (e.g., LOGS_AND_ERRORS)
-  │   │
-  │   extractor = extractors[classified_type]
-  │   extraction_result = extractor.extract(user_message)
-  │   │
-  │   ▼ ExtractionResult (e.g., crime scene with error clusters)
-  │   │
-  │   sanitize(extraction_result)
-  │   │
-  │   ▼ Evidence created with:
-  │       - preprocessed_content = extraction_result.content
-  │       - form = SUBMITTED_DATA
-  │       - preprocessing_method = extractor.strategy_name
-  │       - data_type = to_unified_data_type(classified_type)
-  │
-  └─ Agent continues with structural index in context
+  └─ Result: TurnResponse
 ```
 
-(*) **Mixed text handling**: The full message (including user's prose) is passed to classification as-is (Option A). The classifier uses pattern matching on content samples — a few sentences of prose mixed with 200 lines of logs won't confuse it. The extractors are noise-tolerant by design:
-- Log extractor: scans for `ERROR|WARN|FATAL` patterns, skips non-matching lines
-- Metrics extractor: looks for numeric columns, skips non-numeric rows
-- Config extractor: parses structured formats, ignores unparseable content
+#### Pasted Text vs File Upload: Same Pipeline, Same Extractors
 
-#### When to Classify Pasted Text
-
-The classification runs **after** the LLM responds (not before), because the LLM's `submission_classification` is needed to decide whether the text contains data at all. The sequence is:
-
-1. LLM processes user message → returns `submission_classification`
-2. If `type == "submitted_data"` or `"mixed"`:
-   a. Run `DataClassifier.classify()` on the message content
-   b. Run the matched extractor
-   c. Use the extraction result as `preprocessed_content` for the evidence
-3. LLM's `evidence_to_add` is enriched with the structural index
-
-This means the LLM sees the raw text on the first pass (it must, to classify it), but the **evidence record** gets the structured extraction. On subsequent turns, the agent works from the structural index rather than raw text.
-
-#### Pasted Text vs File Upload: Same Extractors, Different Entry Points
-
-| Aspect | File Upload (`/data`) | Pasted Text (`/queries`) |
-|--------|----------------------|--------------------------|
-| **Tier 0 trigger** | Always (file arrives) | Conditional (LLM says `submitted_data`/`mixed`) |
-| **Filename** | Real filename (e.g., `app.log`) | Synthetic: `pasted_content.txt` |
+| Aspect | File Upload | Pasted Text |
+|--------|-------------|-------------|
+| **Entry point** | `files[]` form field | `pasted_content` form field |
+| **Filename** | Real filename (e.g., `app.log`) | Synthetic: `pasted-content-{ts}.txt` |
 | **Extension hints** | Available (`.log`, `.yaml`, `.csv`) | Not available — classifier relies on content patterns |
-| **Raw file storage** | Stored via `content_ref` | Stored as evidence `preprocessed_content` |
-| **Deduplication** | SHA-256 of file bytes | SHA-256 of message text |
+| **Raw file storage** | Stored via `content_ref` | Stored via `content_ref` |
+| **Deduplication** | SHA-256 of file bytes | SHA-256 of content |
 | **Extractors used** | Same 11 | Same 11 |
-| **Form** | `DOCUMENT` | `SUBMITTED_DATA` |
+| **Form** | `DOCUMENT` | `DOCUMENT` |
+| **Preprocessing** | Step 1 (before LLM) | Step 1 (before LLM) |
 
-**Output**: `PreprocessingResult` with `summary` (<500 chars) and `structural_index` (full extraction). For file uploads, raw file stored via `content_ref`.
+**Output**: `PreprocessingResult` with `summary` (<500 chars) and `structural_index` (full extraction). Raw content stored via `content_ref`.
 
 ---
 
@@ -779,29 +748,23 @@ class EvidenceForm(str, Enum):
 
 ### 8.2 Classification Logic
 
-Evidence form is determined by `_determine_evidence_form()` using the LLM's `submission_classification`:
+> **v4.1 Update:** The `_determine_evidence_form()` function and `submission_classification` field have been **removed**. Evidence form is now determined by payload context (which code path creates the evidence), not by LLM classification. See Section 2.4 for the unified pipeline flow.
 
-```python
-def _determine_evidence_form(submission_classification) -> EvidenceForm:
-    """Map LLM's submission_classification.type to the correct EvidenceForm."""
-    if not submission_classification:
-        return EvidenceForm.USER_TEXT
-    sc_type = getattr(submission_classification, "type", None)
-    if sc_type in ("submitted_data", "mixed"):
-        return EvidenceForm.SUBMITTED_DATA
-    return EvidenceForm.USER_TEXT
-```
+Evidence form is assigned deterministically based on how evidence enters the system:
+
+- **Attachments** (file uploads, pasted data processed through `_preprocess_attachment()`) → `DOCUMENT`
+- **Agent findings** (LLM `evidence_to_add` applied in milestone engine) → `SUBMITTED_DATA`
+- **User text** (conversational messages without data) → not created as evidence; stays in `case.messages[]`
 
 ### 8.3 Form Assignment by Context
 
 | Context | EvidenceForm | How Determined |
 |---------|-------------|----------------|
-| File upload via `/data` | `DOCUMENT` | Hardcoded in attachment evidence creation |
-| User types a question | `USER_TEXT` | `submission_classification.type == "user_text"` |
-| User pastes log data in text input | `SUBMITTED_DATA` | `submission_classification.type == "submitted_data"` |
-| User types question + pastes data | `SUBMITTED_DATA` | `submission_classification.type == "mixed"` |
+| File upload attachment | `DOCUMENT` | Set in `_preprocess_attachment()` during Step 1 |
+| Pasted data attachment | `DOCUMENT` | Set in `_preprocess_attachment()` during Step 1 |
+| LLM-identified evidence (`evidence_to_add`) | `SUBMITTED_DATA` | Hardcoded in milestone engine evidence creation |
 | Evidence from Tier 2/3 search results | `SUBMITTED_DATA` | Derived from submitted file data |
-| No classification available (fallback) | `USER_TEXT` | Safe default |
+| User types a question (no data) | N/A | No evidence created; message only |
 
 ---
 
@@ -814,7 +777,7 @@ def _determine_evidence_form(submission_classification) -> EvidenceForm:
 | `modules/agent/tools/` | Add `search_file_tool.py`, add `vectorize_file_tool.py` |
 | `core/preprocessing/tier2/basic.py` | Expose `_keyword_search` for Tier 2 tool |
 | `core/preprocessing/vector_storage.py` | Remove auto-call from upload path; keep as tool target |
-| `core/investigation/milestone_engine.py` | Add pasted text → Tier 0+1 routing after `submission_classification` |
+| `core/investigation/milestone_engine.py` | v4.1: Removed `_determine_evidence_form()` and `submission_classification` reads; evidence form is payload-driven |
 | `services/preprocessing/classifier.py` | Add best-effort fallback (highest-scoring candidate instead of always UNSTRUCTURED_TEXT) |
 | `services/preprocessing/preprocessing_service.py` | Expose `classify_and_extract(content, filename)` for pasted text path |
 | `modules/agent/tools/deep_analysis_tool.py` | No change (becomes Tier 3 tool) |
@@ -847,7 +810,7 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | Item | Description | When |
 |------|-------------|------|
 | **Frontend paste detection** | `onPaste` handler in `UnifiedInputBar.tsx` to send structured `{typed, pasted}` segments | After backend stabilizes |
-| **Unified endpoint processing** | Merge `/queries` and `/data` into single endpoint | Major API change, needs frontend coordination |
+| ~~**Unified endpoint processing**~~ | ~~Merge `/queries` and `/data` into single endpoint~~ | **Done in v4.1** — unified `process_turn()` pipeline (Phase 1-2) |
 | **Cross-file correlation** | Tier 3 analysis across multiple files simultaneously | Requires multi-file context windowing |
 | **Vectorization cost tracking** | Track per-case vectorization costs for billing | Enterprise feature |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |

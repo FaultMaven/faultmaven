@@ -82,8 +82,7 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 │  │ - PreprocessingResult.structural_index (if file upload)           │ │
 │  │ - PreprocessingResult.summary (<500 chars, always included)       │ │
 │  │                                                                     │ │
-│  │ Returns:                                                            │ │
-│  │ - submission_classification (user_text/submitted_data/mixed)       │ │
+│  │ Returns (v4.1 — submission_classification removed):                │ │
 │  │ - evidence_to_add (category, data_type, summary, purpose)         │ │
 │  │ - state_updates (hypotheses, milestones, etc.)                    │ │
 │  │ - agent_response (natural language response)                      │ │
@@ -91,23 +90,25 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
       │ BaseInteractionResponse
-      │ {submission_classification, state_updates, ...}
+      │ {state_updates, evidence_to_add, ...}
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Evidence Creation Decision Layer                      │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ if submission_classification.type == "user_text":                  │ │
-│  │     NO evidence created                                            │ │
-│  │     Message stays in case.messages[] only                          │ │
+│  │ v4.1: Payload-driven (no submission_classification)               │ │
 │  │                                                                     │ │
-│  │ elif submission_classification.type in ["submitted_data", "mixed"]: │ │
-│  │     Create evidence record:                                        │ │
-│  │     1. Check for duplicate (content_hash)                         │ │
-│  │     2. If duplicate: Create REJECTED with reference               │ │
-│  │     3. If unique: Create with LLM-provided category               │ │
-│  │        (invalid categories fall back to CONTEXTUAL_EVIDENCE)     │ │
-│  │     4. Infer milestone advancement                                │ │
-│  │     5. Insert into database                                        │ │
+│  │ Step 1 — Attachments (before LLM call):                           │ │
+│  │   Each attachment → _preprocess_attachment() → Evidence            │ │
+│  │   form=DOCUMENT, preprocessing_method from Tier 0+1               │ │
+│  │                                                                     │ │
+│  │ Step 2 — Agent findings (after LLM call):                         │ │
+│  │   For each item in evidence_to_add:                               │ │
+│  │     1. Compute content_hash for deduplication                     │ │
+│  │     2. Create Evidence with form=SUBMITTED_DATA                   │ │
+│  │     3. Infer milestone advancement                                │ │
+│  │     4. Insert into case                                            │ │
+│  │                                                                     │ │
+│  │ No evidence_to_add → no evidence created (query-only turn)        │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │

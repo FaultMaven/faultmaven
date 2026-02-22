@@ -1,19 +1,17 @@
-"""Case Data Ingestion Service
+"""Case Data Ingestion Service (Legacy)
 
-Purpose: Handles case-specific data ingestion and evidence extraction workflows
+Purpose: Handles case-specific data ingestion and evidence extraction workflows.
 
-This service manages data operations for case investigations including ingestion,
-classification, processing, and evidence extraction using interface dependencies
-for better testability and modularity.
+NOTE: As of the Unified Ingestion Pipeline (v4.1), attachment preprocessing is
+handled by process_turn() in investigation_service.py via _preprocess_attachment().
+This service is retained for potential batch/background processing use cases but
+is no longer called from the primary turn pipeline.
 
 Core Responsibilities:
-- Case file upload ingestion and validation
 - Data type classification through IDataClassifier
 - Evidence extraction and transparency reporting
 - Processing orchestration through ILogProcessor
-- Insight extraction with proper sanitization
 - Data storage management through IStorageBackend
-- Comprehensive error handling and tracing
 
 Part of the Case module - handles evidence processing for case investigations.
 """

@@ -8,8 +8,8 @@ Fast, rule-based classification (0 LLM calls) with 5-tier prioritization:
 4. Browser context (confidence=0.85-0.92)
 5. Rule-based patterns with file upload boost (confidence=0.60-0.98)
 
-Optimized for /data endpoint (file uploads + page captures).
-Also used for pasted text when LLM's submission_classification indicates submitted_data/mixed (v4.0).
+Called directly from _preprocess_attachment() in the unified turn pipeline
+for all attachments (file uploads and pasted data).
 """
 
 import re
