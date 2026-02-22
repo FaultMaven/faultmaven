@@ -1,9 +1,9 @@
-"""Unit tests for Gap #20: Unified Data Processing — Evidence Form Determination.
+"""Unit tests for Evidence Form Determination.
 
 Tests:
 - EvidenceForm enum has all expected values
 - Evidence model accepts source_file_id (optional)
-- _determine_evidence_form() maps SubmissionClassification to correct EvidenceForm
+- _determine_evidence_form() maps classification objects to correct EvidenceForm
 """
 
 from datetime import UTC, datetime
@@ -120,11 +120,9 @@ class TestDetermineEvidenceForm:
         sc = SimpleNamespace()  # no type attribute
         assert _determine_evidence_form(sc) is EvidenceForm.USER_TEXT
 
-    def test_with_real_submission_classification(self):
-        """Works with the actual SubmissionClassification schema object."""
-        from faultmaven.core.investigation.schemas import SubmissionClassification
-
-        sc = SubmissionClassification(
+    def test_with_dict_like_classification(self):
+        """Works with any object that has a .type attribute."""
+        sc = SimpleNamespace(
             type="submitted_data",
             confidence="high",
             reasoning="User pasted log data",

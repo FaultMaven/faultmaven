@@ -34,7 +34,6 @@ from faultmaven.core.investigation.schemas import (
     PreliminaryUrgency,
     ProblemConfirmation,
     ProposedTransition,
-    SubmissionClassification,
     TurnOutcome,
 )
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -140,11 +139,6 @@ def _inquiry_response_low_urgency() -> InquiryResponse:
             "Can you share the relevant logs so I can take a closer look?"
         ),
         state_updates=InquiryResponse.InquiryStateUpdate(
-            submission_classification=SubmissionClassification(
-                type="user_text",
-                confidence="high",
-                reasoning="User describing a problem",
-            ),
             problem_confirmation=ProblemConfirmation(
                 problem_type="slowness",
                 severity_guess="medium",
@@ -168,11 +162,6 @@ def _inquiry_response_high_urgency() -> InquiryResponse:
             "API is experiencing critical latency spikes in production. Is this accurate?"
         ),
         state_updates=InquiryResponse.InquiryStateUpdate(
-            submission_classification=SubmissionClassification(
-                type="user_text",
-                confidence="high",
-                reasoning="User describing urgent production issue",
-            ),
             problem_confirmation=ProblemConfirmation(
                 problem_type="slowness",
                 severity_guess="high",
@@ -194,11 +183,6 @@ def _inquiry_response_user_confirms() -> InquiryResponse:
     return InquiryResponse(
         agent_response=("Confirmed. Starting investigation into API latency spikes."),
         state_updates=InquiryResponse.InquiryStateUpdate(
-            submission_classification=SubmissionClassification(
-                type="user_text",
-                confidence="high",
-                reasoning="User confirming problem statement",
-            ),
             user_confirmed_investigation=True,
         ),
     )
@@ -212,11 +196,6 @@ def _inquiry_response_with_evidence() -> InquiryResponse:
             "correlates with the deployment time."
         ),
         state_updates=InquiryResponse.InquiryStateUpdate(
-            submission_classification=SubmissionClassification(
-                type="submitted_data",
-                confidence="high",
-                reasoning="User submitted log data",
-            ),
             evidence_to_add=[
                 EvidenceToAdd(
                     summary="Application logs showing connection pool exhaustion after v2.1.3 deployment",
@@ -245,11 +224,6 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
             },
         ),
         state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-            submission_classification=SubmissionClassification(
-                type="submitted_data",
-                confidence="high",
-                reasoning="User provided metrics data",
-            ),
             milestones=MilestoneUpdates(
                 symptom_verified=True,
                 scope_assessed=True,
@@ -304,11 +278,6 @@ def _investigation_no_progress_response() -> InvestigationResponse_Diagnosis:
     return InvestigationResponse_Diagnosis(
         agent_response="Can you provide more details about the issue?",
         state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-            submission_classification=SubmissionClassification(
-                type="user_text",
-                confidence="high",
-                reasoning="User asking a question",
-            ),
             outcome=TurnOutcome.CONVERSATION,
         ),
     )
@@ -400,8 +369,10 @@ class TestInvestigationLifecycle:
         ev = updated.evidence[0]
         assert ev.category == EvidenceCategory.SYMPTOM_EVIDENCE
         assert ev.source_type == EvidenceSourceType.LOGS
-        # Gap #20: submitted_data classification → SUBMITTED_DATA form (not USER_INPUT)
-        assert ev.form == EvidenceForm.SUBMITTED_DATA
+        # Post-unified-pipeline: SubmissionClassification removed. Evidence form is
+        # now determined by payload context (attachments→DOCUMENT, query-only→USER_TEXT).
+        # Engine-created evidence from evidence_to_add defaults to USER_TEXT.
+        assert ev.form == EvidenceForm.USER_TEXT
 
     async def test_explicit_transition_to_investigating(self, engine, case_repo):
         """Explicit intent_type='status_transition' transitions INQUIRY → INVESTIGATING."""
@@ -449,9 +420,9 @@ class TestInvestigationLifecycle:
         assert updated.progress.symptom_verified is True
         assert updated.progress.scope_assessed is True
         assert len(updated.evidence) >= 1
-        # Gap #20: submitted_data classification → SUBMITTED_DATA form
+        # Post-unified-pipeline: engine-created evidence defaults to USER_TEXT
         ev = updated.evidence[0]
-        assert ev.form == EvidenceForm.SUBMITTED_DATA
+        assert ev.form == EvidenceForm.USER_TEXT
         assert len(updated.turn_history) >= 1
         assert result["metadata"]["progress_made"] is True
 
@@ -767,11 +738,6 @@ class TestEvidenceAccumulation:
                 },
             ),
             state_updates=InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-                submission_classification=SubmissionClassification(
-                    type="submitted_data",
-                    confidence="high",
-                    reasoning="User provided timeline data",
-                ),
                 milestones=MilestoneUpdates(timeline_established=True),
                 evidence_to_add=[
                     EvidenceToAdd(

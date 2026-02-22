@@ -14,7 +14,8 @@ logging.basicConfig(
 # Mock dependencies
 from unittest.mock import AsyncMock, MagicMock
 
-from faultmaven.models.api_models import CaseQueryRequest, IntentType
+from faultmaven.core.investigation.schemas import TurnPayload
+from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
@@ -104,10 +105,10 @@ async def test_intent_routing():
     print("\n🧪 Test 2: Heuristic Handler Execution")
 
     # "Hi" should trigger _handle_greeting logic
-    req = CaseQueryRequest(message="Hi")
+    payload = TurnPayload(query="Hi")
     # Force default intent type (CONVERSATION) to test heuristic override
 
-    result = await service.process_turn(case_id, user_id, req)
+    result = await service.process_turn(case_id, user_id, payload)
 
     if "I'm FaultMaven" in result.agent_response:
         print(f"✅ Service returned static greeting: '{result.agent_response[:50]}...'")
@@ -128,18 +129,16 @@ async def test_intent_routing():
     # We will just verify it calls engine with structured intent for now,
     # since we mocked the engine.
 
-    from faultmaven.models.api_models import QueryIntent
-
     mock_case.messages = []  # Reset messages
 
-    req_transition = CaseQueryRequest(
-        message="Resolve this",
+    payload_transition = TurnPayload(
+        query="Resolve this",
         intent=QueryIntent(
             type=IntentType.STATUS_TRANSITION, to_status=CaseStatus.RESOLVED
         ),
     )
 
-    await service.process_turn(case_id, user_id, req_transition)
+    await service.process_turn(case_id, user_id, payload_transition)
 
     # Check if engine was called with correct intent_type
     call_args = mock_engine.process_turn.call_args
