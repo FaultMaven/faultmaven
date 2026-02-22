@@ -31,7 +31,6 @@ from faultmaven.core.investigation.milestone_engine import (
 )
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
-    SubmissionClassification,
 )
 from faultmaven.modules.case.contracts import (
     Case,

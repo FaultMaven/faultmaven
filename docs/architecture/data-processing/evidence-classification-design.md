@@ -100,18 +100,24 @@ User submits → LLM evaluates → If relevant: Create Evidence(category)
 
 ### Decision 3: Classification Types
 
-**Three submission types:**
+> **SUPERSEDED (2026-02-22)**: `SubmissionClassification` was removed as part of the
+> Unified Ingestion Pipeline (v4.1). Evidence form is now determined by payload context:
+> attachments present → `DOCUMENT`, query-only → `USER_TEXT`, agent tools → `SUBMITTED_DATA`.
+> See `docs/architecture/data-processing/data-preprocessing-design-specification.md` v4.1.
+
+~~Three submission types:~~
 ```python
-class SubmissionClassification(str, Enum):
-    USER_TEXT = "user_text"           # Pure conversation → NO evidence record
-    SUBMITTED_DATA = "submitted_data"   # Data from elsewhere → Evidence record
-    MIXED = "mixed"                   # Chat + data → Evidence record (extract data portion)
+# DELETED — replaced by payload-driven EvidenceForm determination
+# class SubmissionClassification(str, Enum):
+#     USER_TEXT = "user_text"
+#     SUBMITTED_DATA = "submitted_data"
+#     MIXED = "mixed"
 ```
 
-**Handling:**
-- `USER_TEXT`: Stays in `case.messages[]` only, never enters `evidence` table
-- `SUBMITTED_DATA`: Always creates evidence record
-- `MIXED`: Creates evidence record for data portion, chat stays in messages
+**New behavior (Unified Ingestion Pipeline):**
+- Turn has attachments → `EvidenceForm.DOCUMENT` (set by `_preprocess_attachment()`)
+- Query-only turn → `EvidenceForm.USER_TEXT` (default)
+- Agent tool output → `EvidenceForm.SUBMITTED_DATA` (set by tool)
 
 ---
 

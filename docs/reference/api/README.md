@@ -918,41 +918,8 @@ Always returns 200 with empty array if no data exists.
 
 #### POST
 
-**Upload Case Data**
-
-Upload data file to a specific case (case-scoped endpoint).
-
-This endpoint follows the complete data submission pipeline:
-1. Data preprocessing (extraction and sanitization)
-2. Evidence creation
-3. Hypothesis analysis
-4. Agent response generation
-
-The session_id is optional - if not provided, it will be derived from the case.
-
-Returns:
-    DataUploadResponse with:
-    - file_id: Unique identifier for the uploaded file
-    - filename: Original filename
-    - preprocessing metadata (data_type, extraction_method, etc.)
-    - agent_response: AI analysis of the uploaded data
-
-**Tags:** `cases`
-
-**Parameters:**
-
-- `case_id` (path) ✅ - No description
-- `Authorization` (header) ❌ - No description
-
-**Request Body:**
-
-Content-Type: `multipart/form-data`
-
-**Responses:**
-
-**201** - Successful Response
-
-**422** - Validation Error
+> **REMOVED (2026-02-22)**: This endpoint has been replaced by `POST /cases/{case_id}/turns`.
+> Returns `410 Gone`. See the unified turns endpoint below.
 
 ---
 
@@ -1159,36 +1126,56 @@ CRITICAL: Must return 200 [] for empty results, NOT 404
 
 #### POST
 
-**Submit Case Query**
+> **REMOVED (2026-02-22)**: This endpoint has been replaced by `POST /cases/{case_id}/turns`.
+> Returns `410 Gone`. See the unified turns endpoint below.
 
-Submit user message to advance the investigation (milestone-based).
+---
 
-Processes the message through MilestoneEngine and returns investigation progress.
-Each turn represents one user message and the agent's response.
+### `/api/v1/cases/{case_id}/turns`
 
-Production features:
-- Session validation
-- Idempotency key support
-- Query history tracking
-- Correlation ID tracking
-- Comprehensive error handling
+#### POST
+
+**Submit Turn**
+
+Submit a turn to a case investigation. Replaces the old `/queries` and `/data` endpoints.
+
+A turn consists of an optional query and/or optional attachments. Attachments are
+preprocessed through Tier 0+1 before the LLM sees them. If no query is provided
+with attachments, an implicit query is generated.
 
 **Tags:** `cases`
 
 **Parameters:**
 
-- `case_id` (path) ✅ - No description
-- `Authorization` (header) ❌ - No description
+- `case_id` (path) ✅ - Case identifier
+- `Authorization` (header) ✅ - Bearer token
 
 **Request Body:**
 
-Content-Type: `application/json`
+Content-Type: `multipart/form-data`
+
+- `query` (string, optional) - User's message text
+- `files` (file[], optional) - File attachments
+- `pasted_content` (string, optional) - Pasted text data (treated as attachment)
+- `intent_type` (string, optional) - Intent type (conversation, status_transition, confirmation, hypothesis_action)
+- `intent_data` (string, optional) - JSON-encoded intent metadata
 
 **Responses:**
 
-**200** - Successful Response
+**200** - TurnResponse with:
+- `agent_response`: Agent's response text
+- `turn_number`: Current turn number
+- `milestones_completed`: List of completed milestone names
+- `case_status`: Current case status
+- `progress_made`: Whether investigation progressed
+- `is_stuck`: Whether investigation is stuck
+- `attachments_processed`: List of AttachmentResult objects
+
+**404** - Case not found
 
 **422** - Validation Error
+
+**503** - Investigation service unavailable
 
 ---
 
@@ -4712,37 +4699,48 @@ Enhanced response model for case message retrieval with debugging support.
 
 ---
 
-### CaseQueryRequest
+### ~~CaseQueryRequest~~ (REMOVED)
 
-Request to submit a query to a case investigation.
-
-Used by POST /cases/{case_id}/queries endpoint.
-
-All queries now include structured intent for reliable routing.
-The message is human-readable; the intent is machine-readable.
-
-**Properties:**
-
-- `message` (string) ✅ - Human-readable message for conversation history and context
-- `intent` (unknown) ❌ - Structured intent for programmatic routing and handling. Defaults to CONVERSATION for backward compatibility.
-- `attachments` (unknown) ❌ - File attachments (file_id, filename, data_type, size, summary, s3_uri)
+> Removed in Unified Ingestion Pipeline (2026-02-22). Replaced by `TurnPayload` (internal dataclass).
+> Clients now use `POST /cases/{case_id}/turns` with multipart form data.
 
 ---
 
-### CaseQueryResponse
+### ~~CaseQueryResponse~~ (REMOVED)
 
-Response for case query submission.
+> Removed in Unified Ingestion Pipeline (2026-02-22). Replaced by `TurnResponse`.
 
-Returned by POST /cases/{case_id}/queries endpoint.
+---
+
+### TurnResponse
+
+Response for turn submission.
+
+Returned by `POST /cases/{case_id}/turns` endpoint.
 
 **Properties:**
 
-- `agent_response` (string) ✅ - No description
-- `turn_number` (integer) ✅ - No description
-- `milestones_completed` (array) ✅ - No description
-- `case_status` (unknown) ✅ - No description
-- `progress_made` (boolean) ✅ - No description
-- `is_stuck` (boolean) ✅ - No description
+- `agent_response` (string) ✅ - Agent's response text
+- `turn_number` (integer) ✅ - Current turn number
+- `milestones_completed` (array) ✅ - Completed milestone names
+- `case_status` (CaseStatus) ✅ - Current case status
+- `progress_made` (boolean) ✅ - Whether investigation progressed
+- `is_stuck` (boolean) ✅ - Whether investigation is stuck
+- `attachments_processed` (AttachmentResult[]) ❌ - Results of preprocessed attachments
+
+---
+
+### AttachmentResult
+
+Result of preprocessing a single attachment.
+
+**Properties:**
+
+- `evidence_id` (string) ✅ - Evidence ID created from the attachment
+- `filename` (string) ✅ - Original filename
+- `data_type` (string) ✅ - Classified data type (logs, metrics, etc.)
+- `file_size` (integer) ✅ - File size in bytes
+- `processing_status` (string) ✅ - Processing status (completed/failed)
 
 ---
 
@@ -4969,23 +4967,11 @@ Correlation between a change and the symptom.
 
 ---
 
-### DataUploadResponse
+### ~~DataUploadResponse~~ (REMOVED)
 
-Response payload for data upload with AI analysis.
-
-**Properties:**
-
-- `schema_version` (string) ❌ - No description
-- `data_id` (string) ✅ - No description
-- `case_id` (string) ✅ - Actual case ID (may differ from optimistic ID in request)
-- `filename` (string) ✅ - Uploaded filename
-- `file_size` (integer) ✅ - File size in bytes
-- `data_type` (string) ✅ - Classified data type
-- `processing_status` (unknown) ✅ - No description
-- `uploaded_at` (string) ✅ - Upload timestamp (ISO 8601)
-- `agent_response` (unknown) ❌ - Conversational AI analysis of the uploaded data
-- `classification` (unknown) ❌ - Classification confidence and metadata
-- `view_state` (unknown) ❌ - No description
+> Removed in Unified Ingestion Pipeline (2026-02-22). File uploads are now handled
+> through `POST /cases/{case_id}/turns` with multipart form data. Results are returned
+> in `TurnResponse.attachments_processed` as `AttachmentResult` objects.
 
 ---
 

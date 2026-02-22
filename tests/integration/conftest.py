@@ -253,61 +253,32 @@ def mock_investigation_service(mock_case_service):
 
     service = AsyncMock()
 
-    # Mock process_turn to return a response AND update case state
-    async def process_turn_mock(case_id, user_id, request):
-        from faultmaven.models.api_models import CaseQueryResponse
+    # Mock process_turn to return a TurnResponse
+    async def process_turn_mock(case_id, user_id, payload):
+        from faultmaven.models.api_models import TurnResponse
 
-        # Simulate side effect: add evidence to case if request has attachments
-        # This allows checks like assert len(case_data["evidence"]) == 1 to pass
-        if hasattr(request, "attachments") and request.attachments:
-            # We need to access the internal storage of mock_case_service
-            # This relies on the implementation detail of mock_case_service fixture
-            # created_cases is a closure variable, but we can't access it directly easily
-            # UNLESS we exposed it.
-            # Alternatively, mock_case_service.get_case returns the object, and we can mutate it.
+        # Simulate side effect: add evidence to case if payload has attachments
+        if hasattr(payload, "has_attachments") and payload.has_attachments:
             case = await mock_case_service.get_case(case_id, user_id)
             if case:
                 from faultmaven.modules.case.contracts import (
                     Evidence,
                     EvidenceCategory,
-                    UploadedFile,
-                    EvidenceSourceType,
                     EvidenceForm,
+                    EvidenceSourceType,
+                    UploadedFile,
                 )
 
-                for attachment in request.attachments:
-                    file_id = attachment.get("file_id", "file_123")
-                    content_ref = f"s3://bucket/{file_id}"
-
-                    # 1. Add UploadedFile
-                    if hasattr(case, "uploaded_files") and isinstance(
-                        case.uploaded_files, list
-                    ):
-                        uf = UploadedFile(
-                            file_id=file_id,
-                            filename=attachment.get("filename", "app.log"),
-                            size_bytes=attachment.get("size", 100),
-                            data_type=attachment.get("data_type", "logs"),
-                            uploaded_at_turn=1,
-                            source_type="file_upload",
-                            content_ref=content_ref,
-                        )
-                        case.uploaded_files.append(uf)
+                for attachment in payload.attachments:
+                    filename = attachment.filename
+                    content_ref = f"s3://bucket/{filename}"
 
                     if hasattr(case, "evidence") and isinstance(case.evidence, list):
-                        # Check for duplicate content (already has evidence for this content)
-                        is_duplicate = False
-                        for existing_ev in case.evidence:
-                            if (
-                                existing_ev.preprocessed_content == "Test content"
-                            ):  # Mock always uses this
-                                is_duplicate = True
-                                break
-
-                        # If filename contains "random", reject it
-                        is_irrelevant = (
-                            "random" in attachment.get("filename", "").lower()
+                        is_duplicate = any(
+                            ev.preprocessed_content == "Test content"
+                            for ev in case.evidence
                         )
+                        is_irrelevant = "random" in filename.lower()
 
                         category = EvidenceCategory.SYMPTOM_EVIDENCE
                         summary = "Log analysis: connection timeout error found"
@@ -323,10 +294,6 @@ def mock_investigation_service(mock_case_service):
                                 "Irrelevant file: content not related to investigation"
                             )
                             primary_purpose = "irrelevant_ignored"
-                        elif attachment.get("data_type") == "configuration":
-                            category = EvidenceCategory.CONTEXTUAL_EVIDENCE
-                            summary = "Configuration analysis: database settings found"
-                            primary_purpose = "context_established"
 
                         ev = Evidence(
                             evidence_id=f"ev_{uuid4().hex[:12]}",
@@ -334,11 +301,7 @@ def mock_investigation_service(mock_case_service):
                             preprocessing_method="test_extraction",
                             content_size_bytes=100,
                             category=category,
-                            source_type=(
-                                EvidenceSourceType.CONFIGURATION
-                                if attachment.get("data_type") == "configuration"
-                                else EvidenceSourceType.LOGS
-                            ),
+                            source_type=EvidenceSourceType.LOGS,
                             form=EvidenceForm.DOCUMENT,
                             summary=summary,
                             collected_at_turn=1,
@@ -348,7 +311,7 @@ def mock_investigation_service(mock_case_service):
                         )
                         case.evidence.append(ev)
 
-        return CaseQueryResponse(
+        return TurnResponse(
             agent_response="Test response",
             turn_number=1,
             milestones_completed=[],

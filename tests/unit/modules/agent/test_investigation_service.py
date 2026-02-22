@@ -14,7 +14,13 @@ from faultmaven.exceptions import (
     PermissionDeniedException,
     ServiceException,
 )
-from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.models.api_models import (
+    AttachmentResult,
+    IntentType,
+    QueryIntent,
+    TurnResponse,
+)
 from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
 )
@@ -27,7 +33,7 @@ from .conftest import (
     mock_case_repository,
     mock_milestone_engine,
     sample_case,
-    sample_case_query_request,
+    sample_turn_payload,
     sample_user_id,
 )
 
@@ -51,7 +57,7 @@ class TestInvestigationServiceProcessTurn:
         mock_milestone_engine,
         sample_case,
         sample_user_id,
-        sample_case_query_request,
+        sample_turn_payload,
     ):
         """Test successful turn processing."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -61,13 +67,12 @@ class TestInvestigationServiceProcessTurn:
         response = await service.process_turn(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
-            request=sample_case_query_request,
+            payload=sample_turn_payload,
         )
 
-        assert isinstance(response, CaseQueryResponse)
+        assert isinstance(response, TurnResponse)
         assert (
-            response.agent_response
-            == f"Agent response to: {sample_case_query_request.message}"
+            response.agent_response == f"Agent response to: {sample_turn_payload.query}"
         )
         # Mock engine increments turn from 0 to 1, so response should have turn_number = 1
         assert (
@@ -78,7 +83,7 @@ class TestInvestigationServiceProcessTurn:
 
     @pytest.mark.asyncio
     async def test_process_turn_case_not_found(
-        self, service, mock_case_repository, sample_user_id, sample_case_query_request
+        self, service, mock_case_repository, sample_user_id, sample_turn_payload
     ):
         """Test turn processing with non-existent case."""
         non_existent_case_id = f"case_{uuid4().hex[:12]}"
@@ -87,12 +92,12 @@ class TestInvestigationServiceProcessTurn:
             await service.process_turn(
                 case_id=non_existent_case_id,
                 user_id=sample_user_id,
-                request=sample_case_query_request,
+                payload=sample_turn_payload,
             )
 
     @pytest.mark.asyncio
     async def test_process_turn_permission_denied(
-        self, service, mock_case_repository, sample_case, sample_case_query_request
+        self, service, mock_case_repository, sample_case, sample_turn_payload
     ):
         """Test turn processing with unauthorized user."""
         # Pre-populate repository with case owned by different user
@@ -103,7 +108,7 @@ class TestInvestigationServiceProcessTurn:
             await service.process_turn(
                 case_id=sample_case.case_id,
                 user_id=unauthorized_user_id,
-                request=sample_case_query_request,
+                payload=sample_turn_payload,
             )
 
     @pytest.mark.asyncio
@@ -114,7 +119,7 @@ class TestInvestigationServiceProcessTurn:
         mock_milestone_engine,
         sample_case,
         sample_user_id,
-        sample_case_query_request,
+        sample_turn_payload,
     ):
         """Test that user message is saved before processing."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -125,7 +130,7 @@ class TestInvestigationServiceProcessTurn:
         await service.process_turn(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
-            request=sample_case_query_request,
+            payload=sample_turn_payload,
         )
 
         # Verify case was saved with user message and agent response
@@ -136,14 +141,11 @@ class TestInvestigationServiceProcessTurn:
         assert (
             len(saved_case.messages) >= 2
         ), f"Expected at least 2 messages, got {len(saved_case.messages)}"
-        # Messages are added in order: user message first (index 0), then agent response (index 1)
-        # So messages[-2] should be the user message if there are exactly 2, or second-to-last otherwise
         user_messages = [m for m in saved_case.messages if m.get("role") == "user"]
         assert len(user_messages) >= 1, "User message should be saved"
-        # Check that our test message is in the user messages
         assert any(
-            m["content"] == sample_case_query_request.message for m in user_messages
-        ), f"User message '{sample_case_query_request.message}' not found in saved messages"
+            m["content"] == sample_turn_payload.query for m in user_messages
+        ), f"User message '{sample_turn_payload.query}' not found in saved messages"
 
     @pytest.mark.asyncio
     async def test_process_turn_saves_agent_response(
@@ -153,7 +155,7 @@ class TestInvestigationServiceProcessTurn:
         mock_milestone_engine,
         sample_case,
         sample_user_id,
-        sample_case_query_request,
+        sample_turn_payload,
     ):
         """Test that agent response is saved after processing."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -163,7 +165,7 @@ class TestInvestigationServiceProcessTurn:
         response = await service.process_turn(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
-            request=sample_case_query_request,
+            payload=sample_turn_payload,
         )
 
         # Verify case was saved with agent response
@@ -180,7 +182,7 @@ class TestInvestigationServiceProcessTurn:
         mock_milestone_engine,
         sample_case,
         sample_user_id,
-        sample_case_query_request,
+        sample_turn_payload,
     ):
         """Test that turn number is incremented."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -191,22 +193,22 @@ class TestInvestigationServiceProcessTurn:
         response = await service.process_turn(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
-            request=sample_case_query_request,
+            payload=sample_turn_payload,
         )
 
         # Service flow:
         # 1. Gets case (current_turn = initial_turn, e.g., 0)
-        # 2. Adds user message with turn_number = current_turn + 1 (e.g., 1)
-        # 3. Engine processes and increments current_turn += 1 (e.g., 0 -> 1)
-        # 4. Service adds agent message with turn_number = updated_case.current_turn (e.g., 1)
-        # 5. Response has turn_number = updated_case.current_turn (e.g., 1)
-        expected_turn = initial_turn + 1  # Engine increments by 1
+        # 2. Preprocesses any attachments (Step 1)
+        # 3. Adds user message with turn_number = current_turn + 1 (e.g., 1)
+        # 4. Engine processes (Step 2 - LLM inference)
+        # 5. Service commits turn increment: current_turn = next_turn (e.g., 1)
+        # 6. Response has turn_number = updated_case.current_turn (e.g., 1)
+        expected_turn = initial_turn + 1
         assert (
             response.turn_number == expected_turn
         ), f"Expected turn_number={expected_turn}, got {response.turn_number} (initial was {initial_turn})"
 
         saved_case = await mock_case_repository.get(sample_case.case_id)
-        # The saved case should have current_turn incremented by the engine
         assert (
             saved_case.current_turn == expected_turn
         ), f"Expected saved_case.current_turn={expected_turn}, got {saved_case.current_turn}"
@@ -220,19 +222,36 @@ class TestInvestigationServiceProcessTurn:
         sample_case,
         sample_user_id,
     ):
-        """Test turn processing with file attachments."""
+        """Test turn processing with file attachments (Step 1 preprocessing)."""
+        from unittest.mock import AsyncMock
+
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
 
-        attachments = [
-            {"file_id": "file1", "filename": "file1.txt"},
-            {"file_id": "file2", "filename": "file2.log"},
-        ]
-        from faultmaven.models.api_models import QueryIntent, IntentType
+        # Mock preprocessing service for attachment processing
+        mock_preprocessing = AsyncMock()
+        mock_preprocessing.classify_and_extract = AsyncMock(
+            return_value=AsyncMock(
+                summary="Test log file summary",
+                structural_index="ERROR line 42: connection refused",
+                data_type=AsyncMock(value="logs"),
+                content_hash="abc123",
+                extraction_method="structural_index",
+            )
+        )
+        service.preprocessing_service = mock_preprocessing
 
-        request_with_attachments = CaseQueryRequest(
-            message="Test message with attachments",
+        attachments = [
+            Attachment(
+                content=b"error log content here",
+                filename="app.log",
+                content_type="text/plain",
+            ),
+        ]
+
+        payload = TurnPayload(
+            query="Check this log file",
             attachments=attachments,
             intent=QueryIntent(type=IntentType.CONVERSATION),
         )
@@ -240,13 +259,15 @@ class TestInvestigationServiceProcessTurn:
         response = await service.process_turn(
             case_id=sample_case.case_id,
             user_id=sample_user_id,
-            request=request_with_attachments,
+            payload=payload,
         )
 
         assert response.agent_response is not None
-        # Verify attachments were passed to engine
-        call_args = mock_milestone_engine.process_turn.call_args
-        assert call_args[1]["attachments"] == attachments
+        assert len(response.attachments_processed) == 1
+        assert response.attachments_processed[0].filename == "app.log"
+        assert response.attachments_processed[0].processing_status == "completed"
+        # Verify preprocessing was called
+        mock_preprocessing.classify_and_extract.assert_called_once()
 
 
 class TestInvestigationServiceGetProgress:

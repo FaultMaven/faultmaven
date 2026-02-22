@@ -17,7 +17,6 @@ from faultmaven.modules.case.domain.models import Case, CaseStatus
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
     from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-    from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
 
 
 def create_sample_case(
@@ -195,12 +194,13 @@ def sample_user_id() -> str:
 
 
 @pytest.fixture
-def sample_case_query_request():
-    """Create a sample CaseQueryRequest."""
-    from faultmaven.models.api_models import CaseQueryRequest, QueryIntent, IntentType
+def sample_turn_payload():
+    """Create a sample TurnPayload."""
+    from faultmaven.core.investigation.schemas import TurnPayload
+    from faultmaven.models.api_models import IntentType, QueryIntent
 
-    return CaseQueryRequest(
-        message="Test user message",
-        attachments=None,
+    return TurnPayload(
+        query="Test user message",
+        attachments=[],
         intent=QueryIntent(type=IntentType.CONVERSATION),
     )

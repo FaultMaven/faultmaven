@@ -81,6 +81,8 @@ def create_milestone_engine(
 def create_investigation_service(
     milestone_engine: Any | None,
     case_repository: Any | None,
+    preprocessing_service: Any | None = None,
+    file_storage_service: Any | None = None,
 ) -> Any | None:
     """Create investigation service for workflow orchestration."""
     if not milestone_engine or not case_repository:
@@ -95,6 +97,8 @@ def create_investigation_service(
         service = InvestigationService(
             milestone_engine=milestone_engine,
             case_repository=case_repository,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage_service,
         )
         logger.debug("InvestigationService initialized")
         return service
@@ -737,7 +741,7 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Investigation Service
     investigation_service = create_investigation_service(
-        milestone_engine, case_repository
+        milestone_engine, case_repository, preprocessing_service
     )
     container.investigation_service = investigation_service
     if investigation_service:

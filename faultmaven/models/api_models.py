@@ -402,37 +402,23 @@ class QueryIntent(BaseModel):
         return self
 
 
-class CaseQueryRequest(BaseModel):
-    """Request to submit a query to a case investigation.
-
-    Used by POST /cases/{case_id}/queries endpoint.
-
-    All queries now include structured intent for reliable routing.
-    The message is human-readable; the intent is machine-readable.
-    """
-
-    message: str = Field(
-        description="Human-readable message for conversation history and context",
-        min_length=1,
-        max_length=4000,
-    )
-
-    intent: QueryIntent = Field(
-        default_factory=lambda: QueryIntent(type=IntentType.CONVERSATION),
-        description="Structured intent for programmatic routing and handling. Defaults to CONVERSATION for backward compatibility.",
-    )
-
-    attachments: Optional[List[dict]] = Field(
-        default=None,
-        description="File attachments (file_id, filename, data_type, size, summary, s3_uri)",
-    )
+# ============================================================
+# Unified Turn Response (v4.1)
+# ============================================================
 
 
-class CaseQueryResponse(BaseModel):
-    """Response for case query submission.
+class AttachmentResult(BaseModel):
+    """Result of preprocessing a single attachment."""
 
-    Returned by POST /cases/{case_id}/queries endpoint.
-    """
+    evidence_id: str
+    filename: str
+    data_type: str
+    file_size: int
+    processing_status: str
+
+
+class TurnResponse(BaseModel):
+    """Response for POST /cases/{id}/turns."""
 
     agent_response: str
     turn_number: int
@@ -440,6 +426,7 @@ class CaseQueryResponse(BaseModel):
     case_status: CaseStatus
     progress_made: bool
     is_stuck: bool
+    attachments_processed: List[AttachmentResult] = Field(default_factory=list)
 
 
 # ============================================================

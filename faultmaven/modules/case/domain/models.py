@@ -1386,22 +1386,22 @@ class EvidenceSourceType(str, Enum):
 
 
 class EvidenceForm(str, Enum):
-    """How evidence was provided by user.
+    """How evidence entered the system.
 
-    Maps to SubmissionClassification.type from LLM response:
-    - DOCUMENT: uploaded file via /data endpoint
-    - USER_TEXT: user-composed text (matches 'user_text' classification)
-    - SUBMITTED_DATA: pasted/injected technical data (matches 'submitted_data'/'mixed')
+    Form is determined by payload context:
+    - DOCUMENT: Turn had attachments (file upload or pasted data)
+    - USER_TEXT: Query-only turn, no attachments
+    - SUBMITTED_DATA: Evidence created by agent tools (search_file, deep_analyze_file)
     """
 
     DOCUMENT = "document"
-    """Uploaded file (log, screenshot, config, etc.)"""
+    """Data submitted as attachment via /turns endpoint — file uploads AND pasted data."""
 
     USER_TEXT = "user_text"
-    """Text composed by user (questions, descriptions, observations)"""
+    """Query-only turn with no attachments (questions, descriptions, observations)."""
 
     SUBMITTED_DATA = "submitted_data"
-    """Technical data pasted or injected by user (logs, configs, metrics, error output)"""
+    """Evidence derived from agent tool use (search_file, deep_analyze_file results)."""
 
 
 class EvidenceStance(str, Enum):
@@ -1528,8 +1528,7 @@ class Evidence(BaseModel):
         max_length=500,
     )
 
-    preprocessed_content: str = Field(
-        description="""
+    preprocessed_content: str = Field(description="""
         Extracted relevant diagnostic information from preprocessing pipeline.
 
         This is what the agent uses for hypothesis evaluation and evidence analysis.
@@ -1547,8 +1546,7 @@ class Evidence(BaseModel):
         Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
 
         This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-        """
-    )
+        """)
 
     content_ref: Optional[str] = Field(
         default=None,
@@ -1560,13 +1558,11 @@ class Evidence(BaseModel):
         ge=0, description="Size of original raw file in bytes"
     )
 
-    preprocessing_method: str = Field(
-        description="""
+    preprocessing_method: str = Field(description="""
         Preprocessing method used to extract preprocessed_content from raw file.
         Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
         ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-        """
-    )
+        """)
 
     compression_ratio: Optional[float] = Field(
         default=None,

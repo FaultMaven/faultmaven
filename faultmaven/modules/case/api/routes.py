@@ -75,7 +75,6 @@ from faultmaven.models.api import (
     Case,
     CaseMessagesResponse,
     CaseResponse,
-    DataUploadResponse,
     ErrorDetail,
     ErrorResponse,
     Message,
@@ -89,27 +88,30 @@ from faultmaven.models.api import (
     ViewState,
 )
 from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
+    AttachmentResult,
     CaseCreateRequest,
     CaseDetail,
     CaseListFilter,
     CaseListResponse,
     CaseMessage,
     CaseParticipant,
-    CaseQueryRequest,
-    CaseQueryResponse,
     CaseSearchRequest,
     CaseSummary,
     CaseUpdateRequest,
     DerivedEvidenceSummary,
     EvidenceDetailsResponse,
+    IntentType,
+    QueryIntent,
     RelatedHypothesis,
     SourceFileReference,
+    TurnResponse,
     UploadedFileDetails,
     UploadedFileDetailsResponse,
     UploadedFileMetadata,
     UploadedFilesList,
     UploadedFilesListResponse,
 )
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.models.interfaces_case import ICaseService
 
@@ -2011,38 +2013,46 @@ async def resume_case_in_session(
         )
 
 
-# Case Query endpoints
+# ============================================================
+# Unified Turn Endpoint (v4.1)
+# ============================================================
 
 
-@router.post("/{case_id}/queries", response_model=CaseQueryResponse)
-@trace("api_submit_case_query")
-async def submit_case_query(
+@router.post("/{case_id}/turns", response_model=TurnResponse)
+@trace("api_submit_turn")
+async def submit_turn(
     case_id: str,
-    request: CaseQueryRequest,
     fastapi_request: Request,
+    query: Optional[str] = Form(None),
+    files: List[UploadFile] = File(default=[]),
+    pasted_content: Optional[str] = Form(None),
+    intent_type: Optional[str] = Form(None),
+    intent_data: Optional[str] = Form(None),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service=Depends(get_investigation_service),
-    session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-):
-    """
-    Submit user message to advance the investigation (milestone-based).
+) -> TurnResponse:
+    """Submit a turn to a case investigation.
 
-    Processes the message through MilestoneEngine and returns investigation progress.
-    Each turn represents one user message and the agent's response.
-
-    Production features:
-    - Session validation
-    - Idempotency key support
-    - Query history tracking
-    - Correlation ID tracking
-    - Comprehensive error handling
+    A turn consists of an optional query and/or optional attachments.
+    Attachments are preprocessed through Tier 0+1 before the LLM sees them.
+    If no query is provided with attachments, an implicit query is generated.
     """
+    import json
+
     case_service = check_case_service_available(case_service)
     correlation_id = str(uuid.uuid4())
 
     try:
-        # 1. Validate case_id parameter
+        # Validate at least one input provided
+        if not query and not files and not pasted_content:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one of query, files, or pasted_content must be provided",
+                headers={"x-correlation-id": correlation_id},
+            )
+
+        # Validate case_id
         if not case_id or case_id.strip() in ("", "undefined", "null"):
             raise HTTPException(
                 status_code=400,
@@ -2050,16 +2060,7 @@ async def submit_case_query(
                 headers={"x-correlation-id": correlation_id},
             )
 
-        # 2. Extract message text
-        message_text = request.message
-        if not message_text or not message_text.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="Message text is required",
-                headers={"x-correlation-id": correlation_id},
-            )
-
-        # 3. Verify case exists (404 if not found)
+        # Verify case exists and user has access
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
@@ -2068,23 +2069,36 @@ async def submit_case_query(
                 headers={"x-correlation-id": correlation_id},
             )
 
-        # 4. Check idempotency key if provided
-        idempotency_key = fastapi_request.headers.get("idempotency-key")
-        if idempotency_key:
-            existing_result = await case_service.check_idempotency_key(idempotency_key)
-            if existing_result:
-                return JSONResponse(
-                    status_code=existing_result.get("status_code", 200),
-                    content=existing_result.get("content", {}),
-                    headers=existing_result.get("headers", {}),
+        # Build attachments list
+        attachments = []
+        for f in files:
+            content = await f.read()
+            attachments.append(
+                Attachment(
+                    content=content,
+                    filename=f.filename or "unnamed_file",
+                    content_type=f.content_type or "application/octet-stream",
                 )
+            )
+        if pasted_content:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+            attachments.append(
+                Attachment(
+                    content=pasted_content.encode("utf-8"),
+                    filename=f"pasted-content-{ts}.txt",
+                    content_type="text/plain",
+                )
+            )
 
-        # 5. Add query to case history (tracks message_count)
-        # 5. Add query to case history (tracks message_count)
-        # REMOVED: Redundant call. InvestigationService.process_turn handles message addition.
-        # await case_service.add_case_query(case_id, message_text, current_user.user_id)
+        # Build intent
+        intent = None
+        if intent_type:
+            data = json.loads(intent_data) if intent_data else {}
+            intent = QueryIntent(type=IntentType(intent_type), **data)
 
-        # 6. Process turn with MilestoneEngine (with configurable agent timeout)
+        payload = TurnPayload(query=query, attachments=attachments, intent=intent)
+
+        # Process turn with configurable timeout
         try:
             from faultmaven.config.settings import get_settings
 
@@ -2094,12 +2108,13 @@ async def submit_case_query(
             )
             response = await asyncio.wait_for(
                 investigation_service.process_turn(
-                    case_id=case_id, user_id=current_user.user_id, request=request
+                    case_id=case_id, user_id=current_user.user_id, payload=payload
                 ),
                 timeout=agent_timeout,
             )
 
-            # 7. Store idempotency result if key provided
+            # Store idempotency result if key provided
+            idempotency_key = fastapi_request.headers.get("idempotency-key")
             if idempotency_key:
                 await case_service.store_idempotency_result(
                     idempotency_key,
@@ -2117,58 +2132,53 @@ async def submit_case_query(
             logger.error(
                 f"Turn processing timed out for case {case_id} after {agent_timeout}s"
             )
-            # Return 504 Gateway Timeout - upstream service (LLM) took too long
             raise HTTPException(
-                status_code=504,  # Gateway Timeout - more accurate than 500
-                detail="Request timeout - processing is taking longer than expected. Please try again with a simpler query or contact support if this persists.",
+                status_code=504,
+                detail="Request timeout - processing is taking longer than expected. Please try again.",
                 headers={
                     "x-correlation-id": correlation_id,
                     "x-error-code": "REQUEST_TIMEOUT",
-                    "Retry-After": "30",  # Suggest retry after 30 seconds
+                    "Retry-After": "30",
                 },
             )
 
     except NotFoundError as e:
         raise HTTPException(
-            status_code=404, detail=str(e), headers={"x-correlation-id": correlation_id}
+            status_code=404,
+            detail=str(e),
+            headers={"x-correlation-id": correlation_id},
         )
     except PermissionDeniedException as e:
         raise HTTPException(
-            status_code=403, detail=str(e), headers={"x-correlation-id": correlation_id}
+            status_code=403,
+            detail=str(e),
+            headers={"x-correlation-id": correlation_id},
         )
     except HTTPException:
         raise
     except ServiceException as e:
         logger.error(
-            f"Turn processing failed: {e}", extra={"correlation_id": correlation_id}
+            f"Turn processing failed: {e}",
+            extra={"correlation_id": correlation_id},
         )
-        # Extract user-friendly error message from the exception
         error_msg = str(e)
-
-        # Detect specific error conditions and provide actionable guidance
         if "over capacity" in error_msg.lower() or "503" in error_msg:
-            detail = "AI service temporarily unavailable due to high demand. Please wait a moment and try again."
+            detail = "AI service temporarily unavailable due to high demand. Please try again."
             status_code = 503
             error_code = "LLM_OVER_CAPACITY"
             retry_after = "60"
         elif "rate limit" in error_msg.lower() or "429" in error_msg:
-            detail = "Rate limit exceeded. Please wait a minute before sending another message."
+            detail = "Rate limit exceeded. Please wait before sending another message."
             status_code = 429
             error_code = "RATE_LIMIT_EXCEEDED"
             retry_after = "60"
         elif "timeout" in error_msg.lower():
-            detail = "Request timed out. Please try again with a shorter message or fewer attachments."
+            detail = "Request timed out. Please try again."
             status_code = 504
             error_code = "LLM_TIMEOUT"
             retry_after = "30"
-        elif "authentication" in error_msg.lower() or "401" in error_msg:
-            detail = "AI service authentication error. Please contact support."
-            status_code = 503
-            error_code = "LLM_AUTH_ERROR"
-            retry_after = "300"  # 5 minutes - this needs admin intervention
         else:
-            # Generic fallback with hint about the error type
-            detail = f"Unable to process your message: {error_msg[:200]}"  # Limit message length
+            detail = f"Unable to process your message: {error_msg[:200]}"
             status_code = 500
             error_code = "SERVICE_ERROR"
             retry_after = "10"
@@ -2188,93 +2198,34 @@ async def submit_case_query(
             exc_info=True,
             extra={"correlation_id": correlation_id},
         )
-        # Provide helpful error message even for unexpected errors
-        error_str = str(e)
-        if "over capacity" in error_str.lower() or "503" in error_str:
-            detail = "AI service temporarily unavailable. Please try again in a moment."
-            status_code = 503
-            error_code = "LLM_UNAVAILABLE"
-            retry_after = "60"
-        elif "connection" in error_str.lower() or "network" in error_str.lower():
-            detail = "Network error communicating with AI service. Please try again."
-            status_code = 503
-            error_code = "NETWORK_ERROR"
-            retry_after = "30"
-        else:
-            detail = f"An unexpected error occurred. Error ID: {correlation_id}"
-            status_code = 500
-            error_code = "UNEXPECTED_ERROR"
-            retry_after = "10"
-
         raise HTTPException(
-            status_code=status_code,
-            detail=detail,
+            status_code=500,
+            detail=f"An unexpected error occurred. Error ID: {correlation_id}",
             headers={
                 "x-correlation-id": correlation_id,
-                "x-error-code": error_code,
-                "Retry-After": retry_after,
+                "x-error-code": "UNEXPECTED_ERROR",
+                "Retry-After": "10",
             },
         )
 
 
-@router.get("/{case_id}/queries")
-@trace("api_list_case_queries")
-async def list_case_queries(
-    case_id: str,
-    limit: int = Query(50, le=100, ge=1),
-    offset: int = Query(0, ge=0),
-    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: UserDTO = Depends(require_authentication),
-):
-    """
-    List queries for a specific case with pagination.
+# ============================================================
+# Legacy Endpoints (DELETED - replaced by /turns)
+# ============================================================
 
-    CRITICAL: Must return 200 [] for empty results, NOT 404
-    """
-    case_service = check_case_service_available(case_service)
+# NOTE: The following endpoints have been deleted as part of the
+# Unified Ingestion Pipeline (v4.1):
+# - POST /{case_id}/queries → use POST /{case_id}/turns
+# - POST /{case_id}/data → use POST /{case_id}/turns
 
-    try:
-        # Verify case exists (404 if case not found)
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=404, detail="Case not found or access denied"
-            )
 
-        # Get queries for this case (empty list is valid)
-        queries = []
-        total_count = 0
-
-        try:
-            queries = await case_service.list_case_queries(case_id, limit, offset)
-            total_count = await case_service.count_case_queries(case_id)
-        except Exception as e:
-            # Log but don't fail - return empty list
-            queries = []
-            total_count = 0
-
-        # Build pagination headers per OpenAPI
-        headers = {"X-Total-Count": str(total_count)}
-        base_url = f"/api/v1/cases/{case_id}/queries"
-        links = []
-        if offset > 0:
-            links.append(f'<{base_url}?limit={limit}&offset=0>; rel="first"')
-            prev_offset = max(0, offset - limit)
-            links.append(f'<{base_url}?limit={limit}&offset={prev_offset}>; rel="prev"')
-        if offset + limit < total_count:
-            next_offset = offset + limit
-            links.append(f'<{base_url}?limit={limit}&offset={next_offset}>; rel="next"')
-            last_offset = ((total_count - 1) // limit) * limit if total_count > 0 else 0
-            links.append(f'<{base_url}?limit={limit}&offset={last_offset}>; rel="last"')
-        if links:
-            headers["Link"] = ", ".join(links)
-
-        return JSONResponse(status_code=200, content=queries or [], headers=headers)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list queries: {str(e)}")
+@router.post("/{case_id}/queries")
+async def submit_case_query_gone(case_id: str):
+    """DELETED: Use POST /{case_id}/turns instead."""
+    raise HTTPException(
+        status_code=410,
+        detail="This endpoint has been removed. Use POST /cases/{case_id}/turns instead.",
+    )
 
 
 # Health and status endpoints
@@ -2407,169 +2358,13 @@ async def get_case_data(
         )
 
 
-@router.post(
-    "/{case_id}/data",
-    status_code=status.HTTP_201_CREATED,
-    response_model=DataUploadResponse,
-)
-@trace("api_upload_case_data")
-async def upload_case_data(
-    case_id: str,
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    session_id: Optional[str] = Form(None),  # Optional - can be derived from case
-    description: Optional[str] = Form(None),
-    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    data_service=Depends(get_data_service),
-    investigation_service=Depends(get_investigation_service),
-    case_vector_store=Depends(get_case_vector_store),
-    current_user: UserDTO = Depends(require_authentication),
-) -> DataUploadResponse:
-    """
-    Upload data file to a specific case (case-scoped endpoint).
-
-    This endpoint follows the complete data submission pipeline:
-    1. Data preprocessing (extraction and sanitization)
-    2. Evidence creation
-    3. Hypothesis analysis
-    4. Agent response generation
-
-    The session_id is optional - if not provided, it will be derived from the case.
-
-    Returns:
-        DataUploadResponse with:
-        - file_id: Unique identifier for the uploaded file
-        - filename: Original filename
-        - preprocessing metadata (data_type, extraction_method, etc.)
-        - agent_response: AI analysis of the uploaded data
-    """
-    case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
-
-    try:
-        # 1. Verify case exists and user has access
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=404,
-                detail="Case not found or access denied",
-                headers={"x-correlation-id": correlation_id},
-            )
-
-        # 2. Get session_id from case if not provided
-        if not session_id:
-            # Cases have a session_id field that tracks the associated session
-            session_id = f"case_{case_id}_session"  # Generate a session ID from case
-
-        # 3. Read file content
-        content = await file.read()
-        content_str = content.decode("utf-8", errors="ignore")
-
-        # 4. Build context for case association
-        context = {"case_id": case_id, "source": "direct_file_upload"}
-        if description:
-            context["description"] = description
-
-        # 5. Preprocess data (extraction, classification, sanitization)
-        uploaded_data = await data_service.ingest_data(
-            content=content_str,
-            session_id=session_id,
-            file_name=file.filename,
-            file_size=len(content),
-            context=context,
-        )
-
-        # 6. Generate agent analysis response via investigation service
-        # Build query that references the uploaded file
-        analysis_query = f"I've uploaded {file.filename}. Please analyze this data."
-        if description:
-            analysis_query += f" Context: {description}"
-
-        # Create a query request for the investigation service
-        query_request = CaseQueryRequest(
-            message=analysis_query,
-            attachments=(
-                [
-                    {
-                        "file_id": uploaded_data.get("data_id"),
-                        "filename": file.filename,
-                        "data_type": uploaded_data.get("data_type"),
-                        "size": uploaded_data.get("file_size", len(content)),
-                        "summary": uploaded_data.get("insights", {}).get(
-                            "brief_summary"
-                        ),
-                        "s3_uri": uploaded_data.get("data_id"),  # Content reference
-                    }
-                ]
-                if uploaded_data.get("data_id")
-                else None
-            ),
-        )
-
-        # Invoke investigation service to process the file upload as a turn
-        investigation_response = await investigation_service.process_turn(
-            case_id=case_id, user_id=current_user.user_id, request=query_request
-        )
-
-        # 7. Vectorization: Removed (v4.0)
-        # Auto-vectorization after every upload was removed in v4.0.
-        # Vectorization is now on-demand via the agent's vectorize_file tool,
-        # triggered only when cheaper tiers (search_file, deep_analysis) are insufficient.
-        # See: docs/working/DRAFT-data-preprocessing-spec-v4.md Section 5
-
-        # 8. Combine preprocessing metadata with agent response
-        from datetime import datetime, timedelta, timezone
-
-        response_data = DataUploadResponse(
-            data_id=uploaded_data.get("data_id"),
-            case_id=case_id,
-            filename=file.filename,
-            file_size=len(content),
-            data_type=uploaded_data.get("data_type", "unknown"),
-            processing_status=ProcessingStatus.COMPLETED,
-            uploaded_at=datetime.now(timezone.utc).isoformat(),
-            agent_response=(
-                AgentResponse(
-                    content=investigation_response.agent_response,
-                    response_type=ResponseType.ANSWER,
-                    session_id=session_id,
-                    case_id=case_id,
-                    sources=[],
-                    case_status=investigation_response.case_status,
-                )
-                if investigation_response
-                else None
-            ),
-            classification=uploaded_data.get("classification"),
-        )
-
-        logger.info(
-            f"Successfully uploaded and analyzed data for case {case_id}: {file.filename}"
-        )
-
-        # Return response with Location header (REST best practice for 201 Created)
-        data_id = uploaded_data.get("data_id")
-        location_url = (
-            f"/api/v1/cases/{case_id}/data/{data_id}"
-            if data_id
-            else f"/api/v1/cases/{case_id}/data"
-        )
-
-        return JSONResponse(
-            status_code=status.HTTP_201_CREATED,
-            content=response_data.model_dump(mode="json"),
-            headers={"Location": location_url},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to upload data to case {case_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to upload data: {str(e)}",
-            headers={"x-correlation-id": correlation_id},
-        )
+@router.post("/{case_id}/data")
+async def upload_case_data_gone(case_id: str):
+    """DELETED: Use POST /{case_id}/turns with file attachments instead."""
+    raise HTTPException(
+        status_code=410,
+        detail="This endpoint has been removed. Use POST /cases/{case_id}/turns with file attachments instead.",
+    )
 
 
 @router.delete(

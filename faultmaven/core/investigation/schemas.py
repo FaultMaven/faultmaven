@@ -31,6 +31,7 @@ Without this pattern, LLM returning null causes Pydantic validation errors:
 Applied to 23 list fields across all schemas (see git blame for specific changes).
 """
 
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -47,6 +48,44 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
     TurnOutcome,
 )
+
+# =============================================================================
+# Unified Ingestion Pipeline (v4.1)
+# =============================================================================
+
+
+@dataclass
+class Attachment:
+    """A file or pasted data submitted with a turn."""
+
+    content: bytes
+    filename: str
+    content_type: str
+    source_metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class TurnPayload:
+    """Universal turn payload — canonical input to the investigation pipeline.
+
+    Every user turn is represented as an optional query + optional attachments.
+    At least one must be provided. If attachments are present, they are preprocessed
+    through Tier 0+1 before the LLM sees them. If no query is provided, an implicit
+    system query is injected.
+    """
+
+    query: Optional[str] = None
+    attachments: List[Attachment] = field(default_factory=list)
+    intent: Optional["QueryIntent"] = None
+
+    @property
+    def has_attachments(self) -> bool:
+        return len(self.attachments) > 0
+
+    @property
+    def has_query(self) -> bool:
+        return self.query is not None and self.query.strip() != ""
+
 
 # =============================================================================
 # Shared Components
@@ -92,51 +131,6 @@ class InternalReasoning(BaseModel):
     uncertainties: Optional[List[str]] = Field(
         default_factory=list,
         description="What remains unclear or uncertain after this analysis",
-    )
-
-
-class SubmissionClassification(BaseModel):
-    """
-    Classification of user's submission content.
-
-    This schema implements single-phase evidence creation: the LLM classifies
-    the user's submission to determine if it contains technical data that should
-    become an evidence record.
-
-    Classification Types:
-    - user_text: Text composed by user (questions, updates, clarifications, observations)
-      → NO evidence record created
-    - submitted_data: Technical data for evidence evaluation (logs, configs, metrics, screenshots)
-      → Evidence record created with appropriate category
-    - mixed: Both user text AND submitted data
-      → Evidence record created (extract the data portion)
-
-    Design Reference:
-    - docs/working/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md
-    - docs/working/DESIGN-DISCUSSION-SUMMARY-2026-02-11.md Section "INQUIRY Phase Classification"
-    """
-
-    type: Literal["submitted_data", "user_text", "mixed"] = Field(
-        description=(
-            "submitted_data: Technical data for evidence evaluation → Create evidence record\n"
-            "user_text: Text composed by user → No evidence record\n"
-            "mixed: Both submitted data and user text → Extract data as evidence"
-        )
-    )
-
-    confidence: Literal["high", "medium", "low"] = Field(
-        description="Confidence in classification (high = clear, medium = likely, low = ambiguous)"
-    )
-
-    reasoning: str = Field(
-        description="Brief explanation of classification decision (max 200 chars)",
-        max_length=200,
-    )
-
-    data_summary: Optional[str] = Field(
-        None,
-        description="If submitted_data or mixed, summarize what technical data is present (max 200 chars)",
-        max_length=200,
     )
 
 
@@ -535,10 +529,6 @@ class InquiryResponse(BaseInteractionResponse):
     """Response schema for INQUIRY status."""
 
     class InquiryStateUpdate(BaseModel):
-        submission_classification: Optional[SubmissionClassification] = Field(
-            None,
-            description="Classification of user's submission (chat vs external data)",
-        )
         problem_confirmation: Optional[ProblemConfirmation] = None
         proposed_problem_statement: Optional[str] = None
         preliminary_urgency: Optional[PreliminaryUrgency] = None
@@ -557,7 +547,7 @@ class InquiryResponse(BaseInteractionResponse):
         quick_suggestions: Optional[List[str]] = Field(default_factory=list)
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
             default_factory=list,
-            description="Evidence to create from user's submission (when submission_classification is external_data/mixed)",
+            description="Evidence to create from agent findings during this turn",
         )
 
     state_updates: InquiryStateUpdate
@@ -582,10 +572,6 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
     """Schema for DIAGNOSIS stage — covers symptom verification, hypothesis work, and solution proposal."""
 
     class DiagnosisStateUpdate(BaseModel):
-        submission_classification: Optional[SubmissionClassification] = Field(
-            None,
-            description="Classification of user's submission (chat vs external data)",
-        )
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
@@ -618,10 +604,6 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
     """Schema for MITIGATION stage — applying and verifying temporary fix."""
 
     class MitigationStateUpdate(BaseModel):
-        submission_classification: Optional[SubmissionClassification] = Field(
-            None,
-            description="Classification of user's submission (chat vs external data)",
-        )
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
@@ -648,10 +630,6 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
     """Schema for TREATMENT stage — verifying fix, extended diagnosis if fix fails."""
 
     class TreatmentStateUpdate(BaseModel):
-        submission_classification: Optional[SubmissionClassification] = Field(
-            None,
-            description="Classification of user's submission (chat vs external data)",
-        )
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
@@ -683,10 +661,6 @@ class InvestigationResponse_General(BaseInteractionResponse):
     """Fallback 'Full' schema if stage is ambiguous or degraded."""
 
     class GeneralStateUpdate(BaseModel):
-        submission_classification: Optional[SubmissionClassification] = Field(
-            None,
-            description="Classification of user's submission (chat vs external data)",
-        )
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
