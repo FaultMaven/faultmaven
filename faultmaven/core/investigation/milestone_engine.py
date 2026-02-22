@@ -330,22 +330,6 @@ def _truncate_content_ref(
     return truncated
 
 
-def _determine_evidence_form(submission_classification: Any) -> EvidenceForm:
-    """Map LLM's submission_classification.type to the correct EvidenceForm.
-
-    - submitted_data / mixed → SUBMITTED_DATA (technical data pasted by user)
-    - user_text / absent     → USER_TEXT (conversational text)
-
-    Called at each evidence creation site in place of a hardcoded default.
-    """
-    if not submission_classification:
-        return EvidenceForm.USER_TEXT
-    sc_type = getattr(submission_classification, "type", None)
-    if sc_type in ("submitted_data", "mixed"):
-        return EvidenceForm.SUBMITTED_DATA
-    return EvidenceForm.USER_TEXT
-
-
 # =============================================================================
 # Reasoning Validation
 # =============================================================================
@@ -614,22 +598,10 @@ def _post_process_llm_response(
     case: Case,
 ) -> Any:
     """
-    Post-process and repair LLM response to handle classification failures.
+    Post-process and repair LLM response to handle evidence creation failures.
 
-    This function implements defensive validation and automatic repair of LLM responses
-    when the LLM fails to properly classify and create evidence. It's called after
-    parsing the LLM response but before applying state updates.
-
-    Validation Rules:
-    1. If LLM classifies as external_data/mixed but evidence_to_add is empty,
-       try automatic pattern detection to create fallback evidence
-    2. If pattern detection finds evidence but LLM said "user_chat",
-       override and create fallback evidence
-
-    Design Philosophy:
-    - Trust but verify: Let LLM make decisions, but validate and repair failures
-    - Never silently lose evidence: Better to create false evidence than miss critical data
-    - Log all interventions for monitoring LLM quality
+    Detects external data patterns in user messages and creates fallback
+    evidence when the LLM fails to recognize submitted data.
 
     Args:
         updates: Parsed LLM response (InquiryResponse or InvestigationResponse_*)
@@ -644,80 +616,24 @@ def _post_process_llm_response(
     evidence_to_add = getattr(updates, "evidence_to_add", []) or []
     logger.debug(
         f"Post-processing LLM response: "
-        f"has_submission_classification={hasattr(updates, 'submission_classification')}, "
-        f"submission_classification_value={getattr(updates, 'submission_classification', None)}, "
         f"evidence_to_add_count={len(evidence_to_add)}"
     )
 
-    # Check if response has submission_classification (INQUIRY phase)
-    if (
-        hasattr(updates, "submission_classification")
-        and updates.submission_classification
-    ):
-        classification = updates.submission_classification
-        evidence_list = getattr(updates, "evidence_to_add", [])
-
-        # Rule 1: If submitted_data/mixed but no evidence, try fallback
-        if classification.type in ["submitted_data", "mixed"]:
-            if not evidence_list or len(evidence_list) == 0:
-                # Try automatic pattern detection
-                fallback_evidence = _detect_external_data_patterns(user_message)
-                if fallback_evidence:
-                    # Create new list or append to existing
-                    if (
-                        not hasattr(updates, "evidence_to_add")
-                        or updates.evidence_to_add is None
-                    ):
-                        updates.evidence_to_add = []
-                    updates.evidence_to_add.append(fallback_evidence)
-                    logger.warning(
-                        f"LLM classified as '{classification.type}' but evidence_to_add was empty. "
-                        f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
-                        f"(category={fallback_evidence.category.value})"
-                    )
-
-        # Rule 2: If LLM said "user_text" but we detect external data patterns
-        elif classification.type == "user_text":
-            fallback_evidence = _detect_external_data_patterns(user_message)
-            if fallback_evidence:
-                # Override LLM classification - create fallback evidence
-                if (
-                    not hasattr(updates, "evidence_to_add")
-                    or updates.evidence_to_add is None
-                ):
-                    updates.evidence_to_add = []
-                updates.evidence_to_add.append(fallback_evidence)
-                logger.warning(
-                    f"LLM misclassified external data as 'user_text'. "
-                    f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
-                    f"(category={fallback_evidence.category.value}). "
-                    f"Message preview: {user_message[:100]}..."
-                )
-
-    # Rule 3: If no submission_classification provided (or None), check patterns anyway
-    # This handles INVESTIGATING phase where submission_classification is optional
-    # and LLM might skip it entirely while still accepting external data
-    if (
-        not hasattr(updates, "submission_classification")
-        or updates.submission_classification is None
-    ):
-        evidence_list = getattr(updates, "evidence_to_add", [])
-
-        # If no evidence but user message looks like external data, create fallback
-        if not evidence_list or len(evidence_list) == 0:
-            fallback_evidence = _detect_external_data_patterns(user_message)
-            if fallback_evidence and hasattr(updates, "evidence_to_add"):
-                # Only add fallback evidence if the StateUpdate type supports it
-                # (TerminalStateUpdate doesn't have evidence_to_add field)
-                if updates.evidence_to_add is None:
-                    updates.evidence_to_add = []
-                updates.evidence_to_add.append(fallback_evidence)
-                logger.warning(
-                    f"LLM didn't provide submission_classification and created no evidence. "
-                    f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
-                    f"(category={fallback_evidence.category.value}). "
-                    f"Message preview: {user_message[:100]}..."
-                )
+    # If no evidence created, check for external data patterns in user message
+    if not evidence_to_add:
+        fallback_evidence = _detect_external_data_patterns(user_message)
+        if fallback_evidence and hasattr(updates, "evidence_to_add"):
+            # Only add fallback evidence if the StateUpdate type supports it
+            # (TerminalStateUpdate doesn't have evidence_to_add field)
+            if updates.evidence_to_add is None:
+                updates.evidence_to_add = []
+            updates.evidence_to_add.append(fallback_evidence)
+            logger.warning(
+                f"LLM created no evidence but external data detected. "
+                f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
+                f"(category={fallback_evidence.category.value}). "
+                f"Message preview: {user_message[:100]}..."
+            )
 
     return updates
 
@@ -755,7 +671,6 @@ class MilestoneEngine:
         knowledge_service: IKnowledgeService | None = None,
         trace_enabled: bool = True,
         checkpoint_service: Any | None = None,
-        preprocessing_service: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -765,14 +680,12 @@ class MilestoneEngine:
             knowledge_service: Optional knowledge service for KB searches
             trace_enabled: Enable observability tracing
             checkpoint_service: Optional CheckpointService for state snapshots
-            preprocessing_service: Optional PreprocessingService for pasted text Tier 0+1
         """
         self.llm_provider = llm_provider
         self.repository = repository
         self.knowledge_service = knowledge_service
         self.trace_enabled = trace_enabled
         self.checkpoint_service = checkpoint_service
-        self.preprocessing_service = preprocessing_service
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.stagnation_detector = StagnationDetector()
@@ -888,25 +801,9 @@ class MilestoneEngine:
                 # ================================================================
                 # EVIDENCE CLASSIFICATION REDESIGN (Phase 4)
                 # ================================================================
-                # REMOVED: UNCLASSIFIED evidence auto-creation
-                #
-                # OLD BEHAVIOR: Auto-create UNCLASSIFIED evidence for every user message
-                # before LLM sees it. LLM would "promote" relevant items via evidence_to_add.
-                #
-                # NEW BEHAVIOR (Single-Phase Evidence Creation):
-                # - Evidence is created AFTER LLM evaluation, not before
-                # - LLM classifies submission as user_chat, external_data, or mixed
-                # - Only external_data and mixed submissions create evidence records
-                # - No UNCLASSIFIED category (replaced with CONTEXTUAL_EVIDENCE & REJECTED)
-                #
-                # Benefits:
-                # - Cleaner data model (no placeholder evidence records)
-                # - Better analytics (clear acceptance rate)
-                # - Lower storage costs (don't store rejected submissions)
-                # - Simpler mental model (evidence = already classified)
-                #
-                # Evidence creation now happens in _process_response_structured()
-                # based on submission_classification from LLM response.
+                # Evidence creation happens in two places:
+                # 1. Attachments: Preprocessed in Step 1 of process_turn() (before LLM)
+                # 2. Agent findings: Created from evidence_to_add in _apply_*_updates()
                 # ================================================================
 
                 user_message_evidence_id = None  # No longer auto-created
@@ -2198,16 +2095,9 @@ class MilestoneEngine:
         # This code is shared between INQUIRY and INVESTIGATING phases
         from uuid import uuid4
 
-        # Log submission classification for debugging
-        classification_type = getattr(updates, "submission_classification", None)
-        if classification_type:
-            logger.info(
-                f"🔍 Submission classification: "
-                f"type={classification_type.type}, "
-                f"confidence={classification_type.confidence}, "
-                f"reasoning={classification_type.reasoning}"
-            )
-
+        # Evidence creation from LLM's evidence_to_add
+        # Preprocessing now happens in Step 1 of process_turn() (before LLM).
+        # Evidence here is agent-derived findings → always SUBMITTED_DATA form.
         has_attr = hasattr(updates, "evidence_to_add")
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
@@ -2218,28 +2108,6 @@ class MilestoneEngine:
             f"count={evidence_count}"
         )
 
-        # v4.0: Preprocess pasted text through Tier 0+1 when submitted_data/mixed
-        preprocessing_result = None
-        if (
-            classification_type
-            and getattr(classification_type, "type", None)
-            in ("submitted_data", "mixed")
-            and user_message
-            and self.preprocessing_service
-        ):
-            try:
-                preprocessing_result = (
-                    await self.preprocessing_service.classify_and_extract(
-                        content=user_message,
-                    )
-                )
-                logger.info(
-                    f"Pasted text preprocessed: type={preprocessing_result.detailed_data_type.value}, "
-                    f"method={preprocessing_result.extraction_method}"
-                )
-            except Exception as e:
-                logger.warning(f"Pasted text preprocessing failed: {e}")
-
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
             for ev_item in updates.evidence_to_add:
                 # During INQUIRY phase, milestones are not yet being tracked,
@@ -2247,22 +2115,9 @@ class MilestoneEngine:
                 # Evidence will be available for milestone validation once case transitions to INVESTIGATING
                 advances_milestones = []  # INQUIRY phase: No milestone tracking yet
 
-                # v4.0: Use preprocessing result for pasted data evidence
-                if preprocessing_result:
-                    evidence_content = preprocessing_result.structural_index
-                    content_hash = preprocessing_result.content_hash
-                    preprocessed_content = preprocessing_result.structural_index
-                    content_size_bytes = preprocessing_result.content_size_bytes
-                    preprocessing_method = preprocessing_result.extraction_method
-                    data_type = preprocessing_result.data_type.value
-                else:
-                    # Gap #2: Compute content hash for deduplication of inline evidence
-                    evidence_content = ev_item.summary or ""
-                    content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
-                    preprocessed_content = ev_item.summary
-                    content_size_bytes = len(ev_item.summary)
-                    preprocessing_method = "none"
-                    data_type = None
+                # Compute content hash for deduplication of inline evidence
+                evidence_content = ev_item.summary or ""
+                content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
 
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
@@ -2273,13 +2128,13 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=_determine_evidence_form(classification_type),
+                    form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
-                    preprocessed_content=preprocessed_content,
-                    content_size_bytes=content_size_bytes,
-                    preprocessing_method=preprocessing_method,
-                    data_type=data_type,
+                    preprocessed_content=ev_item.summary,
+                    content_size_bytes=len(evidence_content),
+                    preprocessing_method="none",
+                    data_type=None,
                     content_hash=content_hash,
                 )
                 case.evidence.append(ev)
@@ -2287,7 +2142,7 @@ class MilestoneEngine:
                 logger.info(
                     f"✅ Created evidence (INQUIRY): {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"form={ev.form.value}, method={preprocessing_method}, "
+                    f"form={ev.form.value}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
@@ -2440,22 +2295,9 @@ class MilestoneEngine:
                 )
 
         # 2. Add Evidence
-        # a) From attachments (REMOVED - Single-phase evidence creation)
-        # Evidence Classification Redesign: Evidence is ONLY created via LLM classification
-        # in evidence_to_add (section b below). Attachments are stored in case.uploaded_files
-        # but don't automatically become evidence records. The LLM must explicitly classify
-        # them via submission_classification and include them in evidence_to_add.
-        #
-        # Old behavior (removed):
-        # if attachments:
-        #     for attachment in attachments:
-        #         evidence = self._create_evidence_from_attachment(...)
-        #         case.evidence.append(evidence)
-        #
-        # New behavior: See section (b) below - evidence_to_add only
-
-        # b) From 'evidence_to_add' (text snippets, logs, non-file evidence)
-        # DEBUG: Log what LLM returned for evidence_to_add
+        # Preprocessing now happens in Step 1 of process_turn() (before LLM).
+        # Evidence from evidence_to_add is agent-derived findings → always SUBMITTED_DATA form.
+        # Evidence from attachments was already created in Step 1 with form=DOCUMENT.
         has_attr = hasattr(updates, "evidence_to_add")
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
@@ -2466,33 +2308,9 @@ class MilestoneEngine:
             f"count={evidence_count}"
         )
 
-        # v4.0: Preprocess pasted text through Tier 0+1 when submitted_data/mixed
-        inv_classification = getattr(updates, "submission_classification", None)
-        preprocessing_result = None
-        if (
-            inv_classification
-            and getattr(inv_classification, "type", None) in ("submitted_data", "mixed")
-            and user_message
-            and self.preprocessing_service
-            and not attachments  # Skip if file attachments are present (already preprocessed)
-        ):
-            try:
-                preprocessing_result = (
-                    await self.preprocessing_service.classify_and_extract(
-                        content=user_message,
-                    )
-                )
-                logger.info(
-                    f"Pasted text preprocessed (INVESTIGATING): "
-                    f"type={preprocessing_result.detailed_data_type.value}, "
-                    f"method={preprocessing_result.extraction_method}"
-                )
-            except Exception as e:
-                logger.warning(f"Pasted text preprocessing failed: {e}")
-
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
             for ev_item in updates.evidence_to_add:
-                # Option 2.5: Infer milestone attribution (Tier 2 + Tier 3)
+                # Infer milestone attribution (Tier 2 + Tier 3)
                 # Tier 2: System infers from category + milestones completed this turn
                 # Tier 3: LLM can override via advances_milestones field
                 milestones_completed_this_turn = metadata.get(
@@ -2513,22 +2331,9 @@ class MilestoneEngine:
                         ev_item.category, milestones_completed_this_turn
                     )
 
-                # v4.0: Use preprocessing result for pasted data evidence
-                if preprocessing_result:
-                    evidence_content = preprocessing_result.structural_index
-                    content_hash = preprocessing_result.content_hash
-                    preprocessed_content = preprocessing_result.structural_index
-                    content_size_bytes = preprocessing_result.content_size_bytes
-                    preprocessing_method = preprocessing_result.extraction_method
-                    data_type = preprocessing_result.data_type.value
-                else:
-                    # Gap #2: Compute content hash for deduplication of inline evidence
-                    evidence_content = ev_item.summary or ""
-                    content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
-                    preprocessed_content = ev_item.summary
-                    content_size_bytes = len(ev_item.summary)
-                    preprocessing_method = "none"
-                    data_type = None
+                # Compute content hash for deduplication of inline evidence
+                evidence_content = ev_item.summary or ""
+                content_hash = hashlib.sha256(evidence_content.encode()).hexdigest()
 
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
@@ -2539,13 +2344,13 @@ class MilestoneEngine:
                     collected_at=datetime.now(UTC),
                     collected_by=case.user_id,
                     collected_at_turn=case.current_turn,
-                    form=_determine_evidence_form(inv_classification),
+                    form=EvidenceForm.SUBMITTED_DATA,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
-                    preprocessed_content=preprocessed_content,
-                    content_size_bytes=content_size_bytes,
-                    preprocessing_method=preprocessing_method,
-                    data_type=data_type,
+                    preprocessed_content=ev_item.summary,
+                    content_size_bytes=len(evidence_content),
+                    preprocessing_method="none",
+                    data_type=None,
                     content_hash=content_hash,
                 )
                 case.evidence.append(ev)
@@ -2553,7 +2358,7 @@ class MilestoneEngine:
                 logger.info(
                     f"✅ Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
-                    f"form={ev.form.value}, method={preprocessing_method}, "
+                    f"form={ev.form.value}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
 
