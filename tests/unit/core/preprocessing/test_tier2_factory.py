@@ -27,7 +27,7 @@ class TestCreateTier2Service:
         assert result.timeout_seconds == 60
 
     def test_external_without_url_raises(self):
-        with pytest.raises(ValueError, match="TIER2_URL required"):
+        with pytest.raises(ValueError, match="DEEP_ANALYSIS_URL required"):
             create_tier2_service(backend="external")
 
     def test_local_with_llm_client(self):
@@ -59,7 +59,7 @@ class TestCreateTier2Service:
             create_tier2_service(backend="basic")
 
     def test_unknown_backend_raises(self):
-        with pytest.raises(ValueError, match="Unknown TIER2_BACKEND"):
+        with pytest.raises(ValueError, match="Unknown DEEP_ANALYSIS_BACKEND"):
             create_tier2_service(backend="quantum")
 
     def test_default_is_disabled(self):

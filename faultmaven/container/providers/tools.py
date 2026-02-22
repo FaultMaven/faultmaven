@@ -187,16 +187,16 @@ def register_tools(container: BaseDIContainer) -> None:
 
     container.tools.extend([t for t in tools_to_add if t is not None])
 
-    # Deep analysis tool (Tier 3 deep LLM analysis, Gap #1)
-    tier2_service = (
-        container.get_service("tier2_service")
+    # Deep analysis tool (Tier 3 deep LLM analysis)
+    deep_analysis_service = (
+        container.get_service("deep_analysis_service")
         if hasattr(container, "get_service")
         else None
     )
-    if tier2_service:
+    if deep_analysis_service:
         from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
 
-        deep_analysis_tool = DeepAnalysisTool(tier2_service=tier2_service)
+        deep_analysis_tool = DeepAnalysisTool(tier2_service=deep_analysis_service)
         container.deep_analysis_tool = deep_analysis_tool
         container.tools.append(deep_analysis_tool)
         logger.info("Deep analysis tool registered (Tier 3 backend active)")

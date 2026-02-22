@@ -496,22 +496,24 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         dependencies=["data_classifier", "chunking_service"],
     )
 
-    # Tier 2 deep analysis service (Gap #1)
+    # Deep analysis service (Tier 3 deep LLM analysis)
     from faultmaven.core.preprocessing.tier2.factory import create_tier2_service
 
     storage_service = getattr(container, "file_storage_service", None)
-    tier2_service = create_tier2_service(
-        backend=settings.tier2.backend,
-        base_url=settings.tier2.url or None,
-        api_key=settings.tier2.api_key or None,
-        llm_client=llm_provider if settings.tier2.backend == "local" else None,
+    deep_analysis_service = create_tier2_service(
+        backend=settings.deep_analysis.backend,
+        base_url=settings.deep_analysis.url or None,
+        api_key=settings.deep_analysis.api_key or None,
+        llm_client=llm_provider if settings.deep_analysis.backend == "local" else None,
         storage_service=storage_service,
-        timeout_seconds=settings.tier2.timeout_seconds,
+        timeout_seconds=settings.deep_analysis.timeout_seconds,
     )
-    if tier2_service:
-        container._register_service("tier2_service", tier2_service)
+    if deep_analysis_service:
+        container._register_service("deep_analysis_service", deep_analysis_service)
     else:
-        container._register_disabled("tier2_service", "TIER2_BACKEND=disabled")
+        container._register_disabled(
+            "deep_analysis_service", "DEEP_ANALYSIS_BACKEND=disabled"
+        )
 
     # Vector store
     try:

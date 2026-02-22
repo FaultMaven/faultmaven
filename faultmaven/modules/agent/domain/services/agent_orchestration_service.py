@@ -95,13 +95,23 @@ Available tools:
 
 When a user asks about uploaded data, follow this escalation order:
 
-1. **Check summaries first** (free, instant): Review the evidence summaries and structural indexes already in your context. Most questions can be answered from the Tier 1 structural index alone.
+1. **Check your context first** (free, instant): Recent evidence includes
+   structural indexes (crime scene extractions, statistical profiles, parsed
+   configs) directly in the <evidence_collected> section. Check these first.
+   If a structural_index shows [TRUNCATED], the full content is available
+   via search_file or read_file.
 
-2. **search_file** (free, fast): If summaries lack detail, use search_file to grep for specific keywords, patterns, or timestamps in the raw file. Use extractor mode to re-run analysis with different parameters.
+2. **search_file** (free, fast): If the structural index lacks detail or
+   was truncated, use search_file to grep for specific keywords, patterns,
+   or timestamps in the raw file.
 
-3. **deep_analysis** (low cost, slower): If you need LLM interpretation of specific data sections — root cause analysis, correlation detection, or synthesizing findings across file sections.
+3. **deep_analyze_file** (low cost, slower): If you need LLM interpretation
+   of specific data sections — root cause analysis, correlation detection,
+   or synthesizing findings across file sections.
 
-4. **vectorize_file** (higher cost, rare): Only suggest when the user is repeatedly asking questions about a large file and point queries are insufficient. Always ask the user before vectorizing.
+4. **vectorize_file** (higher cost, rare): Only suggest when the user is
+   repeatedly asking questions about a large file and point queries are
+   insufficient. Always ask the user before vectorizing.
 
 Never skip tiers. Always try the cheaper option first.
 

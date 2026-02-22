@@ -1,7 +1,7 @@
 # Evidence Classification Design Specification
 
-**Version:** 2.0
-**Date:** 2026-02-12
+**Version:** 2.1
+**Date:** 2026-02-22
 **Status:** Design Specification
 **Context:** Evidence classification taxonomy, single-phase creation, and milestone advancement attribution
 
@@ -12,7 +12,7 @@
 This document specifies the design for evidence classification in FaultMaven:
 
 1. **Single-phase evidence creation** — evidence records created after LLM evaluation, not before
-2. **Classification-first approach** — LLM classifies submissions during processing
+2. **Payload-driven form determination** — evidence form set by ingestion pipeline (attachments -> DOCUMENT, agent findings -> SUBMITTED_DATA), not by LLM classification
 3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing v3.0](./data-preprocessing-design-specification.md))
 4. **5 evidence categories** — SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, REJECTED
 5. **Comprehensive tracking** — all submissions tracked, including rejections
@@ -412,8 +412,11 @@ Turn 1 (INQUIRY):
 User: "Can you check this log file?"
 *uploads app.log with connection timeout errors*
 
+Ingestion Pipeline (before LLM):
+- form: DOCUMENT  ← Set by payload context (attachment present)
+- data_type: LOGS  ← Classified by Tier 0+1 (before LLM)
+
 LLM Classification:
-- submission_classification: "submitted_data"
 - category: SYMPTOM_EVIDENCE  ← Classified based on content
 - summary: "Application logs showing database connection timeouts"
 - primary_purpose: "Shows repeated connection timeout errors during peak hours"
@@ -661,13 +664,14 @@ ORDER BY count DESC;
    - File content (preprocessed text)
    ↓
 6. LLM returns structured response with:
-   - submission_classification: {type: "submitted_data", reasoning: "..."}
    - state_updates.evidence_to_add: [{
        category: "symptom_evidence",  # or "rejected" if not useful
        data_type: "logs",
        summary: "Database connection timeout errors",
        primary_purpose: "Shows connection pool exhaustion at peak hours"
      }]
+   (Note: form=DOCUMENT already set by ingestion pipeline in step 2;
+    LLM no longer performs submission_classification)
    ↓
 7. Create Evidence record:
    - evidence_id: ev_{uuid}
@@ -697,9 +701,10 @@ ORDER BY count DESC;
    - User message text only (no attachments)
    ↓
 5. LLM returns:
-   - submission_classification: {type: "user_text"}
    - agent_response: "..."
    - NO evidence_to_add
+   (Note: No submission_classification — form is determined by payload context,
+    not by LLM. Query-only turns have no attachments, so no evidence is created.)
    ↓
 6. NO Evidence record created
    ↓
@@ -854,6 +859,6 @@ The milestone advancement design uses a hybrid system-inferred approach with opt
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** 2026-02-12
+**Document Version:** 2.1
+**Last Updated:** 2026-02-22
 **Status:** Design Specification
