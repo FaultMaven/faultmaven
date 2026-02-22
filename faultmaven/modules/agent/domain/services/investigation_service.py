@@ -22,10 +22,18 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse, IntentType
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
+from faultmaven.modules.case.domain.models import (
+    Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -42,7 +50,11 @@ class InvestigationService:
     """
 
     def __init__(
-        self, milestone_engine: MilestoneEngine, case_repository: CaseRepository
+        self,
+        milestone_engine: MilestoneEngine,
+        case_repository: CaseRepository,
+        preprocessing_service=None,
+        file_storage_service=None,
     ):
         """
         Initialize investigation service.
@@ -50,30 +62,31 @@ class InvestigationService:
         Args:
             milestone_engine: Core investigation engine with LLM integration
             case_repository: Case persistence layer
+            preprocessing_service: Tier 0+1 preprocessing pipeline
+            file_storage_service: Raw file storage (local/S3)
         """
         self.engine = milestone_engine
         self.repository = case_repository
+        self.preprocessing_service = preprocessing_service
+        self.file_storage_service = file_storage_service
 
     @trace("investigation_service_process_turn")
     async def process_turn(
-        self, case_id: str, user_id: str, request: CaseQueryRequest
-    ) -> CaseQueryResponse:
+        self, case_id: str, user_id: str, payload: TurnPayload
+    ) -> TurnResponse:
         """
-        Process a user message and update investigation.
+        Process a user turn through the two-step pipeline.
 
-        Workflow:
-        1. Retrieve case from repository
-        2. Verify user has access
-        3. Process turn via MilestoneEngine
-        4. Return response with progress updates
+        Step 1: Preprocess any attachments through Tier 0+1 (before LLM).
+        Step 2: LLM inference with query + evidence context.
 
         Args:
             case_id: Case identifier
             user_id: User making the request
-            request: Turn request with message and optional attachments
+            payload: Turn payload with optional query and/or attachments
 
         Returns:
-            CaseQueryResponse with agent response, milestones, and progress
+            TurnResponse with agent response, milestones, progress, and attachment results
 
         Raises:
             NotFoundError: If case not found
@@ -81,12 +94,11 @@ class InvestigationService:
             ServiceException: If turn processing fails
         """
         try:
-            # 1. Retrieve case
+            # 1. Retrieve case and verify access
             case = await self.repository.get(case_id)
             if not case:
                 raise NotFoundError("Case", case_id)
 
-            # 2. Check permissions (simple owner check)
             if case.user_id != user_id:
                 logger.warning(
                     f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
@@ -95,115 +107,118 @@ class InvestigationService:
                     f"User {user_id} not authorized for case {case_id}"
                 )
 
-            # 3. Save user message to conversation history BEFORE processing
-            from datetime import datetime, timezone
-            from uuid import uuid4
-
-            # Calculate next turn number (don't commit yet - only after successful processing)
             next_turn = case.current_turn + 1
 
-            # Per case-storage-design.md Section 4.7, use "timestamp" not "created_at"
-            # Preserve intent metadata for debugging, analytics, and audit trail
+            # ── STEP 1: PRE-LLM DATA INGESTION ──
+            evidence_created: List["Evidence"] = []
+            if payload.has_attachments:
+                for attachment in payload.attachments:
+                    evidence = await self._preprocess_attachment(
+                        case, attachment, user_id, next_turn
+                    )
+                    evidence_created.append(evidence)
+                    case.evidence.append(evidence)
+
+            # Determine query (explicit or implicit)
+            query = payload.query
+            if not payload.has_query and payload.has_attachments:
+                query = generate_implicit_query(payload.attachments, evidence_created)
+
+            # 2. Save user message to conversation history BEFORE LLM processing
+            from uuid import uuid4
+
+            intent = payload.intent
+            intent_type = intent.type if intent else IntentType.CONVERSATION
+
             user_message_obj = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": next_turn,
                 "role": "user",
                 "message_type": "user_query",
-                "content": request.message,
+                "content": query or "",
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": user_id,
                 "token_count": None,
                 "metadata": {
-                    "has_attachments": bool(request.attachments),
-                    "attachment_count": (
-                        len(request.attachments) if request.attachments else 0
-                    ),
-                    # Intent metadata for tracing and analytics
-                    "intent_type": request.intent.type.value,
-                    "intent_metadata": request.intent.model_dump(
-                        exclude_unset=True, exclude={"type"}
+                    "has_attachments": payload.has_attachments,
+                    "attachment_count": len(payload.attachments),
+                    "intent_type": intent_type.value,
+                    "intent_metadata": (
+                        intent.model_dump(exclude_unset=True, exclude={"type"})
+                        if intent
+                        else {}
                     ),
                 },
             }
             case.messages.append(user_message_obj)
             case.message_count += 1
-
-            # Persist user message (but NOT turn increment yet - that happens after success)
             await self.repository.save(case)
 
-            # 4. Route based on structured intent (clean, no keyword matching)
-            # Intent-based routing eliminates ambiguity and provides single code path
-            # for all interactions (conversation history unified).
-            intent_type = request.intent.type
-
+            # ── STEP 2: LLM INFERENCE ──
             # Heuristic check for greetings if intent is CONVERSATION (default)
-            if intent_type == IntentType.CONVERSATION and request.message:
-                heuristic_intent = self._detect_intent_heuristic(request.message)
+            if intent_type == IntentType.CONVERSATION and query:
+                heuristic_intent = self._detect_intent_heuristic(query)
                 if heuristic_intent:
                     intent_type = heuristic_intent
                     logger.info(
-                        f"Heuristic detected intent {intent_type.value} for message: '{request.message}'"
+                        f"Heuristic detected intent {intent_type.value} for message: '{query}'"
                     )
 
             if intent_type == IntentType.STATUS_TRANSITION:
-                # Explicit state transition (resolve/close) via UI button
                 result = await self._handle_status_transition(
                     case=case,
-                    user_message=request.message,
-                    from_status=request.intent.from_status,
-                    to_status=request.intent.to_status,
-                    user_confirmed=request.intent.user_confirmed or False,
+                    user_message=query or "",
+                    from_status=intent.from_status if intent else None,
+                    to_status=intent.to_status if intent else None,
+                    user_confirmed=(
+                        (intent.user_confirmed or False) if intent else False
+                    ),
                 )
             elif intent_type == IntentType.CONFIRMATION:
-                # Yes/No confirmation response
                 result = await self._handle_confirmation(
                     case=case,
-                    user_message=request.message,
-                    confirmation_value=request.intent.confirmation_value,
+                    user_message=query or "",
+                    confirmation_value=intent.confirmation_value if intent else None,
                 )
             elif intent_type == IntentType.HYPOTHESIS_ACTION:
-                # Validate/refute/retire hypothesis
                 result = await self._handle_hypothesis_action(
                     case=case,
-                    user_message=request.message,
-                    hypothesis_id=request.intent.hypothesis_id,
-                    action=request.intent.action,
+                    user_message=query or "",
+                    hypothesis_id=intent.hypothesis_id if intent else None,
+                    action=intent.action if intent else None,
                 )
             elif intent_type == IntentType.CONVERSATION:
-                # Normal conversation - process via MilestoneEngine
-                # Engine handles:
-                # - Generating status-based prompt
-                # - Invoking LLM with structured output
-                # - Updating case state (milestones, evidence, hypotheses)
-                # - Pattern matching fallback for natural language (e.g., "close as unresolved")
-                # - Automatic status transitions
-                # - Saving case via repository
+                # Build attachment metadata for the engine
+                attachment_metadata = [
+                    {
+                        "evidence_id": ev.evidence_id,
+                        "data_type": ev.data_type,
+                        "summary": ev.summary,
+                    }
+                    for ev in evidence_created
+                ]
                 result = await self.engine.process_turn(
                     case=case,
-                    user_message=request.message,
-                    attachments=request.attachments,
-                    intent_type=intent_type.value,  # Pass intent for logging/tracing
-                    intent_data=request.intent.model_dump(exclude_unset=True),
+                    user_message=query or "",
+                    attachments=attachment_metadata or None,
+                    intent_type=intent_type.value,
+                    intent_data=(
+                        intent.model_dump(exclude_unset=True) if intent else {}
+                    ),
                 )
             elif intent_type == IntentType.GREETING:
-                # Heuristic greeting response (no LLM)
                 result = await self._handle_greeting(case=case)
             else:
                 raise ValueError(f"Unknown intent type: {intent_type}")
 
-            # 5. Processing succeeded - commit turn increment
-            # Only commit after successful processing to avoid gaps in audit trail on crashes
+            # 3. Processing succeeded — commit turn increment
             result["case_updated"].current_turn = next_turn
-
-            # 6. Build response
             updated_case = result["case_updated"]
             agent_response_text = result["agent_response"]
 
-            # 7. Save agent response to conversation history
-            from datetime import datetime, timezone
+            # 4. Save agent response to conversation history
             from uuid import uuid4
 
-            # Per case-storage-design.md Section 4.7, use "created_at"
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
@@ -211,18 +226,16 @@ class InvestigationService:
                 "message_type": "agent_response",
                 "content": agent_response_text,
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                "author_id": None,  # System/agent has no user_id
+                "author_id": None,
                 "token_count": None,
                 "metadata": {},
             }
-
             updated_case.messages.append(agent_message)
             updated_case.message_count += 1
-
-            # Save case with agent message
             await self.repository.save(updated_case)
 
-            response = CaseQueryResponse(
+            # 5. Build TurnResponse
+            response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
                 milestones_completed=result.get("metadata", {}).get(
@@ -235,12 +248,22 @@ class InvestigationService:
                     if hasattr(updated_case, "is_stuck")
                     else False
                 ),
+                attachments_processed=[
+                    AttachmentResult(
+                        evidence_id=ev.evidence_id,
+                        filename=att.filename,
+                        data_type=ev.data_type or "",
+                        file_size=ev.content_size_bytes,
+                        processing_status="completed",
+                    )
+                    for att, ev in zip(payload.attachments, evidence_created)
+                ],
             )
 
             logger.info(
                 f"Processed turn {response.turn_number} for case {case_id}, "
                 f"status={response.case_status}, milestones={len(response.milestones_completed)}, "
-                f"messages={updated_case.message_count}"
+                f"attachments={len(evidence_created)}, messages={updated_case.message_count}"
             )
 
             return response
@@ -308,6 +331,73 @@ class InvestigationService:
         except Exception as e:
             logger.error(f"Failed to get progress for case {case_id}: {e}")
             raise ServiceException(f"Progress retrieval failed: {str(e)}") from e
+
+    # ============================================================
+    # Attachment Preprocessing (Step 1 of Two-Step Pipeline)
+    # ============================================================
+
+    async def _preprocess_attachment(
+        self,
+        case: "Case",
+        attachment: Attachment,
+        user_id: str,
+        turn_number: int,
+    ) -> Evidence:
+        """Preprocess a single attachment through Tier 0+1.
+
+        Args:
+            case: Case entity (for case_id context)
+            attachment: Raw attachment from turn payload
+            user_id: User who submitted the attachment
+            turn_number: Current turn number
+
+        Returns:
+            Evidence record with preprocessed content
+
+        Raises:
+            ServiceException: If preprocessing or storage fails
+        """
+        from uuid import uuid4
+
+        content = attachment.content.decode("utf-8", errors="replace")
+
+        # Tier 0+1: Classify and extract structural index
+        preprocessing_result = await self.preprocessing_service.classify_and_extract(
+            content=content,
+            filename=attachment.filename,
+            source_metadata=attachment.source_metadata,
+        )
+
+        # Create evidence record (form=DOCUMENT for all turn attachments)
+        evidence = Evidence(
+            evidence_id=f"ev_{uuid4().hex[:12]}",
+            form=EvidenceForm.DOCUMENT,
+            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            primary_purpose="user_submitted_data",
+            summary=preprocessing_result.summary,
+            preprocessed_content=preprocessing_result.structural_index,
+            data_type=preprocessing_result.data_type.value,
+            content_hash=preprocessing_result.content_hash,
+            content_size_bytes=len(attachment.content),
+            preprocessing_method=preprocessing_result.extraction_method,
+            extraction_method=preprocessing_result.extraction_method,
+            collected_by=user_id,
+            collected_at_turn=turn_number,
+        )
+
+        # Store raw content for Tier 2 deep analysis
+        if self.file_storage_service:
+            storage_result = await self.file_storage_service.store_file(
+                file_data=attachment.content,
+                original_filename=attachment.filename,
+                organization_id=getattr(case, "organization_id", "default"),
+                case_id=case.case_id,
+                mime_type=attachment.content_type,
+            )
+            evidence.content_ref = storage_result.get("file_path")
+
+        return evidence
 
     # ============================================================
     # Intent-Based Query Handlers
