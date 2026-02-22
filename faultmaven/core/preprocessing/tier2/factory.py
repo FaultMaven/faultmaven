@@ -41,10 +41,10 @@ def create_tier2_service(
         ITier2AnalysisService instance, or None if disabled
 
     Configuration (env vars):
-        TIER2_BACKEND=disabled    # external | local | basic | disabled
-        TIER2_URL=                # URL for external backend
-        TIER2_API_KEY=            # API key for external backend
-        TIER2_TIMEOUT_SECONDS=30  # Timeout for Tier 2 calls
+        DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
+        DEEP_ANALYSIS_URL=                # URL for external backend
+        DEEP_ANALYSIS_API_KEY=            # API key for external backend
+        DEEP_ANALYSIS_TIMEOUT_SECONDS=30  # Timeout for deep analysis calls
     """
     if backend == "disabled":
         logger.info("Tier 2 deep analysis: disabled")
@@ -52,7 +52,9 @@ def create_tier2_service(
 
     if backend == "external":
         if not base_url:
-            raise ValueError("TIER2_URL required when TIER2_BACKEND=external")
+            raise ValueError(
+                "DEEP_ANALYSIS_URL required when DEEP_ANALYSIS_BACKEND=external"
+            )
         logger.info(f"Tier 2 deep analysis: external ({base_url})")
         return ExternalTier2Client(
             base_url=base_url,
@@ -63,7 +65,7 @@ def create_tier2_service(
 
     if backend == "local":
         if not llm_client:
-            raise ValueError("LLM client required when TIER2_BACKEND=local")
+            raise ValueError("LLM client required when DEEP_ANALYSIS_BACKEND=local")
         logger.info("Tier 2 deep analysis: local LLM")
         return LocalTier2Service(
             llm_client=llm_client,
@@ -72,13 +74,15 @@ def create_tier2_service(
 
     if backend == "basic":
         if not storage_service:
-            raise ValueError("Storage service required when TIER2_BACKEND=basic")
+            raise ValueError(
+                "Storage service required when DEEP_ANALYSIS_BACKEND=basic"
+            )
         logger.info("Tier 2 deep analysis: basic keyword search")
         return BasicTier2Service(
             storage_service=storage_service,
         )
 
     raise ValueError(
-        f"Unknown TIER2_BACKEND: {backend}. "
+        f"Unknown DEEP_ANALYSIS_BACKEND: {backend}. "
         f"Expected: external | local | basic | disabled"
     )

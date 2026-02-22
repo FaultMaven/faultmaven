@@ -14,7 +14,7 @@
 | Tests: Phase 1-2 test updates | DONE | `ad802c1` |
 | Phase 3: Milestone Engine Cleanup | DONE | `309742b` |
 | Phase 4: Context Sliding Window | DONE | `b1653ac` |
-| Phase 5: Prompt Template Updates | NOT STARTED | — |
+| Phase 5: Prompt Template Updates | DONE | — |
 | Phase 6: Test Rewrite | NOT STARTED | — |
 | Phase 7: Frontend (Copilot) | NOT STARTED | — |
 

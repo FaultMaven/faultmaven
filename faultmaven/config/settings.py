@@ -1803,38 +1803,38 @@ class PreprocessingSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-class Tier2Settings(BaseSettings):
-    """Tier 2 deep analysis configuration.
+class DeepAnalysisSettings(BaseSettings):
+    """Deep analysis (Tier 3) configuration.
 
-    Controls on-demand deep analysis of raw evidence files.
-    Tier 2 runs when the agent needs to drill into raw data beyond
-    what Tier 0+1 structural indexes provide.
+    Controls on-demand deep LLM analysis of raw evidence files.
+    Deep analysis runs when the agent needs interpreted analysis beyond
+    what Tier 0+1 structural indexes and Tier 2 mechanical search provide.
     """
 
     backend: str = Field(
         default="disabled",
-        env="TIER2_BACKEND",
-        description="Tier 2 backend: external | local | basic | disabled",
+        env="DEEP_ANALYSIS_BACKEND",
+        description="Deep analysis backend: external | local | basic | disabled",
     )
 
     url: str = Field(
         default="",
-        env="TIER2_URL",
-        description="URL for external Tier 2 backend",
+        env="DEEP_ANALYSIS_URL",
+        description="URL for external deep analysis backend",
     )
 
     api_key: str = Field(
         default="",
-        env="TIER2_API_KEY",
-        description="API key for external Tier 2 backend",
+        env="DEEP_ANALYSIS_API_KEY",
+        description="API key for external deep analysis backend",
     )
 
     timeout_seconds: int = Field(
         default=30,
-        env="TIER2_TIMEOUT_SECONDS",
+        env="DEEP_ANALYSIS_TIMEOUT_SECONDS",
         ge=5,
         le=120,
-        description="Timeout for Tier 2 analysis calls",
+        description="Timeout for deep analysis calls",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -2127,7 +2127,7 @@ class FaultMavenSettings(BaseSettings):
     features: FeatureSettings = Field(default_factory=FeatureSettings)
     tools: ToolsSettings = Field(default_factory=ToolsSettings)
     preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
-    tier2: Tier2Settings = Field(default_factory=Tier2Settings)
+    deep_analysis: DeepAnalysisSettings = Field(default_factory=DeepAnalysisSettings)
 
     # Enhanced configuration sections merged into main sections above
     # enhanced_protection merged into protection above
