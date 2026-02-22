@@ -1,7 +1,7 @@
 # Evidence Flow Architecture
 
-**Version:** 2.2
-**Date:** 2026-02-12
+**Version:** 2.3
+**Date:** 2026-02-22
 **Status:** Design Specification
 
 ---
@@ -82,7 +82,7 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 │  │ - PreprocessingResult.structural_index (if file upload)           │ │
 │  │ - PreprocessingResult.summary (<500 chars, always included)       │ │
 │  │                                                                     │ │
-│  │ Returns (v4.1 — submission_classification removed):                │ │
+│  │ Returns:                                                           │ │
 │  │ - evidence_to_add (category, data_type, summary, purpose)         │ │
 │  │ - state_updates (hypotheses, milestones, etc.)                    │ │
 │  │ - agent_response (natural language response)                      │ │
@@ -95,9 +95,10 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    Evidence Creation Decision Layer                      │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ v4.1: Payload-driven (no submission_classification)               │ │
+│  │ Payload-driven unified ingestion pipeline:                         │ │
 │  │                                                                     │ │
-│  │ Step 1 — Attachments (before LLM call):                           │ │
+│  │ Step 1 — Classification + Attachments (before LLM, Tier 0+1):    │ │
+│  │   All classification via Tier 0+1 (no LLM classification)        │ │
 │  │   Each attachment → _preprocess_attachment() → Evidence            │ │
 │  │   form=DOCUMENT, preprocessing_method from Tier 0+1               │ │
 │  │                                                                     │ │
@@ -258,8 +259,9 @@ User          API          Investigation    LLM         Database
  │              │                │             │             │
  │              │                │<────────────│             │
  │              │                │  response   │             │
- │              │                │  {type:     │             │
- │              │                │   user_text}│             │
+ │              │                │  {no        │             │
+ │              │                │   evidence_ │             │
+ │              │                │   to_add}   │             │
  │              │                │             │             │
  │              │                │─decision────│             │
  │              │                │  NO evidence│             │
@@ -374,63 +376,93 @@ User          API          Investigation    LLM         Job Queue       Worker
                               │
                               │ User submits file or message
                               ↓
-                    ┌─────────────────┐
-                    │ Preprocessing   │
-                    │ (file upload)   │
-                    └────────┬────────┘
-                             │
-                             │ content_hash computed
-                             ↓
-                    ┌─────────────────┐
-                    │ LLM Evaluation  │
-                    └────────┬────────┘
+                    ┌─────────────────────────┐
+                    │ Step 1: Classification   │
+                    │ (Tier 0+1, before LLM)  │
+                    └────────┬────────────────┘
                              │
                              │
-              ┌──────────────┼──────────────┐
-              │              │              │
-              ↓              ↓              ↓
-     submission_type   submission_type   submission_type
-     = user_text       = submitted_data  = mixed
-              │              │              │
-              ↓              ↓              ↓
-     ┌──────────┐    ┌─────────────┐  ┌─────────────┐
-     │ NO       │    │ Check       │  │ Check       │
-     │ EVIDENCE │    │ Duplicate   │  │ Duplicate   │
-     │          │    └──────┬──────┘  └──────┬──────┘
-     │ (stays   │           │                │
-     │  in      │           │                │
-     │  messages│      ┌────┴────┐      ┌────┴────┐
-     │  only)   │      │ Dup?    │      │ Dup?    │
-     └──────────┘      └────┬────┘      └────┬────┘
-                            │                │
-                       Yes ─┤                ├─ No
-                            │                │
-                            ↓                ↓
-                   ┌─────────────┐   ┌────────────────┐
-                   │ Create      │   │ Create         │
-                   │ REJECTED    │   │ with LLM       │
-                   │ with ref    │   │ category       │
-                   └──────┬──────┘   └────────┬───────┘
-                          │                   │
-                          │                   │
-                          └────────┬──────────┘
-                                   │
-                                   ↓
-                          ┌─────────────────┐
-                          │ Evidence        │
-                          │ Persisted       │
-                          └────────┬────────┘
-                                   │
-                                   ↓
-                            ┌──────────────┐
-                            │ Evidence     │
-                            │ Exists in DB │
-                            └──────┬───────┘
-                                   │
-                                   │ Case can query
-                                   │ for analytics
-                                   ↓
-                                  END
+              ┌──────────────┴──────────────┐
+              │                             │
+              ↓                             ↓
+     Has attachments?              No attachments
+              │                             │
+              ↓                             │
+     ┌─────────────────┐                    │
+     │ Each attachment: │                    │
+     │ form=DOCUMENT    │                    │
+     │ Tier 0+1 classif │                    │
+     └────────┬────────┘                    │
+              │                             │
+              │ Check duplicate             │
+              │ (content_hash)              │
+              │                             │
+         ┌────┴────┐                        │
+         │ Dup?    │                        │
+         └────┬────┘                        │
+              │                             │
+         Yes ─┤─ No                         │
+              │    │                         │
+              ↓    ↓                         │
+     ┌──────────┐ Evidence                  │
+     │ Skip     │ created                   │
+     │ (dedup)  │ form=DOCUMENT             │
+     └──────────┘                           │
+                                            │
+              ┌─────────────────────────────┘
+              │
+              ↓
+     ┌─────────────────┐
+     │ LLM Evaluation  │
+     └────────┬────────┘
+              │
+              │
+     Has evidence_to_add?
+              │
+         ┌────┴────┐
+         │         │
+         ↓         ↓
+        Yes       No
+         │         │
+         ↓         ↓
+     ┌──────────┐  ┌──────────┐
+     │ Each:    │  │ NO       │
+     │ form=    │  │ EVIDENCE │
+     │ SUBMITTED│  │ from LLM │
+     │ _DATA    │  │ (query-  │
+     │          │  │  only    │
+     │ Check    │  │  turn)   │
+     │ duplicate│  └──────────┘
+     └────┬─────┘
+          │
+     ┌────┴────┐
+     │ Dup?    │
+     └────┬────┘
+          │
+     Yes ─┤─ No
+          │    │
+          ↓    ↓
+  ┌──────────┐ Evidence
+  │ Skip     │ created
+  │ (dedup)  │ form=SUBMITTED_DATA
+  └──────────┘
+                    │
+                    ↓
+           ┌─────────────────┐
+           │ Evidence        │
+           │ Persisted       │
+           └────────┬────────┘
+                    │
+                    ↓
+             ┌──────────────┐
+             │ Evidence     │
+             │ Exists in DB │
+             └──────┬───────┘
+                    │
+                    │ Case can query
+                    │ for analytics
+                    ↓
+                   END
 ```
 
 ---
@@ -438,7 +470,7 @@ User          API          Investigation    LLM         Job Queue       Worker
 ## Sequence Diagram: Tier 2 Deep Analysis (On-Demand)
 
 ```
-User          API          Investigation    Vector DB    Tier2 Service   Storage
+User          API          Investigation    Vector DB    Deep Analysis   Storage
  │              │                │             │             │             │
  │─POST query──>│                │             │             │             │
  │ "What's in   │                │             │             │             │
@@ -857,6 +889,6 @@ evidence.storage_size_bytes
 
 ---
 
-**Document Version:** 2.2
-**Last Updated:** 2026-02-12
+**Document Version:** 2.3
+**Last Updated:** 2026-02-22
 **Status:** Design Specification

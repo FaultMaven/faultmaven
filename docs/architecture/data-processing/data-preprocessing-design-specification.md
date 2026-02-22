@@ -18,7 +18,7 @@
 | **Evidence from search** | Not specified | Rules for when/how search results become evidence |
 | **Agent escalation** | Tier 1 summary → Tier 2 deep analysis | Tier 1 → Tier 2 → Tier 3 → Tier 4 progressive ladder |
 | **Classification model** | 6 unified types in spec, 12 detailed types hidden in code | Spec acknowledges 12→6 two-layer model; 11 distinct extractors |
-| **Pasted text** | Bypasses classification and extraction entirely | Routed through Tier 0+1 when `submission_classification.type != "user_text"` |
+| **Pasted text** | Bypasses classification and extraction entirely | Routed through Tier 0+1 via unified `/turns` endpoint (payload-driven, no LLM classification) |
 | **Classification fallback** | Low confidence → `UNSTRUCTURED_TEXT` + user modal | Best-effort: highest-scoring candidate extractor, no user modal |
 
 ---
@@ -429,15 +429,15 @@ The agent tool is `deep_analyze_file` (was already defined in v3.2). It calls `I
 - `LocalTier2Service`: In-process with local LLM (Ollama/vLLM)
 - `BasicTier2Service`: In-process keyword search, no LLM (fallback)
 
-**Configuration** (unchanged):
+**Configuration** (updated Phase 5):
 ```bash
-TIER2_BACKEND=disabled    # external | local | basic | disabled
-TIER2_URL=                # URL for external backend
-TIER2_API_KEY=            # API key for external backend
-TIER2_TIMEOUT_SECONDS=30
+DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
+DEEP_ANALYSIS_URL=                # URL for external backend
+DEEP_ANALYSIS_API_KEY=            # API key for external backend
+DEEP_ANALYSIS_TIMEOUT_SECONDS=30
 ```
 
-> **Note**: The config key remains `TIER2_BACKEND` for backward compatibility. In the codebase, the service is still called `ITier2AnalysisService`. The "Tier 3" naming is a spec-level concept for the four-tier processing model.
+> **Note**: The old `TIER2_*` config names are no longer supported. Phase 5 performed a clean break — use `DEEP_ANALYSIS_*` exclusively. In the codebase, the service is still called `ITier2AnalysisService`. The "Tier 3" naming is a spec-level concept for the four-tier processing model.
 
 ---
 
@@ -627,13 +627,15 @@ async def decide_data_access_tier(
 
 When a user asks about uploaded data, follow this escalation order:
 
-1. **Check summaries first** (free, instant): Review the evidence summaries
-   and structural indexes already in your context. Most questions can be
-   answered from the Tier 1 structural index alone.
+1. **Check your context first** (free, instant): Recent evidence includes
+   structural indexes (crime scene extractions, statistical profiles, parsed
+   configs) directly in the <evidence_collected> section. Check these first.
+   If a structural_index shows [TRUNCATED], the full content is available
+   via search_file or read_file.
 
-2. **search_file** (free, fast): If summaries lack detail, use search_file
-   to grep for specific keywords, patterns, or timestamps in the raw file.
-   Use extractor mode to re-run analysis with different parameters.
+2. **search_file** (free, fast): If the structural index lacks detail or
+   was truncated, use search_file to grep for specific keywords, patterns,
+   or timestamps in the raw file.
 
 3. **deep_analyze_file** (low cost, slower): If you need LLM interpretation
    of specific data sections — root cause analysis, correlation detection,
@@ -734,16 +736,14 @@ This allows the UI to show: "This finding was derived from [original_file.log], 
 ```python
 class EvidenceForm(str, Enum):
     DOCUMENT = "document"
-    """Uploaded file (log, screenshot, config, etc.) via /data endpoint."""
+    """Data submitted as attachment via /turns endpoint — file uploads AND pasted data."""
 
     USER_TEXT = "user_text"
-    """Text composed by user (questions, descriptions, observations).
-    Maps to submission_classification.type == 'user_text'."""
+    """Query-only turn with no attachments (questions, descriptions, observations)."""
 
     SUBMITTED_DATA = "submitted_data"
-    """Pasted/injected technical data in text input.
-    Maps to submission_classification.type in ('submitted_data', 'mixed').
-    Also used for evidence derived from search/analysis of submitted files."""
+    """Evidence derived from agent tool use (search_file, deep_analyze_file results).
+    Not used for direct user submissions — those are DOCUMENT."""
 ```
 
 ### 8.2 Classification Logic
@@ -787,7 +787,7 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 ### 9.2 Backward Compatibility
 
 - Existing `deep_analyze_file` tool continues to work unchanged (renamed conceptually to Tier 3)
-- `TIER2_BACKEND` config key remains (refers to the LLM analysis backend, now Tier 3)
+- `TIER2_*` config keys renamed to `DEEP_ANALYSIS_*` (clean break, no backward compat)
 - Existing vectorized data in ChromaDB remains searchable
 - No database migration needed (Tier 4 uses same ChromaDB schema)
 
@@ -855,11 +855,12 @@ SEARCH_FILE_CONTEXT_LINES=20
 # ============================================================
 # TIER 3: DEEP LLM ANALYSIS
 # ============================================================
-TIER2_BACKEND=disabled              # external | local | basic | disabled
-TIER2_URL=                          # URL for external backend
-TIER2_API_KEY=                      # API key for external backend
-TIER2_TIMEOUT_SECONDS=30
-TIER2_MAX_FILE_SIZE_MB=50
+DEEP_ANALYSIS_BACKEND=disabled      # external | local | basic | disabled
+DEEP_ANALYSIS_URL=                  # URL for external backend
+DEEP_ANALYSIS_API_KEY=              # API key for external backend
+DEEP_ANALYSIS_TIMEOUT_SECONDS=30
+DEEP_ANALYSIS_MAX_FILE_SIZE_MB=50
+# NOTE: Old TIER2_* names are no longer supported (clean break in Phase 5)
 
 # ============================================================
 # TIER 4: VECTORIZATION (on-demand)
