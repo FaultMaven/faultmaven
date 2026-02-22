@@ -433,33 +433,6 @@ class DataUploadRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 
-class DataUploadResponse(BaseModel):
-    """Response payload for data upload with AI analysis."""
-
-    schema_version: Literal["3.1.0"] = "3.1.0"
-    data_id: str
-    case_id: str = Field(
-        ..., description="Actual case ID (may differ from optimistic ID in request)"
-    )
-    filename: str = Field(..., description="Uploaded filename")
-    file_size: int = Field(..., description="File size in bytes")
-    data_type: str = Field(..., description="Classified data type")
-    processing_status: ProcessingStatus
-    uploaded_at: str = Field(..., description="Upload timestamp (ISO 8601)")
-
-    # NEW: AI analysis response
-    agent_response: Optional["AgentResponse"] = Field(
-        None, description="Conversational AI analysis of the uploaded data"
-    )
-
-    # Classification metadata
-    classification: Optional[Dict[str, Any]] = Field(
-        None, description="Classification confidence and metadata"
-    )
-
-    view_state: Optional[ViewState] = None
-
-
 # --- API Compliance Response Models ---
 
 
