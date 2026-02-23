@@ -189,14 +189,25 @@ class InvestigationService:
                 )
             elif intent_type == IntentType.CONVERSATION:
                 # Build attachment metadata for the engine
-                attachment_metadata = [
-                    {
-                        "evidence_id": ev.evidence_id,
-                        "data_type": ev.data_type,
-                        "summary": ev.summary,
-                    }
-                    for ev in evidence_created
-                ]
+                attachment_metadata = []
+                for att, ev in zip(payload.attachments, evidence_created):
+                    is_paste = att.filename.startswith("pasted-content-")
+                    source = "paste" if is_paste else "file_upload"
+                    # UploadedFile.file_id requires ^(file_|data_)[a-f0-9]{12,16}$
+                    ev_hex = ev.evidence_id.removeprefix("ev_")
+                    file_id = f"data_{ev_hex}" if is_paste else f"file_{ev_hex}"
+                    attachment_metadata.append(
+                        {
+                            "evidence_id": ev.evidence_id,
+                            "file_id": file_id,
+                            "filename": att.filename,
+                            "data_type": ev.data_type,
+                            "size": ev.content_size_bytes,
+                            "source_type": source,
+                            "summary": ev.summary,
+                            "s3_uri": ev.content_ref,
+                        }
+                    )
                 result = await self.engine.process_turn(
                     case=case,
                     user_message=query or "",
@@ -361,11 +372,18 @@ class InvestigationService:
 
         content = attachment.content.decode("utf-8", errors="replace")
 
+        # Convert dict source_metadata to SourceMetadata for classifier compatibility
+        source_meta = None
+        if attachment.source_metadata:
+            from faultmaven.models.api import SourceMetadata
+
+            source_meta = SourceMetadata(**attachment.source_metadata)
+
         # Tier 0+1: Classify and extract structural index
         preprocessing_result = await self.preprocessing_service.classify_and_extract(
             content=content,
             filename=attachment.filename,
-            source_metadata=attachment.source_metadata,
+            source_metadata=source_meta,
         )
 
         # Create evidence record (form=DOCUMENT for all turn attachments)

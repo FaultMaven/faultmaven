@@ -269,6 +269,140 @@ class TestInvestigationServiceProcessTurn:
         # Verify preprocessing was called
         mock_preprocessing.classify_and_extract.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_attachment_metadata_includes_required_fields(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+    ):
+        """Regression: attachment_metadata must include filename, size, source_type.
+
+        Without these fields, milestone_engine._create_uploaded_file_from_attachment()
+        defaults size_bytes=0, violating the uploaded_files_size_positive CHECK constraint.
+        """
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        mock_preprocessing = AsyncMock()
+        mock_preprocessing.classify_and_extract = AsyncMock(
+            return_value=AsyncMock(
+                summary="Pasted text summary",
+                structural_index="Some extracted content",
+                data_type=AsyncMock(value="text"),
+                content_hash="hash123",
+                extraction_method="structural_index",
+            )
+        )
+        service.preprocessing_service = mock_preprocessing
+
+        pasted_content = b"some pasted log data with enough bytes"
+        attachments = [
+            Attachment(
+                content=pasted_content,
+                filename="pasted-content-20260223T120000.txt",
+                content_type="text/plain",
+            ),
+        ]
+
+        payload = TurnPayload(
+            query="Analyze this",
+            attachments=attachments,
+            intent=QueryIntent(type=IntentType.CONVERSATION),
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=payload,
+        )
+
+        # Verify engine.process_turn was called with enriched attachment metadata
+        call_kwargs = mock_milestone_engine.process_turn.call_args
+        metadata_list = call_kwargs.kwargs.get("attachments") or call_kwargs[1].get(
+            "attachments"
+        )
+        assert metadata_list is not None, "attachments should be passed to engine"
+        assert len(metadata_list) == 1
+
+        meta = metadata_list[0]
+        assert meta["filename"] == "pasted-content-20260223T120000.txt"
+        assert meta["size"] == len(
+            pasted_content
+        ), "size must match original content bytes"
+        assert meta["size"] > 0, "size must be > 0 (CHECK constraint)"
+        assert (
+            meta["source_type"] == "paste"
+        ), "pasted content should have source_type='paste'"
+        assert "evidence_id" in meta
+        assert "file_id" in meta
+        # file_id must match UploadedFile pattern: ^(file_|data_)[a-f0-9]{12,16}$
+        assert meta["file_id"].startswith(
+            "data_"
+        ), "pasted content file_id should use data_ prefix"
+
+    @pytest.mark.asyncio
+    async def test_file_upload_attachment_metadata_source_type(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+    ):
+        """File uploads should have source_type='file_upload' in attachment metadata."""
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        mock_preprocessing = AsyncMock()
+        mock_preprocessing.classify_and_extract = AsyncMock(
+            return_value=AsyncMock(
+                summary="Log file summary",
+                structural_index="ERROR at line 42",
+                data_type=AsyncMock(value="logs"),
+                content_hash="hash456",
+                extraction_method="structural_index",
+            )
+        )
+        service.preprocessing_service = mock_preprocessing
+
+        file_content = b"2024-01-01 ERROR connection refused\n" * 10
+        attachments = [
+            Attachment(
+                content=file_content,
+                filename="server.log",
+                content_type="text/plain",
+            ),
+        ]
+
+        payload = TurnPayload(
+            query="Check this log",
+            attachments=attachments,
+            intent=QueryIntent(type=IntentType.CONVERSATION),
+        )
+
+        await service.process_turn(
+            case_id=sample_case.case_id,
+            user_id=sample_user_id,
+            payload=payload,
+        )
+
+        call_kwargs = mock_milestone_engine.process_turn.call_args
+        metadata_list = call_kwargs.kwargs.get("attachments") or call_kwargs[1].get(
+            "attachments"
+        )
+        assert metadata_list is not None
+        meta = metadata_list[0]
+        assert meta["source_type"] == "file_upload"
+        assert meta["filename"] == "server.log"
+        assert meta["size"] == len(file_content)
+        assert meta["size"] > 0
+        assert meta["file_id"].startswith(
+            "file_"
+        ), "file upload file_id should use file_ prefix"
+
 
 class TestInvestigationServiceGetProgress:
     """Tests for InvestigationService.get_progress()."""

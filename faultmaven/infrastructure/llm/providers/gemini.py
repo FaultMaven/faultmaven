@@ -180,7 +180,7 @@ class GeminiProvider(BaseLLMProvider):
                         content += part["text"]
 
             # Extract token usage if available
-            if "usageMetadata" in response_data:
+            if response_data.get("usageMetadata"):
                 tokens_used = response_data["usageMetadata"].get(
                     "candidatesTokenCount", 0
                 )

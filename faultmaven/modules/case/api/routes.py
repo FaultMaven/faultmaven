@@ -447,20 +447,34 @@ def get_extractive_fallback_title(
     Returns:
         Extracted title or None if insufficient content
     """
-    # First try the pre-extracted user signals (most reliable)
-    if user_signals and user_signals.strip():
-        words = user_signals.strip().split()[:max_words]
+
+    def _clean_fallback_candidate(text: str) -> Optional[str]:
+        """Clean and validate a fallback title candidate."""
+        words = text.strip().split()[:max_words]
         candidate = " ".join(words)
+        # Strip trailing punctuation (consistent with smart extractive path)
+        candidate = candidate.strip(".,!?;:")
+        # Strip punctuation from last word before checking incomplete endings
+        if words:
+            last_word = words[-1].lower().strip(".,!?;:")
+            if last_word in INCOMPLETE_ENDINGS:
+                return None
         if is_title_valid(candidate, check_banned_words=False):
             return apply_title_case(candidate)
+        return None
+
+    # First try the pre-extracted user signals (most reliable)
+    if user_signals and user_signals.strip():
+        result = _clean_fallback_candidate(user_signals)
+        if result:
+            return result
 
     # Fallback to re-extracting from context if user_signals not provided
     extracted_signals = _extract_user_signals_from_context(context_text)
     if extracted_signals:
-        words = extracted_signals.strip().split()[:max_words]
-        candidate = " ".join(words)
-        if is_title_valid(candidate, check_banned_words=False):
-            return apply_title_case(candidate)
+        result = _clean_fallback_candidate(extracted_signals)
+        if result:
+            return result
 
     # Final fallback: try case description if available and meaningful
     if (
@@ -469,10 +483,9 @@ def get_extractive_fallback_title(
         and case.description.strip()
         and case.description != "No description"
     ):
-        words = case.description.strip().split()[:max_words]
-        candidate = " ".join(words)
-        if is_title_valid(candidate, check_banned_words=False):
-            return apply_title_case(candidate)
+        result = _clean_fallback_candidate(case.description)
+        if result:
+            return result
 
     # Skip case title fallback entirely - it's likely to be generic
     # If no meaningful content found, this should trigger 422 instead
@@ -2082,11 +2095,24 @@ async def submit_turn(
             )
         if pasted_content:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+            # Detect page captures by the URL header the frontend embeds
+            page_match = re.match(r"^--- Page Content \((.+?)\) ---\n", pasted_content)
+            source_meta = None
+            if page_match:
+                source_meta = {
+                    "source_type": "page_capture",
+                    "source_url": page_match.group(1),
+                }
             attachments.append(
                 Attachment(
                     content=pasted_content.encode("utf-8"),
-                    filename=f"pasted-content-{ts}.txt",
-                    content_type="text/plain",
+                    filename=(
+                        f"page-capture-{ts}.html"
+                        if page_match
+                        else f"pasted-content-{ts}.txt"
+                    ),
+                    content_type="text/html" if page_match else "text/plain",
+                    source_metadata=source_meta,
                 )
             )
 

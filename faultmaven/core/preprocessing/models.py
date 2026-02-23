@@ -337,5 +337,6 @@ def generate_concise_summary(text: str, max_length: int = 500) -> str:
     """
     if len(text) <= max_length:
         return text
-    half = max_length // 2
-    return f"{text[:half]}... [truncated] ...{text[-half:]}"
+    separator = "... [truncated] ..."
+    half = (max_length - len(separator)) // 2
+    return f"{text[:half]}{separator}{text[-half:]}"

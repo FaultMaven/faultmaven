@@ -1,7 +1,7 @@
 # Implementation Plan: Unified Ingestion Pipeline v4.1
 
-**Status**: IN PROGRESS (Phase 1-4 complete, Phase 5+ pending)
-**Date**: 2026-02-22
+**Status**: COMPLETE
+**Date**: 2026-02-23
 **Design Spec**: `docs/architecture/data-processing/data-preprocessing-design-specification.md` v4.1
 **Branch**: `feat/unified-ingestion-pipeline`
 
@@ -14,9 +14,10 @@
 | Tests: Phase 1-2 test updates | DONE | `ad802c1` |
 | Phase 3: Milestone Engine Cleanup | DONE | `309742b` |
 | Phase 4: Context Sliding Window | DONE | `b1653ac` |
-| Phase 5: Prompt Template Updates | DONE | — |
-| Phase 6: Test Rewrite | NOT STARTED | — |
-| Phase 7: Frontend (Copilot) | NOT STARTED | — |
+| Phase 5: Prompt Template Updates | DONE | `d40e141` |
+| Phase 6: Test Rewrite | DONE | `fe3a458`, `d40e141` |
+| Phase 7: Frontend (Copilot) | DONE | `c5caf1e` (copilot repo) |
+| Post-implementation: Bug fixes & page URL passthrough | DONE | — |
 
 ---
 

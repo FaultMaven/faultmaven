@@ -777,21 +777,10 @@ class SimpleAgentResponse(BaseModel):
 
 
 class SourceMetadata(BaseModel):
-    """
-    Metadata about where the data originated
-
-    Used to enhance preprocessing and LLM prompts with context
-    about the data source (e.g., "the status page you captured from...")
-    """
+    """Metadata about data source origin, used for classification boosting."""
 
     source_type: Literal["file_upload", "text_paste", "page_capture"]
     source_url: Optional[str] = Field(None, description="URL if from page capture")
-    captured_at: Optional[str] = Field(
-        None, description="ISO 8601 timestamp if from page capture"
-    )
-    user_description: Optional[str] = Field(
-        None, description="User's description of the data"
-    )
 
 
 class ClassificationResult(BaseModel):

@@ -465,8 +465,6 @@ class ErrorPreprocessor(IPreprocessor):
             sections.append(f"Type: {source_metadata.source_type}")
             if source_metadata.source_url:
                 sections.append(f"URL: {source_metadata.source_url}")
-            if source_metadata.user_description:
-                sections.append(f"Description: {source_metadata.user_description}")
             sections.append("")
 
         return "\n".join(sections)

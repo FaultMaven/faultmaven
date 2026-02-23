@@ -359,10 +359,18 @@ class TestGenerateConciseSummary:
         text = "A" * 1000
         result = generate_concise_summary(text, max_length=100)
         assert "... [truncated] ..." in result
-        assert result.startswith("A" * 50)
-        assert result.endswith("A" * 50)
+        assert len(result) <= 100
+        assert result.startswith("A")
+        assert result.endswith("A")
 
     def test_custom_max_length(self):
         text = "B" * 200
         result = generate_concise_summary(text, max_length=50)
         assert "... [truncated] ..." in result
+        assert len(result) <= 50
+
+    def test_default_max_length_respected(self):
+        """Regression: truncated output must not exceed max_length (was 521 chars for 500 limit)."""
+        text = "X" * 2000
+        result = generate_concise_summary(text)
+        assert len(result) <= 500

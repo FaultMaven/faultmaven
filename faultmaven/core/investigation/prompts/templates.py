@@ -24,6 +24,8 @@ STATUS: INQUIRY (Pre-Investigation)
 {identity}
 {core_context}
 
+{evidence}
+
 {kb_results}
 
 CONVERSATION HISTORY:

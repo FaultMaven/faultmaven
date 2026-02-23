@@ -541,7 +541,7 @@ class UploadedFileMetadata(BaseModel):
         default=None, description="AI-generated summary (1-2 sentences)"
     )
     source_metadata: Optional[dict] = Field(
-        default=None, description="Additional metadata for page injections"
+        default=None, description="Source origin metadata (e.g. page capture URL)"
     )
 
     @classmethod
@@ -568,7 +568,7 @@ class UploadedFileMetadata(BaseModel):
             source_type=uploaded_file.source_type,
             analysis_status="completed",  # Always completed after preprocessing
             summary=uploaded_file.preprocessing_summary,
-            source_metadata=None,  # Could be added in future
+            source_metadata=None,
         )
 
     @classmethod
@@ -595,7 +595,7 @@ class UploadedFileMetadata(BaseModel):
             source_type=evidence.source_type.value,
             analysis_status="completed",  # Always completed for now
             summary=evidence.summary,
-            source_metadata=None,  # Could extract from evidence if needed
+            source_metadata=None,
         )
 
 
