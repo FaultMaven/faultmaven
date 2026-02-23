@@ -735,6 +735,7 @@ def register_services(container: BaseDIContainer) -> None:
         container._register_service("milestone_engine", milestone_engine)
 
     # Investigation Service
+    preprocessing_service = container.get_service("preprocessing_service")
     investigation_service = create_investigation_service(
         milestone_engine, case_repository, preprocessing_service
     )
