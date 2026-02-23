@@ -370,7 +370,8 @@ class TestConfigPurity:
         """
         # Create a temporary test file with commented patterns
         test_file = tmp_path / "test_module.py"
-        test_file.write_text("""
+        test_file.write_text(
+            """
 # This module doesn't use os.getenv() directly
 # Instead it receives config via dependency injection
 # Previously this used load_dotenv() but now uses settings
@@ -378,7 +379,8 @@ class TestConfigPurity:
 def some_function(config):
     # os.environ['OLD_WAY'] was replaced with config injection
     return config.some_value
-""")
+"""
+        )
 
         scanner = ConfigPurityScanner(tmp_path)
         # Point scanner to tmp_path which acts as project root

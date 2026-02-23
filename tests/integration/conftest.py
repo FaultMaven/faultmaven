@@ -255,61 +255,103 @@ def mock_investigation_service(mock_case_service):
 
     # Mock process_turn to return a TurnResponse
     async def process_turn_mock(case_id, user_id, payload):
-        from faultmaven.models.api_models import TurnResponse
+        import hashlib as _hashlib
 
-        # Simulate side effect: add evidence to case if payload has attachments
+        from faultmaven.models.api_models import AttachmentResult, TurnResponse
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            EvidenceForm,
+            EvidenceSourceType,
+            UploadedFile,
+        )
+
+        attachments_processed = []
+
+        # Simulate side effect: add UploadedFile + Evidence if payload has attachments
         if hasattr(payload, "has_attachments") and payload.has_attachments:
             case = await mock_case_service.get_case(case_id, user_id)
             if case:
-                from faultmaven.modules.case.contracts import (
-                    Evidence,
-                    EvidenceCategory,
-                    EvidenceForm,
-                    EvidenceSourceType,
-                    UploadedFile,
-                )
-
                 for attachment in payload.attachments:
                     filename = attachment.filename
                     content_ref = f"s3://bucket/{filename}"
 
-                    if hasattr(case, "evidence") and isinstance(case.evidence, list):
-                        is_duplicate = any(
-                            ev.preprocessed_content == "Test content"
-                            for ev in case.evidence
+                    # Determine source_type from filename
+                    source_type = EvidenceSourceType.LOGS
+                    data_type = "logs"
+                    if any(
+                        ext in filename.lower()
+                        for ext in [".yaml", ".yml", ".json", "config"]
+                    ):
+                        source_type = EvidenceSourceType.CONFIGURATION
+                        data_type = "configuration"
+                    elif "metrics" in filename.lower():
+                        source_type = EvidenceSourceType.METRICS
+                        data_type = "metrics"
+
+                    # Create UploadedFile for the raw file
+                    file_id = f"file_{uuid4().hex[:12]}"
+                    uploaded_file = UploadedFile(
+                        file_id=file_id,
+                        filename=filename,
+                        size_bytes=len(attachment.content),
+                        data_type=data_type,
+                        uploaded_at_turn=1,
+                        source_type="file_upload",
+                        preprocessing_summary=f"Test {data_type} ingested from {filename}",
+                        content_ref=content_ref,
+                    )
+                    case.uploaded_files.append(uploaded_file)
+
+                    # Duplicate detection: check existing evidence
+                    is_duplicate = any(
+                        ev.preprocessed_content == "Test content"
+                        for ev in case.evidence
+                    )
+                    is_irrelevant = "random" in filename.lower()
+
+                    category = EvidenceCategory.SYMPTOM_EVIDENCE
+                    summary = "Log analysis: connection timeout error found"
+                    primary_purpose = "symptom_verified"
+
+                    if is_duplicate:
+                        category = EvidenceCategory.REJECTED
+                        summary = "Duplicate file: already processed this content"
+                        primary_purpose = "duplicate_ignored"
+                    elif is_irrelevant:
+                        category = EvidenceCategory.REJECTED
+                        summary = (
+                            "Irrelevant file: content not related to investigation"
                         )
-                        is_irrelevant = "random" in filename.lower()
+                        primary_purpose = "irrelevant_ignored"
 
-                        category = EvidenceCategory.SYMPTOM_EVIDENCE
-                        summary = "Log analysis: connection timeout error found"
-                        primary_purpose = "symptom_verified"
+                    # Create Evidence with matching content_ref
+                    ev = Evidence(
+                        evidence_id=f"ev_{uuid4().hex[:12]}",
+                        preprocessed_content="Test content",
+                        preprocessing_method="test_extraction",
+                        content_size_bytes=len(attachment.content),
+                        category=category,
+                        source_type=source_type,
+                        form=EvidenceForm.DOCUMENT,
+                        summary=summary,
+                        collected_at_turn=1,
+                        collected_by="system",
+                        content_ref=content_ref,
+                        primary_purpose=primary_purpose,
+                        content_hash=_hashlib.sha256(b"Test content").hexdigest(),
+                    )
+                    case.evidence.append(ev)
 
-                        if is_duplicate:
-                            category = EvidenceCategory.REJECTED
-                            summary = "Duplicate file: already processed this content"
-                            primary_purpose = "duplicate_ignored"
-                        elif is_irrelevant:
-                            category = EvidenceCategory.REJECTED
-                            summary = (
-                                "Irrelevant file: content not related to investigation"
-                            )
-                            primary_purpose = "irrelevant_ignored"
-
-                        ev = Evidence(
-                            evidence_id=f"ev_{uuid4().hex[:12]}",
-                            preprocessed_content="Test content",
-                            preprocessing_method="test_extraction",
-                            content_size_bytes=100,
-                            category=category,
-                            source_type=EvidenceSourceType.LOGS,
-                            form=EvidenceForm.DOCUMENT,
-                            summary=summary,
-                            collected_at_turn=1,
-                            collected_by="system",
-                            content_ref=content_ref,
-                            primary_purpose=primary_purpose,
+                    attachments_processed.append(
+                        AttachmentResult(
+                            evidence_id=ev.evidence_id,
+                            filename=filename,
+                            data_type=data_type,
+                            file_size=len(attachment.content),
+                            processing_status="completed",
                         )
-                        case.evidence.append(ev)
+                    )
 
         return TurnResponse(
             agent_response="Test response",
@@ -318,6 +360,7 @@ def mock_investigation_service(mock_case_service):
             case_status=CaseStatus.INVESTIGATING,
             progress_made=True,
             is_stuck=False,
+            attachments_processed=attachments_processed,
         )
 
     service.process_turn = process_turn_mock

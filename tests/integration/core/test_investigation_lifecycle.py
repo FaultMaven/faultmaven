@@ -369,10 +369,9 @@ class TestInvestigationLifecycle:
         ev = updated.evidence[0]
         assert ev.category == EvidenceCategory.SYMPTOM_EVIDENCE
         assert ev.source_type == EvidenceSourceType.LOGS
-        # Post-unified-pipeline: SubmissionClassification removed. Evidence form is
-        # now determined by payload context (attachments→DOCUMENT, query-only→USER_TEXT).
-        # Engine-created evidence from evidence_to_add defaults to USER_TEXT.
-        assert ev.form == EvidenceForm.USER_TEXT
+        # Engine-created evidence from evidence_to_add uses SUBMITTED_DATA
+        # (evidence derived from agent/LLM processing, not direct user input).
+        assert ev.form == EvidenceForm.SUBMITTED_DATA
 
     async def test_explicit_transition_to_investigating(self, engine, case_repo):
         """Explicit intent_type='status_transition' transitions INQUIRY → INVESTIGATING."""
@@ -420,9 +419,9 @@ class TestInvestigationLifecycle:
         assert updated.progress.symptom_verified is True
         assert updated.progress.scope_assessed is True
         assert len(updated.evidence) >= 1
-        # Post-unified-pipeline: engine-created evidence defaults to USER_TEXT
+        # Engine-created evidence from evidence_to_add uses SUBMITTED_DATA
         ev = updated.evidence[0]
-        assert ev.form == EvidenceForm.USER_TEXT
+        assert ev.form == EvidenceForm.SUBMITTED_DATA
         assert len(updated.turn_history) >= 1
         assert result["metadata"]["progress_made"] is True
 

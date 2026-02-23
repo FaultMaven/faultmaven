@@ -8,11 +8,14 @@ Design Reference:
 - docs/architecture/data-processing/EVIDENCE-CLASSIFICATION-FINAL-DESIGN.md
 - docs/architecture/data-processing/EVIDENCE-REDESIGN-IMPLEMENTATION-PLAN.md
 
+All submissions now go through the unified turn endpoint:
+  POST /api/v1/cases/{case_id}/turns
+
 Scenarios Tested:
-1. File upload → preprocessing → LLM classification → evidence creation
+1. File upload via /turns → preprocessing → LLM classification → evidence creation
 2. Duplicate file detection and handling
 3. Pure chat messages (no evidence created)
-4. Mixed submissions (chat + data)
+4. Mixed submissions (chat + file)
 5. Evidence category immutability
 6. Analytics queries (acceptance rate, rejection reasons)
 """
@@ -20,10 +23,8 @@ Scenarios Tested:
 import hashlib
 import io
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
 from faultmaven.main import app
@@ -63,10 +64,14 @@ def get_case_evidence(client, case_id, headers):
     return all_evidence
 
 
+def _upload_headers(auth_headers):
+    """Strip Content-Type so TestClient can set multipart/form-data boundary."""
+    return {k: v for k, v in auth_headers.items() if k.lower() != "content-type"}
+
+
 @pytest.fixture
 def test_case(mock_services_for_integration_tests, auth_headers):
     """Create a test case for integration tests"""
-    # Use the TestClient from the fixture (has all overrides configured)
     response = mock_services_for_integration_tests.post(
         "/api/v1/cases",
         json={
@@ -87,33 +92,27 @@ class TestFileUploadToEvidence:
     def test_log_file_upload_creates_symptom_evidence(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Upload log file → preprocessed → classified as SYMPTOM_EVIDENCE"""
+        """Upload log file via /turns → preprocessed → classified as SYMPTOM_EVIDENCE"""
         # Arrange - Create log file content
-        log_content = """
+        log_content = b"""
 2024-01-10 10:00:00 ERROR [DatabasePool] Connection timeout after 30s
 2024-01-10 10:00:05 ERROR [DatabasePool] Connection timeout after 30s
 2024-01-10 10:00:10 ERROR [DatabasePool] Connection timeout after 30s
 2024-01-10 10:00:15 INFO [Application] Retrying connection...
 2024-01-10 10:00:20 ERROR [DatabasePool] Connection timeout after 30s
 """
-        log_file_content = io.BytesIO(log_content.encode())
+        headers = _upload_headers(auth_headers)
 
-        # Act - Upload file using TestClient from fixture
-        # CRITICAL: Remove Content-Type: application/json from headers so TestClient/httpx
-        # can set the correct multipart/form-data boundary header.
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
-
+        # Act - Upload file via /turns endpoint
         response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("app.log", log_file_content, "text/plain")},
-            data={"description": "Here are the application logs"},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("app.log", log_content, "text/plain"))],
+            data={"query": "Here are the application logs"},
+            headers=headers,
         )
 
-        # Assert - File uploaded successfully
-        assert response.status_code == 201
+        # Assert - Turn processed successfully
+        assert response.status_code == 200
 
         # Get uploaded files to verify file persistence
         files_response = mock_services_for_integration_tests.get(
@@ -148,9 +147,9 @@ class TestFileUploadToEvidence:
     def test_config_file_upload_creates_contextual_evidence(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Upload config file → classified as CONTEXTUAL_EVIDENCE"""
+        """Upload config file via /turns → classified as CONTEXTUAL_EVIDENCE"""
         # Arrange - Create config file
-        config_content = """
+        config_content = b"""
 database:
   host: localhost
   port: 5432
@@ -158,21 +157,18 @@ database:
   timeout: 30
   max_connections: 20
 """
-        config_file_content = config_content.encode()
+        headers = _upload_headers(auth_headers)
 
-        # Act - Upload file using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Act - Upload file via /turns
         response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("database.yaml", config_file_content, "application/yaml")},
-            data={"message": "Here's our database configuration"},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("database.yaml", config_content, "application/yaml"))],
+            data={"query": "Here's our database configuration"},
+            headers=headers,
         )
 
         # Assert
-        assert response.status_code == 201
+        assert response.status_code == 200
 
         # Verify evidence
         evidence_list = get_case_evidence(
@@ -196,22 +192,20 @@ database:
     def test_irrelevant_file_rejected(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Upload unrelated file → classified as REJECTED"""
+        """Upload unrelated file via /turns → classified as REJECTED"""
         # Arrange - Create unrelated file (e.g., vacation photo metadata)
         image_content = b"FAKE_IMAGE_CONTENT_NOT_RELATED_TO_ISSUE"
+        headers = _upload_headers(auth_headers)
 
-        # Act - Upload file using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Act - Upload file via /turns
         response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("vacation.jpg", image_content, "image/jpeg")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("vacation.jpg", image_content, "image/jpeg"))],
+            headers=headers,
         )
 
         # Assert
-        assert response.status_code == 201
+        assert response.status_code == 200
 
         # Verify evidence (may be rejected or accepted depending on LLM)
         evidence_list = get_case_evidence(
@@ -229,29 +223,26 @@ class TestDuplicateFileHandling:
     def test_duplicate_file_detected(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Upload same file twice → second marked as duplicate"""
+        """Upload same file twice via /turns → second marked as duplicate"""
         # Arrange - Same file content
         log_content = b"ERROR: Test error message"
-        content_hash = hashlib.sha256(log_content).hexdigest()
+        headers = _upload_headers(auth_headers)
 
-        # Act - Upload first time using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Act - Upload first time
         first_response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("error.log", log_content, "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("error.log", log_content, "text/plain"))],
+            headers=headers,
         )
-        assert first_response.status_code == 201
+        assert first_response.status_code == 200
 
         # Upload second time (same content)
         second_response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("error_copy.log", log_content, "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("error_copy.log", log_content, "text/plain"))],
+            headers=headers,
         )
-        assert second_response.status_code == 201
+        assert second_response.status_code == 200
 
         # Assert - Check evidence
         evidence_list = get_case_evidence(
@@ -277,28 +268,24 @@ class TestDuplicateFileHandling:
 class TestChatOnlyNoEvidence:
     """Test pure chat messages don't create evidence"""
 
-    @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_chat_message_no_evidence(
+    def test_chat_message_no_evidence(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Pure chat message → no evidence created"""
-        # Note: These tests still use AsyncClient because /queries endpoint
-        # requires async operations that TestClient doesn't support well
-        # Act - Send chat message via /queries endpoint
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/v1/cases/{test_case}/queries",
-                json={"message": "What could be causing high CPU usage?"},
-                headers=auth_headers,
-            )
+        """Pure chat message via /turns → no evidence created"""
+        headers = _upload_headers(auth_headers)
+
+        # Act - Send chat message via /turns endpoint (query only, no files)
+        response = mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={"query": "What could be causing high CPU usage?"},
+            headers=headers,
+        )
 
         # Assert
         assert response.status_code == 200
 
-        # Verify no evidence created using fresh TestClient
+        # Verify no evidence created
         evidence_list = get_case_evidence(
             mock_services_for_integration_tests, test_case, auth_headers
         )
@@ -306,33 +293,31 @@ class TestChatOnlyNoEvidence:
         # Evidence should be empty (pure chat doesn't create evidence)
         assert len(evidence_list) == 0
 
-    @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_multiple_chat_messages_no_evidence(
+    def test_multiple_chat_messages_no_evidence(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Multiple chat messages → no evidence accumulated"""
-        # Act - Send multiple chat messages
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            await client.post(
-                f"/api/v1/cases/{test_case}/queries",
-                json={"message": "Can you help me troubleshoot?"},
-                headers=auth_headers,
-            )
-            await client.post(
-                f"/api/v1/cases/{test_case}/queries",
-                json={"message": "I think it might be the database"},
-                headers=auth_headers,
-            )
-            await client.post(
-                f"/api/v1/cases/{test_case}/queries",
-                json={"message": "What should I check next?"},
-                headers=auth_headers,
-            )
+        """Multiple chat messages via /turns → no evidence accumulated"""
+        headers = _upload_headers(auth_headers)
 
-        # Assert - Verify no evidence created using fresh TestClient
+        # Act - Send multiple chat messages
+        mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={"query": "Can you help me troubleshoot?"},
+            headers=headers,
+        )
+        mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={"query": "I think it might be the database"},
+            headers=headers,
+        )
+        mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={"query": "What should I check next?"},
+            headers=headers,
+        )
+
+        # Assert - Verify no evidence created
         evidence_list = get_case_evidence(
             mock_services_for_integration_tests, test_case, auth_headers
         )
@@ -348,23 +333,21 @@ class TestMixedSubmissions:
     def test_chat_with_file_creates_evidence(
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
-        """Chat message + file upload → evidence created"""
+        """Chat message + file upload via /turns → evidence created"""
         # Arrange
         log_content = b"ERROR: Connection failed"
+        headers = _upload_headers(auth_headers)
 
-        # Act - Upload with message using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Act - Upload with message via /turns
         response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("error.log", log_content, "text/plain")},
-            data={"message": "I'm seeing these errors in the logs"},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("error.log", log_content, "text/plain"))],
+            data={"query": "I'm seeing these errors in the logs"},
+            headers=headers,
         )
 
         # Assert
-        assert response.status_code == 201
+        assert response.status_code == 200
 
         # Verify evidence created
         evidence_list = get_case_evidence(
@@ -387,16 +370,14 @@ class TestEvidenceCategoryImmutability:
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
         """Evidence category should not change after initial classification"""
-        # Arrange - Upload file using fresh TestClient (strip Content-Type)
+        # Arrange - Upload file via /turns
         log_content = b"ERROR: Database timeout"
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        headers = _upload_headers(auth_headers)
 
         mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("db_error.log", log_content, "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("db_error.log", log_content, "text/plain"))],
+            headers=headers,
         )
 
         # Get evidence
@@ -407,9 +388,9 @@ class TestEvidenceCategoryImmutability:
 
         # Act - Upload more evidence, get case again
         mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("metrics.txt", b"CPU: 95%", "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("metrics.txt", b"CPU: 95%", "text/plain"))],
+            headers=headers,
         )
 
         # Get case again
@@ -430,21 +411,20 @@ class TestAnalyticsQueries:
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
         """Test calculating evidence acceptance rate"""
-        # Arrange - Upload mix of relevant and irrelevant files using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Arrange - Upload mix of files via /turns
+        headers = _upload_headers(auth_headers)
+
         # Relevant file
         mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("error.log", b"ERROR: Test", "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("error.log", b"ERROR: Test", "text/plain"))],
+            headers=headers,
         )
         # Another relevant file
         mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("metrics.txt", b"CPU: 100%", "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("metrics.txt", b"CPU: 100%", "text/plain"))],
+            headers=headers,
         )
 
         # Get case
@@ -473,17 +453,12 @@ class TestAnalyticsQueries:
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
         """Test tracking rejection reasons"""
-        # This would require uploading files that get rejected
-        # and verifying the primary_purpose field contains rejection reason
-
-        # Arrange - Upload potentially irrelevant file using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Arrange - Upload potentially irrelevant file via /turns
+        headers = _upload_headers(auth_headers)
         response = mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("random.txt", b"Random content", "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("random.txt", b"Random content", "text/plain"))],
+            headers=headers,
         )
 
         # Get case
@@ -514,15 +489,13 @@ class TestPreprocessingIntegration:
         log_content = b"Test log content"
         # Mock always uses "Test content" for preprocessed_content
         expected_hash = hashlib.sha256(b"Test content").hexdigest()
+        headers = _upload_headers(auth_headers)
 
-        # Act - Upload file using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
+        # Act - Upload file via /turns
         mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("test.log", log_content, "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("test.log", log_content, "text/plain"))],
+            headers=headers,
         )
 
         # Assert
@@ -539,15 +512,12 @@ class TestPreprocessingIntegration:
         self, test_case, auth_headers, mock_services_for_integration_tests
     ):
         """Verify preprocessing_method is recorded in evidence"""
-        # Arrange - Upload different file types using fresh TestClient (strip Content-Type)
-        upload_headers = {
-            k: v for k, v in auth_headers.items() if k.lower() != "content-type"
-        }
-        # Log file
+        # Arrange - Upload file via /turns
+        headers = _upload_headers(auth_headers)
         mock_services_for_integration_tests.post(
-            f"/api/v1/cases/{test_case}/data",
-            files={"file": ("app.log", b"LOG CONTENT", "text/plain")},
-            headers=upload_headers,
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("app.log", b"LOG CONTENT", "text/plain"))],
+            headers=headers,
         )
 
         # Assert

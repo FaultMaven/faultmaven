@@ -23,7 +23,6 @@ Gap #9: Input Sanitization
 """
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -39,15 +38,11 @@ from faultmaven.modules.case.contracts import (
 # Evidence Context Sliding Window Configuration
 # =============================================================================
 # How many recent data evidence items get full structural_index (Tier A)
-EVIDENCE_CONTEXT_RECENT_COUNT = int(os.getenv("EVIDENCE_CONTEXT_RECENT_COUNT", "3"))
+EVIDENCE_CONTEXT_RECENT_COUNT = 3
 # Max chars per Tier A evidence item's structural_index
-EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM = int(
-    os.getenv("EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM", "4000")
-)
+EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM = 4000
 # Max total chars for the entire evidence context section
-EVIDENCE_CONTEXT_MAX_TOTAL_CHARS = int(
-    os.getenv("EVIDENCE_CONTEXT_MAX_TOTAL_CHARS", "16000")
-)
+EVIDENCE_CONTEXT_MAX_TOTAL_CHARS = 16000
 
 logger = logging.getLogger(__name__)
 
