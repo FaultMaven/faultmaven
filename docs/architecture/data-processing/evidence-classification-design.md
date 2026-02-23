@@ -1,7 +1,7 @@
 # Evidence Classification Design Specification
 
-**Version:** 2.1
-**Date:** 2026-02-22
+**Version:** 2.2
+**Date:** 2026-02-23
 **Status:** Design Specification
 **Context:** Evidence classification taxonomy, single-phase creation, and milestone advancement attribution
 
@@ -13,7 +13,7 @@ This document specifies the design for evidence classification in FaultMaven:
 
 1. **Single-phase evidence creation** — evidence records created after LLM evaluation, not before
 2. **Payload-driven form determination** — evidence form set by ingestion pipeline (attachments -> DOCUMENT, agent findings -> SUBMITTED_DATA), not by LLM classification
-3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing v3.0](./data-preprocessing-design-specification.md))
+3. **Unified DataType taxonomy** — 6 types shared with preprocessing ([Data Preprocessing v4.1](./data-preprocessing-design-specification.md))
 4. **5 evidence categories** — SYMPTOM, CAUSAL, RESOLUTION, CONTEXTUAL, REJECTED
 5. **Comprehensive tracking** — all submissions tracked, including rejections
 
@@ -330,7 +330,7 @@ class DataType(str, Enum):
     Includes: Documentation, runbooks, incident reports, problem
     descriptions, steps to reproduce, user observations.
 
-    Note: User-typed text input (form=USER_INPUT) uses this type.
+    Note: User-typed text input (form=USER_TEXT) uses this type.
     """
 
     IMAGE = "image"
@@ -346,7 +346,7 @@ class DataType(str, Enum):
 1. **Single taxonomy** — no mapping between preprocessing DataType and evidence source type
 2. **Easier for LLM** — 6 clear, non-overlapping choices
 3. **Fine-grained detail preserved** — preprocessing metadata captures subtypes (e.g., `DataType.LOGS` with `metadata.subtype = "distributed_trace"`)
-4. **`form` field handles input channel** — `DOCUMENT` (file upload) vs `USER_INPUT` (typed text) replaces the old USER_DESCRIPTION source type
+4. **`form` field handles input channel** — `DOCUMENT` (attachments: file uploads and pasted data) vs `USER_TEXT` (query-only turns) vs `SUBMITTED_DATA` (agent tool findings)
 
 ---
 
@@ -498,7 +498,7 @@ class Evidence(BaseModel):
     # Classification (assigned by LLM at creation time)
     category: EvidenceCategory  # SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED
     data_type: DataType  # LOGS/METRICS/CONFIGURATION/CODE/TEXT/IMAGE (unified with preprocessing)
-    form: EvidenceForm  # DOCUMENT (file upload) or USER_INPUT (typed text)
+    form: EvidenceForm  # DOCUMENT (attachments) or USER_TEXT (query-only) or SUBMITTED_DATA (agent tools)
 
     # Content
     summary: str = Field(max_length=500)
@@ -641,74 +641,64 @@ ORDER BY count DESC;
 
 ## Implementation Flow
 
-### User Submits File Upload
+### User Submits Turn with Attachment
 
 ```
-1. User uploads file via /api/v1/cases/{case_id}/data
+1. User submits turn via POST /api/v1/cases/{case_id}/turns
+   {query?: "Can you check this?", files: [app.log], pasted_content?: null}
    ↓
-2. File preprocessing:
-   - Extract text/metadata
-   - Generate content_hash (SHA256)
-   - Store in S3/local storage
+2. STEP 1 — PRE-LLM PREPROCESSING (for each attachment):
+   - _preprocess_attachment(case, attachment):
+     - Tier 0: Classify data type (DataClassifier)
+     - Tier 1: Type-specific extraction (structural index)
+     - Compute content_hash (SHA-256)
+     - Store raw file via storage_service
+     - Create Evidence(form=DOCUMENT, preprocessed_content=structural_index)
    ↓
-3. Create synthetic message in case.messages[]
-   - role: "user"
-   - content: "I've uploaded {filename}"
-   - attachments: [file_metadata]
+3. Determine query:
+   - If user provided query → use it
+   - If no query + attachments → generate_implicit_query()
    ↓
-4. Call investigation_service.process_turn()
+4. Save user message to case.messages[]
    ↓
-5. LLM receives:
-   - Full case context (existing evidence, hypotheses)
-   - User message with attachment metadata
-   - File content (preprocessed text)
+5. STEP 2 — LLM INFERENCE:
+   - Context includes structural indexes via Context Sliding Window
+   - LLM receives: full case context + query + evidence structural indexes
    ↓
 6. LLM returns structured response with:
    - state_updates.evidence_to_add: [{
-       category: "symptom_evidence",  # or "rejected" if not useful
+       category: "symptom_evidence",
        data_type: "logs",
        summary: "Database connection timeout errors",
        primary_purpose: "Shows connection pool exhaustion at peak hours"
      }]
-   (Note: form=DOCUMENT already set by ingestion pipeline in step 2;
-    LLM no longer performs submission_classification)
+   (Agent findings → form=SUBMITTED_DATA, set by milestone engine)
    ↓
-7. Create Evidence record:
-   - evidence_id: ev_{uuid}
-   - category: From LLM
-   - collected_at_turn: current_turn
-   - content_hash: From preprocessing
+7. Build TurnResponse with attachments_processed[]
    ↓
-8. Check deduplication:
-   - If content_hash exists for this case_id:
-     - Update primary_purpose: "Duplicate of evidence from turn X"
-     - Skip milestone advancement
-   ↓
-9. Save to database
+8. Save to database and return response
 ```
 
-### User Submits Pure Chat
+### User Submits Query-Only Turn
 
 ```
-1. User sends message via /api/v1/cases/{case_id}/queries
+1. User submits turn via POST /api/v1/cases/{case_id}/turns
+   {query: "Why is CPU high?", files: [], pasted_content: null}
    ↓
-2. Save message to case.messages[]
+2. STEP 1 SKIPPED (no attachments)
    ↓
-3. Call investigation_service.process_turn()
+3. Save user message to case.messages[]
    ↓
-4. LLM receives:
-   - Full case context
-   - User message text only (no attachments)
+4. STEP 2 — LLM INFERENCE:
+   - LLM receives: full case context + query
    ↓
 5. LLM returns:
    - agent_response: "..."
-   - NO evidence_to_add
-   (Note: No submission_classification — form is determined by payload context,
-    not by LLM. Query-only turns have no attachments, so no evidence is created.)
+   - NO evidence_to_add (typically)
    ↓
-6. NO Evidence record created
+6. NO attachment evidence created (query-only turn)
    ↓
-7. Return response to user
+7. Return TurnResponse {attachments_processed: []}
 ```
 
 ---
@@ -852,13 +842,13 @@ The milestone advancement design uses a hybrid system-inferred approach with opt
 
 ## Related Documentation
 
-- [Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md) — Defines the three-tier preprocessing model and shared DataType enum
-- [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules for DataType detection
+- [Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and shared DataType enum
+- [Data Classification Strategy v2.1](./data-classification-strategy.md) — Tier 0 classification rules for DataType detection
 - [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline diagrams
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling design for single-phase creation
 
 ---
 
-**Document Version:** 2.1
-**Last Updated:** 2026-02-22
+**Document Version:** 2.2
+**Last Updated:** 2026-02-23
 **Status:** Design Specification

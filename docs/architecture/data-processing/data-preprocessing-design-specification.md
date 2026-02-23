@@ -1,12 +1,25 @@
-# Data Preprocessing Design Specification v4.0
+# Data Preprocessing Design Specification v4.1
 
 **Status**: FINAL
-**Date**: 2026-02-17
-**Supersedes**: v3.2
+**Date**: 2026-02-23
+**Supersedes**: v4.0
 
 ---
 
-## Change Summary from v3.2
+## Change Summary
+
+### v4.0 → v4.1 (Unified Ingestion Pipeline Implementation)
+
+| Area | v4.0 | v4.1 |
+|------|------|------|
+| **Endpoint** | Endpoint-agnostic (`/queries` and `/data` both exist) | Unified `POST /cases/{id}/turns`. Old endpoints deleted. |
+| **Evidence form** | `USER_TEXT` / `SUBMITTED_DATA` (classification-driven via `submission_classification`) | Payload-driven: attachments → `DOCUMENT`, agent tools → `SUBMITTED_DATA`. `_determine_evidence_form()` and `SubmissionClassification` deleted. |
+| **Pipeline** | Preprocessing triggered by LLM classification for pasted text | Two-step: preprocess all attachments (Step 1, before LLM) → LLM inference (Step 2) |
+| **Context** | Evidence summaries only in LLM context | Context Sliding Window: structural indexes included for recent evidence (Tier A/B/C) |
+| **Config** | `TIER2_*` config names | Renamed to `DEEP_ANALYSIS_*`. New `EVIDENCE_CONTEXT_*` constants in `context_builder.py`. |
+| **Pasted text** | Routed through Tier 0+1 (designed but endpoint-agnostic) | Submitted as `pasted_content` form field on `/turns`, preprocessed as attachment in Step 1 |
+
+### v3.2 → v4.0
 
 | Area | v3.2 | v4.0 |
 |------|------|------|
@@ -14,11 +27,9 @@
 | **Vectorization** | Eager background async after every upload | On-demand, triggered by user query demand |
 | **`search_file` tool** | Does not exist | New agent tool for Tier 2 mechanical search |
 | **Domain extractors** | Single-use at upload time | Re-runnable with different parameters |
-| **Evidence form** | `USER_INPUT` (hardcoded default) | `USER_TEXT` / `SUBMITTED_DATA` (classification-driven) |
 | **Evidence from search** | Not specified | Rules for when/how search results become evidence |
 | **Agent escalation** | Tier 1 summary → Tier 2 deep analysis | Tier 1 → Tier 2 → Tier 3 → Tier 4 progressive ladder |
 | **Classification model** | 6 unified types in spec, 12 detailed types hidden in code | Spec acknowledges 12→6 two-layer model; 11 distinct extractors |
-| **Pasted text** | Bypasses classification and extraction entirely | Routed through Tier 0+1 via unified `/turns` endpoint (payload-driven, no LLM classification) |
 | **Classification fallback** | Low confidence → `UNSTRUCTURED_TEXT` + user modal | Best-effort: highest-scoring candidate extractor, no user modal |
 
 ---
@@ -110,7 +121,7 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — progr
 
 ## 2. Tier 0+1: Structural Indexing (Updated)
 
-Runs synchronously on every submission that contains data (file uploads always; pasted text when classified as `submitted_data` or `mixed`). Two sub-phases:
+Runs synchronously on every submission that contains attachments (file uploads and pasted text, both submitted via `POST /cases/{id}/turns`). Two sub-phases:
 
 - **Tier 0 (Classification)**: Rule-based data type detection. <100ms. Zero LLM calls.
 - **Tier 1 (Extraction)**: Domain-specific structural indexing. <2s with timeout enforcement and fallback chain. Zero LLM calls.
@@ -810,9 +821,11 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | Item | Description | When |
 |------|-------------|------|
 | **Frontend paste detection** | `onPaste` handler in `UnifiedInputBar.tsx` to send structured `{typed, pasted}` segments | After backend stabilizes |
-| ~~**Unified endpoint processing**~~ | ~~Merge `/queries` and `/data` into single endpoint~~ | **Done in v4.1** — unified `process_turn()` pipeline (Phase 1-2) |
+| ~~**Unified endpoint processing**~~ | ~~Merge `/queries` and `/data` into single endpoint~~ | **Done in v4.1** — `POST /cases/{id}/turns` with two-step pipeline. Old endpoints deleted. |
 | **Cross-file correlation** | Tier 3 analysis across multiple files simultaneously | Requires multi-file context windowing |
 | **Vectorization cost tracking** | Track per-case vectorization costs for billing | Enterprise feature |
+| **Extractor re-run parameters** | Extractors accept runtime override `**kwargs` (e.g., `time_window`, `min_severity`, `z_score_threshold`) via `search_file` extractor mode. Currently extractors use hard-coded constants; the tool gracefully falls back to defaults. See Appendix B for planned parameter tables. | After core pipeline stabilizes |
+| **Deep analysis file size cap** | `DEEP_ANALYSIS_MAX_FILE_SIZE_MB` config to reject oversized files before sending to Tier 3 backend | When large file uploads are common |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |
 
@@ -859,7 +872,6 @@ DEEP_ANALYSIS_BACKEND=disabled      # external | local | basic | disabled
 DEEP_ANALYSIS_URL=                  # URL for external backend
 DEEP_ANALYSIS_API_KEY=              # API key for external backend
 DEEP_ANALYSIS_TIMEOUT_SECONDS=30
-DEEP_ANALYSIS_MAX_FILE_SIZE_MB=50
 # NOTE: Old TIER2_* names are no longer supported (clean break in Phase 5)
 
 # ============================================================
@@ -895,6 +907,8 @@ PII_REDACT_PASSWORDS=true
 ---
 
 ## Appendix B: Extractor Re-run Parameters
+
+> **Status: NOT YET IMPLEMENTED.** The `search_file` tool's extractor mode dispatches the correct extractor but passes `**params` through a `try/except TypeError` — if the extractor doesn't accept kwargs, it runs with defaults and returns a note. The parameter tables below document the *planned* override interface; extractors currently use hard-coded constants. See Deferred Items.
 
 When the agent calls `search_file` with `search_type="extractor"`, the extractor is selected based on the evidence's `DetailedDataType` (not the unified type). This ensures re-runs use the same specialized extractor that processed the file originally.
 
@@ -963,7 +977,7 @@ No re-run parameters. These extractors have no tunable thresholds.
 
 ---
 
-**Document Version**: 4.0
-**Last Updated**: 2026-02-17
+**Document Version**: 4.1
+**Last Updated**: 2026-02-23
 **Status**: FINAL
-**Predecessor**: v3.2 (data-preprocessing-design-specification.md, Sections 1-10)
+**Predecessor**: v4.0 (data-preprocessing-design-specification.md)

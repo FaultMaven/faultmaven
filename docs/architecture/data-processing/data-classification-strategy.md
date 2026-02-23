@@ -5,11 +5,11 @@
 **Date**: 2026-02-12
 **Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-level fallback for accurate data type detection
 
-**Role in Three-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) three-tier model. Tier 0 runs on every upload, completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
+**Role in Four-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) four-tier model. Tier 0 runs on every submission (file uploads and pasted text via `POST /cases/{id}/turns`), completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
 
 **Scope**: This document addresses **data type classification** — determining what kind of data has been submitted (LOGS vs METRICS vs CONFIGURATION etc.). This is separate from **evidence classification** (SYMPTOM/CAUSAL/RESOLUTION/CONTEXTUAL/REJECTED) which is described in [evidence-classification-design.md](./evidence-classification-design.md).
 
-**Note**: For **query classification** (human question vs machine data), see the QueryClassifier design in the data submission layer. The QueryClassifier is not yet implemented as a standalone module.
+**Note**: With the Unified Ingestion Pipeline (v4.1), query classification (`SubmissionClassification`) has been removed. All turns arrive via `POST /cases/{id}/turns` as `{query?, attachments?[]}`. Attachments are always routed through Tier 0+1 classification. Query-only turns skip preprocessing entirely.
 
 ---
 
@@ -60,11 +60,13 @@ class DataType(str, Enum):
     IMAGE = "image"                  # Visual content
 ```
 
-This is **Tier 0** in the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) three-tier model:
+This is **Tier 0** in the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) four-tier model:
 
 **Position in Pipeline**:
 ```
-/data endpoint receives file upload
+POST /cases/{id}/turns receives {query?, attachments?[]}
+         ↓
+Step 1 (pre-LLM): For each attachment:
          ↓
 Tier 0: DataClassifier (THIS DOC): "What type of data?" → DataType + confidence
          ↓
@@ -76,12 +78,10 @@ Tier 1: Type-specific Mechanical Extraction (0 LLM, <2s)
   - TEXT → Structure Extraction (headings, key sentences)
   - IMAGE → Metadata Extraction (format, dimensions)
          ↓
-Evidence Architecture → Agent Response
+Evidence created (form=DOCUMENT) → Context Sliding Window → LLM Inference (Step 2)
 ```
 
-**For /queries endpoint**: A separate QueryClassifier (3-tier: hints → patterns → heuristics) first determines **IF** content is machine data vs human question. If machine data is detected, DataClassifier (this document) determines **WHAT TYPE**.
-
-**Hint Passing**: QueryClassifier's `detected_data_type` field (if present) can be passed as a hint to DataClassifier to improve accuracy.
+**Pasted text**: Submitted as the `pasted_content` form field on `/turns`, converted to an attachment with synthetic filename (`pasted-content-{ts}.txt`), and routed through the same Tier 0+1 pipeline as file uploads. Since pasted text lacks filename extension hints, the classifier relies entirely on content patterns.
 
 ### How Fine-Grained Subtypes Map to DataType
 
@@ -1441,8 +1441,8 @@ ClassificationResult(
 
 ---
 
-**Document Version**: 2.0
-**Last Updated**: 2026-02-12
+**Document Version**: 2.1
+**Last Updated**: 2026-02-23
 **Status**: Design Specification
 
 
