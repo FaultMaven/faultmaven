@@ -1,7 +1,7 @@
 # Evidence Creation Failure Modes and Recovery
 
-**Version:** 1.1
-**Date:** 2026-02-12
+**Version:** 1.2
+**Date:** 2026-02-23
 **Status:** Design Specification (Deferred to post-MVP)
 **Context:** Failure analysis and recovery strategies for single-phase evidence creation
 
@@ -401,9 +401,9 @@ async def retry_evidence_creation(case_id, llm_result, content_ref, content_hash
 
 ## Content Hash Strategy for Deduplication
 
-### Issue: Mixed Content Hash Fragility
+### Issue: Pasted Content Hash Fragility
 
-**Problem:** For mixed content ("Here are my logs: [200 lines]"), computing SHA-256 of only the extracted data portion is fragile:
+**Problem:** For pasted content ("Here are my logs: [200 lines]"), computing SHA-256 of only the extracted data portion is fragile:
 
 ```python
 # Fragile approach (regex extraction can vary)
@@ -424,14 +424,14 @@ Retry:  "Here are logs:\n\n[logs...]" → extracts "\n[logs...]" → hash_B
 Result: Different hashes, deduplication fails
 ```
 
-### Solution: Hash Raw Submission for Mixed Content
+### Solution: Hash Raw Submission for Pasted Content
 
 **For ALL submission types, hash the ENTIRE raw user message:**
 
 ```python
 async def compute_content_hash(
     user_message: str,
-    submission_type: Literal["user_text", "submitted_data", "mixed"]
+    submission_type: Literal["user_text", "submitted_data"]
 ) -> str:
     """
     Compute content hash for deduplication.
@@ -787,10 +787,10 @@ async def process_turn_with_attachment(
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy and categories
 - [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline
-- [Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md) — Three-tier preprocessing model
+- [Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md) — Four-tier preprocessing model and unified ingestion pipeline
 
 ---
 
-**Document Version:** 1.1
-**Last Updated:** 2026-02-12
+**Document Version:** 1.2
+**Last Updated:** 2026-02-23
 **Status:** Design Specification

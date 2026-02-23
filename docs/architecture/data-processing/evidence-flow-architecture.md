@@ -1,14 +1,14 @@
 # Evidence Flow Architecture
 
-**Version:** 2.3
-**Date:** 2026-02-22
+**Version:** 2.4
+**Date:** 2026-02-23
 **Status:** Design Specification
 
 ---
 
 ## Overview
 
-This document describes the complete evidence flow architecture in FaultMaven. Evidence is created in a **single phase** after LLM evaluation. File preprocessing follows the [three-tier model](./data-preprocessing-design-specification.md) (Tier 0 classification + Tier 1 mechanical extraction). Tier 2 deep analysis is invoked on-demand by the investigation agent, not at upload time.
+This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. Evidence form is payload-driven (attachments → `DOCUMENT`, agent findings → `SUBMITTED_DATA`). File preprocessing follows the [four-tier model](./data-preprocessing-design-specification.md). Tier 2 mechanical search and Tier 3 deep analysis are invoked on-demand by the investigation agent.
 
 ---
 
@@ -30,8 +30,8 @@ This document describes the complete evidence flow architecture in FaultMaven. E
       ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        API Gateway Layer                                 │
-│  POST /api/v1/cases/{case_id}/data     (file upload)                   │
-│  POST /api/v1/cases/{case_id}/queries  (text message)                  │
+│  POST /api/v1/cases/{case_id}/turns    (unified turn endpoint)         │
+│  {query?, files[]?, pasted_content?}                                   │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
       │
@@ -178,84 +178,82 @@ This document describes the complete evidence flow architecture in FaultMaven. E
 
 ---
 
-## Sequence Diagram: File Upload → Evidence Creation
+## Sequence Diagram: Turn with Attachment → Evidence Creation
 
 ```
-User          API          Preprocessing    Storage    Investigation    LLM         Database
- │              │                │             │            │             │             │
- │─POST file───>│                │             │            │             │             │
- │              │                │             │            │             │             │
- │              │─preprocess────>│             │            │             │             │
- │              │                │             │            │             │             │
- │              │                │──compute────│            │             │             │
- │              │                │  hash       │            │             │             │
- │              │                │             │            │             │             │
- │              │                │──check──────┼───────────>│             │             │
- │              │                │  duplicate  │            │             │             │
- │              │                │             │            │─query DB───>│             │
- │              │                │             │            │  (hash)     │             │
- │              │                │             │            │<────────────│             │
- │              │                │             │            │  no match   │             │
- │              │                │<────────────┼────────────│             │             │
- │              │                │  not dup    │            │             │             │
- │              │                │             │            │             │             │
- │              │                │──extract────│            │             │             │
- │              │                │  text       │            │             │             │
- │              │                │             │            │             │             │
- │              │                │──upload─────>│            │             │             │
- │              │                │  file (TTL) │            │             │             │
- │              │                │             │            │             │             │
- │              │<─metadata──────│             │            │             │             │
- │              │  {hash, text}  │             │            │             │             │
- │              │                │             │            │             │             │
- │              │─process_turn──────────────────────────────>│             │             │
- │              │  (message,     │             │            │             │             │
- │              │   attachments) │             │            │             │             │
- │              │                │             │            │             │             │
- │              │                │             │            │─call LLM───>│             │
- │              │                │             │            │  (prompt +  │             │
- │              │                │             │            │   context)  │             │
- │              │                │             │            │             │             │
- │              │                │             │            │             │─analyze────>│
- │              │                │             │            │             │  content    │
- │              │                │             │            │             │             │
- │              │                │             │            │<────────────│             │
- │              │                │             │            │  response   │             │
- │              │                │             │            │  {category, │             │
- │              │                │             │            │   type,...} │             │
- │              │                │             │            │             │             │
- │              │                │             │            │─create──────┼────────────>│
- │              │                │             │            │  evidence   │    INSERT   │
- │              │                │             │            │             │             │
- │              │                │             │            │<────────────┼─────────────│
- │              │                │             │            │  success    │             │
- │              │                │             │            │             │             │
- │              │<───response────────────────────────────────│             │             │
- │              │  {evidence_id, │             │            │             │             │
- │              │   category}    │             │            │             │             │
- │              │                │             │            │             │             │
- │<─201────────│                │             │            │             │             │
- │  Created     │                │             │            │             │             │
- │  {evidence}  │                │             │            │             │             │
- │              │                │             │            │             │             │
+User          API(/turns)    Investigation    Preprocessing    Storage    LLM         Database
+ │              │                │                │             │          │             │
+ │─POST turn───>│                │                │             │          │             │
+ │ {query,      │                │                │             │          │             │
+ │  files[]}    │                │                │             │          │             │
+ │              │─process_turn──>│                │             │          │             │
+ │              │ (TurnPayload)  │                │             │          │             │
+ │              │                │                │             │          │             │
+ │              │                │ ── STEP 1: PRE-LLM ──       │          │             │
+ │              │                │                │             │          │             │
+ │              │                │─preprocess─────>│             │          │             │
+ │              │                │ attachment      │             │          │             │
+ │              │                │                │──classify───│          │             │
+ │              │                │                │  Tier 0     │          │             │
+ │              │                │                │──extract────│          │             │
+ │              │                │                │  Tier 1     │          │             │
+ │              │                │                │──store──────>│          │             │
+ │              │                │                │  raw file   │          │             │
+ │              │                │<─Evidence───────│             │          │             │
+ │              │                │ form=DOCUMENT  │             │          │             │
+ │              │                │                │             │          │             │
+ │              │                │ ── STEP 2: LLM INFERENCE ── │          │             │
+ │              │                │                │             │          │             │
+ │              │                │─call LLM───────────────────────────────>│             │
+ │              │                │ (query +       │             │          │             │
+ │              │                │  structural    │             │          │             │
+ │              │                │  indexes via   │             │          │             │
+ │              │                │  Context       │             │          │             │
+ │              │                │  Sliding       │             │          │             │
+ │              │                │  Window)       │             │          │             │
+ │              │                │                │             │          │             │
+ │              │                │<───────────────────────────────────────│             │
+ │              │                │ response       │             │          │             │
+ │              │                │ {evidence_to_  │             │          │             │
+ │              │                │  add, ...}     │             │          │             │
+ │              │                │                │             │          │             │
+ │              │                │─create agent───┼─────────────┼──────────┼────────────>│
+ │              │                │ evidence       │             │          │   INSERT    │
+ │              │                │ form=SUBMITTED │             │          │             │
+ │              │                │ _DATA          │             │          │             │
+ │              │                │                │             │          │             │
+ │              │<─TurnResponse──│                │             │          │             │
+ │              │ {agent_response│                │             │          │             │
+ │              │  attachments_  │                │             │          │             │
+ │              │  processed}    │                │             │          │             │
+ │              │                │                │             │          │             │
+ │<─200 OK─────│                │                │             │          │             │
+ │ TurnResponse │                │                │             │          │             │
+ │              │                │                │             │          │             │
 ```
 
 ---
 
-## Sequence Diagram: Chat Message → No Evidence
+## Sequence Diagram: Query-Only Turn → No Evidence
 
 ```
-User          API          Investigation    LLM         Database
+User          API(/turns)    Investigation    LLM         Database
  │              │                │             │             │
- │─POST query──>│                │             │             │
- │  "Why is    │                │             │             │
- │   CPU high?" │                │             │             │
+ │─POST turn───>│                │             │             │
+ │ {query:      │                │             │             │
+ │  "Why is     │                │             │             │
+ │   CPU high?"│                │             │             │
+ │  files: []}  │                │             │             │
  │              │                │             │             │
  │              │─process_turn──>│             │             │
- │              │  (message)     │             │             │
+ │              │ (TurnPayload,  │             │             │
+ │              │  no attachmts) │             │             │
+ │              │                │             │             │
+ │              │                │ (Step 1 skipped: no attachments)       │
  │              │                │             │             │
  │              │                │─call LLM───>│             │
- │              │                │  (prompt)   │             │
+ │              │                │  (query +   │             │
+ │              │                │   context)  │             │
  │              │                │             │             │
  │              │                │<────────────│             │
  │              │                │  response   │             │
@@ -263,17 +261,13 @@ User          API          Investigation    LLM         Database
  │              │                │   evidence_ │             │
  │              │                │   to_add}   │             │
  │              │                │             │             │
- │              │                │─decision────│             │
- │              │                │  NO evidence│             │
- │              │                │  created    │             │
- │              │                │             │             │
- │              │<─response──────│             │             │
- │              │  {evidence:    │             │             │
- │              │   null}        │             │             │
+ │              │<─TurnResponse──│             │             │
+ │              │ {agent_response│             │             │
+ │              │  attachments_  │             │             │
+ │              │  processed:[]} │             │             │
  │              │                │             │             │
  │<─200 OK─────│                │             │             │
- │  {no         │                │             │             │
- │   evidence}  │                │             │             │
+ │ TurnResponse │                │             │             │
  │              │                │             │             │
 ```
 
@@ -282,34 +276,36 @@ User          API          Investigation    LLM         Database
 ## Sequence Diagram: Duplicate Upload
 
 ```
-User          API          Preprocessing    Investigation    Database
+User          API(/turns)    Investigation    Preprocessing    Database
  │              │                │                │             │
- │─POST file───>│                │                │             │
- │  (same file) │                │                │             │
+ │─POST turn───>│                │                │             │
+ │ {files:      │                │                │             │
+ │  [same file]}│                │                │             │
+ │              │─process_turn──>│                │             │
+ │              │ (TurnPayload)  │                │             │
  │              │                │                │             │
- │              │─preprocess────>│                │             │
+ │              │                │─preprocess─────>│             │
+ │              │                │ attachment      │             │
+ │              │                │                │──compute────│
+ │              │                │                │  hash       │
+ │              │                │                │  (abc123)   │
  │              │                │                │             │
- │              │                │──compute hash──│             │
- │              │                │  (abc123)      │             │
- │              │                │                │             │
- │              │                │──check─────────>│             │
- │              │                │  duplicate     │             │
- │              │                │                │─query──────>│
- │              │                │                │  hash=      │
- │              │                │                │  abc123     │
+ │              │                │                │──check──────>│
+ │              │                │                │  duplicate  │
  │              │                │                │             │
  │              │                │                │<────────────│
  │              │                │                │  MATCH      │
  │              │                │                │  ev_xyz     │
  │              │                │<───────────────│  (turn 5)   │
  │              │                │  duplicate     │             │
- │              │<─early return──│  found         │             │
+ │              │                │  found         │             │
+ │              │                │                │             │
+ │              │<─TurnResponse──│                │             │
+ │              │ {status:       │                │             │
+ │              │  duplicate}    │                │             │
  │              │                │                │             │
  │<─200 OK─────│                │                │             │
- │  {status:    │                │                │             │
- │   duplicate, │                │                │             │
- │   evidence_  │                │                │             │
- │   ref}       │                │                │             │
+ │ TurnResponse │                │                │             │
  │              │                │                │             │
 ```
 
@@ -467,34 +463,37 @@ User          API          Investigation    LLM         Job Queue       Worker
 
 ---
 
-## Sequence Diagram: Tier 2 Deep Analysis (On-Demand)
+## Sequence Diagram: Tier 2/3 On-Demand Analysis (Agent Tool Calls)
 
 ```
-User          API          Investigation    Vector DB    Deep Analysis   Storage
+User          API(/turns)    Investigation    Context      Deep Analysis   Storage
  │              │                │             │             │             │
- │─POST query──>│                │             │             │             │
- │ "What's in   │                │             │             │             │
- │  the stack   │                │             │             │             │
- │  trace at    │                │             │             │             │
- │  line 12450?"│                │             │             │             │
- │              │                │             │             │             │
+ │─POST turn───>│                │             │             │             │
+ │ {query:      │                │             │             │             │
+ │  "What's in  │                │             │             │             │
+ │   the stack  │                │             │             │             │
+ │   trace at   │                │             │             │             │
+ │   line       │                │             │             │             │
+ │   12450?"}   │                │             │             │             │
  │              │─process_turn──>│             │             │             │
  │              │                │             │             │             │
- │              │                │─search──────>│             │             │
- │              │                │  "stack      │             │             │
- │              │                │   trace      │             │             │
- │              │                │   12450"     │             │             │
+ │              │                │─check───────>│             │             │
+ │              │                │  evidence    │             │             │
+ │              │                │  context     │             │             │
+ │              │                │  (Sliding    │             │             │
+ │              │                │   Window)    │             │             │
  │              │                │             │             │             │
  │              │                │<────────────│             │             │
  │              │                │  ev_abc:     │             │             │
- │              │                │  Cluster 1   │             │             │
+ │              │                │  structural  │             │             │
+ │              │                │  index       │             │             │
  │              │                │             │             │             │
  │              │                │ (Agent reasons: "Tier 1    │             │
  │              │                │  index has cluster summary │             │
  │              │                │  but not the actual stack  │             │
- │              │                │  trace. Need Tier 2.")     │             │
+ │              │                │  trace. Need Tier 3.")     │             │
  │              │                │             │             │             │
- │              │                │─analyze(────────────────-->│             │
+ │              │                │─deep_analyze_file(─────────>│             │
  │              │                │  ev_abc,    │             │             │
  │              │                │  "extract   │             │             │
  │              │                │   stack     │             │             │
@@ -511,18 +510,17 @@ User          API          Investigation    Vector DB    Deep Analysis   Storage
  │              │                │  DeepAnalysisResult       │             │
  │              │                │  {answer, excerpts}       │             │
  │              │                │             │             │             │
- │              │                │ (Agent incorporates Tier 2│             │
+ │              │                │ (Agent incorporates Tier 3│             │
  │              │                │  result into response)    │             │
  │              │                │             │             │             │
- │              │<─response──────│             │             │             │
+ │              │<─TurnResponse──│             │             │             │
  │              │                │             │             │             │
  │<─200 OK─────│                │             │             │             │
- │  {analysis   │                │             │             │             │
- │   with stack │                │             │             │             │
- │   trace}     │                │             │             │             │
+ │ TurnResponse │                │             │             │             │
+ │              │                │             │             │             │
 ```
 
-**Key**: Tier 2 is invoked by the investigation agent as a tool call during `process_turn()`. The preprocessing service is NOT involved — it completed during the original file upload. See [Data Preprocessing v3.2](./data-preprocessing-design-specification.md) Section 6.1 for full invocation logic.
+**Key**: Tier 2 (`search_file`) and Tier 3 (`deep_analyze_file`) are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic.
 
 ---
 
@@ -884,11 +882,11 @@ evidence.storage_size_bytes
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
-- [Data Preprocessing Design Specification v3.0](./data-preprocessing-design-specification.md) — Three-tier preprocessing model
+- [Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md) — Four-tier preprocessing model and unified ingestion pipeline
 - [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules
 
 ---
 
-**Document Version:** 2.3
-**Last Updated:** 2026-02-22
+**Document Version:** 2.4
+**Last Updated:** 2026-02-23
 **Status:** Design Specification

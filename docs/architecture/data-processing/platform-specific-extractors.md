@@ -3,7 +3,7 @@
 **Status:** 🔮 Future Enhancement
 **Priority:** Medium
 **Category:** Data Ingestion
-**Related:** Page Injection, Evidence Collection, [Data Preprocessing v3.0 — Tier 2](./data-preprocessing-design-specification.md#6-tier-2-deep-analysis-service)
+**Related:** Page Injection, Evidence Collection, [Data Preprocessing v4.1 — Tier 3 Deep Analysis](./data-preprocessing-design-specification.md#6-tier-3-deep-analysis-service)
 
 ---
 
@@ -11,11 +11,11 @@
 
 Platform-specific extractors intelligently parse and structure content from popular SRE/DevOps platforms (Datadog, GitHub, PagerDuty, Grafana, etc.) instead of treating all web pages as generic HTML blobs.
 
-**Relationship to Three-Tier Model**: In the [Data Preprocessing v3.0](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
+**Relationship to Four-Tier Model**: In the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) architecture, platform-specific extraction can operate at two levels:
 - **Tier 1 (frontend)**: Client-side platform detection and structured data extraction before upload
-- **Tier 2 (backend)**: Platform-aware deep analysis as a pluggable `ITier2AnalysisService` backend
+- **Tier 3 (backend)**: Platform-aware deep analysis as a pluggable `ITier3AnalysisService` backend (invoked via `deep_analyze_file` agent tool)
 
-This document primarily describes the Tier 1 (frontend) approach. For Tier 2 integration, see the [Tier 2 Service Interface](./data-preprocessing-design-specification.md#62-service-interface-contract).
+This document primarily describes the Tier 1 (frontend) approach. For Tier 3 integration, see the [Tier 3 Service Interface](./data-preprocessing-design-specification.md#62-service-interface-contract).
 
 ---
 
@@ -250,14 +250,14 @@ structured = llm.extract_structured_data(prompt)
 
 ## References
 
-- [Data Preprocessing Architecture v3.0](./data-preprocessing-design-specification.md) — Three-tier model including Tier 2 pluggable backends
+- [Data Preprocessing Architecture v4.1](./data-preprocessing-design-specification.md) — Four-tier model including Tier 3 pluggable backends
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence classification, categories, and unified DataType
-- [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 data type classification
+- [Data Classification Strategy v2.1](./data-classification-strategy.md) — Tier 0 data type classification
 
 ---
 
 ## Status
 
 **Current:** Generic HTML capture only (Tier 1 structural extraction handles HTML as TEXT)
-**Next Steps:** Monitor usage patterns, validate need with users. Consider implementing as a Tier 2 backend for platform-aware deep analysis.
+**Next Steps:** Monitor usage patterns, validate need with users. Consider implementing as a Tier 3 backend for platform-aware deep analysis.
 **Target:** Q2 2026 (post-MVP)

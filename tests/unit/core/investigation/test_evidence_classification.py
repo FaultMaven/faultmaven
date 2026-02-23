@@ -12,7 +12,7 @@ Design Reference:
 - docs/working/IMPLEMENTATION-unified-ingestion-pipeline.md (Phase 6.1)
 
 NOTE: SubmissionClassification was removed in Phase 1-2. Evidence form is now
-payload-driven: attachments → DOCUMENT, agent findings → USER_TEXT.
+payload-driven: attachments → DOCUMENT, agent findings → SUBMITTED_DATA.
 """
 
 from datetime import datetime, timezone

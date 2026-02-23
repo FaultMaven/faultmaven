@@ -147,68 +147,6 @@ def _safe_enum_value(value):
     return str(value)
 
 
-async def _store_evidence_in_vector_db(
-    case_id: str,
-    data_id: str,
-    content: str,
-    data_type: str,
-    metadata: Dict[str, Any],
-    case_vector_store,
-):
-    """
-    Background task: Store evidence in ChromaDB for forensic queries.
-
-    This runs asynchronously after upload completes, so user doesn't wait.
-    Implements the async pipeline from data-preprocessing-design-specification.md Step 5.
-
-    Args:
-        case_id: Case identifier for collection scoping
-        data_id: Unique evidence identifier
-        content: Preprocessed content (NOT raw)
-        data_type: Evidence data type
-        metadata: Evidence metadata
-        case_vector_store: Case-scoped vector store (InMemory or ChromaDB)
-    """
-    try:
-        logger.info(
-            f"Starting background vectorization for evidence {data_id} in case {case_id}",
-            extra={
-                "case_id": case_id,
-                "data_id": data_id,
-                "content_size": len(content),
-            },
-        )
-
-        await case_vector_store.add_documents(
-            case_id=case_id,
-            documents=[
-                {
-                    "id": data_id,
-                    "content": content,
-                    "metadata": {
-                        "data_type": data_type,
-                        "upload_timestamp": datetime.now(timezone.utc).isoformat(),
-                        **metadata,
-                    },
-                }
-            ],
-        )
-
-        logger.info(
-            f"✅ Evidence {data_id} vectorized successfully for case {case_id}",
-            extra={"case_id": case_id, "data_id": data_id},
-        )
-
-    except Exception as e:
-        # Silent failure - doesn't affect user experience
-        # Evidence is still stored in data storage and available via preprocessed summary
-        logger.error(
-            f"❌ Failed to vectorize evidence {data_id} for case {case_id}: {e}",
-            extra={"case_id": case_id, "data_id": data_id, "error": str(e)},
-            exc_info=True,
-        )
-
-
 # Configurable banned words list - minimal but extensible
 BANNED_GENERIC_WORDS = [
     "new case",
