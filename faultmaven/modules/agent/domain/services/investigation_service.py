@@ -157,6 +157,7 @@ class InvestigationService:
             }
             case.messages.append(user_message_obj)
             case.message_count += 1
+            case.current_turn = next_turn
             await self.repository.save(case)
 
             # ── STEP 2: LLM INFERENCE ──
@@ -227,8 +228,7 @@ class InvestigationService:
             else:
                 raise ValueError(f"Unknown intent type: {intent_type}")
 
-            # 3. Processing succeeded — commit turn increment
-            result["case_updated"].current_turn = next_turn
+            # 3. Processing succeeded — extract updated case
             updated_case = result["case_updated"]
             agent_response_text = result["agent_response"]
 
