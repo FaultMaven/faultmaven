@@ -734,12 +734,10 @@ class CaseService(ICaseService):
                 if not filters.include_empty:
                     cases_list = [c for c in cases_list if c.current_turn > 0]
 
-                # Filter archived cases unless include_archived=True
-                # Note: New model uses CLOSED status instead of ARCHIVED
-                if not filters.include_archived:
-                    cases_list = [
-                        c for c in cases_list if c.status != CaseStatus.CLOSED
-                    ]
+                # Note: Closed/resolved cases are always returned so the
+                # frontend can display them in the appropriate category.
+                # The include_archived flag is reserved for a future ARCHIVED
+                # status that hides cases from all default views.
 
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary

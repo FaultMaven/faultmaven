@@ -677,7 +677,7 @@ async def list_cases(
 
     Default Filtering Behavior:
     - INCLUDES empty cases (current_turn == 0) - newly created cases are visible
-    - EXCLUDES archived/closed cases unless include_archived=true
+    - INCLUDES closed/resolved cases (frontend categorizes by status)
     - Use include_empty=false to hide cases with no conversation yet
     - Use status filter to further refine results
     """
@@ -2058,6 +2058,8 @@ async def submit_turn(
         intent = None
         if intent_type:
             data = json.loads(intent_data) if intent_data else {}
+            # Remove 'type' from data to avoid conflict with explicit type= arg
+            data.pop("type", None)
             intent = QueryIntent(type=IntentType(intent_type), **data)
 
         payload = TurnPayload(query=query, attachments=attachments, intent=intent)

@@ -417,6 +417,14 @@ class AttachmentResult(BaseModel):
     processing_status: str
 
 
+class SuggestedActionResponse(BaseModel):
+    """A clickable follow-up action returned with agent responses."""
+
+    label: str
+    type: str  # "question_template" | "command" | "upload_data"
+    payload: str
+
+
 class TurnResponse(BaseModel):
     """Response for POST /cases/{id}/turns."""
 
@@ -427,6 +435,7 @@ class TurnResponse(BaseModel):
     progress_made: bool
     is_stuck: bool
     attachments_processed: List[AttachmentResult] = Field(default_factory=list)
+    suggested_actions: List[SuggestedActionResponse] = Field(default_factory=list)
 
 
 # ============================================================

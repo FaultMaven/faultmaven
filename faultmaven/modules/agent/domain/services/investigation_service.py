@@ -24,7 +24,12 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
-from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
+from faultmaven.models.api_models import (
+    AttachmentResult,
+    IntentType,
+    SuggestedActionResponse,
+    TurnResponse,
+)
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
@@ -246,6 +251,16 @@ class InvestigationService:
             await self.repository.save(updated_case)
 
             # 5. Build TurnResponse
+            raw_follow_ups = result.get("suggested_follow_ups", [])
+            suggested_actions = [
+                SuggestedActionResponse(
+                    label=f["label"],
+                    type=f["action_type"],
+                    payload=f["payload"],
+                )
+                for f in raw_follow_ups
+            ]
+
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
@@ -269,6 +284,7 @@ class InvestigationService:
                     )
                     for att, ev in zip(payload.attachments, evidence_created)
                 ],
+                suggested_actions=suggested_actions,
             )
 
             logger.info(
@@ -550,6 +566,18 @@ class InvestigationService:
         # No engine call needed - manually construct result
         return {
             "agent_response": agent_response,
+            "suggested_follow_ups": [
+                {
+                    "label": "Describe your issue",
+                    "action_type": "question_template",
+                    "payload": "I'm seeing an issue with...",
+                },
+                {
+                    "label": "Paste error logs",
+                    "action_type": "upload_data",
+                    "payload": "Upload or paste your error logs",
+                },
+            ],
             "case_updated": case,
             "metadata": {
                 "progress_made": False,

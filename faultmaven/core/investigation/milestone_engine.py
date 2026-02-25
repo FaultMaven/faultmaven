@@ -878,6 +878,7 @@ class MilestoneEngine:
                     await self.repository.save(case)
                     return {
                         "agent_response": agent_response,
+                        "suggested_follow_ups": [],
                         "case_updated": case,
                         "metadata": {
                             "turn_number": case.current_turn,
@@ -907,6 +908,7 @@ class MilestoneEngine:
                     await self.repository.save(case)
                     return {
                         "agent_response": agent_response,
+                        "suggested_follow_ups": [],
                         "case_updated": case,
                         "metadata": {
                             "turn_number": case.current_turn,
@@ -1452,8 +1454,40 @@ class MilestoneEngine:
                 f"Progress made: {metadata.get('progress_made', False)}"
             )
 
+            # Extract follow-up suggestions from LLM response
+            follow_ups = []
+            if (
+                hasattr(response_obj, "suggested_follow_ups")
+                and response_obj.suggested_follow_ups
+            ):
+                follow_ups = [
+                    {
+                        "label": f.label,
+                        "action_type": f.action_type,
+                        "payload": f.payload,
+                    }
+                    for f in response_obj.suggested_follow_ups
+                ]
+            # Also merge INQUIRY quick_suggestions if present
+            if hasattr(response_obj, "state_updates") and hasattr(
+                response_obj.state_updates, "quick_suggestions"
+            ):
+                qs = response_obj.state_updates.quick_suggestions or []
+                follow_ups.extend(
+                    [
+                        {
+                            "label": s[:40],
+                            "action_type": "question_template",
+                            "payload": s,
+                        }
+                        for s in qs
+                        if s  # skip empty strings
+                    ]
+                )
+
             return {
                 "agent_response": response_obj.agent_response,
+                "suggested_follow_ups": follow_ups,
                 "case_updated": case_updated,
                 "metadata": {
                     "turn_number": case_updated.current_turn,

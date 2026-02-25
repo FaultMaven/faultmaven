@@ -519,10 +519,31 @@ class SolutionToAdd(BaseModel):
 # =============================================================================
 
 
+class SuggestedFollowUp(BaseModel):
+    """A follow-up action the user can take."""
+
+    label: str = Field(
+        description="Short button text shown to user (e.g., 'Check pod logs')"
+    )
+    action_type: Literal["question_template", "command", "upload_data"] = Field(
+        default="question_template",
+        description=(
+            "question_template = submits as user message; "
+            "command = copy-to-clipboard; "
+            "upload_data = prompts file upload"
+        ),
+    )
+    payload: str = Field(description="The text submitted or copied when clicked")
+
+
 class BaseInteractionResponse(BaseModel):
     """Base class for all agent responses."""
 
     agent_response: str = Field(description="Natural language response to the user.")
+    suggested_follow_ups: Optional[List[SuggestedFollowUp]] = Field(
+        default=None,
+        description="2-4 contextual follow-up actions the user can take. Each should be specific to the current investigation state.",
+    )
 
 
 class InquiryResponse(BaseInteractionResponse):

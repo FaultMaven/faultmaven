@@ -93,6 +93,17 @@ When your analysis reveals new findings, create evidence records:
   * category: symptom_evidence, causal_evidence, mitigation_evidence, solution_evidence, contextual_evidence, or rejected
   * source_type: Where data came from (logs, metrics, configuration, code, text, image)
 
+FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
+Generate 2-4 contextual follow-up actions the user can click as shortcuts:
+- action_type "question_template": submits as a user message (use for diagnostic questions)
+- action_type "command": copies to clipboard (use for shell commands to run and paste back)
+- action_type "upload_data": prompts file upload (use when requesting logs, configs, screenshots)
+- Keep labels concise (3-8 words), payloads specific to the current case context
+- Examples:
+  {{"label": "Describe your issue", "action_type": "question_template", "payload": "I'm seeing an issue with..."}}
+  {{"label": "Share error logs", "action_type": "upload_data", "payload": "Upload or paste your error logs"}}
+  {{"label": "What changed recently?", "action_type": "question_template", "payload": "What deployments or config changes happened in the last 24 hours?"}}
+
 Remember: Be reactive. Don't force investigation if the user just wants information.
 Use the natural, conversational response for the agent_response field and update state in state_updates.
 """
@@ -132,6 +143,18 @@ KEY PRINCIPLES:
 - Evidence requests should be specific and actionable.
 - Maintain a working conclusion at all times.
 - Sound like a helpful colleague, not a robot.
+
+FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
+Generate 2-4 contextual follow-up actions the user can click as shortcuts:
+- action_type "question_template": submits as a user message (diagnostic questions, status updates)
+- action_type "command": copies to clipboard (shell commands to run and paste back)
+- action_type "upload_data": prompts file upload (requesting logs, configs, screenshots)
+- Keep labels concise (3-8 words), payloads specific to the current case context
+- Tailor suggestions to the current investigation stage and what data is needed next
+- Examples:
+  {{"label": "Check pod logs", "action_type": "command", "payload": "kubectl logs <pod-name> --tail=100"}}
+  {{"label": "Share deployment diff", "action_type": "upload_data", "payload": "Upload the recent deployment diff or changelog"}}
+  {{"label": "Confirm fix worked", "action_type": "question_template", "payload": "I applied the fix and here are the results..."}}
 
 EVIDENCE FROM ATTACHMENTS:
 Data submitted as attachments has already been preprocessed and appears in your
@@ -396,6 +419,9 @@ You MUST respond with valid JSON matching these fields:
     - SUGGESTION: Your recommended action based on the reasoning above
   * This structured format is REQUIRED for diagnostic reasoning validation
   * Responses without OBSERVATION/ANALYSIS sections will be rejected and require self-correction
+- **suggested_follow_ups**: 2-4 clickable follow-up actions (see FOLLOW-UP SUGGESTIONS section above).
+  * Each item has: label (str), action_type ("question_template"|"command"|"upload_data"), payload (str)
+  * Can be null or omitted if no follow-ups are appropriate
 - **internal_reasoning**: REQUIRED when completing milestones (otherwise optional).
   - evidence_analyzed: REQUIRED non-empty list when completing milestones. Contains evidence IDs you ACTUALLY considered.
     * CRITICAL: MUST be non-empty if milestone_justifications is provided
