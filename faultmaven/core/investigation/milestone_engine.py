@@ -952,6 +952,45 @@ class MilestoneEngine:
                 else:
                     raise ValueError(f"Unknown to_status: {to_status_str}")
 
+            elif intent_type == "confirmation":
+                logger.info(
+                    f"🎯 Explicit confirmation intent for case {case.case_id} "
+                    f"(has_pending_statement={bool(case.inquiry.proposed_problem_statement)})"
+                )
+
+                if case.status != CaseStatus.INQUIRY:
+                    logger.warning(
+                        f"Received confirmation intent for case {case.case_id} but status is {case.status.value}"
+                    )
+                elif not case.inquiry.proposed_problem_statement:
+                    logger.warning(
+                        f"Received confirmation intent for case {case.case_id} but no proposed problem statement exists"
+                    )
+                else:
+                    # Update inquiry state
+                    case.inquiry.problem_statement_confirmed = True
+                    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
+                    case.inquiry.decided_to_investigate = True
+                    case.inquiry.decision_made_at = datetime.now(UTC)
+
+                    # Transition to INVESTIGATING
+                    await self._transition_to_investigating(case)
+                    case.status_history.append(
+                        CaseStatusTransition(
+                            from_status=CaseStatus.INQUIRY,
+                            to_status=CaseStatus.INVESTIGATING,
+                            triggered_at=datetime.now(UTC),
+                            triggered_by=case.user_id,
+                            reason="User confirmed proposed problem statement",
+                        )
+                    )
+
+                    logger.info(
+                        f"✅ Case {case.case_id} transitioned to INVESTIGATING via confirmation intent"
+                    )
+
+                    # Continue to normal LLM flow for investigation kickoff message
+
             # ============================================================
             # USER INTENT DETECTION - PATTERN MATCHING (Natural Language)
             # ============================================================
@@ -2638,6 +2677,9 @@ class MilestoneEngine:
             f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
         )
 
+        # Execute JIT Evidence Promotion to formally collect any attachments uploaded during INQUIRY
+        self._execute_jit_evidence_promotion(case)
+
         # Gap #4: Retroactively attribute milestones to INQUIRY-phase evidence.
         # During INQUIRY, evidence was created with advances_milestones=[] because
         # milestone tracking wasn't active yet. Now that we've initialized progress,
@@ -2660,6 +2702,74 @@ class MilestoneEngine:
                             f"to INQUIRY evidence {ev.evidence_id} "
                             f"(category={ev.category.value})"
                         )
+
+    def _execute_jit_evidence_promotion(self, case: Case) -> None:
+        """
+        Promote attachments uploaded during INQUIRY phase to formal Evidence.
+
+        This Just-in-Time (JIT) extraction occurs when the case transitions
+        to INVESTIGATING. It avoids re-parsing raw text by reusing the
+        pre-processed attachment data.
+        """
+        from uuid import uuid4
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceSourceType,
+            EvidenceCategory,
+            EvidenceForm,
+        )
+
+        for uploaded_file in case.uploaded_files:
+            # Only promote files that were uploaded during INQUIRY (<= current turn)
+            if uploaded_file.uploaded_at_turn <= case.current_turn:
+                # Check if this file is already in evidence to prevent duplicates
+                already_promoted = any(
+                    e.source_file_id == uploaded_file.file_id for e in case.evidence
+                )
+                if already_promoted:
+                    continue
+
+                try:
+                    # Convert data_type to EvidenceSourceType
+                    data_type_str = (uploaded_file.data_type or "unknown").upper()
+                    try:
+                        source_type = EvidenceSourceType[data_type_str]
+                    except KeyError:
+                        source_type = EvidenceSourceType.LOGS  # Fallback
+
+                    # Default category for early attachments is SYMPTOM_EVIDENCE
+                    category = EvidenceCategory.SYMPTOM_EVIDENCE
+
+                    evidence = Evidence(
+                        evidence_id=f"ev_{uuid4().hex[:12]}",
+                        summary=uploaded_file.preprocessing_summary
+                        or f"Uploaded file: {uploaded_file.filename}",
+                        preprocessed_content=uploaded_file.preprocessing_summary
+                        or "[Content extracted in uploaded file]",
+                        content_ref=uploaded_file.content_ref,
+                        content_size_bytes=uploaded_file.size_bytes,
+                        preprocessing_method="jit_promotion",
+                        category=category,
+                        source_type=source_type,
+                        form=EvidenceForm.DOCUMENT,
+                        source_file_id=uploaded_file.file_id,
+                        advances_milestones=[],  # Will be attributed later
+                        collected_at=uploaded_file.uploaded_at,
+                        collected_by=case.user_id,
+                        collected_at_turn=uploaded_file.uploaded_at_turn,
+                        primary_purpose="File Analysis",
+                    )
+
+                    case.evidence.append(evidence)
+                    logger.info(
+                        f"JIT Evidence Promotion: Created evidence {evidence.evidence_id} "
+                        f"from file {uploaded_file.file_id} (turn {uploaded_file.uploaded_at_turn})"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to promote uploaded file {uploaded_file.file_id} to evidence: {e}",
+                        exc_info=True,
+                    )
 
     async def _check_automatic_transitions(
         self, case: Case, metadata: dict[str, Any], user_message: str = ""

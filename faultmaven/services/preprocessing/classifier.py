@@ -371,7 +371,7 @@ class DataClassifier:
         text_log_patterns = [
             r"\b(error|fatal|critical|panic|exception|traceback)\b",
             r"\[\d{4}-\d{2}-\d{2}",  # Timestamp [2025-10-15
-            r"(INFO|WARN|ERROR|DEBUG|TRACE):",  # Log levels
+            r"\b(INFO|WARN|WARNING|ERROR|DEBUG|TRACE|FATAL|CRITICAL)\b[\s:\]|]",  # Log levels (colon, space, or delimiter)
             r"at\s+[\w\.]+\(\w+\.java:\d+\)",  # Java stack trace
             r'File\s+"[^"]+",\s+line\s+\d+',  # Python stack trace
         ]
@@ -422,8 +422,20 @@ class DataClassifier:
             )
 
         # LOGS_AND_ERRORS: Has timestamps AND log patterns (log file)
-        # Strong indicator: .log file with any log patterns
-        if ext in [".log", ".txt"] and (text_score >= 2 or structured_score >= 2):
+        # Strong indicator: .log extension is itself strong evidence — lower threshold
+        if ext == ".log" and (text_score >= 1 or structured_score >= 1):
+            base_confidence = (
+                0.88 + min(text_score + structured_score, 3) * 0.03
+            )  # 0.88-0.97
+            return ClassificationResult(
+                data_type=DataType.LOGS_AND_ERRORS,
+                confidence=min(base_confidence + confidence_boost, 0.98),
+                source="rule_based",
+                classification_failed=False,
+            )
+
+        # .txt files need stronger evidence (extension is ambiguous)
+        if ext == ".txt" and (text_score >= 2 or structured_score >= 2):
             base_confidence = (
                 0.85 + min(text_score + structured_score, 3) * 0.03
             )  # 0.85-0.94
@@ -452,6 +464,8 @@ class DataClassifier:
             r"^\d+\.\d+\s+\d+",  # Unix timestamp + value
             r"(cpu|memory|latency|response_time|throughput|error_rate)",  # Common metric names
             r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}",  # ISO timestamp
+            r"\b(date|time|datetime)[,\t]",  # Tabular data with date/time columns
+            r"\b(count|total|avg|sum|min|max|mean|median|p\d{2})\b[,\t]",  # Aggregate/stat columns
         ]
 
         metrics_score = sum(

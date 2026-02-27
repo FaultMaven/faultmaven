@@ -1681,6 +1681,9 @@ class HypothesisCategory(str, Enum):
     HARDWARE = "hardware"
     """Hardware failures, disk issues, CPU/memory"""
 
+    SECURITY = "security"
+    """Security issues, authentication/authorization failures, access control"""
+
     EXTERNAL = "external"
     """External dependencies, third-party services"""
 
