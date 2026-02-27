@@ -8,7 +8,13 @@ from faultmaven.modules.case.domain.models import (
     InquiryData,
     InvestigationProgress,
 )
-from faultmaven.modules.case.contracts import UploadedFile
+from faultmaven.modules.case.contracts import (
+    UploadedFile,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
+    EvidenceForm,
+)
 
 
 @pytest.mark.asyncio
@@ -56,7 +62,50 @@ async def test_jit_evidence_promotion():
                 preprocessing_summary="Metric data",
                 content_ref="s3://something",
             ),
+            UploadedFile(  # Fallback type, promoted as LOGS
+                file_id="data_1234567890cc",
+                filename="weird.dat",
+                size_bytes=200,
+                data_type="FLUBBER",  # Unknown type
+                uploaded_at_turn=2,
+                uploaded_at=datetime.now(UTC),
+                source_type="file_upload",
+                preprocessing_summary="Weird data",
+                content_ref="s3://weird",
+            ),
+            UploadedFile(  # Duplicate guard, excluded
+                file_id="data_1234567890dd",
+                filename="already_there.txt",
+                size_bytes=300,
+                data_type="LOGS",
+                uploaded_at_turn=3,
+                uploaded_at=datetime.now(UTC),
+                source_type="file_upload",
+                preprocessing_summary="Already there logs",
+                content_ref="s3://duplicate",
+            ),
         ],
+    )
+
+    # Pre-populate evidence to test duplicate guard
+    case.evidence.append(
+        Evidence(
+            evidence_id="ev_000000000000",
+            summary="Pre-existing evidence",
+            preprocessed_content="Pre-existing",
+            content_ref="s3://duplicate",
+            content_size_bytes=300,
+            preprocessing_method="manual",
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            form=EvidenceForm.DOCUMENT,
+            source_file_id="data_1234567890dd",  # Matches the duplicate uploaded file
+            advances_milestones=[],
+            collected_at=datetime.now(UTC),
+            collected_by="user_1234567890abc",
+            collected_at_turn=3,
+            primary_purpose="File Analysis",
+        )
     )
 
     # Need to fake determine_investigation_path since it does not need deep validation for this
@@ -68,8 +117,27 @@ async def test_jit_evidence_promotion():
 
     # Check evidence promotion
     assert case.status == CaseStatus.INVESTIGATING
-    assert len(case.evidence) == 1
-    assert case.evidence[0].source_file_id == "file_1234567890ab"
-    assert case.evidence[0].summary == "System logs"
-    assert case.evidence[0].category.value.lower() == "symptom_evidence"
-    assert case.evidence[0].source_type.value.lower() == "logs"
+    assert len(case.evidence) == 3  # 1 pre-existing + 2 promoted
+
+    # Check first promoted evidence (syslog.txt)
+    promoted_1 = next(
+        e for e in case.evidence if e.source_file_id == "file_1234567890ab"
+    )
+    assert promoted_1.summary == "System logs"
+    assert promoted_1.category.value.lower() == "symptom_evidence"
+    assert promoted_1.source_type.value.lower() == "logs"
+
+    # Check second promoted evidence (weird.dat fallback)
+    promoted_2 = next(
+        e for e in case.evidence if e.source_file_id == "data_1234567890cc"
+    )
+    assert promoted_2.summary == "Weird data"
+    assert promoted_2.category.value.lower() == "symptom_evidence"
+    assert promoted_2.source_type.value.lower() == "logs"  # Fallback to LOGS
+
+    # Check that duplicate was not added again (only one evidence with this source_file_id should exist)
+    duplicates = [e for e in case.evidence if e.source_file_id == "data_1234567890dd"]
+    assert len(duplicates) == 1
+    assert (
+        duplicates[0].evidence_id == "ev_000000000000"
+    )  # Should be the pre-existing one
