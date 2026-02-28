@@ -175,6 +175,37 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any]):
                          "User confirmed problem and decided to investigate")
 ```
 
+#### 1.2.1 Evidence Carry-Over During Natural Transition
+
+When transitioning from INQUIRY to INVESTIGATING via the **natural flow** (agent detects a problem, proposes transition, user confirms), files uploaded during INQUIRY are promoted to formal Evidence records. This is necessary because:
+
+1. **The agent analyzed the data and found a problem** — the data contributed to the problem signal that triggered the transition proposal.
+2. **Evidence requires problem context** — an Evidence record represents data interpreted within the context of a confirmed problem. During INQUIRY, there is no confirmed problem yet, so uploaded files remain as `UploadedFile` (raw data context).
+3. **The transition is the moment context is established** — once the user confirms the problem statement and the case transitions, the previously-uploaded data can now be formally categorized as evidence supporting the confirmed problem.
+
+**How it works**:
+
+- At transition time, each `UploadedFile` uploaded during INQUIRY (up to the current turn) is converted to an `Evidence` record with `category=SYMPTOM_EVIDENCE` and `preprocessing_method="jit_promotion"`.
+- Duplicate detection prevents re-promoting files that were already converted to evidence during INQUIRY (e.g., by agent tools).
+- After promotion, milestone attribution is retroactively applied based on evidence category (see `CATEGORY_MILESTONE_MAP`).
+
+**Manual flow does NOT promote evidence**:
+
+- When a user manually transitions via the status dropdown (Section 1.5), the uploaded data was analyzed by the agent but did NOT produce a problem signal strong enough for the agent to propose a transition.
+- Since the data did not signal a problem, promoting it to evidence would be incorrect — it is context, not evidence.
+- After manual transition, only NEW data submitted during INVESTIGATING is evaluated as evidence. Prior uploaded files remain as `UploadedFile` records (available as raw data context for the agent).
+
+**Evidence and problem — chicken-and-egg relationship**:
+
+```text
+UploadedFile (raw data)  ──agent finds problem──>  Evidence (interpreted data)
+                                                        │
+                                                  requires confirmed
+                                                  problem context
+```
+
+If the agent did not find a problem (manual flow), there is no interpretive context to justify evidence promotion.
+
 #### INVESTIGATING → RESOLVED (Terminal)
 
 **Trigger**: User-Agent Handshake (explicit user confirmation)

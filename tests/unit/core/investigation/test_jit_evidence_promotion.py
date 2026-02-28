@@ -141,3 +141,65 @@ async def test_jit_evidence_promotion():
     assert (
         duplicates[0].evidence_id == "ev_000000000000"
     )  # Should be the pre-existing one
+
+
+@pytest.mark.asyncio
+async def test_jit_evidence_skipped_for_manual_transition():
+    """Manual transition (status dropdown) should NOT promote uploaded files to evidence."""
+    engine = MilestoneEngine(
+        llm_provider=MagicMock(),
+        repository=MagicMock(),
+    )
+
+    case = Case(
+        case_id="case_1234567890ab",
+        organization_id="org_1234567890abc",
+        title="Manual Transition Test",
+        user_id="user_1234567890abc",
+        status=CaseStatus.INQUIRY,
+        current_turn=5,
+        inquiry=InquiryData(
+            proposed_problem_statement="Test problem",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
+        uploaded_files=[
+            UploadedFile(
+                file_id="file_1234567890ab",
+                filename="syslog.txt",
+                size_bytes=1000,
+                data_type="LOGS",
+                uploaded_at_turn=1,
+                uploaded_at=datetime.now(UTC),
+                source_type="file_upload",
+                preprocessing_summary="System logs",
+                content_ref="s3://something",
+            ),
+            UploadedFile(
+                file_id="file_abcdef123456",
+                filename="metrics.json",
+                size_bytes=500,
+                data_type="METRICS",
+                uploaded_at_turn=3,
+                uploaded_at=datetime.now(UTC),
+                source_type="file_upload",
+                preprocessing_summary="Metric data",
+                content_ref="s3://metrics",
+            ),
+        ],
+    )
+
+    # Trigger MANUAL transition
+    await engine._transition_to_investigating(case, manual=True)
+
+    # Case should be fully initialized
+    assert case.status == CaseStatus.INVESTIGATING
+    assert case.progress is not None
+    assert case.problem_verification is not None
+    assert case.path_selection is not None
+
+    # But NO evidence should have been promoted from uploaded files
+    assert len(case.evidence) == 0
+
+    # Uploaded files should still exist (not removed, just not promoted)
+    assert len(case.uploaded_files) == 2

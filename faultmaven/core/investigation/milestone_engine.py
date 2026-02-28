@@ -929,10 +929,10 @@ class MilestoneEngine:
                     case.inquiry.decided_to_investigate = True
                     case.inquiry.decision_made_at = datetime.now(UTC)
 
-                    # Transition to INVESTIGATING
+                    # Transition to INVESTIGATING (manual flow — user clicked dropdown)
                     # Use the centralized transition method to ensure correct ordering:
                     # description must be set BEFORE status (Pydantic validation requirement)
-                    await self._transition_to_investigating(case)
+                    await self._transition_to_investigating(case, manual=True)
                     case.status_history.append(
                         CaseStatusTransition(
                             from_status=CaseStatus.INQUIRY,
@@ -2602,12 +2602,21 @@ class MilestoneEngine:
     # State Management
     # =========================================================================
 
-    async def _transition_to_investigating(self, case: Case) -> None:
+    async def _transition_to_investigating(
+        self, case: Case, *, manual: bool = False
+    ) -> None:
         """
         Transition case from INQUIRY to INVESTIGATING.
 
         This creates the initial investigation structures and copies the
         confirmed problem statement to the case description.
+
+        Args:
+            case: The case to transition.
+            manual: If True, this is a user-initiated manual transition
+                (via status dropdown). Skips evidence promotion and
+                retroactive milestone attribution because the uploaded
+                data did not produce a problem signal during INQUIRY.
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
@@ -2675,14 +2684,17 @@ class MilestoneEngine:
             f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
         )
 
-        # Execute JIT Evidence Promotion to formally collect any attachments uploaded during INQUIRY
-        self._execute_jit_evidence_promotion(case)
+        # Evidence carry-over: only for natural flow transitions.
+        # In manual flow, INQUIRY data didn't signal a problem — not evidence.
+        if not manual:
+            self._execute_jit_evidence_promotion(case)
 
         # Gap #4: Retroactively attribute milestones to INQUIRY-phase evidence.
+        # Only for natural flow — manual transitions have no promoted evidence.
         # During INQUIRY, evidence was created with advances_milestones=[] because
         # milestone tracking wasn't active yet. Now that we've initialized progress,
         # we can infer milestone attribution based on evidence categories.
-        if case.evidence:
+        if not manual and case.evidence:
             # Check which milestones are already satisfied from the transition itself
             initial_milestones = []
             if case.progress.verification_complete:
