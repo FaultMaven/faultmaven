@@ -47,6 +47,10 @@ class MetricsAndPerformanceExtractor:
         time_series = self._parse_metrics(content)
 
         if not time_series:
+            # Valid CSV with no numeric columns — provide structural summary
+            csv_summary = self._summarize_csv_structure(content)
+            if csv_summary:
+                return csv_summary
             return "[Failed to parse metrics data - unsupported format]"
 
         # Analyze each metric
@@ -158,7 +162,11 @@ class MetricsAndPerformanceExtractor:
     def _parse_csv_metrics(
         self, content: str
     ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
-        """Parse CSV format with header row"""
+        """Parse CSV format with header row.
+
+        Auto-detects which columns are numeric by sampling data rows,
+        rather than assuming all non-first columns are numeric.
+        """
         lines = content.strip().split("\n")
         if len(lines) < 2:
             return None
@@ -168,22 +176,76 @@ class MetricsAndPerformanceExtractor:
         if not header:
             return None
 
-        # Initialize result dict
-        result = {col: [] for col in header[1:]}  # Skip timestamp column
+        # Sample up to 10 data rows to detect column types
+        sample_rows = []
+        for line in lines[1 : min(len(lines), 12)]:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) == len(header):
+                sample_rows.append(parts)
 
-        # Parse data rows
+        if not sample_rows:
+            return None
+
+        # Detect which columns are numeric (>50% of sampled values parse as float)
+        numeric_cols = set()
+        timestamp_col = None
+        for col_idx in range(len(header)):
+            numeric_count = 0
+            for row in sample_rows:
+                try:
+                    float(row[col_idx])
+                    numeric_count += 1
+                except ValueError:
+                    pass
+
+            if numeric_count > len(sample_rows) * 0.5:
+                numeric_cols.add(col_idx)
+
+        # Find timestamp column: first non-numeric column with time-like name
+        time_names = {
+            "time",
+            "timestamp",
+            "ts",
+            "date",
+            "datetime",
+            "created_at",
+            "updated_at",
+        }
+        for col_idx, col_name in enumerate(header):
+            if col_idx not in numeric_cols and col_name.lower() in time_names:
+                timestamp_col = col_idx
+                break
+
+        # If no named timestamp column, use the first non-numeric column
+        if timestamp_col is None:
+            for col_idx in range(len(header)):
+                if col_idx not in numeric_cols:
+                    timestamp_col = col_idx
+                    break
+
+        # Metric columns = numeric columns that aren't the timestamp
+        metric_cols = numeric_cols - (
+            {timestamp_col} if timestamp_col is not None else set()
+        )
+        if not metric_cols:
+            return None
+
+        # Parse all data rows
+        result: Dict[str, List[Tuple[Optional[str], float]]] = {
+            header[i]: [] for i in metric_cols
+        }
+
         for line in lines[1:]:
             parts = [p.strip() for p in line.split(",")]
             if len(parts) != len(header):
                 continue
 
-            timestamp = parts[0]
+            ts = parts[timestamp_col] if timestamp_col is not None else None
 
-            for i, value_str in enumerate(parts[1:]):
-                metric_name = header[i + 1]
+            for col_idx in metric_cols:
                 try:
-                    value = float(value_str)
-                    result[metric_name].append((timestamp, value))
+                    value = float(parts[col_idx])
+                    result[header[col_idx]].append((ts, value))
                 except ValueError:
                     continue
 
@@ -217,6 +279,54 @@ class MetricsAndPerformanceExtractor:
                 result[metric_name].append((None, value))
 
         return result if result else None
+
+    def _summarize_csv_structure(self, content: str) -> Optional[str]:
+        """Produce a structural summary for valid CSVs with no numeric metrics columns."""
+        lines = content.strip().split("\n")
+        if len(lines) < 2:
+            return None
+
+        header = [col.strip() for col in lines[0].split(",")]
+        if len(header) < 2:
+            return None
+
+        # Verify it's a valid CSV by checking at least some rows match the header count
+        valid_rows = 0
+        for line in lines[1:]:
+            if len(line.split(",")) == len(header):
+                valid_rows += 1
+
+        if valid_rows == 0:
+            return None
+
+        total_rows = len(lines) - 1
+
+        # Collect value distributions for categorical columns (sample first 200 rows)
+        col_values: Dict[str, Dict[str, int]] = {col: {} for col in header}
+        for line in lines[1 : min(len(lines), 202)]:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) != len(header):
+                continue
+            for i, val in enumerate(parts):
+                counts = col_values[header[i]]
+                counts[val] = counts.get(val, 0) + 1
+
+        out = [f"=== CSV STRUCTURE SUMMARY ===\n"]
+        out.append(f"Rows: {total_rows} (valid: {valid_rows})")
+        out.append(f"Columns ({len(header)}): {', '.join(header)}\n")
+
+        for col_name in header:
+            counts = col_values[col_name]
+            unique = len(counts)
+            out.append(f"  {col_name}: {unique} unique value(s)")
+            # Show top 5 values for columns with low cardinality
+            if unique <= 20:
+                sorted_vals = sorted(counts.items(), key=lambda x: -x[1])[:5]
+                for val, cnt in sorted_vals:
+                    display = val[:60] + "..." if len(val) > 60 else val
+                    out.append(f"    - {display} ({cnt}x)")
+
+        return "\n".join(out)
 
     def _analyze_metric(
         self, metric_name: str, data_points: List[Tuple[Optional[str], float]]
