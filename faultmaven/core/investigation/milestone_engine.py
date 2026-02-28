@@ -1246,28 +1246,14 @@ class MilestoneEngine:
                 f"🔍 Turn {case.current_turn} response type: {type(response_obj).__name__}"
             )
 
-            # 3. Process response and update case state
-            case_updated, response_metadata = await self._process_response_structured(
-                case, user_message, response_obj, attachments
-            )
-            # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
-            metadata.update(response_metadata)
-
-            # 3a. Stage-gate compliance is now handled via LLM milestone output
-            # (Framework §4.1). The LLM sets stage-gate milestones in its
-            # structured response; side effects are applied in
-            # _apply_investigation_updates → _apply_stage_gate_side_effects.
-
-            # 3b. Validate Diagnostic Reasoning with Self-Correction (Section 3.3, F3)
-            # Ensure agent provides context-specific reasoning before suggestions.
-            # If validation fails, retry ONCE with a correction prompt that includes
-            # the specific violations, giving the LLM a chance to self-correct.
+            # 3. Validate reasoning BEFORE applying state (design: error-handling §3.2)
+            # This prevents duplicate state mutations if self-correction retry is needed.
             from faultmaven.core.investigation.diagnostic_reasoning_validator import (
                 validate_diagnostic_reasoning,
             )
 
             is_valid_reasoning, violations = validate_diagnostic_reasoning(
-                case=case_updated,
+                case=case,
                 agent_response=response_obj.agent_response,
                 contains_suggestion=None,  # Auto-detect
             )
@@ -1294,7 +1280,7 @@ class MilestoneEngine:
 
                     # Re-validate the corrected response
                     is_valid_retry, retry_violations = validate_diagnostic_reasoning(
-                        case=case_updated,
+                        case=case,
                         agent_response=corrected_response.agent_response,
                         contains_suggestion=None,
                     )
@@ -1303,28 +1289,15 @@ class MilestoneEngine:
                         logger.info(
                             "Self-correction succeeded: retried response passes validation."
                         )
-                        # Re-process with corrected response
                         response_obj = corrected_response
-                        case_updated, response_metadata = (
-                            await self._process_response_structured(
-                                case, user_message, corrected_response, attachments
-                            )
-                        )
-                        metadata.update(response_metadata)
                         violations = []
                     else:
                         logger.warning(
                             f"Self-correction retry also failed: {retry_violations}. "
                             "Proceeding with retried response; violations fed back for next turn."
                         )
-                        # Use the retried response (it may be partially improved)
+                        # Use the retried response (may be partially improved)
                         response_obj = corrected_response
-                        case_updated, response_metadata = (
-                            await self._process_response_structured(
-                                case, user_message, corrected_response, attachments
-                            )
-                        )
-                        metadata.update(response_metadata)
                         violations = retry_violations
                 except Exception as e:
                     logger.warning(
@@ -1333,11 +1306,23 @@ class MilestoneEngine:
                         exc_info=True,
                         extra={"case_id": case.case_id, "turn": case.current_turn},
                     )
-                    # Keep original response_obj and case_updated as-is
+                    # Keep original response_obj as-is
 
                 # Add remaining violations to metadata for observability (G9+G11 wires them)
                 if violations:
                     metadata["diagnostic_reasoning_violations"] = violations
+
+            # 4. Apply state from the final accepted response (exactly once)
+            case_updated, response_metadata = await self._process_response_structured(
+                case, user_message, response_obj, attachments
+            )
+            # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
+            metadata.update(response_metadata)
+
+            # 4a. Stage-gate compliance is now handled via LLM milestone output
+            # (Framework §4.1). The LLM sets stage-gate milestones in its
+            # structured response; side effects are applied in
+            # _apply_investigation_updates → _apply_stage_gate_side_effects.
 
             # Phase 1: No-Op Detection
             progress_made = self._check_if_progress_made(metadata)

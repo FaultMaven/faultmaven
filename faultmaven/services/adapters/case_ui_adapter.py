@@ -286,7 +286,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
             # Get hypothesis with highest likelihood
             best_hypothesis = max(active_hypotheses, key=lambda h: h.likelihood)
             working_conclusion = WorkingConclusionSummary(
-                summary=best_hypothesis.description,
+                summary=best_hypothesis.statement,
                 confidence=best_hypothesis.likelihood,
                 last_updated=case.updated_at,  # Could track hypothesis update time separately
             )
@@ -302,7 +302,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
             hypothesis_summaries.append(
                 HypothesisSummary(
                     hypothesis_id=hyp.hypothesis_id,
-                    text=hyp.description,
+                    text=hyp.statement,
                     likelihood=hyp.likelihood,
                     status=hyp.status,
                     evidence_count=len(hyp.evidence_links),
