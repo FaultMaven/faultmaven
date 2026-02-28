@@ -420,7 +420,7 @@ class CaseUIResponse_Investigating(BaseModel):
 
     is_stuck: bool = Field(
         default=False,
-        description="Whether investigation is stuck (no progress for 3+ turns)",
+        description="Whether investigation is stuck (no progress for 5+ turns)",
     )
 
     degraded_mode: bool = Field(

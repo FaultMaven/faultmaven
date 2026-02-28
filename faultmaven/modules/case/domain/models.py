@@ -2752,8 +2752,10 @@ class DegradedModeType(str, Enum):
 
     NO_PROGRESS = "no_progress"
     """
-    3+ consecutive turns without milestone advancement.
-    Investigation is stuck (covers insufficient data, user non-engagement, data access issues).
+    5+ consecutive turns without investigative progress.
+    Note: NO_PROGRESS no longer creates a DegradedMode object. The stagnation
+    breaker emits a gentle_reminder BreakoutAction instead. This enum value
+    is retained for backward compatibility with serialized data.
     """
 
     LIMITED_DATA = "limited_data"
@@ -3350,10 +3352,10 @@ class Case(BaseModel):
     @property
     def is_stuck(self) -> bool:
         """
-        Detect if investigation is blocked.
-        Returns True if 3+ consecutive turns without progress.
+        Detect if investigation needs strategy adaptation.
+        Returns True if 5+ consecutive turns without investigative progress.
         """
-        return self.turns_without_progress >= 3
+        return self.turns_without_progress >= 5
 
     @property
     def current_momentum(self) -> Optional[InvestigationMomentum]:
@@ -3461,18 +3463,19 @@ class Case(BaseModel):
         """
         warnings: List[Dict[str, Any]] = []
 
-        # Warning: Investigation stuck
+        # Info: Investigation adapting strategy
         if self.is_stuck:
             warnings.append(
                 {
                     "type": "stuck",
-                    "severity": "warning",
-                    "message": f"No progress for {self.turns_without_progress} consecutive turns",
-                    "action": "Consider providing more data, escalating, or closing case",
+                    "severity": "info",
+                    "message": f"Investigation adapting approach after {self.turns_without_progress} turns",
+                    "action": "The investigation is trying a different diagnostic angle. You can help by providing specific data if requested.",
                 }
             )
 
-        # Error: Degraded mode active
+        # Degraded mode active (genuine external blockers only —
+        # NO_PROGRESS no longer creates DegradedMode)
         if self.degraded_mode and self.degraded_mode.is_active:
             warnings.append(
                 {

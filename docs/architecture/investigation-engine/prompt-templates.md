@@ -926,80 +926,75 @@ verified actual pool metrics yet - that would increase confidence to 85%+."
 {stall_warning}"""
 
 
-def _build_degraded_mode_section(case: Case) -> str:
-    """Build degraded mode instructions override"""
-    
-    mode_type = case.degraded_mode.mode_type
-    reason = case.degraded_mode.reason
-    
-    # Get mode-specific guidance
+def get_degraded_mode_instructions(case: Case) -> str:
+    """Build degraded mode instructions (genuine external blockers only).
+
+    NO_PROGRESS no longer triggers degraded mode — the stagnation breaker
+    emits a gentle_reminder BreakoutAction instead. This function only
+    produces instructions for genuine external blockers.
+    """
+    if not case.degraded_mode or not case.degraded_mode.is_active:
+        return ""
+
+    mode = case.degraded_mode
+
+    # NO_PROGRESS should never reach here, but guard defensively
+    if mode.mode_type.value == "no_progress":
+        return ""
+
+    return _get_limitation_aware_instructions(case, mode)
+
+
+def _get_limitation_aware_instructions(case: Case, mode: DegradedMode) -> str:
+    """Build limitation-aware instructions for genuine external blockers.
+
+    Used for LIMITED_DATA, HYPOTHESIS_DEADLOCK, EXTERNAL_DEPENDENCY — cases
+    where the agent truly cannot proceed without external intervention.
+    """
     mode_descriptions = {
-        "no_progress": ("no progress for multiple turns", "try different approaches or consider escalation"),
         "limited_data": ("missing critical evidence", "proceed with lower confidence or escalate"),
         "hypothesis_deadlock": ("all hypotheses inconclusive", "try different hypothesis categories or escalate"),
         "external_dependency": ("blocked by external dependencies", "escalate or wait for dependencies"),
-        "other": ("investigation limitations", "assess options with user")
+        "other": ("investigation limitations", "assess options with user"),
     }
-    
-    limitation, suggestion = mode_descriptions.get(mode_type, ("limitations", "discuss options"))
-    
+
+    limitation, suggestion = mode_descriptions.get(
+        mode.mode_type.value, ("limitations", "discuss options")
+    )
+
     return f"""═══════════════════════════════════════════════════════════
-⚠️ DEGRADED INVESTIGATION MODE
+⚠️ INVESTIGATION LIMITATION
 ═══════════════════════════════════════════════════════════
 
-**Type**: {mode_type}
-**Reason**: {reason}
+**Type**: {mode.mode_type.value}
+**Reason**: {mode.reason}
 
 **BEHAVIOR CHANGES:**
 
 **1. Transparent Communication**
-   - ALWAYS prefix responses: "⚠️ Investigation limitations: {limitation}"
-   - Explicitly state caveats in EVERY response
    - Be honest about confidence levels based on available evidence
    - Explain what's missing and how it limits your analysis
 
-**2. Lower Confidence Assessment**
+**2. Evidence-Based Confidence**
    - Assess confidence based ONLY on available evidence
-   - Don't overstate certainty when data is limited
    - Use terms: "speculate" (<50%), "probably" (50-70%), "confident" (70-90%), "verified" (90%+)
-   - Be realistic about limitations
 
 **3. Offer Fallback Options**
-   - Every 2 turns, offer escalation option
    - Explain what would help: missing evidence, expertise needed, dependencies required
    - Suggest: {suggestion}
 
 **4. Continue Investigation**
-   - DON'T give up or stop investigating
    - Work within limitations
    - Provide best-effort analysis with caveats
    - Maintain working conclusion with honest confidence
 
-**Degraded Mode Types:**
-- **NO_PROGRESS**: Stuck for 3+ turns without advancement
+**Limitation Types (genuine external blockers only):**
 - **LIMITED_DATA**: Missing critical evidence
 - **HYPOTHESIS_DEADLOCK**: All hypotheses inconclusive
 - **EXTERNAL_DEPENDENCY**: Blocked by permissions, access, other teams
-- **OTHER**: Other investigation barriers
 
-**Example Response Format:**
-
-"⚠️ **Degraded Mode** ({mode_type})
-
-Based on limited evidence, I can only speculate (35% confidence) that this might
-be a memory leak. However, without production logs, this is educated guesswork.
-
-**Caveat**: Missing critical evidence limits my analysis. With production logs
-and metrics, I could validate this theory and increase confidence significantly.
-
-**Options**:
-1. Proceed with this theory (35% confidence) and test the solution
-2. Escalate to team with production access for better diagnosis
-3. Wait until you can provide the needed evidence
-
-What would you prefer?"
-
-**REMEMBER**: Still investigating! Just being transparent about limitations."""
+Note: NO_PROGRESS is NOT a limitation — it produces a gentle reminder
+instead of degraded mode. FaultMaven is a copilot; the user sets the pace."""
 
 
 def _build_output_format_section() -> str:
@@ -1461,27 +1456,32 @@ YOUR TASK
 ...
 ```
 
-### Example 3: INVESTIGATING Template (With Degraded Mode)
+### Example 3: INVESTIGATING Template (With Investigation Limitation)
 
 ```
 [... standard header and state ...]
 
 ═══════════════════════════════════════════════════════════
-⚠️ DEGRADED INVESTIGATION MODE
+⚠️ INVESTIGATION LIMITATION
 ═══════════════════════════════════════════════════════════
 
-**Type**: critical_evidence_missing
-**Confidence Cap**: 50%
+**Type**: limited_data
 **Reason**: User unable to provide production logs (access restricted)
 
 **BEHAVIOR CHANGES:**
 
-**1. Confidence Capping**
-   - ALL hypotheses/conclusions MUST be ≤ 50%
-   - Cannot exceed cap even with supporting evidence
-   - Cap reflects fundamental limitation, not evidence quality
+**1. Transparent Communication**
+   - Be honest about confidence levels based on available evidence
+   - Explain what's missing and how it limits your analysis
 
-[... rest of degraded mode instructions ...]
+**2. Evidence-Based Confidence**
+   - Assess confidence based ONLY on available evidence
+
+[... rest of limitation-aware instructions ...]
+
+Note: This only applies to genuine external blockers (LIMITED_DATA,
+HYPOTHESIS_DEADLOCK, EXTERNAL_DEPENDENCY). NO_PROGRESS produces a
+gentle reminder instead — FaultMaven is a copilot, not a taskmaster.
 
 ═══════════════════════════════════════════════════════════
 YOUR TASK

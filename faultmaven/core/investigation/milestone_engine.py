@@ -1427,15 +1427,25 @@ class MilestoneEngine:
                 # the LLM in the next turn via build_investigation_context()
                 if breakout_action.prompt_injection:
                     current_feedback = metadata.get("system_feedback", "") or ""
-                    breakout_msg = (
-                        f"STAGNATION RECOVERY: {breakout_action.prompt_injection}"
-                    )
+                    # Gentle reminders don't need an alarming prefix
+                    if breakout_action.action == "gentle_reminder":
+                        breakout_msg = breakout_action.prompt_injection
+                    else:
+                        breakout_msg = (
+                            f"STAGNATION RECOVERY: {breakout_action.prompt_injection}"
+                        )
                     metadata["system_feedback"] = (
                         f"{current_feedback}\n{breakout_msg}".strip()
                     )
-                logger.info(
+                log_level = (
+                    logging.DEBUG
+                    if breakout_action.action == "gentle_reminder"
+                    else logging.INFO
+                )
+                logger.log(
+                    log_level,
                     f"Stagnation detected: {stagnation_type.value}. "
-                    f"Action: {breakout_action.action}"
+                    f"Action: {breakout_action.action}",
                 )
 
             # Step 5.9b: Wire validation errors into system_feedback (G9 + G11)
@@ -2543,6 +2553,9 @@ class MilestoneEngine:
                     reasoning=link.reasoning,
                     stance_confidence=link.stance_confidence,
                 )
+                metadata["hypothesis_evidence_links_applied"] = (
+                    metadata.get("hypothesis_evidence_links_applied", 0) + 1
+                )
 
         # 5. Solutions
         if hasattr(updates, "solutions_to_add") and updates.solutions_to_add:
@@ -3207,8 +3220,15 @@ class MilestoneEngine:
         return actions[:5]  # Limit to 5
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
-        """Check if any meaningful status update was made."""
-        keys_to_check = [
+        """Check if any meaningful investigative activity occurred.
+
+        Progress includes structural artifacts (milestones, evidence, hypotheses)
+        AND active investigative behaviors (requesting data, testing hypotheses,
+        linking evidence). A skilled troubleshooter gathering information IS
+        making progress.
+        """
+        # Structural progress: new artifacts created or status changed
+        structural_keys = [
             "milestones_completed",
             "evidence_added",
             "hypotheses_generated",
@@ -3216,11 +3236,24 @@ class MilestoneEngine:
             "solutions_proposed",
             "files_uploaded",
         ]
-        for key in keys_to_check:
+        for key in structural_keys:
             if metadata.get(key):
                 return True
 
         if metadata.get("status_transitioned"):
+            return True
+
+        # Investigative progress: active diagnostic behaviors
+        outcome = metadata.get("outcome")
+        if outcome in (
+            TurnOutcome.DATA_REQUESTED,
+            TurnOutcome.HYPOTHESIS_TESTED,
+            TurnOutcome.DATA_PROVIDED,
+        ):
+            return True
+
+        # Hypothesis-evidence linking counts as progress
+        if metadata.get("hypothesis_evidence_links_applied"):
             return True
 
         return False

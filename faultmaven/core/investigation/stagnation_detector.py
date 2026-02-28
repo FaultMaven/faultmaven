@@ -3,7 +3,7 @@
 Detects investigation stalls and anchoring patterns to prevent getting stuck.
 
 Stagnation Patterns Detected:
-1. NO_PROGRESS - No milestones completed in N consecutive turns
+1. NO_PROGRESS - No investigative progress in N consecutive turns (default 5)
 2. HYPOTHESIS_ANCHORING - Same hypothesis category tested repeatedly without success
 3. ACTION_LOOP - Same actions repeated without progress
 4. HYPOTHESIS_DEADLOCK - All hypotheses inconclusive
@@ -21,14 +21,11 @@ Usage:
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional, Set
+from typing import List, Optional
 
 from faultmaven.modules.case.contracts import (
     Case,
-    DegradedMode,
-    DegradedModeType,
     HypothesisCategory,
     HypothesisStatus,
 )
@@ -64,7 +61,7 @@ class StagnationDetector:
 
     def __init__(
         self,
-        no_progress_threshold: int = 3,
+        no_progress_threshold: int = 5,
         category_anchoring_threshold: int = 4,
         action_loop_threshold: int = 5,
     ):
@@ -72,7 +69,7 @@ class StagnationDetector:
         Initialize stagnation detector with thresholds.
 
         Args:
-            no_progress_threshold: Turns without progress before triggering (default 3)
+            no_progress_threshold: Turns without progress before triggering (default 5)
             category_anchoring_threshold: Failed hypotheses in same category (default 4)
             action_loop_threshold: Turns with same actions repeated (default 5)
         """
@@ -96,10 +93,10 @@ class StagnationDetector:
         Returns:
             StagnationType if stagnating, None otherwise
         """
-        # Pattern 1: No milestones completed in N turns
+        # Pattern 1: No investigative progress in N turns
         if case.turns_without_progress >= self.no_progress_threshold:
-            logger.warning(
-                f"Stagnation detected: no progress for {case.turns_without_progress} turns"
+            logger.info(
+                f"No investigative progress for {case.turns_without_progress} turns — gentle reminder will be injected"
             )
             return StagnationType.NO_PROGRESS
 
@@ -312,29 +309,20 @@ class StagnationBreaker:
 
     def _handle_no_progress(self, case: Case) -> BreakoutAction:
         """
-        Handle no progress in 3+ turns.
+        Handle no investigative progress in 5+ turns.
 
-        Enters degraded mode and suggests user intervention.
+        Does NOT enter degraded mode. FaultMaven is a copilot — the user
+        decides the pace. If they're chatting or exploring tangents, we
+        patiently serve them while keeping the diagnostic thread visible.
         """
-        # Update case with degraded mode
-        if case.degraded_mode is None:
-            case.degraded_mode = DegradedMode(
-                mode_type=DegradedModeType.NO_PROGRESS,
-                reason=f"No progress in {case.turns_without_progress} turns",
-                entered_at=datetime.now(timezone.utc),
-                attempted_actions=[
-                    f"Processed {case.current_turn} turns",
-                    f"Collected {len(case.evidence)} evidence items",
-                    f"Generated {len(case.hypotheses)} hypotheses",
-                ],
-            )
-
         return BreakoutAction(
-            action="enter_degraded_mode",
-            message="Investigation not progressing. Offering alternative approaches.",
-            prompt_injection="The investigation has not made progress in several turns. "
-            "Ask the user for clarification or additional information. "
-            "Consider offering to escalate or try a different approach.",
+            action="gentle_reminder",
+            message="Patiently continuing investigation at user's pace.",
+            prompt_injection=(
+                "Patiently answer the user's immediate question. "
+                "If appropriate, gently remind them of the next diagnostic step, "
+                "but do not force an escalation."
+            ),
         )
 
     def _handle_anchoring(self, case: Case) -> BreakoutAction:

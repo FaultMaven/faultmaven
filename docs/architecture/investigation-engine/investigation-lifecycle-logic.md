@@ -1253,25 +1253,16 @@ async def record_turn(
     solutions_count_after = len(case.solutions)
     solutions_proposed = solutions_count_after - solutions_count_before
 
-    # Determine if progress made
-    progress_made = (
-        len(milestones_completed) > 0 or
-        len(evidence_added) > 0 or
-        hypotheses_generated > 0 or  # NEW: Generating hypotheses is progress
-        any(h.status == HypothesisStatus.VALIDATED for h in case.hypotheses.values()) or
-        solutions_proposed > 0  # NEW: Proposing solutions is progress
-    )
-
-    # RATIONALE:
-    # Hypothesis generation and solution proposals represent active agent work.
-    # Only increment turns_without_progress when TRULY stuck (no actions taken).
-    # Otherwise, waiting for user evidence would trigger premature degraded mode.
+    # Determine if progress made (broadened definition)
+    progress_made = _check_if_progress_made(metadata)
 
     # ============================================================
     # PROGRESS DEFINITION (for turns_without_progress counter)
     # ============================================================
     #
     # Progress IS made when ANY of the following occur:
+    #
+    # STRUCTURAL ARTIFACTS:
     # - Stage-gate milestone transitions False → True (e.g., solution_accepted)
     # - Progress indicator transitions False → True (e.g., symptom_verified)
     # - Evidence is added to the case
@@ -1279,16 +1270,24 @@ async def record_turn(
     # - Hypothesis status changes (ACTIVE → VALIDATED/REFUTED)
     # - ProposedAction is created (agent proposed something actionable)
     # - User confirms problem statement or path selection
+    # - Files uploaded
+    # - Status transitioned
+    #
+    # INVESTIGATIVE BEHAVIORS (a skilled troubleshooter gathering data IS progressing):
+    # - TurnOutcome.DATA_REQUESTED — agent asking for specific data
+    # - TurnOutcome.HYPOTHESIS_TESTED — hypothesis evaluated this turn
+    # - TurnOutcome.DATA_PROVIDED — user responded with requested data
+    # - hypothesis_evidence_links_applied > 0 — evidence linked to hypotheses
     #
     # Progress is NOT made when:
-    # - Agent only asks clarifying questions (no state advancement)
+    # - Pure CONVERSATION with no structural or investigative activity
     # - Agent repeats previous information
     # - Conversation is off-topic or circular
-    # - User provides information that doesn't advance investigation
     #
-    # IMPORTANT: Waiting for user to provide requested evidence does NOT
-    # count against progress. The counter only increments when the agent
-    # fails to take productive action or generate useful hypotheses.
+    # RATIONALE: The old definition only counted structural artifacts, causing
+    # premature stagnation detection when the agent was actively investigating
+    # (requesting data, testing hypotheses, linking evidence). A copilot that
+    # is actively gathering information should not be penalized.
 
     # Create turn record
     turn = TurnProgress(
@@ -1309,11 +1308,16 @@ async def record_turn(
     else:
         case.turns_without_progress += 1
 
-    # Escalate if stuck
-    if case.turns_without_progress >= 3:
-        enter_degraded_mode(case, DegradedModeType.NO_PROGRESS)
+    # Stagnation detection (threshold: 5 turns)
+    # NOTE: NO_PROGRESS no longer creates DegradedMode. The stagnation breaker
+    # emits a gentle_reminder BreakoutAction — a patient prompt injection that
+    # nudges the LLM toward the next diagnostic step without lowering confidence
+    # or suggesting escalation. FaultMaven is a copilot; the user decides the pace.
+    #
+    # DegradedMode is reserved for genuine external blockers (LIMITED_DATA,
+    # HYPOTHESIS_DEADLOCK, EXTERNAL_DEPENDENCY) where the agent truly cannot proceed.
 
-    # Exit degraded mode if progress resumes
+    # Exit degraded mode if progress resumes (for genuine blockers)
     check_degraded_mode_exit(case, progress_made)
 
     return turn
@@ -1323,14 +1327,11 @@ def check_degraded_mode_exit(case: Case, progress_made: bool):
     """
     Exit degraded mode when progress resumes.
 
-    Entry: turns_without_progress >= 3
-    Exit: progress_made = True on any subsequent turn
+    Only applies to genuine external blockers (LIMITED_DATA, HYPOTHESIS_DEADLOCK,
+    EXTERNAL_DEPENDENCY). NO_PROGRESS never creates DegradedMode.
 
-    DEGRADED MODE RECOVERY:
-    - Agent enters degraded mode after 3 turns without progress
-    - Agent exits automatically when progress resumes
-    - Exit condition: Any milestone, evidence, hypothesis, or solution activity
-    - Recovery resets turns_without_progress counter to 0
+    Exit condition: progress_made = True on any subsequent turn.
+    Recovery resets turns_without_progress counter to 0.
     """
     if case.degraded_mode and case.degraded_mode.is_active:
         if progress_made:

@@ -244,8 +244,8 @@ def _determine_investigation_momentum(
     - LOW: Little progress, confidence plateaued
     - BLOCKED: Stuck for multiple turns
     """
-    # Check for blocked state (3+ turns without progress)
-    if case.turns_without_progress >= 3:
+    # Check for blocked state (5+ turns without investigative progress)
+    if case.turns_without_progress >= 5:
         return InvestigationMomentum.BLOCKED
 
     # Check for degraded mode
@@ -270,7 +270,7 @@ def _determine_investigation_momentum(
         return InvestigationMomentum.HIGH
     elif total_progress >= 1:
         return InvestigationMomentum.MODERATE
-    elif case.turns_without_progress >= 2:
+    elif case.turns_without_progress >= 3:
         return InvestigationMomentum.LOW
     else:
         return InvestigationMomentum.MODERATE

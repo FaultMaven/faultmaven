@@ -84,8 +84,8 @@ class TestNoProgressDetection:
     """Test NO_PROGRESS stagnation detection."""
 
     def test_no_progress_detected_after_threshold(self, detector, base_case):
-        """Should detect NO_PROGRESS after 3 turns without progress."""
-        base_case.turns_without_progress = 3
+        """Should detect NO_PROGRESS after 5 turns without progress."""
+        base_case.turns_without_progress = 5
 
         result = detector.detect_stagnation(base_case)
 
@@ -93,7 +93,7 @@ class TestNoProgressDetection:
 
     def test_no_stagnation_below_threshold(self, detector, base_case):
         """Should not detect stagnation below threshold."""
-        base_case.turns_without_progress = 2
+        base_case.turns_without_progress = 4
 
         result = detector.detect_stagnation(base_case)
 
@@ -284,12 +284,15 @@ class TestHypothesisDeadlockDetection:
 class TestStagnationBreaker:
     """Test StagnationBreaker recovery actions."""
 
-    def test_no_progress_enters_degraded_mode(self, breaker, base_case):
-        """NO_PROGRESS should trigger degraded mode entry."""
+    def test_no_progress_sends_gentle_reminder(self, breaker, base_case):
+        """NO_PROGRESS should send a gentle reminder, not enter degraded mode."""
         action = breaker.break_stagnation(base_case, StagnationType.NO_PROGRESS)
 
-        assert action.action == "enter_degraded_mode"
-        assert base_case.degraded_mode is not None
+        assert action.action == "gentle_reminder"
+        assert base_case.degraded_mode is None  # No degraded mode created
+        assert "patiently" in action.prompt_injection.lower()
+        # Should explicitly say NOT to force escalation
+        assert "do not force" in action.prompt_injection.lower()
 
     def test_anchoring_forces_alternative_category(self, breaker, base_case):
         """HYPOTHESIS_ANCHORING should force alternative category."""
@@ -341,6 +344,21 @@ class TestStagnationBreaker:
         # Check that hypotheses were retired
         for hyp in base_case.hypotheses.values():
             assert hyp.status == HypothesisStatus.RETIRED
+
+    def test_no_progress_prompt_is_patient(self, breaker, base_case):
+        """NO_PROGRESS prompt should be patient and non-intrusive."""
+        action = breaker.break_stagnation(base_case, StagnationType.NO_PROGRESS)
+
+        prompt_lower = action.prompt_injection.lower()
+        # Should be patient and answer questions
+        assert "patiently" in prompt_lower
+        assert "question" in prompt_lower
+        # Should gently remind about next steps
+        assert "gently" in prompt_lower or "diagnostic step" in prompt_lower
+        # Should NOT contain any aggressive language
+        assert "⚠️" not in action.prompt_injection
+        assert "degraded" not in prompt_lower
+        assert "force" not in prompt_lower or "do not force" in prompt_lower
 
 
 class TestStagnationSummary:

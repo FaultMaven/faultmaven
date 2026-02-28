@@ -252,7 +252,7 @@ Extended diagnosis proceeds:
 5. **New solution proposal** — Derived from the new hypothesis, with specific commands/steps
 6. **User complies → verify again** (loop back to primary path)
 
-Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers via **degraded mode** — when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). In practice, this typically occurs after 2-3 solution cycles, but the threshold is capability-based, not a fixed counter.
+Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). For genuine external blockers (missing data, all hypotheses deadlocked, external dependencies), the system enters limitation-aware mode. For simple lack of progress, the system injects a gentle reminder to nudge the next diagnostic step without lowering confidence — FaultMaven is a copilot; the user decides the pace.
 
 **Evidence types accepted**:
 - `solution_evidence` — data showing whether the fix worked (post-fix metrics, logs, user confirmation)
@@ -295,7 +295,7 @@ The agent can perform all necessary diagnostic work within TREATMENT. The key di
 
 **Practical note**: Most investigations resolve on the first fix attempt. Extended diagnosis is a capability for the minority of cases where iteration is needed — it should be handled correctly when it occurs but is not the primary TREATMENT workflow.
 
-**Escalation**: The agent enters degraded mode when it has no more viable options — it cannot formulate a new hypothesis or identify new evidence to request. The principle: do not repeat a task without new input. In degraded mode, the agent suggests escalation to a specialist or deeper investigation, providing a structured handoff summary (problem, evidence collected, hypotheses explored, solutions attempted and their outcomes).
+**Escalation**: The agent suggests escalation when it has no more viable options — it cannot formulate a new hypothesis or identify new evidence to request. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the system enters limitation-aware mode and offers escalation with a structured handoff summary (problem, evidence collected, hypotheses explored, solutions attempted and their outcomes). Simple lack of progress (5+ turns without investigative activity) receives only a gentle reminder — not degraded mode.
 
 ---
 
@@ -982,7 +982,7 @@ new.action_attempts = []
 | TERMINAL template | Unchanged |
 | Hypothesis lifecycle and evidence linking | Unchanged |
 | Knowledge base pre-check and fast-track | Unchanged |
-| Stagnation detection and degraded mode | Unchanged |
+| Stagnation detection and progress tracking | Updated — broadened progress definition, NO_PROGRESS no longer triggers degraded mode |
 | Evidence creation pipeline (classify → create) | Unchanged |
 | Preprocessing service (Tier 0+1) | Unchanged |
 | Input sanitization and token budget | Unchanged |
@@ -1000,7 +1000,7 @@ All open questions from the initial draft have been resolved.
 
 2. **Mitigation always returns to DIAGNOSIS for RCA.** After mitigation is verified, the system directs the user back to root cause analysis. DIAGNOSIS resumes with hypothesis formulation and verification informed by what was learned during mitigation. The user can always manually resolve or close the case via UI at any point (this is a UI-level override, not a system flow path), but the system does not offer a "mitigation-only resolution" path. The app pushes toward RCA.
 
-3. **Escalation via degraded mode, not a fixed counter.** The agent enters degraded mode when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. If the agent cannot formulate a new hypothesis or identify new evidence to request, it enters degraded mode and suggests escalation. This aligns with the extended diagnosis design (new evidence is required; if none can be identified, the agent has exhausted its options).
+3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the system enters limitation-aware mode. Simple lack of progress (5+ turns) receives a gentle reminder — FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible. DegradedMode is reserved for situations where the agent truly cannot proceed without external intervention.
 
 4. **MITIGATION is iterative until verified.** Mitigation is not assumed to be one-shot. It is dynamic, interactive, and potentially iterative — multiple attempts may be needed until the user verifies the situation is stabilized. The MITIGATION stage stays active until verified, supporting multiple mitigation actions within a single MITIGATION detour. Re-entry to MITIGATION from DIAGNOSIS (a second detour) is also supported — the mitigation_accepted/mitigation_verified flags reset when returning to DIAGNOSIS, allowing a new mitigation cycle if needed.
 

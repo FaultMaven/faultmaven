@@ -1499,17 +1499,27 @@ def detect_evidence_anchoring(case: Case) -> Optional[str]:
 
 ---
 
-## 4. Degraded Mode
+## 4. Degraded Mode (Genuine External Blockers Only)
+
+> **Important**: `NO_PROGRESS` no longer creates a `DegradedMode` object. After 5+ turns
+> without investigative progress, the stagnation breaker emits a `gentle_reminder`
+> BreakoutAction — a patient prompt injection that nudges the LLM toward the next
+> diagnostic step without lowering confidence or suggesting escalation. FaultMaven is
+> a copilot; the user decides the pace.
+>
+> `DegradedMode` is reserved for genuine external blockers where the agent truly
+> cannot proceed: `LIMITED_DATA`, `HYPOTHESIS_DEADLOCK`, `EXTERNAL_DEPENDENCY`.
 
 ```python
 class DegradedMode(BaseModel):
     """
-    Investigation is blocked or struggling.
-    Agent needs to offer fallback options.
+    Investigation blocked by genuine external factors.
 
-    Exit behavior: Degraded mode is automatically exited when progress_made=True
-    on any subsequent turn. The engine sets exited_at and clears degraded_mode
-    on the case when progress resumes.
+    Used ONLY for situations where the agent cannot proceed without external
+    intervention (missing data, all hypotheses deadlocked, external dependencies).
+    NOT used for simple lack of progress — that receives a gentle reminder instead.
+
+    Exit behavior: Automatically exited when progress_made=True on any subsequent turn.
     """
 
     mode_type: DegradedModeType
@@ -1553,50 +1563,27 @@ class DegradedMode(BaseModel):
         return self.exited_at is None
 
 class DegradedModeType(str, Enum):
-    NO_PROGRESS = "no_progress"
+    NO_PROGRESS = "no_progress"      # Retained for backward compat; no longer creates DegradedMode
     LIMITED_DATA = "limited_data"
     HYPOTHESIS_DEADLOCK = "hypothesis_deadlock"
     EXTERNAL_DEPENDENCY = "external_dependency"
-    OTHER = "other"  # Unexpected degradation reason
-
-def should_enter_degraded_mode(case: Case) -> Optional[DegradedModeType]:
-    """Determine if should enter degraded mode"""
-
-    if case.turns_without_progress >= 3:
-        return DegradedModeType.NO_PROGRESS
-
-    if len(case.hypotheses) > 0:
-        all_inconclusive = all(
-            h.status == HypothesisStatus.INCONCLUSIVE
-            for h in case.hypotheses.values()
-        )
-        if all_inconclusive:
-            return DegradedModeType.HYPOTHESIS_DEADLOCK
-
-    return None
-
+    OTHER = "other"
 
 def check_degraded_mode_exit(case: Case, progress_made: bool) -> bool:
     """
-    Exit degraded mode when progress resumes (canonical implementation).
+    Exit degraded mode when progress resumes.
 
-    Called after each turn. If progress was made and case is in degraded mode,
-    sets exited_at, records exit_reason, clears degraded_mode, and resets
-    turns_without_progress counter.
+    Only applies to genuine external blockers (LIMITED_DATA, HYPOTHESIS_DEADLOCK,
+    EXTERNAL_DEPENDENCY). NO_PROGRESS never creates DegradedMode.
 
-    Entry condition: turns_without_progress >= 3
-    Exit condition: progress_made = True on any subsequent turn
-    Progress = ANY milestone, evidence, hypothesis, or solution activity.
-
-    See also: error-handling-and-recovery.md for stagnation detection patterns.
-
-    Returns True if degraded mode was exited.
+    Exit condition: progress_made = True on any subsequent turn.
+    Recovery resets turns_without_progress counter to 0.
     """
     if progress_made and case.degraded_mode is not None:
         case.degraded_mode.exited_at = datetime.now(timezone.utc)
         case.degraded_mode.exit_reason = "Progress resumed"
         case.degraded_mode = None
-        case.turns_without_progress = 0  # Reset counter on recovery
+        case.turns_without_progress = 0
         return True
     return False
 ```

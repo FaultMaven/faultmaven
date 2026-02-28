@@ -581,6 +581,36 @@ Why: [diagnostic value]"
 1. ALWAYS ask for the result: "Let me know what happens after you try that"
 2. If partial success, explain WHY and what it means for root cause
 3. Suggest the next diagnostic step based on the outcome
+
+**REFINEMENT AND CLARIFICATION:**
+
+Your understanding of the problem is not fixed — it MUST evolve as new evidence arrives.
+
+1. **Refine the Problem Statement**
+   - If new evidence fundamentally changes the nature of the problem, update the
+     problem statement to reflect the new reality. The original description may have
+     been based on incomplete information.
+   - Example: User reports "database is slow" but evidence reveals the application
+     server is running out of memory → update the problem statement accordingly.
+
+2. **Challenge Your Own Hypotheses**
+   - When new evidence contradicts an active hypothesis, refute it explicitly
+     rather than forcing the new data to fit.
+   - Re-examine evidence you've already collected through the lens of new information.
+   - Ask yourself: "Does this new data change what I thought was happening?"
+
+3. **Ask Clarifying Questions on Inconsistencies**
+   - When new data contradicts previous data or the current working theory, prioritize
+     asking a clarifying question BEFORE proceeding with analysis.
+   - Example: "The logs you just shared show the service was healthy at 2:00 PM, but
+     earlier evidence showed errors at that time. Has the environment changed, or are
+     these from different instances?"
+   - Never silently discard contradictory evidence — surface it to the user.
+
+4. **Substantiate Existing Opinions**
+   - When new evidence supports an existing hypothesis or problem statement, explicitly
+     note the reinforcement: "This confirms what we suspected — [evidence] supports
+     the theory that [hypothesis]."
 """
 
 MITIGATION_INSTRUCTIONS = """
@@ -732,6 +762,34 @@ If a temporary workaround was applied during MITIGATION stage:
 - Remind the user to revert/remove the temporary fix now that the permanent
   solution is in place
 - "Now that the root cause is fixed, you should [revert the temporary workaround]"
+
+**REFINEMENT AND CLARIFICATION:**
+
+Your understanding of the problem is not fixed — it MUST evolve as new evidence arrives,
+even during the treatment stage.
+
+1. **Refine the Problem Statement**
+   - If verification evidence reveals the root cause was different than diagnosed,
+     update the problem statement. A failed fix is evidence — it tells you the
+     original diagnosis was incomplete or wrong.
+
+2. **Challenge Past Assumptions**
+   - When a fix fails, don't just try harder — question WHETHER the diagnosis was
+     correct. Re-examine the evidence chain that led to the failed solution.
+   - Ask yourself: "What would have to be true for this fix to have worked?
+     What does its failure tell me?"
+
+3. **Ask Clarifying Questions on Inconsistencies**
+   - When post-fix data contradicts expected outcomes, ask the user before
+     assuming the fix failed entirely.
+   - Example: "The error rate dropped by 80% but didn't fully resolve. Was there
+     a second change deployed around the same time, or is this a partial fix?"
+   - Never silently discard contradictory evidence — surface it to the user.
+
+4. **Substantiate When Evidence Confirms**
+   - When fix results match expectations, explicitly connect the dots: "The error
+     rate returned to baseline after the config change, which confirms that
+     [hypothesis] was the root cause."
 """
 
 # =============================================================================
@@ -861,7 +919,11 @@ def get_fallback_prompt_for_case(
 
 def get_degraded_mode_instructions(case: Case) -> str:
     """
-    Generate degraded mode instructions when investigation is blocked or struggling.
+    Generate degraded mode instructions when investigation is genuinely blocked.
+
+    NO_PROGRESS no longer triggers degraded mode — FaultMaven is a copilot
+    that follows the user's pace. Degraded mode is reserved for genuine
+    external constraints (data corruption, external dependencies, deadlock).
 
     Reference: Prompt Engineering Guide Section 4.6 (lines 1248-1327)
     """
@@ -869,6 +931,23 @@ def get_degraded_mode_instructions(case: Case) -> str:
         return ""
 
     mode = case.degraded_mode
+
+    # NO_PROGRESS should never reach here (stagnation breaker no longer
+    # creates DegradedMode for it), but guard defensively
+    if mode.mode_type.value == "no_progress":
+        return ""
+
+    return _get_limitation_aware_instructions(case, mode)
+
+
+def _get_limitation_aware_instructions(case: Case, mode) -> str:
+    """
+    Generate limitation-aware instructions for non-NO_PROGRESS degraded modes.
+
+    These modes (DATA_BLOCKER, LIMITED_DATA, HYPOTHESIS_DEADLOCK,
+    EXTERNAL_DEPENDENCY) represent genuine external constraints where
+    communicating limitations is appropriate.
+    """
     mode_type_display = mode.mode_type.value.replace("_", " ").title()
 
     # Map mode types to specific guidance
@@ -885,9 +964,6 @@ def get_degraded_mode_instructions(case: Case) -> str:
         suggestion = (
             "Try a different diagnostic approach or escalate to deeper investigation"
         )
-    elif mode.mode_type.value == "no_progress":
-        limitation = "Investigation has not advanced in several turns"
-        suggestion = "Clarify what information would unblock progress"
     elif mode.mode_type.value == "external_dependency":
         limitation = "Waiting on external team or resource"
         suggestion = "Provide interim analysis or alternative approaches"
