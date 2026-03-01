@@ -2635,6 +2635,10 @@ class MilestoneEngine:
         # (Pydantic validation requires description to be set before INVESTIGATING status)
         if case.inquiry.proposed_problem_statement:
             case.description = case.inquiry.proposed_problem_statement
+        elif not case.description:
+            # Manual flow: user may transition before agent proposes a statement.
+            # Use case title as fallback to satisfy Pydantic validation.
+            case.description = case.title or "Investigation requested by user"
 
         # Change status (Pydantic validation happens here)
         case.status = CaseStatus.INVESTIGATING
