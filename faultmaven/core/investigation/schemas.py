@@ -447,7 +447,8 @@ class EvidenceQualityIssue(BaseModel):
 class MissingCriticalData(BaseModel):
     """
     Proactive detection of critical data blockers.
-    Triggers immediate degraded mode entry instead of waiting 3 turns.
+    Flags data quality issues to the agent via system feedback so it can
+    communicate limitations and suggest alternatives in its response.
 
     Reference: Prompt Engineering Guide Section 14 (lines 3316-3351)
     """
@@ -460,9 +461,6 @@ class MissingCriticalData(BaseModel):
     suggested_alternatives: Optional[List[str]] = Field(
         default_factory=list,
         description="Alternative data sources or approaches user could try",
-    )
-    triggers_degraded_mode: bool = Field(
-        True, description="Whether this should trigger immediate degraded mode"
     )
 
 
@@ -606,7 +604,7 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
         missing_critical_data: Optional[MissingCriticalData] = Field(
             None,
-            description="Proactive blocker detection. Triggers immediate degraded mode.",
+            description="Proactive blocker detection. Flags data quality issues via system feedback.",
         )
         evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
             default_factory=list,
@@ -632,7 +630,7 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         missing_critical_data: Optional[MissingCriticalData] = Field(
             None,
-            description="Proactive blocker detection. Triggers immediate degraded mode.",
+            description="Proactive blocker detection. Flags data quality issues via system feedback.",
         )
         evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
             default_factory=list,
@@ -695,7 +693,7 @@ class InvestigationResponse_General(BaseInteractionResponse):
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
         missing_critical_data: Optional[MissingCriticalData] = Field(
             None,
-            description="Proactive blocker detection. Triggers immediate degraded mode.",
+            description="Proactive blocker detection. Flags data quality issues via system feedback.",
         )
         evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
             default_factory=list,

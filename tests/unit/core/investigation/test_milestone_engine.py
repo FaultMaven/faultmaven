@@ -314,16 +314,16 @@ class TestMilestoneEngine:
         assert "internal_reasoning" in errors[0].lower()
 
     @pytest.mark.asyncio
-    async def test_blocker_detection_triggers_degraded_mode(
+    async def test_blocker_detection_surfaces_system_feedback(
         self, mock_llm, mock_repo, base_case
     ):
-        """Test that missing_critical_data triggers immediate degraded mode"""
+        """Test that missing_critical_data surfaces as system_feedback, not degraded mode"""
         engine = MilestoneEngine(mock_llm, mock_repo)
 
         # Mock LLM response with blocker detection
         mock_response_content = json.dumps(
             {
-                "agent_response": "⚠️ Investigation limitations: Critical data is corrupted",
+                "agent_response": "Investigation limitations: Critical data is corrupted",
                 "state_updates": {
                     "missing_critical_data": {
                         "blocker_type": "data_corrupted",
@@ -334,7 +334,6 @@ class TestMilestoneEngine:
                         "suggested_alternatives": [
                             "Request logs from different source"
                         ],
-                        "triggers_degraded_mode": True,
                     },
                     "outcome": "conversation",
                 },
@@ -344,16 +343,12 @@ class TestMilestoneEngine:
 
         result = await engine.process_turn(base_case, "Check logs")
 
-        # Verify degraded mode entered
+        # Verify blocker surfaced as system_feedback in the turn record
         updated_case = result["case_updated"]
-        assert updated_case.degraded_mode is not None
-        assert updated_case.degraded_mode.is_active
-        assert updated_case.degraded_mode.mode_type.value == "data_blocker"
-        assert "Logs missing timestamps" in updated_case.degraded_mode.reason
-
-        metadata = result["metadata"]
-        # Degraded mode prevents progress
-        assert metadata["progress_made"] is False
+        last_turn = updated_case.turn_history[-1]
+        assert last_turn.system_feedback is not None
+        assert "Logs missing timestamps" in last_turn.system_feedback
+        assert "Cannot establish timeline" in last_turn.system_feedback
 
     @pytest.mark.asyncio
     async def test_evidence_quality_issues_logged(self, mock_llm, mock_repo, base_case):

@@ -44,7 +44,6 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    DegradedMode,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -537,7 +536,6 @@ class DatabaseCaseRepository(CaseRepository):
                 "investigation_strategy": case.investigation_strategy.value,
                 "has_working_conclusion": case.working_conclusion is not None,
                 "has_root_cause": case.root_cause_conclusion is not None,
-                "is_degraded": case.degraded_mode is not None,
                 "is_escalated": case.escalation_state is not None,
             }
 
@@ -900,11 +898,6 @@ class DatabaseCaseRepository(CaseRepository):
             if case.path_selection
             else None
         )
-        degraded_mode_json = (
-            json.dumps(case.degraded_mode.model_dump(mode="json"))
-            if case.degraded_mode
-            else None
-        )
         escalation_state_json = (
             json.dumps(case.escalation_state.model_dump(mode="json"))
             if case.escalation_state
@@ -945,7 +938,6 @@ class DatabaseCaseRepository(CaseRepository):
             working_conclusion=working_conclusion_json,
             root_cause_conclusion=root_cause_conclusion_json,
             path_selection=path_selection_json,
-            degraded_mode=degraded_mode_json,
             escalation_state=escalation_state_json,
             documentation=documentation_json,
             progress=progress_json,
@@ -974,7 +966,6 @@ class DatabaseCaseRepository(CaseRepository):
             model.root_cause_conclusion
         )
         path_selection = self._parse_path_selection(model.path_selection)
-        degraded_mode = self._parse_degraded_mode(model.degraded_mode)
         escalation_state = self._parse_escalation_state(model.escalation_state)
 
         # Extract fields from metadata
@@ -1064,7 +1055,6 @@ class DatabaseCaseRepository(CaseRepository):
             solutions=solutions,
             working_conclusion=working_conclusion,
             root_cause_conclusion=root_cause_conclusion,
-            degraded_mode=degraded_mode,
             escalation_state=escalation_state,
             documentation=documentation,
             created_at=self._ensure_tz_aware(model.created_at),
@@ -1207,16 +1197,6 @@ class DatabaseCaseRepository(CaseRepository):
             return None
         try:
             return PathSelection(**data)
-        except Exception:
-            return None
-
-    def _parse_degraded_mode(self, value: Optional[str]) -> Optional[DegradedMode]:
-        """Parse DegradedMode from JSON."""
-        data = self._parse_json(value)
-        if data is None:
-            return None
-        try:
-            return DegradedMode(**data)
         except Exception:
             return None
 

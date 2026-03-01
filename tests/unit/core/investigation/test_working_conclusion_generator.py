@@ -219,20 +219,6 @@ class TestProgressMetricsCalculation:
 
         assert metrics.investigation_momentum == InvestigationMomentum.BLOCKED
 
-    def test_blocked_momentum_with_degraded_mode(self, base_case):
-        """Should return BLOCKED momentum when in degraded mode."""
-        from faultmaven.modules.case.contracts import DegradedMode, DegradedModeType
-
-        base_case.degraded_mode = DegradedMode(
-            mode_type=DegradedModeType.NO_PROGRESS,
-            reason="Test degraded",
-            entered_at=datetime.now(timezone.utc),
-        )
-
-        metrics = calculate_progress_metrics(base_case, current_turn=1)
-
-        assert metrics.investigation_momentum == InvestigationMomentum.BLOCKED
-
 
 class TestEvidenceCompleteness:
     """Test evidence completeness calculation."""
@@ -301,17 +287,10 @@ class TestBlockedReasonsGeneration:
         assert len(metrics.blocked_reasons) > 0
         assert any("progress" in reason.lower() for reason in metrics.blocked_reasons)
 
-    def test_includes_degraded_mode_reason(self, base_case):
-        """Should include degraded mode reason when present."""
-        from faultmaven.modules.case.contracts import DegradedMode, DegradedModeType
-
+    def test_includes_stagnation_blocked_reason(self, base_case):
+        """Should include blocked reason when turns without progress exceeds threshold."""
         base_case.turns_without_progress = 5
-        base_case.degraded_mode = DegradedMode(
-            mode_type=DegradedModeType.NO_PROGRESS,
-            reason="Custom degraded reason",
-            entered_at=datetime.now(timezone.utc),
-        )
 
-        metrics = calculate_progress_metrics(base_case, current_turn=4)
+        metrics = calculate_progress_metrics(base_case, current_turn=6)
 
-        assert any("Custom degraded" in reason for reason in metrics.blocked_reasons)
+        assert any("progress" in reason.lower() for reason in metrics.blocked_reasons)

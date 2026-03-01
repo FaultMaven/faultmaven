@@ -76,20 +76,38 @@ class WorkingConclusionSummary(BaseModel):
 
 
 class InvestigationProgressSummary(BaseModel):
-    """Progress metrics for INVESTIGATING phase."""
+    """Progress metrics for INVESTIGATING phase.
 
-    milestones_completed: int = Field(
-        ge=0, description="Number of milestones completed"
+    Purely descriptive — all backward-looking facts, no speculative
+    forward-looking predictions. The frontend derives "what's next"
+    from current_stage if needed.
+    """
+
+    completed_indicators: List[str] = Field(
+        default_factory=list,
+        description="Completed progress indicators (e.g. symptom_verified, scope_assessed)",
     )
 
-    total_milestones: int = Field(ge=0, description="Total milestones (always 8)")
-
-    completed_milestone_ids: List[str] = Field(
-        default_factory=list, description="IDs of completed milestones"
+    completed_stage_gates: List[str] = Field(
+        default_factory=list,
+        description="Completed stage-gate milestones (e.g. mitigation_accepted, solution_verified)",
     )
 
     current_stage: InvestigationStage = Field(
-        description="Current stage: UNDERSTANDING | DIAGNOSING | RESOLVING"
+        description="Current stage: DIAGNOSIS | MITIGATION | TREATMENT"
+    )
+
+    turns_without_progress: int = Field(
+        default=0,
+        description="Consecutive turns without milestone, evidence, or hypothesis progress",
+    )
+
+    total_evidence: int = Field(
+        default=0, ge=0, description="Total evidence items collected"
+    )
+
+    active_hypotheses: int = Field(
+        default=0, ge=0, description="Number of hypotheses currently being tested"
     )
 
 
@@ -424,7 +442,8 @@ class CaseUIResponse_Investigating(BaseModel):
     )
 
     degraded_mode: bool = Field(
-        default=False, description="Whether investigation is in degraded mode"
+        default=False,
+        description="Deprecated: always False. DegradedMode has been removed.",
     )
 
     # ============================================================

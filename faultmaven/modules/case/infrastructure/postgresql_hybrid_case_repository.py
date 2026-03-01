@@ -31,7 +31,6 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    DegradedMode,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -868,14 +867,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     status, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion, path_selection, degraded_mode,
+                    root_cause_conclusion, path_selection,
                     escalation_state, documentation, progress, metadata
                 ) VALUES (
                     :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
                     :status, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :inquiry::jsonb, :problem_verification::jsonb, :working_conclusion::jsonb,
-                    :root_cause_conclusion::jsonb, :path_selection::jsonb, :degraded_mode::jsonb,
+                    :root_cause_conclusion::jsonb, :path_selection::jsonb,
                     :escalation_state::jsonb, :documentation::jsonb, :progress::jsonb, :metadata::jsonb
                 )
                 ON CONFLICT (case_id) DO UPDATE SET
@@ -897,7 +896,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     working_conclusion = EXCLUDED.working_conclusion,
                     root_cause_conclusion = EXCLUDED.root_cause_conclusion,
                     path_selection = EXCLUDED.path_selection,
-                    degraded_mode = EXCLUDED.degraded_mode,
                     escalation_state = EXCLUDED.escalation_state,
                     documentation = EXCLUDED.documentation,
                     progress = EXCLUDED.progress,
@@ -911,14 +909,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     status, closure_reason, current_turn, turns_without_progress,
                     created_at, updated_at, last_activity_at, resolved_at, closed_at,
                     inquiry, problem_verification, working_conclusion,
-                    root_cause_conclusion, path_selection, degraded_mode,
+                    root_cause_conclusion, path_selection,
                     escalation_state, documentation, progress, metadata
                 ) VALUES (
                     :case_id, :user_id, :organization_id, :title, :description, :investigation_strategy,
                     :status, :closure_reason, :current_turn, :turns_without_progress,
                     :created_at, :updated_at, :last_activity_at, :resolved_at, :closed_at,
                     :inquiry, :problem_verification, :working_conclusion,
-                    :root_cause_conclusion, :path_selection, :degraded_mode,
+                    :root_cause_conclusion, :path_selection,
                     :escalation_state, :documentation, :progress, :metadata
                 )
                 ON CONFLICT (case_id) DO UPDATE SET
@@ -940,7 +938,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     working_conclusion = EXCLUDED.working_conclusion,
                     root_cause_conclusion = EXCLUDED.root_cause_conclusion,
                     path_selection = EXCLUDED.path_selection,
-                    degraded_mode = EXCLUDED.degraded_mode,
                     escalation_state = EXCLUDED.escalation_state,
                     documentation = EXCLUDED.documentation,
                     progress = EXCLUDED.progress,
@@ -984,11 +981,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 "path_selection": (
                     json.dumps(case.path_selection.model_dump(mode="json"))
                     if case.path_selection
-                    else None
-                ),
-                "degraded_mode": (
-                    json.dumps(case.degraded_mode.model_dump(mode="json"))
-                    if case.degraded_mode
                     else None
                 ),
                 "escalation_state": (
@@ -1421,9 +1413,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if row.path_selection
             else None
         )
-        degraded_mode = (
-            DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
-        )
         escalation_state = (
             EscalationState(**json.loads(row.escalation_state))
             if row.escalation_state
@@ -1512,7 +1501,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             working_conclusion=working_conclusion,
             root_cause_conclusion=root_cause_conclusion,
             # Special states
-            degraded_mode=degraded_mode,
             escalation_state=escalation_state,
             # Documentation
             documentation=documentation,

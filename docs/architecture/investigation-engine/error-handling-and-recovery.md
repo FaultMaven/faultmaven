@@ -62,7 +62,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 - Evidence contradictions
 - Stage-gate milestone dependencies violated
 
-**Strategy**: Detect and force alternative paths or enter degraded mode
+**Strategy**: Detect and inject stagnation nudges (prompt hints) to guide alternative paths
 
 ---
 
@@ -569,7 +569,7 @@ class StagnationDetector:
 
     def __init__(
         self,
-        no_progress_threshold: int = 3,
+        no_progress_threshold: int = 5,
         category_anchoring_threshold: int = 4,
         action_loop_threshold: int = 5
     ):
@@ -705,19 +705,20 @@ class StagnationBreaker:
         return BreakoutAction(action="none", message="No action needed")
 
     def _handle_no_progress(self, case: Case) -> BreakoutAction:
-        """Handle no progress in 3+ turns."""
+        """Handle no progress in 5+ turns.
 
-        # Enter degraded mode
-        case.degraded_mode = DegradedMode(
-            mode_type=DegradedModeType.NO_PROGRESS,
-            reason=f"No progress in {case.turns_without_progress} turns",
-            entered_at=datetime.now(timezone.utc)
-        )
+        NO_PROGRESS is based on turn count, which cannot distinguish
+        tangential conversation (user learning) from actual stagnation
+        (agent spinning). Instead of injecting prompt nudges, we surface
+        progress data to the user via the UI and let them decide.
+
+        The UI shows: completed/pending milestones, turns_without_progress,
+        evidence count, and hypothesis count — objective data, no urgency.
+        """
 
         return BreakoutAction(
-            action="enter_degraded_mode",
-            message="Investigation not progressing. Offering alternative approaches.",
-            prompt_injection="Ask user for clarification or offer to escalate."
+            action="none",
+            message="No action — progress data surfaced to user via UI.",
         )
 
     def _handle_anchoring(self, case: Case) -> BreakoutAction:

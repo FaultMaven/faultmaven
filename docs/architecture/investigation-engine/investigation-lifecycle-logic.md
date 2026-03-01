@@ -175,36 +175,43 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any]):
                          "User confirmed problem and decided to investigate")
 ```
 
-#### 1.2.1 Evidence Carry-Over During Natural Transition
+#### 1.2.1 Evidence Classification Lifecycle
 
-When transitioning from INQUIRY to INVESTIGATING via the **natural flow** (agent detects a problem, proposes transition, user confirms), files uploaded during INQUIRY are promoted to formal Evidence records. This is necessary because:
+Evidence classification is **content-based, not stage-based** (see Section 5.2 of [evidence-driven-investigation-framework.md](./evidence-driven-investigation-framework.md)). The LLM evaluates data and classifies it by what it contains, not by which state the case is in.
 
-1. **The agent analyzed the data and found a problem** — the data contributed to the problem signal that triggered the transition proposal.
-2. **Evidence requires problem context** — an Evidence record represents data interpreted within the context of a confirmed problem. During INQUIRY, there is no confirmed problem yet, so uploaded files remain as `UploadedFile` (raw data context).
-3. **The transition is the moment context is established** — once the user confirms the problem statement and the case transitions, the previously-uploaded data can now be formally categorized as evidence supporting the confirmed problem.
+**Core principles:**
 
-**How it works**:
+1. **Uploads create UploadedFile only** — file uploads create raw metadata (`UploadedFile`) in any state. Evidence records are created by the LLM via `evidence_to_add` when it evaluates the data during its analysis turn.
+2. **Classification is content-based** — error logs are `SYMPTOM_EVIDENCE` whether submitted during INQUIRY or INVESTIGATING. Normal configs are `CONTEXTUAL_EVIDENCE`. The LLM classifies based on what the data contains, not which state the case is in.
+3. **Contextual evidence is a classification judgment** — `CONTEXTUAL_EVIDENCE` means the LLM evaluated the data and found it irrelevant to the problem at hand (e.g., normal baseline configs when investigating an OOM crash). It is not a default placeholder.
+4. **Milestones emerge from evidence classification** — milestones are a natural consequence of evidence categories, not LLM-driven during transitions. `_infer_milestones()` maps evidence categories to eligible milestones via `CATEGORY_MILESTONE_MAP`.
 
-- At transition time, each `UploadedFile` uploaded during INQUIRY (up to the current turn) is converted to an `Evidence` record with `category=SYMPTOM_EVIDENCE` and `preprocessing_method="jit_promotion"`.
-- Duplicate detection prevents re-promoting files that were already converted to evidence during INQUIRY (e.g., by agent tools).
-- After promotion, milestone attribution is retroactively applied based on evidence category (see `CATEGORY_MILESTONE_MAP`).
+**How it works at INQUIRY → INVESTIGATING transition:**
 
-**Manual flow does NOT promote evidence**:
+- During INQUIRY, the LLM may create evidence via `evidence_to_add` with content-appropriate categories. These have `advances_milestones=[]` because milestone tracking is not active during INQUIRY.
+- At transition, retroactive attribution runs for ALL evidence:
+  - Contextual evidence gets `[]` from `_infer_milestones()` because `CATEGORY_MILESTONE_MAP[CONTEXTUAL_EVIDENCE] = []`.
+  - Categorized evidence (e.g., `SYMPTOM_EVIDENCE`) gets milestones attributed based on category.
+- This applies uniformly — no distinction between manual and natural flow transitions.
 
-- When a user manually transitions via the status dropdown (Section 1.5), the uploaded data was analyzed by the agent but did NOT produce a problem signal strong enough for the agent to propose a transition.
-- Since the data did not signal a problem, promoting it to evidence would be incorrect — it is context, not evidence.
-- After manual transition, only NEW data submitted during INVESTIGATING is evaluated as evidence. Prior uploaded files remain as `UploadedFile` records (available as raw data context for the agent).
+**Manual vs natural flow — implicit distinction:**
 
-**Evidence and problem — chicken-and-egg relationship**:
+- **Manual flow**: User transitions via status dropdown. Typically no evidence or only contextual evidence exists → 0 milestones attributed (natural consequence, no special flags).
+- **Natural flow**: LLM detected a problem and created categorized evidence during INQUIRY → milestones attributed from categories at transition.
+
+The distinction is implicit in the evidence state, not enforced by a `manual` flag.
+
+**Data layers:**
 
 ```text
-UploadedFile (raw data)  ──agent finds problem──>  Evidence (interpreted data)
-                                                        │
-                                                  requires confirmed
-                                                  problem context
+Upload time:   UploadedFile (raw file metadata)
+LLM analysis:  Evidence created via evidence_to_add with content-based category
+Transition:    Retroactive milestone attribution from evidence categories
 ```
 
-If the agent did not find a problem (manual flow), there is no interpretive context to justify evidence promotion.
+**Validation:**
+
+`validate_reasoning_first` checks for non-contextual (actionable) evidence when the LLM attempts to complete milestones. Contextual evidence alone cannot justify milestone claims — the LLM must first have evaluated and classified data into actionable categories (SYMPTOM, CAUSAL, MITIGATION, or SOLUTION).
 
 #### INVESTIGATING → RESOLVED (Terminal)
 
@@ -1340,36 +1347,14 @@ async def record_turn(
         case.turns_without_progress += 1
 
     # Stagnation detection (threshold: 5 turns)
-    # NOTE: NO_PROGRESS no longer creates DegradedMode. The stagnation breaker
+    # When turns_without_progress exceeds threshold, the stagnation breaker
     # emits a gentle_reminder BreakoutAction — a patient prompt injection that
     # nudges the LLM toward the next diagnostic step without lowering confidence
     # or suggesting escalation. FaultMaven is a copilot; the user decides the pace.
-    #
-    # DegradedMode is reserved for genuine external blockers (LIMITED_DATA,
-    # HYPOTHESIS_DEADLOCK, EXTERNAL_DEPENDENCY) where the agent truly cannot proceed.
-
-    # Exit degraded mode if progress resumes (for genuine blockers)
-    check_degraded_mode_exit(case, progress_made)
+    # This is a prompt hint, not a mode change — the agent continues doing
+    # the same thing it always does (analyzing data, surfacing insights, guiding).
 
     return turn
-
-
-def check_degraded_mode_exit(case: Case, progress_made: bool):
-    """
-    Exit degraded mode when progress resumes.
-
-    Only applies to genuine external blockers (LIMITED_DATA, HYPOTHESIS_DEADLOCK,
-    EXTERNAL_DEPENDENCY). NO_PROGRESS never creates DegradedMode.
-
-    Exit condition: progress_made = True on any subsequent turn.
-    Recovery resets turns_without_progress counter to 0.
-    """
-    if case.degraded_mode and case.degraded_mode.is_active:
-        if progress_made:
-            case.degraded_mode.exited_at = datetime.now(timezone.utc)
-            case.degraded_mode.exit_reason = "Progress resumed - user provided evidence or agent found breakthrough"
-            case.degraded_mode.is_active = False
-            case.turns_without_progress = 0  # Reset counter
 
 
 def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
@@ -1615,7 +1600,7 @@ This section outlines all possible case lifecycles and their associated mileston
     *   If fix failed → extended diagnosis within TREATMENT:
         *   Failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix
         *   New evidence required (the original evidence produced a failed solution)
-        *   Escalation via degraded mode when no viable options remain
+        *   Escalation when no viable options remain (agent communicates limitations naturally)
 
 **Phase 3: Resolution**
 *   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → stage-gate milestone: `solution_verified`
@@ -1677,27 +1662,37 @@ the mitigation is sufficient, but the agent does not offer closure as an option.
 
 Mitigation is not assumed to be one-shot. Within the MITIGATION stage, the agent
 may adjust its approach and propose multiple temp fix attempts until the user
-verifies stabilization. When returning to DIAGNOSIS, the `mitigation_accepted`
-and `mitigation_verified` flags reset, allowing a new MITIGATION detour if a new
-urgent situation arises. The completed mitigation attempt is preserved in the
-`action_attempts` list for history and audit trail.
+verifies stabilization.
+
+**Reset mechanism**: When `mitigation_verified` is completed as a stage-gate
+milestone, `_apply_stage_gate_side_effects()` (in `milestone_engine.py`) resets
+both `mitigation_accepted` and `mitigation_verified` to `False`. This happens
+as a side effect of the same function that marks the corresponding
+`ProposedAction` as "accepted" and creates an `ActionAttempt` audit record.
+The completed mitigation is preserved in the `action_attempts` list. The reset
+allows a new MITIGATION detour if a future urgent situation arises.
 
 #### How the System Distinguishes Outcomes (Retrospectively)
 
-The milestone and status state IS the distinction:
+The boolean milestone flags reflect the **current** cycle, not history.
+After the mitigation flag reset, `mitigation_accepted` and `mitigation_verified`
+are both `False`. To determine whether mitigation occurred, query the
+`action_attempts` list for entries with `action_type=MITIGATION`.
 
-| Field | Full Path (RESOLVED) | Mitigation-Only (CLOSED) |
-|-------|---------------------|--------------------------|
-| `mitigation_accepted` | True | True |
-| `mitigation_verified` | True | True |
-| `solution_accepted` | True | False |
-| `solution_verified` | True | False |
-| `root_cause_identified` | True | False |
-| `CaseStatus` | RESOLVED | CLOSED |
-| `closure_reason` | "resolved" | "mitigation_sufficient" |
+| Field | Full Path (RESOLVED) | Mitigation-Only (CLOSED) | No Mitigation (RESOLVED) |
+| ----- | ------------------- | ------------------------ | ------------------------ |
+| `mitigation_accepted` | False (reset) | False (reset) | False |
+| `mitigation_verified` | False (reset) | False (reset) | False |
+| `solution_accepted` | True | False | True |
+| `solution_verified` | True | False | True |
+| `root_cause_identified` | True | May be partial | True |
+| `CaseStatus` | RESOLVED | CLOSED | RESOLVED |
+| `closure_reason` | "resolved" | "mitigation_sufficient" | "resolved" |
+| `action_attempts` has MITIGATION | Yes | Yes | No |
 
-Analytics and reporting can query these combinations to classify cases by
-outcome type after the fact.
+The combination of `CaseStatus`, `closure_reason`, and `action_attempts` history
+provides the full classification. Analytics should query `action_attempts` to
+determine mitigation involvement, not the boolean flags.
 
 ---
 
@@ -1708,7 +1703,7 @@ outcome type after the fact.
 #### Workflow Steps
 1.  **Investigation Starts**: Stage-gate milestones and progress indicators partially set.
 2.  **Stall/Escalation**:
-    *   Agent cannot find root cause (enters degraded mode — no viable options).
+    *   Agent cannot find root cause (no viable options — communicates limitations and suggests escalation).
     *   User stops responding.
     *   User explicitly requests escalation.
     *   User closes after mitigation without pursuing RCA (`closure_reason="mitigation_sufficient"`, UI renders as "Closed - Mitigated").

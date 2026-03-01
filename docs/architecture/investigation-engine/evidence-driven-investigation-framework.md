@@ -33,7 +33,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 - User-Agent Handshake for terminal transitions (RESOLVED/CLOSED)
 - Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED)
 - Knowledge base pre-check and fast-track resolution
-- Stagnation detection and degraded mode
+- Stagnation detection and progress tracking
 - Input sanitization and token budget management
 
 ---
@@ -85,6 +85,17 @@ The stages constrain the agent to activities that may not match what the evidenc
 ---
 
 ## 2. Design Philosophy
+
+### 2.0 Agent Behavior Is Constant
+
+The agent always does the same thing: analyzes submitted data, surfaces insights, and guides the user toward resolution. Stages (DIAGNOSIS, MITIGATION, TREATMENT) and milestones are descriptive labels that reflect where the evidence has led — they are not prescriptive modes that change agent behavior.
+
+This means:
+
+- There is no "degraded mode" that alters agent behavior when stuck
+- The agent communicates limitations naturally in its responses, not through a special mode
+- Stagnation nudges (gentle reminders, alternative category suggestions) are prompt hints, not mode changes
+- If the investigation is blocked, the agent says so and suggests alternatives — the same way it always communicates
 
 ### 2.1 Core Principle: Evidence-Driven, User-Gated
 
@@ -216,7 +227,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 
 **Exit condition**: User verifies mitigation is effective → return to **DIAGNOSIS** for root cause analysis. The system always directs toward RCA after mitigation. The user can manually resolve or close the case via UI at any point, but the system does not offer a "mitigation-only resolution" flow path.
 
-**Re-entry**: After returning to DIAGNOSIS, if a new urgent situation arises, the agent can propose another mitigation. The mitigation flags reset when returning to DIAGNOSIS, allowing a new MITIGATION detour.
+**Re-entry**: After returning to DIAGNOSIS, if a new urgent situation arises, the agent can propose another mitigation. When `mitigation_verified` is set, `_apply_stage_gate_side_effects()` in `milestone_engine.py` resets both `mitigation_accepted` and `mitigation_verified` to `False`, allowing a new MITIGATION detour. The completed mitigation attempt is preserved in the `action_attempts` list for history and audit.
 
 **Scope**: The agent should NOT pursue root cause analysis during MITIGATION. Focus solely on applying and verifying the temporary fix.
 
@@ -252,7 +263,7 @@ Extended diagnosis proceeds:
 5. **New solution proposal** — Derived from the new hypothesis, with specific commands/steps
 6. **User complies → verify again** (loop back to primary path)
 
-Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). For genuine external blockers (missing data, all hypotheses deadlocked, external dependencies), the system enters limitation-aware mode. For simple lack of progress, the system injects a gentle reminder to nudge the next diagnostic step without lowering confidence — FaultMaven is a copilot; the user decides the pace.
+Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). The agent communicates limitations naturally in its responses — explaining what has been tried, what is blocked, and suggesting alternatives or escalation. For simple lack of progress, the system injects a gentle reminder to nudge the next diagnostic step without lowering confidence — FaultMaven is a copilot; the user decides the pace.
 
 **Evidence types accepted**:
 - `solution_evidence` — data showing whether the fix worked (post-fix metrics, logs, user confirmation)
@@ -295,7 +306,7 @@ The agent can perform all necessary diagnostic work within TREATMENT. The key di
 
 **Practical note**: Most investigations resolve on the first fix attempt. Extended diagnosis is a capability for the minority of cases where iteration is needed — it should be handled correctly when it occurs but is not the primary TREATMENT workflow.
 
-**Escalation**: The agent suggests escalation when it has no more viable options — it cannot formulate a new hypothesis or identify new evidence to request. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the system enters limitation-aware mode and offers escalation with a structured handoff summary (problem, evidence collected, hypotheses explored, solutions attempted and their outcomes). Simple lack of progress (5+ turns without investigative activity) receives only a gentle reminder — not degraded mode.
+**Escalation**: The agent suggests escalation when it has no more viable options — it cannot formulate a new hypothesis or identify new evidence to request. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the agent communicates limitations naturally and offers escalation with a structured handoff summary (problem, evidence collected, hypotheses explored, solutions attempted and their outcomes). Simple lack of progress (5+ turns without investigative activity) receives only a gentle stagnation nudge — a prompt hint, not a mode change.
 
 ---
 
@@ -518,7 +529,7 @@ The path determines **whether the agent offers mitigation** during DIAGNOSIS. Th
 
 **User provides unrelated evidence after proposal**: Agent proposed a fix, user submits new diagnostic data instead of execution results. No transition — system recognizes this is not compliance. Agent processes the new evidence within DIAGNOSIS.
 
-**Solution fails in TREATMENT**: Agent stays in TREATMENT and enters extended diagnosis. Analyzes the failure evidence, identifies knowledge gaps, requests targeted new data. The original evidence produced the failed solution — it cannot be reprocessed for a different result. New evidence is required. Once obtained, the agent forms new hypotheses, proposes a revised solution, and the cycle repeats. Escalation when the agent has no more viable options (degraded mode).
+**Solution fails in TREATMENT**: Agent stays in TREATMENT and enters extended diagnosis. Analyzes the failure evidence, identifies knowledge gaps, requests targeted new data. The original evidence produced the failed solution — it cannot be reprocessed for a different result. New evidence is required. Once obtained, the agent forms new hypotheses, proposes a revised solution, and the cycle repeats. Escalation when the agent has no more viable options (communicated naturally in the agent's response).
 
 **New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted evidence request → new hypothesis → corrective action.
 
@@ -589,7 +600,7 @@ TREATMENT has two modes:
 3. **Targeted evidence request** — Ask for specific new data
 4. **Additive hypothesis formation** — New hypotheses must account for ALL evidence (original + failure + new)
 5. **New solution proposal** — Derived from new hypothesis
-6. **Escalation** — When no viable options remain (degraded mode), suggest handoff with structured summary
+6. **Escalation** — When no viable options remain, suggest handoff with structured summary
 
 This is a limited-use capability — most investigations resolve on the first fix. The TREATMENT prompt includes extended diagnosis instructions proportionally.
 
@@ -779,12 +790,13 @@ proposed_actions: list[ProposedAction] = []
 action_attempts: list[ActionAttempt] = []
 ```
 
-This covers both TREATMENT cycles (solution attempts) and MITIGATION cycles (mitigation attempts). The boolean flags on InvestigationProgress (`mitigation_accepted`, `mitigation_verified`) represent the **current** cycle; the `action_attempts` list provides **history**. When mitigation flags reset on return to DIAGNOSIS, the completed mitigation attempt remains in the list.
+This covers both TREATMENT cycles (solution attempts) and MITIGATION cycles (mitigation attempts). The boolean flags on InvestigationProgress (`mitigation_accepted`, `mitigation_verified`) represent the **current** cycle; the `action_attempts` list provides **history**. When `mitigation_verified` is completed, `_apply_stage_gate_side_effects()` resets both flags to `False` (see §3.3 Re-entry); the completed mitigation attempt remains in the list.
 
-This is not used for escalation thresholds (escalation is via degraded mode, not a fixed counter). It provides:
+This is not used for escalation thresholds (escalation is based on capability exhaustion, not a fixed counter). It provides:
+
 - **LLM context**: The agent sees what has been tried (both mitigations and solutions) and can avoid repeating failed approaches
 - **Analytics**: Time-per-cycle, failure categorization, investigation thoroughness, mitigation effectiveness
-- **Degraded mode input**: The stagnation detector can use attempt history to detect when the agent is cycling without new evidence
+- **Stagnation detection input**: The stagnation detector can use attempt history to detect when the agent is cycling without new evidence
 - **Audit trail**: Complete record of all mitigation and solution actions, even after flag resets
 
 ---
@@ -824,7 +836,6 @@ stateDiagram-v2
 
         state "Safety Systems" as SAFETY {
             StagnationDetector: Stagnation<br/>Detector
-            DegradedMode: Degraded<br/>Mode
         }
     }
 
@@ -918,7 +929,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 5. **Add ActionAttempt tracking** — List on Case for solution and mitigation history (Section 10.6)
 6. **Update EvidenceCategory enum** — Add mitigation_evidence, rename resolution_evidence
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
-8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), degraded mode trigger
+8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), stagnation detection
 9. **Update context_builder.py** — Stage-specific context loading, ProposedAction in prompt context
 10. **Update LLM response schemas** — ProposedAction output, stage-gate milestones, progress indicators
 11. **Update tests** — All test files referencing old milestones/stages
@@ -982,7 +993,7 @@ new.action_attempts = []
 | TERMINAL template | Unchanged |
 | Hypothesis lifecycle and evidence linking | Unchanged |
 | Knowledge base pre-check and fast-track | Unchanged |
-| Stagnation detection and progress tracking | Updated — broadened progress definition, NO_PROGRESS no longer triggers degraded mode |
+| Stagnation detection and progress tracking | Updated — broadened progress definition, stagnation nudges are prompt hints not mode changes |
 | Evidence creation pipeline (classify → create) | Unchanged |
 | Preprocessing service (Tier 0+1) | Unchanged |
 | Input sanitization and token budget | Unchanged |
@@ -1000,7 +1011,7 @@ All open questions from the initial draft have been resolved.
 
 2. **Mitigation always returns to DIAGNOSIS for RCA.** After mitigation is verified, the system directs the user back to root cause analysis. DIAGNOSIS resumes with hypothesis formulation and verification informed by what was learned during mitigation. The user can always manually resolve or close the case via UI at any point (this is a UI-level override, not a system flow path), but the system does not offer a "mitigation-only resolution" path. The app pushes toward RCA.
 
-3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the system enters limitation-aware mode. Simple lack of progress (5+ turns) receives a gentle reminder — FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible. DegradedMode is reserved for situations where the agent truly cannot proceed without external intervention.
+3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the agent communicates limitations naturally in its responses and suggests escalation. Simple lack of progress (5+ turns) receives a gentle stagnation nudge — a prompt hint, not a mode change. FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible.
 
 4. **MITIGATION is iterative until verified.** Mitigation is not assumed to be one-shot. It is dynamic, interactive, and potentially iterative — multiple attempts may be needed until the user verifies the situation is stabilized. The MITIGATION stage stays active until verified, supporting multiple mitigation actions within a single MITIGATION detour. Re-entry to MITIGATION from DIAGNOSIS (a second detour) is also supported — the mitigation_accepted/mitigation_verified flags reset when returning to DIAGNOSIS, allowing a new mitigation cycle if needed.
 
@@ -1026,7 +1037,7 @@ All open questions from the initial draft have been resolved.
 | **Mitigation** | A temporary fix applied during an ongoing incident to reduce impact. Iterative — may require multiple attempts until user verifies stabilization. |
 | **Treatment** | Apply fix, verify result. If fix fails: extended diagnosis (failure analysis → new evidence → new hypothesis → revised fix). Most cases resolve on first fix. |
 | **Diagnosis** | Initial investigation: understand the problem, collect evidence, identify root cause, propose first solution. |
-| **Degraded mode** | State entered when the agent has no more viable options (cannot formulate new hypothesis or identify new evidence to request). Triggers escalation suggestion. |
+| **Stagnation nudge** | A prompt hint injected when the investigation is not progressing (e.g., gentle reminder, alternative category suggestion). Not a mode change — the agent continues doing the same thing it always does. |
 
 ## Appendix B: Related Documents
 

@@ -421,9 +421,8 @@ def build_investigating_prompt(case: Case, user_message: str) -> str:
     user_msg = _build_user_message_section(user_message)
     task_instructions = _build_task_instructions(case)
     general_instructions = _build_general_instructions(case)
-    degraded_mode = _build_degraded_mode_section(case) if case.degraded_mode else ""
     output_format = _build_output_format_section()
-    
+
     # Assemble prompt
     prompt = f"""{header}
 
@@ -434,8 +433,6 @@ def build_investigating_prompt(case: Case, user_message: str) -> str:
 {task_instructions}
 
 {general_instructions}
-
-{degraded_mode}
 
 {output_format}
 """
@@ -803,8 +800,8 @@ WITHIN TREATMENT (do NOT regress to DIAGNOSIS):
 5. **Revised Fix**: Propose updated solution based on new understanding.
 6. **Repeat**: User executes → verify → resolve or iterate.
 
-**Escalation**: When the agent has no more viable options, enter degraded mode
-and offer escalation.
+**Escalation**: When the agent has no more viable options, communicate limitations
+naturally and suggest escalation to a human expert.
 
 **Solution Verification Criteria:**
 ✅ Symptom resolved (errors stopped, performance improved)
@@ -818,26 +815,11 @@ If ALL criteria met → Include proposed_transition in response"""
 def _build_general_instructions(case: Case) -> str:
     """Build general instructions (apply to all stages)"""
     
-    # Warning if approaching stall
-    stall_warning = ""
-    if case.turns_without_progress >= 2:
-        stall_warning = f"""
-⚠️ **WARNING: No progress for {case.turns_without_progress} turns!**
+    # No stall warning injected here — turns_without_progress is surfaced
+    # to the user via the UI (InvestigationProgressSummary) instead of
+    # injecting prompt nudges. The LLM's behavior is constant regardless
+    # of turn count.
 
-**Stall Analysis:**
-- Did user provide requested data? → Process it and complete milestones
-- Did user answer your question? → Use their answer to advance
-- Did user ignore your request? → Try DIFFERENT approach (pivot!)
-- Is user disengaged? → Offer fallback options
-
-**Fallback Options (if stuck for 3+ turns):**
-1. Proceed with best guess (mark confidence as PROBABLE, not VERIFIED)
-2. Offer to escalate to human expert
-3. Offer to close investigation
-4. Try completely different hypothesis category
-
-**If truly stuck**: Fill out degraded_mode field"""
-    
     return f"""═══════════════════════════════════════════════════════════
 GENERAL INSTRUCTIONS (Apply to All Stages)
 ═══════════════════════════════════════════════════════════
@@ -922,79 +904,16 @@ verified actual pool metrics yet - that would increase confidence to 85%+."
 • Never mention: "milestones", "stages", "phases", "verification"
 • Natural language: "I've confirmed the symptom" not "milestone completed"
 • Acknowledge before requesting: "Thanks for the logs. Can you also..."
-
-{stall_warning}"""
-
-
-def get_degraded_mode_instructions(case: Case) -> str:
-    """Build degraded mode instructions (genuine external blockers only).
-
-    NO_PROGRESS no longer triggers degraded mode — the stagnation breaker
-    emits a gentle_reminder BreakoutAction instead. This function only
-    produces instructions for genuine external blockers.
-    """
-    if not case.degraded_mode or not case.degraded_mode.is_active:
-        return ""
-
-    mode = case.degraded_mode
-
-    # NO_PROGRESS should never reach here, but guard defensively
-    if mode.mode_type.value == "no_progress":
-        return ""
-
-    return _get_limitation_aware_instructions(case, mode)
+"""
 
 
-def _get_limitation_aware_instructions(case: Case, mode: DegradedMode) -> str:
-    """Build limitation-aware instructions for genuine external blockers.
-
-    Used for LIMITED_DATA, HYPOTHESIS_DEADLOCK, EXTERNAL_DEPENDENCY — cases
-    where the agent truly cannot proceed without external intervention.
-    """
-    mode_descriptions = {
-        "limited_data": ("missing critical evidence", "proceed with lower confidence or escalate"),
-        "hypothesis_deadlock": ("all hypotheses inconclusive", "try different hypothesis categories or escalate"),
-        "external_dependency": ("blocked by external dependencies", "escalate or wait for dependencies"),
-        "other": ("investigation limitations", "assess options with user"),
-    }
-
-    limitation, suggestion = mode_descriptions.get(
-        mode.mode_type.value, ("limitations", "discuss options")
-    )
-
-    return f"""═══════════════════════════════════════════════════════════
-⚠️ INVESTIGATION LIMITATION
-═══════════════════════════════════════════════════════════
-
-**Type**: {mode.mode_type.value}
-**Reason**: {mode.reason}
-
-**BEHAVIOR CHANGES:**
-
-**1. Transparent Communication**
-   - Be honest about confidence levels based on available evidence
-   - Explain what's missing and how it limits your analysis
-
-**2. Evidence-Based Confidence**
-   - Assess confidence based ONLY on available evidence
-   - Use terms: "speculate" (<50%), "probably" (50-70%), "confident" (70-90%), "verified" (90%+)
-
-**3. Offer Fallback Options**
-   - Explain what would help: missing evidence, expertise needed, dependencies required
-   - Suggest: {suggestion}
-
-**4. Continue Investigation**
-   - Work within limitations
-   - Provide best-effort analysis with caveats
-   - Maintain working conclusion with honest confidence
-
-**Limitation Types (genuine external blockers only):**
-- **LIMITED_DATA**: Missing critical evidence
-- **HYPOTHESIS_DEADLOCK**: All hypotheses inconclusive
-- **EXTERNAL_DEPENDENCY**: Blocked by permissions, access, other teams
-
-Note: NO_PROGRESS is NOT a limitation — it produces a gentle reminder
-instead of degraded mode. FaultMaven is a copilot; the user sets the pace."""
+<!-- DegradedMode removed (Agent Behavior Is Constant principle).
+    NO_PROGRESS stagnation no longer injects prompt nudges — progress data
+    is surfaced to the user via the UI instead. Content-based stagnation types
+    (HYPOTHESIS_ANCHORING, ACTION_LOOP, HYPOTHESIS_DEADLOCK) still inject
+    recovery nudges via system_feedback. Data quality blockers are surfaced via
+    missing_critical_data → system_feedback. The agent's analytical behavior
+    does not change based on state flags. -->
 
 
 def _build_output_format_section() -> str:
@@ -1020,7 +939,7 @@ Choose outcome (what happened THIS turn):
 - "blocked": System determines this from patterns (not your call!)
 
 **If user didn't provide requested data**: Use `data_not_provided`
-System will detect blocking patterns automatically (3+ turns → degraded mode)
+System will detect blocking patterns automatically (stagnation nudges at 3+ turns)
 
 ═══════════════════════════════════════════════════════════
 OUTPUT FORMAT
@@ -1266,8 +1185,9 @@ def _format_time_ago(dt: datetime) -> str:
         return "Just now"
 
 
-def _format_duration(seconds: int) -> str:
-    """Format duration in seconds to human readable"""
+def _format_duration(delta: timedelta) -> str:
+    """Format timedelta to human readable string"""
+    seconds = int(delta.total_seconds())
     if seconds < 60:
         return f"{seconds} seconds"
     elif seconds < 3600:

@@ -268,12 +268,28 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
 def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
     """Transform case into INVESTIGATING phase UI response."""
 
-    # Build progress summary
+    # Build progress summary — purely descriptive, backward-looking facts
+    stage_gate_names = {
+        "mitigation_accepted",
+        "mitigation_verified",
+        "solution_accepted",
+        "solution_verified",
+    }
+    all_completed = case.progress.completed_milestones
+    completed_indicators = [m for m in all_completed if m not in stage_gate_names]
+    completed_stage_gates = [m for m in all_completed if m in stage_gate_names]
+
+    active_hyp_count = sum(
+        1 for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE
+    )
+
     progress = InvestigationProgressSummary(
-        milestones_completed=len(case.progress.completed_milestones),
-        total_milestones=9,  # 9 milestones: 4 verification + 1 root_cause + 3 solution + 1 mitigation
-        completed_milestone_ids=case.progress.completed_milestones,
+        completed_indicators=completed_indicators,
+        completed_stage_gates=completed_stage_gates,
         current_stage=case.progress.current_stage,
+        turns_without_progress=case.turns_without_progress,
+        total_evidence=len(case.evidence),
+        active_hypotheses=active_hyp_count,
     )
 
     # Build working conclusion from highest-confidence active hypothesis
@@ -329,7 +345,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
 
     # Agent status message
     agent_status = f"Working on {case.progress.current_stage.value.replace('_', ' ')}"
-    if case.degraded_mode and case.degraded_mode.is_active:
+    if case.is_stuck:
         agent_status = "Investigation appears stuck - reviewing alternative approaches"
 
     # Next actions (from pending milestones)
@@ -358,7 +374,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         next_actions=next_actions,
         agent_status=agent_status,
         is_stuck=case.is_stuck,
-        degraded_mode=case.degraded_mode is not None and case.degraded_mode.is_active,
+        degraded_mode=False,
         investigation_strategy=investigation_strategy_data,
         problem_verification=problem_verification_data,
         valid_next_states=[

@@ -205,9 +205,7 @@ class CaseDetail(BaseModel):
             solution_count=len(case.solutions),
             is_stuck=case.is_stuck,
             is_terminal=case.is_terminal,
-            degraded_mode_active=(
-                case.degraded_mode.is_active if case.degraded_mode else False
-            ),
+            degraded_mode_active=False,
             escalated=(
                 case.escalation_state.is_active if case.escalation_state else False
             ),
