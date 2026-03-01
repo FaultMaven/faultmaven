@@ -68,8 +68,6 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    DegradedMode,
-    DegradedModeType,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
@@ -439,18 +437,31 @@ def validate_reasoning_first(
                 "DO NOT leave milestone_justifications as empty {{}}."
             )
 
-    # Check 1.5: Warn if trying to complete milestones with no evidence in case
-    # IMPORTANT: Also check evidence_to_add to allow post-processing fallback evidence
+    # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
+    # Contextual evidence (raw uploads) cannot justify milestones — only
+    # LLM-classified evidence (symptom, causal, mitigation, solution) counts.
+    from faultmaven.modules.case.contracts import EvidenceCategory
+
     evidence_being_added = (
         getattr(response_obj.state_updates, "evidence_to_add", []) or []
     )
-    has_evidence = bool(case.evidence) or bool(evidence_being_added)
+    non_contextual_evidence = [
+        e for e in case.evidence if e.category != EvidenceCategory.CONTEXTUAL_EVIDENCE
+    ]
+    non_contextual_being_added = [
+        e
+        for e in evidence_being_added
+        if e.category != EvidenceCategory.CONTEXTUAL_EVIDENCE
+    ]
+    has_actionable_evidence = bool(non_contextual_evidence) or bool(
+        non_contextual_being_added
+    )
 
-    if internal_reasoning.milestone_justifications and not has_evidence:
+    if internal_reasoning.milestone_justifications and not has_actionable_evidence:
         errors.append(
-            "Cannot complete milestones when no evidence has been collected. "
-            "The case has 0 evidence artifacts. You must first request evidence from the user "
-            "before attempting to complete milestones. Use data_requests in state_updates to ask for evidence."
+            "Cannot complete milestones when no actionable evidence has been collected. "
+            "Contextual evidence alone cannot justify milestones. "
+            "You must first analyze and classify evidence before completing milestones."
         )
 
     # Check 2: REMOVED - Category-based validation no longer requires evidence_analyzed
@@ -932,7 +943,7 @@ class MilestoneEngine:
                     # Transition to INVESTIGATING (manual flow — user clicked dropdown)
                     # Use the centralized transition method to ensure correct ordering:
                     # description must be set BEFORE status (Pydantic validation requirement)
-                    await self._transition_to_investigating(case, manual=True)
+                    await self._transition_to_investigating(case)
                     case.status_history.append(
                         CaseStatusTransition(
                             from_status=CaseStatus.INQUIRY,
@@ -1385,21 +1396,13 @@ class MilestoneEngine:
             # Step 5.8: Update progress tracking (before stagnation check)
             if metadata.get("progress_made", False):
                 case_updated.turns_without_progress = 0
-                # G3: Exit degraded mode when progress resumes
-                if case_updated.degraded_mode is not None:
-                    case_updated.degraded_mode.exited_at = datetime.now(UTC)
-                    logger.info(
-                        f"Exiting degraded mode for case {case_updated.case_id}: "
-                        f"progress resumed after {case_updated.degraded_mode.mode_type.value}"
-                    )
-                    case_updated.degraded_mode = None
             else:
                 case_updated.turns_without_progress += 1
 
             # Step 5.9: Check for stagnation (before recording turn)
             stagnation_type = self.stagnation_detector.detect_stagnation(case_updated)
             stagnation_str: str | None = None
-            if stagnation_type and case_updated.degraded_mode is None:
+            if stagnation_type:
                 stagnation_str = stagnation_type.value
                 # Get breakout action and apply it
                 breakout_action = self.stagnation_breaker.break_stagnation(
@@ -1921,6 +1924,9 @@ class MilestoneEngine:
         }
 
         # Handle file uploads (common across all states)
+        # UploadedFile tracks raw file metadata. Evidence classification is
+        # content-based and LLM-driven — the LLM evaluates the data and
+        # creates Evidence via evidence_to_add with the appropriate category.
         if attachments:
             for attachment in attachments:
                 uploaded_file = self._create_uploaded_file_from_attachment(
@@ -2228,30 +2234,22 @@ class MilestoneEngine:
             determine_investigation_path,
         )
 
-        # 0. Check for Proactive Blocker Detection
+        # 0. Check for Proactive Blocker Detection — surface as system feedback
         if hasattr(updates, "missing_critical_data") and updates.missing_critical_data:
             blocker = updates.missing_critical_data
-            if blocker.triggers_degraded_mode and not case.degraded_mode:
-                # Enter degraded mode immediately
-                from faultmaven.modules.case.domain.models import DegradedModeType
-
-                case.degraded_mode = DegradedMode(
-                    mode_type=DegradedModeType.DATA_BLOCKER,
-                    reason=blocker.description,
-                    attempted_actions=[
-                        f"Expected: {blocker.what_was_expected}, Found: {blocker.what_was_found}"
-                    ],
-                    fallback_offered=(
-                        ", ".join(blocker.suggested_alternatives)
-                        if blocker.suggested_alternatives
-                        else None
-                    ),
+            blocker_msg = (
+                f"DATA QUALITY ISSUE: {blocker.description}. "
+                f"Expected: {blocker.what_was_expected}. Found: {blocker.what_was_found}. "
+                f"Impact: {blocker.impact}."
+            )
+            if blocker.suggested_alternatives:
+                blocker_msg += (
+                    f" Alternatives: {', '.join(blocker.suggested_alternatives)}"
                 )
-                logger.warning(
-                    f"Case {case.case_id} entered degraded mode immediately due to data blocker: {blocker.description}"
-                )
-                metadata["degraded_mode_entered"] = True
-                metadata["progress_made"] = False  # Blocker prevents progress
+            current_feedback = metadata.get("system_feedback", "") or ""
+            metadata["system_feedback"] = f"{current_feedback}\n{blocker_msg}".strip()
+            metadata["data_blocker_detected"] = True
+            logger.warning(f"Case {case.case_id} data blocker: {blocker.description}")
 
         # Track evidence quality issues (non-blocking)
         if (
@@ -2602,21 +2600,20 @@ class MilestoneEngine:
     # State Management
     # =========================================================================
 
-    async def _transition_to_investigating(
-        self, case: Case, *, manual: bool = False
-    ) -> None:
+    async def _transition_to_investigating(self, case: Case) -> None:
         """
         Transition case from INQUIRY to INVESTIGATING.
 
         This creates the initial investigation structures and copies the
         confirmed problem statement to the case description.
 
-        Args:
-            case: The case to transition.
-            manual: If True, this is a user-initiated manual transition
-                (via status dropdown). Skips evidence promotion and
-                retroactive milestone attribution because the uploaded
-                data did not produce a problem signal during INQUIRY.
+        Evidence lifecycle:
+            - File uploads already created Evidence(contextual) at upload time.
+            - LLM may have created categorized evidence via evidence_to_add during INQUIRY.
+            - At transition, milestones are retroactively attributed based on evidence
+              categories. Contextual evidence naturally gets [] (no milestone mapping).
+            - Manual flow (only contextual evidence) → 0 milestones (natural consequence).
+            - Natural flow (LLM-categorized evidence may exist) → milestones from categories.
         """
         logger.info(f"Transitioning case {case.case_id} to INVESTIGATING")
 
@@ -2688,17 +2685,13 @@ class MilestoneEngine:
             f"Selected investigation path: {case.path_selection.path} (reason: {case.path_selection.rationale})"
         )
 
-        # Evidence carry-over: only for natural flow transitions.
-        # In manual flow, INQUIRY data didn't signal a problem — not evidence.
-        if not manual:
-            self._execute_jit_evidence_promotion(case)
-
         # Gap #4: Retroactively attribute milestones to INQUIRY-phase evidence.
-        # Only for natural flow — manual transitions have no promoted evidence.
         # During INQUIRY, evidence was created with advances_milestones=[] because
         # milestone tracking wasn't active yet. Now that we've initialized progress,
         # we can infer milestone attribution based on evidence categories.
-        if not manual and case.evidence:
+        # Contextual evidence naturally gets [] from _infer_milestones() because
+        # CATEGORY_MILESTONE_MAP[CONTEXTUAL_EVIDENCE] = [].
+        if case.evidence:
             # Check which milestones are already satisfied from the transition itself
             initial_milestones = []
             if case.progress.verification_complete:
@@ -2716,74 +2709,6 @@ class MilestoneEngine:
                             f"to INQUIRY evidence {ev.evidence_id} "
                             f"(category={ev.category.value})"
                         )
-
-    def _execute_jit_evidence_promotion(self, case: Case) -> None:
-        """
-        Promote attachments uploaded during INQUIRY phase to formal Evidence.
-
-        This Just-in-Time (JIT) extraction occurs when the case transitions
-        to INVESTIGATING. It avoids re-parsing raw text by reusing the
-        pre-processed attachment data.
-        """
-        from uuid import uuid4
-        from faultmaven.modules.case.contracts import (
-            Evidence,
-            EvidenceSourceType,
-            EvidenceCategory,
-            EvidenceForm,
-        )
-
-        for uploaded_file in case.uploaded_files:
-            # Only promote files that were uploaded during INQUIRY (<= current turn)
-            if uploaded_file.uploaded_at_turn <= case.current_turn:
-                # Check if this file is already in evidence to prevent duplicates
-                already_promoted = any(
-                    e.source_file_id == uploaded_file.file_id for e in case.evidence
-                )
-                if already_promoted:
-                    continue
-
-                try:
-                    # Convert data_type to EvidenceSourceType
-                    data_type_str = (uploaded_file.data_type or "unknown").upper()
-                    try:
-                        source_type = EvidenceSourceType[data_type_str]
-                    except KeyError:
-                        source_type = EvidenceSourceType.LOGS  # Fallback
-
-                    # Default category for early attachments is SYMPTOM_EVIDENCE
-                    category = EvidenceCategory.SYMPTOM_EVIDENCE
-
-                    evidence = Evidence(
-                        evidence_id=f"ev_{uuid4().hex[:12]}",
-                        summary=uploaded_file.preprocessing_summary
-                        or f"Uploaded file: {uploaded_file.filename}",
-                        preprocessed_content=uploaded_file.preprocessing_summary
-                        or "[Content extracted in uploaded file]",
-                        content_ref=uploaded_file.content_ref,
-                        content_size_bytes=uploaded_file.size_bytes,
-                        preprocessing_method="jit_promotion",
-                        category=category,
-                        source_type=source_type,
-                        form=EvidenceForm.DOCUMENT,
-                        source_file_id=uploaded_file.file_id,
-                        advances_milestones=[],  # Will be attributed later
-                        collected_at=uploaded_file.uploaded_at,
-                        collected_by=case.user_id,
-                        collected_at_turn=uploaded_file.uploaded_at_turn,
-                        primary_purpose="File Analysis",
-                    )
-
-                    case.evidence.append(evidence)
-                    logger.info(
-                        f"JIT Evidence Promotion: Created evidence {evidence.evidence_id} "
-                        f"from file {uploaded_file.file_id} (turn {uploaded_file.uploaded_at_turn})"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to promote uploaded file {uploaded_file.file_id} to evidence: {e}",
-                        exc_info=True,
-                    )
 
     async def _check_automatic_transitions(
         self, case: Case, metadata: dict[str, Any], user_message: str = ""
@@ -3028,41 +2953,6 @@ class MilestoneEngine:
             evidence_added=metadata.get("evidence_added", []),
             hypotheses_generated=len(metadata.get("hypotheses_generated", [])),
             solutions_proposed=len(metadata.get("solutions_proposed", [])),
-        )
-
-    def _enter_degraded_mode(
-        self, case: Case, mode_type: str, reason: str | None = None
-    ) -> None:
-        """
-        Enter degraded mode when investigation is stuck.
-
-        Args:
-            case: Current case
-            mode_type: Type of degradation (no_progress, limited_data, etc.)
-            reason: Optional detailed reason
-        """
-        if case.degraded_mode:
-            logger.warning(f"Case {case.case_id} already in degraded mode")
-            return
-
-        # Determine reason if not provided
-        if not reason:
-            if mode_type == "no_progress":
-                reason = (
-                    f"No progress for {case.turns_without_progress} consecutive turns"
-                )
-            else:
-                reason = "Investigation limitations encountered"
-
-        case.degraded_mode = DegradedMode(
-            mode_type=DegradedModeType(mode_type),
-            reason=reason,
-            entered_at=datetime.now(UTC),
-            attempted_actions=[],  # TODO: Track attempted actions
-        )
-
-        logger.info(
-            f"Case {case.case_id} entered degraded mode: {mode_type} - {reason}"
         )
 
     # =========================================================================

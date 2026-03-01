@@ -15,7 +15,6 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    DegradedMode,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -642,7 +641,6 @@ class InMemoryCaseRepository(CaseRepository):
             "investigation_strategy": case.investigation_strategy.value,
             "has_working_conclusion": case.working_conclusion is not None,
             "has_root_cause": case.root_cause_conclusion is not None,
-            "is_degraded": case.degraded_mode is not None,
             "is_escalated": case.escalation_state is not None,
         }
 
@@ -1465,11 +1463,6 @@ class PostgreSQLCaseRepository(CaseRepository):
                 else None
             ),
             # Special states
-            "degraded_mode": (
-                json.dumps(case.degraded_mode.model_dump(mode="json"))
-                if case.degraded_mode
-                else None
-            ),
             "escalation_state": (
                 json.dumps(case.escalation_state.model_dump(mode="json"))
                 if case.escalation_state
@@ -1493,7 +1486,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 turns_without_progress, turn_history, path_selection,
                 investigation_strategy, inquiry, problem_verification,
                 uploaded_files, evidence, hypotheses, solutions, working_conclusion,
-                root_cause_conclusion, degraded_mode, escalation_state,
+                root_cause_conclusion, escalation_state,
                 documentation, created_at, updated_at, last_activity_at,
                 resolved_at, closed_at
             ) VALUES (
@@ -1502,7 +1495,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 :turns_without_progress, :turn_history, :path_selection,
                 :investigation_strategy, :inquiry, :problem_verification,
                 :uploaded_files, :evidence, :hypotheses, :solutions, :working_conclusion,
-                :root_cause_conclusion, :degraded_mode, :escalation_state,
+                :root_cause_conclusion, :escalation_state,
                 :documentation, :created_at, :updated_at, :last_activity_at,
                 :resolved_at, :closed_at
             )
@@ -1526,7 +1519,6 @@ class PostgreSQLCaseRepository(CaseRepository):
                 solutions = EXCLUDED.solutions,
                 working_conclusion = EXCLUDED.working_conclusion,
                 root_cause_conclusion = EXCLUDED.root_cause_conclusion,
-                degraded_mode = EXCLUDED.degraded_mode,
                 escalation_state = EXCLUDED.escalation_state,
                 documentation = EXCLUDED.documentation,
                 updated_at = EXCLUDED.updated_at,
@@ -1744,7 +1736,6 @@ class PostgreSQLCaseRepository(CaseRepository):
                 investigation_strategy,
                 (working_conclusion IS NOT NULL) as has_working_conclusion,
                 (root_cause_conclusion IS NOT NULL) as has_root_cause,
-                (degraded_mode IS NOT NULL) as is_degraded,
                 (escalation_state IS NOT NULL) as is_escalated
             FROM cases
             WHERE case_id = :case_id
@@ -1770,7 +1761,6 @@ class PostgreSQLCaseRepository(CaseRepository):
             "investigation_strategy": row.investigation_strategy,
             "has_working_conclusion": row.has_working_conclusion,
             "has_root_cause": row.has_root_cause,
-            "is_degraded": row.is_degraded,
             "is_escalated": row.is_escalated,
         }
 
@@ -1893,9 +1883,6 @@ class PostgreSQLCaseRepository(CaseRepository):
             if row.root_cause_conclusion
             else None
         )
-        degraded_mode = (
-            DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
-        )
         escalation_state = (
             EscalationState(**json.loads(row.escalation_state))
             if row.escalation_state
@@ -1945,7 +1932,6 @@ class PostgreSQLCaseRepository(CaseRepository):
             solutions=solutions,
             working_conclusion=working_conclusion,
             root_cause_conclusion=root_cause_conclusion,
-            degraded_mode=degraded_mode,
             escalation_state=escalation_state,
             documentation=documentation,
             messages=messages,  # CRITICAL: Add messages field

@@ -314,7 +314,7 @@ class InvestigationService:
             Progress summary with:
             - case_id, status, current_stage
             - milestones_completed, pending_milestones
-            - current_turn, is_stuck, degraded_mode
+            - current_turn, is_stuck
 
         Raises:
             NotFoundError: If case not found
@@ -346,11 +346,6 @@ class InvestigationService:
                 "pending_milestones": case.progress.pending_milestones,
                 "current_turn": case.current_turn,
                 "is_stuck": case.is_stuck if hasattr(case, "is_stuck") else False,
-                "degraded_mode": (
-                    case.degraded_mode.is_active
-                    if hasattr(case, "degraded_mode") and case.degraded_mode
-                    else False
-                ),
             }
 
         except (NotFoundError, PermissionDeniedException):

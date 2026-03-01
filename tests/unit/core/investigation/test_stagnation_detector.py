@@ -284,15 +284,12 @@ class TestHypothesisDeadlockDetection:
 class TestStagnationBreaker:
     """Test StagnationBreaker recovery actions."""
 
-    def test_no_progress_sends_gentle_reminder(self, breaker, base_case):
-        """NO_PROGRESS should send a gentle reminder, not enter degraded mode."""
+    def test_no_progress_returns_noop(self, breaker, base_case):
+        """NO_PROGRESS should return no-op — progress data surfaced via UI instead."""
         action = breaker.break_stagnation(base_case, StagnationType.NO_PROGRESS)
 
-        assert action.action == "gentle_reminder"
-        assert base_case.degraded_mode is None  # No degraded mode created
-        assert "patiently" in action.prompt_injection.lower()
-        # Should explicitly say NOT to force escalation
-        assert "do not force" in action.prompt_injection.lower()
+        assert action.action == "none"
+        assert action.prompt_injection is None
 
     def test_anchoring_forces_alternative_category(self, breaker, base_case):
         """HYPOTHESIS_ANCHORING should force alternative category."""
@@ -344,21 +341,6 @@ class TestStagnationBreaker:
         # Check that hypotheses were retired
         for hyp in base_case.hypotheses.values():
             assert hyp.status == HypothesisStatus.RETIRED
-
-    def test_no_progress_prompt_is_patient(self, breaker, base_case):
-        """NO_PROGRESS prompt should be patient and non-intrusive."""
-        action = breaker.break_stagnation(base_case, StagnationType.NO_PROGRESS)
-
-        prompt_lower = action.prompt_injection.lower()
-        # Should be patient and answer questions
-        assert "patiently" in prompt_lower
-        assert "question" in prompt_lower
-        # Should gently remind about next steps
-        assert "gently" in prompt_lower or "diagnostic step" in prompt_lower
-        # Should NOT contain any aggressive language
-        assert "⚠️" not in action.prompt_injection
-        assert "degraded" not in prompt_lower
-        assert "force" not in prompt_lower or "do not force" in prompt_lower
 
 
 class TestStagnationSummary:

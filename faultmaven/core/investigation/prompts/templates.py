@@ -365,12 +365,10 @@ If evidence is corrupted, incomplete, missing critical fields, or unusable:
       what_was_found: "Logs missing timestamps and stack traces"
       impact: "Cannot establish timeline or trace error origin"
       suggested_alternatives: ["Request logs from different source", "Use metrics as alternative"]
-      triggers_degraded_mode: true
-
-This triggers IMMEDIATE degraded mode entry, allowing you to:
-- Transparently communicate limitations
-- Offer alternative approaches
-- Continue best-effort investigation with caveats
+This flags data quality issues via system feedback, allowing you to:
+- Transparently communicate data limitations in your response
+- Suggest alternative data sources
+- Continue best-effort investigation with what's available
 
 For minor issues that don't block progress, use evidence_quality_issues instead.
 
@@ -920,105 +918,6 @@ def get_fallback_prompt_for_case(
 # =============================================================================
 
 
-def get_degraded_mode_instructions(case: Case) -> str:
-    """
-    Generate degraded mode instructions when investigation is genuinely blocked.
-
-    NO_PROGRESS no longer triggers degraded mode — FaultMaven is a copilot
-    that follows the user's pace. Degraded mode is reserved for genuine
-    external constraints (data corruption, external dependencies, deadlock).
-
-    Reference: Prompt Engineering Guide Section 4.6 (lines 1248-1327)
-    """
-    if not case.degraded_mode or not case.degraded_mode.is_active:
-        return ""
-
-    mode = case.degraded_mode
-
-    # NO_PROGRESS should never reach here (stagnation breaker no longer
-    # creates DegradedMode for it), but guard defensively
-    if mode.mode_type.value == "no_progress":
-        return ""
-
-    return _get_limitation_aware_instructions(case, mode)
-
-
-def _get_limitation_aware_instructions(case: Case, mode) -> str:
-    """
-    Generate limitation-aware instructions for non-NO_PROGRESS degraded modes.
-
-    These modes (DATA_BLOCKER, LIMITED_DATA, HYPOTHESIS_DEADLOCK,
-    EXTERNAL_DEPENDENCY) represent genuine external constraints where
-    communicating limitations is appropriate.
-    """
-    mode_type_display = mode.mode_type.value.replace("_", " ").title()
-
-    # Map mode types to specific guidance
-    if mode.mode_type.value == "data_blocker":
-        limitation = "Critical data is corrupted, incomplete, or inaccessible"
-        suggestion = (
-            "Request alternative data sources or work with available information"
-        )
-    elif mode.mode_type.value == "limited_data":
-        limitation = "Insufficient data to complete full investigation"
-        suggestion = "Identify what data would be most valuable and request it"
-    elif mode.mode_type.value == "hypothesis_deadlock":
-        limitation = "All hypotheses are inconclusive with current evidence"
-        suggestion = (
-            "Try a different diagnostic approach or escalate to deeper investigation"
-        )
-    elif mode.mode_type.value == "external_dependency":
-        limitation = "Waiting on external team or resource"
-        suggestion = "Provide interim analysis or alternative approaches"
-    else:
-        limitation = "Investigation facing unexpected challenges"
-        suggestion = "Identify specific blockers and suggest alternatives"
-
-    instructions = f"""
-═══════════════════════════════════════════════════════════
-⚠️ DEGRADED INVESTIGATION MODE
-═══════════════════════════════════════════════════════════
-
-**Type**: {mode_type_display}
-**Reason**: {mode.reason}
-
-**BEHAVIOR CHANGES:**
-
-1. **Transparent Communication**
-   - ALWAYS prefix responses: "⚠️ Investigation limitations: {limitation}"
-   - Explicitly state caveats in EVERY response
-   - Be honest about confidence levels
-
-2. **Lower Confidence Assessment**
-   - Assess confidence based ONLY on available evidence
-   - Use explicit confidence terms:
-     * "I'm speculating" (<50% confidence)
-     * "I think this is probably..." (50-70% confidence)
-     * "I'm fairly confident" (70-90% confidence)
-     * Never claim >90% confidence in degraded mode
-
-3. **Offer Fallback Options**
-   - Every 2 turns, explicitly offer:
-     * Escalation: "Would you like to escalate to [team/person]?"
-     * Alternative approach: "We could try [alternative method]"
-     * Documentation: "I can document findings so far for handoff"
-
-4. **Continue Best-Effort Investigation**
-   - DON'T give up or stop investigating
-   - Work within limitations
-   - Provide best-effort analysis with caveats
-   - Focus on what CAN be determined vs what cannot
-
-5. **Suggested Next Steps**
-   - {suggestion}
-   - Be specific about what would help exit degraded mode
-
-Turn {case.current_turn}: You are in degraded mode. Follow the above behavior changes strictly.
-"""
-
-    return instructions
-
-
 # =============================================================================
 # BUILDER FUNCTIONS
 # =============================================================================
@@ -1078,11 +977,6 @@ def get_prompt_for_case(
                 "PATH: MITIGATION_FIRST (Prioritize stopping the impact over finding RCA)\n"
                 + adaptive_instr
             )
-
-        # Inject degraded mode instructions if active
-        degraded_mode_instr = get_degraded_mode_instructions(case)
-        if degraded_mode_instr:
-            adaptive_instr = degraded_mode_instr + "\n\n" + adaptive_instr
 
         # Add stage to context for schema reference
         ctx["stage"] = stage.value if stage else "diagnosis"

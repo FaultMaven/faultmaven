@@ -1431,11 +1431,19 @@ class UploadedFile(BaseModel):
     Raw file metadata for files uploaded to a case.
 
     Key Distinction:
-    - UploadedFile: Raw file metadata, exists in ANY case phase (INQUIRY or INVESTIGATING)
-    - Evidence: Investigation-linked data derived from files, ONLY exists in INVESTIGATING phase
+    - UploadedFile: Raw file metadata, exists in ANY case state (INQUIRY, INVESTIGATING, etc.)
+    - Evidence: Data classified by the LLM based on content. Created via evidence_to_add
+      when the LLM evaluates the submission.
 
-    Files uploaded during INQUIRY are tracked here but do NOT become evidence until
-    the case transitions to INVESTIGATING and hypotheses are formulated.
+    Evidence classification is content-based, not stage-based (see Section 5.2 of
+    evidence-driven-investigation-framework.md). The LLM evaluates the data and
+    classifies it by what it contains:
+    - Error logs → symptom_evidence (even during INQUIRY)
+    - Normal configs → contextual_evidence
+    - Post-fix metrics → solution_evidence
+
+    UploadedFile records exist independently of Evidence. Not all uploaded files
+    produce Evidence — the LLM decides what is relevant during its analysis.
     """
 
     file_id: str = Field(
@@ -2210,7 +2218,7 @@ class TurnOutcome(str, Enum):
     Turn outcome classification.
 
     NOTE: Outcomes are LLM-observable only (what happened this turn).
-    Workflow control uses direct metrics (turns_without_progress, degraded_mode).
+    Workflow control uses direct metrics (turns_without_progress).
     Outcomes are for analytics and prompt context, not control flow.
     """
 
@@ -2747,102 +2755,6 @@ class RootCauseConclusion(BaseModel):
 # ============================================================
 
 
-class DegradedModeType(str, Enum):
-    """Reason for entering degraded mode"""
-
-    NO_PROGRESS = "no_progress"
-    """
-    5+ consecutive turns without investigative progress.
-    Note: NO_PROGRESS no longer creates a DegradedMode object. The stagnation
-    breaker emits a gentle_reminder BreakoutAction instead. This enum value
-    is retained for backward compatibility with serialized data.
-    """
-
-    LIMITED_DATA = "limited_data"
-    """
-    Cannot obtain required evidence.
-    Insufficient data to proceed.
-    """
-
-    HYPOTHESIS_DEADLOCK = "hypothesis_deadlock"
-    """
-    All hypotheses are inconclusive.
-    Cannot determine root cause.
-    """
-
-    EXTERNAL_DEPENDENCY = "external_dependency"
-    """
-    Waiting on external team/person.
-    Outside agent control.
-    """
-
-    DATA_BLOCKER = "data_blocker"
-    """
-    Critical data quality issue detected immediately.
-    Evidence is corrupted, missing, or unusable.
-    Proactive degraded mode entry (Prompt Engineering Guide Section 14).
-    """
-
-    OTHER = "other"
-    """
-    Does not fit standard degradation reasons.
-    """
-
-
-class DegradedMode(BaseModel):
-    """
-    Investigation is blocked or struggling.
-    Agent offers fallback options.
-    """
-
-    mode_type: DegradedModeType = Field(description="Why investigation degraded")
-
-    entered_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        description="When degraded mode was entered",
-    )
-
-    reason: str = Field(
-        description="Detailed explanation of why investigation degraded",
-        max_length=1000,
-    )
-
-    attempted_actions: List[str] = Field(
-        default_factory=list, description="What agent tried before degrading"
-    )
-
-    # ============================================================
-    # Fallback
-    # ============================================================
-    fallback_offered: Optional[str] = Field(
-        default=None, description="Fallback option presented to user", max_length=1000
-    )
-
-    user_choice: Optional[str] = Field(
-        default=None,
-        description="How user responded: 'accept_fallback' | 'provide_more_data' | 'escalate' | 'abandon'",
-        max_length=100,
-    )
-
-    # ============================================================
-    # Exit
-    # ============================================================
-    exited_at: Optional[datetime] = Field(
-        default=None, description="When degraded mode was exited (if recovered)"
-    )
-
-    exit_reason: Optional[str] = Field(
-        default=None,
-        description="How investigation recovered from degraded mode",
-        max_length=500,
-    )
-
-    @property
-    def is_active(self) -> bool:
-        """Check if still in degraded mode"""
-        return self.exited_at is None
-
-
 class EscalationType(str, Enum):
     """Reason for escalation"""
 
@@ -3293,10 +3205,6 @@ class Case(BaseModel):
     # ============================================================
     # Special States
     # ============================================================
-    degraded_mode: Optional[DegradedMode] = Field(
-        default=None, description="Investigation is stuck or blocked"
-    )
-
     escalation_state: Optional[EscalationState] = Field(
         default=None, description="Escalated to human expert"
     )
@@ -3471,20 +3379,6 @@ class Case(BaseModel):
                     "severity": "info",
                     "message": f"Investigation adapting approach after {self.turns_without_progress} turns",
                     "action": "The investigation is trying a different diagnostic angle. You can help by providing specific data if requested.",
-                }
-            )
-
-        # Degraded mode active (genuine external blockers only —
-        # NO_PROGRESS no longer creates DegradedMode)
-        if self.degraded_mode and self.degraded_mode.is_active:
-            warnings.append(
-                {
-                    "type": "degraded_mode",
-                    "severity": "error",
-                    "message": f"Investigation blocked: {self.degraded_mode.reason}",
-                    "mode_type": self.degraded_mode.mode_type.value,
-                    "action": self.degraded_mode.fallback_offered
-                    or "Escalate or close case",
                 }
             )
 

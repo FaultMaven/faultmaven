@@ -14,8 +14,7 @@ This document defines the core data models used in FaultMaven's evidence-driven 
 2. [Core Data Models](#1-core-data-models)
 3. [Evidence Model](#2-evidence-model)
 4. [Hypothesis Workflow](#3-hypothesis-workflow)
-5. [Degraded Mode](#4-degraded-mode)
-6. [Checkpointing Model](#5-checkpointing-model)
+5. [Checkpointing Model](#5-checkpointing-model)
 
 ---
 
@@ -351,7 +350,7 @@ class TurnOutcome(str, Enum):
     Turn outcome classification.
 
     NOTE: Outcomes are LLM-observable only (what happened this turn).
-    Workflow control uses direct metrics (turns_without_progress, degraded_mode).
+    Workflow control uses direct metrics (turns_without_progress, stagnation detection).
     """
 
     MILESTONE_COMPLETED = "milestone_completed"
@@ -379,7 +378,7 @@ class TurnOutcome(str, Enum):
     """Doesn't fit standard outcomes"""
 
     # NOTE: No "BLOCKED" - investigation stalls naturally via turns_without_progress
-    # Degraded mode triggers at 3 turns without progress (system-managed)
+    # Stagnation nudges trigger at 3+ turns without progress (prompt hints, not mode changes)
 ```
 
 ### 1.4 InvestigationPath
@@ -544,7 +543,6 @@ class Case(BaseModel):
     # ============================================================
     # Special States
     # ============================================================
-    degraded_mode: Optional[DegradedMode] = None
     escalation_state: Optional[EscalationState] = None
 
     # ============================================================
@@ -579,7 +577,7 @@ class Case(BaseModel):
     @property
     def is_stuck(self) -> bool:
         """Detect if investigation is blocked"""
-        return self.turns_without_progress >= 3
+        return self.turns_without_progress >= 5
 
     @property
     def is_terminal(self) -> bool:
@@ -996,8 +994,9 @@ class ActionAttempt(BaseModel):
     analyzes the attempt to determine if stage-gate milestones should be set.
 
     The boolean flags on InvestigationProgress represent the current cycle;
-    the action_attempts list provides history. When mitigation flags reset
-    on return to DIAGNOSIS, the completed mitigation attempt remains in the list.
+    the action_attempts list provides history. When `mitigation_verified` is
+    completed, `_apply_stage_gate_side_effects()` resets both mitigation flags
+    to False; the completed mitigation attempt remains in the list.
     """
     attempt_id: str = Field(default_factory=lambda: f"att_{uuid4().hex[:12]}")
     action_id: str = Field(description="ProposedAction this attempt relates to")
@@ -1382,10 +1381,19 @@ class Hypothesis(BaseModel):
     status: HypothesisStatus
     likelihood: float = Field(ge=0.0, le=1.0)
 
-    # Evidence requirements
-    evidence_requirements: List[EvidenceRequirement]
-    supporting_evidence: List[str] = Field(default_factory=list)
-    refuting_evidence: List[str] = Field(default_factory=list)
+    # Evidence relationships (many-to-many via HypothesisEvidenceLink)
+    evidence_links: Dict[str, HypothesisEvidenceLink] = Field(default_factory=dict)
+
+    # Computed properties (filter evidence_links by stance)
+    @property
+    def supporting_evidence(self) -> List[str]:
+        return [eid for eid, link in self.evidence_links.items()
+                if link.stance == EvidenceStance.SUPPORTS]
+
+    @property
+    def refuting_evidence(self) -> List[str]:
+        return [eid for eid, link in self.evidence_links.items()
+                if link.stance == EvidenceStance.REFUTES]
 
     # Metadata
     generated_at_turn: int
@@ -1498,92 +1506,3 @@ def detect_evidence_anchoring(case: Case) -> Optional[str]:
 ```
 
 ---
-
-## 4. Degraded Mode (Genuine External Blockers Only)
-
-> **Important**: `NO_PROGRESS` no longer creates a `DegradedMode` object. After 5+ turns
-> without investigative progress, the stagnation breaker emits a `gentle_reminder`
-> BreakoutAction — a patient prompt injection that nudges the LLM toward the next
-> diagnostic step without lowering confidence or suggesting escalation. FaultMaven is
-> a copilot; the user decides the pace.
->
-> `DegradedMode` is reserved for genuine external blockers where the agent truly
-> cannot proceed: `LIMITED_DATA`, `HYPOTHESIS_DEADLOCK`, `EXTERNAL_DEPENDENCY`.
-
-```python
-class DegradedMode(BaseModel):
-    """
-    Investigation blocked by genuine external factors.
-
-    Used ONLY for situations where the agent cannot proceed without external
-    intervention (missing data, all hypotheses deadlocked, external dependencies).
-    NOT used for simple lack of progress — that receives a gentle reminder instead.
-
-    Exit behavior: Automatically exited when progress_made=True on any subsequent turn.
-    """
-
-    mode_type: DegradedModeType
-
-    entered_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-
-    reason: str = Field(
-        description="Why investigation entered degraded mode"
-    )
-
-    attempted_actions: List[str] = Field(
-        default_factory=list,
-        description="What agent tried before degrading"
-    )
-
-    fallback_offered: Optional[str] = Field(
-        default=None,
-        description="Fallback option presented to user"
-    )
-
-    user_choice: Optional[str] = Field(
-        default=None,
-        description="How user responded to fallback"
-    )
-
-    exited_at: Optional[datetime] = Field(
-        default=None,
-        description="When degraded mode was exited"
-    )
-
-    exit_reason: Optional[str] = Field(
-        default=None,
-        description="How investigation recovered from degraded mode"
-    )
-
-    @property
-    def is_active(self) -> bool:
-        """Check if still in degraded mode"""
-        return self.exited_at is None
-
-class DegradedModeType(str, Enum):
-    NO_PROGRESS = "no_progress"      # Retained for backward compat; no longer creates DegradedMode
-    LIMITED_DATA = "limited_data"
-    HYPOTHESIS_DEADLOCK = "hypothesis_deadlock"
-    EXTERNAL_DEPENDENCY = "external_dependency"
-    OTHER = "other"
-
-def check_degraded_mode_exit(case: Case, progress_made: bool) -> bool:
-    """
-    Exit degraded mode when progress resumes.
-
-    Only applies to genuine external blockers (LIMITED_DATA, HYPOTHESIS_DEADLOCK,
-    EXTERNAL_DEPENDENCY). NO_PROGRESS never creates DegradedMode.
-
-    Exit condition: progress_made = True on any subsequent turn.
-    Recovery resets turns_without_progress counter to 0.
-    """
-    if progress_made and case.degraded_mode is not None:
-        case.degraded_mode.exited_at = datetime.now(timezone.utc)
-        case.degraded_mode.exit_reason = "Progress resumed"
-        case.degraded_mode = None
-        case.turns_without_progress = 0
-        return True
-    return False
-```

@@ -311,18 +311,14 @@ class StagnationBreaker:
         """
         Handle no investigative progress in 5+ turns.
 
-        Does NOT enter degraded mode. FaultMaven is a copilot — the user
-        decides the pace. If they're chatting or exploring tangents, we
-        patiently serve them while keeping the diagnostic thread visible.
+        NO_PROGRESS is based on turn count, which cannot distinguish
+        tangential conversation (user learning) from actual stagnation
+        (agent spinning). Instead of injecting prompt nudges, we surface
+        progress data to the user via the UI and let them decide.
         """
         return BreakoutAction(
-            action="gentle_reminder",
-            message="Patiently continuing investigation at user's pace.",
-            prompt_injection=(
-                "Patiently answer the user's immediate question. "
-                "If appropriate, gently remind them of the next diagnostic step, "
-                "but do not force an escalation."
-            ),
+            action="none",
+            message="No action — progress data surfaced to user via UI.",
         )
 
     def _handle_anchoring(self, case: Case) -> BreakoutAction:

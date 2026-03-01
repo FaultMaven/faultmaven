@@ -248,10 +248,6 @@ def _determine_investigation_momentum(
     if case.turns_without_progress >= 5:
         return InvestigationMomentum.BLOCKED
 
-    # Check for degraded mode
-    if case.degraded_mode is not None:
-        return InvestigationMomentum.BLOCKED
-
     # Check recent turn history (last 3 turns)
     recent_turns = case.turn_history[-3:] if case.turn_history else []
 
@@ -305,10 +301,6 @@ def _generate_caveats(
         caveats.append(
             f"{len(hypothesis.refuting_evidence)} evidence items contradict this hypothesis"
         )
-
-    # Degraded mode caveat
-    if case.degraded_mode is not None:
-        caveats.append("Investigation is in degraded mode - progress stalled")
 
     return caveats
 
@@ -380,9 +372,6 @@ def _generate_blocked_reasons(
 
     if active_hypotheses_count == 0 and len(case.hypotheses) > 0:
         reasons.append("No active hypotheses remaining (all refuted or retired)")
-
-    if case.degraded_mode is not None:
-        reasons.append(f"Degraded mode: {case.degraded_mode.reason}")
 
     return reasons
 

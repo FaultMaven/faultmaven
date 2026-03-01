@@ -215,6 +215,7 @@ class CaseModel(Base):
     working_conclusion = Column(Text)
     root_cause_conclusion = Column(Text)
     path_selection = Column(Text)
+    # Deprecated: DegradedMode removed from domain model. Column retained for backward compatibility.
     degraded_mode = Column(Text)
     escalation_state = Column(Text)
     documentation = Column(Text, default="{}")

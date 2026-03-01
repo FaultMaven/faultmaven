@@ -37,7 +37,6 @@ from faultmaven.modules.case.contracts import (
     CaseReport,
     CaseStatus,
     CaseStatusTransition,
-    DegradedMode,
     DocumentationData,
     CaseCheckpoint,
     EscalationState,
@@ -1088,13 +1087,13 @@ class SQLiteCaseRepository(CaseRepository):
                 case_id, user_id, organization_id, title,
                 status, created_at, updated_at,
                 inquiry, problem_verification, working_conclusion,
-                root_cause_conclusion, path_selection, degraded_mode,
+                root_cause_conclusion, path_selection,
                 escalation_state, documentation, progress, metadata
             ) VALUES (
                 :case_id, :user_id, :organization_id, :title,
                 :status, :created_at, :updated_at,
                 :inquiry, :problem_verification, :working_conclusion,
-                :root_cause_conclusion, :path_selection, :degraded_mode,
+                :root_cause_conclusion, :path_selection,
                 :escalation_state, :documentation, :progress, :metadata
             )
             ON CONFLICT (case_id) DO UPDATE SET
@@ -1108,7 +1107,6 @@ class SQLiteCaseRepository(CaseRepository):
                 working_conclusion = EXCLUDED.working_conclusion,
                 root_cause_conclusion = EXCLUDED.root_cause_conclusion,
                 path_selection = EXCLUDED.path_selection,
-                degraded_mode = EXCLUDED.degraded_mode,
                 escalation_state = EXCLUDED.escalation_state,
                 documentation = EXCLUDED.documentation,
                 progress = EXCLUDED.progress,
@@ -1148,11 +1146,6 @@ class SQLiteCaseRepository(CaseRepository):
                 "path_selection": (
                     json.dumps(to_json_compatible(case.path_selection.model_dump()))
                     if case.path_selection
-                    else None
-                ),
-                "degraded_mode": (
-                    json.dumps(to_json_compatible(case.degraded_mode.model_dump()))
-                    if case.degraded_mode
                     else None
                 ),
                 "escalation_state": (
@@ -1626,9 +1619,6 @@ class SQLiteCaseRepository(CaseRepository):
             if row.path_selection
             else None
         )
-        degraded_mode = (
-            DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
-        )
         escalation_state = (
             EscalationState(**json.loads(row.escalation_state))
             if row.escalation_state
@@ -1690,7 +1680,6 @@ class SQLiteCaseRepository(CaseRepository):
             "messages": messages_data if messages_data else [],
             "working_conclusion": working_conclusion,
             "root_cause_conclusion": root_cause_conclusion,
-            "degraded_mode": degraded_mode,
             "escalation_state": escalation_state,
             "documentation": documentation,
             # metadata field removed as it is not part of Case model
