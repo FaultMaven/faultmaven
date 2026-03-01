@@ -529,3 +529,126 @@ class TestPreprocessingIntegration:
         for evidence in evidence_list:
             assert "preprocessing_method" in evidence
             assert evidence["preprocessing_method"] is not None
+
+
+class TestLargeContentSubmission:
+    """Test that large content submissions (>1MB) are accepted up to MAX_UPLOAD_SIZE_MB.
+
+    Starlette's MultiPartParser defaults to 1MB per form part. FaultMaven overrides
+    this to match MAX_UPLOAD_SIZE_MB (default 10MB) so that all three data submission
+    paths — file upload, page injection, and pasted text — are governed by the same
+    configured limit.
+
+    Design Reference:
+    - docs/architecture/data-processing/data-preprocessing-design-specification.md
+      Section 2.4 (Pasted Text vs File Upload: Same Pipeline) and Appendix A
+    """
+
+    @pytest.mark.integration
+    def test_large_pasted_content_accepted(
+        self, test_case, auth_headers, mock_services_for_integration_tests
+    ):
+        """Pasted content >1MB should be accepted (up to MAX_UPLOAD_SIZE_MB).
+
+        This is the core regression test for the Starlette max_part_size issue.
+        Without the fix, Starlette rejects any form field >1MB with a 400.
+        """
+        # Arrange - Create pasted content >1MB (roughly 1.5MB)
+        large_content = "ERROR: Connection timeout at line {}\n" * 30000
+        assert len(large_content) > 1 * 1024 * 1024, "Content must exceed 1MB"
+        assert len(large_content) < 10 * 1024 * 1024, "Content must be under 10MB"
+
+        headers = _upload_headers(auth_headers)
+
+        # Act - Submit large pasted content via /turns
+        response = mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={"pasted_content": large_content},
+            headers=headers,
+        )
+
+        # Assert - Should be accepted, not rejected with 400
+        assert response.status_code == 200, (
+            f"Large pasted content ({len(large_content)} bytes) was rejected. "
+            f"Status: {response.status_code}, Body: {response.text[:200]}"
+        )
+
+    @pytest.mark.integration
+    def test_large_page_injection_accepted(
+        self, test_case, auth_headers, mock_services_for_integration_tests
+    ):
+        """Page injection >1MB should be accepted (same path as pasted content).
+
+        Page injection uses the same pasted_content form field but includes
+        a '--- Page Content (url) ---' header that the backend detects.
+        """
+        # Arrange - Simulate a large page capture (~2MB, like the original bug report)
+        page_body = "<div>Content block {}</div>\n" * 60000
+        large_page = (
+            f"--- Page Content (https://example.com/dashboard) ---\n{page_body}"
+        )
+        assert len(large_page) > 1.5 * 1024 * 1024, "Page content must exceed 1.5MB"
+
+        headers = _upload_headers(auth_headers)
+
+        # Act - Submit via /turns
+        response = mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={"pasted_content": large_page},
+            headers=headers,
+        )
+
+        # Assert
+        assert response.status_code == 200, (
+            f"Large page injection ({len(large_page)} bytes) was rejected. "
+            f"Status: {response.status_code}, Body: {response.text[:200]}"
+        )
+
+    @pytest.mark.integration
+    def test_large_file_upload_accepted(
+        self, test_case, auth_headers, mock_services_for_integration_tests
+    ):
+        """File upload >1MB should be accepted (same limit applies to all paths)."""
+        # Arrange - Create a log file >1MB
+        large_log = b"2024-01-10 10:00:00 ERROR [Pool] Connection timeout\n" * 25000
+        assert len(large_log) > 1 * 1024 * 1024, "File must exceed 1MB"
+
+        headers = _upload_headers(auth_headers)
+
+        # Act - Upload large file via /turns
+        response = mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            files=[("files", ("large_app.log", large_log, "text/plain"))],
+            data={"query": "Analyze these logs"},
+            headers=headers,
+        )
+
+        # Assert
+        assert response.status_code == 200, (
+            f"Large file upload ({len(large_log)} bytes) was rejected. "
+            f"Status: {response.status_code}, Body: {response.text[:200]}"
+        )
+
+    @pytest.mark.integration
+    def test_large_query_with_pasted_content_accepted(
+        self, test_case, auth_headers, mock_services_for_integration_tests
+    ):
+        """Combined query + large pasted content should work."""
+        # Arrange
+        large_content = "WARN: Slow query detected ({}ms)\n" * 35000
+        assert len(large_content) > 1 * 1024 * 1024
+
+        headers = _upload_headers(auth_headers)
+
+        # Act - Submit query + large pasted content
+        response = mock_services_for_integration_tests.post(
+            f"/api/v1/cases/{test_case}/turns",
+            data={
+                "query": "What's causing the slow queries?",
+                "pasted_content": large_content,
+            },
+            headers=headers,
+        )
+
+        # Assert
+        assert response.status_code == 200

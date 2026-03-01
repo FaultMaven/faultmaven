@@ -47,6 +47,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
+from starlette.formparsers import MultiPartParser
+
 from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
@@ -674,6 +676,15 @@ app = FastAPI(
     lifespan=lifespan,
     redirect_slashes=False,  # Disable automatic trailing slash redirects
 )
+
+# Override Starlette's default multipart form parser size limits.
+# Starlette defaults to 1MB per form part, but our upload limit is MAX_UPLOAD_SIZE_MB (default 10MB).
+# All three data submission paths (file upload, page injection, pasted text) go through
+# the same unified /turns endpoint as multipart form data and must respect the same limit.
+# See: docs/architecture/data-processing/data-preprocessing-design-specification.md Appendix A
+_upload_max_bytes = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "10")) * 1024 * 1024
+MultiPartParser.max_file_size = _upload_max_bytes
+MultiPartParser.max_part_size = _upload_max_bytes
 
 
 # Add middleware in optimized order to prevent duplicates

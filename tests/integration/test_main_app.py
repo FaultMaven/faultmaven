@@ -122,6 +122,32 @@ def test_application_structure():
     assert hasattr(app, "middleware")
 
 
+def test_multipart_parser_size_limits_configured():
+    """MultiPartParser limits must match MAX_UPLOAD_SIZE_MB to allow large submissions.
+
+    Starlette defaults to 1MB per form part, which silently rejects page injections
+    and pasted text >1MB with a bare 400 error. FaultMaven overrides this at app
+    startup to match the configured MAX_UPLOAD_SIZE_MB (default 10MB).
+
+    All three data submission paths (file upload, page injection, pasted text) go
+    through the same /turns endpoint as multipart form data.
+    """
+    from starlette.formparsers import MultiPartParser
+
+    expected_bytes = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "10")) * 1024 * 1024
+
+    assert MultiPartParser.max_file_size == expected_bytes, (
+        f"MultiPartParser.max_file_size should be {expected_bytes} bytes "
+        f"(MAX_UPLOAD_SIZE_MB={expected_bytes // (1024*1024)}MB), "
+        f"got {MultiPartParser.max_file_size}"
+    )
+    assert MultiPartParser.max_part_size == expected_bytes, (
+        f"MultiPartParser.max_part_size should be {expected_bytes} bytes "
+        f"(MAX_UPLOAD_SIZE_MB={expected_bytes // (1024*1024)}MB), "
+        f"got {MultiPartParser.max_part_size}"
+    )
+
+
 @pytest.mark.integration
 def test_api_routes_registration():
     """Test that API routes are properly registered"""
