@@ -1376,32 +1376,26 @@ YOUR TASK
 ...
 ```
 
-### Example 3: INVESTIGATING Template (With Investigation Limitation)
+### Example 3: INVESTIGATING Template (With Stagnation Recovery)
 
 ```
 [... standard header and state ...]
 
 ═══════════════════════════════════════════════════════════
-⚠️ INVESTIGATION LIMITATION
+IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN
 ═══════════════════════════════════════════════════════════
 
-**Type**: limited_data
-**Reason**: User unable to provide production logs (access restricted)
+IMPORTANT: Do NOT propose hypotheses in 'code' category. This category
+has been explored extensively without success. Try different categories
+like: config, environment, network
 
-**BEHAVIOR CHANGES:**
+Note: Only content-based stagnation types inject recovery nudges:
+- HYPOTHESIS_ANCHORING: forces alternative hypothesis categories
+- ACTION_LOOP: requests user input to break repetitive actions
+- HYPOTHESIS_DEADLOCK: retires inconclusive hypotheses, prompts fresh ones
 
-**1. Transparent Communication**
-   - Be honest about confidence levels based on available evidence
-   - Explain what's missing and how it limits your analysis
-
-**2. Evidence-Based Confidence**
-   - Assess confidence based ONLY on available evidence
-
-[... rest of limitation-aware instructions ...]
-
-Note: This only applies to genuine external blockers (LIMITED_DATA,
-HYPOTHESIS_DEADLOCK, EXTERNAL_DEPENDENCY). NO_PROGRESS produces a
-gentle reminder instead — FaultMaven is a copilot, not a taskmaster.
+NO_PROGRESS does NOT inject — progress data is surfaced to the user
+via the UI instead (completed milestones, turns_without_progress, etc.).
 
 ═══════════════════════════════════════════════════════════
 YOUR TASK

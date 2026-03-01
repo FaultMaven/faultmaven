@@ -1039,7 +1039,7 @@ Based on **temporal_state × urgency_level**:
 | **Ongoing** | MEDIUM | USER_CHOICE | User decides: quick mitigation or thorough RCA |
 | **Ongoing** | LOW | USER_CHOICE | Minor issue, user decides approach |
 | **Historical** | CRITICAL | USER_CHOICE | Clarify why critical if past issue — user knows whether speed or thoroughness matters more |
-| **Historical** | HIGH | ROOT_CAUSE (auto) | Past issue with high urgency — thorough investigation appropriate |
+| **Historical** | HIGH | USER_CHOICE | Past issue with high urgency — user decides mitigation-first or RCA |
 | **Historical** | MEDIUM | ROOT_CAUSE (auto) | Standard post-mortem - find root cause |
 | **Historical** | LOW | ROOT_CAUSE (auto) | Thorough investigation - permanent solution |
 
