@@ -378,7 +378,7 @@ class TurnOutcome(str, Enum):
     """Doesn't fit standard outcomes"""
 
     # NOTE: No "BLOCKED" - investigation stalls naturally via turns_without_progress
-    # Stagnation nudges trigger at 3+ turns without progress (prompt hints, not mode changes)
+    # Stagnation detection triggers at 5+ turns without progress (prompt hints, not mode changes)
 ```
 
 ### 1.4 InvestigationPath
@@ -1413,6 +1413,7 @@ class HypothesisCategory(str, Enum):
     DATA = "data"  # Data quality, corruption, consistency
     DATABASE = "database"  # Database performance, queries, indexes
     HARDWARE = "hardware"
+    SECURITY = "security"  # Security issues, authentication/authorization failures
     EXTERNAL = "external"
     HUMAN = "human"
     OTHER = "other"  # Doesn't fit above categories
