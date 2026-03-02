@@ -899,34 +899,76 @@ class MilestoneEngine:
                     }
 
                 elif to_status_str == "resolved":
-                    # User-Agent Handshake: Explicit UI "Resolve" action.
-                    # Execute immediately since this is a direct user action
-                    # via the UI status dropdown (not NLP interpretation).
-                    from faultmaven.core.investigation.terminal_transitions import (
-                        _execute_resolved_transition,
+                    if case.status != CaseStatus.INVESTIGATING:
+                        raise ValueError(
+                            f"Cannot transition to RESOLVED from {case.status.value}"
+                        )
+
+                    from faultmaven.modules.case.domain.services.case_status_manager import (
+                        CaseStatusManager,
                     )
 
-                    _execute_resolved_transition(
-                        case=case, user_id=case.user_id, reason="User resolved via UI"
+                    if not user_message or not user_message.strip():
+                        user_message = (
+                            CaseStatusManager.get_agent_message(
+                                CaseStatus.INVESTIGATING, CaseStatus.RESOLVED
+                            )
+                            or "The issue is resolved."
+                        )
+
+                    # If a pending transition to resolved already exists, this
+                    # dropdown click is a confirmation of the existing proposal.
+                    # Execute the transition (User-Agent Handshake: confirm step).
+                    if (
+                        hasattr(case, "pending_transition")
+                        and case.pending_transition
+                        and case.pending_transition.get("to_status") == "resolved"
+                    ):
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            confirm_pending_transition,
+                        )
+
+                        confirm_pending_transition(case, case.user_id)
+                        metadata["status_transitioned"] = True
+
+                        logger.info(
+                            f"INVESTIGATING->RESOLVED dropdown: confirmed existing pending "
+                            f"transition for case {case.case_id}"
+                        )
+
+                        # Save and return — transition is complete
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": "Case resolved. The issue has been marked as resolved.",
+                            "suggested_follow_ups": [],
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": ["solution_verified"],
+                                "progress_made": True,
+                            },
+                        }
+
+                    # No pending transition — propose one via User-Agent Handshake.
+                    # The LLM will ask the user to describe the solution and confirm.
+                    # The transition executes on the NEXT turn when the user confirms.
+                    from faultmaven.core.investigation.terminal_transitions import (
+                        propose_transition,
                     )
-                    agent_response = "Case marked as resolved."
+
+                    propose_transition(
+                        case=case,
+                        to_status="resolved",
+                        reason="User indicated resolution via status dropdown",
+                        summary="You've indicated this issue is resolved. Can you describe what fixed it?",
+                    )
+                    metadata["transition_proposed_this_turn"] = True
 
                     logger.info(
-                        f"✅ Case {case.case_id} transitioned to RESOLVED via explicit UI intent"
+                        f"INVESTIGATING->RESOLVED dropdown: proposed transition for "
+                        f"case {case.case_id} (pending user confirmation)"
                     )
-
-                    # Save and return immediately
-                    await self.repository.save(case)
-                    return {
-                        "agent_response": agent_response,
-                        "suggested_follow_ups": [],
-                        "case_updated": case,
-                        "metadata": {
-                            "turn_number": case.current_turn,
-                            "milestones_completed": ["solution_verified"],
-                            "progress_made": True,
-                        },
-                    }
+                    # Fall through to LLM to generate resolution documentation request
 
                 elif to_status_str == "investigating":
                     if case.status != CaseStatus.INQUIRY:
@@ -934,31 +976,30 @@ class MilestoneEngine:
                             f"Cannot transition to INVESTIGATING from {case.status.value}"
                         )
 
-                    # Update inquiry state
-                    case.inquiry.problem_statement_confirmed = True
-                    case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-                    case.inquiry.decided_to_investigate = True
-                    case.inquiry.decision_made_at = datetime.now(UTC)
-
-                    # Transition to INVESTIGATING (manual flow — user clicked dropdown)
-                    # Use the centralized transition method to ensure correct ordering:
-                    # description must be set BEFORE status (Pydantic validation requirement)
-                    await self._transition_to_investigating(case)
-                    case.status_history.append(
-                        CaseStatusTransition(
-                            from_status=CaseStatus.INQUIRY,
-                            to_status=CaseStatus.INVESTIGATING,
-                            triggered_at=datetime.now(UTC),
-                            triggered_by=case.user_id,
-                            reason="User initiated formal investigation",
-                        )
+                    # Design: Dropdown = message. Instead of bypassing the agent,
+                    # inject the pre-composed message and let normal INQUIRY processing
+                    # handle the multi-turn problem statement flow.
+                    # The LLM will:
+                    #   - Ask user to describe the problem (if no statement exists)
+                    #   - Present existing statement for confirmation (if one exists)
+                    #   - Confirm and trigger transition (if already confirmed)
+                    from faultmaven.modules.case.domain.services.case_status_manager import (
+                        CaseStatusManager,
                     )
+
+                    if not user_message or not user_message.strip():
+                        user_message = (
+                            CaseStatusManager.get_agent_message(
+                                CaseStatus.INQUIRY, CaseStatus.INVESTIGATING
+                            )
+                            or "I want to start a formal investigation to find the root cause."
+                        )
 
                     logger.info(
-                        f"✅ Case {case.case_id} transitioned to INVESTIGATING via explicit intent"
+                        f"INQUIRY->INVESTIGATING dropdown: routing through normal INQUIRY flow "
+                        f"for case {case.case_id}"
                     )
-
-                    # Continue to normal LLM flow for investigation kickoff message
+                    # Fall through to normal LLM processing (no transition executed here)
 
                 else:
                     raise ValueError(f"Unknown to_status: {to_status_str}")
