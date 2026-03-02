@@ -374,16 +374,22 @@ class TestInvestigationLifecycle:
         assert ev.form == EvidenceForm.SUBMITTED_DATA
 
     async def test_explicit_transition_to_investigating(self, engine, case_repo):
-        """Explicit intent_type='status_transition' transitions INQUIRY → INVESTIGATING."""
+        """Explicit intent_type='status_transition' routes through normal INQUIRY flow.
+
+        Design: Dropdown = message. The dropdown does NOT bypass the agent.
+        Instead, it injects a pre-composed message and lets the LLM handle
+        the multi-turn problem statement flow. When the LLM confirms the
+        user's intent, the transition fires through _check_automatic_transitions.
+        """
         case = _make_inquiry_case(current_turn=3)
         case.inquiry.proposed_problem_statement = "API latency spikes with p99 > 5s"
         await case_repo.save(case)
 
-        # The investigating transition continues to LLM flow for kickoff message
+        # LLM sees the user wants to investigate and confirms (sets user_confirmed_investigation=True)
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_investigation_verification_response(),
+            return_value=_inquiry_response_user_confirms(),
         ):
             result = await engine.process_turn(
                 case,
@@ -443,11 +449,12 @@ class TestInvestigationLifecycle:
         assert case.status == CaseStatus.INQUIRY
 
         # === Turn 2: Transition to INVESTIGATING via explicit intent ===
+        # Design: Dropdown routes through normal INQUIRY flow. LLM confirms investigation.
         case.current_turn = 2
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_investigation_verification_response(),
+            return_value=_inquiry_response_user_confirms(),
         ):
             result = await engine.process_turn(
                 case,
@@ -584,10 +591,11 @@ class TestCheckpointing:
         case.inquiry.proposed_problem_statement = "API latency spike"
         await case_repo.save(case)
 
+        # Design: Dropdown routes through normal INQUIRY flow. LLM confirms investigation.
         with patch.object(
             engine,
             "_generate_structured_output",
-            return_value=_investigation_verification_response(),
+            return_value=_inquiry_response_user_confirms(),
         ):
             result = await engine.process_turn(
                 case,
@@ -607,16 +615,40 @@ class TestCheckpointing:
         assert cp.metadata["from_status"] == "inquiry"
         assert cp.metadata["to_status"] == "investigating"
 
-    async def test_explicit_ui_resolve_persists(
+    async def test_explicit_ui_resolve_proposes_then_confirms(
         self, engine, case_repo, checkpoint_service
     ):
-        """Explicit UI resolve via status_transition intent works correctly."""
+        """Explicit UI resolve via status_transition proposes transition, then confirms.
+
+        Design: Dropdown = message. First click proposes transition via
+        User-Agent Handshake. Second click (or confirm) executes it.
+        """
         case = _make_investigating_case(current_turn=5)
         await case_repo.save(case)
 
+        # Turn 1: First Resolve dropdown — proposes transition, does NOT execute
+        with patch.object(
+            engine,
+            "_generate_structured_output",
+            return_value=_investigation_verification_response(),
+        ):
+            result = await engine.process_turn(
+                case,
+                "Mark as resolved",
+                intent_type="status_transition",
+                intent_data={"to_status": "resolved", "from_status": "investigating"},
+            )
+
+        case = result["case_updated"]
+        assert case.status == CaseStatus.INVESTIGATING  # NOT resolved yet
+        assert case.pending_transition is not None
+        assert case.pending_transition["to_status"] == "resolved"
+
+        # Turn 2: Second Resolve dropdown — confirms pending transition
+        case.current_turn = 6
         result = await engine.process_turn(
             case,
-            "Mark as resolved",
+            "yes",
             intent_type="status_transition",
             intent_data={"to_status": "resolved", "from_status": "investigating"},
         )

@@ -865,10 +865,16 @@ class TestMilestoneEngine:
     async def test_explicit_status_transition_inquiry_to_investigating(
         self, mock_llm, mock_repo
     ):
-        """Test explicit status_transition intent: INQUIRY → INVESTIGATING via dropdown"""
+        """Test explicit status_transition intent: INQUIRY → INVESTIGATING via dropdown.
+
+        Design: Dropdown = message. The dropdown does NOT bypass the agent.
+        Instead, it injects a pre-composed message and lets the LLM handle
+        the multi-turn problem statement flow. When the LLM sets
+        user_confirmed_investigation=True, the transition fires automatically.
+        """
         engine = MilestoneEngine(mock_llm, mock_repo)
 
-        # Create case in INQUIRY status
+        # Create case in INQUIRY status with a proposed problem statement
         inquiry_case = Case(
             case_id="case_0987654321ab",  # 17 chars
             title="Test Inquiry to Investigating",
@@ -876,20 +882,15 @@ class TestMilestoneEngine:
             user_id="user_123",
             organization_id="org_123",
             description="Test description",
-            problem_verification=ProblemVerification(
-                symptom_statement="Test symptom",
-                severity="HIGH",
-                temporal_state="ongoing",
-                urgency_level="high",
-            ),
         )
+        inquiry_case.inquiry.proposed_problem_statement = "Test symptom"
 
-        # Mock LLM response for investigation kickoff
+        # Mock LLM response: InquiryResponse with user_confirmed_investigation=True
         mock_response_content = json.dumps(
             {
-                "agent_response": "Let's start the investigation. I'll begin by verifying the symptom.",
+                "agent_response": "Confirmed. Starting investigation into the reported issue.",
                 "state_updates": {
-                    "outcome": "milestone_completed",
+                    "user_confirmed_investigation": True,
                 },
             }
         )
@@ -909,7 +910,7 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # 1. Status should be INVESTIGATING
+        # 1. Status should be INVESTIGATING (transition via _check_automatic_transitions)
         assert updated_case.status == CaseStatus.INVESTIGATING
 
         # 2. Inquiry data should be updated
@@ -922,6 +923,176 @@ class TestMilestoneEngine:
         assert last_transition.from_status == CaseStatus.INQUIRY
         assert last_transition.to_status == CaseStatus.INVESTIGATING
 
-        # 4. Should continue to LLM for kickoff message
+        # 4. Should have called LLM (not bypassed)
         assert mock_llm.generate.called
-        assert "investigation" in result["agent_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_investigating_dropdown_without_problem_statement_calls_llm(
+        self, mock_llm, mock_repo
+    ):
+        """Dropdown INQUIRY→INVESTIGATING with no problem statement routes through LLM.
+
+        Design: Dropdown = message. Without a problem statement, the LLM should
+        ask the user to describe the problem rather than silently transitioning.
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        inquiry_case = Case(
+            case_id="case_0987654321cd",
+            title="API issue",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+        )
+        # No proposed_problem_statement set — agent hasn't formulated one yet
+
+        # LLM asks user to describe the problem (does NOT confirm investigation)
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "I'd like to help investigate. Could you describe the problem you're seeing?",
+                "state_updates": {},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(
+            case=inquiry_case,
+            user_message="",  # Empty message — dropdown click only
+            intent_type="status_transition",
+            intent_data={"from_status": "inquiry", "to_status": "investigating"},
+        )
+
+        updated_case = result["case_updated"]
+
+        # Case should stay in INQUIRY (no problem statement to confirm)
+        assert updated_case.status == CaseStatus.INQUIRY
+        # LLM was called (not bypassed)
+        assert mock_llm.generate.called
+
+    @pytest.mark.asyncio
+    async def test_resolved_dropdown_proposes_transition(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Dropdown INVESTIGATING→RESOLVED proposes transition via User-Agent Handshake.
+
+        Design: Dropdown = message. The first click proposes the transition;
+        it does NOT execute immediately. The user must confirm on the next turn.
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Mock LLM response for the proposal turn
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "You've indicated this is resolved. Can you describe what fixed the issue?",
+                "state_updates": {"outcome": "conversation"},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="The issue is resolved.",
+            intent_type="status_transition",
+            intent_data={"from_status": "investigating", "to_status": "resolved"},
+        )
+
+        updated_case = result["case_updated"]
+
+        # Case should still be INVESTIGATING (transition proposed, not executed)
+        assert updated_case.status == CaseStatus.INVESTIGATING
+
+        # Pending transition should be set
+        assert updated_case.pending_transition is not None
+        assert updated_case.pending_transition["to_status"] == "resolved"
+
+        # LLM was called
+        assert mock_llm.generate.called
+
+    @pytest.mark.asyncio
+    async def test_resolved_dropdown_with_pending_confirms(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Dropdown RESOLVED with existing pending transition confirms it.
+
+        If the user clicks Resolve again when a pending transition already
+        exists, it acts as confirmation and executes the transition.
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        # Set up pending transition from a previous turn
+        base_case.pending_transition = {
+            "to_status": "resolved",
+            "reason": "User indicated resolution",
+            "summary": "Issue resolved",
+            "evidence_ids": [],
+            "proposed_at": "2026-03-01T00:00:00Z",
+            "proposed_by": "agent",
+        }
+
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="yes",
+            intent_type="status_transition",
+            intent_data={"from_status": "investigating", "to_status": "resolved"},
+        )
+
+        updated_case = result["case_updated"]
+
+        # Transition should be executed (confirmed the pending)
+        assert updated_case.status == CaseStatus.RESOLVED
+        assert updated_case.pending_transition is None
+        assert updated_case.progress.solution_verified is True
+
+    @pytest.mark.asyncio
+    async def test_resolved_dropdown_injects_precomposed_message(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Dropdown RESOLVED with empty message injects pre-composed message."""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "You mentioned the issue is resolved. Can you describe the solution?",
+                "state_updates": {"outcome": "conversation"},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="",  # Empty — dropdown click only
+            intent_type="status_transition",
+            intent_data={"from_status": "investigating", "to_status": "resolved"},
+        )
+
+        # LLM was called (pre-composed message injected)
+        assert mock_llm.generate.called
+        # Pending transition proposed
+        assert result["case_updated"].pending_transition is not None
+
+    @pytest.mark.asyncio
+    async def test_closed_transitions_still_execute_immediately(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """CLOSED transitions remain immediate (no handshake needed).
+
+        Design: CLOSED transitions have optional info requirements, so
+        immediate execution is intentional.
+        """
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="Close without resolution",
+            intent_type="status_transition",
+            intent_data={"from_status": "investigating", "to_status": "closed"},
+        )
+
+        updated_case = result["case_updated"]
+
+        # Should execute immediately (no pending transition)
+        assert updated_case.status == CaseStatus.CLOSED
+        assert updated_case.pending_transition is None
+        # LLM should NOT be called (immediate return)
+        assert not mock_llm.generate.called
