@@ -488,12 +488,12 @@ def _build_evidence_context(case: Case) -> str:
 
 
 def _build_turn_summary(turn) -> str:
-    """Build a one-line summary from a TurnProgress record.
+    """Build a compact summary from a TurnProgress record.
 
-    Format: TURN {n}: {user_summary} → {outcome_description}
+    Format: TURN {n}: {user_summary} → {structural_metadata} | Agent: {response_summary}
 
-    Uses structured metadata (milestones, evidence, hypotheses) to describe
-    what happened, falling back to the text summary if no structured data.
+    Includes both structural metadata (milestones, evidence counts) AND the
+    agent_response_summary so the LLM knows WHAT was analyzed, not just counts.
     """
     parts = []
 
@@ -511,17 +511,26 @@ def _build_turn_summary(turn) -> str:
     if turn.solutions_proposed:
         parts.append(f"{len(turn.solutions_proposed)} solutions proposed")
 
-    # Fallback to outcome or agent summary
-    if not parts:
-        if turn.agent_response_summary:
-            parts.append(turn.agent_response_summary[:100])
-        elif turn.outcome:
-            parts.append(str(turn.outcome.value))
+    outcome_desc = ", ".join(parts) if parts else ""
 
-    outcome_desc = ", ".join(parts) if parts else "conversation"
+    # Always include agent_response_summary when available — this tells the
+    # LLM what it actually analyzed/concluded, not just structural counts.
+    # Without this, summarized turns lose critical detail like "analyzed
+    # nova-api logs, found VM lifecycle events" → just "1 evidence added".
+    agent_part = ""
+    if turn.agent_response_summary:
+        agent_part = f" | Agent: {turn.agent_response_summary[:200]}"
+    elif not outcome_desc:
+        # No structural metadata AND no agent summary — use outcome as fallback
+        if turn.outcome:
+            outcome_desc = str(turn.outcome.value)
+        else:
+            outcome_desc = "conversation"
 
     user_part = turn.user_message_summary or "User message"
-    return f"TURN {turn.turn_number}: {user_part} → {outcome_desc}"
+    if outcome_desc:
+        return f"TURN {turn.turn_number}: {user_part} → {outcome_desc}{agent_part}"
+    return f"TURN {turn.turn_number}: {user_part}{agent_part}"
 
 
 def _build_graduated_history(case: Case) -> str:

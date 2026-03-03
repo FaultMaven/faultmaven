@@ -820,32 +820,34 @@ def get_fallback_prompt_for_case(
 def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
-    Returns a priority signal injected at the top of DIAGNOSIS instructions.
+    Returns a contextual status signal injected at the top of DIAGNOSIS
+    instructions. Informs the agent where the investigation stands and what
+    would advance it, WITHOUT overriding the user's question.
+
     Three zones based on progress milestone state:
-    - VERIFY THE PROBLEM: No symptoms confirmed yet
+    - VERIFY: No symptoms confirmed yet
     - ROOT CAUSE ANALYSIS: Symptoms verified, cause not found
-    - PROPOSE A SOLUTION: Root cause found, need actionable fix
+    - SOLUTION NEEDED: Root cause found, need actionable fix
     """
     if not progress.symptom_verified:
         return """
-**CURRENT FOCUS: VERIFY THE PROBLEM**
-Your primary goal this turn is to gather logs, confirm symptoms, and
-establish the scope and timeline. Ask the user for the specific evidence
-needed to prove the problem exists.
+**INVESTIGATION PROGRESS: Symptom verification pending**
+No symptoms have been formally confirmed. When analyzing data, look for
+evidence the problem exists — errors, anomalies, user impact — to advance
+symptom_verified, scope_assessed, and timeline_established.
 """
     elif progress.symptom_verified and not progress.root_cause_identified:
         return """
-**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
-The problem is verified. Your primary goal this turn is to form and test
-hypotheses. Look at the causal evidence, form a theory, and actively seek
-the data needed to prove or disprove it.
+**INVESTIGATION PROGRESS: Root cause analysis**
+Symptoms are confirmed. When evaluating evidence, focus on hypotheses
+explaining the root cause. Causal evidence linking changes to symptoms
+advances root_cause_identified.
 """
     elif progress.root_cause_identified and not progress.solution_proposed:
         return """
-**CURRENT FOCUS: PROPOSE A SOLUTION**
-You have identified the root cause. Your primary goal this turn is to
-formulate a concrete, executable fix. Provide specific commands for the
-user to run so the investigation can transition to Treatment.
+**INVESTIGATION PROGRESS: Solution needed**
+Root cause is identified. A concrete, executable fix with specific commands
+advances the investigation to Treatment.
 """
     else:
         return ""  # solution_proposed=True: pending action context handles this
