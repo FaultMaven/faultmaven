@@ -19,7 +19,7 @@ Architecture:
     - solutions (1:N normalized table)
     - case_messages (1:N normalized table)
     - uploaded_files (1:N normalized table)
-    - case_status_transitions (1:N normalized table)
+    - case_actions (1:N normalized table)
 """
 
 import builtins
@@ -34,9 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseAction,
     CaseReport,
     CaseStatus,
-    CaseStatusTransition,
     DocumentationData,
     CaseCheckpoint,
     EscalationState,
@@ -100,10 +100,8 @@ class SQLiteCaseRepository(CaseRepository):
                     case.case_id, case.messages
                 )  # Save messages!
 
-                if case.status_history:
-                    await self._append_status_transitions(
-                        case.case_id, case.status_history
-                    )
+                if case.action_history:
+                    await self._append_case_actions(case.case_id, case.action_history)
 
                 await self.db.commit()
 
@@ -1525,13 +1523,13 @@ class SQLiteCaseRepository(CaseRepository):
                 },
             )
 
-    async def _append_status_transitions(
-        self, case_id: str, transitions: builtins.list[CaseStatusTransition]
+    async def _append_case_actions(
+        self, case_id: str, transitions: builtins.list[CaseAction]
     ) -> None:
-        """Append status transitions (SQLite-compatible)."""
+        """Append case actions (SQLite-compatible)."""
         for transition in transitions:
             query = text("""
-                INSERT INTO case_status_transitions (
+                INSERT INTO case_actions (
                     case_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
                     :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata
@@ -1663,7 +1661,7 @@ class SQLiteCaseRepository(CaseRepository):
             "organization_id": row.organization_id,  # Required field, must be NOT NULL in DB
             "title": row.title,
             "status": CaseStatus(row.status),
-            "status_history": [],
+            "action_history": [],
             "closure_reason": metadata.get("closure_reason"),
             "progress": progress,
             "current_turn": metadata.get("current_turn", 0),

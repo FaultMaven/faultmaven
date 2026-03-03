@@ -8,7 +8,7 @@ Public API:
         - InvestigationProgress, Evidence, Hypothesis, Solution
 
     From domain.services (import directly to avoid circular imports):
-        - CaseService, InvestigationSessionService, CaseStatusManager
+        - CaseService, InvestigationSessionService, CaseActionManager
 
 Structure:
 - api/: API routes for case endpoints

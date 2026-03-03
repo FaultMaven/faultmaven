@@ -60,7 +60,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 - No progress for 3+ turns
 - Hypothesis anchoring (same category tested repeatedly)
 - Evidence contradictions
-- Stage-gate milestone dependencies violated
+- Gate milestone dependencies violated
 
 **Strategy**: Detect and inject stagnation nudges (prompt hints) to guide alternative paths
 
@@ -345,7 +345,7 @@ This ensures the LLM receives corrective instructions for the next turn even whe
 
 ### 4.1 Evidence-Driven State Validator
 
-The `StateValidator` validates investigation state consistency using the **evidence-driven** architecture with stage-gate milestones and progress indicators.
+The `StateValidator` validates investigation state consistency using the **evidence-driven** architecture with gate milestones and progress milestones.
 
 ```python
 from enum import Enum
@@ -395,11 +395,11 @@ class StateValidator:
         progress: InvestigationProgress
     ) -> List[ValidationIssue]:
         """
-        Validate stage-gate milestone and progress indicator dependencies.
+        Validate gate milestone and progress milestone dependencies.
 
-        Stage-gate milestones: mitigation_accepted, mitigation_verified,
+        Gate milestones: mitigation_accepted, mitigation_verified,
             solution_accepted, solution_verified
-        Progress indicators: symptom_verified, scope_assessed, etc.
+        Progress milestones: symptom_verified, scope_assessed, etc.
 
         Milestones can only go False → True, never revert.
         Some milestones have logical dependencies.
@@ -446,7 +446,7 @@ class StateValidator:
                 suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False"
             ))
 
-        # root_cause_identified should have likelihood (progress indicator consistency)
+        # root_cause_identified should have likelihood (progress milestone consistency)
         if progress.root_cause_identified and progress.root_cause_likelihood is None:
             issues.append(ValidationIssue(
                 code="MILESTONE_INCOMPLETE_001",
@@ -1068,7 +1068,7 @@ This error handling framework provides:
 
 5. **System feedback loop** - Wire validation errors, reasoning issues, and breakout prompts to next-turn context
 
-6. **Evidence-driven state validation** - Ensure stage-gate milestone and progress indicator consistency
+6. **Evidence-driven state validation** - Ensure gate milestone and progress milestone consistency
 
 7. **Stagnation detection** - Identify when investigation is stuck (no progress, anchoring, loops)
 

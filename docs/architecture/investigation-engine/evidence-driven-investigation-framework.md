@@ -19,9 +19,9 @@ This document defines the investigation architecture for FaultMaven's investigat
 
 | Aspect | Design |
 |--------|--------|
-| **Stage model** | 3 explicit stages: DIAGNOSIS, MITIGATION, TREATMENT |
+| **Stage model** | 2 core stages (DIAGNOSIS, TREATMENT) with optional MITIGATION detour |
 | **Stage transitions** | Inference-based (user compliance with proposed action implies acceptance) |
-| **Progress tracking** | 4 stage-gate milestones (drive transitions) + 6 progress indicators (LLM context, non-driving) |
+| **Progress tracking** | 10 investigation milestones: 4 gate milestones (drive transitions) + 6 progress milestones (LLM context, non-driving) |
 | **Evidence types** | 5 categories: symptom, causal, mitigation, solution, contextual |
 | **Hypothesis constraint** | Required before causal_evidence classification |
 | **Mitigation** | Distinct stage with own prompt, evidence type, and iterative verification |
@@ -30,7 +30,7 @@ This document defines the investigation architecture for FaultMaven's investigat
 **What does NOT change:**
 - Case statuses: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 - INQUIRY phase and two-step confirmation for entering INVESTIGATING
-- User-Agent Handshake for terminal transitions (RESOLVED/CLOSED)
+- User-Agent Handshake for disposition transitions (RESOLVED/CLOSED)
 - Hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED/RETIRED)
 - Knowledge base pre-check and fast-track resolution
 - Stagnation detection and progress tracking
@@ -71,7 +71,7 @@ Milestones were applied **optimistically** from LLM output, then validated after
 
 ### 1.4 No User Agency in Stage Progression
 
-The user had no say in when the investigation moves from diagnosis to solution. The LLM decided `solution_proposed = True` as an output field, and the stage computed automatically. Terminal transitions (RESOLVED/CLOSED) required user confirmation via the User-Agent Handshake, but intermediate stage transitions did not. This creates asymmetry: the most critical decision (closing the case) requires user approval, but the decision to stop diagnosing and start solving does not.
+The user had no say in when the investigation moves from diagnosis to solution. The LLM decided `solution_proposed = True` as an output field, and the stage computed automatically. Disposition actions (RESOLVED/CLOSED) required user confirmation via the User-Agent Handshake, but intermediate stage transitions did not. This creates asymmetry: the most critical decision (closing the case) requires user approval, but the decision to stop diagnosing and start solving does not.
 
 ### 1.5 Stages Imply an Ordering That Evidence Doesn't Follow
 
@@ -124,9 +124,9 @@ Evidence drives the agent's analysis (what to focus on, which hypotheses to form
 
 Stage transitions are inferred from user behavior, not explicit confirmation. When the agent proposes a solution and the user responds with evidence of having executed it (command output, post-fix metrics), the system infers acceptance and transitions to TREATMENT. If the user questions or refuses, no transition occurs.
 
-This is fundamentally different from transitions that require explicit confirmation:
+This is fundamentally different from case actions that require explicit confirmation:
 - **INQUIRY → INVESTIGATING**: Requires two-step confirmation (changes the nature of interaction)
-- **INVESTIGATING → RESOLVED/CLOSED**: Requires User-Agent Handshake (irreversible terminal state)
+- **INVESTIGATING → RESOLVED/CLOSED**: Requires User-Agent Handshake (irreversible disposition)
 - **DIAGNOSIS → TREATMENT**: Inferred from compliance (user ran the command and pasted results)
 
 The reasoning: asking "do you accept this solution?" before letting the user try it adds friction without safety value. The user's act of executing the proposed command IS acceptance.
@@ -151,7 +151,7 @@ Treating mitigation as a "tool available during other stages" creates complex ro
 
 ---
 
-## 3. The Three-Stage Model
+## 3. The 2-Stage Model with Mitigation Detour
 
 ### 3.1 Stage Overview
 
@@ -310,36 +310,68 @@ The agent can perform all necessary diagnostic work within TREATMENT. The key di
 
 ---
 
-## 4. Milestones and Transitions
+## 4. Investigation State
 
-### 4.1 Stage-Gate Milestones
+### 4.1 Defining Investigation State
 
-Only two milestones gate stage transitions. Both are **set by the LLM in structured output based on detected user compliance** with a ProposedAction — the LLM is the compliance detector, not the decision-maker. The user's action is the trigger; the LLM recognizes it:
+The state of an investigation at any point in time is defined by two dimensions:
+
+1. **Stage** — Where the investigation is: DIAGNOSIS, MITIGATION (detour), or TREATMENT
+2. **Investigation Milestones** — What has been established and what has been acted upon
+
+**Stage** is a computed property derived from 4 gate milestones. It determines which prompt template the LLM receives and what kind of work is expected.
+
+**Investigation Milestones** are 10 boolean flags (grouped into gate milestones and progress milestones) that track the investigation's advancement. Gate milestones drive stage transitions; progress milestones provide the LLM with context about what has been established so far.
+
+Together, these dimensions fully describe investigation state:
+
+| Dimension | Values | Drives |
+|-----------|--------|--------|
+| **Stage** | DIAGNOSIS, MITIGATION, TREATMENT | LLM prompt selection, evidence expectations |
+| **Gate Milestones** (4) | mitigation_accepted, mitigation_verified, solution_accepted, solution_verified | Stage transitions |
+| **Progress Milestones** (6) | symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed | LLM focus within stage, analytics, path selection |
+
+Note: Stage is not independent — it is *computed from* gate milestones. But it is the primary abstraction users and the LLM interact with, while milestones are the underlying state.
+
+### 4.2 Investigation Milestones
+
+#### Gate Milestones (4)
+
+Gate milestones drive stage transitions. They are **set by the LLM in structured output based on detected user compliance** with a ProposedAction — the LLM is the compliance detector, not the decision-maker. The user's action is the trigger; the LLM recognizes it:
 
 | Milestone | Trigger | Effect |
 |-----------|---------|--------|
 | `solution_accepted` | User complies with proposed solution (submits execution results) | DIAGNOSIS → TREATMENT |
 | `solution_verified` | User confirms fix worked (via User-Agent Handshake) | TREATMENT → RESOLVED |
-
-For the mitigation-first path, one additional milestone:
-
-| Milestone | Trigger | Effect |
-|-----------|---------|--------|
 | `mitigation_accepted` | User complies with proposed temp fix (submits execution results) | DIAGNOSIS → MITIGATION |
+| `mitigation_verified` | User confirms mitigation worked | MITIGATION → DIAGNOSIS (return for RCA) |
 
 **How inference works**: The system (or classification layer) detects whether the user's input matches the expected evidence of the proposed action. This is distinct from the three other transition types:
 
-| Transition | Mechanism | Why |
+| Case Action | Mechanism | Why |
 |-----------|-----------|-----|
 | INQUIRY → INVESTIGATING | Explicit two-step confirmation | Changes nature of interaction |
 | DIAGNOSIS → TREATMENT | **Inferred from compliance** | User's action IS acceptance |
 | DIAGNOSIS → MITIGATION | **Inferred from compliance** | User's action IS acceptance |
-| INVESTIGATING → RESOLVED | User-Agent Handshake | Irreversible terminal state |
+| INVESTIGATING → RESOLVED | User-Agent Handshake | Irreversible disposition |
 
-### 4.2 Transition Rules
+#### Progress Milestones (6)
+
+Progress milestones track what has been established during the investigation. They are set by the LLM in structured output and do NOT drive stage transitions. They serve three purposes: (1) inform LLM focus within a stage, (2) provide analytics and dashboard progress, (3) influence path selection decisions.
+
+| Milestone | What It Tracks | Evidence Category |
+|-----------|---------------|-------------------|
+| `symptom_verified` | Problem confirmed with concrete evidence (logs, metrics, user reports) | SYMPTOM_EVIDENCE |
+| `scope_assessed` | Blast radius determined — affected users, services, regions | SYMPTOM_EVIDENCE |
+| `timeline_established` | When problem started, when noticed, duration | SYMPTOM_EVIDENCE |
+| `changes_identified` | Recent deployments, config changes, scaling events identified | SYMPTOM_EVIDENCE, CAUSAL_EVIDENCE |
+| `root_cause_identified` | Root cause determined (directly or via hypothesis validation) | CAUSAL_EVIDENCE |
+| `solution_proposed` | Set programmatically when ProposedAction with action_type=SOLUTION is created | (programmatic, not evidence-driven) |
+
+### 4.3 Stage Computation
 
 ```python
-# Stage computation (replaces computed property from milestones)
+# Stage is computed from gate milestones
 def current_stage(case) -> InvestigationStage:
     if case.solution_accepted and not case.solution_verified:
         return InvestigationStage.TREATMENT
@@ -352,21 +384,21 @@ Key properties:
 
 - **No regression**: Once in TREATMENT, the case stays in TREATMENT (extended diagnosis happens within TREATMENT)
 - **Mitigation is a detour**: MITIGATION always returns to DIAGNOSIS when verified
-- **Inference-based**: Non-terminal transitions are inferred from user compliance, not explicit confirmation
+- **Inference-based**: Non-disposition case actions are inferred from user compliance, not explicit confirmation
 
-### 4.3 What Happened to the 9 Old Milestones?
+### 4.4 What Happened to the 9 Old Milestones?
 
 The old milestones (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed, solution_applied, mitigation_applied, solution_verified) tracked micro-progress within what is now a single DIAGNOSIS stage.
 
 In the new model:
-- **symptom_verified, scope_assessed, timeline_established, changes_identified**: Become LLM context data within DIAGNOSIS. The agent tracks these internally (via ProblemVerification fields), but they do not control stage selection.
-- **root_cause_identified**: Tracked via hypothesis status (VALIDATED with high confidence). Not a boolean flag.
-- **solution_proposed**: Becomes the agent's proposed action within DIAGNOSIS. User compliance triggers inferred transition to TREATMENT. Not a milestone.
+- **symptom_verified, scope_assessed, timeline_established, changes_identified**: Retained as progress milestones — provide LLM context within DIAGNOSIS. They do not control stage selection.
+- **root_cause_identified**: Retained as a progress milestone. Also tracked via hypothesis status (VALIDATED with high confidence).
+- **solution_proposed**: Retained as a progress milestone, but set programmatically (not by LLM). Tells the LLM "you already proposed a solution" without scanning conversation history.
 - **solution_applied**: Tracked as part of TREATMENT workflow. Not a milestone.
 - **mitigation_applied**: Replaced by the MITIGATION stage with its own lifecycle.
-- **solution_verified**: Retained as a user-confirmed milestone gating the terminal transition.
+- **solution_verified**: Retained as a gate milestone driving the TREATMENT → RESOLVED transition.
 
-### 4.4 Transition Flow Diagram
+### 4.5 Transition Flow Diagram
 
 ```
 INQUIRY ──(user confirms problem)──► DIAGNOSIS
@@ -533,7 +565,7 @@ The path determines **whether the agent offers mitigation** during DIAGNOSIS. Th
 
 **New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted evidence request → new hypothesis → corrective action.
 
-**Mitigation-only resolution**: After MITIGATION, user says "That's good enough, we'll investigate later." The system directs toward DIAGNOSIS for RCA, but the user can close the case via UI (→ CLOSED with closure_reason = "mitigation_sufficient"). Note: CaseStatus.CLOSED formally means "closed without permanent solution," but when closure_reason is "mitigation_sufficient" the UI should render this distinctly (e.g., "Closed - Mitigated" rather than "Closed - Abandoned") to reflect that the user's problem was addressed, just not via root cause analysis.
+**Mitigation-only resolution**: After MITIGATION, user says "That's good enough, we'll investigate later." The system directs toward DIAGNOSIS for RCA, but the user can close the case via UI (→ CLOSED disposition with closure_reason = "mitigation_sufficient"). Note: CaseStatus.CLOSED formally means "closed without permanent solution," but when closure_reason is "mitigation_sufficient" the UI should render this distinctly (e.g., "Closed - Mitigated" rather than "Closed - Abandoned") to reflect that the user's problem was addressed, just not via root cause analysis.
 
 ---
 
@@ -545,9 +577,9 @@ The three-template system is preserved with updated stage instructions:
 
 | Template | Used When | Description |
 |----------|-----------|-------------|
-| **INQUIRY_TEMPLATE** | `status == INQUIRY` | Explore problem, get commitment (unchanged) |
-| **INVESTIGATION_BASE** + stage instructions | `status == INVESTIGATING` | Active investigation |
-| **TERMINAL_TEMPLATE** | `status in [RESOLVED, CLOSED]` | Documentation and summary (unchanged) |
+| **INQUIRY_TEMPLATE** | `status == INQUIRY` (phase) | Explore problem, get commitment (unchanged) |
+| **INVESTIGATION_BASE** + stage instructions | `status == INVESTIGATING` (phase) | Active investigation |
+| **TERMINAL_TEMPLATE** | `status in [RESOLVED, CLOSED]` (dispositions) | Documentation and summary (unchanged) |
 
 ### 8.2 Stage Instructions (Replaces STAGE_INSTRUCTIONS Dict)
 
@@ -576,7 +608,7 @@ def get_stage_instructions(case: Case) -> str:
 
 ### 8.4 DIAGNOSIS Prompt Objectives
 
-The DIAGNOSIS instructions combine the analytical capabilities of the old 3 stage prompts into a natural flow:
+The DIAGNOSIS instructions combine the analytical capabilities of the old 4 stage prompts into a natural flow:
 
 1. **Verify** — Confirm symptoms, scope, timeline using evidence
 2. **Hypothesize** — Form testable theories about root cause
@@ -584,6 +616,67 @@ The DIAGNOSIS instructions combine the analytical capabilities of the old 3 stag
 4. **Propose** — When confident, propose a concrete action for the user to execute
 
 The agent is not forced through these steps sequentially. If evidence immediately reveals the root cause, the agent can verify, hypothesize, and propose in one turn.
+
+### 8.5 Focus Zone Emphasis (Progress Milestone-Driven)
+
+Within the DIAGNOSIS stage, progress milestones determine a **focus zone** — a priority signal injected at the top of the DIAGNOSIS instructions that tells the LLM what matters most this turn. This is NOT a sub-stage boundary; all DIAGNOSIS capabilities remain available regardless of focus zone.
+
+**Design rationale**: DIAGNOSIS covers the full spectrum from "we don't know what the problem is" to "we've identified root cause and need to propose a fix." Without focus emphasis, the LLM receives all instructions equally and must infer priority from milestone flags. Focus zones make the priority explicit while preserving opportunistic investigation.
+
+#### Focus Zone Computation
+
+```python
+def get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
+    """Compute focus zone from progress milestones.
+
+    Returns a priority signal injected before standard DIAGNOSIS instructions.
+    The LLM still has all DIAGNOSIS capabilities — this guides emphasis only.
+    """
+    if not progress.symptom_verified:
+        return """
+**CURRENT FOCUS: VERIFY THE PROBLEM**
+Your primary goal this turn is to gather logs, confirm symptoms, and
+establish the scope and timeline. Ask the user for the specific evidence
+needed to prove the problem exists.
+"""
+    elif progress.symptom_verified and not progress.root_cause_identified:
+        return """
+**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
+The problem is verified. Your primary goal this turn is to form and test
+hypotheses. Look at the causal evidence, form a theory, and actively seek
+the data needed to prove or disprove it.
+"""
+    elif progress.root_cause_identified and not progress.solution_proposed:
+        return """
+**CURRENT FOCUS: PROPOSE A SOLUTION**
+You have identified the root cause. Your primary goal this turn is to
+formulate a concrete, executable fix. Provide specific commands for the
+user to run so the investigation can transition to Treatment.
+"""
+    else:
+        return ""  # solution_proposed=True: pending action context handles this state
+```
+
+#### Injection Point
+
+The focus zone is injected immediately after the stage header, before the standard capabilities list:
+
+```text
+**CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
+{focus_zone_emphasis}                          ← injected here
+**YOUR NATURAL FLOW** (no sub-stages — follow the evidence):
+1. Verify Symptoms ...
+2. Diagnose Root Cause ...
+3. Propose Action ...
+```
+
+#### Why This Works
+
+- **Not a sub-stage boundary**: The LLM can still complete multiple milestones in one turn. The focus zone says "prioritize this" not "only do this."
+- **No schema change**: The response schema remains `InvestigationResponse_Diagnosis` regardless of focus zone.
+- **No new templates**: The instruction set is still one template with conditional emphasis.
+- **Maps to evidence categories**: Verification zone expects `SYMPTOM_EVIDENCE`, RCA zone expects `CAUSAL_EVIDENCE`, solution zone is triggered programmatically. This aligns with `CATEGORY_MILESTONE_MAP`.
+- **Graceful fallback**: When `solution_proposed=True`, the `pending_action` context already tells the LLM what's expected — no emphasis needed.
 
 The proposal should be a specific action ("Run `kubectl rollout restart...`"), not a request for permission ("Would you like me to suggest a fix?"). The user's compliance (executing and submitting results) triggers the inference-based transition to TREATMENT.
 
@@ -668,15 +761,15 @@ class InvestigationProgress(BaseModel):
     solution_verified: bool = False
     mitigation_applied: bool = False
 
-# New: Stage-gate milestones + progress indicators (non-stage-driving)
+# New: Gate milestones + progress milestones (non-stage-driving)
 class InvestigationProgress(BaseModel):
-    # Stage-gate milestones (inferred from user behavior — drive transitions)
+    # Gate milestones (inferred from user behavior — drive stage transitions)
     mitigation_accepted: bool = False     # DIAGNOSIS → MITIGATION (inferred from compliance)
     mitigation_verified: bool = False     # MITIGATION → DIAGNOSIS (return)
     solution_accepted: bool = False       # DIAGNOSIS → TREATMENT (inferred from compliance)
     solution_verified: bool = False       # TREATMENT → RESOLVED (User-Agent Handshake)
 
-    # Progress indicators (set by LLM — do NOT drive stage transitions)
+    # Progress milestones (set by LLM — do NOT drive stage transitions)
     # Used for: LLM context, progress display, analytics, deciding when/what to propose
     symptom_verified: bool = False        # Problem symptoms confirmed
     scope_assessed: bool = False          # Impact scope determined
@@ -770,11 +863,11 @@ The `action_type` is determined by the system when creating the ProposedAction f
 - Otherwise → `SOLUTION`
 - Downgraded to `DIAGNOSTIC` if no hypothesis exists (prevents premature TREATMENT entry)
 
-The system uses `action_type` to determine which stage-gate milestone to set when user compliance is detected.
+The system uses `action_type` to determine which gate milestone to set when user compliance is detected.
 
 ### 10.6 Action Attempt Tracking (New)
 
-Track user attempts to execute proposed actions. Compliance detection analyzes attempts to determine if stage-gate milestones should be set:
+Track user attempts to execute proposed actions. Compliance detection analyzes attempts to determine if gate milestones should be set:
 
 ```python
 class ActionAttempt(BaseModel):
@@ -850,10 +943,10 @@ stateDiagram-v2
 
 The core processing pipeline remains the same (context assembly → prompt selection → LLM invocation → response processing). Changes are limited to:
 
-1. **Template selection**: 3 stage instructions instead of 4
+1. **Template selection**: 2 core stage instructions + 1 mitigation detour instruction (replacing the old 4)
 2. **Stage computation**: From inferred milestones instead of 9 boolean flags
 3. **Evidence validation**: Category-based checks updated for new types
-4. **Compliance detection**: Post-LLM detection of user compliance with proposed action via stage-gate milestones in structured output (transition takes effect next turn)
+4. **Compliance detection**: Post-LLM detection of user compliance with proposed action via gate milestones in structured output (transition takes effect next turn)
 
 ### 11.3 Evidence Classification & Stage Relationship
 
@@ -924,14 +1017,14 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 
 1. **Add new stage instructions** (DONE) — DIAGNOSIS_INSTRUCTIONS, MITIGATION_INSTRUCTIONS, TREATMENT_INSTRUCTIONS added to templates.py
 2. **Update InvestigationStage enum** — Add DIAGNOSIS, MITIGATION, TREATMENT values
-3. **Update InvestigationProgress model** — Stage-gate milestones + retained progress indicators
+3. **Update InvestigationProgress model** — Gate milestones + retained progress milestones
 4. **Add ProposedAction model** — action_type, expected_command, description (Section 10.5)
 5. **Add ActionAttempt tracking** — List on Case for solution and mitigation history (Section 10.6)
 6. **Update EvidenceCategory enum** — Add mitigation_evidence, rename resolution_evidence
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
 8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), stagnation detection
 9. **Update context_builder.py** — Stage-specific context loading, ProposedAction in prompt context
-10. **Update LLM response schemas** — ProposedAction output, stage-gate milestones, progress indicators
+10. **Update LLM response schemas** — ProposedAction output, gate milestones, progress milestones
 11. **Update tests** — All test files referencing old milestones/stages
 
 ### 13.3 Database Migration
@@ -942,7 +1035,7 @@ Existing cases with old milestone fields need migration:
 - Cases in INVESTIGATING: Map old milestones to new fields:
 
 ```python
-# Progress indicators: direct copy (field names unchanged)
+# Progress milestones: direct copy (field names unchanged)
 new.symptom_verified = old.symptom_verified
 new.scope_assessed = old.scope_assessed
 new.timeline_established = old.timeline_established
@@ -950,7 +1043,7 @@ new.changes_identified = old.changes_identified
 new.root_cause_identified = old.root_cause_identified
 new.solution_proposed = old.solution_proposed
 
-# Stage-gate milestones: infer from old state
+# Gate milestones: infer from old state
 new.solution_accepted = old.solution_applied    # if applied, they accepted
 new.solution_verified = old.solution_verified
 new.mitigation_accepted = old.mitigation_applied
@@ -969,9 +1062,9 @@ new.action_attempts = []
 | Component | Old | New |
 |-----------|-----|-----|
 | InvestigationStage enum | 4 values | 3 values |
-| InvestigationProgress | 9 boolean flags driving stages | 4 stage-gate milestones (inferred) + 6 progress indicators (non-driving, LLM context) |
-| Stage computation | Computed from milestone flags | Computed from stage-gate milestones only |
-| Stage transitions | Automatic (milestone-driven) | Inference-based (user compliance with proposed action) |
+| InvestigationProgress | 9 boolean flags driving stages | 4 gate milestones (inferred) + 6 progress milestones (non-driving, LLM context) |
+| Stage computation | Computed from milestone flags | Computed from gate milestones only |
+| Stage transitions (case actions) | Automatic (milestone-driven) | Inference-based (user compliance with proposed action) |
 | Proposal tracking | None (free text only) | ProposedAction with action_type, expected_command (Section 10.5) |
 | Action attempt tracking | None | ActionAttempt list covering both solution and mitigation cycles (Section 10.6) |
 | TREATMENT scope | Verify fix only | Verify fix + extended diagnosis when fix fails |
@@ -979,7 +1072,7 @@ new.action_attempts = []
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
 | Path selection | USER_CHOICE in matrix | USER_CHOICE restored for ambiguous urgency/temporal cells |
-| Milestone validation | Consistency check (blocking) | Stage-gate milestones inferred from behavior; progress indicators set by LLM (advisory, non-blocking) |
+| Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones set by LLM (advisory, non-blocking) |
 | Compliance detection | N/A (explicit confirmation) | Post-LLM, default no-transition when ambiguous (Section 15, decisions 5-6) |
 | "Jump ahead" | Allowed and encouraged | Removed (no sub-stages to jump between) |
 
@@ -989,7 +1082,7 @@ new.action_attempts = []
 |-----------|--------|
 | CaseStatus (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) | Unchanged |
 | INQUIRY template and two-step confirmation | Unchanged |
-| User-Agent Handshake for terminal transitions | Unchanged |
+| User-Agent Handshake for disposition actions | Unchanged |
 | TERMINAL template | Unchanged |
 | Hypothesis lifecycle and evidence linking | Unchanged |
 | Knowledge base pre-check and fast-track | Unchanged |
@@ -1007,7 +1100,7 @@ new.action_attempts = []
 
 All open questions from the initial draft have been resolved.
 
-1. **Old milestones retained as progress indicators.** The old flags (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed) are retained as non-stage-driving progress indicators on InvestigationProgress. They are used by the LLM to evaluate investigation progress and decide when/what to propose — but they do NOT drive stage transitions. The change is removing sub-stage boundaries, not the tracking data. These should be called "progress indicators" or "diagnostic flags" rather than "milestones" to avoid confusion with the stage-gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified).
+1. **Old milestones retained as progress milestones.** The old flags (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed) are retained as non-stage-driving progress milestones on InvestigationProgress. They are used by the LLM to evaluate investigation progress and decide when/what to propose — but they do NOT drive stage transitions. The change is removing sub-stage boundaries, not the tracking data. These should be called "progress milestones" or "diagnostic flags" rather than "milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified).
 
 2. **Mitigation always returns to DIAGNOSIS for RCA.** After mitigation is verified, the system directs the user back to root cause analysis. DIAGNOSIS resumes with hypothesis formulation and verification informed by what was learned during mitigation. The user can always manually resolve or close the case via UI at any point (this is a UI-level override, not a system flow path), but the system does not offer a "mitigation-only resolution" path. The app pushes toward RCA.
 
@@ -1017,7 +1110,7 @@ All open questions from the initial draft have been resolved.
 
 5. **Compliance detection: default to no-transition when ambiguous.** The inference-based transition depends on classifying whether the user's message is compliance with a proposed action. When ambiguous (e.g., "I ran the command but got a different error", "Here are the results, but I'm not sure I did it right"), the system defaults to no-transition and the LLM handles it within the current stage. It is safer to stay in the current stage and let the LLM ask for clarification than to transition incorrectly. The `ProposedAction.expected_command` field (Section 10.5) provides a structured reference point for matching user submissions against the proposed action, improving detection accuracy over free-text inference alone.
 
-6. **Compliance detection happens post-LLM (within LLM response processing).** The LLM sets `action_type` on `ProposedAction` when proposing an action, and sets stage-gate milestones (solution_accepted, mitigation_accepted) in its structured output when it determines the user has complied. The system transitions for the next turn based on these outputs. This means the transition turn itself runs with the current stage's prompt (e.g., DIAGNOSIS prompt), which is acceptable because: (a) the DIAGNOSIS prompt already instructs the agent to recognize compliance and respond appropriately, (b) the actual TREATMENT/MITIGATION prompt takes effect on the next turn when stage-specific instructions are needed, and (c) pre-LLM classification would require a separate lightweight classifier that duplicates the LLM's contextual understanding, adding fragility without clear benefit.
+6. **Compliance detection happens post-LLM (within LLM response processing).** The LLM sets `action_type` on `ProposedAction` when proposing an action, and sets gate milestones (solution_accepted, mitigation_accepted) in its structured output when it determines the user has complied. The system transitions for the next turn based on these outputs. This means the transition turn itself runs with the current stage's prompt (e.g., DIAGNOSIS prompt), which is acceptable because: (a) the DIAGNOSIS prompt already instructs the agent to recognize compliance and respond appropriately, (b) the actual TREATMENT/MITIGATION prompt takes effect on the next turn when stage-specific instructions are needed, and (c) pre-LLM classification would require a separate lightweight classifier that duplicates the LLM's contextual understanding, adding fragility without clear benefit.
 
 ---
 
@@ -1025,9 +1118,16 @@ All open questions from the initial draft have been resolved.
 
 | Term | Definition |
 |------|-----------|
-| **Stage** | One of DIAGNOSIS, MITIGATION, or TREATMENT. Determines which prompt the LLM receives. |
-| **Stage-gate milestone** | An inferred event that drives stage transitions (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified). Set by the LLM in structured output. |
-| **Progress indicator** | A non-stage-driving flag tracking investigation progress (symptom_verified, scope_assessed, etc.). Set by the LLM, used for context and analytics, does NOT drive transitions. |
+| **Phase** | An active work period: INQUIRY or INVESTIGATING. The case is being actively worked on. |
+| **Disposition** | A terminal resolution: RESOLVED or CLOSED. The case has reached its final state. |
+| **Case Action** | Any phase transition or disposition change (e.g., INQUIRY → INVESTIGATING, INVESTIGATING → RESOLVED). Recorded as `CaseAction` entries in the `case_actions` table (managed by `CaseActionManager`). |
+| **Status** | A passive descriptive label on entities (e.g., hypothesis status: CAPTURED, ACTIVE, VALIDATED). |
+| **State/CaseState** | A complete technical snapshot of the case at a point in time. |
+| **Investigation State** | The current state of an investigation, defined by two dimensions: Stage (where the investigation is) and Investigation Milestones (what has been established and acted upon). See §4.1. |
+| **Stage** | One of DIAGNOSIS, MITIGATION, or TREATMENT (within the INVESTIGATING phase only). Computed from gate milestones. Determines which prompt the LLM receives. |
+| **Investigation Milestone** | Collective term for the 10 boolean flags that track investigation advancement. Two sub-types: gate milestones (4, drive transitions) and progress milestones (6, LLM context). |
+| **Gate Milestone** | A milestone that drives stage transitions (mitigation_accepted, mitigation_verified, solution_accepted, solution_verified). Set by the LLM in structured output when it detects user compliance. |
+| **Progress Milestone** | A milestone that tracks investigation advancement without driving stage transitions (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed). Set by the LLM, used for context and analytics. |
 | **Evidence** | Data submitted by the user, classified by the LLM into categories. |
 | **Hypothesis** | A testable theory about the root cause, with confidence scoring and evidence links. |
 | **Inference-based transition** | A stage change inferred from user compliance with a proposed action (executing a command and submitting results). |

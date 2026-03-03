@@ -8,7 +8,7 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 - **[Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md)** - Overview and philosophy of the evidence-driven investigation approach
 - **[Investigation Data Models](./investigation-data-models.md)** - Core data structures (CaseStatus, Evidence, Hypothesis, Solution, ProposedAction, etc.)
-- **[Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)** - State transitions, path routing, and turn tracking
+- **[Investigation Lifecycle Logic](./investigation-lifecycle-logic.md)** - Case actions, path routing, and turn tracking
 
 ### Prompt Engineering
 
@@ -37,9 +37,9 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Evidence-Driven Investigation Framework | Implemented | 3-stage model (DIAGNOSIS, MITIGATION, TREATMENT) operational |
-| Investigation Data Models | Implemented | All core models in production (stage-gate milestones + progress indicators) |
-| Investigation Lifecycle Logic | Implemented | Status transitions, inference-based stage transitions, path routing |
+| Evidence-Driven Investigation Framework | Implemented | 2-stage model with mitigation detour (DIAGNOSIS, TREATMENT + MITIGATION detour) operational |
+| Investigation Data Models | Implemented | All core models in production (gate milestones + progress milestones) |
+| Investigation Lifecycle Logic | Implemented | Case actions, inference-based stage transitions, path routing |
 | Prompt Engineering System | Implemented | Three-template system (DIAGNOSIS, MITIGATION, TREATMENT prompts) |
 | Error Handling and Recovery | Implemented | LLM retry, stagnation detection, compliance detection, degraded mode |
 | Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated |
@@ -57,10 +57,10 @@ This section covers FaultMaven's investigation engine — the evidence-driven fr
 ## Key Concepts
 
 - **Evidence-driven investigation**: Agent processes evidence naturally within the current stage; transitions happen when the user acts
-- **4 case statuses**: INQUIRY, INVESTIGATING, RESOLVED, CLOSED
-- **3 stages**: DIAGNOSIS (understand & diagnose), MITIGATION (temp fix), TREATMENT (permanent fix & resolution)
+- **4 case statuses**: INQUIRY (phase), INVESTIGATING (phase), RESOLVED (disposition), CLOSED (disposition)
+- **2 core stages + mitigation detour**: DIAGNOSIS (understand & diagnose), TREATMENT (permanent fix & resolution), with an optional MITIGATION detour (temp fix)
 - **3 user-facing stage names**: "Diagnosing", "Mitigating", "Resolving"
-- **2 milestone types**: 4 stage-gate milestones (drive transitions) + 6 progress indicators (LLM context)
+- **10 investigation milestones**: 4 gate milestones (drive transitions) + 6 progress milestones (LLM context)
 - **Inference-based transitions**: User compliance with proposed actions triggers stage transitions
 - **2 investigation paths**: MITIGATION_FIRST (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) and ROOT_CAUSE (DIAGNOSIS → TREATMENT)
 - **Three-template prompt system**: DIAGNOSIS, MITIGATION, and TREATMENT stage instructions

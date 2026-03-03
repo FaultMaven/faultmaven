@@ -34,78 +34,92 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class CaseStatus(str, Enum):
     """
-    Case lifecycle status.
+    Case lifecycle status — passive label describing a case's current condition.
 
-    Lifecycle Flow:
-      INQUIRY -> INVESTIGATING -> RESOLVED (terminal)
-                                 -> CLOSED (terminal)
-               -> CLOSED (terminal)
+    Values fall into two categories:
+    - **Phases** (active work): INQUIRY, INVESTIGATING
+    - **Dispositions** (terminal resolution): RESOLVED, CLOSED
 
-    Terminal States: RESOLVED, CLOSED (no further transitions)
+    Case Actions (phase transitions and dispositions):
+      INQUIRY → INVESTIGATING  (phase transition)
+      INQUIRY → RESOLVED       (fast-track disposition)
+      INQUIRY → CLOSED         (disposition)
+      INVESTIGATING → RESOLVED (disposition)
+      INVESTIGATING → CLOSED   (disposition)
     """
 
     INQUIRY = "inquiry"
     """
-    Pre-investigation exploration.
+    Phase: Pre-investigation exploration.
 
     Characteristics:
     - User asking questions
     - Agent providing quick guidance
     - No formal investigation commitment
-    - May transition to INVESTIGATING or CLOSED
+    - May transition to INVESTIGATING or reach a disposition
 
     Typical Duration: Minutes to hours
     """
 
     INVESTIGATING = "investigating"
     """
-    Active formal investigation.
+    Phase: Active formal investigation.
 
     Characteristics:
-    - Working through milestones
+    - Working through stages (DIAGNOSIS, MITIGATION, TREATMENT)
     - Gathering evidence
     - Testing hypotheses
     - Applying solutions
-    - May transition to RESOLVED or CLOSED
+    - May reach a disposition (RESOLVED or CLOSED)
 
     Typical Duration: Hours to days
     """
 
     RESOLVED = "resolved"
     """
-    TERMINAL STATE: Case closed WITH solution.
+    Disposition: Case closed WITH solution.
 
     Characteristics:
     - Problem was fixed
     - Solution verified
     - closure_reason = "resolved"
-    - No further transitions allowed
+    - No further case actions allowed
 
-    State: Terminal (permanent)
+    Disposition: Terminal (permanent)
     """
 
     CLOSED = "closed"
     """
-    TERMINAL STATE: Case closed WITHOUT solution.
+    Disposition: Case closed WITHOUT solution.
 
     Characteristics:
     - Investigation abandoned/escalated
     - OR inquiry-only (no investigation)
     - closure_reason = "abandoned" | "escalated" | "inquiry_only" | "duplicate" | "other"
-    - No further transitions allowed
+    - No further case actions allowed
 
-    State: Terminal (permanent)
+    Disposition: Terminal (permanent)
     """
 
     @property
     def is_terminal(self) -> bool:
-        """Check if this status is terminal"""
+        """Check if this status is a disposition (terminal)."""
         return self in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
 
     @property
     def is_active(self) -> bool:
-        """Check if case is active (not terminal)"""
+        """Check if this status is a phase (active, not terminal)."""
         return self in [CaseStatus.INQUIRY, CaseStatus.INVESTIGATING]
+
+    @property
+    def is_phase(self) -> bool:
+        """Check if this status represents an active phase (INQUIRY or INVESTIGATING)."""
+        return self.is_active
+
+    @property
+    def is_disposition(self) -> bool:
+        """Check if this status represents a terminal disposition (RESOLVED or CLOSED)."""
+        return self.is_terminal
 
 
 class CaseSeverity(str, Enum):
@@ -155,35 +169,35 @@ class CaseSeverity(str, Enum):
         )
 
 
-class CaseStatusTransition(BaseModel):
+class CaseAction(BaseModel):
     """
-    Record of one status change.
+    Record of one case action (phase transition or disposition change).
     Provides audit trail for case lifecycle.
     """
 
-    from_status: CaseStatus = Field(description="Status before transition")
+    from_status: CaseStatus = Field(description="Status before the action")
 
-    to_status: CaseStatus = Field(description="Status after transition")
+    to_status: CaseStatus = Field(description="Status after the action")
 
     triggered_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        description="When transition occurred",
+        description="When the action occurred",
     )
 
     triggered_by: str = Field(
-        description="Who triggered: user_id or 'system' for automatic transitions"
+        description="Who triggered: user_id or 'system' for automatic actions"
     )
 
     reason: str = Field(
-        description="Human-readable reason for transition", max_length=500
+        description="Human-readable reason for the action", max_length=500
     )
 
     @model_validator(mode="after")
-    def validate_transition(self):
-        """Ensure transition is valid"""
-        if not is_valid_transition(self.from_status, self.to_status):
+    def validate_action(self):
+        """Ensure case action is valid."""
+        if not is_valid_action(self.from_status, self.to_status):
             raise ValueError(
-                f"Invalid transition: {self.from_status} -> {self.to_status}"
+                f"Invalid case action: {self.from_status} -> {self.to_status}"
             )
         return self
 
@@ -191,34 +205,42 @@ class CaseStatusTransition(BaseModel):
         frozen = True  # Immutable once created
 
 
-def is_valid_transition(from_status: CaseStatus, to_status: CaseStatus) -> bool:
-    """
-    Validate status transition.
+# Backward compatibility alias
+CaseStatusTransition = CaseAction
 
-    Valid Transitions:
-    - INQUIRY -> INVESTIGATING (standard investigation start)
-    - INQUIRY -> RESOLVED (Fast-Track: KB match resolves issue)
-    - INQUIRY -> CLOSED (inquiry-only, no investigation)
-    - INVESTIGATING -> RESOLVED (solution verified)
-    - INVESTIGATING -> CLOSED (abandoned/escalated)
+
+def is_valid_action(from_status: CaseStatus, to_status: CaseStatus) -> bool:
+    """
+    Validate a case action (phase transition or disposition change).
+
+    Valid Case Actions:
+    - INQUIRY → INVESTIGATING (phase transition: start investigation)
+    - INQUIRY → RESOLVED (disposition: fast-track KB resolution)
+    - INQUIRY → CLOSED (disposition: no investigation needed)
+    - INVESTIGATING → RESOLVED (disposition: solution verified)
+    - INVESTIGATING → CLOSED (disposition: abandoned/escalated)
 
     Invalid:
-    - RESOLVED -> * (terminal)
-    - CLOSED -> * (terminal)
-    - INVESTIGATING -> INQUIRY (no backward)
+    - RESOLVED → * (disposition is terminal)
+    - CLOSED → * (disposition is terminal)
+    - INVESTIGATING → INQUIRY (no backward phase transition)
     """
-    valid_transitions = {
+    valid_actions = {
         CaseStatus.INQUIRY: [
             CaseStatus.INVESTIGATING,
             CaseStatus.RESOLVED,
             CaseStatus.CLOSED,
         ],
         CaseStatus.INVESTIGATING: [CaseStatus.RESOLVED, CaseStatus.CLOSED],
-        CaseStatus.RESOLVED: [],  # Terminal
-        CaseStatus.CLOSED: [],  # Terminal
+        CaseStatus.RESOLVED: [],  # Disposition — terminal
+        CaseStatus.CLOSED: [],  # Disposition — terminal
     }
 
-    return to_status in valid_transitions.get(from_status, [])
+    return to_status in valid_actions.get(from_status, [])
+
+
+# Backward compatibility alias
+is_valid_transition = is_valid_action
 
 
 class MessageType(str, Enum):
@@ -229,7 +251,7 @@ class MessageType(str, Enum):
     SYSTEM_EVENT = "system_event"
     DATA_UPLOAD = "data_upload"
     CASE_NOTE = "case_note"
-    STATUS_CHANGE = "status_change"
+    CASE_ACTION = "case_action"
 
 
 class ParticipantRole(str, Enum):
@@ -553,21 +575,25 @@ class InvestigationProgress(BaseModel):
 
 class InvestigationStage(str, Enum):
     """
-    Investigation stage within INVESTIGATING status (3 stages).
-    Computed from stage-gate milestones.
+    Investigation stage within the Investigating Phase.
 
-    Stages:
-    - DIAGNOSIS: Understand, diagnose, propose actions
+    2-stage model with mitigation detour:
+    - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
+    - TREATMENT: Verify permanent fix, resolve case (core stage)
     - MITIGATION: Apply and verify temporary fix (optional detour)
-    - TREATMENT: Verify permanent fix, resolve case
 
-    Stage transitions are inference-based — user compliance with
-    proposed actions triggers transitions via compliance detection.
-    The stage determines which prompt template the LLM receives.
+    DIAGNOSIS and TREATMENT are the two core stages every investigation
+    passes through. MITIGATION is an optional detour that temporarily
+    narrows focus to "stop the bleeding" before returning to DIAGNOSIS.
+
+    Computed from stage-gate milestones. Stage transitions are
+    inference-based — user compliance with proposed actions triggers
+    transitions via compliance detection. The stage determines which
+    prompt template the LLM receives.
 
     Investigation Paths:
     - ROOT_CAUSE: DIAGNOSIS → TREATMENT
-    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT
+    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
     """
 
     DIAGNOSIS = "diagnosis"
@@ -2485,14 +2511,14 @@ def determine_investigation_path(
 
 class InvestigationPath(str, Enum):
     """
-    Investigation routing strategy (3-stage workflow).
+    Investigation routing strategy (2-stage model with mitigation detour).
 
     IMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).
     LLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.
     System calls determine_investigation_path() to select path deterministically.
 
-    Two paths through the 3-stage model:
-    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT
+    Two paths through the 2-stage model:
+    - MITIGATION_FIRST: DIAGNOSIS → MITIGATION (detour) → DIAGNOSIS → TREATMENT
     - ROOT_CAUSE: DIAGNOSIS → TREATMENT
     """
 
@@ -3035,13 +3061,16 @@ class Case(BaseModel):
 
     # ============================================================
     # Status (PRIMARY - User-Facing Lifecycle)
+    # Phase (INQUIRY, INVESTIGATING) or Disposition (RESOLVED, CLOSED)
     # ============================================================
     status: CaseStatus = Field(
-        default=CaseStatus.INQUIRY, description="Current lifecycle status"
+        default=CaseStatus.INQUIRY,
+        description="Current lifecycle status (phase or disposition)",
     )
 
-    status_history: List[CaseStatusTransition] = Field(
-        default_factory=list, description="Complete history of status changes"
+    action_history: List[CaseAction] = Field(
+        default_factory=list,
+        description="Complete history of case actions (phase transitions and dispositions)",
     )
 
     closure_reason: Optional[str] = Field(
@@ -3458,14 +3487,14 @@ class Case(BaseModel):
                 raise ValueError(f"closure_reason must be one of: {allowed}")
         return v
 
-    @field_validator("status_history")
+    @field_validator("action_history")
     @classmethod
-    def status_history_ordered(cls, v):
-        """Ensure status history is chronologically ordered"""
+    def action_history_ordered(cls, v):
+        """Ensure action history is chronologically ordered."""
         if len(v) > 1:
             for i in range(len(v) - 1):
                 if v[i].triggered_at > v[i + 1].triggered_at:
-                    raise ValueError("Status history must be chronologically ordered")
+                    raise ValueError("Action history must be chronologically ordered")
         return v
 
     @field_validator("turn_history")

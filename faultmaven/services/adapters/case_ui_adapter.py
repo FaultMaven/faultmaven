@@ -52,8 +52,8 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationPath,
 )
-from faultmaven.modules.case.domain.services.case_status_manager import (
-    CaseStatusManager,
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    CaseActionManager,
 )
 
 
@@ -260,7 +260,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         inquiry=inquiry_data,
         valid_next_states=[
             status.value
-            for status in CaseStatusManager.get_allowed_transitions(case.status)
+            for status in CaseActionManager.get_allowed_transitions(case.status)
         ],
     )
 
@@ -379,7 +379,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         problem_verification=problem_verification_data,
         valid_next_states=[
             status.value
-            for status in CaseStatusManager.get_allowed_transitions(case.status)
+            for status in CaseActionManager.get_allowed_transitions(case.status)
         ],
     )
 
@@ -502,6 +502,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         reports_available=reports_available,
         valid_next_states=[
             status.value
-            for status in CaseStatusManager.get_allowed_transitions(case.status)
+            for status in CaseActionManager.get_allowed_transitions(case.status)
         ],
     )

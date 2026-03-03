@@ -65,27 +65,27 @@ These field names are deprecated and should not be used in new code:
 ```python
 class CaseStatus(str, Enum):
     """
-    Case lifecycle status (4 states).
-    Two terminal states: RESOLVED (with solution) and CLOSED (without solution).
+    Case lifecycle status (4 values: 2 phases + 2 dispositions).
+    Two dispositions: RESOLVED (with solution) and CLOSED (without solution).
     """
 
     INQUIRY = "inquiry"
     """
-    Pre-investigation exploration.
+    PHASE: Pre-investigation exploration.
     User asking questions, agent providing quick guidance.
     No formal investigation commitment yet.
     """
 
     INVESTIGATING = "investigating"
     """
-    Active formal investigation.
+    PHASE: Active formal investigation.
     Working through verification, diagnosis, and resolution.
     Problem not yet fixed.
     """
 
     RESOLVED = "resolved"
     """
-    TERMINAL STATE: Case closed WITH solution.
+    DISPOSITION: Case closed WITH solution.
     Problem was fixed and verified.
 
     closure_reason = "resolved"
@@ -93,7 +93,7 @@ class CaseStatus(str, Enum):
 
     CLOSED = "closed"
     """
-    TERMINAL STATE: Case closed WITHOUT solution.
+    DISPOSITION: Case closed WITHOUT solution.
     Investigation abandoned, escalated, or inquiry-only.
 
     closure_reason = "abandoned" | "escalated" | "mitigation_sufficient" | "inquiry_only" | "duplicate" | "other"
@@ -103,10 +103,10 @@ class CaseStatus(str, Enum):
 ```
 
 **Key Points**:
-- **RESOLVED** and **CLOSED** are both terminal (no further state)
+- **RESOLVED** and **CLOSED** are both dispositions (terminal — no further case actions)
 - **RESOLVED** = Problem fixed (has solution, solution_verified=True)
 - **CLOSED** = Problem not fixed (no solution, or mitigation-only, or inquiry-only)
-- Agent doesn't care about cases after they reach terminal state
+- Agent doesn't care about cases after they reach a disposition
 
 ### 1.2 InvestigationProgress
 
@@ -115,17 +115,17 @@ class InvestigationProgress(BaseModel):
     """
     Evidence-driven progress tracking with two distinct milestone types:
 
-    1. STAGE-GATE MILESTONES (4): Drive stage transitions.
+    1. GATE MILESTONES (4): Drive stage transitions.
        Set by the LLM in structured output when it detects user compliance
-       with a ProposedAction (Framework §4.1). The LLM is the compliance
+       with a ProposedAction (Framework §4.2). The LLM is the compliance
        detector — the user's action is the trigger; the LLM recognizes it.
-    2. PROGRESS INDICATORS (6): Provide LLM context and analytics.
+    2. PROGRESS MILESTONES (6): Provide LLM context and analytics.
        Set by LLM in structured output. Do NOT drive stage transitions.
     """
 
     # ============================================================
-    # STAGE-GATE MILESTONES (drive stage transitions)
-    # Set by the LLM in structured output (Framework §4.1).
+    # GATE MILESTONES (drive stage transitions)
+    # Set by the LLM in structured output (Framework §4.2).
     # ============================================================
     mitigation_accepted: bool = Field(
         default=False,
@@ -161,7 +161,7 @@ class InvestigationProgress(BaseModel):
     )
 
     # ============================================================
-    # PROGRESS INDICATORS (LLM context, non-stage-driving)
+    # PROGRESS MILESTONES (LLM context, non-stage-driving)
     # Set by LLM in structured output. Advisory, not controlling.
     # ============================================================
     symptom_verified: bool = Field(
@@ -218,8 +218,8 @@ class InvestigationProgress(BaseModel):
     @property
     def current_stage(self) -> InvestigationStage:
         """
-        Compute investigation stage from STAGE-GATE MILESTONES only.
-        Progress indicators do NOT affect stage computation.
+        Compute investigation stage from GATE MILESTONES only.
+        Progress milestones do NOT affect stage computation.
 
         Returns one of 3 InvestigationStage enum values:
         - DIAGNOSIS: Understanding, diagnosing, proposing actions
@@ -260,11 +260,11 @@ class InvestigationProgress(BaseModel):
             return "Resolving"
 ```
 
-#### Progress Indicator Evidence Expectations
+#### Progress Milestone Evidence Expectations
 
-The milestone engine validates evidence claims for **progress indicators** (non-stage-driving) using a category-count check:
+The milestone engine validates evidence claims for **progress milestones** (non-stage-driving) using a category-count check:
 
-| Progress Indicator | Min Evidence | Expected Categories |
+| Progress Milestone | Min Evidence | Expected Categories |
 |-------------------|-------------|---------------------|
 | `symptom_verified` | 1 | SYMPTOM |
 | `scope_assessed` | 1 | SYMPTOM |
@@ -273,33 +273,32 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 | `root_cause_identified` | 2 | CAUSAL |
 | `solution_proposed` | 0 | (set programmatically when ProposedAction created) |
 
-**Stage-gate milestones** are NOT evidence-validated — they are set by the LLM in structured output when it detects user compliance with a ProposedAction (Framework §4.1):
+**Gate milestones** are NOT evidence-validated — they are set by the LLM in structured output when it detects user compliance with a ProposedAction (Framework §4.2):
 
-| Stage-Gate Milestone | Trigger |
+| Gate Milestone | Trigger |
 |---------------------|---------|
 | `mitigation_accepted` | User complied with proposed temp fix (inferred from submission) |
 | `mitigation_verified` | User confirmed mitigation worked |
 | `solution_accepted` | User complied with proposed solution (inferred from submission) |
 | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
-**How progress indicator validation works:**
-1. LLM sets progress indicator = True in structured output
+**How progress milestone validation works:**
+1. LLM sets progress milestone = True in structured output
 2. System extracts evidence IDs from `internal_reasoning.evidence_analyzed`
 3. System counts cited evidence matching expected categories
-4. If count < minimum: warning logged (indicator still set, but flagged)
+4. If count < minimum: warning logged (milestone still set, but flagged)
 
-Validation is **advisory, not blocking**. The LLM's progress indicator assertions are trusted, with validation providing quality feedback for monitoring.
+Validation is **advisory, not blocking**. The LLM's progress milestone assertions are trusted, with validation providing quality feedback for monitoring.
 
 ```python
 class InvestigationStage(str, Enum):
     """
-    Investigation stage within INVESTIGATING status (3 stages).
-    Computed from stage-gate milestones.
+    Investigation stage within the Investigating Phase.
 
-    Stages:
-    - DIAGNOSIS: Understand, diagnose, propose actions
-    - MITIGATION: Apply and verify temporary fix (detour)
-    - TREATMENT: Apply permanent fix, verify resolution
+    2-stage model with mitigation detour:
+    - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
+    - TREATMENT: Apply permanent fix, verify resolution (core stage)
+    - MITIGATION: Apply and verify temporary fix (optional detour)
 
     Stage transitions are inference-based (user compliance).
     """
@@ -392,7 +391,8 @@ class InvestigationPath(str, Enum):
     during DIAGNOSIS, not which stages are available. Path is
     advisory, not structural.
 
-    Both paths use the same 3-stage model (DIAGNOSIS → MITIGATION → TREATMENT),
+    Both paths use the same 2-stage model with mitigation detour
+    (DIAGNOSIS → TREATMENT, with optional MITIGATION detour),
     but differ in agent behavior during DIAGNOSIS.
     """
     MITIGATION_FIRST = "mitigation_first"
@@ -482,9 +482,9 @@ class Case(BaseModel):
     # ============================================================
     status: CaseStatus = Field(default=CaseStatus.INQUIRY)
 
-    status_history: List[CaseStatusTransition] = Field(
+    action_history: List[CaseAction] = Field(
         default_factory=list,
-        description="Audit trail of status changes"
+        description="Audit trail of case actions (phase transitions and disposition changes)"
     )
 
     closure_reason: Optional[str] = Field(
@@ -561,7 +561,7 @@ class Case(BaseModel):
     )
     closed_at: Optional[datetime] = Field(
         default=None,
-        description="When case reached terminal state (RESOLVED or CLOSED)"
+        description="When case reached a disposition (RESOLVED or CLOSED)"
     )
 
     # ============================================================
@@ -581,18 +581,18 @@ class Case(BaseModel):
 
     @property
     def is_terminal(self) -> bool:
-        """Check if case is in terminal state"""
+        """Check if case has reached a disposition (terminal)"""
         return self.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
 
     @property
     def time_to_resolution(self) -> Optional[timedelta]:
-        """Time from creation to terminal state"""
+        """Time from creation to disposition"""
         if self.closed_at:
             return self.closed_at - self.created_at
         return None
 
-class CaseStatusTransition(BaseModel):
-    """Record of status change"""
+class CaseAction(BaseModel):
+    """Record of a case action (phase transition or disposition change)"""
     from_status: CaseStatus
     to_status: CaseStatus
     triggered_at: datetime
@@ -972,7 +972,7 @@ class ProposedAction(BaseModel):
     A concrete action proposed by the agent for the user to execute.
 
     ProposedActions are created when the agent proposes a solution (via SolutionToAdd).
-    User compliance with a proposed action triggers stage-gate milestone
+    User compliance with a proposed action triggers gate milestone
     transitions via compliance detection. The user's action IS acceptance —
     no explicit confirmation step required.
     """
@@ -991,7 +991,7 @@ class ActionAttempt(BaseModel):
 
     When the user submits results after executing (or attempting to execute)
     a proposed action, an ActionAttempt is created. Compliance detection
-    analyzes the attempt to determine if stage-gate milestones should be set.
+    analyzes the attempt to determine if gate milestones should be set.
 
     The boolean flags on InvestigationProgress represent the current cycle;
     the action_attempts list provides history. When `mitigation_verified` is

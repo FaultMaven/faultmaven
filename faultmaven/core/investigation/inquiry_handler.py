@@ -10,7 +10,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Optional
 
-from faultmaven.modules.case.contracts import Case, CaseStatus, CaseStatusTransition
+from faultmaven.modules.case.contracts import Case, CaseAction, CaseStatus
 
 logger = logging.getLogger(__name__)
 
@@ -228,9 +228,9 @@ async def _transition_to_investigating(case: Case) -> str:
     case.status = CaseStatus.INVESTIGATING
     case.status_transitioned_at = datetime.now(UTC)
 
-    # Record transition
-    case.status_history.append(
-        CaseStatusTransition(
+    # Record case action
+    case.action_history.append(
+        CaseAction(
             from_status=old_status,
             to_status=CaseStatus.INVESTIGATING,
             triggered_at=datetime.now(UTC),

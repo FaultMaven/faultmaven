@@ -1,6 +1,272 @@
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
+
+# CRITICAL: Mock heavy ML dependencies FIRST to prevent PyTorch TORCH_LIBRARY errors
+# This must happen before ANY imports that could trigger torch/transformers/sentence-transformers
+# The PyTorch TORCH_LIBRARY registration error occurs when torch is imported multiple times
+
+# Mock torch to prevent TORCH_LIBRARY registration errors
+if "torch" not in sys.modules:
+
+    class _MockTorchModule(ModuleType):
+        """Comprehensive mock for torch module."""
+
+        __version__ = "2.0.0"
+
+        def __getattr__(self, name):
+            # Return mock for any torch attribute
+            if name in (
+                "nn",
+                "optim",
+                "cuda",
+                "jit",
+                "onnx",
+                "autograd",
+                "utils",
+                "distributed",
+            ):
+                # Return a module-like mock for submodules
+                mock_submodule = ModuleType(f"torch.{name}")
+                mock_submodule.__getattr__ = lambda self, n: Mock()
+                return mock_submodule
+            return Mock()
+
+    _mock_torch = _MockTorchModule("torch")
+    _mock_torch.Tensor = type("Tensor", (), {})
+    _mock_torch.device = Mock
+    _mock_torch.dtype = Mock
+    sys.modules["torch"] = _mock_torch
+    sys.modules["torch.nn"] = ModuleType("torch.nn")
+    sys.modules["torch.optim"] = ModuleType("torch.optim")
+    sys.modules["torch.cuda"] = ModuleType("torch.cuda")
+
+# Mock transformers to prevent heavy imports
+if "transformers" not in sys.modules:
+    _mock_transformers = ModuleType("transformers")
+    _mock_transformers.__version__ = "4.36.0"
+    _mock_transformers.AutoModel = Mock
+    _mock_transformers.AutoTokenizer = Mock
+    _mock_transformers.PreTrainedModel = type("PreTrainedModel", (), {})
+    sys.modules["transformers"] = _mock_transformers
+    sys.modules["transformers.utils"] = ModuleType("transformers.utils")
+
+# Mock sentence_transformers to prevent model loading
+if "sentence_transformers" not in sys.modules:
+
+    class _MockSentenceTransformer:
+        """Mock SentenceTransformer class."""
+
+        def __init__(self, model_name_or_path, *args, **kwargs):
+            self.model_name_or_path = model_name_or_path
+
+        def encode(self, sentences, *args, **kwargs):
+            # Return deterministic fake embeddings based on text hash
+            import numpy as np
+            import hashlib
+
+            def get_deterministic_vector(text):
+                # Use a simple hash to seed random for deterministic output
+                seed = int(hashlib.md5(text.encode("utf-8")).hexdigest()[:8], 16)
+                # Save current state
+                state = np.random.get_state()
+                try:
+                    np.random.seed(seed)
+                    res = np.random.rand(384).astype(np.float32)
+                    return res
+                finally:
+                    # Restore state so we don't affect global random state
+                    np.random.set_state(state)
+
+            if isinstance(sentences, str):
+                return get_deterministic_vector(sentences)
+            return np.array(
+                [get_deterministic_vector(s) for s in sentences], dtype=np.float32
+            )
+
+    _mock_st = ModuleType("sentence_transformers")
+    _mock_st.SentenceTransformer = _MockSentenceTransformer
+    _mock_st.__version__ = "2.2.2"
+    sys.modules["sentence_transformers"] = _mock_st
+
+# CRITICAL: Mock _ctypes FIRST, before any other imports
+# This must happen before any module tries to import ctypes (e.g., protobuf, numpy, chromadb)
+# Python installations built without libffi support will be missing _ctypes
+# Note: We only mock _ctypes, not ctypes itself, to avoid breaking numpy
+try:
+    import _ctypes
+except ImportError:
+    # Create a comprehensive mock for _ctypes with dynamic attribute access
+    # This allows protobuf/ctypes to import without errors
+    # Python installations built without libffi support will be missing _ctypes
+    class _CTypesMock(ModuleType):
+        """Dynamic mock for _ctypes that provides any requested attribute."""
+
+        __version__ = "1.1.0"  # Must match ctypes expected version
+
+        # Essential type classes
+        Union = type("Union", (), {})
+        Structure = type("Structure", (), {})
+        Array = type("Array", (), {})
+        _Pointer = type("_Pointer", (), {})
+        CFuncPtr = type("CFuncPtr", (), {})
+        _FuncPtr = type("_FuncPtr", (), {})
+
+        # Constants
+        RTLD_LOCAL = 0
+        RTLD_GLOBAL = 1
+        FUNCFLAG_CDECL = 2
+        FUNCFLAG_PYTHONAPI = 4
+        FUNCFLAG_USE_ERRNO = 8
+        FUNCFLAG_USE_LASTERROR = 16
+
+        # Exception classes
+        ArgumentError = type("ArgumentError", (Exception,), {})
+
+        def sizeof(self, obj):
+            """Mock sizeof that returns reasonable defaults for common types."""
+            # Return reasonable sizes for common ctypes types
+            type_name = (
+                str(type(obj).__name__) if hasattr(obj, "__name__") else str(type(obj))
+            )
+            size_map = {
+                "c_int": 4,
+                "c_long": 8,
+                "c_void_p": 8,
+                "c_char_p": 8,
+                "c_double": 8,
+                "c_float": 4,
+                "str": 8,  # Pointer size on 64-bit
+            }
+            # Check if it's a known type or return default pointer size
+            for key, size in size_map.items():
+                if key in type_name.lower():
+                    return size
+            return 8  # Default to pointer size on 64-bit systems
+
+        def __getattr__(self, name):
+            # Return appropriate values for known functions
+            if name == "sizeof":
+                return self.sizeof
+            elif name in ("addressof", "alignment"):
+                return Mock(return_value=0)
+            elif name in ("get_errno", "set_errno"):
+                return Mock(return_value=0)
+            else:
+                # Return a Mock callable for any other missing function/attribute
+                return Mock(return_value=None)
+
+    _mock_ctypes = _CTypesMock("_ctypes")
+    sys.modules["_ctypes"] = _mock_ctypes
+
+    # Also create a minimal ctypes mock for numpy compatibility
+    # numpy.ctypeslib needs ctypes.c_byte, c_short, etc.
+    class _CTypesModuleMock(ModuleType):
+        """Minimal ctypes module mock for numpy compatibility."""
+
+        def __getattr__(self, name):
+            # Return Mock objects for ctypes types (c_int, c_byte, etc.)
+            if name.startswith("c_"):
+                return type(f"c_{name[2:]}", (), {"_type_": name})
+            # Return Mock for functions
+            return Mock(return_value=None)
+
+    _mock_ctypes_module = _CTypesModuleMock("ctypes")
+    # Add common ctypes types that numpy needs
+    for ctype_name in [
+        "c_byte",
+        "c_short",
+        "c_int",
+        "c_long",
+        "c_longlong",
+        "c_ubyte",
+        "c_ushort",
+        "c_uint",
+        "c_ulong",
+        "c_ulonglong",
+        "c_float",
+        "c_double",
+        "c_char",
+        "c_wchar",
+        "c_void_p",
+        "c_char_p",
+    ]:
+        setattr(
+            _mock_ctypes_module,
+            ctype_name,
+            type(ctype_name, (), {"_type_": ctype_name}),
+        )
+    sys.modules["ctypes"] = _mock_ctypes_module
+
+# Mock _sqlite3 for Python installations missing this built-in module
+# Similar to _ctypes, this can happen when Python is built without sqlite support
+try:
+    import _sqlite3
+except ImportError:
+    _mock_sqlite3 = ModuleType("_sqlite3")
+    # Add minimal sqlite3 interface
+    _mock_sqlite3.connect = Mock(return_value=Mock())
+    _mock_sqlite3.version = "3.42.0"  # ChromaDB requires >= 3.35.0
+    _mock_sqlite3.version_info = (3, 42, 0)
+    _mock_sqlite3.sqlite_version = "3.42.0"
+    _mock_sqlite3.sqlite_version_info = (3, 42, 0)
+    # Add Row class that sqlite3.dbapi2 needs
+    _mock_sqlite3.Row = type("Row", (tuple,), {})
+    # Add all sqlite3 exception classes for aiosqlite compatibility
+    _mock_sqlite3.Error = type("Error", (Exception,), {})
+    _mock_sqlite3.Warning = type("Warning", (Exception,), {})
+    _mock_sqlite3.DatabaseError = type("DatabaseError", (_mock_sqlite3.Error,), {})
+    _mock_sqlite3.IntegrityError = type(
+        "IntegrityError", (_mock_sqlite3.DatabaseError,), {}
+    )
+    _mock_sqlite3.OperationalError = type(
+        "OperationalError", (_mock_sqlite3.DatabaseError,), {}
+    )
+    _mock_sqlite3.ProgrammingError = type(
+        "ProgrammingError", (_mock_sqlite3.DatabaseError,), {}
+    )
+    _mock_sqlite3.InterfaceError = type("InterfaceError", (_mock_sqlite3.Error,), {})
+    _mock_sqlite3.InternalError = type(
+        "InternalError", (_mock_sqlite3.DatabaseError,), {}
+    )
+    _mock_sqlite3.DataError = type("DataError", (_mock_sqlite3.DatabaseError,), {})
+    _mock_sqlite3.NotSupportedError = type(
+        "NotSupportedError", (_mock_sqlite3.DatabaseError,), {}
+    )
+    sys.modules["_sqlite3"] = _mock_sqlite3
+
+    # Also mock sqlite3 module itself to prevent import errors
+    # sqlite3.dbapi2 tries to call register_adapter during init, which fails without _sqlite3
+    try:
+        import sqlite3
+    except (ImportError, NameError):
+        _mock_sqlite3_module = ModuleType("sqlite3")
+        _mock_sqlite3_module.Row = _mock_sqlite3.Row
+        # Add Cursor and Connection classes
+        _mock_sqlite3_module.Cursor = type("Cursor", (), {})
+        _mock_sqlite3_module.Connection = type("Connection", (), {})
+        _mock_sqlite3_module.connect = Mock(return_value=Mock())
+        _mock_sqlite3_module.version = "3.42.0"  # ChromaDB requires >= 3.35.0
+        _mock_sqlite3_module.version_info = (3, 42, 0)
+        _mock_sqlite3_module.sqlite_version = "3.42.0"
+        _mock_sqlite3_module.sqlite_version_info = (3, 42, 0)
+        # Copy all exception classes from _sqlite3
+        _mock_sqlite3_module.Error = _mock_sqlite3.Error
+        _mock_sqlite3_module.Warning = _mock_sqlite3.Warning
+        _mock_sqlite3_module.DatabaseError = _mock_sqlite3.DatabaseError
+        _mock_sqlite3_module.IntegrityError = _mock_sqlite3.IntegrityError
+        _mock_sqlite3_module.OperationalError = _mock_sqlite3.OperationalError
+        _mock_sqlite3_module.ProgrammingError = _mock_sqlite3.ProgrammingError
+        _mock_sqlite3_module.InterfaceError = _mock_sqlite3.InterfaceError
+        _mock_sqlite3_module.InternalError = _mock_sqlite3.InternalError
+        _mock_sqlite3_module.DataError = _mock_sqlite3.DataError
+        _mock_sqlite3_module.NotSupportedError = _mock_sqlite3.NotSupportedError
+        # Add DB-API 2.0 module attributes that aiosqlite needs
+        _mock_sqlite3_module.paramstyle = "qmark"  # Standard SQLite parameter style
+        _mock_sqlite3_module.threadsafety = 1
+        _mock_sqlite3_module.apilevel = "2.0"
+        _mock_sqlite3_module.register_converter = Mock()
+        sys.modules["sqlite3"] = _mock_sqlite3_module
 
 
 class _DummyAPMIntegration:
@@ -202,19 +468,19 @@ if "ctypes" not in sys.modules:
             ctype_name,
             type(ctype_name, (), {"__name__": ctype_name}),
         )
-    _mock_ctypes_module.Union = _mock_ctypes.Union
-    _mock_ctypes_module.Structure = _mock_ctypes.Structure
-    _mock_ctypes_module.Array = _mock_ctypes.Array
-    _mock_ctypes_module.POINTER = _mock_ctypes.POINTER
-    _mock_ctypes_module.sizeof = _mock_ctypes.sizeof
-    _mock_ctypes_module.addressof = _mock_ctypes.addressof
-    _mock_ctypes_module.byref = _mock_ctypes.byref
-    _mock_ctypes_module.cast = _mock_ctypes.cast
-    _mock_ctypes_module.get_errno = _mock_ctypes.get_errno
-    _mock_ctypes_module.set_errno = _mock_ctypes.set_errno
-    _mock_ctypes_module.ArgumentError = _mock_ctypes.ArgumentError
-    _mock_ctypes_module.RTLD_GLOBAL = _mock_ctypes.RTLD_GLOBAL
-    _mock_ctypes_module.RTLD_LOCAL = _mock_ctypes.RTLD_LOCAL
+    _mock_ctypes_module.Union = Mock()
+    _mock_ctypes_module.Structure = Mock()
+    _mock_ctypes_module.Array = Mock()
+    _mock_ctypes_module.POINTER = Mock()
+    _mock_ctypes_module.sizeof = Mock(return_value=8)
+    _mock_ctypes_module.addressof = Mock(return_value=0)
+    _mock_ctypes_module.byref = Mock()
+    _mock_ctypes_module.cast = Mock()
+    _mock_ctypes_module.get_errno = Mock(return_value=0)
+    _mock_ctypes_module.set_errno = Mock()
+    _mock_ctypes_module.ArgumentError = Exception
+    _mock_ctypes_module.RTLD_GLOBAL = 256
+    _mock_ctypes_module.RTLD_LOCAL = 0
     # Add DLL loading functions that some libraries need
     _mock_ctypes_module.CDLL = Mock()
     _mock_ctypes_module.PyDLL = Mock()
@@ -225,9 +491,11 @@ if "ctypes" not in sys.modules:
 # Stub heavy dependencies to avoid import issues in tests
 # These stubs prevent importing sklearn, chromadb, pypdf, etc.
 # sklearn must have __spec__ attribute for transformers compatibility
+import types
+
 if "sklearn" not in sys.modules:
-    _mock_sklearn = ModuleType("sklearn")
-    _mock_sklearn.__spec__ = SimpleNamespace(
+    _mock_sklearn = types.ModuleType("sklearn")
+    _mock_sklearn.__spec__ = types.SimpleNamespace(
         name="sklearn",
         loader=None,
         origin=None,
@@ -241,6 +509,53 @@ if "sklearn" not in sys.modules:
 # NOTE: chromadb stub removed - tests need real ChromaDB
 # If chromadb is not installed, tests using it will fail as expected
 sys.modules.setdefault("pypdf", SimpleNamespace())
+
+# Mock _ctypes and ctypes for Python installations missing this built-in module
+# This can happen when Python is built without libffi support
+# We need to mock both _ctypes and ctypes before any imports try to use them
+try:
+    import _ctypes
+except ImportError:
+    # Create a comprehensive mock for _ctypes
+    _mock_ctypes = types.ModuleType("_ctypes")
+    for attr in [
+        "Union",
+        "Structure",
+        "Array",
+        "_Pointer",
+        "CFuncPtr",
+        "POINTER",
+        "c_int",
+        "c_void_p",
+        "c_char_p",
+        "c_long",
+        "c_ulong",
+        "c_double",
+    ]:
+        setattr(_mock_ctypes, attr, Mock)
+    sys.modules["_ctypes"] = _mock_ctypes
+
+# Also mock ctypes module itself to prevent import errors
+try:
+    import ctypes
+except (ImportError, AttributeError):
+    _mock_ctypes_module = types.ModuleType("ctypes")
+    for attr in [
+        "Union",
+        "Structure",
+        "Array",
+        "POINTER",
+        "c_int",
+        "c_void_p",
+        "c_char_p",
+        "c_long",
+        "c_ulong",
+        "c_double",
+        "CDLL",
+        "Structure",
+    ]:
+        setattr(_mock_ctypes_module, attr, Mock)
+    sys.modules["ctypes"] = _mock_ctypes_module
 
 sys.modules.setdefault(
     "faultmaven.tools.knowledge_base",
@@ -267,24 +582,28 @@ sys.modules.setdefault(
     ),
 )
 
-# Import tools with fallback for langchain compatibility issues
+# Lazy import tools that may require _ctypes (via chromadb/protobuf) or have version issues
+# These will be imported only when needed, not at module level
+# Catch all exceptions since the import chain can fail at many levels (torch, transformers, langchain, etc.)
 try:
     from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
-except (ImportError, AttributeError):
-    KnowledgeBaseTool = Mock
-
-try:
     from faultmaven.modules.agent.tools.web_search import WebSearchTool
-except (ImportError, AttributeError):
+except Exception as e:
+    # If import fails for any reason (ctypes, langchain version, torch, etc.), create mock versions
+    # This allows tests to run even if these heavy dependencies have issues
+    KnowledgeBaseTool = Mock
     WebSearchTool = Mock
 
 # from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
 # from faultmaven.core.processing.log_analyzer import LogProcessor
-
+# Conditional import for LLMRouter (may import torch/transformers which can have issues)
 try:
     from faultmaven.infrastructure.llm.router import LLMRouter
-except (ImportError, AttributeError):
+except Exception:
+    # If import fails (torch issues, etc.), create a mock
     LLMRouter = Mock
+from faultmaven.models import DataType, SessionContext
+from faultmaven.models.common import AgentStateEnum as AgentState
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
 from faultmaven.models.common import AgentStateEnum as AgentState

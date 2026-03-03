@@ -648,8 +648,8 @@ class TestMilestoneEngine:
         assert final_case.pending_transition is None
 
         # 6. Status history recorded transition with user as trigger
-        assert len(final_case.status_history) > 0
-        last_transition = final_case.status_history[-1]
+        assert len(final_case.action_history) > 0
+        last_transition = final_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INVESTIGATING
         assert last_transition.to_status == CaseStatus.RESOLVED
 
@@ -713,8 +713,8 @@ class TestMilestoneEngine:
         assert updated_case.resolved_at is None
 
         # 6. Status history recorded transition to CLOSED
-        assert len(updated_case.status_history) > 0
-        last_transition = updated_case.status_history[-1]
+        assert len(updated_case.action_history) > 0
+        last_transition = updated_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INVESTIGATING
         assert last_transition.to_status == CaseStatus.CLOSED
         assert "abandoned" in last_transition.reason.lower()
@@ -807,8 +807,8 @@ class TestMilestoneEngine:
         assert updated_case.progress.symptom_verified is False
 
         # 5. Status history should record the transition
-        assert len(updated_case.status_history) > 0
-        last_transition = updated_case.status_history[-1]
+        assert len(updated_case.action_history) > 0
+        last_transition = updated_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INQUIRY
         assert last_transition.to_status == CaseStatus.CLOSED
 
@@ -853,8 +853,8 @@ class TestMilestoneEngine:
         assert updated_case.progress.solution_verified is False
 
         # 5. Status history should record the transition
-        assert len(updated_case.status_history) > 0
-        last_transition = updated_case.status_history[-1]
+        assert len(updated_case.action_history) > 0
+        last_transition = updated_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INVESTIGATING
         assert last_transition.to_status == CaseStatus.CLOSED
 
@@ -918,8 +918,8 @@ class TestMilestoneEngine:
         assert updated_case.inquiry.decided_to_investigate is True
 
         # 3. Status history should record the transition
-        assert len(updated_case.status_history) > 0
-        last_transition = updated_case.status_history[-1]
+        assert len(updated_case.action_history) > 0
+        last_transition = updated_case.action_history[-1]
         assert last_transition.from_status == CaseStatus.INQUIRY
         assert last_transition.to_status == CaseStatus.INVESTIGATING
 

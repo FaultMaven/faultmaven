@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import (
     Case,
+    CaseAction,
     CaseStatus,
-    CaseStatusTransition,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -520,8 +520,8 @@ class PostgreSQLCaseRepository(CaseRepository):
             "title": case.title,
             "description": case.description,
             "status": case.status.value,
-            "status_history": json.dumps(
-                [t.model_dump(mode="json") for t in case.status_history]
+            "action_history": json.dumps(
+                [t.model_dump(mode="json") for t in case.action_history]
             ),
             "closure_reason": case.closure_reason,
             # Progress (JSONB)
@@ -588,7 +588,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         query = text("""
             INSERT INTO cases (
                 case_id, user_id, organization_id, title, description, status,
-                status_history, closure_reason, progress, current_turn,
+                action_history, closure_reason, progress, current_turn,
                 turns_without_progress, turn_history, path_selection,
                 investigation_strategy, inquiry, problem_verification,
                 uploaded_files, evidence, hypotheses, solutions, working_conclusion,
@@ -597,7 +597,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 resolved_at, closed_at
             ) VALUES (
                 :case_id, :user_id, :organization_id, :title, :description, :status,
-                :status_history, :closure_reason, :progress, :current_turn,
+                :action_history, :closure_reason, :progress, :current_turn,
                 :turns_without_progress, :turn_history, :path_selection,
                 :investigation_strategy, :inquiry, :problem_verification,
                 :uploaded_files, :evidence, :hypotheses, :solutions, :working_conclusion,
@@ -609,7 +609,7 @@ class PostgreSQLCaseRepository(CaseRepository):
                 title = EXCLUDED.title,
                 description = EXCLUDED.description,
                 status = EXCLUDED.status,
-                status_history = EXCLUDED.status_history,
+                action_history = EXCLUDED.action_history,
                 closure_reason = EXCLUDED.closure_reason,
                 progress = EXCLUDED.progress,
                 current_turn = EXCLUDED.current_turn,
@@ -910,9 +910,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         """Convert database row to Case domain model."""
         # Parse JSON fields (required fields)
         progress = InvestigationProgress(**json.loads(row.progress))
-        status_history = [
-            CaseStatusTransition(**t) for t in json.loads(row.status_history)
-        ]
+        action_history = [CaseAction(**t) for t in json.loads(row.action_history)]
         turn_history = [TurnProgress(**t) for t in json.loads(row.turn_history)]
         uploaded_files = (
             [UploadedFile(**f) for f in json.loads(row.uploaded_files)]
@@ -977,7 +975,7 @@ class PostgreSQLCaseRepository(CaseRepository):
             title=row.title,
             description=row.description,
             status=CaseStatus(row.status),
-            status_history=status_history,
+            action_history=action_history,
             closure_reason=row.closure_reason,
             progress=progress,
             current_turn=row.current_turn,

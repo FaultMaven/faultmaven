@@ -13,7 +13,7 @@ Architecture:
     ├── solutions (1:N normalized table)
     ├── case_messages (1:N normalized table)
     ├── uploaded_files (1:N normalized table)
-    ├── case_status_transitions (1:N normalized table)
+    ├── case_actions (1:N normalized table)
     ├── case_tags (M:N normalized table)
     └── agent_tool_calls (1:N normalized table)
 """
@@ -29,8 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models import (
     Case,
+    CaseAction,
     CaseStatus,
-    CaseStatusTransition,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -97,7 +97,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Strategy:
         1. Upsert cases table (main record + JSONB)
         2. Upsert normalized tables (evidence, hypotheses, solutions)
-        3. Append-only tables (messages, status_transitions)
+        3. Append-only tables (messages, case_actions)
 
         Args:
             case: Case domain object
@@ -132,11 +132,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 # 6. Upsert messages (normalized table)
                 await self._upsert_messages(case.case_id, case.messages)
 
-                # 7. Append status transitions (append-only)
-                if case.status_history:
-                    await self._append_status_transitions(
-                        case.case_id, case.status_history
-                    )
+                # 7. Append case actions (append-only)
+                if case.action_history:
+                    await self._append_case_actions(case.case_id, case.action_history)
 
                 await self.db.commit()
 
@@ -1318,13 +1316,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 },
             )
 
-    async def _append_status_transitions(
-        self, case_id: str, transitions: List[CaseStatusTransition]
+    async def _append_case_actions(
+        self, case_id: str, transitions: List[CaseAction]
     ) -> None:
-        """Append status transitions (append-only audit trail)."""
+        """Append case actions (append-only audit trail)."""
         for transition in transitions:
             query = text("""
-                INSERT INTO case_status_transitions (
+                INSERT INTO case_actions (
                     case_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
                     :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata::jsonb
@@ -1479,7 +1477,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             title=row.title,
             description=description,
             status=CaseStatus(row.status),
-            status_history=[],  # Load separately if needed
+            action_history=[],  # Load separately if needed
             closure_reason=None,
             # Progress
             progress=progress,
