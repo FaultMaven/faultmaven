@@ -140,8 +140,28 @@ CURRENT USER MESSAGE:
 
 {output_format}
 
-YOUR TASK:
-{adaptive_instructions}
+ASSISTANT ROLE (CRITICAL):
+You are an ADVISOR who helps users troubleshoot. You:
+- SUGGEST actions for the user to take (e.g., "I'd suggest restarting the service")
+- ASK for data the user can provide (e.g., "Could you check the database metrics?")
+- BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
+  You cannot execute code or access systems.
+  Use: "Could you run", "Please check", "It would help to look at".
+- NEVER claim you will "execute", "run", "check", or "look into" things yourself (future tense)
+- NEVER claim you have "executed", "ran", "checked", "looked at", "analyzed", or "accessed" things the user didn't provide (past tense)
+- Use language like: "I'd suggest...", "You might want to try...", "Could you check..."
+- BAD: "Which of these would you like me to check or execute first?"
+- BAD: "I've taken a look at the service map and logs"
+- GOOD: "Which of these would you like to try first?"
+- GOOD: "Based on the symptoms you described, it sounds like..."
+
+CONCISENESS:
+Keep responses focused and actionable. Avoid excessive preamble or lengthy explanations.
+- Lead with the key insight or recommendation
+- Use bullet points for multiple options
+- One sentence of reasoning is often enough - don't over-explain
+- Only confirm/clarify when: situation is critical, details are ambiguous/inconsistent, or direction changed
+- Skip confirmation when: user reports action results, asks follow-up questions, or context is clear
 
 KEY PRINCIPLES:
 - Evidence-Driven Progress: Only set a progress indicator to True when you are also creating
@@ -154,6 +174,9 @@ KEY PRINCIPLES:
   equivalent data, or proceed without it.
 - WORK WITH WHAT YOU GET: Never stall. If the user provides partial or off-topic data, extract what
   is useful, answer briefly, and immediately state the next productive step.
+
+YOUR TASK:
+{adaptive_instructions}
 
 FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
 Generate 2-4 contextual follow-up actions the user can click as shortcuts:
@@ -251,29 +274,6 @@ Example - No new findings from analysis:
 MILESTONE ATTRIBUTION (Automatic):
 Do NOT specify advances_milestones in evidence_to_add (system infers from category automatically).
 Only specify if automatic inference would be wrong (rare edge case).
-
-ASSISTANT ROLE (CRITICAL):
-You are an ADVISOR who helps users troubleshoot. You:
-- SUGGEST actions for the user to take (e.g., "I'd suggest restarting the service")
-- ASK for data the user can provide (e.g., "Could you check the database metrics?")
-- BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
-  You cannot execute code or access systems.
-  Use: "Could you run", "Please check", "It would help to look at".
-- NEVER claim you will "execute", "run", "check", or "look into" things yourself (future tense)
-- NEVER claim you have "executed", "ran", "checked", "looked at", "analyzed", or "accessed" things the user didn't provide (past tense)
-- Use language like: "I'd suggest...", "You might want to try...", "Could you check..."
-- BAD: "Which of these would you like me to check or execute first?"
-- BAD: "I've taken a look at the service map and logs"
-- GOOD: "Which of these would you like to try first?"
-- GOOD: "Based on the symptoms you described, it sounds like..."
-
-CONCISENESS:
-Keep responses focused and actionable. Avoid excessive preamble or lengthy explanations.
-- Lead with the key insight or recommendation
-- Use bullet points for multiple options
-- One sentence of reasoning is often enough - don't over-explain
-- Only confirm/clarify when: situation is critical, details are ambiguous/inconsistent, or direction changed
-- Skip confirmation when: user reports action results, asks follow-up questions, or context is clear
 
 DIAGNOSTIC REASONING REQUIREMENTS (CRITICAL - Anti-Hallucination):
 Before suggesting any action or mitigation, you MUST structure your response with:
@@ -947,6 +947,40 @@ def get_fallback_prompt_for_case(
 # =============================================================================
 
 
+def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
+    """Compute focus zone from progress milestones (Framework §8.5).
+
+    Returns a priority signal injected at the top of DIAGNOSIS instructions.
+    Three zones based on progress milestone state:
+    - VERIFY THE PROBLEM: No symptoms confirmed yet
+    - ROOT CAUSE ANALYSIS: Symptoms verified, cause not found
+    - PROPOSE A SOLUTION: Root cause found, need actionable fix
+    """
+    if not progress.symptom_verified:
+        return """
+**CURRENT FOCUS: VERIFY THE PROBLEM**
+Your primary goal this turn is to gather logs, confirm symptoms, and
+establish the scope and timeline. Ask the user for the specific evidence
+needed to prove the problem exists.
+"""
+    elif progress.symptom_verified and not progress.root_cause_identified:
+        return """
+**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
+The problem is verified. Your primary goal this turn is to form and test
+hypotheses. Look at the causal evidence, form a theory, and actively seek
+the data needed to prove or disprove it.
+"""
+    elif progress.root_cause_identified and not progress.solution_proposed:
+        return """
+**CURRENT FOCUS: PROPOSE A SOLUTION**
+You have identified the root cause. Your primary goal this turn is to
+formulate a concrete, executable fix. Provide specific commands for the
+user to run so the investigation can transition to Treatment.
+"""
+    else:
+        return ""  # solution_proposed=True: pending action context handles this
+
+
 def get_prompt_for_case(
     case: Case,
     user_message: str,
@@ -987,7 +1021,8 @@ def get_prompt_for_case(
 
         # Dispatch to stage instructions (2-stage model with mitigation detour)
         if stage == InvestigationStage.DIAGNOSIS:
-            adaptive_instr = DIAGNOSIS_INSTRUCTIONS
+            focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
+            adaptive_instr = focus_emphasis + DIAGNOSIS_INSTRUCTIONS
         elif stage == InvestigationStage.MITIGATION:
             adaptive_instr = MITIGATION_INSTRUCTIONS
         elif stage == InvestigationStage.TREATMENT:
