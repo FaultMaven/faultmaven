@@ -44,7 +44,98 @@ EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM = 4000
 # Max total chars for the entire evidence context section
 EVIDENCE_CONTEXT_MAX_TOTAL_CHARS = 16000
 
+# =============================================================================
+# Graduated Conversation History Configuration
+# =============================================================================
+# Recent turns: full user messages + smart-truncated agent responses
+HISTORY_VERBATIM_TURNS = 3
+# Older turns: one-line summaries from TurnProgress metadata
+HISTORY_SUMMARY_MAX_TURNS = 7
+# Agent response character count before smart-truncation kicks in
+HISTORY_AGENT_TRUNCATE_THRESHOLD = 600
+
 logger = logging.getLogger(__name__)
+
+_TRUNCATION_MARKER = "[...analysis removed for brevity...]"
+
+
+def _smart_truncate_agent_response(
+    response: str,
+    threshold: int = HISTORY_AGENT_TRUNCATE_THRESHOLD,
+) -> str:
+    """Truncate agent response preserving narrative structure.
+
+    Preserves the opening (acknowledgment/key insight) and closing
+    (question/next action) while replacing the middle analysis blocks
+    with a brevity marker. User messages are never passed to this function.
+
+    Strategy:
+    1. Under threshold → return as-is
+    2. Split on paragraph boundaries (double newline)
+    3. Keep first paragraph + last paragraph, replace middle
+    4. If first+last still too long, trim at sentence boundaries
+    """
+    if len(response) <= threshold:
+        return response
+
+    paragraphs = [p.strip() for p in response.split("\n\n") if p.strip()]
+
+    if len(paragraphs) >= 3:
+        first = paragraphs[0]
+        last = paragraphs[-1]
+        combined = f"{first}\n\n{_TRUNCATION_MARKER}\n\n{last}"
+
+        # If first+last is still too long, trim each at sentence boundaries
+        if len(combined) > threshold * 1.5:
+            first = _trim_to_sentence(first, 300)
+            last = _trim_to_sentence_end(last, 250)
+            combined = f"{first}\n\n{_TRUNCATION_MARKER}\n\n{last}"
+
+        return combined
+
+    if len(paragraphs) == 2:
+        # Two paragraphs — keep both but trim if needed
+        first = _trim_to_sentence(paragraphs[0], 350)
+        last = _trim_to_sentence_end(paragraphs[1], 250)
+        return f"{first}\n\n{last}"
+
+    # Single paragraph (no double-newline structure) — sentence-based fallback
+    first = _trim_to_sentence(response, 350)
+    last = _trim_to_sentence_end(response, 200)
+    if first != response:
+        return f"{first}\n\n{_TRUNCATION_MARKER}\n\n{last}"
+    return response
+
+
+def _trim_to_sentence(text: str, max_chars: int) -> str:
+    """Trim text to the last sentence boundary within max_chars."""
+    if len(text) <= max_chars:
+        return text
+    # Find the last sentence-ending punctuation within limit
+    truncated = text[:max_chars]
+    for end_char in [". ", ".\n", "? ", "?\n", "! ", "!\n"]:
+        last_pos = truncated.rfind(end_char)
+        if last_pos > max_chars // 3:  # Don't cut too aggressively
+            return truncated[: last_pos + 1]
+    # No good sentence boundary — cut at word boundary
+    last_space = truncated.rfind(" ")
+    if last_space > max_chars // 2:
+        return truncated[:last_space] + "..."
+    return truncated + "..."
+
+
+def _trim_to_sentence_end(text: str, max_chars: int) -> str:
+    """Keep the last max_chars of text, starting at a sentence boundary."""
+    if len(text) <= max_chars:
+        return text
+    # Find a sentence start near the cut point
+    tail = text[-max_chars:]
+    for start_marker in [". ", ".\n", "? ", "?\n", "! ", "!\n"]:
+        first_pos = tail.find(start_marker)
+        if 0 < first_pos < max_chars // 2:
+            return tail[first_pos + 2 :]  # Skip the punctuation + space
+    # No good sentence boundary — just take the tail
+    return "..." + tail.lstrip()
 
 
 @dataclass
@@ -396,6 +487,164 @@ def _build_evidence_context(case: Case) -> str:
     return result
 
 
+def _build_turn_summary(turn) -> str:
+    """Build a one-line summary from a TurnProgress record.
+
+    Format: TURN {n}: {user_summary} → {outcome_description}
+
+    Uses structured metadata (milestones, evidence, hypotheses) to describe
+    what happened, falling back to the text summary if no structured data.
+    """
+    parts = []
+
+    # Milestones completed this turn
+    if turn.milestones_completed:
+        parts.append(", ".join(turn.milestones_completed))
+
+    # Evidence and hypothesis counts
+    if turn.evidence_added:
+        parts.append(f"{len(turn.evidence_added)} evidence added")
+    if turn.hypotheses_generated:
+        parts.append(f"{len(turn.hypotheses_generated)} hypotheses proposed")
+    if turn.hypotheses_validated:
+        parts.append(f"{len(turn.hypotheses_validated)} hypotheses validated")
+    if turn.solutions_proposed:
+        parts.append(f"{len(turn.solutions_proposed)} solutions proposed")
+
+    # Fallback to outcome or agent summary
+    if not parts:
+        if turn.agent_response_summary:
+            parts.append(turn.agent_response_summary[:100])
+        elif turn.outcome:
+            parts.append(str(turn.outcome.value))
+
+    outcome_desc = ", ".join(parts) if parts else "conversation"
+
+    user_part = turn.user_message_summary or "User message"
+    return f"TURN {turn.turn_number}: {user_part} → {outcome_desc}"
+
+
+def _build_graduated_history(case: Case) -> str:
+    """Build graduated conversation history: recent turns verbatim, older summarized.
+
+    Recent turns (last HISTORY_VERBATIM_TURNS): full user messages + smart-truncated
+    agent responses. Older turns: one-line summaries from TurnProgress metadata.
+
+    Falls back to verbatim-only if turn_history is unavailable.
+    """
+    messages = case.messages or []
+    turn_records = case.turn_history or []
+
+    if not messages:
+        return (
+            "<conversation_history>\nNo previous conversation.\n</conversation_history>"
+        )
+
+    # Determine the turn number boundary between "earlier" and "recent"
+    # Get all unique turn numbers from messages, sorted
+    all_turn_nums = sorted(
+        {m.get("turn_number", 0) for m in messages if m.get("turn_number")}
+    )
+
+    if len(all_turn_nums) <= HISTORY_VERBATIM_TURNS:
+        # Few enough turns — all verbatim, no summarization needed
+        return _build_verbatim_history(messages)
+
+    # Split: recent turns get verbatim, older turns get summarized
+    recent_turn_nums = set(all_turn_nums[-HISTORY_VERBATIM_TURNS:])
+    earlier_turn_nums = all_turn_nums[:-HISTORY_VERBATIM_TURNS]
+
+    result = "<conversation_history>\n"
+
+    # --- EARLIER TURNS (summarized from TurnProgress) ---
+    if earlier_turn_nums and turn_records:
+        # Index turn_records by turn_number for quick lookup
+        turn_index = {t.turn_number: t for t in turn_records}
+        summary_turns = earlier_turn_nums[-HISTORY_SUMMARY_MAX_TURNS:]
+
+        result += "EARLIER TURNS:\n"
+        for turn_num in summary_turns:
+            if turn_num in turn_index:
+                result += _build_turn_summary(turn_index[turn_num]) + "\n"
+            else:
+                # Turn record missing — minimal fallback from messages
+                user_msgs = [
+                    m
+                    for m in messages
+                    if m.get("turn_number") == turn_num and m.get("role") == "user"
+                ]
+                user_preview = (
+                    user_msgs[0].get("content", "")[:100] if user_msgs else "..."
+                )
+                result += f"TURN {turn_num}: {user_preview}\n"
+        result += "\n"
+
+    elif earlier_turn_nums:
+        # No turn_records available — summarize from messages directly
+        result += "EARLIER TURNS:\n"
+        summary_turns = earlier_turn_nums[-HISTORY_SUMMARY_MAX_TURNS:]
+        for turn_num in summary_turns:
+            user_msgs = [
+                m
+                for m in messages
+                if m.get("turn_number") == turn_num and m.get("role") == "user"
+            ]
+            user_preview = user_msgs[0].get("content", "")[:150] if user_msgs else "..."
+            result += f"TURN {turn_num}: {user_preview}\n"
+        result += "\n"
+
+    # --- RECENT TURNS (verbatim with smart agent truncation) ---
+    result += "RECENT TURNS:\n"
+    current_turn_num = None
+    for msg in messages:
+        turn_num = msg.get("turn_number")
+        if turn_num not in recent_turn_nums:
+            continue
+
+        role = msg.get("role", "unknown").upper()
+        content = msg.get("content", "")
+        if not content:
+            continue
+
+        if turn_num != current_turn_num:
+            if current_turn_num is not None:
+                result += "\n"
+            result += f"TURN {turn_num}:\n"
+            current_turn_num = turn_num
+
+        if role == "ASSISTANT":
+            content = _smart_truncate_agent_response(content)
+
+        result += f"{role}: {content}\n"
+
+    result += "</conversation_history>"
+    return result
+
+
+def _build_verbatim_history(messages: list) -> str:
+    """Build full verbatim history for short conversations (≤3 turns)."""
+    result = "<conversation_history>\n"
+    current_turn_num = None
+
+    for msg in messages[-20:]:
+        turn_num = msg.get("turn_number", "?")
+        role = msg.get("role", "unknown").upper()
+        content = msg.get("content", "")
+        if not content:
+            continue
+
+        if turn_num != current_turn_num:
+            if current_turn_num is not None:
+                result += "\n"
+            result += f"TURN {turn_num}:\n"
+            current_turn_num = turn_num
+
+        result += f"{role}: {content}\n"
+
+    result += "</conversation_history>"
+    return result
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -554,9 +803,9 @@ def build_investigation_context(
                 break
 
     # 6. Conversation History
-    # Gap #8: State Summary + Last Turn pattern for long conversations
-    # Use compact state summary for conversations >15 turns to save tokens
-    # Auto-enable state summary mode for long conversations
+    # Two modes:
+    # - State Summary (>15 turns): Minimal summary + last turn only
+    # - Graduated History (≤15 turns): Recent turns verbatim, older summarized
     if use_state_summary is None:
         use_state_summary = case.current_turn > 15
 
@@ -574,8 +823,8 @@ def build_investigation_context(
                 recent_history += f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
 
             # What agent requested or concluded
-            if last_turn.agent_summary:
-                summary = last_turn.agent_summary[:200]
+            if last_turn.agent_response_summary:
+                summary = last_turn.agent_response_summary[:200]
                 recent_history += f"Agent: {summary}\n"
 
             recent_history += "</previous_turn>"
@@ -586,35 +835,8 @@ def build_investigation_context(
         recent_history += "</current_turn>"
 
     else:
-        # Full conversation history for short conversations (<15 turns)
-        recent_history = "<conversation_history>\n"
-
-        # Get recent messages (last 20 messages = ~10 turns)
-        recent_messages = case.messages[-20:] if case.messages else []
-
-        if not recent_messages:
-            recent_history += "No previous conversation.\n"
-        else:
-            # Group messages by turn for readability
-            current_turn_num = None
-            for msg in recent_messages:
-                turn_num = msg.get("turn_number", "?")
-                role = msg.get("role", "unknown").upper()
-                content = msg.get("content", "")
-
-                if not content:
-                    continue  # Skip empty messages
-
-                # Add turn header when starting a new turn
-                if turn_num != current_turn_num:
-                    if current_turn_num is not None:
-                        recent_history += "\n"
-                    recent_history += f"TURN {turn_num}:\n"
-                    current_turn_num = turn_num
-
-                recent_history += f"{role}: {content}\n"
-
-        recent_history += "</conversation_history>"
+        # Graduated history: recent turns verbatim, older turns summarized
+        recent_history = _build_graduated_history(case)
 
     # 7. Knowledge Base Results
     kb_str = ""

@@ -380,7 +380,7 @@ class HypothesisModel(Base):
     initial_likelihood = Column(Numeric(3, 2), default=0.5)
 
     # Tracking
-    generated_at_turn = Column(Integer, nullable=True, default=0, server_default="0")
+    generated_at_turn = Column(Integer, nullable=False, default=0, server_default="0")
     last_updated_turn = Column(Integer, default=0)
     last_progress_at_turn = Column(Integer, default=0)
     iterations_without_progress = Column(Integer, default=0)
