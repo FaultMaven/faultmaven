@@ -233,43 +233,53 @@ angle: [alternative approach]."
 
 ## Prompt Injection Architecture
 
-The rules are not injected randomly — they follow a deliberate assembly order that mirrors how LLMs weight instructions:
+### Where Rules Live in the Code
+
+Rules are injected into template strings in `templates.py` and assembled at runtime by `get_prompt_for_case()`. The table below maps each rule to its actual injection point:
+
+| Rule | Template | Section in Template | Position |
+| ---- | -------- | ------------------- | -------- |
+| 1 (Answer First) | INQUIRY only | YOUR TASK instructions | Early (after context header) |
+| 2 (Evidence-Grounded) | INVESTIGATION_BASE | DIAGNOSTIC REASONING + EVIDENCE GROUNDING | Mid-to-late (after operational sections) |
+| 3 (Advisor Role) | All templates | ASSISTANT ROLE | Varies: early in INQUIRY/TERMINAL, mid in INVESTIGATING |
+| 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
+| 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
+| 6 (Steady Advance) | All templates | STEADY ADVANCE | Last section (always) |
+
+### Dynamic Injection: Focus Zone (§8.5)
+
+The only rule-adjacent content injected at runtime is **Focus Zone Emphasis** — a progress milestone-driven priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to DIAGNOSIS_INSTRUCTIONS inside `get_prompt_for_case()`. This is not a behavioral rule; it's system-computed adaptive context. See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
+
+### INVESTIGATION_BASE Layout
 
 ```text
-PROMPT ASSEMBLY ORDER
-=====================
+CONTEXT HEADER
+  Identity, case context, hypotheses, pending action,
+  conversation history, user message, output format
+                                                        (~2000-5000+ tokens of dynamic context)
 
-1. BASE PERSONA (Rules 3, 5)
-   How the agent speaks and handles adversity.
-   -> Advisor Role vocabulary constraints
-   -> Work With What You Get resilience
-
-2. CURRENT FOCUS (Focus Zone Emphasis, Framework S8.5)
-   What the agent should prioritize this turn.
-   -> Progress milestone-driven emphasis
-   -> Not a behavioral rule; system-computed
-
-3. STRUCTURED OUTPUT (Rule 2)
-   How claims and suggestions must be structured.
-   -> OBSERVATION -> ANALYSIS -> SUGGESTION chain
-   -> Hallucination prevention
-
-4. FINAL DIRECTIVE (Rule 6)
-   The last instruction before generation.
-   -> Steady Advance: no recycled content
-   -> Positioned last for maximum LLM attention
-
-TEMPLATE-SPECIFIC INJECTIONS
-=============================
-
-INQUIRY only:      Rule 1 (Answer First)
-                   -> Don't force investigation on Q&A
-
-INVESTIGATING:     Rule 4 (Graceful Pivot)
-                   -> Smooth handling of user limitations
+YOUR TASK: {adaptive_instructions}                      Focus Zone prepended here for DIAGNOSIS
+KEY PRINCIPLES (Rules 4, 5)                             Graceful Pivot + Work With What You Get
+FOLLOW-UP SUGGESTIONS
+EVIDENCE FROM ATTACHMENTS / CLASSIFICATION / RECORDS
+MILESTONE ATTRIBUTION
+ASSISTANT ROLE (Rule 3)                                 Advisor Role vocabulary constraints
+CONCISENESS
+DIAGNOSTIC REASONING (Rule 2)                           OBSERVATION -> ANALYSIS -> SUGGESTION
+EVIDENCE GROUNDING (Rule 2 extension)                   Anti-hallucination hard constraints
+...security constraints, hypothesis management...
+STEADY ADVANCE (Rule 6)                                 LAST — recency effect
 ```
 
-**Why this order matters**: Early tokens set the behavioral frame (persona, constraints). Final tokens get disproportionate attention from the LLM (recency effect). Placing Steady Advance last ensures the anti-repetition constraint is the freshest instruction when the LLM begins generating.
+### Design Rationale
+
+Two structural invariants are enforced:
+
+1. **Rule 6 is always last**. LLMs give disproportionate attention to final instructions (recency effect). Placing Steady Advance last ensures the anti-repetition constraint is the freshest instruction when the LLM begins generating.
+
+2. **Focus Zone is prepended to stage instructions**. It appears at the top of `{adaptive_instructions}` for DIAGNOSIS, making it the first instruction-level content the LLM sees after the dynamic context header.
+
+The remaining rules occupy stable positions in the template but are not ordered for primacy/recency optimization. The dynamic context header (identity, evidence, hypotheses, conversation history) consumes thousands of tokens before any instruction, so positional effects within the instruction block are negligible compared to Rule 6's last-position advantage and Focus Zone's first-instruction position.
 
 ---
 

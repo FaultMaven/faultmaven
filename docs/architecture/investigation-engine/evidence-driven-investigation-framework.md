@@ -626,7 +626,7 @@ Within the DIAGNOSIS stage, progress milestones determine a **focus zone** — a
 #### Focus Zone Computation
 
 ```python
-def get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
+def _get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
     """Compute focus zone from progress milestones.
 
     Returns a priority signal injected before standard DIAGNOSIS instructions.
