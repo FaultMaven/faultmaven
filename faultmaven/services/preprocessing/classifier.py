@@ -462,7 +462,7 @@ class DataClassifier:
             r'\btimestamp["\']?\s*[:,]',  # JSON with timestamp field
             r'\w+{[\w="]+}',  # Prometheus format: metric{label="value"}
             r"^\d+\.\d+\s+\d+",  # Unix timestamp + value
-            r"(cpu|memory|latency|response_time|throughput|error_rate)",  # Common metric names
+            r"\b(cpu|memory|latency|response_time|throughput|error_rate)\b",  # Common metric names
             r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}",  # ISO timestamp
             r"\b(date|time|datetime)[,\t]",  # Tabular data with date/time columns
             r"\b(count|total|avg|sum|min|max|mean|median|p\d{2})\b[,\t]",  # Aggregate/stat columns
@@ -473,7 +473,7 @@ class DataClassifier:
         )
 
         # CSV files with numeric data patterns strongly suggest metrics
-        if ext in metrics_exts and metrics_score >= 1:
+        if ext in metrics_exts and metrics_score >= 2:
             return ClassificationResult(
                 data_type=DataType.METRICS_AND_PERFORMANCE,
                 confidence=0.85,

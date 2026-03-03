@@ -45,10 +45,10 @@ class MetricsAndPerformanceExtractor:
         """
         # Try to parse as different formats
         time_series = self._parse_metrics(content)
+        csv_summary = self._summarize_csv_structure(content)
 
         if not time_series:
             # Valid CSV with no numeric columns — provide structural summary
-            csv_summary = self._summarize_csv_structure(content)
             if csv_summary:
                 return csv_summary
             return "[Failed to parse metrics data - unsupported format]"
@@ -61,6 +61,10 @@ class MetricsAndPerformanceExtractor:
 
         # Combine summaries
         output = self._format_summary(summaries)
+
+        # Append categorical distributions for non-numeric columns if available
+        if csv_summary:
+            output += f"\n\n{csv_summary}"
 
         # Safety truncation
         if len(output) > self.MAX_OUTPUT_LENGTH:
@@ -315,12 +319,18 @@ class MetricsAndPerformanceExtractor:
         out.append(f"Rows: {total_rows} (valid: {valid_rows})")
         out.append(f"Columns ({len(header)}): {', '.join(header)}\n")
 
+        is_small_ref_table = total_rows < 100 and len(header) <= 3
+
         for col_name in header:
             counts = col_values[col_name]
             unique = len(counts)
             out.append(f"  {col_name}: {unique} unique value(s)")
-            # Show top 5 values for columns with low cardinality
-            if unique <= 20:
+            # Show top 5 values for columns with low cardinality, or all for small reference tables
+            if is_small_ref_table:
+                sorted_vals = sorted(counts.items(), key=lambda x: -x[1])
+                for val, cnt in sorted_vals:
+                    out.append(f"    - {val} ({cnt}x)")
+            elif unique <= 20:
                 sorted_vals = sorted(counts.items(), key=lambda x: -x[1])[:5]
                 for val, cnt in sorted_vals:
                     display = val[:60] + "..." if len(val) > 60 else val
