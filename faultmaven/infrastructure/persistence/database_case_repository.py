@@ -35,9 +35,9 @@ from faultmaven.infrastructure.persistence.case_repository import (
     RepositoryException,
 )
 from faultmaven.infrastructure.persistence.models import (
+    CaseActionModel,
     CaseMessageModel,
     CaseModel,
-    CaseStatusTransitionModel,
     CaseTagModel,
     EvidenceModel,
     HypothesisModel,
@@ -46,8 +46,8 @@ from faultmaven.infrastructure.persistence.models import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
+    CaseAction,
     CaseStatus,
-    CaseStatusTransition,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -118,7 +118,7 @@ class DatabaseCaseRepository(CaseRepository):
 
             # Handle related entities
             await self._sync_messages(case.case_id, case.messages)
-            await self._sync_status_transitions(case.case_id, case.status_history)
+            await self._sync_case_actions(case.case_id, case.action_history)
 
             await self.db.commit()
 
@@ -155,7 +155,7 @@ class DatabaseCaseRepository(CaseRepository):
                     selectinload(CaseModel.solutions),
                     selectinload(CaseModel.messages),
                     selectinload(CaseModel.uploaded_files),
-                    selectinload(CaseModel.status_transitions),
+                    selectinload(CaseModel.case_actions),
                     selectinload(CaseModel.tags),
                 )
                 .where(CaseModel.case_id == case_id)
@@ -223,7 +223,7 @@ class DatabaseCaseRepository(CaseRepository):
                 selectinload(CaseModel.solutions),
                 selectinload(CaseModel.messages),
                 selectinload(CaseModel.uploaded_files),
-                selectinload(CaseModel.status_transitions),
+                selectinload(CaseModel.case_actions),
             )
             if conditions:
                 data_stmt = data_stmt.where(and_(*conditions))
@@ -330,7 +330,7 @@ class DatabaseCaseRepository(CaseRepository):
                     selectinload(CaseModel.solutions),
                     selectinload(CaseModel.messages),
                     selectinload(CaseModel.uploaded_files),
-                    selectinload(CaseModel.status_transitions),
+                    selectinload(CaseModel.case_actions),
                 )
                 .where(and_(*conditions))
                 .order_by(CaseModel.updated_at.desc())
@@ -644,7 +644,7 @@ class DatabaseCaseRepository(CaseRepository):
                     selectinload(CaseModel.solutions),
                     selectinload(CaseModel.messages),
                     selectinload(CaseModel.uploaded_files),
-                    selectinload(CaseModel.status_transitions),
+                    selectinload(CaseModel.case_actions),
                 )
                 .where(CaseModel.session_id == session_id)
                 .order_by(CaseModel.updated_at.desc())
@@ -703,7 +703,7 @@ class DatabaseCaseRepository(CaseRepository):
                     selectinload(CaseModel.solutions),
                     selectinload(CaseModel.messages),
                     selectinload(CaseModel.uploaded_files),
-                    selectinload(CaseModel.status_transitions),
+                    selectinload(CaseModel.case_actions),
                 )
                 .where(and_(*conditions))
                 .order_by(CaseModel.updated_at.desc())
@@ -793,7 +793,7 @@ class DatabaseCaseRepository(CaseRepository):
 
             # Handle related entities
             await self._sync_messages(case.case_id, case.messages)
-            await self._sync_status_transitions(case.case_id, case.status_history)
+            await self._sync_case_actions(case.case_id, case.action_history)
 
             await self.db.commit()
 
@@ -841,26 +841,24 @@ class DatabaseCaseRepository(CaseRepository):
                 )
                 self.db.add(message_model)
 
-    async def _sync_status_transitions(
-        self, case_id: str, transitions: List[CaseStatusTransition]
-    ) -> None:
-        """Sync status transitions for a case (append-only)."""
-        if not transitions:
+    async def _sync_case_actions(self, case_id: str, actions: List[CaseAction]) -> None:
+        """Sync case actions for a case (append-only)."""
+        if not actions:
             return
 
-        # Get existing transition count
+        # Get existing action count
         stmt = (
             select(func.count())
-            .select_from(CaseStatusTransitionModel)
-            .where(CaseStatusTransitionModel.case_id == case_id)
+            .select_from(CaseActionModel)
+            .where(CaseActionModel.case_id == case_id)
         )
         result = await self.db.execute(stmt)
         existing_count = result.scalar()
 
-        # Add new transitions
-        for i, t in enumerate(transitions):
+        # Add new actions
+        for i, t in enumerate(actions):
             if i >= existing_count:
-                transition_model = CaseStatusTransitionModel(
+                action_model = CaseActionModel(
                     case_id=case_id,
                     from_status=t.from_status.value,
                     to_status=t.to_status.value,
@@ -868,7 +866,7 @@ class DatabaseCaseRepository(CaseRepository):
                     transitioned_at=t.triggered_at,
                     transition_metadata=json.dumps({"triggered_by": t.triggered_by}),
                 )
-                self.db.add(transition_model)
+                self.db.add(action_model)
 
     # ========================================================================
     # Model Conversion: Domain -> ORM
@@ -1031,12 +1029,12 @@ class DatabaseCaseRepository(CaseRepository):
                     }
                 )
 
-        # Parse status transitions from relationship
-        status_history = []
-        if model.status_transitions:
-            for t in model.status_transitions:
+        # Parse case actions from relationship
+        action_history = []
+        if model.case_actions:
+            for t in model.case_actions:
                 try:
-                    transition = CaseStatusTransition(
+                    action = CaseAction(
                         from_status=(
                             CaseStatus(t.from_status)
                             if t.from_status
@@ -1049,9 +1047,9 @@ class DatabaseCaseRepository(CaseRepository):
                         ),
                         reason=t.reason or "",
                     )
-                    status_history.append(transition)
+                    action_history.append(action)
                 except Exception:
-                    pass  # Skip invalid transitions
+                    pass  # Skip invalid actions
 
         # Parse timestamps from metadata
         resolved_at = self._parse_datetime(metadata.get("resolved_at"))
@@ -1067,7 +1065,7 @@ class DatabaseCaseRepository(CaseRepository):
             title=model.title,
             description=description,
             status=CaseStatus(model.status),
-            status_history=status_history,
+            action_history=action_history,
             closure_reason=closure_reason,
             progress=progress,
             current_turn=current_turn,

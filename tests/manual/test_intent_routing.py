@@ -58,7 +58,7 @@ async def test_intent_routing():
         evidence=[],
         hypotheses={},
         solutions=[],
-        status_history=[],
+        action_history=[],
         participants=[],
         messages=[],
     )

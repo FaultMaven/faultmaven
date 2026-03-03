@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import (
     Case,
+    CaseAction,
     CaseStatus,
-    CaseStatusTransition,
     DocumentationData,
     EscalationState,
     Evidence,
@@ -1415,7 +1415,7 @@ class PostgreSQLCaseRepository(CaseRepository):
             "description": case.description,
             "status": case.status.value,
             "status_history": json.dumps(
-                [t.model_dump(mode="json") for t in case.status_history]
+                [t.model_dump(mode="json") for t in case.action_history]
             ),
             "closure_reason": case.closure_reason,
             # Progress (JSONB)
@@ -1834,9 +1834,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         """Convert database row to Case domain model."""
         # Parse JSON fields (required fields)
         progress = InvestigationProgress(**json.loads(row.progress))
-        status_history = [
-            CaseStatusTransition(**t) for t in json.loads(row.status_history)
-        ]
+        action_history = [CaseAction(**t) for t in json.loads(row.status_history)]
         turn_history = [TurnProgress(**t) for t in json.loads(row.turn_history)]
         uploaded_files = (
             [UploadedFile(**f) for f in json.loads(row.uploaded_files)]
@@ -1916,7 +1914,7 @@ class PostgreSQLCaseRepository(CaseRepository):
             title=row.title,
             description=description,
             status=CaseStatus(row.status),
-            status_history=status_history,
+            action_history=action_history,
             closure_reason=row.closure_reason,
             progress=progress,
             current_turn=row.current_turn,

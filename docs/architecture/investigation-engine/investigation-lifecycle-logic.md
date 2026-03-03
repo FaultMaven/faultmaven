@@ -19,7 +19,7 @@ This document defines the state transitions, path routing, and turn tracking log
 
 ## 1. Investigation Lifecycle
 
-### 1.1 Status Transition Map
+### 1.1 Case Action Map
 
 ```
 ┌──────────────┐
@@ -48,7 +48,7 @@ This document defines the state transitions, path routing, and turn tracking log
        │                      ┌──────────────┐    ┌──────────────┐
        │                      │   RESOLVED   │    │    CLOSED    │
        │                      │              │    │              │
-       │                      │ TERMINAL     │    │  TERMINAL    │
+       │                      │ DISPOSITION  │    │ DISPOSITION  │
        │                      │ With solution│    │ No solution  │
        │                      └──────────────┘    └──────────────┘
        │                                                  ▲
@@ -56,7 +56,7 @@ This document defines the state transitions, path routing, and turn tracking log
           (inquiry-only)
 ```
 
-### 1.2 Status Transitions
+### 1.2 Case Actions
 
 #### INQUIRY → INVESTIGATING
 
@@ -71,7 +71,7 @@ Confirmations reduce errors but create friction. Use conditional logic:
 - Situation is CRITICAL/HIGH severity (alignment crucial before action)
 - Problem description is ambiguous, inconsistent, or incomplete
 - Key details changed that affect investigation direction
-- User manually requests status transition (via dropdown)
+- User manually requests case action (via dropdown)
 - First time transitioning to INVESTIGATING (establish shared understanding)
 
 **WHEN TO SKIP CONFIRMATION** (natural progression):
@@ -213,14 +213,14 @@ Transition:    Retroactive milestone attribution from evidence categories
 
 `validate_reasoning_first` checks for non-contextual (actionable) evidence when the LLM attempts to complete milestones. Contextual evidence alone cannot justify milestone claims — the LLM must first have evaluated and classified data into actionable categories (SYMPTOM, CAUSAL, MITIGATION, or SOLUTION).
 
-#### INVESTIGATING → RESOLVED (Terminal)
+#### INVESTIGATING → RESOLVED (Disposition)
 
 **Trigger**: User-Agent Handshake (explicit user confirmation)
 
 **User-Agent Handshake Pattern**:
 
-Terminal transitions are NEVER automatic. The agent proposes resolution, and the
-user must explicitly confirm before the transition executes.
+Disposition actions are NEVER automatic. The agent proposes resolution, and the
+user must explicitly confirm before the case action executes.
 
 **Flow**:
 1. Agent detects solution effectiveness → includes `ProposedTransition` in response
@@ -256,14 +256,14 @@ def confirm_pending_transition(case, user_id):
         closure_reason="resolved",
     )
     case.pending_transition = None
-    # TERMINAL - no further transitions
+    # DISPOSITION - no further case actions
 ```
 
 **Why not automatic?** The LLM's interpretation of "it works" can be wrong.
 The user might mean "this command works" not "the whole system is fixed."
-Terminal transitions are irreversible, so false positives are costly.
+Disposition actions are irreversible, so false positives are costly.
 
-#### INVESTIGATING → CLOSED (Terminal)
+#### INVESTIGATING → CLOSED (Disposition)
 
 **Trigger**: Investigation abandoned without solution
 
@@ -273,12 +273,12 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     case.status = CaseStatus.CLOSED
     case.closed_at = datetime.now(timezone.utc)
     case.closure_reason = reason  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
-    # TERMINAL - no further transitions
+    # DISPOSITION - no further case actions
     # Note: "mitigation_sufficient" is used when user closes after mitigation
     # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
 ```
 
-#### INQUIRY → CLOSED (Terminal)
+#### INQUIRY → CLOSED (Disposition)
 
 **Trigger**: Inquiry-only, no investigation needed
 
@@ -288,10 +288,10 @@ def close_from_inquiry(case: Case, user_id: str):
     case.status = CaseStatus.CLOSED
     case.closed_at = datetime.now(timezone.utc)
     case.closure_reason = "inquiry_only"
-    # TERMINAL - no further transitions
+    # DISPOSITION - no further case actions
 ```
 
-#### INQUIRY → RESOLVED (Terminal, Fast-Track)
+#### INQUIRY → RESOLVED (Disposition, Fast-Track)
 
 > **Implementation Status:** Design complete, wiring deferred. The `KnowledgeResolution` model exists in contracts and the `InquiryResponse.knowledge_resolution` field is in the schema, but `_process_response_structured()` does not yet process this field. See limitation G5 in [Opportunistic Investigation Framework](./opportunistic-investigation-framework.md#known-limitations--deferred-items).
 
@@ -323,7 +323,7 @@ def fast_track_resolution(case: Case, knowledge_resolution: KnowledgeResolution)
     case.closed_at = datetime.now(timezone.utc)
     case.closure_reason = "knowledge_base_resolution"
     case.knowledge_resolution = knowledge_resolution
-    # TERMINAL - no further transitions
+    # DISPOSITION - no further case actions
 ```
 
 **Flow**:
@@ -367,12 +367,12 @@ VALID_TRANSITIONS = {
         CaseStatus.RESOLVED,        # Solution verified (terminal)
         CaseStatus.CLOSED           # Abandoned (terminal)
     ],
-    CaseStatus.RESOLVED: [],        # TERMINAL - no transitions
-    CaseStatus.CLOSED: []           # TERMINAL - no transitions
+    CaseStatus.RESOLVED: [],        # DISPOSITION - no further case actions
+    CaseStatus.CLOSED: []           # DISPOSITION - no further case actions
 }
 ```
 
-**Transition Diagram** (updated with Fast-Track):
+**Case Action Diagram** (updated with Fast-Track):
 
 ```
 ┌──────────────┐
@@ -402,17 +402,17 @@ VALID_TRANSITIONS = {
        │                     ┌──────────────┐    ┌──────────────┐
        │                     │   RESOLVED   │◄───┘              │
        │                     │              │                   │
-       │                     │ TERMINAL     │    ┌──────────────┐
+       │                     │ DISPOSITION  │    ┌──────────────┐
        │                     │ With solution│    │    CLOSED    │
        │                     └──────────────┘    │              │
-       │                                         │  TERMINAL    │
+       │                                         │ DISPOSITION  │
        └──(inquiry-only)─────────────────────────► No solution  │
                                                  └──────────────┘
 ```
 
-### 1.4 Automatic Terminal Transitions
+### 1.4 Automatic Disposition Actions
 
-Terminal transitions are triggered automatically based on milestone completion.
+Disposition case actions are triggered automatically based on milestone completion.
 
 ```python
 async def process_turn(case: Case, user_message: str) -> str:
@@ -422,7 +422,7 @@ async def process_turn(case: Case, user_message: str) -> str:
     AUTOMATIC TRANSITIONS:
     - Checked AFTER agent response generation
     - Triggered by milestone completion (data-driven)
-    - Terminal transitions are irreversible
+    - Disposition actions are irreversible
     """
 
     # Validate not terminal
@@ -445,9 +445,9 @@ async def process_turn(case: Case, user_message: str) -> str:
     record_turn(case, milestones_completed)
 
     # ============================================================
-    # TERMINAL TRANSITION HANDLING (User-Agent Handshake)
+    # DISPOSITION CASE ACTION HANDLING (User-Agent Handshake)
     # ============================================================
-    # Terminal transitions are NEVER automatic. The agent proposes
+    # Disposition case actions are NEVER automatic. The agent proposes
     # a transition via ProposedTransition, and the system holds it
     # pending until the user confirms in the next turn.
 
@@ -472,25 +472,25 @@ async def process_turn(case: Case, user_message: str) -> str:
     return agent_response
 
 
-# Terminal transitions (all require user confirmation):
+# Disposition case actions (all require user confirmation):
 #
 # INVESTIGATING → RESOLVED:
 #   - Trigger: Agent proposes via ProposedTransition + user confirms
 #   - Automatic: No (requires User-Agent Handshake)
-#   - Terminal: Yes (irreversible)
+#   - Disposition: Yes (irreversible)
 #
 # INVESTIGATING → CLOSED:
 #   - Trigger: User explicit action (force_close via UI or chat)
 #   - Automatic: No (requires user intent)
-#   - Terminal: Yes (irreversible)
+#   - Disposition: Yes (irreversible)
 #
 # INQUIRY → CLOSED:
 #   - Trigger: User explicit action (close_from_inquiry)
-#   - Terminal: Yes (irreversible)
+#   - Disposition: Yes (irreversible)
 #
 # INQUIRY → RESOLVED:
 #   - Trigger: Fast-track KB resolution + user confirmation
-#   - Terminal: Yes (irreversible)
+#   - Disposition: Yes (irreversible)
 
 
 # ============================================================
@@ -502,24 +502,24 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     User explicitly abandons investigation without solution.
 
     Trigger: User action (not automatic)
-    Terminal: Yes (irreversible)
+    Disposition: Yes (irreversible)
     """
     if case.status != CaseStatus.INVESTIGATING:
-        raise InvalidTransitionError("Can only force-close from INVESTIGATING status")
+        raise CaseActionError("Can only force-close from INVESTIGATING phase")
 
     case.status = CaseStatus.CLOSED
     case.closed_at = datetime.now(timezone.utc)
     case.closure_reason = reason  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
     # Note: "mitigation_sufficient" is used when user closes after mitigation
     # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
-    case.status_history.append(CaseStatusTransition(
+    case.action_history.append(CaseAction(
         from_status=CaseStatus.INVESTIGATING,
         to_status=CaseStatus.CLOSED,
         triggered_at=datetime.now(timezone.utc),
         triggered_by=user_id,
         reason=f"User force-closed: {reason}"
     ))
-    # TERMINAL - no further transitions
+    # DISPOSITION - no further case actions
 
 
 def close_from_inquiry(case: Case, user_id: str):
@@ -527,22 +527,22 @@ def close_from_inquiry(case: Case, user_id: str):
     Close after inquiry without formal investigation.
 
     Trigger: User action (not automatic)
-    Terminal: Yes (irreversible)
+    Disposition: Yes (irreversible)
     """
     if case.status != CaseStatus.INQUIRY:
-        raise InvalidTransitionError("Can only close-from-inquiry when in INQUIRY status")
+        raise CaseActionError("Can only close-from-inquiry when in INQUIRY phase")
 
     case.status = CaseStatus.CLOSED
     case.closed_at = datetime.now(timezone.utc)
     case.closure_reason = "inquiry_only"
-    case.status_history.append(CaseStatusTransition(
+    case.action_history.append(CaseAction(
         from_status=CaseStatus.INQUIRY,
         to_status=CaseStatus.CLOSED,
         triggered_at=datetime.now(timezone.utc),
         triggered_by=user_id,
         reason="User closed after inquiry only"
     ))
-    # TERMINAL - no further transitions
+    # DISPOSITION - no further case actions
 ```
 
 #### 1.4.1 State Update Timing
@@ -553,52 +553,52 @@ State updates occur at specific points within a turn to ensure consistency:
 |-------------|----------|------|---------|
 | `proposed_problem_statement` | — | During INQUIRY turn | LLM generates from conversation |
 | `problem_statement_confirmed` | — | After user confirmation | User says "Yes" or equivalent |
-| `symptom_verified` | Progress indicator | After evidence processing | LLM sets in structured output when symptoms confirmed |
-| `scope_assessed` | Progress indicator | After evidence processing | LLM sets in structured output when impact scope determined |
-| `timeline_established` | Progress indicator | After evidence processing | LLM sets in structured output when timeline understood |
-| `changes_identified` | Progress indicator | After evidence processing | LLM sets in structured output when changes correlated |
-| `root_cause_identified` | Progress indicator | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
-| `solution_proposed` | Progress indicator | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
+| `symptom_verified` | Progress milestone | After evidence processing | LLM sets in structured output when symptoms confirmed |
+| `scope_assessed` | Progress milestone | After evidence processing | LLM sets in structured output when impact scope determined |
+| `timeline_established` | Progress milestone | After evidence processing | LLM sets in structured output when timeline understood |
+| `changes_identified` | Progress milestone | After evidence processing | LLM sets in structured output when changes correlated |
+| `root_cause_identified` | Progress milestone | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
+| `solution_proposed` | Progress milestone | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
 | `path_selection` | — | During DIAGNOSIS (when temporal_state + urgency_level available) | Automatic from problem verification data |
-| `mitigation_accepted` | Stage-gate milestone | LLM structured output | LLM detects user complied with proposed temp fix (submitted results) |
-| `mitigation_verified` | Stage-gate milestone | LLM structured output | LLM detects user confirms mitigation worked → return to DIAGNOSIS |
-| `solution_accepted` | Stage-gate milestone | LLM structured output | LLM detects user complied with proposed solution (submitted results) |
-| `solution_verified` | Stage-gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
-| Terminal transition | — | End of turn | After all other processing |
+| `mitigation_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed temp fix (submitted results) |
+| `mitigation_verified` | Gate milestone | LLM structured output | LLM detects user confirms mitigation worked → return to DIAGNOSIS |
+| `solution_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed solution (submitted results) |
+| `solution_verified` | Gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
+| Disposition action | — | End of turn | After all other processing |
 
-**Stage-gate milestones vs Progress indicators**:
+**Gate milestones vs Progress milestones**:
 
-- **Stage-gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM in structured output when it detects user compliance with a ProposedAction. The LLM is the compliance detector — the user's action is the trigger; the LLM recognizes it (Framework §4.1).
-- **Progress indicators** (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
+- **Gate milestones** (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`): Drive stage transitions. Set by the LLM in structured output when it detects user compliance with a ProposedAction. The LLM is the compliance detector — the user's action is the trigger; the LLM recognizes it (Framework §4.1).
+- **Progress milestones** (`symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions.
 
 **Order of Operations Within a Turn**:
 
 1. **Receive user message**
 2. **LLM processes** and generates response + `state_updates`
-3. **Apply state updates**: progress indicators, stage-gate milestones, evidence, hypotheses (all from LLM structured output)
-4. **Stage-gate side effects**: When a stage-gate milestone is set, mark the corresponding ProposedAction as accepted; stage transition takes effect next turn
+3. **Apply state updates**: progress milestones, gate milestones, evidence, hypotheses (all from LLM structured output)
+4. **Gate milestone side effects**: When a gate milestone is set, mark the corresponding ProposedAction as accepted; stage transition takes effect next turn
 5. **Record turn progress** (detect what changed)
-6. **Check terminal transitions** (RESOLVED/CLOSED) if conditions met
+6. **Check disposition actions** (RESOLVED/CLOSED) if conditions met
 7. **Return response to user**
 
-**Rationale**: Terminal transitions happen last to ensure all state is consistent before case becomes immutable. Stage-gate milestones are applied from the LLM's structured output alongside progress indicators; the new stage's prompt takes effect on the next turn.
+**Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
 
-### 1.5 Manual Status Change Requests
+### 1.5 Manual Case Action Requests
 
-**Purpose**: Allow users to manually request status transitions for practical scenarios (urgent issues, external resolutions, etc.)
+**Purpose**: Allow users to manually request case actions for practical scenarios (urgent issues, external resolutions, etc.)
 
-**Core Principle**: Manual status changes follow the same confirmation pattern as natural progression - **all status changes require explicit user confirmation**.
+**Core Principle**: Manual case actions follow the same confirmation pattern as natural progression - **all case actions require explicit user confirmation**.
 
 ---
 
-#### 1.5.1 UI Component: Status Dropdown
+#### 1.5.1 UI Component: Case Action Dropdown
 
 **Location**: Case header (collapsed view)
 
 **Behavior**:
 - Shows current status with dropdown indicator
-- Displays only **forward transitions** (status changes are irreversible)
-- Terminal states (RESOLVED, CLOSED) have dropdown disabled
+- Displays only **forward transitions** (case actions are irreversible)
+- Dispositions (RESOLVED, CLOSED) have dropdown disabled
 
 **Available Options by Status**:
 
@@ -606,8 +606,8 @@ State updates occur at specific points within a turn to ensure consistency:
 |---------------|------------------|
 | INQUIRY       | Investigating, Closed |
 | INVESTIGATING | Resolved, Closed |
-| RESOLVED      | *(disabled - terminal state)* |
-| CLOSED        | *(disabled - terminal state)* |
+| RESOLVED      | *(disabled - disposition)* |
+| CLOSED        | *(disabled - disposition)* |
 
 **API Support**: No direct API - uses existing query submission endpoint
 
@@ -620,7 +620,7 @@ State updates occur at specific points within a turn to ensure consistency:
 User selects new status from dropdown → Frontend shows confirmation modal:
 
 ```
-⚠️ Request Status Change
+⚠️ Request Case Action
 
 This will ask the agent to transition the case to [NEW_STATUS].
 
@@ -719,7 +719,7 @@ If user confirmed (Option A or refined via Option C), agent:
 
 1. **Sets status** to new value
 2. **Initializes required state** (e.g., creates `ProblemVerification` for INVESTIGATING)
-3. **Records transition** in `status_history`
+3. **Records case action** in `action_history`
 4. **Responds with acknowledgment** and next steps
 
 **Example response** (INQUIRY → INVESTIGATING):
@@ -737,7 +737,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 **Backend updates**:
 - `case.status = CaseStatus.INVESTIGATING`
 - `case.problem_verification = ProblemVerification(symptom_statement=...)`
-- `case.status_history.append(CaseStatusTransition(...))`
+- `case.action_history.append(CaseAction(...))`
 
 ---
 
@@ -775,7 +775,7 @@ Let me start by verifying the scope and impact. What services are affected?"
 
 ---
 
-#### 1.5.4 Status-Specific Confirmation Examples
+#### 1.5.4 Case Action Confirmation Examples
 
 **INQUIRY → INVESTIGATING**
 
@@ -828,11 +828,11 @@ Should I close the case and archive our findings?
 
 #### 1.5.5 API Summary
 
-All manual status changes use **existing endpoints** - no new APIs required:
+All manual case actions use **existing endpoints** - no new APIs required:
 
 | Action | Endpoint | Method | Body |
 |--------|----------|--------|------|
-| Submit status change request | `/api/v1/cases/{case_id}/queries` | POST | `{"message": "[User requested to change case status to Investigating]"}` |
+| Submit case action request | `/api/v1/cases/{case_id}/queries` | POST | `{"message": "[User requested to change case status to Investigating]"}` |
 | User clicks Yes button | `/api/v1/cases/{case_id}/queries` | POST | `{"message": "Yes"}` |
 | User clicks No button | `/api/v1/cases/{case_id}/queries` | POST | `{"message": "No"}` |
 | User types qualified answer | `/api/v1/cases/{case_id}/queries` | POST | `{"message": "<user's typed message>"}` |
@@ -844,16 +844,16 @@ All manual status changes use **existing endpoints** - no new APIs required:
 #### 1.5.6 Design Rationale
 
 **Why dropdown menu instead of pure chat?**
-- **Discoverability**: Users see available status transitions
+- **Discoverability**: Users see available case actions
 - **Clarity**: Visual indicator of current status + forward-only options
 - **Efficiency**: One click vs composing message
 - **Removes ambiguity**: "Let's investigate" could mean many things
 
-**Why agent confirmation instead of direct status change?**
-- **Consistency**: Same pattern as natural progression (all status changes require confirmation)
+**Why agent confirmation instead of direct case action?**
+- **Consistency**: Same pattern as natural progression (all case actions require confirmation)
 - **Safety**: Agent can validate prerequisites and catch mistakes
 - **Context**: Agent ensures mutual understanding before transition
-- **Audit**: Full conversation record of why status changed
+- **Audit**: Full conversation record of why the case action occurred
 
 **Why buttons + typed fallback?**
 - **Efficiency**: Most cases are simple yes/no
@@ -1023,7 +1023,7 @@ def apply_path_guidance(case: Case):
 
 ```
 Turn 1 (INQUIRY):     preliminary_urgency assessed → Early hint provided
-Turn 2 (INQUIRY→INVESTIGATING): Status transition → enters DIAGNOSIS stage
+Turn 2 (INQUIRY→INVESTIGATING): Case action → enters DIAGNOSIS stage
 Turn 3 (INVESTIGATING/DIAGNOSIS): symptom_verified set → path_selection determined → agent behavior guided by path
 Turn N (INVESTIGATING/DIAGNOSIS): Agent proposes action → user complies → inferred transition to MITIGATION or TREATMENT
 ```
@@ -1083,7 +1083,7 @@ def determine_investigation_path(
 
 ### 2.3 Path Impact on Investigation
 
-The path determines **whether the agent proactively offers mitigation** during DIAGNOSIS. Both paths use the same 3-stage model (DIAGNOSIS → MITIGATION → TREATMENT), but differ in agent behavior.
+The path determines **whether the agent proactively offers mitigation** during DIAGNOSIS. Both paths use the same 2-stage model with mitigation detour (DIAGNOSIS → TREATMENT, with optional MITIGATION detour), but differ in agent behavior.
 
 ---
 
@@ -1116,9 +1116,9 @@ MITIGATION is a **distinct stage** — a controlled detour to stabilize the situ
 
 **Stage flow**: DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT → RESOLVED
 
-**Stage-gate milestones**: `mitigation_accepted` → `mitigation_verified` → `solution_accepted` → `solution_verified`
+**Gate milestones**: `mitigation_accepted` → `mitigation_verified` → `solution_accepted` → `solution_verified`
 
-**Progress indicators** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
+**Progress milestones** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
 
 ---
 
@@ -1140,9 +1140,9 @@ Direct root cause analysis — no mitigation detour.
 
 **Stage flow**: DIAGNOSIS → TREATMENT → RESOLVED
 
-**Stage-gate milestones**: `solution_accepted` → `solution_verified`
+**Gate milestones**: `solution_accepted` → `solution_verified`
 
-**Progress indicators** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
+**Progress milestones** (non-driving): `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`, `root_cause_identified`, `solution_proposed`
 
 ---
 
@@ -1199,9 +1199,9 @@ def validate_milestone_claims(
                 f"(expected >= {expectations['min_evidence']})"
             )
 
-# Minimum evidence expectations for PROGRESS INDICATORS (non-stage-driving):
-# These are validated when the LLM claims a progress indicator has been reached.
-PROGRESS_INDICATOR_EVIDENCE_EXPECTATIONS = {
+# Minimum evidence expectations for PROGRESS MILESTONES (non-stage-driving):
+# These are validated when the LLM claims a progress milestone has been reached.
+PROGRESS_MILESTONE_EVIDENCE_EXPECTATIONS = {
     "symptom_verified":     {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
     "scope_assessed":       {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
     "timeline_established": {"min_evidence": 1, "categories": [SYMPTOM_EVIDENCE]},
@@ -1211,8 +1211,8 @@ PROGRESS_INDICATOR_EVIDENCE_EXPECTATIONS = {
                                                                      # ProposedAction with action_type=SOLUTION is created
 }
 
-# STAGE-GATE MILESTONES are NOT evidence-validated — they are set by
-# the LLM in structured output when it detects user compliance (Framework §4.1):
+# GATE MILESTONES are NOT evidence-validated — they are set by
+# the LLM in structured output when it detects user compliance (Framework §4.2):
 #   - mitigation_accepted: User complied with proposed temp fix
 #   - mitigation_verified: User confirmed mitigation worked
 #   - solution_accepted:   User complied with proposed solution
@@ -1255,7 +1255,7 @@ async def record_turn(
     progress_after = case.progress.dict()
     evidence_count_after = len(case.evidence)
 
-    # Detect state changes (both stage-gate milestones and progress indicators)
+    # Detect state changes (both gate milestones and progress milestones)
     STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "solution_accepted", "solution_verified"}
     PROGRESS_INDICATORS = {"symptom_verified", "scope_assessed", "timeline_established",
                            "changes_identified", "root_cause_identified", "solution_proposed"}
@@ -1267,10 +1267,10 @@ async def record_turn(
         and progress_after[key] == True
     ]
 
-    # Stage-gate milestone changes trigger stage recomputation
+    # Gate milestone changes trigger stage recomputation
     stage_gate_completed = [k for k in all_changed if k in STAGE_GATE_MILESTONES]
 
-    # Progress indicator changes are recorded but do NOT affect stage
+    # Progress milestone changes are recorded but do NOT affect stage
     indicators_completed = [k for k in all_changed if k in PROGRESS_INDICATORS]
 
     milestones_completed = all_changed  # Both types are recorded in turn history
@@ -1301,15 +1301,15 @@ async def record_turn(
     # Progress IS made when ANY of the following occur:
     #
     # STRUCTURAL ARTIFACTS:
-    # - Stage-gate milestone transitions False → True (e.g., solution_accepted)
-    # - Progress indicator transitions False → True (e.g., symptom_verified)
+    # - Gate milestone transitions False → True (e.g., solution_accepted)
+    # - Progress milestone transitions False → True (e.g., symptom_verified)
     # - Evidence is added to the case
     # - New hypothesis is generated
     # - Hypothesis status changes (ACTIVE → VALIDATED/REFUTED)
     # - ProposedAction is created (agent proposed something actionable)
     # - User confirms problem statement or path selection
     # - Files uploaded
-    # - Status transitioned
+    # - Case action occurred (phase transition or disposition change)
     #
     # INVESTIGATIVE BEHAVIORS (a skilled troubleshooter gathering data IS progressing):
     # - TurnOutcome.DATA_REQUESTED — agent asking for specific data
@@ -1365,7 +1365,7 @@ def determine_turn_outcome(case: Case, progress_made: bool) -> TurnOutcome:
     Used for LLM observability and metrics (not workflow control).
     """
 
-    # Terminal transition
+    # Disposition action
     if case.is_terminal:
         return TurnOutcome.CASE_RESOLVED if case.status == CaseStatus.RESOLVED else TurnOutcome.OTHER
 
@@ -1582,16 +1582,16 @@ This section outlines all possible case lifecycles and their associated mileston
 
 *   **DIAGNOSIS Stage** (natural flow, not sequential sub-stages)
     *   Agent verifies symptoms, scope, timeline using evidence
-    *   Progress indicators set by LLM: `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`
+    *   Progress milestones set by LLM: `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`
     *   Agent forms hypotheses, tests against evidence
-    *   Progress indicator: `root_cause_identified` (when hypothesis validated with high confidence)
+    *   Progress milestone: `root_cause_identified` (when hypothesis validated with high confidence)
     *   Agent proposes concrete solution action
-    *   Progress indicator: `solution_proposed` (when ProposedAction with action_type=SOLUTION created)
+    *   Progress milestone: `solution_proposed` (when ProposedAction with action_type=SOLUTION created)
     *   **Constraint**: A hypothesis must exist before evidence can be classified as `causal_evidence`
 
 *   **DIAGNOSIS → TREATMENT transition** (inference-based)
     *   User complies with proposed solution (executes and submits results)
-    *   System infers acceptance → stage-gate milestone: `solution_accepted`
+    *   System infers acceptance → gate milestone: `solution_accepted`
     *   If user questions or refuses → stays in DIAGNOSIS, agent refines approach
 
 *   **TREATMENT Stage** (iterative resolution)
@@ -1603,7 +1603,7 @@ This section outlines all possible case lifecycles and their associated mileston
         *   Escalation when no viable options remain (agent communicates limitations naturally)
 
 **Phase 3: Resolution**
-*   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → stage-gate milestone: `solution_verified`
+*   **Transition Trigger**: User confirms fix worked via User-Agent Handshake → gate milestone: `solution_verified`
 *   **State**: `RESOLVED`.
 
 ---
@@ -1619,13 +1619,13 @@ offer a "mitigation-only resolution" flow path.
 #### Full Path (Mitigation + RCA → RESOLVED)
 **Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) → `RESOLVED`
 
-**Stage-gate milestones**:
+**Gate milestones**:
 *   `mitigation_accepted`: User complied with proposed temp fix (inferred from submission).
 *   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
 *   `solution_accepted`: User complied with proposed permanent solution (inferred from submission).
 *   `solution_verified`: Permanent fix validated (via User-Agent Handshake).
 
-**Progress indicators** (non-driving):
+**Progress milestones** (non-driving):
 *   `symptom_verified`, `scope_assessed`, `timeline_established`, `changes_identified`: Set during DIAGNOSIS.
 *   `root_cause_identified`: Set when hypothesis validated with high confidence.
 *   `solution_proposed`: Set when ProposedAction with action_type=SOLUTION created.
@@ -1637,7 +1637,7 @@ The user decides the mitigation is sufficient and does not want RCA. This is a
 **user-initiated closure**, not a system-offered path. The system always returns
 to DIAGNOSIS after mitigation; the user closes via UI.
 
-**Stage-gate milestones**:
+**Gate milestones**:
 *   `mitigation_accepted`: User complied with proposed temp fix.
 *   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
 *   `solution_accepted`: **Not set** (user closed before proposing permanent solution).
@@ -1664,7 +1664,7 @@ Mitigation is not assumed to be one-shot. Within the MITIGATION stage, the agent
 may adjust its approach and propose multiple temp fix attempts until the user
 verifies stabilization.
 
-**Reset mechanism**: When `mitigation_verified` is completed as a stage-gate
+**Reset mechanism**: When `mitigation_verified` is completed as a gate
 milestone, `_apply_stage_gate_side_effects()` (in `milestone_engine.py`) resets
 both `mitigation_accepted` and `mitigation_verified` to `False`. This happens
 as a side effect of the same function that marks the corresponding
@@ -1701,7 +1701,7 @@ determine mitigation involvement, not the boolean flags.
 **Flow**: `INQUIRY` → `INVESTIGATING` → `CLOSED`
 
 #### Workflow Steps
-1.  **Investigation Starts**: Stage-gate milestones and progress indicators partially set.
+1.  **Investigation Starts**: Gate milestones and progress milestones partially set.
 2.  **Stall/Escalation**:
     *   Agent cannot find root cause (no viable options — communicates limitations and suggests escalation).
     *   User stops responding.
@@ -1710,7 +1710,7 @@ determine mitigation involvement, not the boolean flags.
 3.  **Closure**: Case marked `CLOSED` with reason (e.g., `escalated`, `abandoned`, `mitigation_sufficient`).
 
 #### Milestones
-*   Partial completion of progress indicators (symptom_verified, scope_assessed, etc.).
-*   Stage-gate milestones may be partially set (e.g., mitigation_accepted/verified if mitigation was performed).
+*   Partial completion of progress milestones (symptom_verified, scope_assessed, etc.).
+*   Gate milestones may be partially set (e.g., mitigation_accepted/verified if mitigation was performed).
 *   `working_conclusion`: Summary of findings up to the point of closure.
 *   `action_attempts`: Complete record of all mitigation and solution actions attempted.

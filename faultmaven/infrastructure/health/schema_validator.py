@@ -33,10 +33,10 @@ from faultmaven.infrastructure.persistence.models import (
     AgentToolCallModel,
     AgentToolCallV2Model,
     Base,
+    CaseActionModel,
     CaseCheckpointModel,
     CaseMessageModel,
     CaseModel,
-    CaseStatusTransitionModel,
     CaseTagModel,
     EvidenceArtifactModel,
     EvidenceModel,
@@ -109,7 +109,7 @@ class SchemaValidator:
         "case_messages": CaseMessageModel,
         "evidence": EvidenceModel,
         "uploaded_files": UploadedFileModel,
-        "case_status_transitions": CaseStatusTransitionModel,
+        "case_actions": CaseActionModel,
     }
 
     # All tables to validate (comprehensive)
@@ -121,7 +121,7 @@ class SchemaValidator:
         "evidence": EvidenceModel,
         "sessions": SessionModel,
         "uploaded_files": UploadedFileModel,
-        "case_status_transitions": CaseStatusTransitionModel,
+        "case_actions": CaseActionModel,
         "case_tags": CaseTagModel,
         "agent_tool_calls": AgentToolCallModel,
         "evidence_artifacts": EvidenceArtifactModel,
@@ -141,7 +141,7 @@ class SchemaValidator:
         "case_messages": {"organization_id"},
         "evidence": {"organization_id"},
         "uploaded_files": {"organization_id"},
-        "case_status_transitions": {"organization_id"},
+        "case_actions": {"organization_id"},
     }
 
     def __init__(

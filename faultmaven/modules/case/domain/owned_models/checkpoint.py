@@ -30,7 +30,7 @@ class CaseCheckpoint(BaseModel):
     )
     trigger: str = Field(
         ...,
-        description="Event that triggered the checkpoint (e.g., 'turn_complete', 'pre_status_change')",
+        description="Event that triggered the checkpoint (e.g., 'turn_complete', 'pre_case_action')",
     )
     created_at: datetime = Field(..., description="When the checkpoint was created")
     metadata: Dict[str, Any] = Field(

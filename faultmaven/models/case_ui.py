@@ -18,8 +18,8 @@ from faultmaven.modules.case.domain.models import (
     HypothesisStatus,
     InvestigationStage,
 )
-from faultmaven.modules.case.domain.services.case_status_manager import (
-    CaseStatusManager,
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    CaseActionManager,
 )
 
 # ============================================================

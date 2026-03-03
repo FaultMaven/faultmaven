@@ -15,8 +15,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStage
-from faultmaven.modules.case.domain.services.case_status_manager import (
-    CaseStatusManager,
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    CaseActionManager,
 )
 
 # ============================================================
@@ -131,7 +131,7 @@ class CaseSummary(BaseModel):
             is_terminal=case.is_terminal,
             valid_next_states=[
                 status.value
-                for status in CaseStatusManager.get_allowed_transitions(case.status)
+                for status in CaseActionManager.get_allowed_transitions(case.status)
             ],
         )
 
@@ -211,7 +211,7 @@ class CaseDetail(BaseModel):
             ),
             valid_next_states=[
                 status.value
-                for status in CaseStatusManager.get_allowed_transitions(case.status)
+                for status in CaseActionManager.get_allowed_transitions(case.status)
             ],
         )
 

@@ -12243,7 +12243,7 @@
           "user_choice"
         ],
         "title": "InvestigationPath",
-        "description": "Investigation routing strategy (3-stage workflow).\n\nIMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).\nLLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.\nSystem calls determine_investigation_path() to select path deterministically.\n\nTwo paths through the 3-stage model:\n- MITIGATION_FIRST: DIAGNOSIS \u2192 MITIGATION \u2192 DIAGNOSIS \u2192 TREATMENT\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT"
+        "description": "Investigation routing strategy (2-stage model with mitigation detour).\n\nIMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).\nLLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.\nSystem calls determine_investigation_path() to select path deterministically.\n\nTwo paths through the 2-stage model:\n- MITIGATION_FIRST: DIAGNOSIS \u2192 MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT"
       },
       "InvestigationProgress": {
         "properties": {
@@ -12429,7 +12429,7 @@
           "treatment"
         ],
         "title": "InvestigationStage",
-        "description": "Investigation stage within INVESTIGATING status (3 stages).\nComputed from stage-gate milestones.\n\nStages:\n- DIAGNOSIS: Understand, diagnose, propose actions\n- MITIGATION: Apply and verify temporary fix (optional detour)\n- TREATMENT: Verify permanent fix, resolve case\n\nStage transitions are inference-based \u2014 user compliance with\nproposed actions triggers transitions via compliance detection.\nThe stage determines which prompt template the LLM receives.\n\nInvestigation Paths:\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT\n- MITIGATION_FIRST: DIAGNOSIS \u2192 MITIGATION \u2192 DIAGNOSIS \u2192 TREATMENT"
+        "description": "Investigation stage within INVESTIGATING status (2-stage model with mitigation detour).\nComputed from stage-gate milestones.\n\nCore stages:\n- DIAGNOSIS: Understand, diagnose, propose actions\n- TREATMENT: Verify permanent fix, resolve case\n\nOptional detour:\n- MITIGATION: Apply and verify temporary fix\n\nStage transitions are inference-based \u2014 user compliance with\nproposed actions triggers transitions via compliance detection.\nThe stage determines which prompt template the LLM receives.\n\nInvestigation Paths:\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT\n- MITIGATION_FIRST: DIAGNOSIS \u2192 MITIGATION \u2192 DIAGNOSIS \u2192 TREATMENT"
       },
       "InvestigationStrategy": {
         "type": "string",

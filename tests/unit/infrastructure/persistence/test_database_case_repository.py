@@ -462,15 +462,15 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
     await repository.save(sample_case)
 
     # Add status transition
-    from faultmaven.modules.case.domain.models import CaseStatusTransition
+    from faultmaven.modules.case.domain.models import CaseAction
 
-    transition = CaseStatusTransition(
+    transition = CaseAction(
         from_status=CaseStatus.INQUIRY,
         to_status=CaseStatus.INVESTIGATING,
         triggered_by="test-user",
         reason="Starting investigation",
     )
-    sample_case.status_history.append(transition)
+    sample_case.action_history.append(transition)
     # Set required fields for INVESTIGATING status
     sample_case.description = "Starting formal investigation"
     inquiry = InquiryData()
@@ -486,7 +486,7 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
     # Assert
     retrieved = await repository.get(sample_case.case_id)
     assert retrieved.status == CaseStatus.INVESTIGATING
-    # Note: status_history is stored in metadata, verify status changed
+    # Note: action_history is stored in metadata, verify status changed
 
 
 # ============================================================

@@ -14,7 +14,7 @@ Models:
 - SolutionModel: Normalized solutions linked to cases
 - CaseMessageModel: Case conversation messages
 - UploadedFileModel: Files uploaded to cases
-- CaseStatusTransitionModel: Status change audit trail
+- CaseActionModel: Case action (phase transition / disposition) audit trail
 - CaseTagModel: Case tagging
 - AgentToolCallModel: Agent tool execution tracking
 """
@@ -104,15 +104,12 @@ class SessionModel(Base):
 
 
 class CaseStatusEnum(str, enum.Enum):
-    """Case lifecycle status."""
+    """Case lifecycle status (phases and dispositions)."""
 
     INQUIRY = "inquiry"
-    PROBLEM_VERIFICATION = "problem_verification"
-    ROOT_CAUSE_ANALYSIS = "root_cause_analysis"
-    SOLUTION_IMPLEMENTATION = "solution_implementation"
+    INVESTIGATING = "investigating"
     RESOLVED = "resolved"
     CLOSED = "closed"
-    ARCHIVED = "archived"
 
 
 class EvidenceCategoryEnum(str, enum.Enum):
@@ -254,8 +251,8 @@ class CaseModel(Base):
     uploaded_files = relationship(
         "UploadedFileModel", back_populates="case", cascade="all, delete-orphan"
     )
-    status_transitions = relationship(
-        "CaseStatusTransitionModel", back_populates="case", cascade="all, delete-orphan"
+    case_actions = relationship(
+        "CaseActionModel", back_populates="case", cascade="all, delete-orphan"
     )
     tags = relationship(
         "CaseTagModel", back_populates="case", cascade="all, delete-orphan"
@@ -619,10 +616,10 @@ class UploadedFileModel(Base):
 # ============================================================
 
 
-class CaseStatusTransitionModel(Base):
-    """Status change audit trail."""
+class CaseActionModel(Base):
+    """Case action (phase transition / disposition) audit trail."""
 
-    __tablename__ = "case_status_transitions"
+    __tablename__ = "case_actions"
 
     transition_id = Column(Integer, primary_key=True, autoincrement=True)
     case_id = Column(
@@ -646,12 +643,14 @@ class CaseStatusTransitionModel(Base):
     transition_metadata = Column("metadata", Text, default="{}")
 
     # Relationship
-    case = relationship("CaseModel", back_populates="status_transitions")
+    case = relationship("CaseModel", back_populates="case_actions")
 
     def __repr__(self) -> str:
-        return (
-            f"<CaseStatusTransitionModel(from={self.from_status}, to={self.to_status})>"
-        )
+        return f"<CaseActionModel(from={self.from_status}, to={self.to_status})>"
+
+
+# Backward compatibility alias
+CaseStatusTransitionModel = CaseActionModel
 
 
 # ============================================================

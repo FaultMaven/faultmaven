@@ -65,6 +65,7 @@ class SemanticCache:
 
     def check(self, prompt: str, model: str) -> Optional[LLMResponse]:
         """Check cache for semantically similar response"""
+
         # Simple hash-based cache if no embeddings
         if not self.encoder:
             cache_key = self._get_cache_key(prompt, model)

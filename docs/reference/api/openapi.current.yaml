@@ -8653,13 +8653,14 @@ components:
       - root_cause
       - user_choice
       title: InvestigationPath
-      description: "Investigation routing strategy (3-stage workflow).\n\nIMPORTANT:\
-        \ Path is SYSTEM-DETERMINED from matrix (temporal_state x urgency_level).\n\
+      description: "Investigation routing strategy (2-stage model with mitigation\
+        \ detour).\n\nIMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state\
+        \ x urgency_level).\n\
         LLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.\nSystem\
         \ calls determine_investigation_path() to select path deterministically.\n\
-        \nTwo paths through the 3-stage model:\n- MITIGATION_FIRST: DIAGNOSIS \u2192\
-        \ MITIGATION \u2192 DIAGNOSIS \u2192 TREATMENT\n- ROOT_CAUSE: DIAGNOSIS \u2192\
-        \ TREATMENT"
+        \nTwo paths through the 2-stage model:\n- MITIGATION_FIRST: DIAGNOSIS \u2192\
+        \ MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT\n- ROOT_CAUSE: DIAGNOSIS\
+        \ \u2192 TREATMENT"
     InvestigationProgress:
       properties:
         mitigation_accepted:
@@ -8815,8 +8816,9 @@ components:
       - mitigation
       - treatment
       title: InvestigationStage
-      description: "Investigation stage within INVESTIGATING status (3 stages).\n\
-        Computed from stage-gate milestones.\n\nStages:\n- DIAGNOSIS: Understand,\
+      description: "Investigation stage within INVESTIGATING status (2-stage model\
+        \ with mitigation detour).\nComputed from stage-gate milestones.\n\nCore stages:\n\
+        - DIAGNOSIS: Understand,\
         \ diagnose, propose actions\n- MITIGATION: Apply and verify temporary fix\
         \ (optional detour)\n- TREATMENT: Verify permanent fix, resolve case\n\nStage\
         \ transitions are inference-based \u2014 user compliance with\nproposed actions\

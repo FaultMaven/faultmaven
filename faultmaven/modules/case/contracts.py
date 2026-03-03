@@ -498,9 +498,10 @@ class CaseDTO:
 # Services should import from contracts.py (not domain.models) per Principle 2
 from faultmaven.modules.case.domain.models import (  # noqa: E402
     Case,
+    CaseAction,
     CaseSeverity,
     CaseStatus,
-    CaseStatusTransition,
+    CaseStatusTransition,  # Backward compat alias for CaseAction
     ConfidenceLevel,
     DocumentationData,
     DocumentType,
@@ -586,9 +587,10 @@ __all__ = [
     # Investigation models from Agent module (shared for investigation coordination)
     # Case domain models (backward compatibility)
     "Case",
+    "CaseAction",
     "CaseSeverity",
     "CaseStatus",
-    "CaseStatusTransition",
+    "CaseStatusTransition",  # Backward compat alias for CaseAction
     "ConfidenceLevel",
     "InquiryData",
     "DocumentationData",

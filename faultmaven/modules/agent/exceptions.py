@@ -78,27 +78,35 @@ class InvestigationError(AgentException):
         )
 
 
-class PhaseTransitionError(AgentException):
-    """Raised when phase transition validation fails.
+class CaseActionError(AgentException):
+    """Raised when a case action (phase transition or disposition) validation fails.
 
     This exception is raised when the investigation cannot
-    transition between phases due to validation failures.
+    perform a case action due to validation failures.
     """
 
     def __init__(
         self,
         message: str,
-        from_phase: Optional[str] = None,
-        to_phase: Optional[str] = None,
+        from_status: Optional[str] = None,
+        to_status: Optional[str] = None,
         reason: Optional[str] = None,
     ):
-        self.from_phase = from_phase
-        self.to_phase = to_phase
+        self.from_status = from_status
+        self.to_status = to_status
         self.reason = reason
         super().__init__(
             message,
-            details={"from_phase": from_phase, "to_phase": to_phase, "reason": reason},
+            details={
+                "from_status": from_status,
+                "to_status": to_status,
+                "reason": reason,
+            },
         )
+
+
+# Backward compatibility alias
+PhaseTransitionError = CaseActionError
 
 
 class AgentTimeoutError(AgentException):

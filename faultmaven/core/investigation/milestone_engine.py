@@ -67,7 +67,7 @@ from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
     CaseStatus,
-    CaseStatusTransition,
+    CaseAction,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
@@ -904,13 +904,13 @@ class MilestoneEngine:
                             f"Cannot transition to RESOLVED from {case.status.value}"
                         )
 
-                    from faultmaven.modules.case.domain.services.case_status_manager import (
-                        CaseStatusManager,
+                    from faultmaven.modules.case.domain.services.case_action_manager import (
+                        CaseActionManager,
                     )
 
                     if not user_message or not user_message.strip():
                         user_message = (
-                            CaseStatusManager.get_agent_message(
+                            CaseActionManager.get_agent_message(
                                 CaseStatus.INVESTIGATING, CaseStatus.RESOLVED
                             )
                             or "The issue is resolved."
@@ -983,13 +983,13 @@ class MilestoneEngine:
                     #   - Ask user to describe the problem (if no statement exists)
                     #   - Present existing statement for confirmation (if one exists)
                     #   - Confirm and trigger transition (if already confirmed)
-                    from faultmaven.modules.case.domain.services.case_status_manager import (
-                        CaseStatusManager,
+                    from faultmaven.modules.case.domain.services.case_action_manager import (
+                        CaseActionManager,
                     )
 
                     if not user_message or not user_message.strip():
                         user_message = (
-                            CaseStatusManager.get_agent_message(
+                            CaseActionManager.get_agent_message(
                                 CaseStatus.INQUIRY, CaseStatus.INVESTIGATING
                             )
                             or "I want to start a formal investigation to find the root cause."
@@ -1027,8 +1027,8 @@ class MilestoneEngine:
 
                     # Transition to INVESTIGATING
                     await self._transition_to_investigating(case)
-                    case.status_history.append(
-                        CaseStatusTransition(
+                    case.action_history.append(
+                        CaseAction(
                             from_status=CaseStatus.INQUIRY,
                             to_status=CaseStatus.INVESTIGATING,
                             triggered_at=datetime.now(UTC),
@@ -2662,7 +2662,7 @@ class MilestoneEngine:
         if self.checkpoint_service:
             await self.checkpoint_service.create_checkpoint(
                 case,
-                trigger="pre_status_change",
+                trigger="pre_case_action",
                 metadata={
                     "from_status": case.status.value,
                     "to_status": "investigating",
@@ -2793,7 +2793,7 @@ class MilestoneEngine:
                         to_status = case.pending_transition.get("to_status", "unknown")
                         await self.checkpoint_service.create_checkpoint(
                             case,
-                            trigger="pre_status_change",
+                            trigger="pre_case_action",
                             metadata={
                                 "from_status": case.status.value,
                                 "to_status": to_status,
@@ -2813,8 +2813,8 @@ class MilestoneEngine:
             if self._check_fast_track_resolution(case):
                 # Status changed in _check_fast_track_resolution
                 metadata["status_transitioned"] = True
-                case.status_history.append(
-                    CaseStatusTransition(
+                case.action_history.append(
+                    CaseAction(
                         from_status=old_status,
                         to_status=CaseStatus.RESOLVED,
                         triggered_by="system",
@@ -2830,8 +2830,8 @@ class MilestoneEngine:
             ):
                 await self._transition_to_investigating(case)
                 metadata["status_transitioned"] = True
-                case.status_history.append(
-                    CaseStatusTransition(
+                case.action_history.append(
+                    CaseAction(
                         from_status=old_status,
                         to_status=CaseStatus.INVESTIGATING,
                         triggered_by="system",

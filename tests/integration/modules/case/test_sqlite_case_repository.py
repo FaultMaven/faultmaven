@@ -197,9 +197,9 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create case_status_transitions table
+    # Create case_actions table (audit trail of case actions)
     await session.execute(text("""
-        CREATE TABLE IF NOT EXISTS case_status_transitions (
+        CREATE TABLE IF NOT EXISTS case_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             case_id TEXT NOT NULL,
             from_status TEXT,

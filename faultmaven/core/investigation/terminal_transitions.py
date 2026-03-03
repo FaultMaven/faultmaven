@@ -26,7 +26,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Optional
 
-from faultmaven.modules.case.contracts import Case, CaseStatus, CaseStatusTransition
+from faultmaven.modules.case.contracts import Case, CaseAction, CaseStatus
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +143,8 @@ def _execute_resolved_transition(case: Case, user_id: str, reason: str):
         closed_at=now,
         closure_reason="resolved",
     )
-    case.status_history.append(
-        CaseStatusTransition(
+    case.action_history.append(
+        CaseAction(
             from_status=CaseStatus.INVESTIGATING,
             to_status=CaseStatus.RESOLVED,
             triggered_at=now,
@@ -176,8 +176,8 @@ def _execute_closed_transition(case: Case, user_id: str, reason: str):
         closed_at=now,
         closure_reason=reason,
     )
-    case.status_history.append(
-        CaseStatusTransition(
+    case.action_history.append(
+        CaseAction(
             from_status=from_status,
             to_status=CaseStatus.CLOSED,
             triggered_at=now,
@@ -225,8 +225,8 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
         closed_at=datetime.now(UTC),
         closure_reason=reason,  # "abandoned" | "escalated" | "other"
     )
-    case.status_history.append(
-        CaseStatusTransition(
+    case.action_history.append(
+        CaseAction(
             from_status=CaseStatus.INVESTIGATING,
             to_status=CaseStatus.CLOSED,
             triggered_at=datetime.now(UTC),
@@ -267,8 +267,8 @@ def close_from_inquiry(case: Case, user_id: str):
         closed_at=datetime.now(UTC),
         closure_reason="inquiry_only",
     )
-    case.status_history.append(
-        CaseStatusTransition(
+    case.action_history.append(
+        CaseAction(
             from_status=CaseStatus.INQUIRY,
             to_status=CaseStatus.CLOSED,
             triggered_at=datetime.now(UTC),

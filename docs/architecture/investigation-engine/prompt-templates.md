@@ -514,16 +514,16 @@ WHAT YOU ALREADY KNOW (Don't re-verify!)
 def _format_milestones(progress) -> str:
     """Format milestone completion status.
 
-    Two types displayed separately:
-    - Stage-gate milestones: Drive stage transitions. Set by the LLM in
-      structured output when it detects user compliance (Framework §4.1).
-    - Progress indicators: LLM context (non-stage-driving)
+    Two types of investigation milestones displayed separately:
+    - Gate milestones: Drive stage transitions. Set by the LLM in
+      structured output when it detects user compliance (Framework §4.2).
+    - Progress milestones: LLM context (non-stage-driving)
 
     Note: solution_verified is set via User-Agent Handshake
     (confirm_pending_transition), not directly by the LLM.
     """
 
-    lines = ["**Stage-Gate Milestones:**"]
+    lines = ["**Gate Milestones:**"]
     stage_gates = {
         "mitigation_accepted": progress.mitigation_accepted,
         "mitigation_verified": progress.mitigation_verified,
@@ -534,7 +534,7 @@ def _format_milestones(progress) -> str:
         status = "✅" if completed else "⏳"
         lines.append(f"{status} {milestone}")
 
-    lines.append("\n**Progress Indicators:**")
+    lines.append("\n**Progress Milestones:**")
     indicators = {
         "symptom_verified": progress.symptom_verified,
         "scope_assessed": progress.scope_assessed,
@@ -577,10 +577,10 @@ USER'S MESSAGE
 def _build_task_instructions(case: Case) -> str:
     """Build task instructions (adaptive by stage).
 
-    3 stages in the evidence-driven framework:
-    - DIAGNOSIS: Understand, diagnose, propose actions
-    - MITIGATION: Apply and verify temporary fix
-    - TREATMENT: Apply permanent fix, verify resolution
+    2-stage model with mitigation detour:
+    - DIAGNOSIS: Understand, diagnose, propose actions (core stage)
+    - TREATMENT: Apply permanent fix, verify resolution (core stage)
+    - MITIGATION: Apply and verify temporary fix (optional detour)
     """
 
     stage = case.progress.current_stage
@@ -600,13 +600,54 @@ YOUR TASK
         return header + "ERROR: Unknown stage"
 
 
+def _get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
+    """Compute focus zone from progress milestones (Framework §8.5).
+
+    Returns a priority signal injected before standard DIAGNOSIS instructions.
+    The LLM still has all DIAGNOSIS capabilities — this guides emphasis only.
+
+    Focus zones:
+    - VERIFY THE PROBLEM:  symptom_verified=False
+    - ROOT CAUSE ANALYSIS: symptom_verified=True, root_cause_identified=False
+    - PROPOSE A SOLUTION:  root_cause_identified=True, solution_proposed=False
+    - (empty):             solution_proposed=True (pending action context handles it)
+    """
+    if not progress.symptom_verified:
+        return """
+**CURRENT FOCUS: VERIFY THE PROBLEM**
+Your primary goal this turn is to gather logs, confirm symptoms, and
+establish the scope and timeline. Ask the user for the specific evidence
+needed to prove the problem exists.
+"""
+    elif progress.symptom_verified and not progress.root_cause_identified:
+        return """
+**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
+The problem is verified. Your primary goal this turn is to form and test
+hypotheses. Look at the causal evidence, form a theory, and actively seek
+the data needed to prove or disprove it.
+"""
+    elif progress.root_cause_identified and not progress.solution_proposed:
+        return """
+**CURRENT FOCUS: PROPOSE A SOLUTION**
+You have identified the root cause. Your primary goal this turn is to
+formulate a concrete, executable fix. Provide specific commands for the
+user to run so the investigation can transition to Treatment.
+"""
+    else:
+        return ""  # solution_proposed=True: pending action context handles this state
+
+
 def _get_diagnosis_instructions(case: Case) -> str:
     """Get DIAGNOSIS stage instructions.
 
-    DIAGNOSIS combines the analytical capabilities of the old 3 stage prompts
+    DIAGNOSIS combines the analytical capabilities of the old 4 stage prompts
     (SYMPTOM_VERIFICATION, HYPOTHESIS_FORMULATION, HYPOTHESIS_VALIDATION) into
     a natural flow. The agent processes evidence naturally without sub-stage
     boundaries.
+
+    Focus zone emphasis (§8.5) is injected before the standard capabilities
+    list based on progress milestones. This is a priority signal, not a
+    sub-stage boundary — all capabilities remain available.
     """
 
     # Get verification data
@@ -624,6 +665,9 @@ def _get_diagnosis_instructions(case: Case) -> str:
         path = case.path_selection.path
 
     active_hypotheses = len([h for h in case.hypotheses.values() if h.status == "ACTIVE"])
+
+    # Focus zone emphasis (Framework §8.5)
+    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
 
     path_guidance = ""
     if case.path_selection and case.path_selection.path == "MITIGATION_FIRST":
@@ -643,7 +687,7 @@ def _get_diagnosis_instructions(case: Case) -> str:
 """
 
     return f"""**CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
-
+{focus_emphasis}
 **Problem:** {symptom}
 **Temporal State:** {temporal} | **Urgency:** {urgency} | **Path:** {path}
 **Active Hypotheses:** {active_hypotheses}
@@ -655,7 +699,7 @@ def _get_diagnosis_instructions(case: Case) -> str:
    - Confirm symptom with logs, metrics, or user reports
    - Assess scope (blast radius) and urgency
    - Establish timeline and identify recent changes
-   - Set progress indicators: symptom_verified, scope_assessed,
+   - Set progress milestones: symptom_verified, scope_assessed,
      timeline_established, changes_identified
 
 2. **Diagnose Root Cause**
@@ -887,13 +931,13 @@ pool exhaustion issue. I'm moderately confident because error patterns match
 pool exhaustion and timing correlates with traffic spike. However, I haven't
 verified actual pool metrics yet - that would increase confidence to 85%+."
 
-**Progress Indicators:**
+**Progress Milestones:**
 • Only set to True if you have EVIDENCE (don't guess!)
 • You can set MULTIPLE indicators in ONE turn
 • Never set to False (indicators only advance forward)
 • These provide context, they do NOT drive stage transitions
 
-**Stage-Gate Milestones (set when you detect user compliance):**
+**Gate Milestones (set when you detect user compliance):**
 • mitigation_accepted: Set True when user submits results of executing proposed mitigation
 • mitigation_verified: Set True when user confirms mitigation stabilized the situation
 • solution_accepted: Set True when user submits results of executing proposed solution
@@ -954,7 +998,7 @@ You MUST respond with valid JSON matching these fields:
   - milestone_justifications: Key-value map of {milestone_name: "justification"}.
   - uncertainties: What remains unclear.
 - **state_updates**:
-  - progress_indicators: Map of progress indicator flags (set True where data allows).
+  - progress_indicators: Map of progress milestone flags (set True where data allows).
   - outcome: milestone_completed | data_requested | hypothesis_validated | conversation | blocked
 
 **ONLY include fields that CHANGE this turn!**
@@ -1137,7 +1181,7 @@ CONVERSATION STYLE
 
 • Be helpful and informative about the closed case
 • Don't be apologetic about inability to reopen
-• Be direct about terminal state (case is closed, period)
+• Be direct about the disposition (case is closed, period)
 • Offer alternatives (new case, documentation, questions)
 
 ═══════════════════════════════════════════════════════════
@@ -1338,13 +1382,13 @@ WHAT YOU ALREADY KNOW (Don't re-verify!)
 **PROBLEM:**
 API intermittently timing out (10% request failure rate)
 
-**Stage-Gate Milestones:**
+**Gate Milestones:**
 ⏳ mitigation_accepted
 ⏳ mitigation_verified
 ⏳ solution_accepted
 ⏳ solution_verified
 
-**Progress Indicators:**
+**Progress Milestones:**
 ⏳ symptom_verified
 ⏳ scope_assessed
 ⏳ timeline_established
@@ -1368,6 +1412,11 @@ YOUR TASK
 ═══════════════════════════════════════════════════════════
 
 **CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
+
+**CURRENT FOCUS: VERIFY THE PROBLEM**
+Your primary goal this turn is to gather logs, confirm symptoms, and
+establish the scope and timeline. Ask the user for the specific evidence
+needed to prove the problem exists.
 
 **YOUR NATURAL FLOW** (no sub-stages — follow the evidence):
 1. **Verify Symptoms**: Confirm symptom with logs, metrics, or user reports.
@@ -1402,6 +1451,11 @@ YOUR TASK
 ═══════════════════════════════════════════════════════════
 
 **CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
+
+**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
+The problem is verified. Your primary goal this turn is to form and test
+hypotheses. Look at the causal evidence, form a theory, and actively seek
+the data needed to prove or disprove it.
 
 [... rest of Diagnosing instructions ...]
 ```

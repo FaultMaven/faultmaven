@@ -405,7 +405,7 @@ class TestInvestigationLifecycle:
         assert updated.problem_verification is not None
         assert updated.path_selection is not None
         assert any(
-            t.to_status == CaseStatus.INVESTIGATING for t in updated.status_history
+            t.to_status == CaseStatus.INVESTIGATING for t in updated.action_history
         )
 
     async def test_investigation_turn_with_milestone_progress(self, engine, case_repo):
@@ -608,7 +608,7 @@ class TestCheckpointing:
 
         # Verify checkpoint was created
         checkpoints = await case_repo.get_checkpoints(case.case_id)
-        pre_change_cps = [cp for cp in checkpoints if cp.trigger == "pre_status_change"]
+        pre_change_cps = [cp for cp in checkpoints if cp.trigger == "pre_case_action"]
         assert len(pre_change_cps) >= 1
         cp = pre_change_cps[0]
         assert cp.case_id == case.case_id
