@@ -73,7 +73,7 @@ class DocumentationExtractor:
                 for pattern in markdown_indicators
                 if re.search(pattern, content, re.MULTILINE)
             )
-            >= 2
+            >= 1
         )
 
     def _extract_title(self, content: str, is_markdown: bool) -> str:
