@@ -103,6 +103,7 @@ Generate 2-4 contextual follow-up actions the user can click as shortcuts:
 - action_type "question_template": submits as a user message (use for diagnostic questions)
 - action_type "command": copies to clipboard (use for shell commands to run and paste back)
 - action_type "upload_data": prompts file upload (use when requesting logs, configs, screenshots)
+NOTE: action_type MUST be one of the three values above. Do NOT use tool names (read_file, search_file, etc.).
 - Keep labels concise (3-8 words), payloads specific to the current case context
 - Examples:
   {{"label": "Describe your issue", "action_type": "question_template", "payload": "I'm seeing an issue with..."}}
@@ -158,6 +159,7 @@ Generate 2-4 contextual follow-up actions the user can click as shortcuts:
 - action_type "question_template": submits as a user message (diagnostic questions, status updates)
 - action_type "command": copies to clipboard (shell commands to run and paste back)
 - action_type "upload_data": prompts file upload (requesting logs, configs, screenshots)
+NOTE: action_type MUST be one of the three values above. Do NOT use tool names (read_file, search_file, etc.).
 - Keep labels concise (3-8 words), payloads specific to the current case context
 - Tailor suggestions to the current investigation stage and what data is needed next
 - Examples:

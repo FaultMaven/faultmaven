@@ -1842,28 +1842,34 @@ class MilestoneEngine:
                     # Recursively process lists
                     elif isinstance(value, list):
                         fixed_list = []
-                        for item in value:
-                            if isinstance(item, dict):
-                                # Find item schema
-                                item_schema = None
-                                if "items" in prop_schema:
-                                    if "$ref" in prop_schema["items"]:
-                                        ref_name = prop_schema["items"]["$ref"].split(
-                                            "/"
-                                        )[-1]
+                        # Resolve item schema — handle both direct {items: ...}
+                        # and Optional[List[...]] which produces {anyOf: [{items: ..., type: "array"}, {type: "null"}]}
+                        item_schema = None
+                        if "items" in prop_schema:
+                            if "$ref" in prop_schema["items"]:
+                                ref_name = prop_schema["items"]["$ref"].split("/")[-1]
+                                item_schema = all_defs.get(ref_name, {})
+                            else:
+                                item_schema = prop_schema["items"]
+                        elif "anyOf" in prop_schema:
+                            # Handle Optional[List[Model]] — items is inside the array option
+                            for option in prop_schema["anyOf"]:
+                                if option.get("type") == "array" and "items" in option:
+                                    if "$ref" in option["items"]:
+                                        ref_name = option["items"]["$ref"].split("/")[
+                                            -1
+                                        ]
                                         item_schema = all_defs.get(ref_name, {})
                                     else:
-                                        item_schema = prop_schema["items"]
+                                        item_schema = option["items"]
+                                    break
 
-                                if item_schema:
-                                    # Pass root_defs through recursion
-                                    fixed_list.append(
-                                        fix_enum_violations(
-                                            item, item_schema, root_defs
-                                        )
-                                    )
-                                else:
-                                    fixed_list.append(item)
+                        for item in value:
+                            if isinstance(item, dict) and item_schema:
+                                # Pass root_defs through recursion
+                                fixed_list.append(
+                                    fix_enum_violations(item, item_schema, root_defs)
+                                )
                             else:
                                 fixed_list.append(item)
                         fixed_obj[key] = fixed_list
