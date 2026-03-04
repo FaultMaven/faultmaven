@@ -50,6 +50,8 @@ faultmaven/modules/agent/
     ├── user_kb_qa.py
     ├── global_kb_qa.py
     ├── document_qa_tool.py
+    ├── search_file_tool.py      # Tier 2 mechanical search
+    ├── deep_analysis_tool.py    # Tier 3 deep LLM analysis
     ├── web_search.py           # Web search tool
     ├── kb_config.py
     └── kb_configs/             # Knowledge base configurations
@@ -68,14 +70,17 @@ faultmaven/modules/agent/
 The Agent module maintains **three separate services** with clear separation of concerns by abstraction level:
 
 #### 1. AgentOrchestrationService (Low-Level)
-- **Responsibility**: LLM calls, streaming, tool execution primitives
-- **Size**: 1,068 LOC
-- **Dependencies**: LLM providers, tool registry
+- **Responsibility**: LLM calls, streaming, tool execution primitives, tier-escalation hardening
+- **Size**: ~1,350 LOC
+- **Dependencies**: LLM providers, tool registry, coverage metadata utilities
 - **Key Operations**:
   - Execute agent with streaming responses
   - Coordinate tool invocations
   - Handle LLM provider interactions
   - Token budget tracking
+  - **Coverage gap detection** (R3): Extract entities from user queries (timestamps, services, error codes, IPs), compare against evidence coverage metadata, inject advisories into LLM context
+  - **Auto-escalation** (R4): Track consecutive empty `search_file` results, inject `[ESCALATION ADVISORY]` after 2 failures
+  - **Context budget tracking** (R5): 30K char budget for tool results with standard/aggressive compression preserving high-signal lines
 
 #### 2. InvestigationOrchestrator (Mid-Level)
 - **Responsibility**: Workflow state, phase transitions, hypothesis tracking
@@ -97,12 +102,14 @@ The Agent module maintains **three separate services** with clear separation of 
   - Coordinate investigation milestones
   - Generate investigation summaries
 
-### Tools (11 Tools)
+### Tools (13 Tools)
 
 **Evidence Tools** (import from Evidence module):
 - `ListEvidenceTool` - List available evidence artifacts
 - `ReadFileTool` - Read evidence file contents
 - `CaseEvidenceQATool` - Q&A over case evidence
+- `SearchFileTool` - Tier 2 mechanical search (keyword/regex/extractor) with two-pass keyword matching and zero-result vocabulary recovery
+- `DeepAnalysisTool` - Tier 3 deep LLM analysis with pluggable backends (external, local, basic)
 
 **Knowledge Tools** (import from Knowledge module):
 - `KnowledgeBaseTool` - Access knowledge base

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    extract_time_range,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -59,37 +61,55 @@ class LogsAndErrorsExtractor:
             return EMPTY_CONTENT_RESPONSE
 
         lines = content.split("\n")
+        total_lines = len(lines)
 
         # 1. Find all errors with severity
         errors = self._find_all_errors_with_severity(lines)
 
         if not errors:
             # No errors found - extract tail
-            return self._extract_tail(lines)
-
-        # 2. Find highest-severity error
-        primary_error = max(errors, key=lambda e: e["severity"])
-
-        # 3. Check for multiple high-severity errors (ERROR level or higher)
-        high_severity = [
-            e for e in errors if e["severity"] >= self.SEVERITY_WEIGHTS["ERROR"]
-        ]
-
-        if len(high_severity) > 1:
-            # Multiple crime scenes: first + last
-            return self._extract_multiple_crime_scenes(
-                lines, high_severity[0], high_severity[-1]
-            )
-
-        # 4. Check for error burst around primary error
-        burst_window = self._detect_error_burst(lines, primary_error["line_idx"])
-
-        if burst_window:
-            return self._extract_burst_context(lines, burst_window, primary_error)
+            result = self._extract_tail(lines)
         else:
-            return self._extract_single_error_context(lines, primary_error)
+            # 2. Find highest-severity error
+            primary_error = max(errors, key=lambda e: e["severity"])
 
-    def _find_all_errors_with_severity(self, lines: List[str]) -> List[Dict]:
+            # 3. Check for multiple high-severity errors (ERROR level or higher)
+            high_severity = [
+                e for e in errors if e["severity"] >= self.SEVERITY_WEIGHTS["ERROR"]
+            ]
+
+            if len(high_severity) > 1:
+                # Multiple crime scenes: first + last
+                result = self._extract_multiple_crime_scenes(
+                    lines, high_severity[0], high_severity[-1]
+                )
+            else:
+                # 4. Check for error burst around primary error
+                burst_window = self._detect_error_burst(
+                    lines, primary_error["line_idx"]
+                )
+
+                if burst_window:
+                    result = self._extract_burst_context(
+                        lines, burst_window, primary_error
+                    )
+                else:
+                    result = self._extract_single_error_context(lines, primary_error)
+
+        # Coverage metadata
+        from collections import Counter
+
+        severity_counts = Counter(e["keyword"] for e in errors)
+        time_range = extract_time_range(content)
+        result += format_coverage_metadata(
+            Lines=f"{min(total_lines, self.MAX_SNIPPET_LINES)} of {total_lines}",
+            Errors=len(errors),
+            **{f"Severity {k}": v for k, v in severity_counts.items()},
+            **time_range,
+        )
+        return result
+
+    def _find_all_errors_with_severity(self, lines: list[str]) -> list[dict]:
         """
         Scan all lines for error keywords and track severity
 
@@ -122,8 +142,8 @@ class LogsAndErrorsExtractor:
         return errors
 
     def _detect_error_burst(
-        self, lines: List[str], error_idx: int, window: Optional[int] = None
-    ) -> Optional[Tuple[int, int]]:
+        self, lines: list[str], error_idx: int, window: int | None = None
+    ) -> tuple[int, int] | None:
         """
         Detect error burst (multiple errors clustered together)
 
@@ -158,7 +178,7 @@ class LogsAndErrorsExtractor:
 
         return None
 
-    def _extract_single_error_context(self, lines: List[str], error: Dict) -> str:
+    def _extract_single_error_context(self, lines: list[str], error: dict) -> str:
         """
         Extract ±200 lines around a single error
 
@@ -185,7 +205,7 @@ class LogsAndErrorsExtractor:
         )
 
     def _extract_multiple_crime_scenes(
-        self, lines: List[str], first_error: Dict, last_error: Dict
+        self, lines: list[str], first_error: dict, last_error: dict
     ) -> str:
         """
         Extract first + last crime scenes
@@ -229,7 +249,7 @@ class LogsAndErrorsExtractor:
         )
 
     def _extract_burst_context(
-        self, lines: List[str], burst_window: Tuple[int, int], primary_error: Dict
+        self, lines: list[str], burst_window: tuple[int, int], primary_error: dict
     ) -> str:
         """
         Extract error burst with expanded window
@@ -260,7 +280,7 @@ class LogsAndErrorsExtractor:
             f"Error burst detected: {burst_size} lines with {primary_error['keyword']} storm",
         )
 
-    def _extract_tail(self, lines: List[str]) -> str:
+    def _extract_tail(self, lines: list[str]) -> str:
         """
         Fallback: Extract last N lines if no errors found
 
@@ -278,7 +298,7 @@ class LogsAndErrorsExtractor:
             snippet, f"No errors detected - showing last {len(snippet)} lines"
         )
 
-    def _truncate_if_needed(self, snippet: List[str], error_offset: int) -> List[str]:
+    def _truncate_if_needed(self, snippet: list[str], error_offset: int) -> list[str]:
         """
         Safety check: Truncate snippet if exceeds MAX_SNIPPET_LINES
 
@@ -306,7 +326,7 @@ class LogsAndErrorsExtractor:
             + snippet[-keep_after:]
         )
 
-    def _format_snippet(self, lines: List[str], header: str) -> str:
+    def _format_snippet(self, lines: list[str], header: str) -> str:
         """
         Format extracted lines with header
 

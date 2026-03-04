@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -48,25 +49,30 @@ class CommandOutputExtractor:
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
+        total_lines = len(content.split("\n"))
+
         # Detect command type
         command_type = self._detect_command_type(content)
 
-        if command_type == "top":
-            return self._parse_top(content)
-        elif command_type == "ps":
-            return self._parse_ps(content)
-        elif command_type == "iostat":
-            return self._parse_iostat(content)
-        elif command_type == "netstat":
-            return self._parse_netstat(content)
-        elif command_type == "df":
-            return self._parse_df(content)
-        elif command_type == "free":
-            return self._parse_free(content)
-        elif command_type == "vmstat":
-            return self._parse_vmstat(content)
-        else:
-            return self._fallback_extraction(content)
+        parsers = {
+            "top": self._parse_top,
+            "ps": self._parse_ps,
+            "iostat": self._parse_iostat,
+            "netstat": self._parse_netstat,
+            "df": self._parse_df,
+            "free": self._parse_free,
+            "vmstat": self._parse_vmstat,
+        }
+
+        parser = parsers.get(command_type, self._fallback_extraction)
+        result = parser(content)
+
+        # Coverage metadata
+        result += format_coverage_metadata(
+            Command=command_type,
+            Lines=total_lines,
+        )
+        return result
 
     def _detect_command_type(self, content: str) -> str:
         """Detect which command generated this output"""
@@ -119,7 +125,7 @@ class CommandOutputExtractor:
             load_avg, cpu_usage, mem_usage, cpu_hogs, mem_hogs, processes
         )
 
-    def _extract_load_average(self, lines: List[str]) -> Optional[str]:
+    def _extract_load_average(self, lines: list[str]) -> str | None:
         """Extract load average from top output"""
         for line in lines[:5]:
             match = re.search(
@@ -131,7 +137,7 @@ class CommandOutputExtractor:
                 return match.group(1)
         return None
 
-    def _extract_cpu_usage(self, lines: List[str]) -> Dict[str, float]:
+    def _extract_cpu_usage(self, lines: list[str]) -> dict[str, float]:
         """Extract CPU usage breakdown"""
         for line in lines[:10]:
             # Match: %Cpu(s):  5.2 us,  2.1 sy,  0.0 ni, 92.5 id
@@ -148,7 +154,7 @@ class CommandOutputExtractor:
                 }
         return {}
 
-    def _extract_memory_usage_top(self, lines: List[str]) -> Dict[str, float]:
+    def _extract_memory_usage_top(self, lines: list[str]) -> dict[str, float]:
         """Extract memory usage from top"""
         for line in lines[:10]:
             # Match: KiB Mem : 16384000 total,  8192000 free,  7000000 used
@@ -169,7 +175,7 @@ class CommandOutputExtractor:
                 }
         return {}
 
-    def _extract_top_processes(self, lines: List[str]) -> List[Dict]:
+    def _extract_top_processes(self, lines: list[str]) -> list[dict]:
         """Extract process list from top output"""
         processes = []
 
@@ -205,12 +211,12 @@ class CommandOutputExtractor:
 
     def _generate_top_summary(
         self,
-        load_avg: Optional[str],
-        cpu_usage: Dict,
-        mem_usage: Dict,
-        cpu_hogs: List[Dict],
-        mem_hogs: List[Dict],
-        all_processes: List[Dict],
+        load_avg: str | None,
+        cpu_usage: dict,
+        mem_usage: dict,
+        cpu_hogs: list[dict],
+        mem_hogs: list[dict],
+        all_processes: list[dict],
     ) -> str:
         """Generate natural language summary for top output"""
         lines = ["System State Analysis (top command)", ""]

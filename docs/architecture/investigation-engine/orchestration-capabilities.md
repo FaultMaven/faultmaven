@@ -87,3 +87,42 @@ The `execute_agent` method yields `ExecutionEvent` objects via an `AsyncGenerato
 ### 4.2 Integration
 *   **Protocol**: Server-Sent Events (SSE) or standard HTTP streaming response.
 *   **Route**: `POST /sessions/{session_id}/message?stream=true`
+
+## 5. Tier-Escalation Hardening (Mechanical Safety Nets)
+
+The `AgentOrchestrationService` includes three mechanical safety nets that improve the agent's tier escalation decisions without requiring prompt changes. These are non-blocking advisories — hints injected into the LLM context, not hard gates.
+
+### 5.1 Coverage Gap Detection (R3)
+
+**Problem**: The LLM doesn't know its Tier 1 structural index only covers a specific time range or set of services. It may answer questions about uncovered data with incomplete evidence.
+
+**Mechanism**:
+
+1. **Query entity extraction**: Regex-based extraction of timestamps, service names, HTTP error codes, E-codes, and IP addresses from the user's message.
+2. **Coverage comparison**: Extracted entities are compared against evidence coverage metadata (appended by Tier 1 extractors as `--- COVERAGE METADATA ---` blocks).
+3. **Advisory injection**: When query entities fall outside evidence coverage (e.g., user asks about 14:00 but evidence covers 13:42-13:57), a coverage advisory is injected into the LLM context before the system prompt.
+
+### 5.2 Auto-Escalation Advisory (R4)
+
+**Problem**: The agent may call `search_file` repeatedly with different keywords, hitting zero results each time, without escalating to Tier 3 (`deep_analyze_file`) or informing the user.
+
+**Mechanism**:
+
+1. Track consecutive empty `search_file` results via a counter in the execution loop.
+2. After **2 consecutive zero-result calls**, inject an `[ESCALATION ADVISORY]` into the tool result content visible to the LLM.
+3. The advisory suggests: (1) review vocabulary hints, (2) try `search_type='regex'`, (3) escalate to `deep_analysis`, or (4) tell the user what's missing.
+4. Counter resets after advisory injection or a successful search.
+
+### 5.3 Context Budget Tracking (R5)
+
+**Problem**: Multiple tool results can fill the context window with low-signal log noise, pushing out high-value information.
+
+**Mechanism**:
+
+1. Track cumulative tool result characters via a `tool_result_chars` counter.
+2. **Budget**: 30K characters (`TOOL_RESULT_BUDGET`).
+3. At 80% budget: apply **standard compression** — keep first 3 lines + high-signal keyword lines + last 2 lines.
+4. Over budget: apply **aggressive compression** — keep first line + high-signal keyword lines only.
+5. High-signal keywords: `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`.
+
+**Key**: Compression only affects what the LLM sees. The uncompressed content is preserved in the `AgentToolCall` record for audit and debugging.

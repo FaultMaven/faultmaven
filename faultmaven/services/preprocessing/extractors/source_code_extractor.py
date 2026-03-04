@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -70,15 +71,32 @@ class SourceCodeExtractor:
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
+        total_lines = len(content.split("\n"))
+
         # Try Python AST parsing first
         python_result = self._parse_python_ast(content)
         if python_result:
-            return python_result
+            tree = ast.parse(content)
+            classes = self._extract_classes(tree)
+            functions = self._extract_functions(tree)
+            error_handling = self._extract_error_handling(tree)
+            return python_result + format_coverage_metadata(
+                Language="Python",
+                Lines=total_lines,
+                Functions=len(functions),
+                Classes=len(classes),
+                **{"Error handlers": len(error_handling)},
+            )
 
         # Fall back to pattern-based extraction
-        return self._pattern_based_extraction(content)
+        result = self._pattern_based_extraction(content)
+        language = self._detect_language(content)
+        return result + format_coverage_metadata(
+            Language=language,
+            Lines=total_lines,
+        )
 
-    def _parse_python_ast(self, content: str) -> Optional[str]:
+    def _parse_python_ast(self, content: str) -> str | None:
         """Parse Python code using AST"""
         try:
             tree = ast.parse(content)
@@ -96,7 +114,7 @@ class SourceCodeExtractor:
             imports, classes, functions, error_handling, todos
         )
 
-    def _extract_imports(self, tree: ast.AST) -> List[str]:
+    def _extract_imports(self, tree: ast.AST) -> list[str]:
         """Extract import statements"""
         imports = []
 
@@ -111,7 +129,7 @@ class SourceCodeExtractor:
 
         return imports[:30]  # Limit
 
-    def _extract_classes(self, tree: ast.AST) -> List[Dict[str, Any]]:
+    def _extract_classes(self, tree: ast.AST) -> list[dict[str, Any]]:
         """Extract class definitions"""
         classes = []
 
@@ -134,7 +152,7 @@ class SourceCodeExtractor:
 
         return classes
 
-    def _extract_functions(self, tree: ast.AST) -> List[Dict[str, Any]]:
+    def _extract_functions(self, tree: ast.AST) -> list[dict[str, Any]]:
         """Extract function definitions (module-level only, not methods)"""
         functions = []
 
@@ -158,7 +176,7 @@ class SourceCodeExtractor:
 
         return functions
 
-    def _extract_error_handling(self, tree: ast.AST) -> List[Dict[str, Any]]:
+    def _extract_error_handling(self, tree: ast.AST) -> list[dict[str, Any]]:
         """Extract try/except blocks"""
         error_handlers = []
 
@@ -184,7 +202,7 @@ class SourceCodeExtractor:
 
     def _extract_todos_from_ast(
         self, tree: ast.AST, content: str
-    ) -> List[Tuple[int, str]]:
+    ) -> list[tuple[int, str]]:
         """Extract TODO/FIXME comments from source"""
         todos = []
         lines = content.split("\n")
@@ -198,7 +216,7 @@ class SourceCodeExtractor:
 
         return todos
 
-    def _get_name(self, node: Optional[ast.AST]) -> str:
+    def _get_name(self, node: ast.AST | None) -> str:
         """Get name from AST node"""
         if node is None:
             return "None"
@@ -213,11 +231,11 @@ class SourceCodeExtractor:
 
     def _format_python_output(
         self,
-        imports: List[str],
-        classes: List[Dict[str, Any]],
-        functions: List[Dict[str, Any]],
-        error_handling: List[Dict[str, Any]],
-        todos: List[Tuple[int, str]],
+        imports: list[str],
+        classes: list[dict[str, Any]],
+        functions: list[dict[str, Any]],
+        error_handling: list[dict[str, Any]],
+        todos: list[tuple[int, str]],
     ) -> str:
         """Format Python analysis output"""
         lines = ["=== PYTHON CODE ANALYSIS ===\n"]
@@ -294,9 +312,9 @@ class SourceCodeExtractor:
 
     # --- tree-sitter integration ---
 
-    _ts_parsers: Dict[str, Any] = {}  # Lazy-loaded parsers
+    _ts_parsers: dict[str, Any] = {}  # Lazy-loaded parsers
 
-    def _get_ts_parser(self, lang_name: str) -> Optional[Any]:
+    def _get_ts_parser(self, lang_name: str) -> Any | None:
         """Get or lazily create a tree-sitter parser for the given language."""
         if not TREE_SITTER_AVAILABLE:
             return None
@@ -324,7 +342,7 @@ class SourceCodeExtractor:
         except Exception:
             return None
 
-    def _tree_sitter_extraction(self, content: str) -> Optional[str]:
+    def _tree_sitter_extraction(self, content: str) -> str | None:
         """Try tree-sitter extraction across supported languages."""
         source = content.encode("utf-8", errors="replace")
 
@@ -385,7 +403,7 @@ class SourceCodeExtractor:
 
     def _detect_language_tree_sitter(
         self, source: bytes
-    ) -> Tuple[Optional[str], Optional[Any]]:
+    ) -> tuple[str | None, Any | None]:
         """Detect language by parsing with each grammar, choosing the one with fewest errors."""
         # Try languages in order of likelihood (skip Python — handled by AST path)
         candidates = ["javascript", "typescript", "java", "go", "rust", "c"]
@@ -432,7 +450,7 @@ class SourceCodeExtractor:
             count += self._count_nodes(child)
         return count
 
-    def _collect_by_type(self, node: Any, type_name: str) -> List[Any]:
+    def _collect_by_type(self, node: Any, type_name: str) -> list[Any]:
         """Collect all descendant nodes matching a type."""
         results = []
         if node.type == type_name:
@@ -441,7 +459,7 @@ class SourceCodeExtractor:
             results.extend(self._collect_by_type(child, type_name))
         return results
 
-    def _extract_ts_function_name(self, node: Any) -> Optional[str]:
+    def _extract_ts_function_name(self, node: Any) -> str | None:
         """Extract function name from a tree-sitter node.
 
         Handles C/C++ where name is nested inside declarator→declarator.
@@ -462,7 +480,7 @@ class SourceCodeExtractor:
 
     def _extract_with_tree_sitter(
         self, root: Any, lang_name: str, source: bytes
-    ) -> Dict[str, List[str]]:
+    ) -> dict[str, list[str]]:
         """Extract imports, classes, functions, error handling, TODOs from tree."""
         # Language-specific node type mappings
         import_types = {
@@ -498,7 +516,7 @@ class SourceCodeExtractor:
             "c": [],
         }
 
-        result: Dict[str, List[str]] = {
+        result: dict[str, list[str]] = {
             "imports": [],
             "classes": [],
             "functions": [],
@@ -642,7 +660,7 @@ class SourceCodeExtractor:
         else:
             return "Unknown"
 
-    def _extract_imports_pattern(self, content: str, language: str) -> List[str]:
+    def _extract_imports_pattern(self, content: str, language: str) -> list[str]:
         """Extract import/include statements using patterns"""
         imports = []
 
@@ -661,7 +679,7 @@ class SourceCodeExtractor:
 
         return [imp.strip() for imp in imports[:30]]
 
-    def _extract_functions_pattern(self, content: str, language: str) -> List[str]:
+    def _extract_functions_pattern(self, content: str, language: str) -> list[str]:
         """Extract function definitions using patterns"""
         functions = []
 
@@ -682,7 +700,7 @@ class SourceCodeExtractor:
 
         return functions[: self.MAX_FUNCTIONS]
 
-    def _extract_classes_pattern(self, content: str, language: str) -> List[str]:
+    def _extract_classes_pattern(self, content: str, language: str) -> list[str]:
         """Extract class definitions using patterns"""
         classes = []
 
@@ -698,7 +716,7 @@ class SourceCodeExtractor:
 
         return classes[: self.MAX_CLASSES]
 
-    def _extract_error_handling_pattern(self, content: str, language: str) -> List[str]:
+    def _extract_error_handling_pattern(self, content: str, language: str) -> list[str]:
         """Extract error handling using patterns"""
         error_handlers = []
 
@@ -721,7 +739,7 @@ class SourceCodeExtractor:
 
         return error_handlers[:10]
 
-    def _extract_todos_pattern(self, content: str) -> List[str]:
+    def _extract_todos_pattern(self, content: str) -> list[str]:
         """Extract TODO/FIXME comments"""
         todos = []
         lines = content.split("\n")

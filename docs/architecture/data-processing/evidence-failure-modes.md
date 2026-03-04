@@ -787,7 +787,7 @@ async def process_turn_with_attachment(
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy and categories
 - [Evidence Flow Architecture](./evidence-flow-architecture.md) — End-to-end evidence pipeline
-- [Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md) — Four-tier preprocessing model and unified ingestion pipeline
+- [Data Preprocessing Design Specification v4.2](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and tier-escalation hardening
 
 ---
 

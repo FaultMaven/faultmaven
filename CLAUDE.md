@@ -166,6 +166,8 @@ modules/agent/tools/
 ├── case_evidence_qa.py     # Case evidence queries
 ├── list_evidence_tool.py   # List available evidence
 ├── read_file_tool.py       # File reading tool
+├── search_file_tool.py     # Tier 2: keyword/regex/extractor search on raw files
+├── deep_analysis_tool.py   # Tier 3: LLM-powered deep analysis
 ├── web_search.py           # Web search integration (Tavily)
 └── kb_configs/             # KB tool configurations
     ├── global_kb_config.py

@@ -1382,3 +1382,277 @@ class TestAgentSystemPrompts:
         """Test that reporter prompt mentions summarization."""
         prompt = AGENT_SYSTEM_PROMPTS[AgentType.REPORTER]
         assert "summary" in prompt.lower() or "report" in prompt.lower()
+
+
+# =============================================================================
+# Test: Query Entity Extraction (R3.1)
+# =============================================================================
+
+
+class TestExtractQueryEntities:
+    """Tests for _extract_query_entities static method."""
+
+    def test_extracts_timestamps(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "what happened at 14:00 and 14:30:15?"
+        )
+        assert "14:00" in entities["timestamps"]
+        assert "14:30:15" in entities["timestamps"]
+
+    def test_extracts_date_stamps(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "check logs for 2024-01-15"
+        )
+        assert "2024-01-15" in entities["timestamps"]
+
+    def test_extracts_services(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "check logs from nginx and errors from redis"
+        )
+        assert "nginx" in entities["services"]
+        assert "redis" in entities["services"]
+
+    def test_extracts_http_error_codes(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "why are we getting 503 and 404 errors?"
+        )
+        assert "503" in entities["error_codes"]
+        assert "404" in entities["error_codes"]
+
+    def test_extracts_ip_addresses(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "connection refused from 10.0.0.5"
+        )
+        assert "10.0.0.5" in entities["ip_addresses"]
+
+    def test_no_entities_from_plain_question(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "what is the root cause?"
+        )
+        assert not any(entities.values())
+
+    def test_extracts_e_codes(self, orchestration_service):
+        entities = orchestration_service._extract_query_entities(
+            "seeing E1001 errors in production"
+        )
+        assert "E1001" in entities["error_codes"]
+
+
+# =============================================================================
+# Test: Coverage Gap Detection (R3.2)
+# =============================================================================
+
+
+class TestDetectCoverageGaps:
+    """Tests for _detect_coverage_gaps."""
+
+    def _make_case_with_evidence(self, preprocessed_content):
+        """Helper to create a case with evidence containing coverage metadata."""
+        evidence = MagicMock()
+        evidence.preprocessed_content = preprocessed_content
+        case = MagicMock()
+        case.evidence = [evidence]
+        return case
+
+    def test_detects_timestamp_gap(self, orchestration_service):
+        from faultmaven.services.preprocessing.extractors.utils import (
+            COVERAGE_SEPARATOR,
+        )
+
+        case = self._make_case_with_evidence(
+            f"log content here{COVERAGE_SEPARATOR}"
+            f"First timestamp: 2024-01-15 13:42:00\n"
+            f"Last timestamp: 2024-01-15 13:57:00"
+        )
+        entities = {
+            "timestamps": ["14:00"],
+            "services": [],
+            "error_codes": [],
+            "ip_addresses": [],
+        }
+        gaps = orchestration_service._detect_coverage_gaps(entities, case)
+        assert len(gaps) > 0
+        assert "14:00" in gaps[0]
+
+    def test_no_gap_when_timestamp_covered(self, orchestration_service):
+        from faultmaven.services.preprocessing.extractors.utils import (
+            COVERAGE_SEPARATOR,
+        )
+
+        case = self._make_case_with_evidence(
+            f"log content{COVERAGE_SEPARATOR}"
+            f"First timestamp: 2024-01-15 13:42:00\n"
+            f"Last timestamp: 2024-01-15 14:00:00"
+        )
+        entities = {
+            "timestamps": ["14:00"],
+            "services": [],
+            "error_codes": [],
+            "ip_addresses": [],
+        }
+        gaps = orchestration_service._detect_coverage_gaps(entities, case)
+        # "14:00" appears in the coverage text, so no gap
+        assert len(gaps) == 0
+
+    def test_detects_missing_service(self, orchestration_service):
+        from faultmaven.services.preprocessing.extractors.utils import (
+            COVERAGE_SEPARATOR,
+        )
+
+        case = self._make_case_with_evidence(
+            f"nginx logs{COVERAGE_SEPARATOR}Sources: nginx, redis"
+        )
+        entities = {
+            "timestamps": [],
+            "services": ["kafka"],
+            "error_codes": [],
+            "ip_addresses": [],
+        }
+        gaps = orchestration_service._detect_coverage_gaps(entities, case)
+        assert len(gaps) > 0
+        assert "kafka" in gaps[0]
+
+    def test_no_gap_when_service_covered(self, orchestration_service):
+        from faultmaven.services.preprocessing.extractors.utils import (
+            COVERAGE_SEPARATOR,
+        )
+
+        case = self._make_case_with_evidence(
+            f"nginx logs{COVERAGE_SEPARATOR}Sources: nginx, redis"
+        )
+        entities = {
+            "timestamps": [],
+            "services": ["nginx"],
+            "error_codes": [],
+            "ip_addresses": [],
+        }
+        gaps = orchestration_service._detect_coverage_gaps(entities, case)
+        assert len(gaps) == 0
+
+    def test_no_gaps_when_no_evidence(self, orchestration_service):
+        case = MagicMock()
+        case.evidence = []
+        entities = {
+            "timestamps": ["14:00"],
+            "services": ["nginx"],
+            "error_codes": [],
+            "ip_addresses": [],
+        }
+        gaps = orchestration_service._detect_coverage_gaps(entities, case)
+        assert len(gaps) == 0
+
+
+# =============================================================================
+# Test: Coverage Advisories (R3.3)
+# =============================================================================
+
+
+class TestBuildCoverageAdvisories:
+    """Tests for _build_coverage_advisories."""
+
+    def test_returns_advisory_on_gap(self, orchestration_service):
+        from faultmaven.services.preprocessing.extractors.utils import (
+            COVERAGE_SEPARATOR,
+        )
+
+        evidence = MagicMock()
+        evidence.preprocessed_content = (
+            f"log content{COVERAGE_SEPARATOR}"
+            f"First timestamp: 2024-01-15 13:42:00\n"
+            f"Last timestamp: 2024-01-15 13:57:00"
+        )
+        case = MagicMock()
+        case.evidence = [evidence]
+
+        advisory = orchestration_service._build_coverage_advisories(
+            "what happened at 14:00?", case
+        )
+        assert "Coverage Advisory" in advisory
+        assert "14:00" in advisory
+
+    def test_returns_empty_when_no_entities(self, orchestration_service):
+        case = MagicMock()
+        case.evidence = []
+        advisory = orchestration_service._build_coverage_advisories(
+            "what is the root cause?", case
+        )
+        assert advisory == ""
+
+    def test_returns_empty_when_covered(self, orchestration_service):
+        from faultmaven.services.preprocessing.extractors.utils import (
+            COVERAGE_SEPARATOR,
+        )
+
+        evidence = MagicMock()
+        evidence.preprocessed_content = (
+            f"log content{COVERAGE_SEPARATOR}"
+            f"First timestamp: 2024-01-15 14:00:00\n"
+            f"Last timestamp: 2024-01-15 14:30:00\n"
+            f"Sources: nginx"
+        )
+        case = MagicMock()
+        case.evidence = [evidence]
+
+        advisory = orchestration_service._build_coverage_advisories(
+            "check nginx at 14:00", case
+        )
+        assert advisory == ""
+
+
+# =============================================================================
+# Test: Tool Result Compression (R5)
+# =============================================================================
+
+
+class TestCompressToolResult:
+    """Tests for _compress_tool_result."""
+
+    def test_short_content_unchanged(self, orchestration_service):
+        content = "line 1\nline 2\nline 3"
+        result = orchestration_service._compress_tool_result(content)
+        assert result == content
+
+    def test_standard_compression_keeps_first_and_last(self, orchestration_service):
+        lines = [f"line {i}: some data" for i in range(50)]
+        lines[25] = "line 25: CRITICAL error occurred"
+        content = "\n".join(lines)
+
+        result = orchestration_service._compress_tool_result(content, aggressive=False)
+
+        # First 3 lines preserved
+        assert "line 0:" in result
+        assert "line 1:" in result
+        assert "line 2:" in result
+        # High-signal line preserved
+        assert "CRITICAL error" in result
+        # Last 2 lines preserved
+        assert "line 49:" in result
+        # Compression marker
+        assert "50 total lines" in result
+
+    def test_aggressive_compression_keeps_signal_only(self, orchestration_service):
+        lines = [f"line {i}: normal data" for i in range(50)]
+        lines[10] = "line 10: fatal crash detected"
+        lines[30] = "line 30: timeout waiting for response"
+        content = "\n".join(lines)
+
+        result = orchestration_service._compress_tool_result(content, aggressive=True)
+
+        # First line preserved
+        assert "line 0:" in result
+        # Signal lines preserved
+        assert "fatal crash" in result
+        assert "timeout" in result
+        # Most normal lines removed
+        assert "line 5:" not in result
+        # Compression marker
+        assert "50 total lines" in result
+
+    def test_compression_handles_no_signal_lines(self, orchestration_service):
+        lines = [f"line {i}: normal info log" for i in range(50)]
+        content = "\n".join(lines)
+
+        result = orchestration_service._compress_tool_result(content, aggressive=True)
+        # Should still work, just fewer lines
+        assert "line 0:" in result
+        assert "50 total lines" in result

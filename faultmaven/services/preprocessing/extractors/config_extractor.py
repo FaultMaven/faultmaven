@@ -10,10 +10,11 @@ falling back to regex patterns.
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -103,20 +104,69 @@ class StructuredConfigExtractor:
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
+        # Detect format
+        format_detected = self._detect_format(content)
+
         # Try to detect format and parse
         config_data = self._parse_config(content)
 
         if config_data is None:
             # Couldn't parse - treat as key=value pairs
             config_data = self._parse_key_value_pairs(content)
+            format_detected = "key-value"
+
+        # Count keys before redaction
+        top_keys = list(config_data.keys()) if isinstance(config_data, dict) else []
+        total_keys = self._count_keys(config_data)
 
         # Redact secrets
-        sanitized = self._redact_secrets(config_data)
+        sanitized, redaction_count = self._redact_secrets_counted(config_data)
 
         # Format output
-        return self._format_config(sanitized)
+        result = self._format_config(sanitized)
 
-    def _parse_config(self, content: str) -> Optional[Dict[str, Any]]:
+        # Coverage metadata
+        result += format_coverage_metadata(
+            Format=format_detected,
+            **{"Top-level keys": ", ".join(top_keys[:10])},
+            **{"Total keys": total_keys},
+            **{"Secrets redacted": redaction_count},
+        )
+        return result
+
+    def _detect_format(self, content: str) -> str:
+        """Detect config format without parsing."""
+        try:
+            json.loads(content)
+            return "json"
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            import yaml
+
+            result = yaml.safe_load(content)
+            if isinstance(result, dict):
+                return "yaml"
+        except (ImportError, Exception):
+            pass
+        try:
+            import tomli
+
+            tomli.loads(content)
+            return "toml"
+        except (ImportError, Exception):
+            pass
+        return "ini/env"
+
+    def _count_keys(self, data: Any) -> int:
+        """Count total keys recursively."""
+        if isinstance(data, dict):
+            return len(data) + sum(self._count_keys(v) for v in data.values())
+        if isinstance(data, list):
+            return sum(self._count_keys(item) for item in data)
+        return 0
+
+    def _parse_config(self, content: str) -> dict[str, Any] | None:
         """
         Try to parse as structured config
 
@@ -149,7 +199,7 @@ class StructuredConfigExtractor:
 
         return None
 
-    def _parse_key_value_pairs(self, content: str) -> Dict[str, Any]:
+    def _parse_key_value_pairs(self, content: str) -> dict[str, Any]:
         """
         Parse as simple key=value pairs (.env, .ini style)
 
@@ -188,37 +238,37 @@ class StructuredConfigExtractor:
 
         return result
 
-    def _redact_secrets(self, data: Any, path: str = "") -> Any:
-        """
-        Recursively redact secrets from config data
-
-        Args:
-            data: Config data (dict, list, or primitive)
-            path: Current key path (for nested configs)
+    def _redact_secrets_counted(self, data: Any, path: str = "") -> tuple[Any, int]:
+        """Recursively redact secrets from config data, counting redactions.
 
         Returns:
-            Sanitized data
+            (sanitized_data, redaction_count)
         """
         if isinstance(data, dict):
-            return {
-                key: self._redact_secrets(value, f"{path}.{key}" if path else key)
-                for key, value in data.items()
-            }
+            result = {}
+            count = 0
+            for key, value in data.items():
+                new_path = f"{path}.{key}" if path else key
+                sanitized, c = self._redact_secrets_counted(value, new_path)
+                result[key] = sanitized
+                count += c
+            return result, count
         elif isinstance(data, list):
-            return [
-                self._redact_secrets(item, f"{path}[{i}]")
-                for i, item in enumerate(data)
-            ]
+            result = []
+            count = 0
+            for i, item in enumerate(data):
+                sanitized, c = self._redact_secrets_counted(item, f"{path}[{i}]")
+                result.append(sanitized)
+                count += c
+            return result, count
         elif isinstance(data, str):
-            # Check if key name suggests secret
             if self._is_secret_key(path):
-                return "[REDACTED]"
-            # Check if value looks like a secret
+                return "[REDACTED]", 1
             if self._is_secret_value(data, key_path=path):
-                return "[REDACTED]"
-            return data
+                return "[REDACTED]", 1
+            return data, 0
         else:
-            return data
+            return data, 0
 
     def _is_secret_key(self, key_path: str) -> bool:
         """Check if key name suggests it's a secret"""

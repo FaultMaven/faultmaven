@@ -10,7 +10,8 @@ Design Reference: docs/working/DRAFT-data-preprocessing-spec-v4.md Section 3
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from collections import Counter
+from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
@@ -57,7 +58,7 @@ class SearchFileTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> Dict[str, Any]:
+    def parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -96,7 +97,7 @@ class SearchFileTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Execute file search."""
@@ -158,10 +159,38 @@ class SearchFileTool(AgentTool):
                 results = self._keyword_search(content, query)
 
             logger.info(
-                f"search_file: {evidence_id} ({filename}), "
-                f"mode={search_type}, query='{query[:50]}', "
-                f"results={len(results)}"
+                "search_file: %s (%s), mode=%s, query='%s', results=%d",
+                evidence_id,
+                filename,
+                search_type,
+                query[:50],
+                len(results),
             )
+
+            if not results:
+                vocabulary = self._extract_file_vocabulary(content)
+                top_terms = (
+                    vocabulary.get("patterns", [])
+                    + vocabulary.get("frequent_tokens", [])
+                )[:10]
+                return ToolResult(
+                    success=True,
+                    data={
+                        "evidence_id": evidence_id,
+                        "filename": filename,
+                        "search_type": search_type,
+                        "query": query,
+                        "results_count": 0,
+                        "results": [],
+                        "vocabulary": vocabulary,
+                        "suggestion": (
+                            f"No matches found. File contains these terms: "
+                            f"{', '.join(top_terms)}"
+                            if top_terms
+                            else "No matches found and no recognizable terms extracted."
+                        ),
+                    },
+                )
 
             return ToolResult(
                 success=True,
@@ -176,26 +205,33 @@ class SearchFileTool(AgentTool):
             )
 
         except Exception as e:
-            logger.exception(f"search_file failed for {evidence_id}: {e}")
+            logger.exception("search_file failed for %s: %s", evidence_id, e)
             return ToolResult(
                 success=False,
                 data=None,
                 error=f"Search failed: {str(e)}",
             )
 
-    def _keyword_search(self, content: str, query: str) -> List[Dict[str, Any]]:
-        """Keyword search: tokenize query, find matching lines, return context windows."""
+    def _keyword_search(self, content: str, query: str) -> list[dict[str, Any]]:
+        """Keyword search: tokenize query, find matching lines, return context windows.
+
+        Two-pass strategy:
+        1. Find lines matching ALL keywords (high relevance).
+        2. If no all-keyword matches and multiple keywords exist, fall back to
+           individual keyword matching (lower cap, marked partial_match).
+        """
         lines = content.split("\n")
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
 
         if not keywords:
             return []
 
+        # Pass 1: lines matching ALL keywords
         matches: list[dict] = []
         for i, line in enumerate(lines):
             line_lower = line.lower()
             matched_keywords = [kw for kw in keywords if kw in line_lower]
-            if matched_keywords:
+            if len(matched_keywords) == len(keywords):
                 start = max(0, i - self.context_lines)
                 end = min(len(lines), i + self.context_lines + 1)
                 matches.append(
@@ -206,13 +242,39 @@ class SearchFileTool(AgentTool):
                         "line_start": start + 1,
                         "line_end": end,
                         "matched_keywords": matched_keywords,
-                        "relevance": len(matched_keywords) / len(keywords),
+                        "relevance": 1.0,
                     }
                 )
 
-        return self._merge_overlapping(matches)[: self.max_results]
+        merged = self._merge_overlapping(matches)[: self.max_results]
+        if merged:
+            return merged
 
-    def _regex_search(self, content: str, pattern: str) -> List[Dict[str, Any]]:
+        # Pass 2: partial match fallback — individual keywords
+        if len(keywords) > 1:
+            partial_matches: list[dict] = []
+            for kw in keywords:
+                for i, line in enumerate(lines):
+                    if kw in line.lower():
+                        start = max(0, i - self.context_lines)
+                        end = min(len(lines), i + self.context_lines + 1)
+                        partial_matches.append(
+                            {
+                                "excerpt": "\n".join(
+                                    f"{j + 1}: {lines[j]}" for j in range(start, end)
+                                ),
+                                "line_start": start + 1,
+                                "line_end": end,
+                                "matched_keywords": [kw],
+                                "relevance": 1 / len(keywords),
+                                "partial_match": True,
+                            }
+                        )
+            return self._merge_overlapping(partial_matches)[:5]
+
+        return []
+
+    def _regex_search(self, content: str, pattern: str) -> list[dict[str, Any]]:
         """Regex search: compile pattern, find all matches, return with context."""
         try:
             regex = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
@@ -244,8 +306,8 @@ class SearchFileTool(AgentTool):
         self,
         content: str,
         evidence: Any,
-        params: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """Re-run domain-specific extractor with different parameters."""
         if not self.preprocessing_service:
             return [
@@ -305,8 +367,149 @@ class SearchFileTool(AgentTool):
                 }
             ]
 
+    # --- Vocabulary extraction (for zero-result recovery) ---
+
+    # Compiled once at class level
+    _VOCAB_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+        ("http_errors", re.compile(r"\b[45]\d{2}\b")),
+        (
+            "exceptions",
+            re.compile(r"\b[A-Z][a-zA-Z]*(?:Error|Exception|Failure|Fault|Timeout)\b"),
+        ),
+        ("host_port", re.compile(r"\b[\w-]+:\d{2,5}\b")),
+        ("ip_addresses", re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")),
+        ("file_paths", re.compile(r"/[\w/.-]+")),
+    ]
+
+    _STOP_WORDS = frozenset(
+        {
+            "the",
+            "and",
+            "for",
+            "are",
+            "but",
+            "not",
+            "you",
+            "all",
+            "can",
+            "had",
+            "her",
+            "was",
+            "one",
+            "our",
+            "out",
+            "has",
+            "have",
+            "from",
+            "with",
+            "they",
+            "been",
+            "said",
+            "each",
+            "which",
+            "their",
+            "will",
+            "other",
+            "about",
+            "many",
+            "then",
+            "them",
+            "these",
+            "some",
+            "would",
+            "make",
+            "like",
+            "into",
+            "time",
+            "very",
+            "when",
+            "come",
+            "could",
+            "more",
+            "than",
+            "first",
+            "also",
+            "its",
+            "over",
+            "such",
+            "after",
+            "this",
+            "that",
+            "what",
+            "there",
+            "where",
+            "just",
+            "most",
+            "only",
+            # Log noise
+            "info",
+            "debug",
+            "warn",
+            "warning",
+            "error",
+            "trace",
+            "level",
+            "timestamp",
+            "date",
+            "log",
+            "logger",
+            "message",
+            "msg",
+            "null",
+            "none",
+            "true",
+            "false",
+            "undefined",
+        }
+    )
+
+    def _extract_file_vocabulary(self, content: str) -> dict[str, list[str]]:
+        """Extract vocabulary from file content for zero-result recovery.
+
+        Three-pass heuristic:
+        1. Known patterns (HTTP errors, exceptions, IPs, paths)
+        2. Frequent tokens (statistical)
+        3. Structural hints (from preprocessed content if available)
+        """
+        # Budget: first 100KB
+        sample = content[:102400]
+
+        result: dict[str, list[str]] = {"patterns": [], "frequent_tokens": []}
+
+        # Pass 1: Known patterns
+        seen: set[str] = set()
+        for _label, pattern in self._VOCAB_PATTERNS:
+            for match in pattern.finditer(sample):
+                val = match.group(0)
+                if val not in seen:
+                    seen.add(val)
+                    result["patterns"].append(val)
+                    if len(result["patterns"]) >= 30:
+                        break
+
+        # Pass 2: Frequent tokens
+        tokens = re.split(r"[\s=:,;|\[\]{}()\"\'+]+", sample)
+        counts: Counter[str] = Counter()
+        for tok in tokens:
+            tok_lower = tok.lower().strip(".-_/")
+            if (
+                len(tok_lower) > 2
+                and not tok_lower.isdigit()
+                and tok_lower not in self._STOP_WORDS
+                and tok_lower.isalnum()
+            ):
+                counts[tok_lower] += 1
+
+        # Tokens appearing 2-10 times (not too rare, not too common)
+        frequent = [tok for tok, count in counts.most_common(50) if 2 <= count <= 10][
+            :20
+        ]
+        result["frequent_tokens"] = frequent
+
+        return result
+
     @staticmethod
-    def _merge_overlapping(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_overlapping(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Merge overlapping excerpt windows."""
         if not matches:
             return []

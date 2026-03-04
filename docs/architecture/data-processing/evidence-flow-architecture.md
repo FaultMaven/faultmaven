@@ -520,7 +520,13 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
  │              │                │             │             │             │
 ```
 
-**Key**: Tier 2 (`search_file`) and Tier 3 (`deep_analyze_file`) are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic.
+**Key**: Tier 2 (`search_file`) and Tier 3 (`deep_analyze_file`) are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v4.2](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic.
+
+**Tier-Escalation Hardening (v4.2)**: The orchestration layer adds three mechanical safety nets to improve tier escalation decisions:
+
+- **Coverage gap detection (R3)**: Extracts entities (timestamps, services, error codes, IPs) from user queries and compares against evidence coverage metadata. Injects advisories when query entities fall outside evidence coverage.
+- **Auto-escalation (R4)**: Tracks consecutive empty `search_file` results. After 2 consecutive zero-result calls, injects `[ESCALATION ADVISORY]` suggesting regex mode, deep analysis escalation, or vocabulary-guided retry.
+- **Context budget tracking (R5)**: Enforces a 30K character budget on tool results with standard/aggressive compression preserving high-signal lines (errors, exceptions, timeouts, crashes).
 
 ---
 
@@ -882,7 +888,7 @@ evidence.storage_size_bytes
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
-- [Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md) — Four-tier preprocessing model and unified ingestion pipeline
+- [Data Preprocessing Design Specification v4.2](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and tier-escalation hardening
 - [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules
 
 ---

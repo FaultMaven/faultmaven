@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Dict, List
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -56,7 +57,7 @@ class DocumentationExtractor:
         config_sections = self._find_config_sections(sections)
 
         # Generate summary
-        return self._generate_summary(
+        result = self._generate_summary(
             title,
             sections,
             code_blocks,
@@ -64,6 +65,22 @@ class DocumentationExtractor:
             procedure_sections,
             config_sections,
         )
+
+        # Count commands in code blocks
+        commands_count = sum(
+            1
+            for cb in code_blocks
+            if cb["type"] == "inline" and self._looks_like_command(cb["code"])
+        )
+
+        # Coverage metadata
+        result += format_coverage_metadata(
+            Format="markdown" if is_markdown else "plain",
+            Sections=len(sections),
+            **{"Code blocks": len(code_blocks)},
+            **{"Commands": commands_count},
+        )
+        return result
 
     def _is_markdown(self, content: str) -> bool:
         """Detect if content is Markdown format"""
@@ -100,7 +117,7 @@ class DocumentationExtractor:
 
         return "Untitled Document"
 
-    def _extract_sections(self, content: str, is_markdown: bool) -> List[Dict]:
+    def _extract_sections(self, content: str, is_markdown: bool) -> list[dict]:
         """Extract section headings and their content"""
         sections = []
 
@@ -157,7 +174,7 @@ class DocumentationExtractor:
 
         return sections
 
-    def _extract_code_blocks(self, content: str, is_markdown: bool) -> List[Dict]:
+    def _extract_code_blocks(self, content: str, is_markdown: bool) -> list[dict]:
         """Extract code blocks and inline commands"""
         code_blocks = []
 
@@ -218,7 +235,7 @@ class DocumentationExtractor:
             return False  # Skip trivial inline code like `true`, `null`
         return any(cmd in text.lower() for cmd in command_indicators)
 
-    def _find_troubleshooting_sections(self, sections: List[Dict]) -> List[Dict]:
+    def _find_troubleshooting_sections(self, sections: list[dict]) -> list[dict]:
         """Identify sections related to troubleshooting"""
         keywords = [
             "troubleshoot",
@@ -237,7 +254,7 @@ class DocumentationExtractor:
             if any(keyword in section["title"].lower() for keyword in keywords)
         ]
 
-    def _find_procedure_sections(self, sections: List[Dict]) -> List[Dict]:
+    def _find_procedure_sections(self, sections: list[dict]) -> list[dict]:
         """Identify sections containing procedures"""
         keywords = [
             "how to",
@@ -256,7 +273,7 @@ class DocumentationExtractor:
             if any(keyword in section["title"].lower() for keyword in keywords)
         ]
 
-    def _find_config_sections(self, sections: List[Dict]) -> List[Dict]:
+    def _find_config_sections(self, sections: list[dict]) -> list[dict]:
         """Identify sections related to configuration"""
         keywords = [
             "config",
@@ -276,11 +293,11 @@ class DocumentationExtractor:
     def _generate_summary(
         self,
         title: str,
-        sections: List[Dict],
-        code_blocks: List[Dict],
-        troubleshooting_sections: List[Dict],
-        procedure_sections: List[Dict],
-        config_sections: List[Dict],
+        sections: list[dict],
+        code_blocks: list[dict],
+        troubleshooting_sections: list[dict],
+        procedure_sections: list[dict],
+        config_sections: list[dict],
     ) -> str:
         """Generate structured documentation summary"""
         lines = [

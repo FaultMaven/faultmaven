@@ -42,7 +42,7 @@ class VisualEvidenceExtractor:
         # Phase 3 implementation will use 1 LLM call per image
         return 0  # Placeholder returns 0
 
-    def extract(self, content: str, filename: Optional[str] = None) -> str:
+    def extract(self, content: str, filename: str | None = None) -> str:
         """
         Extract information from visual evidence
 

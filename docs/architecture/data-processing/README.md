@@ -47,7 +47,7 @@ All documents in this section share a single DataType taxonomy:
 
 ### Data Preprocessing
 
-- **[Data Preprocessing Design Specification v4.1](./data-preprocessing-design-specification.md)** — Core four-tier preprocessing architecture. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors), Tier 2 mechanical search (`search_file`), Tier 3 deep LLM analysis (`deep_analyze_file`), Tier 4 on-demand vectorization, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, and evidence form determination.
+- **[Data Preprocessing Design Specification v4.2](./data-preprocessing-design-specification.md)** — Core four-tier preprocessing architecture. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), Tier 2 mechanical search (`search_file` with two-pass keyword matching and zero-result vocabulary recovery), Tier 3 deep LLM analysis (`deep_analyze_file`), Tier 4 on-demand vectorization, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and tier-escalation hardening (R3 coverage gap detection, R4 auto-escalation, R5 context budgeting).
 
 - **[Data Classification Strategy v2.0](./data-classification-strategy.md)** — Tier 0 classification rules. Multi-level pattern matching (Level 1-3 heuristics, Level 4 contextual, optional Level 5 LLM), disambiguation strategies, confidence scoring, and command output detection.
 
@@ -69,7 +69,7 @@ All documents in this section share a single DataType taxonomy:
 |-----------|--------|-------|
 | Unified Ingestion Pipeline | **Implemented** | `POST /cases/{id}/turns` — two-step pipeline (preprocess → LLM). Old `/queries` and `/data` endpoints deleted. |
 | Tier 0+1: Structural Indexing | **Implemented** | 12 detailed types, 11 extractors, best-effort fallback. Pasted text routed through same pipeline. |
-| Tier 2: Mechanical Search | **Implemented** | `search_file` agent tool — keyword/regex/extractor re-run on raw files |
+| Tier 2: Mechanical Search | **Implemented** | `search_file` agent tool — two-pass keyword search (ALL→partial fallback), regex, extractor re-run. Zero-result vocabulary recovery. |
 | Tier 3: Deep LLM Analysis | Partial | `deep_analyze_file` tool; pluggable backend interface defined, limited backends. Config renamed to `DEEP_ANALYSIS_*`. |
 | Tier 4: Vectorization | **Implemented** | On-demand via `vectorize_file` tool (was eager background in v3.2) |
 | Context Sliding Window | **Implemented** | Structural indexes included in LLM context (Tier A: recent full, Tier B: older summary, Tier C: user text summary) |
@@ -77,4 +77,6 @@ All documents in this section share a single DataType taxonomy:
 | Evidence Classification | **Implemented** | Single-phase creation with LLM evaluation |
 | Evidence Failure Modes | Design Complete | Async retry, orphan cleanup designed; deferred to post-MVP |
 | Platform-Specific Extractors | Planned | Future enhancement for SRE/DevOps tool parsing |
+| Coverage Metadata (Tier 1) | **Implemented** | All 10 extractors append `--- COVERAGE METADATA ---` with key-value pairs (Lines, Time range, Format, etc.) |
+| Tier-Escalation Hardening | **Implemented** | R3: coverage gap detection, R4: auto-escalation after 2 empty searches, R5: 30K char context budget with compression |
 | Pattern Learning System | Planned | Adaptive classification from user corrections (Phase 3) |

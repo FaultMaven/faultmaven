@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Dict, List, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -73,9 +74,22 @@ class ErrorReportExtractor:
         stack_frames = self._parse_stack_frames(content, language)
 
         # Generate summary
-        return self._generate_summary(
+        result = self._generate_summary(
             language, exception_type, exception_msg, stack_frames, content
         )
+
+        # Coverage metadata
+        root_cause = None
+        if stack_frames:
+            root_frame = stack_frames[-1]
+            root_cause = root_frame.get("file", root_frame.get("class_method", "?"))
+        result += format_coverage_metadata(
+            Language=language,
+            Exception=exception_type,
+            **{"Stack frames": len(stack_frames)},
+            **{"Root cause": root_cause},
+        )
+        return result
 
     def _detect_language(self, content: str) -> str:
         """Detect programming language from exception format"""
@@ -97,7 +111,7 @@ class ErrorReportExtractor:
 
         return "unknown"
 
-    def _parse_exception(self, content: str, language: str) -> Tuple[str, str]:
+    def _parse_exception(self, content: str, language: str) -> tuple[str, str]:
         """Parse exception type and message"""
         if language not in self.LANG_PATTERNS:
             return "Unknown", "Could not parse exception"
@@ -134,7 +148,7 @@ class ErrorReportExtractor:
 
         return "Unknown", "Could not parse exception"
 
-    def _parse_stack_frames(self, content: str, language: str) -> List[Dict]:
+    def _parse_stack_frames(self, content: str, language: str) -> list[dict]:
         """Parse stack trace frames"""
         if language not in self.LANG_PATTERNS:
             return []
@@ -218,7 +232,7 @@ class ErrorReportExtractor:
         language: str,
         exception_type: str,
         exception_msg: str,
-        stack_frames: List[Dict],
+        stack_frames: list[dict],
         full_content: str,
     ) -> str:
         """Generate actionable exception summary"""
@@ -281,7 +295,7 @@ class ErrorReportExtractor:
 
     def _get_fix_suggestions(
         self, exception_type: str, exception_msg: str, content: str
-    ) -> List[str]:
+    ) -> list[str]:
         """Generate fix suggestions based on exception type and message"""
         suggestions = []
 

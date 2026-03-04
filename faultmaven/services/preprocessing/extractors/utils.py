@@ -5,9 +5,12 @@ Provides:
 - Token budget constants
 - Input validation (empty/whitespace guard)
 - Output truncation (keep beginning + end, truncate middle)
+- Coverage metadata formatting and timestamp extraction
 """
 
-from typing import TYPE_CHECKING
+import re
+from datetime import UTC, datetime, timezone
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
@@ -63,3 +66,119 @@ def truncate_output(text: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS) -> s
     marker = f"\n\n... [Truncated {removed} characters for context budget] ...\n\n"
 
     return text[:keep_start] + marker + text[-keep_end:]
+
+
+# ---------------------------------------------------------------------------
+# Coverage metadata
+# ---------------------------------------------------------------------------
+
+COVERAGE_SEPARATOR = "\n\n--- COVERAGE METADATA ---\n"
+
+
+def format_coverage_metadata(**kwargs: object) -> str:
+    """Format coverage metadata as key-value pairs after the separator.
+
+    Keys with ``None`` values are omitted.  All other values are converted
+    to strings via ``str()``.
+    """
+    lines = [f"{key}: {value}" for key, value in kwargs.items() if value is not None]
+    return COVERAGE_SEPARATOR + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Timestamp extraction (for coverage time-range detection)
+# ---------------------------------------------------------------------------
+
+# Compiled once at import time — order matters (most specific first).
+_TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("iso8601_t", re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")),
+    ("iso8601", re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")),
+    (
+        "syslog_bsd",
+        re.compile(r"[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}"),
+    ),
+    ("epoch_ms", re.compile(r"\b(\d{13})\b")),
+    ("epoch_s", re.compile(r"\b(\d{10})\b")),
+]
+
+_SYSLOG_MONTHS = {
+    "Jan": 1,
+    "Feb": 2,
+    "Mar": 3,
+    "Apr": 4,
+    "May": 5,
+    "Jun": 6,
+    "Jul": 7,
+    "Aug": 8,
+    "Sep": 9,
+    "Oct": 10,
+    "Nov": 11,
+    "Dec": 12,
+}
+
+
+def extract_timestamp(line: str) -> datetime | None:
+    """Extract the first recognisable timestamp from *line*.
+
+    Supports ISO-8601 (with/without ``T``), syslog BSD, epoch seconds
+    and epoch milliseconds.  Returns ``None`` when no pattern matches.
+    """
+    for name, pat in _TS_PATTERNS:
+        m = pat.search(line)
+        if not m:
+            continue
+        try:
+            if name == "iso8601_t":
+                return datetime.fromisoformat(m.group(0))
+            if name == "iso8601":
+                return datetime.strptime(m.group(0), "%Y-%m-%d %H:%M:%S")
+            if name == "syslog_bsd":
+                parts = m.group(0).split()
+                month = _SYSLOG_MONTHS.get(parts[0], 1)
+                day = int(parts[1])
+                time_parts = parts[2].split(":")
+                return datetime(
+                    year=datetime.now(tz=UTC).year,
+                    month=month,
+                    day=day,
+                    hour=int(time_parts[0]),
+                    minute=int(time_parts[1]),
+                    second=int(time_parts[2]),
+                )
+            if name == "epoch_ms":
+                return datetime.fromtimestamp(int(m.group(1)) / 1000, tz=UTC)
+            if name == "epoch_s":
+                return datetime.fromtimestamp(int(m.group(1)), tz=UTC)
+        except (ValueError, OSError, OverflowError):
+            continue
+    return None
+
+
+def extract_time_range(content: str) -> dict[str, str]:
+    """Return ``{"Time range": "<start> to <end>"}`` from content.
+
+    Scans only the first 10 and last 10 lines for performance.
+    Returns ``{"Time range": "unknown"}`` when no timestamps are found.
+    """
+    lines = content.split("\n")
+    head = lines[:10]
+    tail = lines[-10:] if len(lines) > 10 else []
+
+    first_ts: datetime | None = None
+    for line in head:
+        first_ts = extract_timestamp(line)
+        if first_ts:
+            break
+
+    last_ts: datetime | None = None
+    for line in reversed(tail):
+        last_ts = extract_timestamp(line)
+        if last_ts:
+            break
+
+    if first_ts and last_ts:
+        fmt = "%Y-%m-%d %H:%M:%S"
+        return {"Time range": f"{first_ts.strftime(fmt)} to {last_ts.strftime(fmt)}"}
+    if first_ts:
+        return {"Time range": first_ts.strftime("%Y-%m-%d %H:%M:%S")}
+    return {"Time range": "unknown"}
