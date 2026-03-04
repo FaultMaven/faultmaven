@@ -7,11 +7,12 @@ No LLM calls required - pure JSON parsing and graph analysis.
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Dict, List
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+)
 
 
 class TraceDataExtractor:
@@ -35,6 +36,9 @@ class TraceDataExtractor:
         5. Extract error spans
         6. Generate natural language summary
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         try:
             trace_data = json.loads(content)
         except json.JSONDecodeError:
@@ -97,6 +101,7 @@ class TraceDataExtractor:
     def _extract_spans(self, trace_data: Dict) -> List[Dict]:
         """Extract spans from various trace formats"""
         spans = []
+        is_jaeger = False
 
         # OpenTelemetry format: {spans: [...]}
         if "spans" in trace_data:
@@ -104,6 +109,7 @@ class TraceDataExtractor:
 
         # Jaeger format: {data: [{spans: [...]}]}
         elif "data" in trace_data and isinstance(trace_data["data"], list):
+            is_jaeger = True
             if trace_data["data"] and "spans" in trace_data["data"][0]:
                 spans = trace_data["data"][0]["spans"]
 
@@ -114,11 +120,11 @@ class TraceDataExtractor:
                 {
                     "span_id": span.get("spanId") or span.get("spanID", "unknown"),
                     "parent_id": span.get("parentSpanId")
-                    or span.get("references", [{}])[0].get("spanID"),
+                    or (span.get("references") or [{}])[0].get("spanID"),
                     "operation": span.get("operationName")
                     or span.get("name", "unknown"),
                     "service": self._extract_service_name(span),
-                    "duration_ms": self._extract_duration_ms(span),
+                    "duration_ms": self._extract_duration_ms(span, is_jaeger=is_jaeger),
                     "has_error": self._check_error(span),
                 }
             )
@@ -143,21 +149,21 @@ class TraceDataExtractor:
 
         return "unknown"
 
-    def _extract_duration_ms(self, span: Dict) -> float:
-        """Extract duration in milliseconds from span"""
-        # OpenTelemetry format (nanoseconds)
-        if "duration" in span:
-            duration = span["duration"]
-            # Check if it's in nanoseconds (very large number)
-            if duration > 1000000:
-                return duration / 1000000  # Convert ns to ms
-            return duration
+    def _extract_duration_ms(self, span: Dict, is_jaeger: bool = False) -> float:
+        """Extract duration in milliseconds from span.
 
-        # Jaeger format (microseconds)
-        if "startTime" in span and "duration" in span:
-            return span["duration"] / 1000  # Convert μs to ms
+        Uses format-aware conversion instead of magnitude heuristic:
+        - Jaeger: durations are in microseconds
+        - OpenTelemetry: durations are in nanoseconds
+        """
+        if "duration" not in span:
+            return 0.0
 
-        return 0.0
+        duration = span["duration"]
+        if is_jaeger:
+            return duration / 1_000  # Jaeger: microseconds → ms
+        else:
+            return duration / 1_000_000  # OpenTelemetry: nanoseconds → ms
 
     def _check_error(self, span: Dict) -> bool:
         """Check if span has error"""
@@ -181,12 +187,78 @@ class TraceDataExtractor:
         return max(span["duration_ms"] for span in spans)
 
     def _find_critical_path(self, spans: List[Dict]) -> List[str]:
-        """Find the critical path (longest duration chain)"""
-        # Sort by duration descending
-        sorted_spans = sorted(spans, key=lambda x: x["duration_ms"], reverse=True)
+        """Find the critical path via parent-child graph traversal.
 
-        # Return top 3 slowest operations
-        return [f"{span['service']}.{span['operation']}" for span in sorted_spans[:3]]
+        Builds an adjacency graph from parent_id relationships and finds
+        the longest-duration path using DFS. Falls back to top-3-by-duration
+        if the graph is malformed (missing parents).
+        """
+        from collections import defaultdict
+
+        # Build adjacency: parent_id -> [child spans]
+        children = defaultdict(list)
+        span_map = {}
+        for span in spans:
+            span_map[span["span_id"]] = span
+            parent = span.get("parent_id")
+            if parent:
+                children[parent].append(span)
+
+        # Find root span(s) — no parent
+        roots = [s for s in spans if not s.get("parent_id")]
+        if not roots:
+            # Malformed graph — fall back to top 3 by duration
+            sorted_spans = sorted(spans, key=lambda x: x["duration_ms"], reverse=True)
+            return [f"{s['service']}.{s['operation']}" for s in sorted_spans[:3]]
+
+        # DFS: find path with longest total duration
+        visited = set()
+
+        def dfs(span_id):
+            if span_id in visited:
+                return (0.0, [])
+            visited.add(span_id)
+
+            span = span_map.get(span_id)
+            if not span:
+                return (0.0, [])
+
+            child_spans = children.get(span_id, [])
+            if not child_spans:
+                return (
+                    span["duration_ms"],
+                    [f"{span['service']}.{span['operation']}"],
+                )
+
+            best_duration = 0.0
+            best_path = []
+            for child in child_spans:
+                dur, path = dfs(child["span_id"])
+                if dur > best_duration:
+                    best_duration = dur
+                    best_path = path
+
+            return (
+                span["duration_ms"] + best_duration,
+                [f"{span['service']}.{span['operation']}"] + best_path,
+            )
+
+        # Try from each root, take longest
+        best_total = 0.0
+        best_critical_path = []
+        for root in roots:
+            visited.clear()
+            total, path = dfs(root["span_id"])
+            if total > best_total:
+                best_total = total
+                best_critical_path = path
+
+        if best_critical_path:
+            return best_critical_path
+
+        # Fallback
+        sorted_spans = sorted(spans, key=lambda x: x["duration_ms"], reverse=True)
+        return [f"{s['service']}.{s['operation']}" for s in sorted_spans[:3]]
 
     def _find_slow_spans(self, spans: List[Dict], total_duration: float) -> List[Dict]:
         """Find spans that take > 20% of total time"""

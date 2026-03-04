@@ -3,16 +3,29 @@ METRICS_AND_PERFORMANCE Extractor
 
 Analyzes quantitative performance data (CSV, JSON time-series) and detects
 anomalies using statistical methods. No LLM calls required.
+
+Uses prometheus_client for Prometheus text format parsing when available,
+falling back to regex-based parsing.
 """
 
+import csv
+import io
 import json
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+    truncate_output,
+)
+
+try:
+    from prometheus_client.parser import text_string_to_metric_families
+
+    PROMETHEUS_CLIENT_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_CLIENT_AVAILABLE = False
 
 
 class MetricsAndPerformanceExtractor:
@@ -43,6 +56,9 @@ class MetricsAndPerformanceExtractor:
         4. Detect anomalies (spikes, drops)
         5. Generate natural language summary
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Try to parse as different formats
         time_series = self._parse_metrics(content)
         csv_summary = self._summarize_csv_structure(content)
@@ -66,11 +82,7 @@ class MetricsAndPerformanceExtractor:
         if csv_summary:
             output += f"\n\n{csv_summary}"
 
-        # Safety truncation
-        if len(output) > self.MAX_OUTPUT_LENGTH:
-            output = output[: self.MAX_OUTPUT_LENGTH] + "\n\n... [Truncated for length]"
-
-        return output
+        return truncate_output(output)
 
     def _parse_metrics(
         self, content: str
@@ -163,6 +175,14 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
+    def _parse_csv_rows(self, content: str) -> Optional[List[List[str]]]:
+        """Parse CSV content using stdlib csv.reader (handles quoting correctly)."""
+        try:
+            reader = csv.reader(io.StringIO(content))
+            return [row for row in reader if row]
+        except csv.Error:
+            return None
+
     def _parse_csv_metrics(
         self, content: str
     ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
@@ -170,20 +190,21 @@ class MetricsAndPerformanceExtractor:
 
         Auto-detects which columns are numeric by sampling data rows,
         rather than assuming all non-first columns are numeric.
+        Uses csv.reader to correctly handle quoted fields.
         """
-        lines = content.strip().split("\n")
-        if len(lines) < 2:
+        rows = self._parse_csv_rows(content)
+        if not rows or len(rows) < 2:
             return None
 
         # Parse header
-        header = [col.strip() for col in lines[0].split(",")]
+        header = [col.strip() for col in rows[0]]
         if not header:
             return None
 
         # Sample up to 10 data rows to detect column types
         sample_rows = []
-        for line in lines[1 : min(len(lines), 12)]:
-            parts = [p.strip() for p in line.split(",")]
+        for row in rows[1 : min(len(rows), 12)]:
+            parts = [p.strip() for p in row]
             if len(parts) == len(header):
                 sample_rows.append(parts)
 
@@ -239,8 +260,8 @@ class MetricsAndPerformanceExtractor:
             header[i]: [] for i in metric_cols
         }
 
-        for line in lines[1:]:
-            parts = [p.strip() for p in line.split(",")]
+        for row in rows[1:]:
+            parts = [p.strip() for p in row]
             if len(parts) != len(header):
                 continue
 
@@ -261,8 +282,48 @@ class MetricsAndPerformanceExtractor:
     def _parse_prometheus_metrics(
         self, content: str
     ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
-        """Parse Prometheus text exposition format"""
-        result = {}
+        """Parse Prometheus text exposition format.
+
+        Uses prometheus_client library when available for label-preserving parsing,
+        falling back to regex-based parsing otherwise.
+        """
+        if PROMETHEUS_CLIENT_AVAILABLE:
+            result = self._parse_prometheus_with_library(content)
+            if result:
+                return result
+
+        return self._parse_prometheus_regex(content)
+
+    def _parse_prometheus_with_library(
+        self, content: str
+    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+        """Parse Prometheus metrics using prometheus_client library."""
+        try:
+            result: Dict[str, List[Tuple[Optional[str], float]]] = {}
+            for family in text_string_to_metric_families(content):
+                for sample in family.samples:
+                    # Include labels in metric name for differentiation
+                    if sample.labels:
+                        label_str = ",".join(
+                            f"{k}={v}" for k, v in sorted(sample.labels.items())
+                        )
+                        metric_key = f"{sample.name}{{{label_str}}}"
+                    else:
+                        metric_key = sample.name
+
+                    if metric_key not in result:
+                        result[metric_key] = []
+                    result[metric_key].append((None, float(sample.value)))
+
+            return result if result else None
+        except Exception:
+            return None
+
+    def _parse_prometheus_regex(
+        self, content: str
+    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+        """Parse Prometheus metrics using regex (fallback)."""
+        result: Dict[str, List[Tuple[Optional[str], float]]] = {}
 
         # Match lines like: metric_name{labels} value timestamp
         pattern = r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([\d.eE+-]+)"
@@ -286,29 +347,29 @@ class MetricsAndPerformanceExtractor:
 
     def _summarize_csv_structure(self, content: str) -> Optional[str]:
         """Produce a structural summary for valid CSVs with no numeric metrics columns."""
-        lines = content.strip().split("\n")
-        if len(lines) < 2:
+        rows = self._parse_csv_rows(content)
+        if not rows or len(rows) < 2:
             return None
 
-        header = [col.strip() for col in lines[0].split(",")]
+        header = [col.strip() for col in rows[0]]
         if len(header) < 2:
             return None
 
         # Verify it's a valid CSV by checking at least some rows match the header count
         valid_rows = 0
-        for line in lines[1:]:
-            if len(line.split(",")) == len(header):
+        for row in rows[1:]:
+            if len(row) == len(header):
                 valid_rows += 1
 
         if valid_rows == 0:
             return None
 
-        total_rows = len(lines) - 1
+        total_rows = len(rows) - 1
 
         # Collect value distributions for categorical columns (sample first 200 rows)
         col_values: Dict[str, Dict[str, int]] = {col: {} for col in header}
-        for line in lines[1 : min(len(lines), 202)]:
-            parts = [p.strip() for p in line.split(",")]
+        for row in rows[1 : min(len(rows), 202)]:
+            parts = [p.strip() for p in row]
             if len(parts) != len(header):
                 continue
             for i, val in enumerate(parts):

@@ -7,11 +7,12 @@ No LLM calls required - pure tabular parsing and threshold-based analysis.
 """
 
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+)
 
 
 class CommandOutputExtractor:
@@ -41,6 +42,9 @@ class CommandOutputExtractor:
         4. Rank issues by severity
         5. Generate actionable summary
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Detect command type
         command_type = self._detect_command_type(content)
 
@@ -284,8 +288,129 @@ class CommandOutputExtractor:
         return "\n".join(summary)
 
     def _parse_iostat(self, content: str) -> str:
-        """Parse iostat command output"""
-        return "I/O Statistics (iostat command)\n\n" + content[:500]
+        """Parse iostat -x command output.
+
+        Extracts avg-cpu summary and per-device I/O statistics.
+        Flags devices with high utilization (>80%) or high await (>20ms).
+        """
+        lines = content.split("\n")
+
+        summary = ["I/O Statistics (iostat command)", ""]
+
+        # Parse avg-cpu section
+        cpu_line = None
+        for i, line in enumerate(lines):
+            if "avg-cpu" in line:
+                # Next non-empty line has the values
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if lines[j].strip():
+                        cpu_line = lines[j].strip()
+                        break
+                break
+
+        if cpu_line:
+            parts = cpu_line.split()
+            if len(parts) >= 6:
+                summary.append(
+                    f"CPU: {parts[0]}% user, {parts[2]}% system, {parts[5]}% idle"
+                )
+                summary.append("")
+
+        # Parse device stats table
+        header_idx = None
+        for i, line in enumerate(lines):
+            if re.search(r"Device\b", line) and (
+                "tps" in line or "r/s" in line or "w/s" in line or "util" in line
+            ):
+                header_idx = i
+                break
+
+        if header_idx is None:
+            summary.append("No device statistics found")
+            return "\n".join(summary)
+
+        header_parts = lines[header_idx].split()
+        # Find column indices for key metrics
+        col_map = {}
+        for idx, col in enumerate(header_parts):
+            col_lower = col.lower().replace("%", "")
+            if col_lower in ("tps",):
+                col_map["tps"] = idx
+            elif col_lower in ("await",):
+                col_map["await"] = idx
+            elif col_lower in ("util", "%util"):
+                col_map["util"] = idx
+            elif (
+                "kb_read" in col_lower or "rkb/s" in col_lower or "r_await" in col_lower
+            ):
+                if "r_await" in col_lower:
+                    col_map["r_await"] = idx
+            elif "kb_wrtn" in col_lower or "wkb/s" in col_lower:
+                pass
+
+        devices = []
+        anomalies = []
+        for line in lines[header_idx + 1 :]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) < len(header_parts):
+                continue
+
+            device_name = parts[0]
+            device_info = {"name": device_name}
+
+            tps_idx = col_map.get("tps")
+            if tps_idx and tps_idx < len(parts):
+                try:
+                    device_info["tps"] = float(parts[tps_idx])
+                except ValueError:
+                    pass
+
+            await_idx = col_map.get("await")
+            if await_idx and await_idx < len(parts):
+                try:
+                    device_info["await"] = float(parts[await_idx])
+                    if device_info["await"] > 20:
+                        anomalies.append(
+                            f"{device_name}: await={device_info['await']:.1f}ms (>20ms)"
+                        )
+                except ValueError:
+                    pass
+
+            util_idx = col_map.get("util")
+            if util_idx and util_idx < len(parts):
+                try:
+                    device_info["util"] = float(parts[util_idx])
+                    if device_info["util"] > 80:
+                        anomalies.append(
+                            f"{device_name}: %util={device_info['util']:.1f}% (>80%)"
+                        )
+                except ValueError:
+                    pass
+
+            devices.append(device_info)
+
+        if devices:
+            summary.append(f"Devices: {len(devices)}")
+            for d in devices:
+                parts_str = []
+                if "tps" in d:
+                    parts_str.append(f"tps={d['tps']:.1f}")
+                if "await" in d:
+                    parts_str.append(f"await={d['await']:.1f}ms")
+                if "util" in d:
+                    parts_str.append(f"%util={d['util']:.1f}%")
+                summary.append(f"  - {d['name']}: {', '.join(parts_str)}")
+
+        if anomalies:
+            summary.append("")
+            summary.append(f"Anomalies ({len(anomalies)}):")
+            for a in anomalies:
+                summary.append(f"  - {a}")
+
+        return "\n".join(summary)
 
     def _parse_netstat(self, content: str) -> str:
         """Parse netstat command output"""
@@ -368,8 +493,91 @@ class CommandOutputExtractor:
         return "Memory Usage (free command)\n\n" + content[:200]
 
     def _parse_vmstat(self, content: str) -> str:
-        """Parse vmstat command output"""
-        return "Virtual Memory Statistics (vmstat command)\n\n" + content[:500]
+        """Parse vmstat command output.
+
+        Extracts process, memory, swap, I/O, system, and CPU statistics.
+        Flags swap activity (si/so > 0), high I/O wait (>20%), blocked procs.
+        """
+        lines = content.split("\n")
+
+        summary = ["Virtual Memory Statistics (vmstat command)", ""]
+
+        # Find the column header line (r, b, swpd, free, ...)
+        header_idx = None
+        for i, line in enumerate(lines):
+            if re.search(r"\br\b.*\bb\b.*\bswpd\b", line):
+                header_idx = i
+                break
+
+        if header_idx is None:
+            summary.append("Unable to parse vmstat header")
+            return "\n".join(summary)
+
+        header_parts = lines[header_idx].split()
+        col_map = {col: idx for idx, col in enumerate(header_parts)}
+
+        # Parse data rows (may be multiple samples)
+        data_rows = []
+        for line in lines[header_idx + 1 :]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= len(header_parts):
+                try:
+                    row = {col: int(parts[idx]) for col, idx in col_map.items()}
+                    data_rows.append(row)
+                except (ValueError, IndexError):
+                    continue
+
+        if not data_rows:
+            summary.append("No data rows found")
+            return "\n".join(summary)
+
+        # Use last row as current state
+        latest = data_rows[-1]
+
+        anomalies = []
+
+        # Procs
+        r_val = latest.get("r", 0)
+        b_val = latest.get("b", 0)
+        summary.append(f"Procs: {r_val} running, {b_val} blocked")
+        if b_val > 0:
+            anomalies.append(f"{b_val} blocked process(es)")
+
+        # Memory
+        swpd = latest.get("swpd", 0)
+        free = latest.get("free", 0)
+        buff = latest.get("buff", 0)
+        cache = latest.get("cache", 0)
+        summary.append(
+            f"Memory: free={free}K, buff={buff}K, cache={cache}K, swpd={swpd}K"
+        )
+
+        # Swap activity
+        si = latest.get("si", 0)
+        so = latest.get("so", 0)
+        if si > 0 or so > 0:
+            summary.append(f"Swap: si={si}K/s, so={so}K/s")
+            anomalies.append(f"swap activity detected (si={si}, so={so})")
+
+        # CPU
+        us = latest.get("us", 0)
+        sy = latest.get("sy", 0)
+        idle = latest.get("id", 0)
+        wa = latest.get("wa", 0)
+        summary.append(f"CPU: {us}% user, {sy}% system, {wa}% wait, {idle}% idle")
+        if wa > 20:
+            anomalies.append(f"high I/O wait: {wa}%")
+
+        if anomalies:
+            summary.append("")
+            summary.append(f"Anomalies ({len(anomalies)}):")
+            for a in anomalies:
+                summary.append(f"  - {a}")
+
+        return "\n".join(summary)
 
     def _fallback_extraction(self, content: str) -> str:
         """Fallback for unknown command output"""

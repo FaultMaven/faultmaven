@@ -3,15 +3,34 @@ SOURCE_CODE Extractor
 
 Analyzes source code files using AST parsing and pattern matching to extract
 key information (functions, classes, imports, error handling). No LLM calls.
+
+Uses tree-sitter for multi-language parsing when available, falling back to
+regex-based pattern matching.
 """
 
 import ast
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+    truncate_output,
+)
+
+try:
+    import tree_sitter as _ts
+    import tree_sitter_c as _tsc
+    import tree_sitter_go as _tsgo
+    import tree_sitter_java as _tsjava
+    import tree_sitter_javascript as _tsjs
+    import tree_sitter_python as _tspy
+    import tree_sitter_rust as _tsrust
+    import tree_sitter_typescript as _tsts
+
+    TREE_SITTER_AVAILABLE = True
+except ImportError:
+    TREE_SITTER_AVAILABLE = False
 
 
 class SourceCodeExtractor:
@@ -45,6 +64,9 @@ class SourceCodeExtractor:
            - TODOs and FIXMEs
         4. Format as structured summary
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Try Python AST parsing first
         python_result = self._parse_python_ast(content)
         if python_result:
@@ -250,17 +272,309 @@ class SourceCodeExtractor:
 
         output = "\n".join(lines)
 
-        if len(output) > self.MAX_OUTPUT_CHARS:
-            return output[: self.MAX_OUTPUT_CHARS] + "\n... [Truncated for length]"
-
-        return output
+        return truncate_output(output)
 
     def _pattern_based_extraction(self, content: str) -> str:
         """
-        Pattern-based extraction for non-Python languages
+        Extraction for non-Python languages.
 
-        Supports: JavaScript, TypeScript, Java, Go, Rust, C/C++
+        Uses tree-sitter when available for accurate AST-based extraction,
+        falling back to regex patterns otherwise.
         """
+        if TREE_SITTER_AVAILABLE:
+            result = self._tree_sitter_extraction(content)
+            if result:
+                return result
+
+        # Fallback to regex-based extraction
+        return self._regex_based_extraction(content)
+
+    # --- tree-sitter integration ---
+
+    _ts_parsers: Dict[str, Any] = {}  # Lazy-loaded parsers
+
+    def _get_ts_parser(self, lang_name: str) -> Optional[Any]:
+        """Get or lazily create a tree-sitter parser for the given language."""
+        if not TREE_SITTER_AVAILABLE:
+            return None
+        if lang_name in self._ts_parsers:
+            return self._ts_parsers[lang_name]
+
+        lang_factories = {
+            "javascript": lambda: _ts.Language(_tsjs.language()),
+            "typescript": lambda: _ts.Language(_tsts.language_typescript()),
+            "java": lambda: _ts.Language(_tsjava.language()),
+            "go": lambda: _ts.Language(_tsgo.language()),
+            "rust": lambda: _ts.Language(_tsrust.language()),
+            "c": lambda: _ts.Language(_tsc.language()),
+            "python": lambda: _ts.Language(_tspy.language()),
+        }
+
+        factory = lang_factories.get(lang_name)
+        if not factory:
+            return None
+        try:
+            lang = factory()
+            parser = _ts.Parser(lang)
+            self._ts_parsers[lang_name] = parser
+            return parser
+        except Exception:
+            return None
+
+    def _tree_sitter_extraction(self, content: str) -> Optional[str]:
+        """Try tree-sitter extraction across supported languages."""
+        source = content.encode("utf-8", errors="replace")
+
+        # Detect language by trying each parser — use error count heuristic
+        lang_name, tree = self._detect_language_tree_sitter(source)
+        if not lang_name or not tree:
+            return None
+
+        display_names = {
+            "javascript": "JavaScript",
+            "typescript": "TypeScript",
+            "java": "Java",
+            "go": "Go",
+            "rust": "Rust",
+            "c": "C/C++",
+        }
+
+        root = tree.root_node
+        info = self._extract_with_tree_sitter(root, lang_name, source)
+
+        lines = ["=== SOURCE CODE ANALYSIS (tree-sitter) ===\n"]
+        lines.append(f"Detected Language: {display_names.get(lang_name, lang_name)}\n")
+
+        if info["imports"]:
+            lines.append(f"## Imports/Includes ({len(info['imports'])})")
+            for imp in info["imports"][:15]:
+                lines.append(f"  {imp}")
+            if len(info["imports"]) > 15:
+                lines.append(f"  ... and {len(info['imports']) - 15} more")
+            lines.append("")
+
+        if info["classes"]:
+            lines.append(f"## Classes/Structs ({len(info['classes'])})")
+            for cls in info["classes"][:10]:
+                lines.append(f"  • {cls}")
+            lines.append("")
+
+        if info["functions"]:
+            lines.append(f"## Functions ({len(info['functions'])})")
+            for func in info["functions"][:15]:
+                lines.append(f"  • {func}")
+            lines.append("")
+
+        if info["error_handling"]:
+            lines.append(f"## Error Handling ({len(info['error_handling'])})")
+            for eh in info["error_handling"][:10]:
+                lines.append(f"  • {eh}")
+            lines.append("")
+
+        if info["todos"]:
+            lines.append(f"## TODOs/FIXMEs ({len(info['todos'])})")
+            for todo in info["todos"][:10]:
+                lines.append(f"  • {todo}")
+            lines.append("")
+
+        output = "\n".join(lines)
+        return truncate_output(output)
+
+    def _detect_language_tree_sitter(
+        self, source: bytes
+    ) -> Tuple[Optional[str], Optional[Any]]:
+        """Detect language by parsing with each grammar, choosing the one with fewest errors."""
+        # Try languages in order of likelihood (skip Python — handled by AST path)
+        candidates = ["javascript", "typescript", "java", "go", "rust", "c"]
+        best_lang = None
+        best_tree = None
+        best_error_count = float("inf")
+
+        for lang_name in candidates:
+            parser = self._get_ts_parser(lang_name)
+            if not parser:
+                continue
+            try:
+                tree = parser.parse(source)
+                errors = self._count_errors(tree.root_node)
+                # Accept if zero errors, or track best
+                if errors == 0:
+                    return lang_name, tree
+                if errors < best_error_count:
+                    best_error_count = errors
+                    best_lang = lang_name
+                    best_tree = tree
+            except Exception:
+                continue
+
+        # Accept best if it has fewer errors than 30% of nodes
+        if best_tree and best_lang:
+            total = self._count_nodes(best_tree.root_node)
+            if total > 0 and best_error_count / total < 0.3:
+                return best_lang, best_tree
+
+        return None, None
+
+    def _count_errors(self, node: Any) -> int:
+        """Count ERROR nodes in the tree."""
+        count = 1 if node.type == "ERROR" else 0
+        for child in node.children:
+            count += self._count_errors(child)
+        return count
+
+    def _count_nodes(self, node: Any) -> int:
+        """Count total nodes in the tree."""
+        count = 1
+        for child in node.children:
+            count += self._count_nodes(child)
+        return count
+
+    def _collect_by_type(self, node: Any, type_name: str) -> List[Any]:
+        """Collect all descendant nodes matching a type."""
+        results = []
+        if node.type == type_name:
+            results.append(node)
+        for child in node.children:
+            results.extend(self._collect_by_type(child, type_name))
+        return results
+
+    def _extract_ts_function_name(self, node: Any) -> Optional[str]:
+        """Extract function name from a tree-sitter node.
+
+        Handles C/C++ where name is nested inside declarator→declarator.
+        """
+        # Direct name field (most languages)
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            return name_node.text.decode()
+
+        # C/C++: function_definition → declarator (function_declarator) → declarator (identifier)
+        declarator = node.child_by_field_name("declarator")
+        if declarator:
+            inner = declarator.child_by_field_name("declarator")
+            if inner and inner.type == "identifier":
+                return inner.text.decode()
+
+        return None
+
+    def _extract_with_tree_sitter(
+        self, root: Any, lang_name: str, source: bytes
+    ) -> Dict[str, List[str]]:
+        """Extract imports, classes, functions, error handling, TODOs from tree."""
+        # Language-specific node type mappings
+        import_types = {
+            "javascript": ["import_statement"],
+            "typescript": ["import_statement"],
+            "java": ["import_declaration"],
+            "go": ["import_spec"],
+            "rust": ["use_declaration"],
+            "c": ["preproc_include"],
+        }
+        class_types = {
+            "javascript": ["class_declaration"],
+            "typescript": ["class_declaration", "interface_declaration"],
+            "java": ["class_declaration", "interface_declaration"],
+            "go": ["type_declaration"],
+            "rust": ["struct_item", "enum_item"],
+            "c": ["struct_specifier"],
+        }
+        function_types = {
+            "javascript": ["function_declaration", "method_definition"],
+            "typescript": ["function_declaration", "method_definition"],
+            "java": ["method_declaration"],
+            "go": ["function_declaration", "method_declaration"],
+            "rust": ["function_item"],
+            "c": ["function_definition"],
+        }
+        error_types = {
+            "javascript": ["try_statement"],
+            "typescript": ["try_statement"],
+            "java": ["try_statement"],
+            "go": [],  # Go uses if err != nil — handled separately
+            "rust": [],  # Rust uses ? and Result — handled separately
+            "c": [],
+        }
+
+        result: Dict[str, List[str]] = {
+            "imports": [],
+            "classes": [],
+            "functions": [],
+            "error_handling": [],
+            "todos": [],
+        }
+
+        # Imports
+        for type_name in import_types.get(lang_name, []):
+            for node in self._collect_by_type(root, type_name):
+                text = node.text.decode("utf-8", errors="replace").strip()
+                result["imports"].append(text)
+
+        # Classes/Structs
+        for type_name in class_types.get(lang_name, []):
+            for node in self._collect_by_type(root, type_name):
+                name_node = node.child_by_field_name("name")
+                name = (
+                    name_node.text.decode()
+                    if name_node
+                    else (
+                        node.text.decode().split()[1]
+                        if len(node.text.decode().split()) > 1
+                        else "?"
+                    )
+                )
+                result["classes"].append(name)
+
+        # Functions
+        for type_name in function_types.get(lang_name, []):
+            for node in self._collect_by_type(root, type_name):
+                name = self._extract_ts_function_name(node)
+                if name:
+                    result["functions"].append(name)
+
+        # Error handling
+        for type_name in error_types.get(lang_name, []):
+            for node in self._collect_by_type(root, type_name):
+                result["error_handling"].append(
+                    f"try/catch at line {node.start_point.row + 1}"
+                )
+
+        # Go error handling: count `if err != nil` patterns
+        if lang_name == "go":
+            if_nodes = self._collect_by_type(root, "if_statement")
+            err_checks = 0
+            for node in if_nodes:
+                text = node.text.decode("utf-8", errors="replace")
+                if "err" in text and "nil" in text:
+                    err_checks += 1
+            if err_checks > 0:
+                result["error_handling"].append(f"{err_checks} error checks found")
+
+        # Rust error handling: count ? operators and .unwrap() calls
+        if lang_name == "rust":
+            full_text = source.decode("utf-8", errors="replace")
+            q_count = full_text.count("?")
+            unwrap_count = len(re.findall(r"\.unwrap\(\)", full_text))
+            expect_count = len(re.findall(r"\.expect\(", full_text))
+            total = q_count + unwrap_count + expect_count
+            if total > 0:
+                result["error_handling"].append(
+                    f"{total} error handling patterns found"
+                )
+
+        # TODOs/FIXMEs from comments
+        for node in self._collect_by_type(root, "comment"):
+            text = node.text.decode("utf-8", errors="replace")
+            if re.search(r"(TODO|FIXME|XXX|HACK):", text, re.IGNORECASE):
+                result["todos"].append(
+                    f"Line {node.start_point.row + 1}: {text.strip()}"
+                )
+
+        return result
+
+    # --- Regex fallback (original pattern-based extraction) ---
+
+    def _regex_based_extraction(self, content: str) -> str:
+        """Regex-based extraction for non-Python languages (fallback)."""
         lines = ["=== SOURCE CODE ANALYSIS (Pattern-based) ===\n"]
 
         # Detect language
@@ -306,10 +620,7 @@ class SourceCodeExtractor:
 
         output = "\n".join(lines)
 
-        if len(output) > self.MAX_OUTPUT_CHARS:
-            return output[: self.MAX_OUTPUT_CHARS] + "\n... [Truncated for length]"
-
-        return output
+        return truncate_output(output)
 
     def _detect_language(self, content: str) -> str:
         """Detect programming language from content patterns"""

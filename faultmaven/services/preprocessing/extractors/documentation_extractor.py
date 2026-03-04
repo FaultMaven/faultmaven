@@ -7,11 +7,12 @@ No LLM calls required - pure markdown/text parsing.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+)
 
 
 class DocumentationExtractor:
@@ -35,6 +36,9 @@ class DocumentationExtractor:
         5. Extract code blocks and commands
         6. Generate structured summary
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Detect format
         is_markdown = self._is_markdown(content)
 
@@ -207,7 +211,9 @@ class DocumentationExtractor:
             "go",
         ]
 
-        return any(text.lower().startswith(cmd) for cmd in command_indicators)
+        if len(text) <= 5:
+            return False  # Skip trivial inline code like `true`, `null`
+        return any(cmd in text.lower() for cmd in command_indicators)
 
     def _find_troubleshooting_sections(self, sections: List[Dict]) -> List[Dict]:
         """Identify sections related to troubleshooting"""

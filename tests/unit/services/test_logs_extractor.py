@@ -137,6 +137,18 @@ class TestLogsAndErrorsExtractor:
         assert "panic" in result.lower()
         assert "CRIME SCENE" in result
 
+    def test_severity_ordering_critical_over_warning(self, extractor):
+        """R4.4: Line containing both WARNING and CRITICAL should classify as CRITICAL."""
+        log_lines = (
+            ["INFO: Normal"] * 20
+            + ["WARNING: CRITICAL failure in subsystem"]
+            + ["INFO: Normal"] * 20
+        )
+        content = "\n".join(log_lines)
+        result = extractor.extract(content)
+        # The line matches both WARNING and CRITICAL — CRITICAL (severity 90) should win
+        assert "Single CRITICAL" in result
+
     def test_properties(self, extractor):
         """Test extractor properties"""
         assert extractor.strategy_name == "crime_scene"

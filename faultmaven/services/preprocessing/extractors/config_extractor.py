@@ -3,15 +3,55 @@ STRUCTURED_CONFIG Extractor
 
 Parses configuration files (YAML, JSON, TOML, INI, .env) and extracts
 key settings while redacting secrets. No LLM calls required.
+
+Uses detect-secrets for enhanced secret detection when available,
+falling back to regex patterns.
 """
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+    truncate_output,
+)
+
+try:
+    from detect_secrets import settings as _ds_settings
+    from detect_secrets.core.scan import scan_line as _ds_scan_line
+
+    DETECT_SECRETS_AVAILABLE = True
+except ImportError:
+    DETECT_SECRETS_AVAILABLE = False
+
+# detect-secrets plugin config: only structured-pattern detectors (no entropy-based)
+_DS_PLUGINS = {
+    "plugins_used": [
+        {"name": "ArtifactoryDetector"},
+        {"name": "AWSKeyDetector"},
+        {"name": "AzureStorageKeyDetector"},
+        {"name": "BasicAuthDetector"},
+        {"name": "CloudantDetector"},
+        {"name": "DiscordBotTokenDetector"},
+        {"name": "GitHubTokenDetector"},
+        {"name": "GitLabTokenDetector"},
+        {"name": "IbmCloudIamDetector"},
+        {"name": "IbmCosHmacDetector"},
+        {"name": "JwtTokenDetector"},
+        {"name": "MailchimpDetector"},
+        {"name": "NpmDetector"},
+        {"name": "OpenAIDetector"},
+        {"name": "SendGridDetector"},
+        {"name": "SlackDetector"},
+        {"name": "SoftlayerDetector"},
+        {"name": "SquareOAuthDetector"},
+        {"name": "StripeDetector"},
+        {"name": "TelegramBotTokenDetector"},
+        {"name": "TwilioKeyDetector"},
+    ]
+}
 
 
 class StructuredConfigExtractor:
@@ -57,6 +97,9 @@ class StructuredConfigExtractor:
         3. Redact secrets
         4. Format output
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Try to detect format and parse
         config_data = self._parse_config(content)
 
@@ -168,7 +211,7 @@ class StructuredConfigExtractor:
             if self._is_secret_key(path):
                 return "[REDACTED]"
             # Check if value looks like a secret
-            if self._is_secret_value(data):
+            if self._is_secret_value(data, key_path=path):
                 return "[REDACTED]"
             return data
         else:
@@ -179,13 +222,32 @@ class StructuredConfigExtractor:
         key_lower = key_path.lower()
         return any(re.search(pattern, key_lower) for pattern in self.SECRET_PATTERNS)
 
-    def _is_secret_value(self, value: str) -> bool:
-        """Check if value looks like a secret"""
+    def _is_secret_value(self, value: str, key_path: str = "") -> bool:
+        """Check if value looks like a secret.
+
+        Uses regex patterns as fast first-pass, then detect-secrets
+        as second-pass for structured API token detection.
+        """
         # Don't redact short values
         if len(value) < 16:
             return False
 
-        return any(re.match(pattern, value) for pattern in self.SECRET_VALUE_PATTERNS)
+        # First pass: regex patterns
+        if any(re.match(pattern, value) for pattern in self.SECRET_VALUE_PATTERNS):
+            return True
+
+        # Second pass: detect-secrets (structured token detectors only)
+        if DETECT_SECRETS_AVAILABLE:
+            try:
+                with _ds_settings.transient_settings(_DS_PLUGINS):
+                    synthetic_line = f"{key_path}={value}" if key_path else value
+                    results = list(_ds_scan_line(synthetic_line))
+                    if results:
+                        return True
+            except Exception:
+                pass
+
+        return False
 
     def _format_config(self, data: Any, indent: int = 0) -> str:
         """
@@ -220,13 +282,4 @@ class StructuredConfigExtractor:
 
         output = "\n".join(lines)
 
-        # Safety check: truncate if too long
-        output_lines = output.split("\n")
-        if len(output_lines) > self.MAX_OUTPUT_LINES:
-            truncated = "\n".join(output_lines[: self.MAX_OUTPUT_LINES])
-            truncated += (
-                f"\n\n... [Truncated {len(output_lines) - self.MAX_OUTPUT_LINES} lines]"
-            )
-            return truncated
-
-        return output
+        return truncate_output(output)

@@ -36,6 +36,7 @@ from faultmaven.services.preprocessing.extractors.metrics_extractor import (
 from faultmaven.services.preprocessing.extractors.profiling_extractor import (
     ProfilingDataExtractor,
 )
+from faultmaven.services.preprocessing.extractors.protocol import Extractor
 from faultmaven.services.preprocessing.extractors.source_code_extractor import (
     SourceCodeExtractor,
 )
@@ -50,6 +51,7 @@ from faultmaven.services.preprocessing.extractors.visual_extractor import (
 )
 
 __all__ = [
+    "Extractor",
     "LogsAndErrorsExtractor",
     "StructuredConfigExtractor",
     "MetricsAndPerformanceExtractor",

@@ -6,11 +6,12 @@ No LLM calls required - pure stack trace parsing and pattern matching.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+)
 
 
 class ErrorReportExtractor:
@@ -56,6 +57,9 @@ class ErrorReportExtractor:
         6. Extract variable values if present
         7. Generate actionable summary with fix suggestions
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Detect language
         language = self._detect_language(content)
 
@@ -186,6 +190,11 @@ class ErrorReportExtractor:
                         "is_user_code": self._is_user_code(match.group(1), language),
                     }
                 )
+
+        # Java, JavaScript, and Go list the most recent call FIRST (opposite of Python).
+        # Reverse so frames[-1] consistently points to the innermost (root cause) frame.
+        if language in ("java", "javascript", "go"):
+            frames.reverse()
 
         return frames
 

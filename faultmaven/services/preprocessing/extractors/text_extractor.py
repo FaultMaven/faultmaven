@@ -7,11 +7,13 @@ detection - no LLM calls required.
 """
 
 import re
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import List, Tuple
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+    truncate_output,
+)
 
 
 class UnstructuredTextExtractor:
@@ -45,6 +47,9 @@ class UnstructuredTextExtractor:
         3. Prioritize by relevance (errors > code > structure)
         4. Format for readability
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Detect structure type
         has_markdown = self._has_markdown_structure(content)
 
@@ -60,11 +65,7 @@ class UnstructuredTextExtractor:
         # Build output prioritizing errors and code
         output = self._format_output(errors, code_blocks, sections, content)
 
-        # Safety truncation
-        if len(output) > self.MAX_OUTPUT_CHARS:
-            output = output[: self.MAX_OUTPUT_CHARS] + "\n\n... [Truncated for length]"
-
-        return output
+        return truncate_output(output)
 
     def _has_markdown_structure(self, content: str) -> bool:
         """Detect if content uses markdown formatting"""
@@ -112,7 +113,9 @@ class UnstructuredTextExtractor:
 
         for i, line in enumerate(lines):
             line_lower = line.lower()
-            if any(kw in line_lower for kw in error_keywords):
+            if any(
+                re.search(rf"\b{re.escape(kw)}\b", line_lower) for kw in error_keywords
+            ):
                 # Extract error with context (±2 lines)
                 start = max(0, i - 2)
                 end = min(len(lines), i + 3)

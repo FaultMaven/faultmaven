@@ -6,11 +6,12 @@ No LLM calls required - pure parsing and statistical analysis.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+)
 
 
 class ProfilingDataExtractor:
@@ -40,6 +41,9 @@ class ProfilingDataExtractor:
         5. Detect recursive patterns
         6. Generate actionable summary
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         # Detect format
         prof_format = self._detect_format(content)
 
@@ -62,8 +66,10 @@ class ProfilingDataExtractor:
         if re.search(r"[\w\.]+(?:;[\w\.]+)+\s+\d+", content):
             return self.FORMAT_FLAME_GRAPH
 
-        # Check for perf format
+        # Check for perf format (perf stat or perf report)
         if re.search(r"Performance counter stats", content, re.IGNORECASE):
+            return self.FORMAT_PERF
+        if re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", content):
             return self.FORMAT_PERF
 
         return self.FORMAT_UNKNOWN
@@ -234,20 +240,129 @@ class ProfilingDataExtractor:
         return "\n".join(lines)
 
     def _extract_perf(self, content: str) -> str:
-        """Extract insights from perf stat output"""
+        """Extract insights from perf stat and perf report output.
+
+        perf stat: Parses counter lines, calculates IPC.
+        perf report: Parses overhead table for top functions.
+        """
+        if "Performance counter stats" in content:
+            return self._extract_perf_stat(content)
+        elif re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", content):
+            return self._extract_perf_report(content)
+        else:
+            # Fallback to basic extraction
+            lines = content.split("\n")
+            summary = ["Profiling Analysis (perf format)", "", "Performance Counters:"]
+            for line in lines:
+                if (
+                    "cycles" in line
+                    or "instructions" in line
+                    or "seconds time elapsed" in line
+                ):
+                    summary.append(f"  - {line.strip()}")
+            return "\n".join(summary)
+
+    def _extract_perf_stat(self, content: str) -> str:
+        """Parse perf stat output with IPC calculation."""
         lines = content.split("\n")
+        summary = ["Profiling Analysis (perf stat)", ""]
 
-        summary = ["Profiling Analysis (perf format)", "", "Performance Counters:"]
+        counters = {}
+        anomalies = []
 
-        # Extract key metrics
         for line in lines:
-            # Look for metric lines
-            if (
-                "cycles" in line
-                or "instructions" in line
-                or "seconds time elapsed" in line
-            ):
-                summary.append(f"  - {line.strip()}")
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("Performance"):
+                continue
+
+            # Match counter lines like: "1,234,567      cycles" or "1234567 instructions"
+            match = re.match(r"([\d,\.]+)\s+(\S+.*?)(?:\s+#.*)?$", line)
+            if match:
+                raw_value = match.group(1).replace(",", "")
+                counter_name = match.group(2).strip()
+                try:
+                    value = float(raw_value)
+                    counters[counter_name] = value
+                    summary.append(f"  {counter_name}: {int(value):,}")
+                except ValueError:
+                    pass
+
+            # Also capture "seconds time elapsed"
+            elapsed_match = re.search(r"([\d\.]+)\s+seconds time elapsed", line)
+            if elapsed_match:
+                elapsed = float(elapsed_match.group(1))
+                counters["elapsed"] = elapsed
+                summary.append(f"  Time elapsed: {elapsed:.3f}s")
+
+        # Calculate IPC
+        cycles = counters.get("cycles", 0)
+        instructions = counters.get("instructions", 0)
+        if cycles > 0 and instructions > 0:
+            ipc = instructions / cycles
+            summary.append("")
+            summary.append(f"IPC (Instructions Per Cycle): {ipc:.2f}")
+            if ipc < 1.0:
+                anomalies.append(f"low IPC ({ipc:.2f}) — possible memory stalls")
+
+        # Check cache miss rate
+        cache_refs = counters.get("cache-references", 0)
+        cache_misses = counters.get("cache-misses", 0)
+        if cache_refs > 0 and cache_misses > 0:
+            miss_rate = (cache_misses / cache_refs) * 100
+            summary.append(f"Cache miss rate: {miss_rate:.1f}%")
+            if miss_rate > 10:
+                anomalies.append(f"high cache-miss rate ({miss_rate:.1f}%)")
+
+        if anomalies:
+            summary.append("")
+            summary.append("Anomalies:")
+            for a in anomalies:
+                summary.append(f"  - {a}")
+
+        return "\n".join(summary)
+
+    def _extract_perf_report(self, content: str) -> str:
+        """Parse perf report output for top functions by overhead."""
+        lines = content.split("\n")
+        summary = ["Profiling Analysis (perf report)", ""]
+
+        # Find header line
+        header_idx = None
+        for i, line in enumerate(lines):
+            if re.search(r"Overhead\s+Command\s+Shared Object\s+Symbol", line):
+                header_idx = i
+                break
+
+        if header_idx is None:
+            summary.append("Unable to parse perf report header")
+            return "\n".join(summary)
+
+        # Parse function entries
+        functions = []
+        for line in lines[header_idx + 1 :]:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("-"):
+                continue
+            # Match: "12.34%  command  libfoo.so  [.] function_name"
+            match = re.match(r"([\d\.]+)%\s+(\S+)\s+(\S+)\s+\[.\]\s+(.+)", line)
+            if match:
+                functions.append(
+                    {
+                        "overhead": float(match.group(1)),
+                        "command": match.group(2),
+                        "shared_object": match.group(3),
+                        "symbol": match.group(4).strip(),
+                    }
+                )
+
+        if not functions:
+            summary.append("No function entries found")
+            return "\n".join(summary)
+
+        summary.append(f"Top Functions by Overhead ({len(functions)} total):")
+        for i, fn in enumerate(functions[:10], 1):
+            summary.append(f"  {i}. {fn['symbol']} ({fn['overhead']:.1f}%)")
+            summary.append(f"     {fn['shared_object']} [{fn['command']}]")
 
         return "\n".join(summary)
 

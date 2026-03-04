@@ -19,7 +19,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import Callable, Dict, Optional
 
 from faultmaven.core.preprocessing.models import (
     DuplicateFileError,
@@ -42,10 +42,7 @@ from faultmaven.services.preprocessing.classifier import DataClassifier
 from faultmaven.services.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.protocol import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +107,7 @@ class PreprocessingService:
         self.chunk_trigger_tokens = chunk_trigger_tokens
 
         # Extractor registry - all 11 data types
-        self.extractors = {
+        self.extractors: Dict[DataType, Extractor] = {
             DataType.LOGS_AND_ERRORS: logs_extractor,
         }
 

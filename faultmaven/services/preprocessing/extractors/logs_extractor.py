@@ -6,11 +6,12 @@ No LLM calls required - pure keyword-based extraction.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-# Interface imports for clean architecture compliance
-if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+from faultmaven.services.preprocessing.extractors.utils import (
+    EMPTY_CONTENT_RESPONSE,
+    has_content,
+)
 
 
 class LogsAndErrorsExtractor:
@@ -51,6 +52,9 @@ class LogsAndErrorsExtractor:
         4. Extract context with adaptive sizing
         5. Safety check: truncate if exceeds limit
         """
+        if not has_content(content):
+            return EMPTY_CONTENT_RESPONSE
+
         lines = content.split("\n")
 
         # 1. Find all errors with severity
@@ -91,9 +95,14 @@ class LogsAndErrorsExtractor:
         """
         errors = []
 
+        # Sort by severity descending so the highest-severity match wins per line
+        sorted_keywords = sorted(
+            self.SEVERITY_WEIGHTS.items(), key=lambda x: x[1], reverse=True
+        )
+
         for idx, line in enumerate(lines):
-            # Check each severity keyword
-            for keyword, severity in self.SEVERITY_WEIGHTS.items():
+            # Check each severity keyword (highest severity first)
+            for keyword, severity in sorted_keywords:
                 # Case-insensitive match with word boundary
                 pattern = rf"\b{re.escape(keyword)}\b"
                 if re.search(pattern, line, re.IGNORECASE):
