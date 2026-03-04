@@ -81,3 +81,29 @@ class TestBestEffortFallback:
             classification_failed=True,
         )
         assert result.source == "rule_based_best_effort"
+
+
+class TestCSVFallbackScoring:
+    """Test that CSVs without numeric data are not misclassified as METRICS."""
+
+    def test_non_numeric_csv_not_classified_as_metrics(self, classifier):
+        """A CSV reference table with no numeric columns should not be METRICS."""
+        # Simulates Linux_2k.log_templates.csv: 2-column EventId+EventTemplate table
+        content = "EventId,EventTemplate\n"
+        content += "E001,kernel: <*> <*> <*>\n"
+        content += "E002,session opened for user <*>\n"
+        content += "E003,Connection from <*> port <*>\n"
+        for i in range(4, 20):
+            content += f"E{i:03d},some log template pattern <*>\n"
+
+        result = classifier.classify("log_templates.csv", content)
+        assert result.data_type != DataType.METRICS_AND_PERFORMANCE
+
+    def test_numeric_csv_still_classified_as_metrics(self, classifier):
+        """A CSV with actual numeric metric columns should still be METRICS."""
+        content = "timestamp,cpu_usage,memory_mb,latency_ms\n"
+        for i in range(20):
+            content += f"2024-01-01T{i:02d}:00:00,{75+i*0.5},{1024+i*10},{150+i*2}\n"
+
+        result = classifier.classify("metrics.csv", content)
+        assert result.data_type == DataType.METRICS_AND_PERFORMANCE

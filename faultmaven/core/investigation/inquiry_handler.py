@@ -7,6 +7,7 @@ Reference: investigation-lifecycle-logic.md Section 1.2
 """
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Optional
 
@@ -56,7 +57,7 @@ async def handle_inquiry_turn(case: Case, user_message: str, llm_provider) -> st
         )
 
     # Check if user confirms statement
-    if _user_confirms(user_message):
+    if user_confirms(user_message):
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
         case.inquiry.decided_to_investigate = True
@@ -77,9 +78,13 @@ Is this what you want me to investigate?
 💡 Tip: Click a button or type to clarify"""
 
 
-def _user_confirms(user_message: str) -> bool:
+def user_confirms(user_message: str) -> bool:
     """
     Check if user is confirming the problem statement.
+
+    Uses word-boundary matching to avoid false positives (e.g., "started" ≠ "start").
+    Only triggers on short messages (< 100 chars) — long messages are providing
+    information, not confirming.
 
     Confirmation phrases:
     - "Yes", "Yes, investigate", "That's right"
@@ -88,10 +93,14 @@ def _user_confirms(user_message: str) -> bool:
     """
     message_lower = user_message.lower().strip()
 
+    # Long messages are providing information, not confirming
+    if len(message_lower) > 100:
+        return False
+
     confirmation_phrases = [
         "yes",
         "correct",
-        "right",
+        "that's right",
         "proceed",
         "investigate",
         "let's go",
@@ -100,9 +109,13 @@ def _user_confirms(user_message: str) -> bool:
         "start",
         "looks good",
         "sounds good",
+        "go ahead",
     ]
 
-    return any(phrase in message_lower for phrase in confirmation_phrases)
+    return any(
+        re.search(r"\b" + re.escape(phrase) + r"\b", message_lower)
+        for phrase in confirmation_phrases
+    )
 
 
 def _user_provides_corrections(user_message: str) -> bool:

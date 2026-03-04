@@ -1096,3 +1096,106 @@ class TestMilestoneEngine:
         assert updated_case.pending_transition is None
         # LLM should NOT be called (immediate return)
         assert not mock_llm.generate.called
+
+
+class TestMechanicalConfirmationFallback:
+    """Test that user_confirms() acts as a mechanical fallback when the LLM
+    fails to set user_confirmed_investigation=True in structured output."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_fires_when_llm_misses_confirmation(
+        self, mock_llm, mock_repo
+    ):
+        """LLM doesn't set user_confirmed_investigation but user says 'yes' → fallback triggers."""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test INQUIRY stuck",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+        )
+        case.inquiry.proposed_problem_statement = "API returning 503 errors"
+
+        # LLM response: does NOT set user_confirmed_investigation
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Let me confirm: your API is returning 503 errors?",
+                "state_updates": {},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(case, "yes, that's correct")
+
+        updated_case = result["case_updated"]
+        # Mechanical fallback should have caught "yes" and transitioned
+        assert updated_case.inquiry.problem_statement_confirmed is True
+        assert updated_case.inquiry.decided_to_investigate is True
+        assert updated_case.status == CaseStatus.INVESTIGATING
+
+    @pytest.mark.asyncio
+    async def test_fallback_does_not_fire_without_proposed_statement(
+        self, mock_llm, mock_repo
+    ):
+        """Fallback should not fire if there's no proposed_problem_statement."""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test no statement",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+        )
+        # No proposed_problem_statement set
+
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "What issue are you experiencing?",
+                "state_updates": {},
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(case, "yes")
+
+        updated_case = result["case_updated"]
+        # Should stay in INQUIRY — no statement to confirm
+        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.inquiry.problem_statement_confirmed is False
+
+    @pytest.mark.asyncio
+    async def test_llm_path_takes_priority_over_fallback(self, mock_llm, mock_repo):
+        """When LLM sets user_confirmed_investigation=True, the LLM path fires (not fallback)."""
+        engine = MilestoneEngine(mock_llm, mock_repo)
+
+        case = Case(
+            case_id="case_1234567890ab",
+            title="Test LLM priority",
+            status=CaseStatus.INQUIRY,
+            user_id="user_123",
+            organization_id="org_123",
+            description="",
+        )
+        case.inquiry.proposed_problem_statement = "Database connection drops"
+
+        # LLM correctly detects confirmation
+        mock_response_content = json.dumps(
+            {
+                "agent_response": "Starting investigation.",
+                "state_updates": {
+                    "user_confirmed_investigation": True,
+                },
+            }
+        )
+        mock_llm.generate.return_value = mock_response_content
+
+        result = await engine.process_turn(case, "yes, proceed")
+
+        updated_case = result["case_updated"]
+        assert updated_case.inquiry.problem_statement_confirmed is True
+        assert updated_case.status == CaseStatus.INVESTIGATING

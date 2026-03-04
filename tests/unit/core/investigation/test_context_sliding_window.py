@@ -32,6 +32,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceForm,
     EvidenceSourceType,
     InquiryData,
+    UploadedFile,
 )
 from faultmaven.modules.case.domain.models import Case
 
@@ -408,3 +409,115 @@ class TestMixedForms:
         for i in range(3):
             assert f"User observation {i}" in result
         # No structural_index tags expected for USER_TEXT-only cases
+
+
+# ============================================================
+# Filename Attribution
+# ============================================================
+
+
+class TestFilenameAttribution:
+    """Test that evidence XML tags include filename when source_file_id maps to an UploadedFile."""
+
+    def test_tier_a_evidence_includes_filename(self):
+        """Tier A evidence with source_file_id → filename attribute in XML."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Nginx access log errors",
+            preprocessed_content="ERROR: 503 at /api/health",
+            data_type="LOGS",
+            source_file_id="file_aabbccdd1122",
+        )
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id="file_aabbccdd1122",
+                filename="nginx-access.log",
+                size_bytes=5000,
+                data_type="LOGS_AND_ERRORS",
+                uploaded_at_turn=1,
+            )
+        ]
+        result = _build_evidence_context(case)
+
+        assert 'filename="nginx-access.log"' in result
+
+    def test_tier_b_evidence_includes_filename(self):
+        """Tier B (older) evidence with source_file_id → filename in XML."""
+        # Create 4 items: first 1 is older (Tier B), last 3 are recent (Tier A)
+        evidence = [
+            _make_evidence(
+                summary="Old app server log",
+                preprocessed_content="Old structural index",
+                source_file_id="file_aabb11223344",
+                collected_at_turn=1,
+            ),
+        ] + [
+            _make_evidence(
+                summary=f"Recent item {i}",
+                preprocessed_content=f"Structural {i}",
+                collected_at_turn=i + 2,
+            )
+            for i in range(3)
+        ]
+        case = _make_case_with_evidence(evidence)
+        case.uploaded_files = [
+            UploadedFile(
+                file_id="file_aabb11223344",
+                filename="app-server.log",
+                size_bytes=3000,
+                data_type="LOGS_AND_ERRORS",
+                uploaded_at_turn=1,
+            )
+        ]
+        result = _build_evidence_context(case)
+
+        assert 'filename="app-server.log"' in result
+
+    def test_no_filename_when_no_source_file_id(self):
+        """Evidence without source_file_id → no filename attribute."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="User pasted logs",
+            preprocessed_content="Some content",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)
+
+        assert "filename=" not in result
+
+    def test_multiple_files_distinguished_by_filename(self):
+        """Two evidence items from different files → distinct filenames in XML."""
+        ev1 = _make_evidence(
+            summary="Nginx errors",
+            preprocessed_content="503 errors",
+            source_file_id="file_ccdd11223344",
+            collected_at_turn=1,
+        )
+        ev2 = _make_evidence(
+            summary="App server errors",
+            preprocessed_content="NullPointerException",
+            source_file_id="file_eeff11223344",
+            collected_at_turn=2,
+        )
+        case = _make_case_with_evidence([ev1, ev2])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id="file_ccdd11223344",
+                filename="nginx-access.log",
+                size_bytes=5000,
+                data_type="LOGS_AND_ERRORS",
+                uploaded_at_turn=1,
+            ),
+            UploadedFile(
+                file_id="file_eeff11223344",
+                filename="app-server.log",
+                size_bytes=8000,
+                data_type="LOGS_AND_ERRORS",
+                uploaded_at_turn=2,
+            ),
+        ]
+        result = _build_evidence_context(case)
+
+        assert 'filename="nginx-access.log"' in result
+        assert 'filename="app-server.log"' in result

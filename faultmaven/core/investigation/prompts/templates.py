@@ -49,6 +49,8 @@ YOUR TASK:
        ("How do I check logs of a restarting pod?" → LOW, not ongoing)
      * Only HIGH/CRITICAL + ongoing for ACTIVE incidents happening RIGHT NOW
 
+{inquiry_state}
+
 TWO-STEP CONFIRMATION (CRITICAL — governs your response structure):
 
 TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
