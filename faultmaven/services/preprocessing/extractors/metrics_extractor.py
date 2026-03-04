@@ -12,13 +12,16 @@ import csv
 import io
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     has_content,
     truncate_output,
 )
+
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 try:
     from prometheus_client.parser import text_string_to_metric_families

@@ -7,13 +7,16 @@ detection - no LLM calls required.
 """
 
 import re
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     has_content,
     truncate_output,
 )
+
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class UnstructuredTextExtractor:

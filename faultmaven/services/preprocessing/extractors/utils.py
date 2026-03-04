@@ -7,6 +7,11 @@ Provides:
 - Output truncation (keep beginning + end, truncate middle)
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+
 # Token budget: approximate maximum output size for any extractor.
 # Individual extractors may set lower budgets but should never exceed this.
 MAX_STRUCTURAL_INDEX_TOKENS = 2500

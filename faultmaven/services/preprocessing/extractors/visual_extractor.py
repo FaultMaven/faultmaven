@@ -9,12 +9,15 @@ The extractor uses the MULTIMODAL_PROVIDER setting from .env, which allows
 specifying a different LLM provider for visual processing than text chat.
 """
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
     has_content,
 )
+
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class VisualEvidenceExtractor:

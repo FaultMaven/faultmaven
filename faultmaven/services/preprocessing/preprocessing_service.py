@@ -19,7 +19,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Optional
 
 from faultmaven.core.preprocessing.models import (
     DuplicateFileError,
@@ -43,6 +43,9 @@ from faultmaven.services.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
 from faultmaven.services.preprocessing.extractors.protocol import Extractor
+
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 logger = logging.getLogger(__name__)
 

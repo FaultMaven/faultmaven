@@ -7,7 +7,10 @@ All extractors must implement:
 - extract(content) -> str: the extraction logic
 """
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 @runtime_checkable
