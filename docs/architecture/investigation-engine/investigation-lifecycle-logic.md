@@ -145,34 +145,42 @@ Is this what you want me to investigate?
 💡 Tip: Click a button or type to clarify"""
 
 
-def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any]):
+def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
+                           user_message: str = ""):
     """
     Handle structured updates during INQUIRY.
 
     Logic:
-    1. If user confirms problem -> transition to INVESTIGATING
-    2. If user provides preliminary guidance -> Refine problem statement
-    3. If user decides to investigate -> Set flag
+    1. If LLM detects user confirmation -> transition to INVESTIGATING
+    2. If LLM misses confirmation but user_confirms() matches -> mechanical fallback
+    3. If user provides preliminary guidance -> Refine problem statement
+    4. If user decides to investigate -> Set flag
+
+    The mechanical fallback (step 2) uses inquiry_handler.user_confirms() — a
+    word-boundary regex matcher with a 100-char message length guard — to catch
+    explicit confirmations ("yes", "proceed", "looks good") that the LLM missed.
+    This prevents the INQUIRY confirmation loop where the agent re-asks "Let me
+    confirm..." across multiple turns without progressing.
     """
 
     # 1. Capture problem statement
     if updates.proposed_problem_statement:
         case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
 
-    # 2. Check for transition
-    if updates.problem_statement_confirmed and updates.decided_to_investigate:
-        if not case.inquiry.proposed_problem_statement:
-            # Error state: cannot confirm null statement
-            return
+    # 2. Check for transition (LLM path)
+    if updates.user_confirmed_investigation and case.inquiry.proposed_problem_statement:
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.decided_to_investigate = True
+        # ... transition fires via _check_automatic_transitions
 
-        # Create ProblemVerification with confirmed statement
-        case.problem_verification = ProblemVerification(
-            symptom_statement=case.inquiry.proposed_problem_statement
-            # LLM will fill other fields during investigation
-        )
-
-        transition_status(case, CaseStatus.INVESTIGATING, "system",
-                         "User confirmed problem and decided to investigate")
+    # 2b. Mechanical fallback: LLM missed confirmation, but user message matches
+    elif (not updates.user_confirmed_investigation
+          and case.inquiry.proposed_problem_statement
+          and not case.inquiry.problem_statement_confirmed
+          and user_confirms(user_message)):
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.decided_to_investigate = True
+        # Same transition path as above
 ```
 
 #### 1.2.1 Evidence Classification Lifecycle

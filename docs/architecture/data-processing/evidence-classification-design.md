@@ -348,6 +348,8 @@ class DataType(str, Enum):
 3. **Fine-grained detail preserved** — preprocessing metadata captures subtypes (e.g., `DataType.LOGS` with `metadata.subtype = "distributed_trace"`)
 4. **`form` field handles input channel** — `DOCUMENT` (attachments: file uploads and pasted data) vs `USER_TEXT` (query-only turns) vs `SUBMITTED_DATA` (agent tool findings)
 
+**CSV/TSV Best-Effort Fallback**: CSV and TSV files that fail the primary metrics check (metrics_score < 2) are classified as `UNSTRUCTURED_TEXT` directly in the best-effort fallback section of `DataClassifier`. This avoids false positives from vocabulary-based scoring, where incidental cell content (e.g., "error", "cpu", "interface") matches log, metric, or code patterns. Reference tables and non-numeric CSVs are correctly classified as text rather than competing across all DataType scores.
+
 ---
 
 ## INQUIRY Phase Classification (First-Class Scenario)

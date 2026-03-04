@@ -623,11 +623,52 @@ class DataClassifier:
 
         # CSV/TSV files that reached best-effort already failed the primary
         # metrics check (metrics_score < 2 at line 478). Vocabulary-based scoring
-        # produces false positives from incidental cell content — "info", "error",
-        # "cpu", "interface", brackets — matching log, metric, and code patterns.
-        # Rather than zeroing each type individually (whack-a-mole), classify as
-        # TEXT: tabular reference/data files are the correct fallback.
+        # is unreliable for CSV — cell content produces cross-type false positives
+        # ("error" → LOGS, "interface" → CODE, "cpu" → METRICS). Instead of
+        # letting the generic best-effort pick the noisiest score, use structural
+        # analysis per the design spec (has_numeric_columns, has_tabular_structure,
+        # has_high_numeric_density):
+        #
+        # METRICS requires all three:
+        #   1. Structural breadth: >= 5 columns (data export, not a lookup table)
+        #   2. Data density: >= 10 rows in sample (real dataset, not a stub)
+        #   3. Numeric/metric evidence: numeric cells >= 10% OR metrics_score >= 1
+        #      (confirms quantitative content, not purely text)
+        #
+        # Everything else → TEXT (safe fallback, classification_failed=True)
         if ext in metrics_exts:
+            first_line = content.split("\n", 1)[0].strip()
+            delimiter = "\t" if ext == ".tsv" else ","
+            col_count = len(first_line.split(delimiter))
+
+            sample_lines = content[:5000].split("\n")
+            data_lines = [l for l in sample_lines[1:] if l.strip()]
+
+            numeric_cells = 0
+            total_cells = 0
+            for line in data_lines[:20]:
+                for cell in line.split(delimiter):
+                    cell = cell.strip().strip('"')
+                    if cell:
+                        total_cells += 1
+                        if re.match(r"^-?[\d\.]+$", cell):
+                            numeric_cells += 1
+            numeric_ratio = numeric_cells / max(total_cells, 1)
+
+            is_structured_data = (
+                col_count >= 5
+                and len(data_lines) >= 10
+                and (numeric_ratio >= 0.1 or metrics_score >= 1)
+            )
+
+            if is_structured_data:
+                return ClassificationResult(
+                    data_type=DataType.METRICS_AND_PERFORMANCE,
+                    confidence=0.55,
+                    source="rule_based",
+                    classification_failed=True,
+                )
+
             return ClassificationResult(
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 confidence=0.45,

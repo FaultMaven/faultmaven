@@ -246,9 +246,15 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 6 (Steady Advance) | All templates | STEADY ADVANCE | Last section (always) |
 
-### Dynamic Injection: Focus Zone (§8.5)
+### Dynamic Injection: Focus Zone and INQUIRY State
 
-The only rule-adjacent content injected at runtime is **Focus Zone Emphasis** — a progress milestone-driven priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to DIAGNOSIS_INSTRUCTIONS inside `get_prompt_for_case()`. This is not a behavioral rule; it's system-computed adaptive context. See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
+Two pieces of rule-adjacent content are injected at runtime:
+
+1. **Focus Zone Emphasis** — a progress milestone-driven priority signal computed by `_get_diagnosis_focus_emphasis()` and prepended to DIAGNOSIS_INSTRUCTIONS inside `get_prompt_for_case()`. See [Evidence-Driven Investigation Framework §8.5](./evidence-driven-investigation-framework.md#85-focus-zone-emphasis-progress-milestone-driven).
+
+2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It tells the LLM to detect implicit confirmation (data uploads, engagement with the problem) rather than re-asking "Let me confirm..." repeatedly. See [Context Engineering Analysis: INQUIRY State Injection](../../reference/deep-dives/context-engineering-analysis.md#inquiry-state-injection-dynamic-context).
+
+Neither is a behavioral rule; both are system-computed adaptive context that modifies what the LLM *sees* rather than constraining what it *does*.
 
 ### INVESTIGATION_BASE Layout
 
@@ -292,6 +298,7 @@ In addition to the 6 behavioral rules above (which are enforced via prompt injec
 | Coverage gap detection (R3) | User query contains entities (timestamps, services) outside evidence coverage | Advisory injected into LLM context | Mechanical: regex entity extraction + coverage metadata comparison |
 | Auto-escalation (R4) | 2 consecutive empty `search_file` results | `[ESCALATION ADVISORY]` appended to tool result | Mechanical: counter in execution loop |
 | Context budget (R5) | Tool result chars exceed 30K budget | Standard/aggressive compression of tool results | Mechanical: character counter + keyword-based line filtering |
+| INQUIRY confirmation fallback | LLM misses user confirmation but proposed problem statement exists and user message matches confirmation phrases | `problem_statement_confirmed` and `decided_to_investigate` set to True | Mechanical: word-boundary regex via `user_confirms()` in `inquiry_handler.py`, 100-char length guard |
 
 These are **not behavioral rules** because they don't constrain the LLM's output structure or vocabulary. They are system-level interventions that modify what the LLM *sees* (injected advisories, compressed results) rather than what it *does*. They complement the behavioral rules by ensuring the LLM has the right information to make good decisions.
 

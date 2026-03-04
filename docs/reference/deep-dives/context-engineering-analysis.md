@@ -684,6 +684,69 @@ Tool result compression fills the gap between conversation-level and evidence-le
 
 ---
 
+## Evidence Filename Attribution (Context Disambiguation)
+
+**Added**: 2026-03-04
+
+Another application of Principle 1 is **filename attribution** in evidence XML tags. When the Context Sliding Window assembles evidence for the LLM, each evidence item now includes the original filename from `case.uploaded_files`:
+
+```xml
+<!-- Before: ambiguous when multiple items share the same data_type -->
+<evidence id="ev_abc" form="document" data_type="logs">...</evidence>
+<evidence id="ev_def" form="document" data_type="logs">...</evidence>
+
+<!-- After: structurally unambiguous -->
+<evidence id="ev_abc" form="document" data_type="logs" filename="nginx-access.log">...</evidence>
+<evidence id="ev_def" form="document" data_type="logs" filename="app-server.log">...</evidence>
+```
+
+**Implementation**: `_build_evidence_context()` in `context_builder.py` builds a `file_id→filename` lookup from `case.uploaded_files` and adds a `filename="..."` attribute at all three tiers (A, B, C) of the sliding window. The lookup is constructed once per context assembly, adding negligible overhead.
+
+**Why it matters**: Without filenames, the LLM can conflate evidence from different sources when they share the same `data_type`. This is especially problematic during hypothesis testing, where the LLM must distinguish between e.g. access logs and application logs to correctly attribute symptoms. Filename attribution makes conflation structurally difficult.
+
+---
+
+## INQUIRY State Injection (Dynamic Context)
+
+**Added**: 2026-03-04
+
+A targeted application of Principle 4 ("Structured Note-Taking") is **INQUIRY state injection** — a dynamic `<inquiry_state>` XML block injected into the INQUIRY template when a proposed problem statement exists but hasn't been confirmed.
+
+### The Problem
+
+The INQUIRY→INVESTIGATING transition requires `user_confirmed_investigation=True` in the LLM's structured output. However, the INQUIRY template was blind to the current inquiry state — it didn't tell the LLM that a problem statement had already been proposed. This caused the LLM to re-ask "Let me confirm the problem..." across multiple turns even when the user had implicitly confirmed by uploading data or asking about the issue.
+
+### The Solution
+
+`_build_context()` in `context_builder.py` checks whether the case is in INQUIRY with an unconfirmed proposed problem statement. If so, it injects an `<inquiry_state>` section into the template context:
+
+```xml
+<inquiry_state>
+PROPOSED_PROBLEM_STATEMENT: Database connection timeouts during peak hours
+CONFIRMED: False
+AWAITING_CONFIRMATION: You already proposed this problem statement. If the user's
+message shows engagement with the problem (uploading data, asking about the issue,
+referencing the problem, or any affirmative response), treat it as implicit
+confirmation and set user_confirmed_investigation=True. Do NOT re-ask for
+confirmation if you already asked in a previous turn.
+</inquiry_state>
+```
+
+This works alongside a mechanical fallback in `milestone_engine.py` — a regex-based `user_confirms()` function that catches explicit confirmation phrases (e.g., "yes", "proceed", "looks good") the LLM may still miss.
+
+### Updated Technique Inventory
+
+| Technique | Scope | When Applied |
+| --- | --- | --- |
+| Conversation summarization | Conversation history | After 10+ turns |
+| Sub-agent architecture | System prompts | Per-phase agent selection |
+| Tool result compression | Tool results | Per-tool-call, budget-based |
+| Context Sliding Window | Evidence indexes | Per-turn context assembly |
+| **Evidence filename attribution** | **Evidence XML tags** | **Per-turn context assembly** |
+| **INQUIRY state injection** | **INQUIRY template** | **When unconfirmed problem statement exists** |
+
+---
+
 ## Conclusion
 
 **FaultMaven is already implementing many Anthropic best practices**, particularly:
