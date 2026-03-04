@@ -190,6 +190,68 @@ k8s-deployment.yaml → config_file (confidence: 1.0)
 
 ---
 
+### Search File Tool (Tier 2)
+**Status**: ✅ Production
+**File**: `faultmaven/modules/agent/tools/search_file_tool.py`
+**Type**: Direct Implementation
+
+**Purpose**: Tier 2 mechanical search over raw evidence file content. Zero LLM cost, on-demand.
+
+**When Used**:
+- Tier 1 structural index lacks detail for the user's question
+- Agent needs specific lines, values, or patterns from raw file
+- Re-running domain extractors with different parameters
+
+**Search Modes**:
+- **keyword** (default): Two-pass strategy. Pass 1 requires ALL keywords on same line (high relevance). Pass 2 falls back to individual keywords with `partial_match: True` (capped at 5 results).
+- **regex**: Treats query as regex pattern. Useful for timestamps, error codes, IP addresses.
+- **extractor**: Re-runs domain-specific extractor with overridden parameters (e.g., `min_severity`, `z_score_threshold`).
+
+**Zero-Result Recovery**:
+When any search mode returns 0 results, vocabulary extraction runs on the file content (first 100KB):
+- Known patterns: HTTP errors, exception names, host:port, IPs, file paths
+- Frequent tokens: statistical analysis of token frequency (2-10 occurrences)
+- Suggestion string with top 10 discovered terms
+
+**Configuration**:
+```env
+SEARCH_FILE_MAX_RESULTS=10
+SEARCH_FILE_CONTEXT_LINES=20
+```
+
+**Performance**:
+- Keyword/regex search: <2s on typical files
+- Vocabulary extraction: <500ms on ~1MB content
+
+---
+
+### Deep Analyze File Tool (Tier 3)
+**Status**: 🟡 Partial (pluggable backend interface defined, limited backends)
+**File**: `faultmaven/modules/agent/tools/deep_analysis_tool.py`
+**Type**: LLM-Powered Analysis
+
+**Purpose**: Tier 3 deep LLM analysis of specific data windows in evidence files. Uses LLM to interpret data, not just search it.
+
+**When Used**:
+- Agent needs interpreted analysis (root cause, correlation detection)
+- Tier 2 keyword/regex search found matches but agent needs synthesis
+- Hypothesis validation requires raw data analysis
+
+**Pluggable Backends**:
+- `ExternalTier2Client`: HTTP call to cloud microservice
+- `LocalTier2Service`: In-process with local LLM (Ollama/vLLM)
+- `BasicTier2Service`: In-process keyword search, no LLM (fallback)
+
+**Configuration**:
+```env
+DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
+DEEP_ANALYSIS_URL=                # URL for external backend
+DEEP_ANALYSIS_API_KEY=            # API key for external backend
+DEEP_ANALYSIS_TIMEOUT_SECONDS=30
+```
+
+---
+
 ## Partially Implemented Tools 🟡
 
 ### Document Generator Tool
@@ -377,9 +439,11 @@ class CustomAPITool(BaseTool):
 | Web Search | 1-2s | 95% | 40% |
 | Log Analyzer | 800ms/MB | 99% | N/A |
 | Data Classifier | 50-200ms | 99.5% | N/A |
+| Search File (Tier 2) | 0.5-2s | 99% | N/A |
+| Deep Analyze File (Tier 3) | 3-15s | 95% | N/A |
 
 ---
 
-**Last Updated**: 2025-10-12  
+**Last Updated**: 2026-03-04
 **Maintained By**: Architecture Team
 

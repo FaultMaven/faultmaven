@@ -283,6 +283,22 @@ The remaining rules occupy stable positions in the template but are not ordered 
 
 ---
 
+## Mechanical Safety Nets (Non-Prompt Enforcement)
+
+In addition to the 6 behavioral rules above (which are enforced via prompt injection), the `AgentOrchestrationService` implements **mechanical safety nets** that operate outside the prompt:
+
+| Safety Net | Trigger | Action | Enforcement |
+| --- | --- | --- | --- |
+| Coverage gap detection (R3) | User query contains entities (timestamps, services) outside evidence coverage | Advisory injected into LLM context | Mechanical: regex entity extraction + coverage metadata comparison |
+| Auto-escalation (R4) | 2 consecutive empty `search_file` results | `[ESCALATION ADVISORY]` appended to tool result | Mechanical: counter in execution loop |
+| Context budget (R5) | Tool result chars exceed 30K budget | Standard/aggressive compression of tool results | Mechanical: character counter + keyword-based line filtering |
+
+These are **not behavioral rules** because they don't constrain the LLM's output structure or vocabulary. They are system-level interventions that modify what the LLM *sees* (injected advisories, compressed results) rather than what it *does*. They complement the behavioral rules by ensuring the LLM has the right information to make good decisions.
+
+See [Orchestration Capabilities §5](./orchestration-capabilities.md#5-tier-escalation-hardening-mechanical-safety-nets) for implementation details.
+
+---
+
 ## What Is NOT a Behavioral Rule
 
 **Stage-specific prompt routing** is system architecture, not an LLM instruction. The Python logic in `get_prompt_for_case()` selects which template to serve based on investigation stage (DIAGNOSIS, MITIGATION, TREATMENT). Telling the LLM "you receive different prompts based on stage" is meta-information it cannot act on — the stage-specific prompt *is* the enforcement. This routing is documented in [Prompt Templates](./prompt-templates.md) and [Investigation Lifecycle Logic](./investigation-lifecycle-logic.md).

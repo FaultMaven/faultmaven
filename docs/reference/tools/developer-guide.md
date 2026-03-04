@@ -603,6 +603,24 @@ Before submitting a new tool:
 - [ ] All tests pass (`pytest`)
 - [ ] No linter errors (`ruff check`)
 
+## Tool Result Compression
+
+Tool results are subject to **context budget tracking** in the `AgentOrchestrationService`. When cumulative tool result characters exceed the 30K budget, results are compressed before being sent to the LLM:
+
+- **Standard compression** (at 80% budget): First 3 lines + high-signal keyword lines + last 2 lines
+- **Aggressive compression** (over budget): First line + high-signal keyword lines only
+
+**High-signal keywords**: `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`
+
+**Implications for tool developers**:
+
+1. **Put critical information early**: The first 1-3 lines of your tool result are always preserved. Include the most important findings there.
+2. **Use high-signal keywords**: Results containing error-related keywords are preserved during compression. Structure your output to include these naturally.
+3. **Keep results concise**: Shorter results are less likely to trigger compression. Avoid dumping raw data — summarize and highlight key findings.
+4. **Uncompressed audit trail**: The original uncompressed result is always saved in the `AgentToolCall` record, so no data is lost for debugging.
+
+---
+
 ## Common Pitfalls
 
 ### ❌ Don't: Hard-code configuration
@@ -658,8 +676,8 @@ async def execute(self, params):
 
 ---
 
-**Last Updated**: 2025-10-12  
-**Version**: 1.0  
+**Last Updated**: 2026-03-04
+**Version**: 1.1
 **Maintainer**: Architecture Team
 
 

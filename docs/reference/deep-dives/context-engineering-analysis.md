@@ -1,7 +1,7 @@
 # Context Engineering Analysis: FaultMaven vs Anthropic Best Practices
 
 **Date:** 2025-10-05
-**Last Updated:** 2025-10-05 (Sub-agent implementation completed)
+**Last Updated:** 2026-03-04 (Tool result compression added)
 **Reference:** [Anthropic: Effective Context Engineering for AI Agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
 **Status:** ✅ Phase 1 Complete - Sub-agent Architecture Implemented
 
@@ -640,6 +640,47 @@ Track these KPIs to validate improvements:
 5. **Cost per Case**
    - Baseline: ~$0.15/case (15 turns × $0.01)
    - Target: ~$0.08/case (49% reduction)
+
+---
+
+## Tool Result Compression (Context Engineering in Practice)
+
+**Added**: 2026-03-04
+
+A concrete application of Principle 1 ("Smallest Possible Set of High-Signal Tokens") is the **tool result compression** system implemented in `AgentOrchestrationService`. When agent tools return large results (e.g., multi-page log excerpts from `search_file`), the context window fills with low-signal noise.
+
+### The Problem
+
+Multiple tool calls during an investigation turn can generate 50K+ characters of tool results. Most of this is log lines, config dumps, or search excerpts where only a few lines contain diagnostic signal.
+
+### The Solution: Budget-Based Compression
+
+The orchestration layer tracks cumulative tool result characters against a 30K character budget (`TOOL_RESULT_BUDGET`):
+
+| Threshold | Compression Level | What's Preserved |
+| --- | --- | --- |
+| < 80% budget | None | Full tool result |
+| 80-100% budget | Standard | First 3 lines + high-signal keyword lines + last 2 lines |
+| > 100% budget | Aggressive | First line + high-signal keyword lines only |
+
+**High-signal keywords**: `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`
+
+### Why This Works
+
+This is a mechanical implementation of Anthropic's principle: "Find the smallest possible set of high-signal tokens." The compression preserves diagnostic signal (error lines) while discarding noise (normal log entries), directly improving context utilization without requiring LLM involvement.
+
+**Key design decision**: Compression only affects what the LLM sees. The uncompressed result is preserved in `AgentToolCall` records for audit and debugging. This means zero information loss for humans, maximum signal density for the LLM.
+
+### Relationship to Other Context Engineering Techniques
+
+| Technique | Scope | When Applied |
+| --- | --- | --- |
+| Conversation summarization | Conversation history | After 10+ turns |
+| Sub-agent architecture | System prompts | Per-phase agent selection |
+| **Tool result compression** | **Tool results** | **Per-tool-call, budget-based** |
+| Context Sliding Window | Evidence indexes | Per-turn context assembly |
+
+Tool result compression fills the gap between conversation-level and evidence-level context management — it ensures that the *within-turn* tool results don't overwhelm the context window.
 
 ---
 

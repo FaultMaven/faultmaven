@@ -19,12 +19,14 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 import asyncio
-
+import json
 import logging
+import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from faultmaven.domain.events import (
@@ -34,8 +36,6 @@ from faultmaven.domain.events import (
     LLMEvent,
     LLMEventType,
     Message,
-    MessageRole,
-    Tool,
     ToolCall,
 )
 from faultmaven.domain.events import ToolResult as DomainToolResult
@@ -47,7 +47,7 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.integrations.llm_client import LLMClient, LLMProvider, create_llm_client
+from faultmaven.integrations.llm_client import LLMClient, create_llm_client
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
@@ -61,9 +61,39 @@ from faultmaven.modules.agent.tools.base import (
 )
 from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
 from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.services.preprocessing.extractors.utils import COVERAGE_SEPARATOR
 
 logger = logging.getLogger(__name__)
 
+# --- R3: Query entity extraction patterns (compiled once) ---
+_RE_TIMESTAMP_HM = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
+_RE_TIMESTAMP_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_RE_SERVICE_NAME = re.compile(r"\b(?:in|from|on)\s+([a-z][\w-]*)\b", re.IGNORECASE)
+_RE_HTTP_ERROR = re.compile(r"\b[45]\d{2}\b")
+_RE_ERROR_CODE = re.compile(r"\bE\d{4}\b")
+_RE_IP_ADDRESS = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+
+# --- R5: Context budget and compression ---
+TOOL_RESULT_BUDGET = 30000
+_HIGH_SIGNAL_KEYWORDS = frozenset(
+    {
+        "error",
+        "exception",
+        "fail",
+        "timeout",
+        "refused",
+        "denied",
+        "critical",
+        "fatal",
+        "panic",
+        "crash",
+        "kill",
+        "oom",
+        "traceback",
+        "stacktrace",
+        "caused by",
+    }
+)
 
 # Agent system prompts by type
 AGENT_SYSTEM_PROMPTS = {
@@ -188,10 +218,10 @@ class ExecutionResult:
     execution_id: str
     status: ExecutionStatus
     response: str
-    token_usage: Dict[str, int]
-    tool_calls: List[Dict[str, Any]]
+    token_usage: dict[str, int]
+    tool_calls: list[dict[str, Any]]
     duration_ms: int
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 class AgentOrchestrationService:
@@ -218,8 +248,8 @@ class AgentOrchestrationService:
         case_repo: ICaseRepository,
         session_service: Any,
         evidence_service: Any,
-        tool_registry: Optional[AgentToolRegistry] = None,
-        llm_client: Optional[LLMClient] = None,
+        tool_registry: AgentToolRegistry | None = None,
+        llm_client: LLMClient | None = None,
         max_retries: int = 3,
         retry_initial_delay: float = 1.0,
         tool_timeout: int = 30,
@@ -371,7 +401,7 @@ class AgentOrchestrationService:
             # Step 5-7: Execute LLM with streaming and tool handling
             final_response = ""
             total_tokens = {"input_tokens": 0, "output_tokens": 0}
-            all_tool_calls: List[AgentToolCall] = []
+            all_tool_calls: list[AgentToolCall] = []
 
             # Create tool context for tool execution
             tool_context = ToolContext(
@@ -424,7 +454,7 @@ class AgentOrchestrationService:
                             "role": "user",
                             "content": user_message,
                             "turn_number": current_turn,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(UTC).isoformat(),
                         },
                     )
 
@@ -435,7 +465,7 @@ class AgentOrchestrationService:
                             "role": "assistant",
                             "content": final_response,
                             "turn_number": current_turn,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(UTC).isoformat(),
                         },
                     )
 
@@ -651,11 +681,17 @@ class AgentOrchestrationService:
 ## Session Context
 - **Session Goal**: {session.session_goal or 'No specific goal set'}
 """
+        # R3: Inject coverage advisory if gaps detected
+        advisory = self._build_coverage_advisories(user_message, case)
+        if advisory:
+            case_context += advisory
+
         system_prompt += case_context
 
         logger.debug(
-            f"Built agent context for case {session.case_id}: "
-            f"system_prompt length={len(system_prompt)} chars"
+            "Built agent context for case %s: system_prompt length=%d chars",
+            session.case_id,
+            len(system_prompt),
         )
 
         # Get conversation history
@@ -689,7 +725,7 @@ class AgentOrchestrationService:
         self,
         case_id: str,
         limit: int = 10,
-    ) -> List[Message]:
+    ) -> list[Message]:
         """Get conversation history from case messages.
 
         Following prompt engineering guide Section 11.5, we provide recent
@@ -702,7 +738,7 @@ class AgentOrchestrationService:
         Returns:
             List of Messages representing recent conversation history
         """
-        messages: List[Message] = []
+        messages: list[Message] = []
 
         try:
             # Get case with full message history
@@ -862,6 +898,178 @@ class AgentOrchestrationService:
         return "\n".join(summary_parts)
 
     # ============================================================
+    # Coverage Advisory (R3)
+    # ============================================================
+
+    @staticmethod
+    def _extract_query_entities(message: str) -> dict[str, list[str]]:
+        """Extract timestamps, services, error codes, IPs from user message.
+
+        Used to detect coverage gaps between what the user asks about
+        and what the evidence actually covers.
+        """
+        entities: dict[str, list[str]] = {
+            "timestamps": [],
+            "services": [],
+            "error_codes": [],
+            "ip_addresses": [],
+        }
+
+        # Timestamps (HH:MM or HH:MM:SS)
+        for m in _RE_TIMESTAMP_HM.finditer(message):
+            entities["timestamps"].append(m.group(0))
+
+        # Date stamps (YYYY-MM-DD)
+        for m in _RE_TIMESTAMP_DATE.finditer(message):
+            entities["timestamps"].append(m.group(0))
+
+        # Service names (words after "in/from/on")
+        for m in _RE_SERVICE_NAME.finditer(message):
+            entities["services"].append(m.group(1).lower())
+
+        # HTTP error codes + E-codes
+        for m in _RE_HTTP_ERROR.finditer(message):
+            entities["error_codes"].append(m.group(0))
+        for m in _RE_ERROR_CODE.finditer(message):
+            entities["error_codes"].append(m.group(0))
+
+        # IP addresses
+        for m in _RE_IP_ADDRESS.finditer(message):
+            entities["ip_addresses"].append(m.group(0))
+
+        return entities
+
+    @staticmethod
+    def _detect_coverage_gaps(entities: dict[str, list[str]], case: Any) -> list[str]:
+        """Compare query entities against evidence coverage metadata.
+
+        Checks whether user-referenced timestamps, services, and error codes
+        are covered by the evidence artifacts attached to the case.
+        """
+        gaps: list[str] = []
+
+        if not hasattr(case, "evidence") or not case.evidence:
+            return gaps
+
+        # Collect all coverage metadata from evidence
+        all_coverage_text = ""
+        time_ranges: list[str] = []
+
+        for ev in case.evidence:
+            preprocessed = getattr(ev, "preprocessed_content", "") or ""
+            if COVERAGE_SEPARATOR in preprocessed:
+                coverage_section = preprocessed.split(COVERAGE_SEPARATOR)[1]
+                all_coverage_text += " " + coverage_section
+
+                # Extract time range values
+                for line in coverage_section.split("\n"):
+                    if line.startswith("First timestamp:") or line.startswith(
+                        "Last timestamp:"
+                    ):
+                        time_ranges.append(line)
+
+        if not all_coverage_text:
+            return gaps
+
+        coverage_lower = all_coverage_text.lower()
+
+        # Check timestamps — warn if queried times are mentioned but not in ranges
+        for ts in entities.get("timestamps", []):
+            if ts not in all_coverage_text and time_ranges:
+                gaps.append(
+                    f"Queried time '{ts}' not found in evidence coverage "
+                    f"(available: {'; '.join(time_ranges[:3])})"
+                )
+
+        # Check services
+        for svc in entities.get("services", []):
+            if svc not in coverage_lower:
+                gaps.append(
+                    f"Service '{svc}' not mentioned in any evidence coverage metadata"
+                )
+
+        return gaps
+
+    def _build_coverage_advisories(self, user_message: str, case: Any) -> str:
+        """Build coverage advisory string for the system prompt.
+
+        Extracts entities from the user message, checks them against
+        evidence coverage metadata, and returns advisory text if gaps exist.
+        """
+        entities = self._extract_query_entities(user_message)
+
+        # Skip if no entities extracted
+        if not any(entities.values()):
+            return ""
+
+        gaps = self._detect_coverage_gaps(entities, case)
+        if not gaps:
+            return ""
+
+        advisory = "\n\n## Coverage Advisory\n\n"
+        advisory += (
+            "**Warning**: The user's query references entities not fully covered "
+            "by available evidence:\n"
+        )
+        for gap in gaps[:5]:  # Cap at 5 advisories
+            advisory += f"- {gap}\n"
+        advisory += (
+            "\nConsider: search_file with different keywords, "
+            "request additional evidence from the user, "
+            "or clearly state what data is missing.\n"
+        )
+
+        return advisory
+
+    # ============================================================
+    # Tool Result Compression (R5)
+    # ============================================================
+
+    @staticmethod
+    def _compress_tool_result(content: str, aggressive: bool = False) -> str:
+        """Compress tool result content to stay within context budget.
+
+        Standard mode: keeps first 3 lines + high-signal lines + last 2 lines.
+        Aggressive mode: keeps first line + high-signal lines only.
+
+        Args:
+            content: Raw tool result content
+            aggressive: If True, apply aggressive compression
+
+        Returns:
+            Compressed content string
+        """
+        lines = content.split("\n")
+        if len(lines) <= 10:
+            return content
+
+        signal_lines: list[str] = []
+        for line in lines:
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in _HIGH_SIGNAL_KEYWORDS):
+                signal_lines.append(line)
+
+        if aggressive:
+            kept = [lines[0]]
+            if signal_lines:
+                kept.append("--- [compressed: keeping high-signal lines] ---")
+                kept.extend(signal_lines[:20])
+            kept.append(f"--- [compressed: {len(lines)} total lines] ---")
+        else:
+            kept = lines[:3]
+            if signal_lines:
+                kept.append("--- [compressed: keeping high-signal lines] ---")
+                # Deduplicate signal lines that are already in first 3
+                for sl in signal_lines[:20]:
+                    if sl not in kept:
+                        kept.append(sl)
+            kept.append("---")
+            kept.extend(lines[-2:])
+            kept.append(f"--- [{len(lines)} total lines] ---")
+
+        return "\n".join(kept)
+
+    # ============================================================
     # LLM Execution with Streaming
     # ============================================================
 
@@ -892,11 +1100,16 @@ class AgentOrchestrationService:
         total_input_tokens = 0
         total_output_tokens = 0
 
+        # R4: Auto-escalation tracking
+        consecutive_empty_searches = 0
+        # R5: Context budget tracking
+        tool_result_chars = 0
+
         while iteration < max_iterations:
             iteration += 1
 
             # Call LLM with retry
-            tool_calls_to_execute: List[ToolCall] = []
+            tool_calls_to_execute: list[ToolCall] = []
             response_text = ""
 
             try:
@@ -968,17 +1181,54 @@ class AgentOrchestrationService:
                 tool_context=tool_context,
             )
 
-            # Add tool results to context
+            # Add tool results to context (with R4 escalation + R5 compression)
             for result in tool_results:
+                content_for_context = result.content
+
+                # R4: Track consecutive empty search_file results
+                if result.tool_name == "search_file" and result.success:
+                    try:
+                        data = json.loads(result.content)
+                        if isinstance(data, dict) and data.get("results_count", 0) == 0:
+                            consecutive_empty_searches += 1
+                        else:
+                            consecutive_empty_searches = 0
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                    # R4: Inject escalation advisory after 2 consecutive failures
+                    if consecutive_empty_searches >= 2:
+                        content_for_context += (
+                            "\n\n[ESCALATION ADVISORY] "
+                            f"Last {consecutive_empty_searches} search_file calls "
+                            "returned zero results. "
+                            "Options: 1) Review vocabulary hints above "
+                            "2) Use search_type='regex' "
+                            "3) Escalate to deep_analysis "
+                            "4) Tell user what data is missing"
+                        )
+                        consecutive_empty_searches = 0
+
+                # R5: Track budget and compress if needed
+                tool_result_chars += len(content_for_context)
+                if tool_result_chars > TOOL_RESULT_BUDGET:
+                    content_for_context = self._compress_tool_result(
+                        content_for_context, aggressive=True
+                    )
+                elif tool_result_chars > int(TOOL_RESULT_BUDGET * 0.8):
+                    content_for_context = self._compress_tool_result(
+                        content_for_context, aggressive=False
+                    )
+
                 context.add_tool_result(
-                    content=result.content,
+                    content=content_for_context,
                     tool_call_id=result.tool_call_id,
                     tool_name=result.tool_name,
                 )
 
                 yield ExecutionEvent.tool_result(
                     tool_name=result.tool_name,
-                    result=result.content,
+                    result=result.content,  # Original content for event
                     success=result.success,
                     tool_call_id=result.tool_call_id,
                     execution_id=execution.execution_id,
@@ -1009,9 +1259,9 @@ class AgentOrchestrationService:
     async def _handle_tool_calls(
         self,
         execution: AgentExecution,
-        tool_calls: List[ToolCall],
+        tool_calls: list[ToolCall],
         tool_context: ToolContext,
-    ) -> List[DomainToolResult]:
+    ) -> list[DomainToolResult]:
         """Execute tool calls from agent (parallel execution).
 
         For each tool call:
@@ -1029,7 +1279,7 @@ class AgentOrchestrationService:
         Returns:
             List of ToolResult
         """
-        results: List[DomainToolResult] = []
+        results: list[DomainToolResult] = []
 
         # Limit parallel execution
         semaphore = asyncio.Semaphore(self.max_parallel_tools)
@@ -1104,7 +1354,7 @@ class AgentOrchestrationService:
                     content = f"Tool error: {result.error}"
                     tc_record.mark_failed(result.error or "Unknown error")
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 content = f"Tool execution timed out after {self.tool_timeout}s"
                 tc_record.mark_failed("Timeout")
                 result = None
@@ -1148,8 +1398,8 @@ class AgentOrchestrationService:
     async def _execute_with_retry(
         self,
         func: Callable,
-        max_retries: Optional[int] = None,
-        initial_delay: Optional[float] = None,
+        max_retries: int | None = None,
+        initial_delay: float | None = None,
     ) -> AsyncGenerator[LLMEvent, None]:
         """Execute LLM call with exponential backoff retry.
 
@@ -1235,7 +1485,7 @@ class AgentOrchestrationService:
         self,
         execution_id: str,
         organization_id: str,
-    ) -> Optional[AgentExecution]:
+    ) -> AgentExecution | None:
         """Get an execution by ID with authorization check.
 
         Args:
@@ -1262,7 +1512,7 @@ class AgentOrchestrationService:
         organization_id: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> Tuple[List[AgentExecution], int]:
+    ) -> tuple[list[AgentExecution], int]:
         """List executions for a case with authorization.
 
         Args:

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, List, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -53,6 +54,8 @@ class UnstructuredTextExtractor:
         if not has_content(content):
             return EMPTY_CONTENT_RESPONSE
 
+        total_lines = len(content.split("\n"))
+
         # Detect structure type
         has_markdown = self._has_markdown_structure(content)
 
@@ -68,7 +71,16 @@ class UnstructuredTextExtractor:
         # Build output prioritizing errors and code
         output = self._format_output(errors, code_blocks, sections, content)
 
-        return truncate_output(output)
+        result = truncate_output(output)
+
+        # Coverage metadata
+        result += format_coverage_metadata(
+            Lines=total_lines,
+            Structure="markdown" if has_markdown else "plain",
+            **{"Error mentions": len(errors)},
+            **{"Code blocks": len(code_blocks)},
+        )
+        return result
 
     def _has_markdown_structure(self, content: str) -> bool:
         """Detect if content uses markdown formatting"""
@@ -85,7 +97,7 @@ class UnstructuredTextExtractor:
         )
         return matches >= 2
 
-    def _extract_error_messages(self, content: str) -> List[Tuple[str, str]]:
+    def _extract_error_messages(self, content: str) -> list[tuple[str, str]]:
         """
         Extract error messages and stack traces
 
@@ -134,7 +146,7 @@ class UnstructuredTextExtractor:
 
         return errors[: self.MAX_ERROR_MESSAGES]
 
-    def _extract_code_blocks(self, content: str) -> List[Tuple[str, str]]:
+    def _extract_code_blocks(self, content: str) -> list[tuple[str, str]]:
         """
         Extract code blocks (markdown fenced or indented)
 
@@ -180,7 +192,7 @@ class UnstructuredTextExtractor:
 
         return code_blocks
 
-    def _extract_markdown_sections(self, content: str) -> List[Tuple[str, str, int]]:
+    def _extract_markdown_sections(self, content: str) -> list[tuple[str, str, int]]:
         """
         Extract markdown sections by heading
 
@@ -223,7 +235,7 @@ class UnstructuredTextExtractor:
 
         return sections[: self.MAX_SECTIONS]
 
-    def _extract_plain_text_sections(self, content: str) -> List[Tuple[str, str, int]]:
+    def _extract_plain_text_sections(self, content: str) -> list[tuple[str, str, int]]:
         """
         Extract sections from plain text using paragraph detection
 
@@ -268,9 +280,9 @@ class UnstructuredTextExtractor:
 
     def _format_output(
         self,
-        errors: List[Tuple[str, str]],
-        code_blocks: List[Tuple[str, str]],
-        sections: List[Tuple[str, str, int]],
+        errors: list[tuple[str, str]],
+        code_blocks: list[tuple[str, str]],
+        sections: list[tuple[str, str, int]],
         content: str,
     ) -> str:
         """Format extracted content for readability"""

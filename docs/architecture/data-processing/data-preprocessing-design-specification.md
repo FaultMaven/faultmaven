@@ -1,12 +1,23 @@
-# Data Preprocessing Design Specification v4.1
+# Data Preprocessing Design Specification v4.2
 
 **Status**: FINAL
-**Date**: 2026-02-23
-**Supersedes**: v4.0
+**Date**: 2026-03-04
+**Supersedes**: v4.1
 
 ---
 
 ## Change Summary
+
+### v4.1 → v4.2 (Tier-Escalation Hardening)
+
+| Area | v4.1 | v4.2 |
+|------|------|------|
+| **Coverage metadata** | Extractors produce structural index only | All 10 extractors append `--- COVERAGE METADATA ---` with key-value pairs (Lines, Time range, Format, etc.) for downstream gap detection |
+| **Keyword search** | Single-pass: ANY keyword matches | Two-pass: Pass 1 requires ALL keywords (high relevance). Pass 2 falls back to individual keywords with `partial_match: True` (capped at 5 results). |
+| **Zero-result recovery** | No recovery path when search returns 0 results | Vocabulary extraction returns patterns (HTTP errors, exceptions, IPs, host:port, file paths) + frequent tokens + suggestion string |
+| **Orchestration R3** | No coverage gap detection | Query entity extraction (timestamps, services, error codes, IPs) compared against evidence coverage metadata → advisory injected into LLM context |
+| **Orchestration R4** | No escalation on repeated failures | After 2 consecutive empty `search_file` results → `[ESCALATION ADVISORY]` injected into LLM context with recovery options |
+| **Orchestration R5** | No context budget tracking | 30K char budget for tool results. Standard compression (first 3 + signal lines + last 2) and aggressive compression (first + signal lines only) |
 
 ### v4.0 → v4.1 (Unified Ingestion Pipeline Implementation)
 
@@ -170,6 +181,37 @@ The classification system has two layers. The **detailed layer** (12 types) driv
 
 **All 11 extractors use stdlib only** (re, ast, json). No external dependencies except optional `yaml`/`tomli` for config parsing. This means zero external risk, deterministic output, and fast execution.
 
+#### Coverage Metadata (v4.2)
+
+All 10 active extractors (excluding VisualEvidence) append **coverage metadata** after a `--- COVERAGE METADATA ---` separator. This metadata enables downstream systems — particularly the orchestration layer's coverage gap detection (Section 6.1) — to identify what an extractor *did* and *didn't* process.
+
+**Format:**
+```
+[... structural index output ...]
+
+--- COVERAGE METADATA ---
+Lines: 847 of 12453
+Time range: 2024-01-15T10:30:00 to 2024-01-15T10:45:23
+Severity distribution: ERROR=23, WARN=45, CRITICAL=2
+```
+
+**Per-extractor metadata fields:**
+
+| Extractor | Coverage Fields |
+|-----------|----------------|
+| LogsAndErrors | Lines processed/total, severity distribution, time range |
+| ErrorReport | Language, stack frames count, exception type |
+| TraceData | Spans count, unique services, critical path duration |
+| CommandOutput | Command type, lines count |
+| MetricsAndPerformance | Format detected, metric families/columns, anomalies found |
+| ProfilingData | Format, functions profiled, top function |
+| StructuredConfig | Format, top-level keys, secrets redacted count |
+| SourceCode | Language, functions/classes/error handlers count, lines |
+| UnstructuredText | Lines, structure type, error mentions count |
+| Documentation | Format, sections/code blocks/commands count |
+
+Coverage metadata is additive — appended after the separator, never modifying existing output. Utility functions in `faultmaven/services/preprocessing/extractors/utils.py` provide `COVERAGE_SEPARATOR`, `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
+
 ### 2.3 Classification Fallback: Best-Effort Dispatch
 
 When the classifier has low confidence (< 0.60), it still has partial pattern scores from its rule-based analysis. Instead of always falling back to `UNSTRUCTURED_TEXT`, v4.0 uses the highest-scoring candidate type.
@@ -301,37 +343,34 @@ async def search_file(
 
 ### 3.3 Search Modes
 
-#### A. Keyword Search
+#### A. Keyword Search (Two-Pass Strategy — v4.2)
 
-Tokenizes the query into keywords, scans lines for matches, returns context windows. This is the existing `BasicTier2Service._keyword_search()` logic, now directly accessible as an agent tool.
+Tokenizes the query into keywords (>2 chars), then uses a two-pass strategy for high-precision results with partial-match recovery:
+
+**Pass 1 — Full match (high relevance):** Find lines matching ALL keywords. Returns results with `relevance: 1.0`. Merge overlapping windows, cap at `max_results`.
+
+**Pass 2 — Partial match fallback:** If Pass 1 returns nothing and multiple keywords exist, try individual keywords. Results are marked `partial_match: True` with `relevance: 1/len(keywords)`. Capped at 5 results (lower than Pass 1).
 
 ```python
-async def _keyword_search(
-    raw_content: str,
-    query: str,
-    context_lines: int = 20,
-    max_results: int = 5,
-) -> List[DataExcerpt]:
-    """
-    Keyword search: tokenize query, find matching lines, extract ±context windows.
-    Merge overlapping windows. Return up to max_results excerpts.
-    """
+def _keyword_search(self, content: str, query: str) -> list[dict[str, Any]]:
+    """Two-pass keyword search with partial match fallback."""
     keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
-    lines = raw_content.split('\n')
-    matches = []
+    lines = content.split("\n")
 
+    # Pass 1: lines matching ALL keywords
     for i, line in enumerate(lines):
-        line_lower = line.lower()
-        if any(kw in line_lower for kw in keywords):
-            start = max(0, i - context_lines)
-            end = min(len(lines), i + context_lines)
-            matches.append(DataExcerpt(
-                content='\n'.join(f"{j+1}: {lines[j]}" for j in range(start, end)),
-                line_start=start + 1,
-                line_end=end,
-            ))
+        matched = [kw for kw in keywords if kw in line.lower()]
+        if len(matched) == len(keywords):  # ALL must match
+            # ... context window, relevance=1.0
 
-    return merge_overlapping(matches)[:max_results]
+    if merged:
+        return merged  # High-quality results found
+
+    # Pass 2: individual keyword fallback (only when >1 keyword)
+    if len(keywords) > 1:
+        for kw in keywords:
+            # ... context window, partial_match=True, relevance=1/len(keywords)
+        return partial_matches[:5]  # Lower cap
 ```
 
 #### B. Regex Search
@@ -397,7 +436,38 @@ async def _rerun_extractor(
     return extractor.extract(raw_content, **params)
 ```
 
-### 3.4 Relationship to Existing Services
+### 3.4 Zero-Result Recovery: Vocabulary Extraction (v4.2)
+
+When any search mode returns 0 results, the tool extracts vocabulary from the file to help the agent reformulate its query. The response includes a `vocabulary` object and a `suggestion` string.
+
+**Three-pass heuristic (on first 100KB of content):**
+
+1. **Known patterns** — Compiled regex for HTTP errors (`[45]\d{2}`), exception names (`ConnectionTimeout`, `NullPointerException`), host:port pairs, IP addresses, file paths. Up to 30 patterns.
+
+2. **Frequent tokens** — Statistical: split on whitespace/delimiters, filter stop words and log noise, return tokens appearing 2-10 times (not too rare, not too common). Top 20.
+
+3. **Suggestion string** — Concatenates top 10 terms from patterns + frequent tokens into a human-readable hint: `"No matches found. File contains these terms: 503, ConnectionTimeout, 10.0.0.5, api-server:8080, kafka-consumer:9092"`.
+
+**Zero-result response format:**
+```json
+{
+  "evidence_id": "ev_abc",
+  "filename": "app.log",
+  "search_type": "keyword",
+  "query": "database_migration",
+  "results_count": 0,
+  "results": [],
+  "vocabulary": {
+    "patterns": ["503", "ConnectionTimeout", "10.0.0.5", "api-server:8080"],
+    "frequent_tokens": ["request", "batch", "processing", "handler"]
+  },
+  "suggestion": "No matches found. File contains these terms: 503, ConnectionTimeout, 10.0.0.5, ..."
+}
+```
+
+**Performance:** Vocabulary extraction completes in <500ms on ~1MB content (compiled regex + Counter-based frequency analysis).
+
+### 3.5 Relationship to Existing Services
 
 The `search_file` tool consolidates functionality that partially exists today:
 
@@ -408,7 +478,7 @@ The `search_file` tool consolidates functionality that partially exists today:
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
 | `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis | Moves to Tier 3 (unchanged) |
 
-### 3.5 When to Use `search_file` vs `deep_analyze_file`
+### 3.6 When to Use `search_file` vs `deep_analyze_file`
 
 | Scenario | Tool | Why |
 |----------|------|-----|
@@ -658,6 +728,46 @@ When a user asks about uploaded data, follow this escalation order:
 
 Never skip tiers. Always try the cheaper option first.
 ```
+
+### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2)
+
+The agent's tier-escalation decisions are prompt-driven. Three failure modes exist: premature answers from incomplete evidence, silent search dead ends, and context dilution. v4.2 adds mechanical safety nets in `AgentOrchestrationService` — coverage gap detection, auto-escalation, and context budgeting — without changing the tool interface.
+
+#### R3: Coverage Gap Detection
+
+Before each LLM call, the orchestration service extracts entities from the user's message and compares them against evidence coverage metadata:
+
+1. **Query entity extraction** — Compiled regex extracts timestamps (`14:00`, `2024-01-15`), service names (words after `in`/`from`/`on`), HTTP error codes (`4xx`/`5xx`), error codes (`E1234`), and IP addresses.
+
+2. **Coverage gap detection** — For each evidence artifact, parse the `--- COVERAGE METADATA ---` section. Compare query timestamps against evidence time ranges, query services against evidence source fields. Gaps produce advisory strings.
+
+3. **Advisory injection** — Gap descriptions are appended to the LLM system prompt as `[COVERAGE ADVISORY]` blocks. Example: `"User asks about 14:00 but evidence ev_abc only covers 13:42-13:57. Agent should acknowledge the gap or search for additional data."`
+
+#### R4: Auto-Escalation After Consecutive Failures
+
+The orchestration service tracks consecutive empty `search_file` results during agent execution. After 2 consecutive zero-result searches, an `[ESCALATION ADVISORY]` is injected into the tool result content visible to the LLM:
+
+```
+[ESCALATION ADVISORY] Last 2 search_file calls returned zero results.
+Options: 1) Review vocabulary hints above 2) Use search_type='regex'
+3) Escalate to deep_analysis 4) Tell user what's missing
+```
+
+The counter resets on any non-empty search result or after advisory injection.
+
+#### R5: Context Budget Tracking and Tool Result Compression
+
+Tool results can flood the LLM context window with log noise. The orchestration service tracks cumulative tool result size (in characters) against a 30K char budget (`TOOL_RESULT_BUDGET`):
+
+| Budget Usage | Compression Level | Behavior |
+| --- | --- | --- |
+| < 80% (< 24K chars) | None | Full tool result passed through |
+| 80-100% (24K-30K) | Standard | First 3 lines + high-signal keyword lines + last 2 lines |
+| > 100% (> 30K) | Aggressive | First line + high-signal keyword lines only |
+
+**High-signal keywords** (15 terms): `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`.
+
+Compression modifies only what the LLM sees — the full uncompressed content is preserved in the `AgentToolCall` database record for audit purposes.
 
 ---
 
@@ -977,7 +1087,7 @@ No re-run parameters. These extractors have no tunable thresholds.
 
 ---
 
-**Document Version**: 4.1
-**Last Updated**: 2026-02-23
+**Document Version**: 4.2
+**Last Updated**: 2026-03-04
 **Status**: FINAL
-**Predecessor**: v4.0 (data-preprocessing-design-specification.md)
+**Predecessor**: v4.1 (data-preprocessing-design-specification.md)

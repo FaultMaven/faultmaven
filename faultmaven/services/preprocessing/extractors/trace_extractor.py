@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Dict, List
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -86,9 +87,17 @@ class TraceDataExtractor:
             trace_id, total_duration, critical_path, slow_spans, error_spans, call_tree
         )
 
+        # Coverage metadata
+        services = sorted(set(s["service"] for s in spans))
+        summary += format_coverage_metadata(
+            Spans=len(spans),
+            Services=", ".join(services),
+            **{"Error spans": len(error_spans)},
+            **{"Total duration ms": f"{total_duration:.1f}"},
+        )
         return summary
 
-    def _extract_trace_id(self, trace_data: Dict) -> str:
+    def _extract_trace_id(self, trace_data: dict) -> str:
         """Extract trace ID from various trace formats"""
         # OpenTelemetry format
         if "traceId" in trace_data:
@@ -101,7 +110,7 @@ class TraceDataExtractor:
 
         return "unknown"
 
-    def _extract_spans(self, trace_data: Dict) -> List[Dict]:
+    def _extract_spans(self, trace_data: dict) -> list[dict]:
         """Extract spans from various trace formats"""
         spans = []
         is_jaeger = False
@@ -134,7 +143,7 @@ class TraceDataExtractor:
 
         return normalized_spans
 
-    def _extract_service_name(self, span: Dict) -> str:
+    def _extract_service_name(self, span: dict) -> str:
         """Extract service name from span"""
         # OpenTelemetry format
         if "serviceName" in span:
@@ -152,7 +161,7 @@ class TraceDataExtractor:
 
         return "unknown"
 
-    def _extract_duration_ms(self, span: Dict, is_jaeger: bool = False) -> float:
+    def _extract_duration_ms(self, span: dict, is_jaeger: bool = False) -> float:
         """Extract duration in milliseconds from span.
 
         Uses format-aware conversion instead of magnitude heuristic:
@@ -168,7 +177,7 @@ class TraceDataExtractor:
         else:
             return duration / 1_000_000  # OpenTelemetry: nanoseconds → ms
 
-    def _check_error(self, span: Dict) -> bool:
+    def _check_error(self, span: dict) -> bool:
         """Check if span has error"""
         # Check status
         if "status" in span:
@@ -183,13 +192,13 @@ class TraceDataExtractor:
 
         return False
 
-    def _calculate_total_duration(self, spans: List[Dict]) -> float:
+    def _calculate_total_duration(self, spans: list[dict]) -> float:
         """Calculate total trace duration"""
         if not spans:
             return 0.0
         return max(span["duration_ms"] for span in spans)
 
-    def _find_critical_path(self, spans: List[Dict]) -> List[str]:
+    def _find_critical_path(self, spans: list[dict]) -> list[str]:
         """Find the critical path via parent-child graph traversal.
 
         Builds an adjacency graph from parent_id relationships and finds
@@ -263,17 +272,17 @@ class TraceDataExtractor:
         sorted_spans = sorted(spans, key=lambda x: x["duration_ms"], reverse=True)
         return [f"{s['service']}.{s['operation']}" for s in sorted_spans[:3]]
 
-    def _find_slow_spans(self, spans: List[Dict], total_duration: float) -> List[Dict]:
+    def _find_slow_spans(self, spans: list[dict], total_duration: float) -> list[dict]:
         """Find spans that take > 20% of total time"""
         threshold = total_duration * 0.2
         slow_spans = [span for span in spans if span["duration_ms"] > threshold]
         return sorted(slow_spans, key=lambda x: x["duration_ms"], reverse=True)
 
-    def _find_error_spans(self, spans: List[Dict]) -> List[Dict]:
+    def _find_error_spans(self, spans: list[dict]) -> list[dict]:
         """Find spans with errors"""
         return [span for span in spans if span["has_error"]]
 
-    def _build_call_tree(self, spans: List[Dict]) -> str:
+    def _build_call_tree(self, spans: list[dict]) -> str:
         """Build a simple service call tree"""
         services = set(span["service"] for span in spans)
         return " → ".join(sorted(services))
@@ -282,9 +291,9 @@ class TraceDataExtractor:
         self,
         trace_id: str,
         total_duration: float,
-        critical_path: List[str],
-        slow_spans: List[Dict],
-        error_spans: List[Dict],
+        critical_path: list[str],
+        slow_spans: list[dict],
+        error_spans: list[dict],
         call_tree: str,
     ) -> str:
         """Generate natural language summary"""

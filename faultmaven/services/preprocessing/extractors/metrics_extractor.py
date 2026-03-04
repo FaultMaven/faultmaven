@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
     truncate_output,
 )
@@ -69,14 +70,21 @@ class MetricsAndPerformanceExtractor:
         if not time_series:
             # Valid CSV with no numeric columns — provide structural summary
             if csv_summary:
-                return csv_summary
+                return csv_summary + format_coverage_metadata(
+                    Format="csv (non-numeric)",
+                )
             return "[Failed to parse metrics data - unsupported format]"
+
+        # Detect format for coverage
+        format_detected = self._detect_format_name(content)
 
         # Analyze each metric
         summaries = []
         for metric_name, data_points in time_series.items():
             summary = self._analyze_metric(metric_name, data_points)
             summaries.append(summary)
+
+        total_anomalies = sum(len(s.get("anomalies", [])) for s in summaries)
 
         # Combine summaries
         output = self._format_summary(summaries)
@@ -85,11 +93,31 @@ class MetricsAndPerformanceExtractor:
         if csv_summary:
             output += f"\n\n{csv_summary}"
 
-        return truncate_output(output)
+        output = truncate_output(output)
+
+        # Coverage metadata
+        metric_names = list(time_series.keys())
+        output += format_coverage_metadata(
+            Format=format_detected,
+            Metrics=len(metric_names),
+            **{"Metric names": ", ".join(metric_names[:10])},
+            **{"Anomalies found": total_anomalies},
+        )
+        return output
+
+    def _detect_format_name(self, content: str) -> str:
+        """Detect which format was successfully parsed."""
+        if self._parse_json_metrics(content):
+            return "json"
+        if self._parse_csv_metrics(content):
+            return "csv"
+        if self._parse_prometheus_metrics(content):
+            return "prometheus"
+        return "unknown"
 
     def _parse_metrics(
         self, content: str
-    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
         """
         Parse metrics data from various formats
 
@@ -116,7 +144,7 @@ class MetricsAndPerformanceExtractor:
 
     def _parse_json_metrics(
         self, content: str
-    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
         """Parse JSON time-series data"""
         try:
             data = json.loads(content)
@@ -134,8 +162,8 @@ class MetricsAndPerformanceExtractor:
             return None
 
     def _parse_json_array(
-        self, data: List[Dict]
-    ) -> Dict[str, List[Tuple[Optional[str], float]]]:
+        self, data: list[dict]
+    ) -> dict[str, list[tuple[str | None, float]]]:
         """Parse JSON array format: [{timestamp, cpu, memory, ...}, ...]"""
         result = {}
 
@@ -153,9 +181,7 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _parse_json_dict(
-        self, data: Dict
-    ) -> Dict[str, List[Tuple[Optional[str], float]]]:
+    def _parse_json_dict(self, data: dict) -> dict[str, list[tuple[str | None, float]]]:
         """Parse JSON dict format: {metric: [{timestamp, value}, ...]}"""
         result = {}
 
@@ -178,7 +204,7 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _parse_csv_rows(self, content: str) -> Optional[List[List[str]]]:
+    def _parse_csv_rows(self, content: str) -> list[list[str]] | None:
         """Parse CSV content using stdlib csv.reader (handles quoting correctly)."""
         try:
             reader = csv.reader(io.StringIO(content))
@@ -188,7 +214,7 @@ class MetricsAndPerformanceExtractor:
 
     def _parse_csv_metrics(
         self, content: str
-    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
         """Parse CSV format with header row.
 
         Auto-detects which columns are numeric by sampling data rows,
@@ -259,7 +285,7 @@ class MetricsAndPerformanceExtractor:
             return None
 
         # Parse all data rows
-        result: Dict[str, List[Tuple[Optional[str], float]]] = {
+        result: dict[str, list[tuple[str | None, float]]] = {
             header[i]: [] for i in metric_cols
         }
 
@@ -284,7 +310,7 @@ class MetricsAndPerformanceExtractor:
 
     def _parse_prometheus_metrics(
         self, content: str
-    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
         """Parse Prometheus text exposition format.
 
         Uses prometheus_client library when available for label-preserving parsing,
@@ -299,10 +325,10 @@ class MetricsAndPerformanceExtractor:
 
     def _parse_prometheus_with_library(
         self, content: str
-    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
         """Parse Prometheus metrics using prometheus_client library."""
         try:
-            result: Dict[str, List[Tuple[Optional[str], float]]] = {}
+            result: dict[str, list[tuple[str | None, float]]] = {}
             for family in text_string_to_metric_families(content):
                 for sample in family.samples:
                     # Include labels in metric name for differentiation
@@ -324,9 +350,9 @@ class MetricsAndPerformanceExtractor:
 
     def _parse_prometheus_regex(
         self, content: str
-    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
         """Parse Prometheus metrics using regex (fallback)."""
-        result: Dict[str, List[Tuple[Optional[str], float]]] = {}
+        result: dict[str, list[tuple[str | None, float]]] = {}
 
         # Match lines like: metric_name{labels} value timestamp
         pattern = r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([\d.eE+-]+)"
@@ -348,7 +374,7 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _summarize_csv_structure(self, content: str) -> Optional[str]:
+    def _summarize_csv_structure(self, content: str) -> str | None:
         """Produce a structural summary for valid CSVs with no numeric metrics columns."""
         rows = self._parse_csv_rows(content)
         if not rows or len(rows) < 2:
@@ -370,7 +396,7 @@ class MetricsAndPerformanceExtractor:
         total_rows = len(rows) - 1
 
         # Collect value distributions for categorical columns (sample first 200 rows)
-        col_values: Dict[str, Dict[str, int]] = {col: {} for col in header}
+        col_values: dict[str, dict[str, int]] = {col: {} for col in header}
         for row in rows[1 : min(len(rows), 202)]:
             parts = [p.strip() for p in row]
             if len(parts) != len(header):
@@ -403,8 +429,8 @@ class MetricsAndPerformanceExtractor:
         return "\n".join(out)
 
     def _analyze_metric(
-        self, metric_name: str, data_points: List[Tuple[Optional[str], float]]
-    ) -> Dict[str, Any]:
+        self, metric_name: str, data_points: list[tuple[str | None, float]]
+    ) -> dict[str, Any]:
         """
         Analyze single metric time-series
 
@@ -429,7 +455,7 @@ class MetricsAndPerformanceExtractor:
             "anomalies": anomalies[: self.MAX_ANOMALIES_REPORTED],
         }
 
-    def _calculate_statistics(self, values: List[float]) -> Dict[str, float]:
+    def _calculate_statistics(self, values: list[float]) -> dict[str, float]:
         """Calculate statistical measures"""
         n = len(values)
         sorted_values = sorted(values)
@@ -449,8 +475,8 @@ class MetricsAndPerformanceExtractor:
         }
 
     def _detect_anomalies(
-        self, data_points: List[Tuple[Optional[str], float]], stats: Dict[str, float]
-    ) -> List[Dict[str, Any]]:
+        self, data_points: list[tuple[str | None, float]], stats: dict[str, float]
+    ) -> list[dict[str, Any]]:
         """
         Detect anomalies using statistical methods
 
@@ -494,7 +520,7 @@ class MetricsAndPerformanceExtractor:
 
         return anomalies
 
-    def _format_summary(self, summaries: List[Dict[str, Any]]) -> str:
+    def _format_summary(self, summaries: list[dict[str, Any]]) -> str:
         """Format analysis results as natural language summary"""
         lines = ["=== METRICS ANALYSIS SUMMARY ===\n"]
 

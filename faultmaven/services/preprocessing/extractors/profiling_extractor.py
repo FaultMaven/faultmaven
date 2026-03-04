@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Dict, List
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    format_coverage_metadata,
     has_content,
 )
 
@@ -50,14 +51,20 @@ class ProfilingDataExtractor:
         # Detect format
         prof_format = self._detect_format(content)
 
-        if prof_format == self.FORMAT_CPROFILE:
-            return self._extract_cprofile(content)
-        elif prof_format == self.FORMAT_FLAME_GRAPH:
-            return self._extract_flame_graph(content)
-        elif prof_format == self.FORMAT_PERF:
-            return self._extract_perf(content)
-        else:
-            return self._fallback_extraction(content)
+        parsers = {
+            self.FORMAT_CPROFILE: self._extract_cprofile,
+            self.FORMAT_FLAME_GRAPH: self._extract_flame_graph,
+            self.FORMAT_PERF: self._extract_perf,
+        }
+
+        parser = parsers.get(prof_format, self._fallback_extraction)
+        result = parser(content)
+
+        # Coverage metadata
+        result += format_coverage_metadata(
+            Format=prof_format,
+        )
+        return result
 
     def _detect_format(self, content: str) -> str:
         """Detect profiling data format"""
@@ -138,7 +145,7 @@ class ProfilingDataExtractor:
         return self._generate_cprofile_summary(functions, hotspots, total_time)
 
     def _generate_cprofile_summary(
-        self, functions: List[Dict], hotspots: List[Dict], total_time: float
+        self, functions: list[dict], hotspots: list[dict], total_time: float
     ) -> str:
         """Generate natural language summary for cProfile data"""
         lines = [
