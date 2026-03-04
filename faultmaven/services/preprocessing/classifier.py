@@ -371,6 +371,7 @@ class DataClassifier:
         text_log_patterns = [
             r"\b(error|fatal|critical|panic|exception|traceback)\b",
             r"\[\d{4}-\d{2}-\d{2}",  # Timestamp [2025-10-15
+            r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\w+",  # Syslog RFC 3164: Jun 14 15:16:01 hostname
             r"\b(INFO|WARN|WARNING|ERROR|DEBUG|TRACE|FATAL|CRITICAL)\b[\s:\]|]",  # Log levels (colon, space, or delimiter)
             r"at\s+[\w\.]+\(\w+\.java:\d+\)",  # Java stack trace
             r'File\s+"[^"]+",\s+line\s+\d+',  # Python stack trace
@@ -397,6 +398,7 @@ class DataClassifier:
             r"\[\d{4}-\d{2}-\d{2}",  # [2025-10-15
             r"\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}",  # ISO timestamp
             r'"timestamp":\s*"\d{4}-\d{2}-\d{2}',  # JSON timestamp
+            r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}",  # Syslog RFC 3164
         ]
         has_timestamps = any(
             re.search(p, sample, re.IGNORECASE) for p in timestamp_patterns
@@ -618,6 +620,15 @@ class DataClassifier:
             DataType.STRUCTURED_CONFIG: config_score,
             DataType.SOURCE_CODE: code_score,
         }
+
+        # CSV/TSV files need structural log evidence (timestamps at line starts,
+        # log levels with brackets) — not just vocabulary matches (words like
+        # "info", "error" appearing in cell values). Without structural evidence,
+        # log-like vocabulary in tabular files is incidental (e.g., template CSVs,
+        # error code reference tables).
+        if ext in metrics_exts and structured_score == 0:
+            scores[DataType.LOGS_AND_ERRORS] = 0
+
         best_type, best_score = max(scores.items(), key=lambda x: x[1])
 
         if best_score >= 1:
