@@ -621,13 +621,19 @@ class DataClassifier:
             DataType.SOURCE_CODE: code_score,
         }
 
-        # CSV/TSV files need structural log evidence (timestamps at line starts,
-        # log levels with brackets) — not just vocabulary matches (words like
-        # "info", "error" appearing in cell values). Without structural evidence,
-        # log-like vocabulary in tabular files is incidental (e.g., template CSVs,
-        # error code reference tables).
-        if ext in metrics_exts and structured_score == 0:
-            scores[DataType.LOGS_AND_ERRORS] = 0
+        # CSV/TSV files that reached best-effort already failed the primary
+        # metrics check (metrics_score < 2 at line 478). Vocabulary-based scoring
+        # produces false positives from incidental cell content — "info", "error",
+        # "cpu", "interface", brackets — matching log, metric, and code patterns.
+        # Rather than zeroing each type individually (whack-a-mole), classify as
+        # TEXT: tabular reference/data files are the correct fallback.
+        if ext in metrics_exts:
+            return ClassificationResult(
+                data_type=DataType.UNSTRUCTURED_TEXT,
+                confidence=0.45,
+                source="rule_based",
+                classification_failed=True,
+            )
 
         best_type, best_score = max(scores.items(), key=lambda x: x[1])
 

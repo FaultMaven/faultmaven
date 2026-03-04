@@ -411,6 +411,13 @@ def _build_evidence_context(case: Case) -> str:
             "</evidence_collected>"
         )
 
+    # Build filename lookup from uploaded files
+    file_lookup = {}
+    if hasattr(case, "uploaded_files") and case.uploaded_files:
+        for uf in case.uploaded_files:
+            if uf.file_id and uf.filename:
+                file_lookup[str(uf.file_id)] = uf.filename
+
     # Separate evidence by form for tiered treatment
     data_evidence = []  # DOCUMENT or SUBMITTED_DATA
     text_evidence = []  # USER_TEXT
@@ -454,7 +461,10 @@ def _build_evidence_context(case: Case) -> str:
             continue
 
         data_type_attr = f' data_type="{ev.data_type}"' if ev.data_type else ""
-        result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}>\n'
+        filename_attr = ""
+        if ev.source_file_id and str(ev.source_file_id) in file_lookup:
+            filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
+        result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}{filename_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if structural_index.strip():
             result += "    <structural_index>\n"
@@ -467,7 +477,12 @@ def _build_evidence_context(case: Case) -> str:
 
     # Tier B: Older data evidence (summary only)
     for ev in tier_b:
-        entry = f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}">'
+        filename_attr = ""
+        if ev.source_file_id and str(ev.source_file_id) in file_lookup:
+            filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
+        entry = (
+            f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{filename_attr}>'
+        )
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
@@ -476,7 +491,12 @@ def _build_evidence_context(case: Case) -> str:
 
     # Tier C: USER_TEXT evidence (summary only, always)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent text items
-        entry = f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}">'
+        filename_attr = ""
+        if ev.source_file_id and str(ev.source_file_id) in file_lookup:
+            filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
+        entry = (
+            f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{filename_attr}>'
+        )
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
@@ -889,6 +909,26 @@ def build_investigation_context(
             )
             # All context sections relevant (may need extended diagnosis)
 
+    # 10. INQUIRY State (prevents blind re-proposal of already-proposed problem statements)
+    inquiry_state_str = ""
+    if case.status == CaseStatus.INQUIRY and case.inquiry:
+        inq = case.inquiry
+        if inq.proposed_problem_statement and inq.proposed_problem_statement.strip():
+            inquiry_state_str = "<inquiry_state>\n"
+            inquiry_state_str += (
+                f"PROPOSED_PROBLEM_STATEMENT: {inq.proposed_problem_statement}\n"
+            )
+            inquiry_state_str += f"CONFIRMED: {inq.problem_statement_confirmed}\n"
+            if not inq.problem_statement_confirmed:
+                inquiry_state_str += (
+                    "AWAITING_CONFIRMATION: You already proposed this problem statement. "
+                    "If the user's message shows engagement with the problem (uploading data, "
+                    "asking about the issue, referencing the problem, or any affirmative response), "
+                    "treat it as implicit confirmation and set user_confirmed_investigation=True. "
+                    "Do NOT re-ask for confirmation if you already asked in a previous turn.\n"
+                )
+            inquiry_state_str += "</inquiry_state>"
+
     # Assembly with budget check
     ctx = {
         "identity": budget.use(identity),
@@ -901,6 +941,7 @@ def build_investigation_context(
         "system_feedback": feedback_str,  # Prioritize feedback
         "conversation_history": budget.use(recent_history),
         "user_message": user_message_safe,  # Sanitized user message always included
+        "inquiry_state": budget.use(inquiry_state_str),
     }
 
     return ctx
