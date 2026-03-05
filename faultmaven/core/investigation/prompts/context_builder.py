@@ -364,13 +364,24 @@ def _build_state_summary(case: Case) -> str:
     else:
         hypothesis_str = "None yet"
 
-    # Evidence count
+    # Evidence count + digest of diagnostic findings
     evidence_count = len(case.evidence)
     evidence_str = (
         f"{evidence_count} artifacts analyzed"
         if evidence_count > 0
         else "No evidence collected"
     )
+
+    # Compact digest: retain key findings from diagnostic evidence (logs, metrics)
+    # so the agent can still cite specifics after Tier A window eviction
+    evidence_digests = []
+    for ev in case.evidence:
+        dt = (ev.data_type or "").lower()
+        if (
+            "log" in dt or "metric" in dt or "trace" in dt or "error_report" in dt
+        ) and ev.summary:
+            evidence_digests.append(f"[{ev.data_type}] {ev.summary[:120]}")
+    evidence_digest = "; ".join(evidence_digests[:5]) if evidence_digests else ""
 
     # Turn metrics
     turns_total = case.current_turn
@@ -385,7 +396,58 @@ Evidence: {evidence_str}
 Turns: {turns_total} total, {turns_since_progress} since last progress
 </state_summary>"""
 
+    # Append evidence digest outside the compact summary block so it doesn't
+    # inflate the base summary for cases with no diagnostic evidence
+    if evidence_digest:
+        summary += f"\n<evidence_digest>\n{evidence_digest}\n</evidence_digest>"
+
     return summary
+
+
+def _score_evidence_for_tier_a(ev, case) -> float:
+    """
+    Score evidence for Tier A promotion. Higher score = more likely to get
+    full structural index in the LLM context.
+
+    Scoring weights:
+    - Data type priority (+2 logs/metrics, +1 config/code, 0 text): diagnostic
+      evidence should always beat READMEs and CITATIONs.
+    - Hypothesis linkage (+3): evidence backing an active/validated hypothesis
+      is the most valuable context the agent can have.
+    - Has structural content (+1): evidence with rich preprocessed_content
+      benefits more from Tier A than items with minimal extraction.
+    - Recency (0.0-1.0): tiebreaker. Normalized against case.current_turn so
+      it never outweighs type or hypothesis bonuses.
+    """
+    score = 0.0
+
+    # Recency: 0.0 to 1.0, tiebreaker only
+    current_turn = max(case.current_turn, 1)
+    score += ev.collected_at_turn / current_turn
+
+    # Data type priority: diagnostic evidence over text
+    # Handles both DataType enum values (logs_and_errors, metrics_and_performance)
+    # and legacy/test values (LOGS, metrics, log, etc.)
+    dt = (ev.data_type or "").lower()
+    if "log" in dt or "metric" in dt or "trace" in dt or "error_report" in dt:
+        score += 2
+    elif "config" in dt or "code" in dt or "command" in dt or "profil" in dt:
+        score += 1
+
+    # Hypothesis linkage: evidence referenced by active/validated hypotheses
+    for h in case.hypotheses.values():
+        if h.status.value in ("active", "validated") and ev.evidence_id in (
+            h.supporting_evidence_ids or []
+        ):
+            score += 3
+            break
+
+    # Structural content richness: items with real extraction output benefit
+    # more from Tier A than items with sparse/empty preprocessed_content
+    if ev.preprocessed_content and len(ev.preprocessed_content) > 200:
+        score += 1
+
+    return score
 
 
 def _build_evidence_context(case: Case) -> str:
@@ -396,9 +458,11 @@ def _build_evidence_context(case: Case) -> str:
     includes structural indexes for recent data evidence, fixing the
     "I don't have access to file content" bug.
 
-    Tier A: Last N data evidence items (form=DOCUMENT or SUBMITTED_DATA)
-            → Include preprocessed_content (structural index), capped per item.
-    Tier B: Older data evidence → summary only.
+    Tier A: Top N data evidence items by relevance score (form=DOCUMENT or
+            SUBMITTED_DATA) → Include preprocessed_content (structural index),
+            capped per item. Scored by data type, hypothesis linkage,
+            structural content richness, and recency (tiebreaker).
+    Tier B: Remaining data evidence → summary only.
     Tier C: USER_TEXT evidence → summary only, always.
 
     Token budget: ~4000 tokens dedicated. Worst case: 3 Tier A items x 4000
@@ -427,13 +491,17 @@ def _build_evidence_context(case: Case) -> str:
         else:
             text_evidence.append(ev)
 
-    # Split data evidence into recent (Tier A) and older (Tier B)
-    tier_a = data_evidence[-EVIDENCE_CONTEXT_RECENT_COUNT:]
-    tier_b = (
-        data_evidence[:-EVIDENCE_CONTEXT_RECENT_COUNT]
-        if len(data_evidence) > EVIDENCE_CONTEXT_RECENT_COUNT
-        else []
+    # Select Tier A by relevance score (not FIFO). Logs/metrics with hypothesis
+    # linkage beat READMEs/CITATIONs regardless of upload order.
+    scored = sorted(
+        data_evidence,
+        key=lambda ev: _score_evidence_for_tier_a(ev, case),
+        reverse=True,
     )
+    tier_a_set = set(id(ev) for ev in scored[:EVIDENCE_CONTEXT_RECENT_COUNT])
+    # Preserve original chronological order within each tier for stable output
+    tier_a = [ev for ev in data_evidence if id(ev) in tier_a_set]
+    tier_b = [ev for ev in data_evidence if id(ev) not in tier_a_set]
 
     result = "<evidence_collected>\n"
     total_chars = 0
@@ -803,6 +871,20 @@ def build_investigation_context(
             hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
         hypothesis_str += "</working_hypotheses>"
 
+    # 5a. Working Conclusion (durable case-level understanding)
+    # Persists across turns even after evidence structural indexes are evicted
+    # from the Tier A window, ensuring the agent retains its accumulated findings.
+    conclusion_str = ""
+    if case.working_conclusion:
+        wc = case.working_conclusion
+        conclusion_str = "<working_conclusion>\n"
+        conclusion_str += f"STATEMENT: {wc.statement}\n"
+        conclusion_str += f"CONFIDENCE: {wc.likelihood*100:.0f}%\n"
+        conclusion_str += f"REASONING: {wc.reasoning[:500]}\n"
+        if wc.supporting_evidence_ids:
+            conclusion_str += f"EVIDENCE: {', '.join(wc.supporting_evidence_ids)}\n"
+        conclusion_str += "</working_conclusion>"
+
     # 5b. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
     pending_action_str = ""
     if case.proposed_actions:
@@ -936,6 +1018,7 @@ def build_investigation_context(
         "milestones": budget.use(milestones_str),
         "evidence": budget.use(evidence_str),
         "hypotheses": budget.use(hypothesis_str),
+        "working_conclusion": budget.use(conclusion_str),
         "pending_action": budget.use(pending_action_str),
         "kb_results": budget.use(kb_str),
         "system_feedback": feedback_str,  # Prioritize feedback
