@@ -434,13 +434,17 @@ def _score_evidence_for_tier_a(ev, case) -> float:
     elif "config" in dt or "code" in dt or "command" in dt or "profil" in dt:
         score += 1
 
-    # Hypothesis linkage: evidence referenced by active/validated hypotheses
+    # Hypothesis linkage: evidence linked to active/validated hypotheses
+    # with a supportive stance (supports/strongly_supports)
     for h in case.hypotheses.values():
-        if h.status.value in ("active", "validated") and ev.evidence_id in (
-            h.supporting_evidence_ids or []
+        if (
+            h.status.value in ("active", "validated")
+            and ev.evidence_id in h.evidence_links
         ):
-            score += 3
-            break
+            link = h.evidence_links[ev.evidence_id]
+            if link.stance.value in ("supports", "strongly_supports"):
+                score += 3
+                break
 
     # Structural content richness: items with real extraction output benefit
     # more from Tier A than items with sparse/empty preprocessed_content
