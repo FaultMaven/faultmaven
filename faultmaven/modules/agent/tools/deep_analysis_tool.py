@@ -1,10 +1,10 @@
 """Deep Analysis Tool for Agent Execution
 
-Invokes Tier 2 deep analysis on raw evidence files when Tier 0+1
-structural indexes are insufficient to answer the agent's question.
+Invokes LLM-interpreted deep analysis on raw evidence files. Primary tool
+for Directed Analysis mode — the LLM reads the user's question, searches
+the file, and answers.
 
-Design Reference:
-- docs/architecture/data-processing/data-preprocessing-design-specification.md Section 9.3
+Design Reference: docs/architecture/data-processing/README.md
 """
 
 import logging
@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 class DeepAnalysisTool(AgentTool):
     """Tool for on-demand deep analysis of raw evidence files.
 
-    Uses Tier 2 preprocessing to drill into raw data (logs, configs, etc.)
-    when the structural index from Tier 0+1 doesn't answer the question.
+    Uses the deep analysis backend to drill into raw data (logs, configs,
+    etc.) when the structural index doesn't answer the question. Primary
+    entry point for Directed Analysis mode.
     """
 
     def __init__(self, tier2_service: Any):

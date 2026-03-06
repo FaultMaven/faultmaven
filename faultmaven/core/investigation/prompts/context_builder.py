@@ -454,7 +454,7 @@ def _score_evidence_for_tier_a(ev, case) -> float:
     return score
 
 
-def _build_evidence_context(case: Case) -> str:
+def _build_evidence_context(case: Case, processing_mode: Optional[str] = None) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
 
@@ -539,7 +539,10 @@ def _build_evidence_context(case: Case) -> str:
         result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}{filename_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if structural_index.strip():
-            result += "    <structural_index>\n"
+            role_attr = (
+                ' role="orientation"' if processing_mode == "directed_analysis" else ""
+            )
+            result += f"    <structural_index{role_attr}>\n"
             result += structural_index
             if truncated:
                 result += f"\n[TRUNCATED: {remaining_chars:,} more characters. Use search_file or read_file to query the full content.]"
@@ -755,6 +758,7 @@ def build_investigation_context(
     model_name: Optional[str] = None,
     use_state_summary: Optional[bool] = None,
     enable_stage_specific_loading: bool = True,
+    processing_mode: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -864,7 +868,7 @@ def build_investigation_context(
     # Tier B (older data, summary only), Tier C (user text, summary only).
     # Fixes "I don't have access to file content" bug by including
     # structural indexes in the LLM context for recent evidence.
-    evidence_str = _build_evidence_context(case)
+    evidence_str = _build_evidence_context(case, processing_mode=processing_mode)
 
     # 5. Hypothesis Summary
     hypothesis_str = ""

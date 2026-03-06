@@ -864,6 +864,7 @@ def get_prompt_for_case(
     provider_name: Optional[str] = None,
     model_name: Optional[str] = None,
     use_state_summary: Optional[bool] = None,
+    processing_mode: Optional[str] = None,
 ) -> str:
     """Build the final prompt based on case status and stage.
 
@@ -875,6 +876,8 @@ def get_prompt_for_case(
         model_name: LLM model name for fine-grained budget calculation (Gap #6)
         use_state_summary: Optional flag to use compact state summary (Gap #8)
                           (auto-enabled for conversations >15 turns)
+        processing_mode: Processing mode (triage/directed_analysis) for structural
+                        index role tagging in evidence context
 
     Returns:
         Formatted prompt for the LLM
@@ -887,6 +890,7 @@ def get_prompt_for_case(
         provider_name=provider_name,
         model_name=model_name,
         use_state_summary=use_state_summary,
+        processing_mode=processing_mode,
     )
 
     if case.status == CaseStatus.INQUIRY:

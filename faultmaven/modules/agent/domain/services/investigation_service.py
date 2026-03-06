@@ -67,7 +67,7 @@ class InvestigationService:
         Args:
             milestone_engine: Core investigation engine with LLM integration
             case_repository: Case persistence layer
-            preprocessing_service: Tier 0+1 preprocessing pipeline
+            preprocessing_service: Classification and extraction pipeline
             file_storage_service: Raw file storage (local/S3)
         """
         self.engine = milestone_engine
@@ -82,7 +82,7 @@ class InvestigationService:
         """
         Process a user turn through the two-step pipeline.
 
-        Step 1: Preprocess any attachments through Tier 0+1 (before LLM).
+        Step 1: Preprocess any attachments (classify + extract, before LLM).
         Step 2: LLM inference with query + evidence context.
 
         Args:
@@ -115,11 +115,26 @@ class InvestigationService:
             next_turn = case.current_turn + 1
 
             # ── STEP 1: PRE-LLM DATA INGESTION ──
+            # Classify query for scenario-driven processing mode
+            from faultmaven.modules.agent.domain.services.query_classifier import (
+                classify_query,
+            )
+
+            classification = classify_query(
+                payload.query or "",
+                has_attachments=payload.has_attachments,
+            )
+            processing_mode = classification.mode.value
+
             evidence_created: List["Evidence"] = []
             if payload.has_attachments:
                 for attachment in payload.attachments:
                     evidence = await self._preprocess_attachment(
-                        case, attachment, user_id, next_turn
+                        case,
+                        attachment,
+                        user_id,
+                        next_turn,
+                        processing_mode=processing_mode,
                     )
                     evidence_created.append(evidence)
                     case.evidence.append(evidence)
@@ -355,7 +370,7 @@ class InvestigationService:
             raise ServiceException(f"Progress retrieval failed: {str(e)}") from e
 
     # ============================================================
-    # Attachment Preprocessing (Step 1 of Two-Step Pipeline)
+    # Attachment Preprocessing
     # ============================================================
 
     async def _preprocess_attachment(
@@ -364,14 +379,17 @@ class InvestigationService:
         attachment: Attachment,
         user_id: str,
         turn_number: int,
+        processing_mode: str = "triage",
     ) -> Evidence:
-        """Preprocess a single attachment through Tier 0+1.
+        """Preprocess a single attachment through classification and extraction.
 
         Args:
             case: Case entity (for case_id context)
             attachment: Raw attachment from turn payload
             user_id: User who submitted the attachment
             turn_number: Current turn number
+            processing_mode: Processing mode from query classification
+                (triage or directed_analysis)
 
         Returns:
             Evidence record with preprocessed content
@@ -390,7 +408,14 @@ class InvestigationService:
 
             source_meta = SourceMetadata(**attachment.source_metadata)
 
-        # Tier 0+1: Classify and extract structural index
+        # Classify and extract structural index.
+        # COLD START ORIENTATION: This extractor pass runs for EVERY file
+        # regardless of processing mode. In Triage mode, the structural index
+        # IS the user-facing answer. In Directed Analysis mode, it serves as
+        # internal orientation — a map of the file's contents (time range,
+        # services, error distribution) so the DA's LLM can formulate targeted
+        # search strategies instead of searching blind. Do NOT skip this step
+        # for DA-mode files.
         preprocessing_result = await self.preprocessing_service.classify_and_extract(
             content=content,
             filename=attachment.filename,
@@ -411,11 +436,12 @@ class InvestigationService:
             content_size_bytes=len(attachment.content),
             preprocessing_method=preprocessing_result.extraction_method,
             extraction_method=preprocessing_result.extraction_method,
+            processing_mode=processing_mode,
             collected_by=user_id,
             collected_at_turn=turn_number,
         )
 
-        # Store raw content for Tier 2 deep analysis
+        # Store raw content for deep analysis / search_file access
         if self.file_storage_service:
             storage_result = await self.file_storage_service.store_file(
                 file_data=attachment.content,

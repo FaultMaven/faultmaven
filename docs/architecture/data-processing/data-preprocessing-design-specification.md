@@ -1,12 +1,26 @@
-# Data Preprocessing Design Specification v4.2
+# Data Preprocessing Design Specification v5.0
 
 **Status**: FINAL
-**Date**: 2026-03-04
-**Supersedes**: v4.1
+**Date**: 2026-03-06
+**Supersedes**: v4.2
 
 ---
 
 ## Change Summary
+
+### v4.2 → v5.0 (Scenario-Driven Processing)
+
+| Area | v4.2 | v5.0 |
+|------|------|------|
+| **Processing model** | Linear 4-tier escalation ("Never skip tiers. Always try the cheaper option first.") | Scenario-driven: **Triage**, **Directed Analysis**, **Semantic Search**. Mode selected by mechanical query classifier, not LLM judgment. |
+| **Query routing** | LLM-driven tier selection via system prompt | Heuristic `classify_query()` — regex entity detection (timestamps, HTTP status codes, error keywords, service names, IPs) + generic phrase detection. No LLM call. |
+| **System prompt** | Single "Data Access Strategy" with tier ordering | Mode-specific: `DATA_ACCESS_TRIAGE` (structural index is the answer) vs `DATA_ACCESS_DIRECTED_ANALYSIS` (structural index as orientation map, deep_analysis as primary tool) |
+| **Structural index role** | Always presented the same way in LLM context | Tagged `<structural_index role="orientation">` in DA mode; plain `<structural_index>` in Triage mode |
+| **Vectorization trigger** | Agent proposes → user approves | Auto-triggered mechanically on DA failure signals (no user confirmation) |
+| **Failure tracking** | Global `consecutive_empty_searches` counter with escalation advisory after 2 empties | Per-evidence `EvidenceDAState` with 4 independent triggers: tool timeout, 3+ empty searches, 3+ DA invocations, low confidence (<0.2). Cross-turn persistence via `da_invocation_count` on Evidence model. |
+| **Small-file DA failure** | Not addressed | Raw file content injected directly into LLM context when DA fails on files below vectorization threshold |
+| **Evidence model** | No processing mode tracking | New fields: `processing_mode` (triage\|directed_analysis), `da_invocation_count` (cross-turn DA counter) |
+| **Orchestration R4** | After 2 consecutive empty searches → `[ESCALATION ADVISORY]` | **Replaced** by per-evidence DA failure tracking with auto-vectorization (Section 6) |
 
 ### v4.1 → v4.2 (Tier-Escalation Hardening)
 
@@ -47,9 +61,9 @@
 
 ## 1. Architecture Overview
 
-### 1.1 Four-Tier Processing Model
+### 1.1 Scenario-Driven Processing Model
 
-Data submitted to FaultMaven — whether uploaded files or pasted text — progresses through up to four processing tiers. Each tier is more expensive and more thorough than the previous. The system starts cheap and escalates only when cheaper tiers fail to answer the user's questions.
+Data submitted to FaultMaven — whether uploaded files or pasted text — is always preprocessed through Tier 0+1 (structural indexing). Subsequent processing is determined by a **mechanical query classifier** that routes to one of three processing modes based on heuristic entity detection and phrasing analysis. No LLM is involved in mode selection.
 
 ```
                     SUBMISSION
@@ -61,45 +75,42 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — progr
          │  → Summary + structural_index│  No LLM.
          └──────────────┬───────────────┘
                         │
-              Agent has summary +
-              structural index.
-              Can answer question?
+                        v
+         ┌──────────────────────────────┐
+         │  QUERY CLASSIFIER            │  Mechanical. No LLM.
+         │  classify_query(message,     │  Regex entity detection +
+         │    has_attachments)           │  generic phrase analysis.
+         └──────────────┬───────────────┘
                         │
-                   ┌────┴────┐
-                YES│         │NO
-                   │         v
-             ┌─────┘  ┌──────────────────────────┐
-             │        │  TIER 2: Mechanical Search │  On-demand. $0. ~1s.
-             │        │  search_file tool           │  Grep/regex on raw file.
-             │        │  Re-run domain extractors   │  No LLM.
-             │        │  → Raw excerpts             │
-             │        └────────────┬─────────────────┘
-             │                     │
-             │           Can answer question?
-             │                     │
-             │                ┌────┴────┐
-             │             YES│         │NO
-             │                │         v
-             │          ┌─────┘  ┌──────────────────────────┐
-             │          │        │  TIER 3: Deep LLM Analysis│  On-demand. ~$0.01.
-             │          │        │  deep_analyze_file tool    │  LLM analyzes specific
-             │          │        │  → Interpreted answer +    │  data windows.
-             │          │        │    supporting excerpts     │
-             │          │        └────────────┬───────────────┘
-             │          │                     │
-             │          │           Can answer question?
-             │          │                     │
-             │          │               ┌─────┴────┐
-             │          │            YES│          │NO + file qualifies
-             │          │               │          v
-             │          │         ┌─────┘  ┌──────────────────────────┐
-             │          │         │        │  TIER 4: Vectorization    │  Rare. ~$0.05.
-             │          │         │        │  Chunk + embed + store    │  User warned first.
-             │          │         │        │  → Semantic search across │  Background async.
-             │          │         │        │    all vectorized evidence│
-             │          │         │        └──────────────────────────┘
-             │          │         │
-             v          v         v
+              ┌─────────┼─────────┐
+              v         v         v
+     ┌────────────┐ ┌─────────────────┐ ┌──────────────────┐
+     │  TRIAGE    │ │  DIRECTED       │ │  SEMANTIC SEARCH │
+     │            │ │  ANALYSIS       │ │                  │
+     │ Structural │ │ Structural index│ │ Auto-triggered   │
+     │ index IS   │ │ as orientation  │ │ when DA fails on │
+     │ the answer.│ │ map. Agent uses │ │ large files.     │
+     │ Summarize  │ │ deep_analysis   │ │ vectorize_file   │
+     │ key        │ │ and search_file │ │ → knowledge_base │
+     │ findings.  │ │ as primary      │ │ _search.         │
+     │            │ │ tools.          │ │                  │
+     └────────────┘ └────────┬────────┘ └──────────────────┘
+                             │
+                    DA failure signals?
+                    (timeout, empty searches,
+                     low confidence, 3+ DA calls)
+                             │
+                        ┌────┴────┐
+                     NO │         │ YES + file qualifies
+                        │         v
+                        │  ┌──────────────────────────┐
+                        │  │  AUTO-VECTORIZATION       │  Mechanical trigger.
+                        │  │  No user confirmation.    │  Per-evidence tracking.
+                        │  │  → Semantic search via    │
+                        │  │    knowledge_base_search  │
+                        │  └──────────────────────────┘
+                        │         │
+                        v         v
          ┌──────────────────────────────┐
          │  AGENT RESPONSE              │
          │  → May create Evidence via   │
@@ -107,9 +118,19 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — progr
          └──────────────────────────────┘
 ```
 
+**Mode selection (heuristic, no LLM):**
+
+| Signal | Result | Example |
+|--------|--------|---------|
+| Specific entities (timestamps, HTTP status codes, error keywords, service names, IPs) + interrogative structure | **Directed Analysis** (high confidence) | "what caused the 502 errors at 14:00?" |
+| Entities + non-generic phrasing | **Directed Analysis** | "investigate 502s at 14:00" |
+| Generic phrasing ("analyze this", "what's in here") without entities | **Triage** | "analyze this log file" |
+| No message + attachments | **Triage** | User drops file with no question |
+| Ambiguous (no entities, no generic phrasing, no question) | **Directed Analysis** (default) | "performance degradation" |
+
 ### 1.2 Design Principles
 
-1. **Start cheap, escalate on demand.** Tier 0+1 runs on every submission. Tiers 2-4 run only when the user's questions can't be answered by cheaper tiers.
+1. **Mechanical mode selection.** The query classifier (`classify_query()`) determines the processing mode using regex entity detection and phrasing analysis. No LLM call for routing — deterministic and auditable.
 
 2. **Payload-driven evidence form.** Evidence form (`USER_TEXT` vs `SUBMITTED_DATA` vs `DOCUMENT`) is determined by payload context: attachments present → `DOCUMENT`, agent tool findings → `SUBMITTED_DATA`, query-only → `USER_TEXT`. *(Updated v4.1: was classification-driven via `submission_classification`, now payload-driven via unified turn pipeline.)*
 
@@ -117,16 +138,17 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — progr
 
 4. **Re-runnable extractors.** Domain-specific extractors (Crime Scene, Anomaly Detection, etc.) can be re-invoked with different parameters on follow-up queries, not just at upload time.
 
-5. **Agent decides, user approves.** The agent decides when to escalate. For Tier 4 (vectorization), the agent warns the user about cost/time before proceeding.
+5. **Auto-vectorization on DA failure.** When directed analysis fails mechanically (tool timeouts, repeated empty searches, low confidence, cumulative DA calls), the system auto-vectorizes qualifying files without user confirmation. Per-evidence tracking ensures independent failure detection. *(Updated v5.0: was "Agent decides, user approves".)*
 
-### 1.3 Cost Matrix
+### 1.3 Tool Cost Matrix
 
-| Tier | Trigger | Cost | Latency | LLM Calls |
-|------|---------|------|---------|-----------|
-| **0+1** | Every submission | $0.00 | <2s | 0 |
-| **2** | Agent needs specific data | $0.00 | ~0.5-2s | 0 |
-| **3** | Agent needs interpreted analysis | ~$0.01-0.05 | 3-15s | 1 |
-| **4** | Agent needs semantic search; file qualifies | ~$0.05-0.50 | 10-60s | 0 (embedding only) |
+| Tool | Cost | Latency | LLM? | When Used |
+|------|------|---------|------|-----------|
+| *(structural index in context)* | $0.00 | <2s | No | Always — Tier 0+1 on every submission |
+| `search_file` | $0.00 | ~0.5-2s | No | Agent needs specific data from raw file |
+| `deep_analysis` | ~$0.01-0.05 | 3-15s | Yes | Agent needs interpreted analysis |
+| `vectorize_file` | ~$0.05-0.50 | 10-60s | Embed only | Auto-triggered on DA failure; file must pass size gates |
+| `knowledge_base_search` | $0.00 | ~0.5s | No | After vectorization, semantic search |
 
 ---
 
@@ -518,92 +540,104 @@ DEEP_ANALYSIS_API_KEY=            # API key for external backend
 DEEP_ANALYSIS_TIMEOUT_SECONDS=30
 ```
 
-> **Note**: The old `TIER2_*` config names are no longer supported. Phase 5 performed a clean break — use `DEEP_ANALYSIS_*` exclusively. In the codebase, the service is still called `ITier2AnalysisService`. The "Tier 3" naming is a spec-level concept for the four-tier processing model.
+> **Note**: The old `TIER2_*` config names are no longer supported. Phase 5 performed a clean break — use `DEEP_ANALYSIS_*` exclusively. In the codebase, the service is still called `ITier2AnalysisService`. The "Tier 3" naming is a spec-level concept for the processing model; in v5.0, tool selection is mode-driven rather than tier-driven.
 
 ---
 
-## 5. Tier 4: Vectorization (Redesigned)
+## 5. Vectorization (Redesigned v5.0)
 
-### 5.1 Key Change: Eager → On-Demand
+### 5.1 Key Changes: Eager → On-Demand → Auto-Triggered
 
-**v3.2 behavior**: After every file upload, the Tier 1 structural index is chunked, embedded, and stored in ChromaDB as a background async task. Every file gets vectorized.
+**v3.2**: After every file upload, the Tier 1 structural index is chunked, embedded, and stored in ChromaDB as a background async task. Every file gets vectorized.
 
-**v4.0 behavior**: Vectorization only happens when:
-1. The file qualifies (meets size and type criteria)
-2. The user demonstrates continued interest (cheaper tiers failed)
-3. The agent proposes vectorization and the user approves
+**v4.0**: Vectorization only when the agent proposes and user approves.
 
-### 5.2 Three Qualification Factors
+**v5.0**: Vectorization is **auto-triggered mechanically** when directed analysis fails on qualifying files. No user confirmation required. The orchestration layer tracks per-evidence DA failure signals and triggers `vectorize_file` automatically.
 
-Vectorization is gated by three factors. All three must pass.
+### 5.2 Qualification: Size Gates
 
-#### Factor 1: Size Minimum
+Two size gates must pass before vectorization (either auto-triggered or manual):
 
-Files below the size threshold are fully representable by their Tier 1 structural index. Vectorizing them adds no retrieval value.
+#### Size Minimum (Configurable)
+
+Files below the size threshold are fully representable by their structural index. Vectorizing them adds no retrieval value.
 
 ```python
-VECTORIZATION_MIN_SIZE_BYTES = 50_000  # 50KB of raw content
-
-def passes_size_minimum(evidence: Evidence) -> bool:
-    return evidence.content_size_bytes >= VECTORIZATION_MIN_SIZE_BYTES
+# Configurable via settings (AgentSettings.vectorization_min_size_bytes)
+# Default: 50,000 bytes (50KB). Range: 1,000 - 10,000,000.
+min_size = get_settings().agent.vectorization_min_size_bytes
 ```
 
-**Rationale**: A 5KB config file's Tier 1 output is the full parsed config. A 50KB log file's Tier 1 output is a structural index that may omit details. The threshold is configurable.
+**Rationale**: A 5KB config file's Tier 1 output is the full parsed config. A 50KB log file's Tier 1 output is a structural index that may omit details. When DA fails on a file below this threshold, the system injects raw file content directly into the LLM context instead (see Section 6.1).
 
-#### Factor 2: User Query Demand
-
-The user must have asked questions that cheaper tiers could not answer. Vectorization happens reactively, not speculatively.
-
-**Decision flow:**
-```
-User asks question about file X
-  → Agent tries Tier 1 (structural index)
-    → Sufficient? → Respond. No vectorization.
-    → Insufficient?
-      → Agent tries Tier 2 (search_file)
-        → Sufficient? → Respond. No vectorization.
-        → Insufficient?
-          → Agent tries Tier 3 (deep_analyze_file)
-            → Sufficient? → Respond. No vectorization.
-            → Insufficient for *this* query but user keeps asking about
-              this file across multiple turns?
-              → Agent proposes vectorization.
-```
-
-The agent proposes vectorization when it detects a pattern: the user is repeatedly asking about the same large file, and point queries (Tier 2-3) are insufficient because the questions span the entire file (e.g., "find all places where X correlates with Y").
-
-**Agent prompt guidance:**
-```
-When you've used search_file and deep_analyze_file on the same file
-across multiple turns and the user's questions require scanning the
-entire file rather than specific sections, consider suggesting
-vectorization:
-
-"This file is large (X MB) and your questions require searching
-across the entire document. I can vectorize this file for faster
-semantic search, which will take about Y seconds. Shall I proceed?"
-
-Only suggest vectorization when:
-- The file passes the size minimum (>50KB)
-- You've already tried Tier 2 and/or Tier 3
-- The user's question pattern suggests full-file search is needed
-- The file does not exceed the max size cap
-```
-
-#### Factor 3: Max Size Cap
+#### Size Maximum (Hard Cap)
 
 Files above the max size cap are too expensive to vectorize (embedding cost scales linearly with content size).
 
 ```python
-VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB
-
-def passes_size_cap(evidence: Evidence) -> bool:
-    return evidence.content_size_bytes <= VECTORIZATION_MAX_SIZE_BYTES
+VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 ```
 
-For files above the cap, the agent should use Tier 2 (targeted search) and Tier 3 (windowed LLM analysis) instead.
+For files above the cap, the agent should use `search_file` (targeted search) and `deep_analysis` (windowed LLM analysis) instead.
 
-### 5.3 Vectorization Trigger: Agent Tool
+### 5.3 Auto-Vectorization Triggers (v5.0)
+
+Vectorization is triggered mechanically by the orchestration layer when **any single** DA failure signal fires on a qualifying file. No user confirmation needed.
+
+**Four independent trigger signals** (per-evidence, tracked by `EvidenceDAState`):
+
+| Signal | Threshold | Rationale |
+|--------|-----------|-----------|
+| **Tool timeout** | Any `deep_analysis` or `search_file` call times out | File is too large for point queries |
+| **Repeated empty searches** | 3+ consecutive `search_file` calls return 0 results | Agent's keyword strategy is failing; semantic search may find what keywords miss |
+| **Cumulative DA invocations** | 3+ `deep_analysis` calls on the same evidence | Agent is repeatedly probing the file without resolution |
+| **Low confidence** | Any `deep_analysis` returns confidence < 0.2 | Analysis produced unreliable results |
+
+**Cross-turn persistence**: `da_invocation_count` is stored on the Evidence model and persisted via the case repository, enabling vectorization triggers that span multiple conversation turns.
+
+**Decision flow:**
+
+```python
+def _should_auto_vectorize(state: EvidenceDAState) -> bool:
+    """Mechanical decision: should this evidence be auto-vectorized?"""
+    if state.content_size_bytes < get_settings().agent.vectorization_min_size_bytes:
+        return False
+    return (
+        state.has_timed_out
+        or state.empty_search_count >= 3
+        or state.da_call_count >= 3
+        or (state.da_call_count >= 1 and state.last_da_confidence < 0.2)
+    )
+```
+
+When auto-vectorization fires, a `[SYSTEM]` message is injected into the tool result context:
+
+```text
+[SYSTEM] This file has been automatically indexed for semantic search.
+Use knowledge_base_search to find content by meaning rather than keywords.
+```
+
+**Early advisory**: When `empty_search_count` reaches 3 (before the auto-vectorization size gate is checked), a `[SYSTEM]` advisory is injected into the tool result to redirect the agent toward `deep_analysis`:
+
+```text
+[SYSTEM] Last {N} search_file calls on this file returned zero results.
+Consider using deep_analysis with a different query approach.
+```
+
+This advisory fires regardless of file size and is independent of the auto-vectorization trigger.
+
+### 5.4 Small-File DA Failure Fallback (v5.0)
+
+When DA fails on a file **below** the vectorization size threshold, vectorization is not an option. Instead, the system injects the raw file content (up to 50KB safety cap) directly into the LLM context:
+
+```text
+[SYSTEM] Full file content (small file, {size} bytes):
+{raw_content}
+```
+
+This ensures the LLM has full visibility into small files when point queries fail, without the overhead of vectorization.
+
+### 5.5 Tool Interface
 
 ```python
 @tool(name="vectorize_file")
@@ -611,17 +645,15 @@ async def vectorize_file(
     evidence_id: str,
 ) -> str:
     """
-    Vectorize a previously uploaded file for semantic search.
+    Vectorize a previously uploaded evidence file for semantic search.
 
-    This chunks the file's structural index, generates embeddings, and
-    stores them in ChromaDB. After vectorization, you can search this
-    file's content via knowledge_base_search.
-
-    IMPORTANT: Only call this after confirming with the user. Vectorization
-    is a heavier operation that takes 10-60 seconds depending on file size.
+    Chunks the file content, generates embeddings, and stores them in
+    ChromaDB. After vectorization, use knowledge_base_search to find
+    content semantically. Triggered automatically when directed analysis
+    fails on large files.
 
     Prerequisites (system-enforced):
-    - File must be >50KB (VECTORIZATION_MIN_SIZE_BYTES)
+    - File must exceed configured minimum size (default 50KB)
     - File must be <50MB (VECTORIZATION_MAX_SIZE_BYTES)
     """
 ```
@@ -659,79 +691,82 @@ In v3.2, `store_in_vector_db_background()` is called automatically after every u
 
 ---
 
-## 6. Agent Escalation Decision Tree
+## 6. Scenario-Driven Processing Modes (v5.0)
 
-The investigation agent follows this decision tree when a user asks a question about submitted data:
+The investigation agent receives a **mode-specific system prompt** based on the query classifier's output. This replaces the old linear escalation decision tree and "Never skip tiers" instruction.
+
+### 6.0 Query Classifier
+
+The `classify_query()` function in `modules/agent/domain/services/query_classifier.py` performs mechanical routing:
 
 ```python
-async def decide_data_access_tier(
-    query: str,
-    relevant_evidence: List[Evidence],
-) -> str:
-    """
-    Agent's internal reasoning for data access tier selection.
-    This is encoded in the system prompt, not as executable code.
-    """
+class ProcessingMode(str, Enum):
+    TRIAGE = "triage"
+    DIRECTED_ANALYSIS = "directed_analysis"
+    SEMANTIC_SEARCH = "semantic_search"
 
-    # Step 1: Check Tier 1 (always available)
-    # Agent reviews evidence.summary and structural_index
-    # (structural_index is included in evidence context for the current turn,
-    #  and retrievable via vector DB if previously vectorized)
-    if structural_index_answers_query(query, relevant_evidence):
-        return "respond_from_tier1"
+@dataclass
+class QueryClassification:
+    mode: ProcessingMode
+    detected_entities: dict[str, list[str]]  # timestamps, status_codes, etc.
+    confidence: float  # 0.0-1.0
 
-    # Step 2: Try Tier 2 (search_file — zero cost)
-    # Agent calls search_file to grep/regex the raw file
-    if query_is_about_specific_pattern_or_value():
-        return "call_search_file"
-
-    # Step 3: Try Tier 3 (deep_analyze_file — low cost)
-    # Agent calls deep_analyze_file for LLM-interpreted analysis
-    if query_needs_interpretation_or_synthesis():
-        return "call_deep_analyze_file"
-
-    # Step 4: Consider Tier 4 (vectorize_file — higher cost)
-    # Only if: large file + repeated queries + questions span full file
-    if (file_passes_size_checks()
-        and user_has_asked_multiple_questions_about_this_file()
-        and questions_require_full_file_search()):
-        return "propose_vectorization_to_user"
-
-    # Fallback: respond with what we have
-    return "respond_with_available_data"
+def classify_query(user_message: str, has_attachments: bool) -> QueryClassification:
+    """Heuristic classification — no LLM call."""
 ```
 
-**System prompt excerpt for agent:**
+**Entity detection** (compiled regex): timestamps (`\d{1,2}:\d{2}`, ISO dates, month-day), HTTP status codes (`[45]\d{2}`), error keywords (OOM, segfault, timeout, connection refused, etc.), service names (nginx, redis, postgres, etc.), IP addresses.
 
-```
+**Classification logic:**
+
+1. No message + attachments → **TRIAGE** (confidence 0.95)
+2. Specific entities + interrogative structure ("what", "why", "how") → **DIRECTED_ANALYSIS** (confidence 0.9)
+3. Entities + non-generic phrasing → **DIRECTED_ANALYSIS** (confidence 0.75)
+4. Generic phrasing without entities → **TRIAGE** (confidence 0.85)
+5. Generic phrasing WITH entities → entities win → **DIRECTED_ANALYSIS** (confidence 0.65)
+6. Interrogative without entities → **DIRECTED_ANALYSIS** (confidence 0.6)
+7. Ambiguous → **DIRECTED_ANALYSIS** (confidence 0.5, DA subsumes Triage)
+
+### Mode-Specific System Prompts
+
+Two `DATA_ACCESS_*` constants are injected into the INVESTIGATOR system prompt via the `{data_access_strategy}` placeholder:
+
+**Triage mode** (`DATA_ACCESS_TRIAGE`):
+
+```text
 ## Data Access Strategy
 
-When a user asks about uploaded data, follow this escalation order:
-
-1. **Check your context first** (free, instant): Recent evidence includes
-   structural indexes (crime scene extractions, statistical profiles, parsed
-   configs) directly in the <evidence_collected> section. Check these first.
-   If a structural_index shows [TRUNCATED], the full content is available
-   via search_file or read_file.
-
-2. **search_file** (free, fast): If the structural index lacks detail or
-   was truncated, use search_file to grep for specific keywords, patterns,
-   or timestamps in the raw file.
-
-3. **deep_analyze_file** (low cost, slower): If you need LLM interpretation
-   of specific data sections — root cause analysis, correlation detection,
-   or synthesizing findings across file sections.
-
-4. **vectorize_file** (higher cost, rare): Only suggest when the user is
-   repeatedly asking questions about a large file and point queries are
-   insufficient. Always ask the user before vectorizing.
-
-Never skip tiers. Always try the cheaper option first.
+The structural indexes in <evidence_collected> are your primary source.
+Summarize the key findings: errors by severity, anomalies, misconfigurations,
+notable patterns.
+If a structural_index is [TRUNCATED], use search_file to retrieve specific sections.
+Do NOT call deep_analysis or vectorize_file in triage mode — the structural
+index is the answer.
 ```
 
-### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2)
+**Directed Analysis mode** (`DATA_ACCESS_DIRECTED_ANALYSIS`):
 
-The agent's tier-escalation decisions are prompt-driven. Three failure modes exist: premature answers from incomplete evidence, silent search dead ends, and context dilution. v4.2 adds mechanical safety nets in `AgentOrchestrationService` — coverage gap detection, auto-escalation, and context budgeting — without changing the tool interface.
+```text
+## Data Access Strategy
+
+The user has a specific question. The <structural_index role="orientation"> for
+each evidence file is a map of the file's contents (time range, services, error
+distribution).
+
+Use this map to formulate targeted queries:
+- **deep_analysis** — Primary tool. Ask a focused question about specific evidence.
+- **search_file** — Supplementary. Use for exact keyword, regex, or timestamp matching.
+
+You do NOT need to try search_file before deep_analysis. Use whichever is
+appropriate for the question. If your analysis is insufficient, the system will
+automatically index large files for semantic search — you do not need to manage this.
+```
+
+**Structural index tagging**: In DA mode, structural indexes are tagged `<structural_index role="orientation">` to signal they are orientation data, not the primary output. In Triage mode, plain `<structural_index>` is used.
+
+### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2, updated v5.0)
+
+Three mechanical safety nets in `AgentOrchestrationService` — coverage gap detection, per-evidence DA failure tracking with auto-vectorization, and context budgeting.
 
 #### R3: Coverage Gap Detection
 
@@ -743,17 +778,40 @@ Before each LLM call, the orchestration service extracts entities from the user'
 
 3. **Advisory injection** — Gap descriptions are appended to the LLM system prompt as `[COVERAGE ADVISORY]` blocks. Example: `"User asks about 14:00 but evidence ev_abc only covers 13:42-13:57. Agent should acknowledge the gap or search for additional data."`
 
-#### R4: Auto-Escalation After Consecutive Failures
+#### R4: Per-Evidence DA Failure Tracking and Auto-Vectorization (v5.0)
 
-The orchestration service tracks consecutive empty `search_file` results during agent execution. After 2 consecutive zero-result searches, an `[ESCALATION ADVISORY]` is injected into the tool result content visible to the LLM:
+> **v5.0 change**: Replaces the v4.2 global `consecutive_empty_searches` counter. Tracking is now **per-evidence** via `EvidenceDAState`, and triggers **auto-vectorization** instead of injecting an escalation advisory.
 
+The orchestration service tracks DA failure signals independently for each evidence file during agent execution:
+
+```python
+@dataclass
+class EvidenceDAState:
+    """Per-evidence directed analysis tracking within a single execution."""
+    evidence_id: str
+    empty_search_count: int = 0       # search_file calls with 0 results
+    da_call_count: int = 0            # deep_analysis invocations
+    last_da_confidence: float = 1.0   # confidence from last deep_analysis result
+    has_timed_out: bool = False       # any tool timed out on this evidence
+    content_size_bytes: int = 0       # file size (for vectorization threshold)
+    vectorized: bool = False          # already auto-vectorized this execution
 ```
-[ESCALATION ADVISORY] Last 2 search_file calls returned zero results.
-Options: 1) Review vocabulary hints above 2) Use search_type='regex'
-3) Escalate to deep_analysis 4) Tell user what's missing
-```
 
-The counter resets on any non-empty search result or after advisory injection.
+**Tracking rules:**
+
+- `search_file` returns 0 results → `empty_search_count += 1`
+- `search_file` returns results → `empty_search_count = 0` (reset)
+- `deep_analysis` completes → `da_call_count += 1`, `last_da_confidence` updated
+- Any tool times out → `has_timed_out = True`
+
+**Auto-vectorization**: When any trigger fires AND the file passes the size gate, `vectorize_file` is called automatically. When the file is below the size gate, raw content is injected into context instead (see Section 5.4).
+
+**Cross-turn persistence**: `da_invocation_count` on the Evidence model (persisted via `case_repo`) enables vectorization triggers that accumulate across separate conversation turns. After each `deep_analysis` call, the count is persisted:
+
+```python
+ev.da_invocation_count = getattr(ev, "da_invocation_count", 0) + 1
+await tool_context.evidence_service.update_evidence(ev)
+```
 
 #### R5: Context Budget Tracking and Tool Result Compression
 
@@ -914,13 +972,13 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 
 ### 9.3 Agent Tool Summary
 
-| Tool | Tier | Cost | LLM? | When |
-|------|------|------|------|------|
-| *(evidence context)* | 1 | $0 | No | Always available |
-| `search_file` | 2 | $0 | No | Agent needs specific data from raw file |
-| `deep_analyze_file` | 3 | ~$0.01 | Yes | Agent needs interpreted analysis |
-| `vectorize_file` | 4 | ~$0.05+ | Embed only | Agent proposes, user approves |
-| `knowledge_base_search` | Post-4 | $0 | No | After vectorization, semantic search |
+| Tool | Cost | LLM? | When |
+|------|------|------|------|
+| *(evidence context)* | $0 | No | Always available (structural index in LLM context) |
+| `search_file` | $0 | No | Agent needs specific data from raw file |
+| `deep_analysis` | ~$0.01 | Yes | Agent needs interpreted analysis |
+| `vectorize_file` | ~$0.05+ | Embed only | Auto-triggered on DA failure (no user confirmation) |
+| `knowledge_base_search` | $0 | No | After vectorization, semantic search |
 
 ---
 
@@ -985,10 +1043,12 @@ DEEP_ANALYSIS_TIMEOUT_SECONDS=30
 # NOTE: Old TIER2_* names are no longer supported (clean break in Phase 5)
 
 # ============================================================
-# TIER 4: VECTORIZATION (on-demand)
+# VECTORIZATION (auto-triggered on DA failure)
 # ============================================================
-VECTORIZATION_MIN_SIZE_BYTES=50000       # 50KB minimum
-VECTORIZATION_MAX_SIZE_BYTES=50000000    # 50MB maximum
+# VECTORIZATION_MIN_SIZE_BYTES is now configurable via AgentSettings
+# (settings.agent.vectorization_min_size_bytes). Default: 50000 (50KB).
+# Range: 1000-10000000. Set via env var VECTORIZATION_MIN_SIZE_BYTES.
+VECTORIZATION_MAX_SIZE_BYTES=50000000    # 50MB hard cap (not configurable)
 CHROMADB_HOST=localhost
 CHROMADB_PORT=8000
 CHROMADB_COLLECTION_PREFIX=case_
@@ -1087,7 +1147,7 @@ No re-run parameters. These extractors have no tunable thresholds.
 
 ---
 
-**Document Version**: 4.2
-**Last Updated**: 2026-03-04
+**Document Version**: 5.0
+**Last Updated**: 2026-03-06
 **Status**: FINAL
-**Predecessor**: v4.1 (data-preprocessing-design-specification.md)
+**Predecessor**: v4.2 (data-preprocessing-design-specification.md)

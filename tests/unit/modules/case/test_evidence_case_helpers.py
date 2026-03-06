@@ -115,6 +115,49 @@ class TestEvidenceNewFields:
         assert ev.content_hash == "b" * 64
         assert ev.extraction_method == "statistical_profile"
 
+    # --- Scenario-driven processing fields ---
+
+    def test_processing_mode_defaults_to_none(self):
+        ev = _make_evidence()
+        assert ev.processing_mode is None
+
+    def test_processing_mode_triage(self):
+        ev = _make_evidence(processing_mode="triage")
+        assert ev.processing_mode == "triage"
+
+    def test_processing_mode_directed_analysis(self):
+        ev = _make_evidence(processing_mode="directed_analysis")
+        assert ev.processing_mode == "directed_analysis"
+
+    def test_da_invocation_count_defaults_to_zero(self):
+        ev = _make_evidence()
+        assert ev.da_invocation_count == 0
+
+    def test_da_invocation_count_set(self):
+        ev = _make_evidence(da_invocation_count=3)
+        assert ev.da_invocation_count == 3
+
+    def test_da_invocation_count_rejects_negative(self):
+        with pytest.raises(Exception):
+            _make_evidence(da_invocation_count=-1)
+
+    def test_processing_fields_roundtrip_via_dict(self):
+        """processing_mode and da_invocation_count survive dict serialization."""
+        ev = _make_evidence(
+            processing_mode="directed_analysis",
+            da_invocation_count=5,
+        )
+        as_dict = ev.model_dump()
+        restored = Evidence(**as_dict)
+        assert restored.processing_mode == "directed_analysis"
+        assert restored.da_invocation_count == 5
+
+    def test_backward_compat_missing_processing_fields(self):
+        """Evidence created without processing fields → defaults to None/0."""
+        ev = _make_evidence()
+        assert ev.processing_mode is None
+        assert ev.da_invocation_count == 0
+
 
 # =============================================================================
 # Case helper properties

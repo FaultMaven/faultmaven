@@ -1948,6 +1948,15 @@ class AgentSettings(BaseSettings):
         description="Maximum LLM iterations (tool call loops) per execution",
     )
 
+    # Vectorization configuration (scenario-driven data processing)
+    vectorization_min_size_bytes: int = Field(
+        default=50_000,
+        env="VECTORIZATION_MIN_SIZE_BYTES",
+        ge=1000,
+        le=10_000_000,
+        description="Minimum file size in bytes for auto-vectorization eligibility",
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

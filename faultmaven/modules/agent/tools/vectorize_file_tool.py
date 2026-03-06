@@ -1,37 +1,35 @@
-"""Vectorize File Tool — Tier 4 On-Demand Vectorization (v4.0)
+"""Vectorize File Tool — On-Demand Vectorization for Semantic Search
 
-Chunks the evidence's structural index, generates embeddings, and stores
-them in ChromaDB for semantic search. Only called when cheaper tiers
-(search_file, deep_analysis) are insufficient and the user approves.
+Chunks evidence content, generates embeddings, and stores them in
+ChromaDB for semantic search. Auto-triggered by the orchestration layer
+when directed analysis fails on files exceeding the size threshold.
 
-Design Reference: docs/working/DRAFT-data-preprocessing-spec-v4.md Section 5
+Design Reference: docs/architecture/data-processing/README.md
 """
 
 import logging
 from typing import Any, Dict
 
+from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 
 logger = logging.getLogger(__name__)
 
-# Size gates for vectorization eligibility
-VECTORIZATION_MIN_SIZE_BYTES = 50_000  # 50KB
-VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB
+VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
 
 class VectorizeFileTool(AgentTool):
-    """Tier 4 on-demand vectorization of evidence files.
+    """On-demand vectorization of evidence files for semantic search.
 
-    Chunks the evidence's structural index, generates embeddings, and
-    stores them in ChromaDB. After vectorization, the file's content
-    is searchable via knowledge_base_search.
+    Chunks evidence content, generates embeddings, and stores them in
+    ChromaDB. After vectorization, the file's content is searchable via
+    knowledge_base_search. Auto-triggered by the orchestration layer when
+    directed analysis fails on files exceeding the size threshold.
 
-    Prerequisites (enforced):
-    - File must be >50KB
+    Size gates (enforced):
+    - File must exceed VECTORIZATION_MIN_SIZE_BYTES (configurable, default 50KB)
     - File must be <50MB
-    - Agent should have already tried cheaper tiers first
-    - Agent should have confirmed with the user before calling
     """
 
     def __init__(
@@ -50,11 +48,10 @@ class VectorizeFileTool(AgentTool):
     def description(self) -> str:
         return (
             "Vectorize a previously uploaded evidence file for semantic search. "
-            "Chunks the file's structural index, generates embeddings, and stores "
-            "them in ChromaDB. After vectorization, use knowledge_base_search to "
-            "find content semantically. IMPORTANT: Only call this after confirming "
-            "with the user — vectorization takes 10-60 seconds. File must be >50KB "
-            "and <50MB."
+            "Chunks the file content, generates embeddings, and stores them in "
+            "ChromaDB. After vectorization, use knowledge_base_search to find "
+            "content semantically. Triggered automatically when directed analysis "
+            "fails on large files."
         )
 
     @property
@@ -116,14 +113,16 @@ class VectorizeFileTool(AgentTool):
 
             # Check size gates
             content_size = getattr(evidence, "content_size_bytes", 0) or 0
+            settings = get_settings()
+            min_size = settings.agent.vectorization_min_size_bytes
 
-            if content_size < VECTORIZATION_MIN_SIZE_BYTES:
+            if content_size < min_size:
                 return ToolResult(
                     success=False,
                     data=None,
                     error=(
                         f"File is too small for vectorization ({content_size} bytes). "
-                        f"Minimum is {VECTORIZATION_MIN_SIZE_BYTES} bytes (50KB). "
+                        f"Minimum is {min_size} bytes. "
                         f"Use search_file or deep_analysis instead."
                     ),
                 )
@@ -176,8 +175,10 @@ class VectorizeFileTool(AgentTool):
             )
 
             logger.info(
-                f"vectorize_file: {evidence_id}, "
-                f"content_size={content_size}, data_type={data_type_str}"
+                "vectorize_file completed: %s, content_size=%d, data_type=%s",
+                evidence_id,
+                content_size,
+                data_type_str,
             )
 
             return ToolResult(

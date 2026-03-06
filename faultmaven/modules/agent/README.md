@@ -70,7 +70,7 @@ faultmaven/modules/agent/
 The Agent module maintains **three separate services** with clear separation of concerns by abstraction level:
 
 #### 1. AgentOrchestrationService (Low-Level)
-- **Responsibility**: LLM calls, streaming, tool execution primitives, tier-escalation hardening
+- **Responsibility**: LLM calls, streaming, tool execution primitives, orchestration hardening
 - **Size**: ~1,350 LOC
 - **Dependencies**: LLM providers, tool registry, coverage metadata utilities
 - **Key Operations**:
@@ -79,7 +79,7 @@ The Agent module maintains **three separate services** with clear separation of 
   - Handle LLM provider interactions
   - Token budget tracking
   - **Coverage gap detection** (R3): Extract entities from user queries (timestamps, services, error codes, IPs), compare against evidence coverage metadata, inject advisories into LLM context
-  - **Auto-escalation** (R4): Track consecutive empty `search_file` results, inject `[ESCALATION ADVISORY]` after 2 failures
+  - **Per-evidence DA failure tracking** (R4): Track DA failure signals per evidence via `EvidenceDAState`, auto-vectorize large files on repeated failures, inject raw content for small files
   - **Context budget tracking** (R5): 30K char budget for tool results with standard/aggressive compression preserving high-signal lines
 
 #### 2. InvestigationOrchestrator (Mid-Level)

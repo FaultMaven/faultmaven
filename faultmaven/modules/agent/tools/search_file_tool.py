@@ -1,11 +1,11 @@
-"""Search File Tool — Tier 2 Mechanical Search (v4.0)
+"""Search File Tool — Mechanical Search over Evidence Files
 
 Provides three search modes over previously uploaded evidence files:
 - keyword: Split query into keywords, find matching lines with context
 - regex: Treat query as a regex pattern
 - extractor: Re-run domain-specific extractor with different parameters
 
-Design Reference: docs/working/DRAFT-data-preprocessing-spec-v4.md Section 3
+Design Reference: docs/architecture/data-processing/README.md
 """
 
 import logging
@@ -24,11 +24,12 @@ DEFAULT_MAX_RESULTS = 10
 
 
 class SearchFileTool(AgentTool):
-    """Tier 2 mechanical search over raw file content.
+    """Mechanical search over raw evidence file content.
 
     Allows the agent to search previously uploaded evidence files using
     keyword matching, regex patterns, or re-running domain extractors
-    with different parameters.
+    with different parameters. Used within Directed Analysis as a
+    supplementary tool for exact keyword/regex/timestamp matching.
     """
 
     def __init__(

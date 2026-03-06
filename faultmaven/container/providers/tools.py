@@ -187,7 +187,7 @@ def register_tools(container: BaseDIContainer) -> None:
 
     container.tools.extend([t for t in tools_to_add if t is not None])
 
-    # Deep analysis tool (Tier 3 deep LLM analysis)
+    # Deep analysis tool (LLM-interpreted analysis)
     deep_analysis_service = (
         container.get_service("deep_analysis_service")
         if hasattr(container, "get_service")
@@ -199,9 +199,9 @@ def register_tools(container: BaseDIContainer) -> None:
         deep_analysis_tool = DeepAnalysisTool(tier2_service=deep_analysis_service)
         container.deep_analysis_tool = deep_analysis_tool
         container.tools.append(deep_analysis_tool)
-        logger.info("Deep analysis tool registered (Tier 3 backend active)")
+        logger.info("Deep analysis tool registered (DA backend active)")
 
-    # Search file tool (Tier 2 mechanical search, v4.0)
+    # Search file tool (mechanical search)
     preprocessing_service = (
         container.get_service("preprocessing_service")
         if hasattr(container, "get_service")
@@ -221,11 +221,11 @@ def register_tools(container: BaseDIContainer) -> None:
         )
         container.search_file_tool = search_file_tool
         container.tools.append(search_file_tool)
-        logger.info("Search file tool registered (Tier 2 mechanical search)")
+        logger.info("Search file tool registered (mechanical search)")
     except Exception as e:
         logger.warning(f"Search file tool registration failed: {e}")
 
-    # Vectorize file tool (Tier 4 on-demand vectorization, v4.0)
+    # Vectorize file tool (on-demand vectorization)
     case_vector_store = (
         container.get_service("case_vector_store")
         if hasattr(container, "get_service")
@@ -240,7 +240,7 @@ def register_tools(container: BaseDIContainer) -> None:
         )
         container.vectorize_file_tool = vectorize_file_tool
         container.tools.append(vectorize_file_tool)
-        logger.info("Vectorize file tool registered (Tier 4 on-demand)")
+        logger.info("Vectorize file tool registered (auto-triggered on DA failure)")
     except Exception as e:
         logger.warning(f"Vectorize file tool registration failed: {e}")
 

@@ -1,4 +1,4 @@
-"""Tests for VectorizeFileTool — Tier 4 on-demand vectorization (v4.0)."""
+"""Tests for VectorizeFileTool — on-demand vectorization for semantic search."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,9 +7,20 @@ from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VectorizeFileTool,
-    VECTORIZATION_MIN_SIZE_BYTES,
     VECTORIZATION_MAX_SIZE_BYTES,
 )
+
+
+@pytest.fixture
+def mock_settings():
+    """Patch get_settings to return controllable vectorization threshold."""
+    settings = MagicMock()
+    settings.agent.vectorization_min_size_bytes = 50_000  # 50KB default
+    with patch(
+        "faultmaven.modules.agent.tools.vectorize_file_tool.get_settings",
+        return_value=settings,
+    ) as mock:
+        yield settings
 
 
 @pytest.fixture
@@ -42,8 +53,8 @@ def context():
 
 class TestSizeGates:
     @pytest.mark.asyncio
-    async def test_rejects_file_below_minimum(self, tool, context):
-        """Files below 50KB should be rejected."""
+    async def test_rejects_file_below_minimum(self, tool, context, mock_settings):
+        """Files below the configured minimum should be rejected."""
         evidence = context.evidence_service.get_evidence.return_value
         evidence.content_size_bytes = 10_000  # 10KB
 
@@ -54,10 +65,10 @@ class TestSizeGates:
 
         assert result.success is False
         assert "too small" in result.error
-        assert str(VECTORIZATION_MIN_SIZE_BYTES) in result.error
+        assert str(mock_settings.agent.vectorization_min_size_bytes) in result.error
 
     @pytest.mark.asyncio
-    async def test_rejects_file_above_maximum(self, tool, context):
+    async def test_rejects_file_above_maximum(self, tool, context, mock_settings):
         """Files above 50MB should be rejected."""
         evidence = context.evidence_service.get_evidence.return_value
         evidence.content_size_bytes = 60_000_000  # 60MB
@@ -72,8 +83,8 @@ class TestSizeGates:
         assert str(VECTORIZATION_MAX_SIZE_BYTES) in result.error
 
     @pytest.mark.asyncio
-    async def test_accepts_file_within_range(self, tool, context):
-        """Files between 50KB and 50MB should be accepted."""
+    async def test_accepts_file_within_range(self, tool, context, mock_settings):
+        """Files between configured minimum and 50MB should be accepted."""
         with patch(
             "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
             new_callable=AsyncMock,
@@ -87,10 +98,27 @@ class TestSizeGates:
         assert "vectorized" in result.data["message"]
         mock_store.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_custom_min_size_threshold(self, tool, context, mock_settings):
+        """Minimum size threshold should be configurable via settings."""
+        mock_settings.agent.vectorization_min_size_bytes = 200_000  # 200KB
+
+        evidence = context.evidence_service.get_evidence.return_value
+        evidence.content_size_bytes = 100_000  # 100KB — below new threshold
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_under_custom"},
+            context=context,
+        )
+
+        assert result.success is False
+        assert "too small" in result.error
+        assert "200000" in result.error
+
 
 class TestVectorization:
     @pytest.mark.asyncio
-    async def test_calls_store_function(self, tool, context):
+    async def test_calls_store_function(self, tool, context, mock_settings):
         """Should call store_in_vector_db_background with correct params."""
         with patch(
             "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
@@ -108,7 +136,7 @@ class TestVectorization:
         assert "Structural index" in call_kwargs["structural_index"]
 
     @pytest.mark.asyncio
-    async def test_no_preprocessed_content(self, tool, context):
+    async def test_no_preprocessed_content(self, tool, context, mock_settings):
         """Should fail if evidence has no preprocessed content."""
         evidence = context.evidence_service.get_evidence.return_value
         evidence.preprocessed_content = None
@@ -143,7 +171,7 @@ class TestValidation:
         assert "not available" in result.error
 
     @pytest.mark.asyncio
-    async def test_evidence_not_found(self, tool, context):
+    async def test_evidence_not_found(self, tool, context, mock_settings):
         context.evidence_service.get_evidence.return_value = None
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_missing"},

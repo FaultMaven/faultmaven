@@ -38,6 +38,10 @@ from faultmaven.domain.events import (
     Message,
     ToolCall,
 )
+from faultmaven.modules.agent.domain.services.query_classifier import (
+    ProcessingMode,
+    classify_query,
+)
 from faultmaven.domain.events import ToolResult as DomainToolResult
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -63,7 +67,28 @@ from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_regi
 from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.services.preprocessing.extractors.utils import COVERAGE_SEPARATOR
 
+from faultmaven.config.settings import get_settings
+
 logger = logging.getLogger(__name__)
+
+
+# --- Per-evidence DA failure tracking (scenario-driven processing) ---
+@dataclass
+class EvidenceDAState:
+    """Per-evidence directed analysis tracking within a single execution.
+
+    Tracks mechanical failure signals for auto-vectorization decisions.
+    Ephemeral — lives only within one _execute_with_streaming call.
+    """
+
+    evidence_id: str
+    empty_search_count: int = 0
+    da_call_count: int = 0
+    last_da_confidence: float = 1.0
+    has_timed_out: bool = False
+    content_size_bytes: int = 0
+    vectorized: bool = False
+
 
 # --- R3: Query entity extraction patterns (compiled once) ---
 _RE_TIMESTAMP_HM = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
@@ -95,6 +120,28 @@ _HIGH_SIGNAL_KEYWORDS = frozenset(
     }
 )
 
+# --- Mode-specific data access prompts (scenario-driven processing) ---
+
+DATA_ACCESS_TRIAGE = """## Data Access Strategy
+
+The structural indexes in <evidence_collected> are your primary source.
+Summarize the key findings: errors by severity, anomalies, misconfigurations, notable patterns.
+If a structural_index is [TRUNCATED], use search_file to retrieve specific sections.
+Do NOT call deep_analysis or vectorize_file in triage mode — the structural index is the answer."""
+
+DATA_ACCESS_DIRECTED_ANALYSIS = """## Data Access Strategy
+
+The user has a specific question. The <structural_index role="orientation"> for each
+evidence file is a map of the file's contents (time range, services, error distribution).
+
+Use this map to formulate targeted queries:
+- **deep_analysis** — Primary tool. Ask a focused question about specific evidence.
+- **search_file** — Supplementary. Use for exact keyword, regex, or timestamp matching.
+
+You do NOT need to try search_file before deep_analysis. Use whichever is appropriate
+for the question. If your analysis is insufficient, the system will automatically
+index large files for semantic search — you do not need to manage this."""
+
 # Agent system prompts by type
 AGENT_SYSTEM_PROMPTS = {
     AgentType.INVESTIGATOR: """You are an expert troubleshooting investigator for technical issues.
@@ -116,34 +163,11 @@ When investigating:
 Available tools:
 - list_evidence: List all evidence files uploaded for this case
 - read_file: Read the contents of an evidence file by ID
-- search_file: Search a file for specific keywords, regex patterns, or re-run extractors with different parameters (free, fast)
-- deep_analysis: Get LLM-interpreted analysis of specific data sections (costs ~$0.01, slower)
-- vectorize_file: Vectorize a large file for semantic search (costs ~$0.05+, ask user first)
-- knowledge_base_search: Search the knowledge base for relevant information
+- search_file: Search a file for keywords, regex patterns, or timestamps (fast, free)
+- deep_analysis: LLM-interpreted analysis of specific data sections (primary tool for answering questions)
+- knowledge_base_search: Semantic search over vectorized evidence
 
-## Data Access Strategy
-
-When a user asks about uploaded data, follow this escalation order:
-
-1. **Check your context first** (free, instant): Recent evidence includes
-   structural indexes (crime scene extractions, statistical profiles, parsed
-   configs) directly in the <evidence_collected> section. Check these first.
-   If a structural_index shows [TRUNCATED], the full content is available
-   via search_file or read_file.
-
-2. **search_file** (free, fast): If the structural index lacks detail or
-   was truncated, use search_file to grep for specific keywords, patterns,
-   or timestamps in the raw file.
-
-3. **deep_analyze_file** (low cost, slower): If you need LLM interpretation
-   of specific data sections — root cause analysis, correlation detection,
-   or synthesizing findings across file sections.
-
-4. **vectorize_file** (higher cost, rare): Only suggest when the user is
-   repeatedly asking questions about a large file and point queries are
-   insufficient. Always ask the user before vectorizing.
-
-Never skip tiers. Always try the cheaper option first.
+{data_access_strategy}
 
 Always explain your reasoning and next steps clearly.""",
     AgentType.DEBUGGER: """You are a debugging specialist focused on code and log analysis.
@@ -661,10 +685,30 @@ class AgentOrchestrationService:
         if not case:
             raise NotFoundError("Case", session.case_id)
 
-        # Build system prompt
-        system_prompt = AGENT_SYSTEM_PROMPTS.get(
+        # Classify query for scenario-driven processing mode
+        classification = classify_query(
+            user_message, has_attachments=bool(case.evidence)
+        )
+        if classification.mode == ProcessingMode.DIRECTED_ANALYSIS:
+            data_access = DATA_ACCESS_DIRECTED_ANALYSIS
+        else:
+            data_access = DATA_ACCESS_TRIAGE
+
+        logger.info(
+            "query_classified",
+            extra={
+                "case_id": session.case_id,
+                "mode": classification.mode.value,
+                "confidence": classification.confidence,
+                "entities": classification.detected_entities,
+            },
+        )
+
+        # Build system prompt with mode-specific data access strategy
+        prompt_template = AGENT_SYSTEM_PROMPTS.get(
             agent_type, AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR]
         )
+        system_prompt = prompt_template.replace("{data_access_strategy}", data_access)
 
         # Build state summary following Section 11.5 of prompt guide
         state_summary = self._build_state_summary(case, session)
@@ -710,6 +754,7 @@ class AgentOrchestrationService:
             "organization_id": session.organization_id,
             "case_title": case.title,
             "session_goal": session.session_goal,
+            "processing_mode": classification.mode.value,
         }
 
         return AgentContext(
@@ -1100,8 +1145,8 @@ class AgentOrchestrationService:
         total_input_tokens = 0
         total_output_tokens = 0
 
-        # R4: Auto-escalation tracking
-        consecutive_empty_searches = 0
+        # Per-evidence DA failure tracking (scenario-driven processing)
+        evidence_da_states: dict[str, EvidenceDAState] = {}
         # R5: Context budget tracking
         tool_result_chars = 0
 
@@ -1181,33 +1226,145 @@ class AgentOrchestrationService:
                 tool_context=tool_context,
             )
 
-            # Add tool results to context (with R4 escalation + R5 compression)
+            # Add tool results to context (with DA tracking + R5 compression)
             for result in tool_results:
                 content_for_context = result.content
 
-                # R4: Track consecutive empty search_file results
-                if result.tool_name == "search_file" and result.success:
-                    try:
-                        data = json.loads(result.content)
-                        if isinstance(data, dict) and data.get("results_count", 0) == 0:
-                            consecutive_empty_searches += 1
-                        else:
-                            consecutive_empty_searches = 0
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                    # R4: Inject escalation advisory after 2 consecutive failures
-                    if consecutive_empty_searches >= 2:
-                        content_for_context += (
-                            "\n\n[ESCALATION ADVISORY] "
-                            f"Last {consecutive_empty_searches} search_file calls "
-                            "returned zero results. "
-                            "Options: 1) Review vocabulary hints above "
-                            "2) Use search_type='regex' "
-                            "3) Escalate to deep_analysis "
-                            "4) Tell user what data is missing"
+                # Per-evidence DA failure tracking
+                evidence_id = self._extract_evidence_id_from_tool_call(
+                    result.tool_call_id, tool_calls_to_execute
+                )
+                if evidence_id and result.tool_name in (
+                    "search_file",
+                    "deep_analysis",
+                ):
+                    # Lazy-init per-evidence state
+                    if evidence_id not in evidence_da_states:
+                        ev_size = await self._get_evidence_size(
+                            evidence_id, tool_context
                         )
-                        consecutive_empty_searches = 0
+                        evidence_da_states[evidence_id] = EvidenceDAState(
+                            evidence_id=evidence_id,
+                            content_size_bytes=ev_size,
+                        )
+                    state = evidence_da_states[evidence_id]
+
+                    # Track search_file empty results
+                    if result.tool_name == "search_file" and result.success:
+                        try:
+                            data = json.loads(result.content)
+                            if (
+                                isinstance(data, dict)
+                                and data.get("results_count", 0) == 0
+                            ):
+                                state.empty_search_count += 1
+                            else:
+                                state.empty_search_count = 0
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                        # Advisory after 3 consecutive empty searches on same file
+                        if state.empty_search_count >= 3:
+                            content_for_context += (
+                                "\n\n[SYSTEM] "
+                                f"Last {state.empty_search_count} search_file calls "
+                                "on this file returned zero results. "
+                                "Consider using deep_analysis with a different "
+                                "query approach."
+                            )
+
+                    # Track deep_analysis confidence + persist cross-turn counter
+                    if result.tool_name == "deep_analysis" and result.success:
+                        try:
+                            data = json.loads(result.content)
+                            if isinstance(data, dict):
+                                state.da_call_count += 1
+                                state.last_da_confidence = float(
+                                    data.get("confidence", 1.0)
+                                )
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
+                        # Persist da_invocation_count for cross-turn trigger #4.
+                        # Evidence is a Pydantic model embedded in Case.evidence[],
+                        # so we update via case_repo (not evidence_service which
+                        # operates on the separate EvidenceArtifact SQL table).
+                        try:
+                            case = await self.case_repo.get(
+                                context.context_data.get("case_id", "")
+                            )
+                            if case:
+                                for ev in case.evidence:
+                                    if ev.evidence_id == evidence_id:
+                                        ev.da_invocation_count = (
+                                            getattr(ev, "da_invocation_count", 0) + 1
+                                        )
+                                        # Sync persistent count into ephemeral state
+                                        if ev.da_invocation_count > state.da_call_count:
+                                            state.da_call_count = ev.da_invocation_count
+                                        break
+                                await self.case_repo.save(case)
+                        except Exception as e:
+                            logger.debug(
+                                "Failed to update da_invocation_count for %s: %s",
+                                evidence_id,
+                                e,
+                            )
+
+                    # Track timeouts
+                    if (
+                        not result.success
+                        and "timed out" in (result.content or "").lower()
+                    ):
+                        state.has_timed_out = True
+
+                    # Check auto-vectorization trigger
+                    if not state.vectorized and self._should_auto_vectorize(state):
+                        vectorized = await self._auto_vectorize(
+                            evidence_id, tool_context
+                        )
+                        if vectorized:
+                            state.vectorized = True
+                            content_for_context += (
+                                "\n\n[SYSTEM] This file has been automatically "
+                                "indexed for semantic search. Use "
+                                "knowledge_base_search to find content by "
+                                "meaning rather than keywords."
+                            )
+                            logger.info(
+                                "auto_vectorization_triggered",
+                                extra={
+                                    "evidence_id": evidence_id,
+                                    "trigger": self._vectorization_trigger_reason(
+                                        state
+                                    ),
+                                    "content_size_bytes": state.content_size_bytes,
+                                },
+                            )
+                    # Small-file DA failure: inject raw content instead of vectorizing
+                    elif (
+                        not state.vectorized
+                        and self._da_has_failed(state)
+                        and not self._should_auto_vectorize(state)
+                        and state.content_size_bytes > 0
+                    ):
+                        settings = get_settings()
+                        if (
+                            state.content_size_bytes
+                            < settings.agent.vectorization_min_size_bytes
+                        ):
+                            try:
+                                raw_content = await self._get_raw_file_content(
+                                    evidence_id, tool_context
+                                )
+                                if raw_content:
+                                    content_for_context += (
+                                        f"\n\n[SYSTEM] Full file content "
+                                        f"(small file, "
+                                        f"{state.content_size_bytes} bytes):\n"
+                                        f"{raw_content[:50000]}"
+                                    )
+                            except Exception:
+                                pass
 
                 # R5: Track budget and compress if needed
                 tool_result_chars += len(content_for_context)
@@ -1390,6 +1547,109 @@ class AgentOrchestrationService:
                 content=f"Tool execution failed: {str(e)}",
                 error=str(e),
             )
+
+    # ============================================================
+    # DA Failure Tracking & Auto-Vectorization Helpers
+    # ============================================================
+
+    @staticmethod
+    def _extract_evidence_id_from_tool_call(
+        tool_call_id: str, tool_calls: list[ToolCall]
+    ) -> str | None:
+        """Extract evidence_id from the original tool call arguments."""
+        for tc in tool_calls:
+            if tc.id == tool_call_id:
+                args = tc.arguments if isinstance(tc.arguments, dict) else {}
+                return args.get("evidence_id")
+        return None
+
+    async def _get_evidence_size(
+        self, evidence_id: str, tool_context: ToolContext
+    ) -> int:
+        """Get the content_size_bytes for an evidence record."""
+        try:
+            ev = await tool_context.evidence_service.get_evidence(
+                evidence_id, tool_context.organization_id
+            )
+            return getattr(ev, "content_size_bytes", 0) or 0
+        except Exception:
+            return 0
+
+    async def _get_raw_file_content(
+        self, evidence_id: str, tool_context: ToolContext
+    ) -> str | None:
+        """Retrieve raw file content for a small evidence file.
+
+        Uses evidence_service.download_evidence() directly (same pattern
+        as search_file_tool.py) rather than routing through the tool registry.
+        """
+        try:
+            file_data, _filename, _mime_type = (
+                await tool_context.evidence_service.download_evidence(
+                    evidence_id=evidence_id,
+                    organization_id=tool_context.organization_id,
+                )
+            )
+            return file_data.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    def _should_auto_vectorize(self, state: EvidenceDAState) -> bool:
+        """Mechanical decision: should this evidence be auto-vectorized?
+
+        Returns True only if the file exceeds the size threshold AND at
+        least one DA failure signal has fired. No LLM judgment involved.
+        """
+        settings = get_settings()
+        if state.content_size_bytes < settings.agent.vectorization_min_size_bytes:
+            return False
+        return (
+            state.has_timed_out
+            or state.empty_search_count >= 3
+            or state.da_call_count >= 3
+            or (state.da_call_count >= 1 and state.last_da_confidence < 0.2)
+        )
+
+    @staticmethod
+    def _da_has_failed(state: EvidenceDAState) -> bool:
+        """Check if DA failure signals have fired (ignoring size threshold)."""
+        return (
+            state.has_timed_out
+            or state.empty_search_count >= 3
+            or state.da_call_count >= 3
+            or (state.da_call_count >= 1 and state.last_da_confidence < 0.2)
+        )
+
+    async def _auto_vectorize(
+        self, evidence_id: str, tool_context: ToolContext
+    ) -> bool:
+        """Auto-vectorize an evidence file. No user confirmation needed."""
+        try:
+            result = await asyncio.wait_for(
+                self.tool_registry.execute_tool(
+                    tool_name="vectorize_file",
+                    params={"evidence_id": evidence_id},
+                    context=tool_context,
+                ),
+                timeout=60,
+            )
+            return result.success
+        except (TimeoutError, Exception) as e:
+            logger.warning("Auto-vectorization failed for %s: %s", evidence_id, e)
+            return False
+
+    @staticmethod
+    def _vectorization_trigger_reason(state: EvidenceDAState) -> str:
+        """Return the trigger reason for logging."""
+        if state.has_timed_out:
+            return "tool_timeout"
+        if state.empty_search_count >= 3:
+            return "repeated_empty_searches"
+        if state.da_call_count >= 3:
+            return "cumulative_da_calls"
+        if state.last_da_confidence < 0.2:
+            return "low_confidence"
+        return "unknown"
 
     # ============================================================
     # Retry Logic

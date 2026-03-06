@@ -1,14 +1,14 @@
 # Evidence Flow Architecture
 
-**Version:** 2.4
-**Date:** 2026-02-23
+**Version:** 2.5
+**Date:** 2026-03-06
 **Status:** Design Specification
 
 ---
 
 ## Overview
 
-This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. Evidence form is payload-driven (attachments → `DOCUMENT`, agent findings → `SUBMITTED_DATA`). File preprocessing follows the [four-tier model](./data-preprocessing-design-specification.md). Tier 2 mechanical search and Tier 3 deep analysis are invoked on-demand by the investigation agent.
+This document describes the complete evidence flow architecture in FaultMaven. All user turns arrive via a unified endpoint (`POST /cases/{id}/turns`) and are processed through a two-step pipeline: (1) preprocess attachments through Tier 0+1 before the LLM, (2) LLM inference with structural indexes in context. Evidence form is payload-driven (attachments → `DOCUMENT`, agent findings → `SUBMITTED_DATA`). File preprocessing follows the [scenario-driven processing model](./data-preprocessing-design-specification.md). A mechanical query classifier routes each turn to Triage or Directed Analysis mode, which determines the system prompt and tool selection strategy. Vectorization is auto-triggered when directed analysis fails on qualifying large files.
 
 ---
 
@@ -520,12 +520,12 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
  │              │                │             │             │             │
 ```
 
-**Key**: Tier 2 (`search_file`) and Tier 3 (`deep_analyze_file`) are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v4.2](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic.
+**Key**: `search_file` and `deep_analysis` are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v5.0](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic. Tool selection is guided by the processing mode (Triage vs Directed Analysis) set by the query classifier.
 
-**Tier-Escalation Hardening (v4.2)**: The orchestration layer adds three mechanical safety nets to improve tier escalation decisions:
+**Orchestration Hardening (v4.2, updated v5.0)**: The orchestration layer adds three mechanical safety nets:
 
 - **Coverage gap detection (R3)**: Extracts entities (timestamps, services, error codes, IPs) from user queries and compares against evidence coverage metadata. Injects advisories when query entities fall outside evidence coverage.
-- **Auto-escalation (R4)**: Tracks consecutive empty `search_file` results. After 2 consecutive zero-result calls, injects `[ESCALATION ADVISORY]` suggesting regex mode, deep analysis escalation, or vocabulary-guided retry.
+- **Per-evidence DA failure tracking + auto-vectorization (R4, v5.0)**: Tracks DA failure signals independently per evidence file via `EvidenceDAState` (empty searches, DA invocations, confidence, timeouts). When any trigger fires on a qualifying large file, auto-vectorizes without user confirmation. For small files below the vectorization threshold, injects raw content into the LLM context. Replaces the v4.2 global `consecutive_empty_searches` counter.
 - **Context budget tracking (R5)**: Enforces a 30K character budget on tool results with standard/aggressive compression preserving high-signal lines (errors, exceptions, timeouts, crashes).
 
 ---
@@ -888,11 +888,11 @@ evidence.storage_size_bytes
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
-- [Data Preprocessing Design Specification v4.2](./data-preprocessing-design-specification.md) — Four-tier preprocessing model, unified ingestion pipeline, and tier-escalation hardening
+- [Data Preprocessing Design Specification v5.0](./data-preprocessing-design-specification.md) — Scenario-driven processing model, unified ingestion pipeline, query classifier, and orchestration hardening
 - [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules
 
 ---
 
-**Document Version:** 2.4
-**Last Updated:** 2026-02-23
+**Document Version:** 2.5
+**Last Updated:** 2026-03-06
 **Status:** Design Specification

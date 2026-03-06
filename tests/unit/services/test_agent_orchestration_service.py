@@ -40,7 +40,10 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
 )
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AGENT_SYSTEM_PROMPTS,
+    DATA_ACCESS_DIRECTED_ANALYSIS,
+    DATA_ACCESS_TRIAGE,
     AgentOrchestrationService,
+    EvidenceDAState,
 )
 from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
 from faultmaven.modules.case.domain.models import Case, CaseStatus
@@ -652,7 +655,12 @@ class TestBuildAgentContext:
         sample_session,
         sample_case,
     ):
-        """Test that context uses correct system prompt for agent type."""
+        """Test that context uses correct system prompt for agent type.
+
+        INVESTIGATOR prompt has a {data_access_strategy} placeholder that
+        gets replaced at runtime with mode-specific content, so we check
+        for a stable substring rather than the raw template.
+        """
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
@@ -666,11 +674,19 @@ class TestBuildAgentContext:
                 agent_type=agent_type,
             )
 
-            # System prompt should contain agent-specific instructions
-            expected_prompt = AGENT_SYSTEM_PROMPTS.get(
-                agent_type, AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR]
-            )
-            assert expected_prompt in context.system_prompt
+            if agent_type == AgentType.INVESTIGATOR:
+                # INVESTIGATOR template contains {data_access_strategy} which
+                # is replaced at runtime. Verify the stable preamble is present
+                # and the placeholder was actually replaced.
+                assert "expert troubleshooting investigator" in context.system_prompt
+                assert "{data_access_strategy}" not in context.system_prompt
+                # One of the two mode-specific prompts must be injected
+                assert (
+                    "Data Access Strategy" in context.system_prompt
+                ), "data_access_strategy placeholder was not replaced"
+            else:
+                expected_prompt = AGENT_SYSTEM_PROMPTS[agent_type]
+                assert expected_prompt in context.system_prompt
 
     @pytest.mark.asyncio
     async def test_build_context_includes_available_tools(
@@ -1656,3 +1672,339 @@ class TestCompressToolResult:
         # Should still work, just fewer lines
         assert "line 0:" in result
         assert "50 total lines" in result
+
+
+# =============================================================================
+# Test: Mode-Aware Prompt Selection (Scenario-Driven Processing)
+# =============================================================================
+
+
+class TestModeAwarePromptSelection:
+    """Tests that _build_agent_context selects the correct data access prompt
+    based on query classification (Triage vs Directed Analysis)."""
+
+    @pytest.mark.asyncio
+    async def test_specific_question_gets_da_prompt(
+        self,
+        orchestration_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """A specific question with entities → DA data access strategy."""
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
+
+        context = await orchestration_service._build_agent_context(
+            session=sample_session,
+            user_message="what caused the 502 errors at 14:00?",
+            agent_type=AgentType.INVESTIGATOR,
+        )
+
+        assert "deep_analysis" in context.system_prompt
+        assert "Primary tool" in context.system_prompt
+        assert (
+            "Do NOT call deep_analysis or vectorize_file in triage mode"
+            not in context.system_prompt
+        )
+
+    @pytest.mark.asyncio
+    async def test_generic_request_gets_triage_prompt(
+        self,
+        orchestration_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """A generic request → Triage data access strategy."""
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
+
+        context = await orchestration_service._build_agent_context(
+            session=sample_session,
+            user_message="analyze this log file",
+            agent_type=AgentType.INVESTIGATOR,
+        )
+
+        assert (
+            "Do NOT call deep_analysis or vectorize_file in triage mode"
+            in context.system_prompt
+        )
+        # Triage should NOT contain DA-specific guidance
+        assert "Primary tool" not in context.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_non_investigator_prompt_unaffected(
+        self,
+        orchestration_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """Non-INVESTIGATOR agents have no {data_access_strategy} placeholder.
+        Their prompts should be unchanged regardless of query content."""
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
+
+        context = await orchestration_service._build_agent_context(
+            session=sample_session,
+            user_message="what caused the 502 errors?",
+            agent_type=AgentType.DEBUGGER,
+        )
+
+        expected = AGENT_SYSTEM_PROMPTS[AgentType.DEBUGGER]
+        assert expected in context.system_prompt
+        # The data access block should NOT appear in non-INVESTIGATOR prompts
+        assert "Data Access Strategy" not in context.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_processing_mode_in_context_data(
+        self,
+        orchestration_service,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+    ):
+        """The classified processing mode should be stored in context_data."""
+        mock_case_repo.get.return_value = sample_case
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
+
+        context = await orchestration_service._build_agent_context(
+            session=sample_session,
+            user_message="what caused the 502 errors at 14:00?",
+            agent_type=AgentType.INVESTIGATOR,
+        )
+
+        assert context.context_data.get("processing_mode") in (
+            "triage",
+            "directed_analysis",
+        )
+
+
+# =============================================================================
+# Test: Auto-Vectorization Decision Logic
+# =============================================================================
+
+
+class TestShouldAutoVectorize:
+    """Tests for _should_auto_vectorize — mechanical decision based on
+    per-evidence DA failure signals and size threshold."""
+
+    @pytest.fixture
+    def service(
+        self,
+        mock_session_service,
+        mock_evidence_service,
+        mock_case_repo,
+        mock_tool_registry,
+        mock_llm_client,
+    ):
+        return AgentOrchestrationService(
+            case_repo=mock_case_repo,
+            session_service=mock_session_service,
+            evidence_service=mock_evidence_service,
+            tool_registry=mock_tool_registry,
+            llm_client=mock_llm_client,
+        )
+
+    def _make_state(self, **overrides) -> EvidenceDAState:
+        defaults = {
+            "evidence_id": "ev_test",
+            "content_size_bytes": 100_000,  # above default 50KB threshold
+        }
+        defaults.update(overrides)
+        return EvidenceDAState(**defaults)
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_timeout_triggers_vectorization(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(has_timed_out=True)
+        assert service._should_auto_vectorize(state) is True
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_three_empty_searches_triggers(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(empty_search_count=3)
+        assert service._should_auto_vectorize(state) is True
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_two_empty_searches_insufficient(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(empty_search_count=2)
+        assert service._should_auto_vectorize(state) is False
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_three_da_calls_triggers(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(da_call_count=3)
+        assert service._should_auto_vectorize(state) is True
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_low_confidence_triggers(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(da_call_count=1, last_da_confidence=0.1)
+        assert service._should_auto_vectorize(state) is True
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_confidence_above_threshold_no_trigger(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(da_call_count=1, last_da_confidence=0.5)
+        assert service._should_auto_vectorize(state) is False
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_size_gate_blocks_small_files(self, mock_settings, service):
+        """Files below the vectorization threshold should never be auto-vectorized,
+        even if DA failure signals have fired."""
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(
+            content_size_bytes=10_000,  # 10KB — below threshold
+            has_timed_out=True,
+            empty_search_count=5,
+            da_call_count=5,
+        )
+        assert service._should_auto_vectorize(state) is False
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_no_triggers_no_vectorization(self, mock_settings, service):
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state()  # all defaults — no failures
+        assert service._should_auto_vectorize(state) is False
+
+    @patch(
+        "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
+    )
+    def test_already_vectorized_state_not_checked(self, mock_settings, service):
+        """_should_auto_vectorize doesn't check the 'vectorized' flag itself —
+        the caller does. But verify the trigger logic is independent."""
+        mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
+        state = self._make_state(vectorized=True, has_timed_out=True)
+        # The method still returns True — the caller's responsibility to check vectorized
+        assert service._should_auto_vectorize(state) is True
+
+
+class TestDAHasFailed:
+    """Tests for _da_has_failed — same triggers as _should_auto_vectorize
+    but without the size gate."""
+
+    def _make_state(self, **overrides) -> EvidenceDAState:
+        defaults = {"evidence_id": "ev_test"}
+        defaults.update(overrides)
+        return EvidenceDAState(**defaults)
+
+    def test_timeout_is_failure(self):
+        state = self._make_state(has_timed_out=True)
+        assert AgentOrchestrationService._da_has_failed(state) is True
+
+    def test_three_empty_searches_is_failure(self):
+        state = self._make_state(empty_search_count=3)
+        assert AgentOrchestrationService._da_has_failed(state) is True
+
+    def test_three_da_calls_is_failure(self):
+        state = self._make_state(da_call_count=3)
+        assert AgentOrchestrationService._da_has_failed(state) is True
+
+    def test_low_confidence_is_failure(self):
+        state = self._make_state(da_call_count=1, last_da_confidence=0.1)
+        assert AgentOrchestrationService._da_has_failed(state) is True
+
+    def test_no_triggers_not_failed(self):
+        state = self._make_state()
+        assert AgentOrchestrationService._da_has_failed(state) is False
+
+    def test_small_file_still_detects_failure(self):
+        """Unlike _should_auto_vectorize, _da_has_failed ignores file size."""
+        state = self._make_state(
+            content_size_bytes=1_000,  # tiny file
+            has_timed_out=True,
+        )
+        assert AgentOrchestrationService._da_has_failed(state) is True
+
+
+class TestVectorizationTriggerReason:
+    """Tests for _vectorization_trigger_reason — logging helper."""
+
+    def _make_state(self, **overrides) -> EvidenceDAState:
+        defaults = {"evidence_id": "ev_test"}
+        defaults.update(overrides)
+        return EvidenceDAState(**defaults)
+
+    def test_timeout_reason(self):
+        state = self._make_state(has_timed_out=True)
+        assert (
+            AgentOrchestrationService._vectorization_trigger_reason(state)
+            == "tool_timeout"
+        )
+
+    def test_empty_searches_reason(self):
+        state = self._make_state(empty_search_count=3)
+        assert (
+            AgentOrchestrationService._vectorization_trigger_reason(state)
+            == "repeated_empty_searches"
+        )
+
+    def test_da_calls_reason(self):
+        state = self._make_state(da_call_count=3)
+        assert (
+            AgentOrchestrationService._vectorization_trigger_reason(state)
+            == "cumulative_da_calls"
+        )
+
+    def test_low_confidence_reason(self):
+        state = self._make_state(da_call_count=1, last_da_confidence=0.1)
+        assert (
+            AgentOrchestrationService._vectorization_trigger_reason(state)
+            == "low_confidence"
+        )
+
+    def test_priority_order_timeout_first(self):
+        """Timeout has highest priority in reason reporting."""
+        state = self._make_state(
+            has_timed_out=True,
+            empty_search_count=5,
+            da_call_count=5,
+        )
+        assert (
+            AgentOrchestrationService._vectorization_trigger_reason(state)
+            == "tool_timeout"
+        )
+
+
+class TestEvidenceDAState:
+    """Tests for EvidenceDAState dataclass defaults and tracking."""
+
+    def test_defaults(self):
+        state = EvidenceDAState(evidence_id="ev_test")
+        assert state.evidence_id == "ev_test"
+        assert state.empty_search_count == 0
+        assert state.da_call_count == 0
+        assert state.last_da_confidence == 1.0
+        assert state.has_timed_out is False
+        assert state.content_size_bytes == 0
+        assert state.vectorized is False
+
+    def test_independent_tracking(self):
+        """Two EvidenceDAState instances track independently."""
+        state_a = EvidenceDAState(evidence_id="ev_a")
+        state_b = EvidenceDAState(evidence_id="ev_b")
+
+        state_a.empty_search_count = 3
+        state_a.has_timed_out = True
+
+        assert state_b.empty_search_count == 0
+        assert state_b.has_timed_out is False

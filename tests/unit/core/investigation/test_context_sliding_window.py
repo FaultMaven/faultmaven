@@ -521,3 +521,72 @@ class TestFilenameAttribution:
 
         assert 'filename="nginx-access.log"' in result
         assert 'filename="app-server.log"' in result
+
+
+# ============================================================
+# Processing Mode: structural_index role="orientation"
+# ============================================================
+
+
+class TestProcessingModeOrientation:
+    """Test that processing_mode controls the role attribute on structural_index.
+
+    In Directed Analysis mode, the structural index is tagged with
+    role="orientation" to signal it's a map for the LLM, not the answer.
+    """
+
+    def test_da_mode_adds_role_orientation(self):
+        """processing_mode='directed_analysis' → <structural_index role="orientation">."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Nginx errors",
+            preprocessed_content="CRIME SCENE: 502 errors at 14:00",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case, processing_mode="directed_analysis")
+
+        assert '<structural_index role="orientation">' in result
+        assert "CRIME SCENE: 502 errors" in result
+
+    def test_triage_mode_no_role_attribute(self):
+        """processing_mode='triage' → <structural_index> (no role)."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Nginx errors",
+            preprocessed_content="CRIME SCENE: 502 errors at 14:00",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case, processing_mode="triage")
+
+        assert "<structural_index>" in result
+        assert 'role="orientation"' not in result
+
+    def test_none_mode_no_role_attribute(self):
+        """processing_mode=None (default) → <structural_index> (no role)."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Nginx errors",
+            preprocessed_content="CRIME SCENE: 502 errors at 14:00",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)  # no processing_mode arg
+
+        assert "<structural_index>" in result
+        assert 'role="orientation"' not in result
+
+    def test_orientation_role_only_on_tier_a(self):
+        """role='orientation' applies to Tier A items only; Tier B has no structural_index."""
+        evidence = [
+            _make_evidence(
+                summary=f"Evidence {i}",
+                preprocessed_content=f"Index {i}",
+                collected_at_turn=i + 1,
+            )
+            for i in range(5)
+        ]
+        case = _make_case_with_evidence(evidence)
+        result = _build_evidence_context(case, processing_mode="directed_analysis")
+
+        # Tier A (recent 3): should have role="orientation"
+        assert '<structural_index role="orientation">' in result
+        # The older items (Tier B) should be summary-only — no structural_index at all

@@ -1260,12 +1260,23 @@ class MilestoneEngine:
                 if hasattr(self.llm_provider, "config")
                 else None
             )
+
+            # Classify query for processing mode (structural index role tagging)
+            from faultmaven.modules.agent.domain.services.query_classifier import (
+                classify_query,
+            )
+
+            classification = classify_query(
+                user_message, has_attachments=bool(case.evidence)
+            )
+
             prompt = get_prompt_for_case(
                 case,
                 user_message,
                 kb_results,
                 provider_name=provider_name,
                 model_name=model_name,
+                processing_mode=classification.mode.value,
             )
 
             # Determine schema based on status/stage

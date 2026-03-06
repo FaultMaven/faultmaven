@@ -15,16 +15,17 @@ All user turns arrive via the **Unified Ingestion Pipeline** (`POST /cases/{id}/
 
 ---
 
-## Four-Tier Processing Model
+## Scenario-Driven Processing Model
 
-FaultMaven uses a **four-tier data preprocessing model** to balance cost, speed, and depth of analysis:
+FaultMaven uses a **scenario-driven processing model** where a mechanical query classifier routes each turn to one of three processing modes:
 
-| Tier | Purpose | Runs | LLM Calls | Cost |
-|------|---------|------|-----------|------|
-| **Tier 0+1: Structural Indexing** | Classification + type-specific extraction | Always (<2s) | 0 | $0 |
-| **Tier 2: Mechanical Search** | `search_file` tool — grep/regex on raw files | On-demand | 0 | $0 |
-| **Tier 3: Deep LLM Analysis** | `deep_analyze_file` tool — LLM interprets data | On-demand | 1 | ~$0.01-$0.05 |
-| **Tier 4: Vectorization** | `vectorize_file` tool — chunk, embed, store | On-demand (rare) | 0 (embed only) | ~$0.05-$0.50 |
+| Mode | When | System Prompt | Vectorization |
+|------|------|---------------|---------------|
+| **Triage** | Generic request ("analyze this") or file drop with no question | Structural index is the answer. Summarize findings. | Not triggered |
+| **Directed Analysis** | Specific question with entities (timestamps, error codes, services) | Structural index as orientation map. `deep_analysis` and `search_file` as primary tools. | Auto-triggered on DA failure |
+| **Semantic Search** | Auto-triggered when DA fails on qualifying large files | N/A (mechanical, not prompt-driven) | `vectorize_file` → `knowledge_base_search` |
+
+All submissions are preprocessed through **Tier 0+1 (Structural Indexing)** — classification + type-specific extraction — before mode selection. The query classifier (`classify_query()`) uses regex entity detection and phrasing analysis. No LLM call for routing.
 
 ---
 
@@ -47,7 +48,7 @@ All documents in this section share a single DataType taxonomy:
 
 ### Data Preprocessing
 
-- **[Data Preprocessing Design Specification v4.2](./data-preprocessing-design-specification.md)** — Core four-tier preprocessing architecture. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), Tier 2 mechanical search (`search_file` with two-pass keyword matching and zero-result vocabulary recovery), Tier 3 deep LLM analysis (`deep_analyze_file`), Tier 4 on-demand vectorization, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and tier-escalation hardening (R3 coverage gap detection, R4 auto-escalation, R5 context budgeting).
+- **[Data Preprocessing Design Specification v5.0](./data-preprocessing-design-specification.md)** — Core preprocessing architecture with scenario-driven processing modes. Defines Tier 0+1 structural indexing (12 detailed types → 6 unified types, 11 extractors with coverage metadata), mechanical query classifier (`classify_query()` — heuristic entity detection + phrasing analysis), mode-specific system prompts (Triage vs Directed Analysis), per-evidence DA failure tracking with auto-vectorization, small-file DA failure fallback, unified ingestion pipeline (`POST /cases/{id}/turns`), Context Sliding Window, evidence form determination, and orchestration hardening (R3 coverage gap detection, R4 per-evidence DA tracking with auto-vectorization, R5 context budgeting).
 
 - **[Data Classification Strategy v2.0](./data-classification-strategy.md)** — Tier 0 classification rules. Multi-level pattern matching (Level 1-3 heuristics, Level 4 contextual, optional Level 5 LLM), disambiguation strategies, confidence scoring, and command output detection.
 
@@ -71,12 +72,15 @@ All documents in this section share a single DataType taxonomy:
 | Tier 0+1: Structural Indexing | **Implemented** | 12 detailed types, 11 extractors, best-effort fallback. Pasted text routed through same pipeline. |
 | Tier 2: Mechanical Search | **Implemented** | `search_file` agent tool — two-pass keyword search (ALL→partial fallback), regex, extractor re-run. Zero-result vocabulary recovery. |
 | Tier 3: Deep LLM Analysis | Partial | `deep_analyze_file` tool; pluggable backend interface defined, limited backends. Config renamed to `DEEP_ANALYSIS_*`. |
-| Tier 4: Vectorization | **Implemented** | On-demand via `vectorize_file` tool (was eager background in v3.2) |
-| Context Sliding Window | **Implemented** | Structural indexes included in LLM context (Tier A: recent full, Tier B: older summary, Tier C: user text summary) |
+| Vectorization (auto-triggered) | **Implemented** | Auto-triggered on DA failure via per-evidence tracking. No user confirmation. Size gates enforced. |
+| Query Classifier | **Implemented** | `classify_query()` — heuristic entity detection + phrasing analysis. Routes to Triage or Directed Analysis. |
+| Mode-Specific System Prompts | **Implemented** | `DATA_ACCESS_TRIAGE` and `DATA_ACCESS_DIRECTED_ANALYSIS` injected via `{data_access_strategy}` placeholder. |
+| Per-Evidence DA Failure Tracking | **Implemented** | `EvidenceDAState` tracks empty searches, DA calls, confidence, timeouts per evidence. Cross-turn via `da_invocation_count`. |
+| Context Sliding Window | **Implemented** | Structural indexes in LLM context (Tier A: recent full, Tier B: older summary, Tier C: user text summary). `role="orientation"` in DA mode. |
 | Evidence Form (Payload-driven) | **Implemented** | `_determine_evidence_form()` and `SubmissionClassification` deleted. Form set by payload context. |
 | Evidence Classification | **Implemented** | Single-phase creation with LLM evaluation |
 | Evidence Failure Modes | Design Complete | Async retry, orphan cleanup designed; deferred to post-MVP |
 | Platform-Specific Extractors | Planned | Future enhancement for SRE/DevOps tool parsing |
 | Coverage Metadata (Tier 1) | **Implemented** | All 10 extractors append `--- COVERAGE METADATA ---` with key-value pairs (Lines, Time range, Format, etc.) |
-| Tier-Escalation Hardening | **Implemented** | R3: coverage gap detection, R4: auto-escalation after 2 empty searches, R5: 30K char context budget with compression |
+| Orchestration Hardening | **Implemented** | R3: coverage gap detection, R4: per-evidence DA failure tracking + auto-vectorization, R5: 30K char context budget with compression |
 | Pattern Learning System | Planned | Adaptive classification from user corrections (Phase 3) |

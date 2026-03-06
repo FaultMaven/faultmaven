@@ -1636,10 +1636,25 @@ class Evidence(BaseModel):
     extraction_method: Optional[str] = Field(
         default=None,
         description=(
-            "Tier 1 extraction method used: structural_index, statistical_profile, "
+            "Extraction method used: structural_index, statistical_profile, "
             "parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction"
         ),
         max_length=100,
+    )
+
+    # ============================================================
+    # Processing Mode (Scenario-Driven Data Processing)
+    # ============================================================
+    processing_mode: Optional[str] = Field(
+        default=None,
+        description="Processing mode: triage | directed_analysis | semantic_search",
+        max_length=50,
+    )
+
+    da_invocation_count: int = Field(
+        default=0,
+        ge=0,
+        description="DA invocations across turns for this evidence (failure trigger #4)",
     )
 
     # ============================================================

@@ -88,9 +88,9 @@ The `execute_agent` method yields `ExecutionEvent` objects via an `AsyncGenerato
 *   **Protocol**: Server-Sent Events (SSE) or standard HTTP streaming response.
 *   **Route**: `POST /sessions/{session_id}/message?stream=true`
 
-## 5. Tier-Escalation Hardening (Mechanical Safety Nets)
+## 5. Orchestration Hardening (Mechanical Safety Nets)
 
-The `AgentOrchestrationService` includes three mechanical safety nets that improve the agent's tier escalation decisions without requiring prompt changes. These are non-blocking advisories — hints injected into the LLM context, not hard gates.
+The `AgentOrchestrationService` includes three mechanical safety nets that improve the agent's data access decisions without requiring prompt changes. These are non-blocking advisories and automated actions — hints injected into the LLM context and mechanical triggers, not hard gates.
 
 ### 5.1 Coverage Gap Detection (R3)
 
@@ -102,16 +102,19 @@ The `AgentOrchestrationService` includes three mechanical safety nets that impro
 2. **Coverage comparison**: Extracted entities are compared against evidence coverage metadata (appended by Tier 1 extractors as `--- COVERAGE METADATA ---` blocks).
 3. **Advisory injection**: When query entities fall outside evidence coverage (e.g., user asks about 14:00 but evidence covers 13:42-13:57), a coverage advisory is injected into the LLM context before the system prompt.
 
-### 5.2 Auto-Escalation Advisory (R4)
+### 5.2 Per-Evidence DA Failure Tracking + Auto-Vectorization (R4, v5.0)
 
-**Problem**: The agent may call `search_file` repeatedly with different keywords, hitting zero results each time, without escalating to Tier 3 (`deep_analyze_file`) or informing the user.
+**Problem**: The agent may call `search_file` or `deep_analysis` repeatedly on the same evidence file without resolution, hitting empty results or low-confidence answers.
 
-**Mechanism**:
+**Mechanism** (replaces v4.2 global `consecutive_empty_searches` counter):
 
-1. Track consecutive empty `search_file` results via a counter in the execution loop.
-2. After **2 consecutive zero-result calls**, inject an `[ESCALATION ADVISORY]` into the tool result content visible to the LLM.
-3. The advisory suggests: (1) review vocabulary hints, (2) try `search_type='regex'`, (3) escalate to `deep_analysis`, or (4) tell the user what's missing.
-4. Counter resets after advisory injection or a successful search.
+1. Track DA failure signals **independently per evidence file** via `EvidenceDAState` (empty search count, DA call count, last DA confidence, timeout flag).
+2. When **any single trigger** fires on a qualifying file (size above `vectorization_min_size_bytes`), auto-vectorize the file via `vectorize_file` — no user confirmation needed.
+3. Four independent triggers: tool timeout, 3+ consecutive empty searches, 3+ DA invocations, low confidence (<0.2).
+4. For files below the vectorization threshold, inject raw file content into the LLM context instead.
+5. `da_invocation_count` is persisted on the Evidence model for cross-turn accumulation.
+
+See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-specification.md) Section 6.1 for full implementation details.
 
 ### 5.3 Context Budget Tracking (R5)
 
