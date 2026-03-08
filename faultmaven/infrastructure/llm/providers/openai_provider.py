@@ -99,9 +99,12 @@ class OpenAIProvider(BaseLLMProvider):
             "Content-Type": "application/json",
         }
 
+        # Handle messages for multi-turn conversations
+        messages = kwargs.pop("messages", None)
+
         payload = {
             "model": effective_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages if messages else [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
@@ -113,8 +116,9 @@ class OpenAIProvider(BaseLLMProvider):
                 payload["tool_choice"] = tool_choice
 
         # Add response format if specified in kwargs
-        if "response_format" in kwargs:
-            payload["response_format"] = kwargs.pop("response_format")
+        response_format = kwargs.pop("response_format", None)
+        if response_format:
+            payload["response_format"] = response_format
 
         # Add any additional kwargs
         payload.update(kwargs)

@@ -19,8 +19,11 @@ from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 logger = logging.getLogger(__name__)
 
 # Default search parameters
-DEFAULT_CONTEXT_LINES = 20
-DEFAULT_MAX_RESULTS = 10
+# Context lines: ±N lines around each match. Keep small — log entries are
+# typically self-contained on a single line, and large context windows cause
+# the TOOL_RESULT_MAX_CHARS truncation to cut off matches.
+DEFAULT_CONTEXT_LINES = 3
+DEFAULT_MAX_RESULTS = 20
 
 
 class SearchFileTool(AgentTool):
@@ -119,42 +122,25 @@ class SearchFileTool(AgentTool):
             )
 
         try:
-            # Get evidence metadata
-            evidence = await context.evidence_service.get_evidence(
-                evidence_id=evidence_id,
-                organization_id=context.organization_id,
+            # Resolve evidence content (standalone table → case-embedded fallback)
+            resolved = await self._resolve_evidence_content(
+                evidence_id,
+                context,
             )
-
-            if not evidence:
+            if resolved is None:
                 return ToolResult(
                     success=False,
                     data=None,
-                    error=f"Evidence not found: {evidence_id}",
+                    error=f"Evidence not found or file not accessible: {evidence_id}",
                 )
-
-            if evidence.case_id != context.case_id:
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error=f"Evidence {evidence_id} does not belong to case {context.case_id}",
-                )
-
-            # Download raw file content
-            file_data, filename, mime_type = (
-                await context.evidence_service.download_evidence(
-                    evidence_id=evidence_id,
-                    organization_id=context.organization_id,
-                )
-            )
-
-            content = file_data.decode("utf-8", errors="replace")
+            content, filename, evidence_obj = resolved
 
             # Dispatch by search type
             if search_type == "regex":
                 results = self._regex_search(content, query)
             elif search_type == "extractor":
                 results = await self._extractor_rerun(
-                    content, evidence, extractor_params
+                    content, evidence_obj, extractor_params
                 )
             else:
                 results = self._keyword_search(content, query)
@@ -212,6 +198,118 @@ class SearchFileTool(AgentTool):
                 data=None,
                 error=f"Search failed: {str(e)}",
             )
+
+    async def _resolve_evidence_content(
+        self,
+        evidence_id: str,
+        context: ToolContext,
+    ) -> tuple[str, str, Any] | None:
+        """Resolve evidence content, trying standalone table then case-embedded.
+
+        The unified ingestion pipeline creates Evidence objects embedded in the
+        Case document (not in the standalone evidence_artifacts table). This
+        method tries both paths:
+        1. Standalone evidence_artifacts table (legacy / standalone uploads)
+        2. Case-embedded evidence list (unified pipeline)
+
+        Returns:
+            (content_str, filename, evidence_obj) or None if not found
+        """
+        ev_service = context.evidence_service
+
+        # Path 1: Standalone evidence table
+        evidence = await ev_service.get_evidence(evidence_id)
+        if evidence:
+            # Verify case access
+            if hasattr(evidence, "case_id") and evidence.case_id != context.case_id:
+                logger.warning(
+                    "search_file: evidence %s belongs to case %s, not %s",
+                    evidence_id,
+                    evidence.case_id,
+                    context.case_id,
+                )
+                return None
+
+            download_result = await ev_service.download_evidence(evidence_id)
+            if download_result:
+                file_data, filename, _mime = download_result
+                content = file_data.decode("utf-8", errors="replace")
+                return content, filename, evidence
+
+        # Path 2: Case-embedded evidence (unified ingestion pipeline)
+        # Evidence is stored in case.evidence[] with content_ref pointing to file
+        logger.debug(
+            "search_file: evidence %s not in standalone table, trying case-embedded",
+            evidence_id,
+        )
+        case_repo = getattr(ev_service, "case_repository", None)
+        if not case_repo:
+            logger.warning("search_file: no case_repository on evidence_service")
+            return None
+
+        case = await case_repo.get(context.case_id)
+        if not case:
+            logger.warning("search_file: case %s not found", context.case_id)
+            return None
+
+        # Find evidence in case's embedded list
+        case_evidence = None
+        for ev in getattr(case, "evidence", []):
+            if getattr(ev, "evidence_id", None) == evidence_id:
+                case_evidence = ev
+                break
+
+        if not case_evidence:
+            logger.warning(
+                "search_file: evidence %s not found in case %s (has %d evidence items)",
+                evidence_id,
+                context.case_id,
+                len(getattr(case, "evidence", [])),
+            )
+            return None
+
+        # Read file via content_ref
+        content_ref = getattr(case_evidence, "content_ref", None)
+        if not content_ref:
+            logger.warning(
+                "search_file: evidence %s has no content_ref (file not stored)",
+                evidence_id,
+            )
+            return None
+
+        # Try storage adapter on evidence service (EvidenceStorageAdapter)
+        storage = getattr(ev_service, "storage", None)
+        if storage and hasattr(storage, "get_file_content"):
+            file_data = await storage.get_file_content(content_ref)
+            if file_data:
+                filename = (
+                    getattr(case_evidence, "original_filename", None) or evidence_id
+                )
+                content = file_data.decode("utf-8", errors="replace")
+                return content, filename, case_evidence
+
+        # Try direct FileStorageService on the tool (injected at construction)
+        if self.storage_service and hasattr(self.storage_service, "retrieve_file"):
+            try:
+                file_data = await self.storage_service.retrieve_file(content_ref)
+                filename = (
+                    getattr(case_evidence, "original_filename", None) or evidence_id
+                )
+                content = file_data.decode("utf-8", errors="replace")
+                return content, filename, case_evidence
+            except Exception as e:
+                logger.warning(
+                    "search_file: storage_service.retrieve_file failed for %s: %s",
+                    content_ref,
+                    e,
+                )
+
+        logger.warning(
+            "search_file: evidence %s found in case but file not accessible (content_ref=%s)",
+            evidence_id,
+            content_ref,
+        )
+        return None
 
     def _keyword_search(self, content: str, query: str) -> list[dict[str, Any]]:
         """Keyword search: tokenize query, find matching lines, return context windows.
@@ -271,7 +369,7 @@ class SearchFileTool(AgentTool):
                                 "partial_match": True,
                             }
                         )
-            return self._merge_overlapping(partial_matches)[:5]
+            return self._merge_overlapping(partial_matches)[: self.max_results]
 
         return []
 

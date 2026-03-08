@@ -545,7 +545,7 @@ def _build_evidence_context(case: Case, processing_mode: Optional[str] = None) -
             result += f"    <structural_index{role_attr}>\n"
             result += structural_index
             if truncated:
-                result += f"\n[TRUNCATED: {remaining_chars:,} more characters. Use search_file or read_file to query the full content.]"
+                result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Work with the visible content above. If you need specific details beyond what's shown, suggest a targeted command the user can run.]"
             result += "\n    </structural_index>\n"
         result += "  </evidence>\n"
         total_chars += entry_estimate

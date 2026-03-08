@@ -76,7 +76,16 @@ def _make_engine():
     mock_llm.generate = AsyncMock()
     mock_repo = MagicMock()
     mock_repo.save = AsyncMock(side_effect=lambda c: c)
-    return MilestoneEngine(mock_llm, mock_repo), mock_llm, mock_repo
+    return (
+        MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        ),
+        mock_llm,
+        mock_repo,
+    )
 
 
 # ============================================================

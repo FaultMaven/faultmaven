@@ -170,10 +170,10 @@ class TestRealPIIRedactionBehavior:
             assert processing_time < 0.5
             assert isinstance(result, str)
 
-            # IP addresses should be redacted for privacy
-            if "[IP_ADDRESS_REDACTED]" in result:
+            # IP addresses should be redacted for privacy (indexed pseudonyms)
+            if "<IP_ADDRESS_" in result:
                 # Validate redaction occurred
-                assert "192.168" not in result or "[IP_ADDRESS_REDACTED]" in result
+                assert "192.168" not in result or "<IP_ADDRESS_" in result
 
     def test_real_secret_key_redaction(self, data_sanitizer):
         """Test real API key and secret redaction."""
@@ -207,23 +207,22 @@ class TestRealPIIRedactionBehavior:
             assert isinstance(result, str)
             assert len(result) > 0
 
-            # Check for expected redaction patterns
+            # Check for expected indexed redaction patterns
             redaction_found = any(
-                redacted in result
-                for redacted in [
-                    "[AWS_ACCESS_KEY_REDACTED]",
-                    "[API_KEY_REDACTED]",
-                    "[JWT_TOKEN_REDACTED]",
-                    "[DATABASE_URL_REDACTED]",
-                    "[SENSITIVE_DATA_REDACTED]",
+                prefix in result
+                for prefix in [
+                    "<AWS_ACCESS_KEY_",
+                    "<API_KEY_",
+                    "<JWT_TOKEN_",
+                    "<DATABASE_URL_",
                 ]
             )
 
             # Some secrets should be redacted based on patterns
             if "AWS_ACCESS_KEY_ID=AKIA" in case["input"]:
-                assert "[AWS_ACCESS_KEY_REDACTED]" in result
+                assert "<AWS_ACCESS_KEY_" in result
             elif "postgresql://" in case["input"]:
-                assert "[DATABASE_URL_REDACTED]" in result
+                assert "<DATABASE_URL_" in result
 
 
 class TestRealDataSanitizationWorkflows:
@@ -355,17 +354,17 @@ class TestRealDataSanitizationWorkflows:
         assert "Resolution Steps:" in sanitized_content
         assert "Internal Notes:" in sanitized_content
 
-        # Validate redaction of various sensitive data types
-        expected_redactions = [
-            "[IP_ADDRESS_REDACTED]",
-            "[DATABASE_URL_REDACTED]",
-            "[AWS_ACCESS_KEY_REDACTED]",
-            "[MAC_ADDRESS_REDACTED]",
+        # Validate redaction of various sensitive data types (indexed pseudonyms)
+        expected_prefixes = [
+            "<IP_ADDRESS_",
+            "<DATABASE_URL_",
+            "<AWS_ACCESS_KEY_",
+            "<MAC_ADDRESS_",
         ]
 
         # At least some redactions should have occurred
         redaction_count = sum(
-            1 for redaction in expected_redactions if redaction in sanitized_content
+            1 for prefix in expected_prefixes if prefix in sanitized_content
         )
         assert redaction_count > 0  # Some sensitive data should be redacted
 

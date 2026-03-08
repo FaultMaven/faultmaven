@@ -640,6 +640,12 @@ class ProviderRegistry:
             )
             self._routing_initialized = True
 
+        # When tools are present, bypass confidence filtering. Tool-calling
+        # responses have different confidence characteristics (e.g. empty text
+        # + valid tool calls is normal). The caller (DA tool loop) has its own
+        # retry logic and must see the raw response to decide what to do.
+        skip_confidence_check = bool(kwargs.get("tools"))
+
         # Get health-aware routing order
         routing_order = self._get_routing_order()
 
@@ -650,7 +656,7 @@ class ProviderRegistry:
 
         last_error = None
         best_low_confidence_response = None
-        best_low_confidence_score = 0.0
+        best_low_confidence_score = -1.0
 
         for provider_name in routing_order:
             provider = self._providers.get(provider_name)
@@ -698,6 +704,19 @@ class ProviderRegistry:
 
                 # Calculate latency
                 latency_ms = (time.monotonic() - start_time) * 1000
+
+                # For tool-calling requests, skip confidence filtering and
+                # return the response directly. The caller has its own retry
+                # logic and needs to inspect tool_calls regardless of confidence.
+                if skip_confidence_check:
+                    state.record_success(latency_ms)
+                    if provider_name != self._sticky_provider:
+                        self.logger.info(
+                            f"🔄 Switched to {provider_name} "
+                            f"(was: {self._sticky_provider or 'none'})"
+                        )
+                    self._sticky_provider = provider_name
+                    return response
 
                 # Check confidence threshold
                 if response.confidence >= confidence_threshold:

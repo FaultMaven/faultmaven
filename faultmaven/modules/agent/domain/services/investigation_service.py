@@ -11,6 +11,7 @@ This service wraps the MilestoneEngine and provides:
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -229,14 +230,19 @@ class InvestigationService:
                             "s3_uri": ev.content_ref,
                         }
                     )
+                # DA evidence search is handled inside MilestoneEngine's tool loop.
+                # The same LLM that tracks hypotheses searches evidence directly
+                # during generation — no pre-fetch or separate gathering step needed.
+
                 result = await self.engine.process_turn(
                     case=case,
                     user_message=query or "",
                     attachments=attachment_metadata or None,
                     intent_type=intent_type.value,
-                    intent_data=(
-                        intent.model_dump(exclude_unset=True) if intent else {}
-                    ),
+                    intent_data={
+                        **(intent.model_dump(exclude_unset=True) if intent else {}),
+                        "query_mode": classification.mode.value,
+                    },
                 )
             elif intent_type == IntentType.GREETING:
                 result = await self._handle_greeting(case=case)
@@ -439,6 +445,7 @@ class InvestigationService:
             processing_mode=processing_mode,
             collected_by=user_id,
             collected_at_turn=turn_number,
+            original_filename=attachment.filename,
         )
 
         # Store raw content for deep analysis / search_file access
@@ -615,8 +622,6 @@ class InvestigationService:
         Returns:
             Detected IntentType or None
         """
-        import re
-
         clean_msg = message.strip().lower()
 
         # Greeting patterns (case-insensitive)

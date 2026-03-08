@@ -156,12 +156,17 @@ class TestValidation:
         evidence = MagicMock()
         evidence.case_id = "case_other"
         context.evidence_service.get_evidence.return_value = evidence
+        # download_evidence should not be attempted for wrong-case evidence
+        context.evidence_service.download_evidence.return_value = None
         result = await tool.execute_with_context(
             params={"evidence_id": "ev_abc", "query": "test"},
             context=context,
         )
         assert result.success is False
-        assert "does not belong" in result.error
+        assert (
+            "not found" in result.error.lower()
+            or "not accessible" in result.error.lower()
+        )
 
 
 class TestPartialMatchFallback:

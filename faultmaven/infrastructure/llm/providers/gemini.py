@@ -7,7 +7,8 @@ capabilities for text and image processing.
 
 import json
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import aiohttp
 
@@ -16,7 +17,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -103,8 +104,8 @@ class GeminiProvider(BaseLLMProvider):
             generation_config["stopSequences"] = kwargs["stop_sequences"]
 
         # Handle structured output (json_schema or json_object)
-        if "response_format" in kwargs:
-            rf = kwargs["response_format"]
+        rf = kwargs.get("response_format")
+        if rf:
             if rf.get("type") == "json_schema":
                 generation_config["response_mime_type"] = "application/json"
                 if "json_schema" in rf and "schema" in rf["json_schema"]:
@@ -112,11 +113,53 @@ class GeminiProvider(BaseLLMProvider):
             elif rf.get("type") == "json_object":
                 generation_config["response_mime_type"] = "application/json"
 
+        # Extract multi-turn messages and tool calling params
+        messages = kwargs.pop("messages", None)
+        tools_param = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+
         # Prepare request body for Gemini API format
-        request_body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": generation_config,
-        }
+        if messages:
+            converted = self._convert_messages_to_gemini(messages)
+            request_body = {
+                "contents": converted["contents"],
+                "generationConfig": generation_config,
+            }
+            if converted.get("system_instruction"):
+                request_body["systemInstruction"] = {
+                    "parts": [{"text": converted["system_instruction"]}]
+                }
+        else:
+            request_body = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": generation_config,
+            }
+
+        # Add function calling tools
+        if tools_param:
+            function_declarations = []
+            for tool in tools_param:
+                if tool.get("type") == "function":
+                    func = tool["function"]
+                    params = func.get("parameters", {})
+                    # Gemini doesn't support $ref/$defs/anyOf — resolve them
+                    params = self._resolve_refs_for_gemini(params)
+                    function_declarations.append(
+                        {
+                            "name": func["name"],
+                            "description": func.get("description", ""),
+                            "parameters": params,
+                        }
+                    )
+            if function_declarations:
+                request_body["tools"] = [
+                    {"functionDeclarations": function_declarations}
+                ]
+
+            if tool_choice == "required":
+                request_body["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
+            elif tool_choice == "auto":
+                request_body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
 
         # Add safety settings if provided
         if "safety_settings" in kwargs:
@@ -169,6 +212,7 @@ class GeminiProvider(BaseLLMProvider):
 
         # Extract content from Gemini response format
         content = ""
+        tool_calls = None
         tokens_used = 0
 
         if "candidates" in response_data and response_data["candidates"]:
@@ -178,6 +222,20 @@ class GeminiProvider(BaseLLMProvider):
                 for part in candidate["content"]["parts"]:
                     if "text" in part:
                         content += part["text"]
+                    elif "functionCall" in part:
+                        if tool_calls is None:
+                            tool_calls = []
+                        fc = part["functionCall"]
+                        tool_calls.append(
+                            ToolCall(
+                                id=f"call_{uuid4().hex[:12]}",
+                                type="function",
+                                function={
+                                    "name": fc["name"],
+                                    "arguments": json.dumps(fc.get("args", {})),
+                                },
+                            )
+                        )
 
             # Extract token usage if available
             if response_data.get("usageMetadata"):
@@ -213,7 +271,13 @@ class GeminiProvider(BaseLLMProvider):
         response_time_ms = int((time.time() - start_time) * 1000)
 
         # Calculate confidence based on model and response quality
-        confidence = self._calculate_confidence(selected_model, content, response_data)
+        has_valid_tool_calls = tool_calls is not None and len(tool_calls) > 0
+        confidence = self._calculate_confidence(
+            selected_model,
+            content,
+            response_data,
+            has_valid_tool_calls=has_valid_tool_calls,
+        )
 
         return LLMResponse(
             content=content,
@@ -223,10 +287,15 @@ class GeminiProvider(BaseLLMProvider):
             tokens_used=tokens_used,
             response_time_ms=response_time_ms,
             cached=False,
+            tool_calls=tool_calls,
         )
 
     def _calculate_confidence(
-        self, model: str, content: str, response_data: dict
+        self,
+        model: str,
+        content: str,
+        response_data: dict,
+        has_valid_tool_calls: bool = False,
     ) -> float:
         """
         Calculate confidence score for Gemini response
@@ -235,6 +304,7 @@ class GeminiProvider(BaseLLMProvider):
             model: Model used for generation
             content: Generated content
             response_data: Full API response
+            has_valid_tool_calls: Whether the response has valid tool calls
 
         Returns:
             Confidence score (0.0-1.0)
@@ -267,8 +337,10 @@ class GeminiProvider(BaseLLMProvider):
         # Adjust based on content quality
         content_length = len(content.strip())
 
-        if content_length == 0:
+        if content_length == 0 and not has_valid_tool_calls:
             return 0.0
+        elif content_length == 0 and has_valid_tool_calls:
+            return model_confidence
         elif content_length < 50:
             # Very short responses might be less reliable
             model_confidence *= 0.8
@@ -310,3 +382,190 @@ class GeminiProvider(BaseLLMProvider):
 
         # Ensure confidence is within valid range
         return min(1.0, max(0.0, model_confidence))
+
+    def _convert_messages_to_gemini(self, messages: list) -> Dict[str, Any]:
+        """Convert OpenAI-format messages to Gemini API format.
+
+        Handles:
+        - system messages → extracted to 'system_instruction'
+        - user messages → role: user with text parts
+        - assistant messages → role: model with text/functionCall parts
+        - tool messages → role: function with functionResponse parts
+
+        Returns:
+            Dict with 'contents' list and optional 'system_instruction' string.
+        """
+        system_parts: List[str] = []
+        contents: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_parts.append(content)
+
+            elif role == "user":
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [{"text": content}],
+                    }
+                )
+
+            elif role == "assistant":
+                parts: List[Dict[str, Any]] = []
+                if content:
+                    parts.append({"text": content})
+
+                for tc in msg.get("tool_calls", []):
+                    func = tc.get("function", {})
+                    args = func.get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                    parts.append(
+                        {
+                            "functionCall": {
+                                "name": func.get("name", ""),
+                                "args": args,
+                            }
+                        }
+                    )
+
+                if parts:
+                    contents.append({"role": "model", "parts": parts})
+
+            elif role == "tool":
+                tool_name = msg.get("name", "")
+                response_content = content
+
+                # Parse as JSON for structured response if possible
+                try:
+                    response_content = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    response_content = {"result": content}
+
+                fn_response_part = {
+                    "functionResponse": {
+                        "name": tool_name,
+                        "response": response_content,
+                    }
+                }
+
+                # Group consecutive function responses into one turn
+                if (
+                    contents
+                    and contents[-1].get("role") == "function"
+                    and all(
+                        "functionResponse" in p for p in contents[-1].get("parts", [])
+                    )
+                ):
+                    contents[-1]["parts"].append(fn_response_part)
+                else:
+                    contents.append({"role": "function", "parts": [fn_response_part]})
+
+        result: Dict[str, Any] = {"contents": contents}
+        if system_parts:
+            result["system_instruction"] = "\n\n".join(system_parts)
+
+        return result
+
+    # Fields that Gemini's function calling API does not support.
+    # Gemini only accepts: type, description, properties, required, items,
+    # enum, nullable, format.  Everything else must be stripped.
+    _GEMINI_UNSUPPORTED_FIELDS = frozenset(
+        {
+            "additionalProperties",
+            "title",
+            "default",
+            "examples",
+            "$schema",
+            "minLength",
+            "maxLength",
+            "pattern",
+            "minimum",
+            "maximum",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+            "minItems",
+            "maxItems",
+            "uniqueItems",
+            "const",
+            "oneOf",
+        }
+    )
+
+    @staticmethod
+    def _resolve_refs_for_gemini(schema: dict) -> dict:
+        """Resolve $ref/$defs, convert anyOf, and strip unsupported fields for Gemini.
+
+        Gemini's API doesn't support JSON Schema features like $ref, $defs,
+        anyOf, oneOf, or additionalProperties. This method:
+        1. Inlines all $ref references from $defs
+        2. Converts anyOf: [{type: X}, {type: "null"}] to {type: X, nullable: true}
+        3. Removes $defs from the final schema
+        4. Strips unsupported fields (additionalProperties, title, default, etc.)
+        """
+        import copy
+
+        schema = copy.deepcopy(schema)
+        defs = schema.pop("$defs", None) or {}
+
+        def _strip_unsupported(node: dict) -> None:
+            """Remove fields that Gemini does not support."""
+            for field in GeminiProvider._GEMINI_UNSUPPORTED_FIELDS:
+                node.pop(field, None)
+
+        def resolve(node):
+            if not isinstance(node, dict):
+                return node
+
+            # Resolve $ref
+            if "$ref" in node:
+                ref_path = node["$ref"]  # e.g. "#/$defs/InternalReasoning"
+                ref_name = ref_path.rsplit("/", 1)[-1]
+                if ref_name in defs:
+                    resolved = copy.deepcopy(defs[ref_name])
+                    return resolve(resolved)
+                return {"type": "object"}
+
+            # Convert anyOf (Pydantic Optional pattern)
+            if "anyOf" in node:
+                variants = node["anyOf"]
+                non_null = [v for v in variants if v.get("type") != "null"]
+                if len(non_null) == 1:
+                    # Optional[X] pattern: anyOf: [{type: X}, {type: null}]
+                    resolved = resolve(non_null[0])
+                    resolved["nullable"] = True
+                    # Preserve description from parent
+                    if "description" in node and "description" not in resolved:
+                        resolved["description"] = node["description"]
+                    return resolved
+                elif non_null:
+                    # Union type — pick first non-null variant
+                    resolved = resolve(non_null[0])
+                    resolved["nullable"] = any(
+                        v.get("type") == "null" for v in variants
+                    )
+                    return resolved
+                return {"type": "string"}
+
+            # Recurse into properties
+            if "properties" in node:
+                node["properties"] = {
+                    k: resolve(v) for k, v in node["properties"].items()
+                }
+
+            # Recurse into items
+            if "items" in node:
+                node["items"] = resolve(node["items"])
+
+            # Strip unsupported fields (additionalProperties, title, etc.)
+            _strip_unsupported(node)
+
+            return node
+
+        return resolve(schema)

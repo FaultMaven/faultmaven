@@ -98,9 +98,7 @@ class DeepAnalysisTool(AgentTool):
                     error="Evidence service not available in context.",
                 )
 
-            evidence = await evidence_service.get_evidence(
-                evidence_id, context.organization_id
-            )
+            evidence = await evidence_service.get_evidence(evidence_id)
             if not evidence:
                 return ToolResult(
                     success=False,

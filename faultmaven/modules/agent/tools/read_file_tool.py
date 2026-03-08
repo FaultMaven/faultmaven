@@ -125,10 +125,7 @@ class ReadFileTool(AgentTool):
 
         try:
             # Get evidence metadata first
-            evidence = await context.evidence_service.get_evidence(
-                evidence_id=evidence_id,
-                organization_id=context.organization_id,
-            )
+            evidence = await context.evidence_service.get_evidence(evidence_id)
 
             if not evidence:
                 return ToolResult(
@@ -149,12 +146,16 @@ class ReadFileTool(AgentTool):
                 )
 
             # Download file contents
-            file_data, filename, mime_type = (
-                await context.evidence_service.download_evidence(
-                    evidence_id=evidence_id,
-                    organization_id=context.organization_id,
-                )
+            download_result = await context.evidence_service.download_evidence(
+                evidence_id,
             )
+            if not download_result:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Could not download evidence file: {evidence_id}",
+                )
+            file_data, filename, mime_type = download_result
 
             # Process based on file type
             content = self._process_file_content(

@@ -41,6 +41,9 @@ from faultmaven.modules.case.contracts import (
     CaseCheckpoint,
     EscalationState,
     Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
     Hypothesis,
     InquiryData,
     InvestigationProgress,
@@ -306,41 +309,60 @@ class SQLiteCaseRepository(CaseRepository):
         return messages
 
     async def _load_evidence_for_case(self, case: Case) -> None:
-        """Load evidence for case directly from evidence_artifacts table."""
+        """Load investigation evidence from the evidence table."""
         try:
             query = text("""
                 SELECT
-                    evidence_id, case_id, user_id, organization_id,
-                    original_filename, stored_filename, file_path,
-                    evidence_type, mime_type, file_size, storage_backend,
-                    created_at, updated_at, metadata, description,
-                    is_primary
-                FROM evidence_artifacts
+                    evidence_id, case_id, category, summary,
+                    preprocessed_content, content_ref, file_size,
+                    upload_timestamp, metadata, collected_at_turn,
+                    content_hash, source_file_id
+                FROM evidence
                 WHERE case_id = :case_id
-                ORDER BY created_at DESC
+                ORDER BY upload_timestamp DESC
                 LIMIT 1000
             """)
             result = await self.db.execute(query, {"case_id": case.case_id})
             rows = result.fetchall()
 
-            case.evidence = [
-                Evidence(
-                    evidence_id=str(row[0]),
-                    data_type=row[7] if row[7] else "other",
-                    summary=row[14] or "",
-                    preprocessed_content=None,
-                    storage_ref=row[6],
-                    file_size=row[9],
-                    filename=row[4],
-                    timestamp=row[11],
-                )
-                for row in rows
-            ]
-        except Exception as e:
-            import logging
+            evidence_list = []
+            for row in rows:
+                try:
+                    category_str = row[2] or "contextual_evidence"
+                    try:
+                        category = EvidenceCategory(category_str)
+                    except ValueError:
+                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
 
+                    evidence_list.append(
+                        Evidence(
+                            evidence_id=str(row[0]),
+                            category=category,
+                            primary_purpose="loaded_evidence",
+                            summary=row[3] if row[3] else "Evidence",
+                            preprocessed_content=row[4] if row[4] else "",
+                            content_ref=row[5],
+                            content_size_bytes=row[6] if row[6] else 0,
+                            preprocessing_method="loaded",
+                            source_type=EvidenceSourceType.LOGS,
+                            form=EvidenceForm.DOCUMENT,
+                            collected_by="user",
+                            collected_at_turn=row[9] if row[9] else 0,
+                            content_hash=row[10],
+                            source_file_id=row[11],
+                        )
+                    )
+                except Exception as ev_err:
+                    logging.getLogger(__name__).warning(
+                        "Failed to load evidence %s: %s", row[0], ev_err
+                    )
+
+            case.evidence = evidence_list
+        except Exception as e:
             logging.getLogger(__name__).warning(
-                f"Failed to load evidence for case {case.case_id}: {e}"
+                "Failed to load evidence for case %s: %s",
+                case.case_id,
+                e,
             )
 
     async def list(
@@ -2043,29 +2065,278 @@ class SQLiteCaseRepository(CaseRepository):
         description: str | None = None,
         tags: builtins.list[str] | None = None,
     ) -> Any:
-        raise NotImplementedError(
-            "create_standalone_evidence not implemented for SQLite"
+        """Create standalone evidence record in SQLite."""
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+            EvidenceArtifactType,
+            StorageBackend,
+        )
+
+        evidence_id = f"ev_{uuid4().hex[:12]}"
+        now = datetime.now(UTC)
+
+        # Infer evidence type from content_type
+        if content_type.startswith("image/"):
+            evidence_type = EvidenceArtifactType.SCREENSHOT
+        elif content_type.startswith("video/"):
+            evidence_type = EvidenceArtifactType.VIDEO_RECORDING
+        elif "json" in content_type or content_type.startswith("text/"):
+            evidence_type = EvidenceArtifactType.LOG_FILE
+        elif "application/x-har" in content_type:
+            evidence_type = EvidenceArtifactType.HAR_FILE
+        else:
+            evidence_type = EvidenceArtifactType.OTHER
+
+        tags_list = tags or []
+
+        # Store tags inside metadata JSON (no tags column in production schema)
+        meta = {"tags": tags_list} if tags_list else {}
+
+        query = text("""
+            INSERT INTO evidence_artifacts (
+                evidence_id, case_id, user_id, organization_id,
+                original_filename, stored_filename, file_path,
+                evidence_type, mime_type, file_size, storage_backend,
+                created_at, updated_at, metadata, description,
+                is_primary
+            ) VALUES (
+                :evidence_id, :case_id, :user_id, :organization_id,
+                :original_filename, :stored_filename, :file_path,
+                :evidence_type, :mime_type, :file_size, :storage_backend,
+                :created_at, :updated_at, :metadata, :description,
+                :is_primary
+            )
+        """)
+
+        await self.db.execute(
+            query,
+            {
+                "evidence_id": evidence_id,
+                "case_id": "standalone",
+                "user_id": uploaded_by,
+                "organization_id": "default_org",
+                "original_filename": filename,
+                "stored_filename": filename,
+                "file_path": storage_path,
+                "evidence_type": evidence_type.value,
+                "mime_type": content_type,
+                "file_size": size_bytes,
+                "storage_backend": StorageBackend.LOCAL_FILESYSTEM.value,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "metadata": json.dumps(meta),
+                "description": description,
+                "is_primary": 0,
+            },
+        )
+        await self.db.commit()
+
+        return EvidenceArtifact(
+            evidence_id=evidence_id,
+            case_id="standalone",
+            user_id=uploaded_by,
+            organization_id="default_org",
+            original_filename=filename,
+            stored_filename=filename,
+            file_path=storage_path,
+            evidence_type=evidence_type,
+            mime_type=content_type,
+            file_size=size_bytes,
+            storage_backend=StorageBackend.LOCAL_FILESYSTEM,
+            created_at=now,
+            updated_at=now,
+            description=description,
+            metadata={},
+            tags=tags_list,
+            linked_case_ids=[],
         )
 
     async def get_standalone_evidence(self, evidence_id: str) -> Any | None:
-        raise NotImplementedError("get_standalone_evidence not implemented for SQLite")
+        """Get standalone evidence by ID from SQLite."""
+        query = text("""
+            SELECT
+                evidence_id, case_id, user_id, organization_id,
+                original_filename, stored_filename, file_path,
+                evidence_type, mime_type, file_size, storage_backend,
+                created_at, updated_at, metadata, description,
+                is_primary
+            FROM evidence_artifacts
+            WHERE evidence_id = :evidence_id
+        """)
+        result = await self.db.execute(query, {"evidence_id": evidence_id})
+        row = result.fetchone()
+        if not row:
+            return None
+        return self._row_to_evidence_artifact(row)
 
     async def list_standalone_evidence(
         self, filters: Any
     ) -> tuple[builtins.list[Any], int]:
-        raise NotImplementedError("list_standalone_evidence not implemented for SQLite")
+        """List standalone evidence with filters from SQLite."""
+        where_clauses = []
+        params: dict[str, Any] = {}
+
+        if filters and hasattr(filters, "case_id") and filters.case_id:
+            where_clauses.append("case_id = :case_id")
+            params["case_id"] = str(filters.case_id)
+
+        if filters and hasattr(filters, "uploaded_by") and filters.uploaded_by:
+            where_clauses.append("user_id = :user_id")
+            params["user_id"] = str(filters.uploaded_by)
+
+        if (
+            filters
+            and hasattr(filters, "filename_contains")
+            and filters.filename_contains
+        ):
+            where_clauses.append("original_filename LIKE :filename_pattern")
+            params["filename_pattern"] = f"%{filters.filename_contains}%"
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        # Get total count
+        count_query = text(f"SELECT COUNT(*) FROM evidence_artifacts WHERE {where_sql}")
+        count_result = await self.db.execute(count_query, params)
+        total = count_result.scalar() or 0
+
+        # Get paginated results
+        offset = getattr(filters, "offset", 0) if filters else 0
+        limit = getattr(filters, "limit", 50) if filters else 50
+        params["limit"] = limit
+        params["offset"] = offset
+
+        data_query = text(f"""
+            SELECT
+                evidence_id, case_id, user_id, organization_id,
+                original_filename, stored_filename, file_path,
+                evidence_type, mime_type, file_size, storage_backend,
+                created_at, updated_at, metadata, description,
+                is_primary
+            FROM evidence_artifacts
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        result = await self.db.execute(data_query, params)
+        rows = result.fetchall()
+
+        evidence_list = []
+        for row in rows:
+            artifact = self._row_to_evidence_artifact(row)
+            if artifact:
+                evidence_list.append(artifact)
+
+        # Apply tag filtering in Python (tags stored as JSON in SQLite)
+        if filters and hasattr(filters, "tags") and filters.tags:
+            evidence_list = [
+                e
+                for e in evidence_list
+                if any(tag in getattr(e, "tags", []) for tag in filters.tags)
+            ]
+
+        return evidence_list, total
 
     async def delete_standalone_evidence(self, evidence_id: str) -> bool:
-        raise NotImplementedError(
-            "delete_standalone_evidence not implemented for SQLite"
-        )
+        """Delete standalone evidence record from SQLite."""
+        query = text("DELETE FROM evidence_artifacts WHERE evidence_id = :evidence_id")
+        result = await self.db.execute(query, {"evidence_id": evidence_id})
+        await self.db.commit()
+        return result.rowcount > 0
 
     async def link_standalone_evidence_to_case(
         self, evidence_id: str, case_id: str
     ) -> Any | None:
-        raise NotImplementedError(
-            "link_standalone_evidence_to_case not implemented for SQLite"
+        """Link standalone evidence to a case in SQLite."""
+        # Verify evidence exists
+        evidence = await self.get_standalone_evidence(evidence_id)
+        if not evidence:
+            return None
+
+        # Update case_id
+        query = text("""
+            UPDATE evidence_artifacts
+            SET case_id = :case_id, updated_at = :updated_at
+            WHERE evidence_id = :evidence_id
+        """)
+        await self.db.execute(
+            query,
+            {
+                "case_id": case_id,
+                "evidence_id": evidence_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
         )
+        await self.db.commit()
+
+        # Return updated evidence
+        return await self.get_standalone_evidence(evidence_id)
+
+    def _row_to_evidence_artifact(self, row: Any) -> Any | None:
+        """Convert a database row to an EvidenceArtifact domain object."""
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+            EvidenceArtifactType,
+            StorageBackend,
+        )
+
+        try:
+            # Parse evidence_type
+            try:
+                evidence_type = EvidenceArtifactType(row[7])
+            except (ValueError, KeyError):
+                evidence_type = EvidenceArtifactType.OTHER
+
+            # Parse storage_backend
+            try:
+                storage_backend = StorageBackend(row[10])
+            except (ValueError, KeyError):
+                storage_backend = StorageBackend.LOCAL_FILESYSTEM
+
+            # Parse timestamps
+            created_at = row[11]
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at)
+            updated_at = row[12]
+            if isinstance(updated_at, str):
+                updated_at = datetime.fromisoformat(updated_at)
+            if not updated_at:
+                updated_at = created_at
+
+            # Parse JSON fields
+            metadata = row[13]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata) if metadata else {}
+            elif metadata is None:
+                metadata = {}
+
+            # Tags are stored inside metadata JSON (no tags column in schema)
+            tags = metadata.pop("tags", []) if isinstance(metadata, dict) else []
+
+            case_id = row[1] or "standalone"
+
+            return EvidenceArtifact(
+                evidence_id=str(row[0]),
+                case_id=case_id,
+                user_id=str(row[2]) if row[2] else "",
+                organization_id=str(row[3]) if row[3] else "default_org",
+                original_filename=str(row[4]) if row[4] else "unknown",
+                stored_filename=str(row[5]) if row[5] else str(row[4]) or "unknown",
+                file_path=str(row[6]) if row[6] else "",
+                evidence_type=evidence_type,
+                mime_type=str(row[8]) if row[8] else "application/octet-stream",
+                file_size=int(row[9]) if row[9] else 0,
+                storage_backend=storage_backend,
+                created_at=created_at or datetime.now(UTC),
+                updated_at=updated_at or datetime.now(UTC),
+                metadata=metadata,
+                description=row[14],
+                is_primary=bool(row[15]) if row[15] else False,
+                tags=tags,
+                linked_case_ids=[case_id] if case_id != "standalone" else [],
+            )
+        except Exception as e:
+            logger.warning("Failed to parse evidence artifact row: %s", e)
+            return None
 
     async def create_agent_execution(self, execution: Any) -> Any:
         raise NotImplementedError("create_agent_execution not implemented for SQLite")

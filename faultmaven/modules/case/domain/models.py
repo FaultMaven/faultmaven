@@ -1671,6 +1671,12 @@ class Evidence(BaseModel):
         description="ID of the UploadedFile this evidence was derived from (None if from user input)",
     )
 
+    original_filename: Optional[str] = Field(
+        default=None,
+        description="Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used by search_file tool for display.",
+        max_length=512,
+    )
+
     # ============================================================
     # Milestone Advancement
     # ============================================================

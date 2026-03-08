@@ -4,7 +4,7 @@ Handles evidence upload, linking, retrieval, and deletion.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 from uuid import UUID
 
 from fastapi import UploadFile
@@ -67,16 +67,18 @@ class EvidenceService:
 
         # Auto-link to case if provided
         if case_id:
-            await self.link_to_case(UUID(evidence.evidence_id), case_id)
+            await self.link_to_case(str(evidence.evidence_id), str(case_id))
 
         logger.info(f"Evidence {evidence.evidence_id} uploaded: {file.filename}")
         return evidence
 
-    async def get_evidence(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
+    async def get_evidence(
+        self, evidence_id: Union[str, UUID]
+    ) -> Optional[EvidenceArtifact]:
         """Get evidence by ID.
 
         Args:
-            evidence_id: Evidence UUID
+            evidence_id: Evidence ID (string or UUID)
 
         Returns:
             EvidenceArtifact or None if not found
@@ -96,11 +98,11 @@ class EvidenceService:
         """
         return await self.case_repository.list_standalone_evidence(filters)
 
-    async def delete_evidence(self, evidence_id: UUID) -> bool:
+    async def delete_evidence(self, evidence_id: Union[str, UUID]) -> bool:
         """Delete evidence file and record.
 
         Args:
-            evidence_id: Evidence UUID
+            evidence_id: Evidence ID (string or UUID)
 
         Returns:
             True if deleted, False if not found
@@ -120,12 +122,14 @@ class EvidenceService:
             logger.info(f"Evidence {evidence_id} deleted")
         return deleted
 
-    async def link_to_case(self, evidence_id: UUID, case_id: UUID) -> EvidenceArtifact:
+    async def link_to_case(
+        self, evidence_id: Union[str, UUID], case_id: Union[str, UUID]
+    ) -> EvidenceArtifact:
         """Link evidence to a case.
 
         Args:
-            evidence_id: Evidence UUID
-            case_id: Case UUID
+            evidence_id: Evidence ID (string or UUID)
+            case_id: Case ID (string or UUID)
 
         Returns:
             Updated evidence record
@@ -142,11 +146,11 @@ class EvidenceService:
         logger.info(f"Evidence {evidence_id} linked to case {case_id}")
         return evidence
 
-    async def get_file_url(self, evidence_id: UUID) -> Optional[str]:
+    async def get_file_url(self, evidence_id: Union[str, UUID]) -> Optional[str]:
         """Get download URL for evidence file.
 
         Args:
-            evidence_id: Evidence UUID
+            evidence_id: Evidence ID (string or UUID)
 
         Returns:
             Download URL or None if not found
@@ -156,3 +160,54 @@ class EvidenceService:
             return None
 
         return await self.storage.get_download_url(evidence.file_path)
+
+    async def download_evidence(
+        self, evidence_id: Union[str, UUID]
+    ) -> Optional[Tuple[bytes, str, str]]:
+        """Download evidence file content.
+
+        Args:
+            evidence_id: Evidence ID (string or UUID)
+
+        Returns:
+            Tuple of (file_bytes, filename, content_type) or None if not found
+        """
+        evidence = await self.case_repository.get_standalone_evidence(str(evidence_id))
+        if not evidence:
+            return None
+
+        file_data = await self.storage.get_file_content(evidence.file_path)
+        if file_data is None:
+            return None
+
+        return file_data, evidence.original_filename, evidence.mime_type
+
+    async def list_evidence_by_case(
+        self,
+        case_id: str,
+        evidence_type=None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[EvidenceArtifact]:
+        """List evidence linked to a case.
+
+        Args:
+            case_id: Case ID string
+            evidence_type: Optional filter by evidence type
+            limit: Max results
+            offset: Pagination offset
+
+        Returns:
+            List of evidence artifacts for the case
+        """
+        filters = EvidenceListFilter(case_id=case_id, limit=limit, offset=offset)
+        evidence_list, _ = await self.case_repository.list_standalone_evidence(filters)
+
+        if evidence_type:
+            evidence_list = [
+                e
+                for e in evidence_list
+                if getattr(e, "evidence_type", None) == evidence_type
+            ]
+
+        return evidence_list

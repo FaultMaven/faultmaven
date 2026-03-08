@@ -556,11 +556,12 @@ class InquiryResponse(BaseInteractionResponse):
         user_confirmed_investigation: bool = Field(
             default=False,
             description=(
-                "Set to True ONLY when the user explicitly confirms the problem "
-                "statement and agrees to investigate. Examples: 'Yes', 'Correct, "
-                "let's investigate', 'That's right'. Do NOT set True on the same "
-                "turn you first present the problem statement — wait for user's "
-                "confirmation response."
+                "Set to True when the user confirms or implicitly accepts the problem "
+                "statement. Explicit confirmation: 'Yes', 'Correct', 'Let's investigate'. "
+                "Implicit confirmation: user asks a follow-up question about the data, "
+                "references the problem, uploads additional evidence, or otherwise engages "
+                "with the investigation topic. Do NOT set True on the same turn you first "
+                "present the problem statement — wait for the user's next message."
             ),
         )
         quick_suggestions: Optional[List[str]] = Field(default_factory=list)

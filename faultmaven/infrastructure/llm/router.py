@@ -66,6 +66,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
         response_format: Optional[Dict[str, Any]] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -87,10 +88,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Sanitize prompt before sending to external providers (conditional)
         sanitized_prompt = self._sanitize_if_needed(prompt)
 
-        # Check cache first - always check with the original model parameter
+        # Check cache first (skip for multi-turn conversations — not cacheable)
         # The cache will be stored with the effective model used
         cache_model = model  # Use the requested model for cache lookup
-        if cache_model:
+        if cache_model and not messages:
             cached_response = self.cache.check(sanitized_prompt, cache_model)
             if cached_response:
                 self.logger.info("✅ Using cached response")
@@ -118,6 +119,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_format,
+                messages=messages,
                 confidence_threshold=self.confidence_threshold,
                 timeout=self.request_timeout,  # Configurable timeout from environment/settings
                 retries=1,  # Single retry for failed LLM calls
@@ -174,6 +176,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         tools = kwargs.get("tools")
         tool_choice = kwargs.get("tool_choice")
         response_format = kwargs.get("response_format")
+        messages = kwargs.get("messages")
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -185,6 +188,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             tools=tools,
             tool_choice=tool_choice,
             response_format=response_format,
+            messages=messages,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)

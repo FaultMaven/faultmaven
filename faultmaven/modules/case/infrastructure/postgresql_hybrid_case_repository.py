@@ -34,6 +34,9 @@ from faultmaven.modules.case.domain.models import (
     DocumentationData,
     EscalationState,
     Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
     Hypothesis,
     InquiryData,
     InvestigationProgress,
@@ -250,51 +253,62 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to get case {case_id}: {e}") from e
 
     async def _load_evidence_for_case(self, case: Case) -> None:
-        """Load evidence for case directly from evidence_artifacts table.
-
-        Per module-organization-design.md, Case module now owns evidence data.
-        This method queries the evidence table directly.
+        """Load investigation evidence from the evidence table.
 
         Args:
             case: Case to load evidence for (modified in place)
         """
         try:
-            # Query evidence_artifacts table directly (Case owns this table now)
             query = text("""
                 SELECT
-                    evidence_id, case_id, user_id, organization_id,
-                    original_filename, stored_filename, file_path,
-                    evidence_type, mime_type, file_size, storage_backend,
-                    created_at, updated_at, metadata, description,
-                    is_primary, tags
-                FROM evidence_artifacts
+                    evidence_id, case_id, category, summary,
+                    preprocessed_content, content_ref, file_size,
+                    upload_timestamp, metadata, collected_at_turn,
+                    content_hash, source_file_id
+                FROM evidence
                 WHERE case_id = :case_id
-                ORDER BY created_at DESC
+                ORDER BY upload_timestamp DESC
                 LIMIT 1000
                 """)
             result = await self.db.execute(query, {"case_id": case.case_id})
             rows = result.fetchall()
 
-            # Convert to Evidence domain model
-            case.evidence = [
-                Evidence(
-                    evidence_id=str(row[0]),
-                    data_type=row[7] if row[7] else "other",
-                    summary=row[14] or "",  # description
-                    preprocessed_content=None,
-                    storage_ref=row[6],  # file_path
-                    file_size=row[9],  # file_size
-                    filename=row[4],  # original_filename
-                    timestamp=row[11],  # created_at
-                )
-                for row in rows
-            ]
-        except Exception as e:
-            # Log but don't fail if evidence loading fails
-            import logging
+            evidence_list = []
+            for row in rows:
+                try:
+                    category_str = row[2] or "contextual_evidence"
+                    try:
+                        category = EvidenceCategory(category_str)
+                    except ValueError:
+                        category = EvidenceCategory.CONTEXTUAL_EVIDENCE
 
-            logging.getLogger(__name__).warning(
-                f"Failed to load evidence for case {case.case_id}: {e}"
+                    evidence_list.append(
+                        Evidence(
+                            evidence_id=str(row[0]),
+                            category=category,
+                            primary_purpose="loaded_evidence",
+                            summary=row[3] if row[3] else "Evidence",
+                            preprocessed_content=row[4] if row[4] else "",
+                            content_ref=row[5],
+                            content_size_bytes=row[6] if row[6] else 0,
+                            preprocessing_method="loaded",
+                            source_type=EvidenceSourceType.LOGS,
+                            form=EvidenceForm.DOCUMENT,
+                            collected_by="user",
+                            collected_at_turn=row[9] if row[9] else 0,
+                            content_hash=row[10],
+                            source_file_id=row[11],
+                        )
+                    )
+                except Exception as ev_err:
+                    logger.warning("Failed to load evidence %s: %s", row[0], ev_err)
+
+            case.evidence = evidence_list
+        except Exception as e:
+            logger.warning(
+                "Failed to load evidence for case %s: %s",
+                case.case_id,
+                e,
             )
 
     async def list(

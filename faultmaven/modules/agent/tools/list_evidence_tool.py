@@ -114,7 +114,6 @@ class ListEvidenceTool(AgentTool):
             # List evidence for the case
             evidence_list = await context.evidence_service.list_evidence_by_case(
                 case_id=context.case_id,
-                organization_id=context.organization_id,
                 evidence_type=evidence_type,
                 limit=limit,
             )

@@ -130,8 +130,9 @@ class TestDataSanitizer:
         text = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
         result = sanitizer.sanitize(text)
 
-        # Should redact AWS access key
-        assert "[AWS_ACCESS_KEY_REDACTED]" in result
+        # Should redact AWS access key with indexed pseudonym
+        assert "<AWS_ACCESS_KEY_" in result
+        assert "AKIAIOSFODNN7EXAMPLE" not in result
 
     def test_database_url_redaction(self):
         """Test database URL redaction."""
@@ -139,8 +140,9 @@ class TestDataSanitizer:
         text = "DATABASE_URL=postgresql://user:password@host:5432/db"
         result = sanitizer.sanitize(text)
 
-        # Should redact database URL
-        assert "[DATABASE_URL_REDACTED]" in result
+        # Should redact database URL with indexed pseudonym
+        assert "<DATABASE_URL_" in result
+        assert "postgresql://user:password@host:5432/db" not in result
 
     def test_jwt_token_redaction(self):
         """Test JWT token redaction."""
@@ -150,11 +152,10 @@ class TestDataSanitizer:
 
         # Should redact something in the JWT token (either JWT or AWS secret)
         assert any(
-            redaction in result
-            for redaction in [
-                "[JWT_TOKEN_REDACTED]",
-                "[AWS_SECRET_KEY_REDACTED]",
-                "[SENSITIVE_DATA_REDACTED]",
+            prefix in result
+            for prefix in [
+                "<JWT_TOKEN_",
+                "<AWS_SECRET_KEY_",
             ]
         )
 
@@ -164,8 +165,9 @@ class TestDataSanitizer:
         text = "Server running on 192.168.1.100"
         result = sanitizer.sanitize(text)
 
-        # Should redact internal IP
-        assert "[IP_ADDRESS_REDACTED]" in result
+        # Should redact internal IP with indexed pseudonym
+        assert "<IP_ADDRESS_" in result
+        assert "192.168.1.100" not in result
 
     def test_mac_address_redaction(self):
         """Test MAC address redaction."""
@@ -173,5 +175,6 @@ class TestDataSanitizer:
         text = "Device MAC: 00:1B:44:11:3A:B7"
         result = sanitizer.sanitize(text)
 
-        # Should redact MAC address
-        assert "[MAC_ADDRESS_REDACTED]" in result
+        # Should redact MAC address with indexed pseudonym
+        assert "<MAC_ADDRESS_" in result
+        assert "00:1B:44:11:3A:B7" not in result

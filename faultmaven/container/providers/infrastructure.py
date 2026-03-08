@@ -45,6 +45,46 @@ def create_llm_provider() -> Any:
     return LLMRouter()
 
 
+def create_da_provider() -> tuple[Any | None, str | None]:
+    """Select a dedicated provider for DA (directed analysis) turns.
+
+    Only activates when DA_PROVIDER is explicitly set in .env.
+    When not set, returns (None, None) — the DA tool loop uses the default
+    LLM router, which inherits the user's configured model (e.g. GEMINI_MODEL).
+
+    Returns:
+        Tuple of (provider_instance, model_name) or (None, None).
+    """
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.llm.providers import get_registry
+
+    settings = get_settings()
+
+    # Only activate when DA_PROVIDER is explicitly set
+    if settings.llm.da_provider is None:
+        logger.info("DA_PROVIDER not set; DA turns will use default LLM router")
+        return None, None
+
+    provider_enum = settings.llm.get_da_provider()
+    model = settings.llm.get_da_model()
+    provider_name = provider_enum.value
+
+    registry = get_registry()
+    provider = registry.get_provider(provider_name)
+
+    if provider and provider.is_available():
+        logger.info(
+            f"DA provider for directed analysis turns: {provider_name} (model: {model})"
+        )
+        return provider, model
+
+    logger.warning(
+        f"DA provider '{provider_name}' not available; "
+        "DA turns will use default router"
+    )
+    return None, None
+
+
 def create_log_processor() -> Any:
     """Create legacy log processor."""
     from faultmaven.core.processing.log_analyzer import LogProcessor

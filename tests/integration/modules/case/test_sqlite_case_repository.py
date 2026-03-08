@@ -211,7 +211,7 @@ async def create_test_schema(session: AsyncSession):
         )
     """))
 
-    # Create evidence_artifacts table (used by _load_evidence_for_case)
+    # Create evidence_artifacts table (matches production schema — no tags column)
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS evidence_artifacts (
             evidence_id TEXT PRIMARY KEY,
@@ -229,8 +229,7 @@ async def create_test_schema(session: AsyncSession):
             updated_at TIMESTAMP,
             metadata TEXT,
             description TEXT,
-            is_primary INTEGER DEFAULT 0,
-            tags TEXT
+            is_primary INTEGER DEFAULT 0
         )
     """))
 

@@ -336,7 +336,11 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
             evidence_summaries.append(
                 EvidenceSummary(
                     evidence_id=ev.evidence_id,
-                    type=ev.evidence_type.value,
+                    type=(
+                        ev.source_type.value
+                        if hasattr(ev.source_type, "value")
+                        else str(ev.source_type)
+                    ),
                     summary=ev.summary,
                     timestamp=ev.collected_at,
                     relevance_score=0.8,  # Could compute from hypothesis links
