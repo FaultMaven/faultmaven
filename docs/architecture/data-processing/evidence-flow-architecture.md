@@ -127,8 +127,10 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │ - data_type (logs/metrics/configuration/code/text/image)         │ │
 │  │ - summary, primary_purpose                                         │ │
 │  │ - content_ref, content_hash                                        │ │
+│  │ - original_filename (display name from upload)                    │ │
 │  │ - collected_at_turn, collected_at, collected_by                   │ │
 │  │ - related_hypotheses, advances_milestones                         │ │
+│  │ - processing_mode, da_invocation_count                            │ │
 │  │                                                                     │ │
 │  │ Constraints:                                                        │ │
 │  │ - UNIQUE (case_id, collected_at_turn)                             │ │
@@ -521,6 +523,8 @@ User          API(/turns)    Investigation    Context      Deep Analysis   Stora
 ```
 
 **Key**: `search_file` and `deep_analysis` are invoked by the investigation agent as tool calls during `process_turn()`. The preprocessing service is NOT involved — it completed during Step 1 of the original turn. See [Data Preprocessing v5.0](./data-preprocessing-design-specification.md) Sections 3-4 for full invocation logic. Tool selection is guided by the processing mode (Triage vs Directed Analysis) set by the query classifier.
+
+**DA Tool Loop (v5.0)**: In Directed Analysis turns, the milestone engine routes inference through a bounded tool-calling loop (`_tool_augmented_generate()`) instead of single-shot generation. The LLM receives `search_file` and `schema_tool` as function-calling tools, iterating up to 4 times with an iteration-0 guardrail that forces at least one evidence search before generating a structured response. The `search_file` tool resolves evidence content through dual-path resolution (standalone via `evidence_artifacts` table or case-embedded via `case_repo`). The `Evidence.original_filename` field provides the display filename in search results. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
 
 **Orchestration Hardening (v4.2, updated v5.0)**: The orchestration layer adds three mechanical safety nets:
 

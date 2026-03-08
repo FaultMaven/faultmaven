@@ -76,6 +76,9 @@ All documents in this section share a single DataType taxonomy:
 | Query Classifier | **Implemented** | `classify_query()` — heuristic entity detection + phrasing analysis. Routes to Triage or Directed Analysis. |
 | Mode-Specific System Prompts | **Implemented** | `DATA_ACCESS_TRIAGE` and `DATA_ACCESS_DIRECTED_ANALYSIS` injected via `{data_access_strategy}` placeholder. |
 | Per-Evidence DA Failure Tracking | **Implemented** | `EvidenceDAState` tracks empty searches, DA calls, confidence, timeouts per evidence. Cross-turn via `da_invocation_count`. |
+| DA Tool Loop | **Implemented** | Bounded tool-calling loop (`_tool_augmented_generate()`) for Directed Analysis turns. LLM iterates `search_file` + `schema_tool` up to 4 times with iteration-0 guardrail. Dual-path evidence resolution. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50). |
+| Evidence `original_filename` | **Implemented** | Set during `_preprocess_attachment()`, displayed by `search_file` tool instead of opaque evidence ID. |
+| Diagnostic Reasoning Validator | **Implemented** | Validates agent responses for OBSERVATION + ANALYSIS structure, evidence grounding (≥2 of 4 categories), causal reasoning. Self-correction retry with single attempt. DA causal reasoning downgrade. See [Error Handling §3.2](../investigation-engine/error-handling-and-recovery.md#32-reasoning-validation-with-self-correction). |
 | Context Sliding Window | **Implemented** | Structural indexes in LLM context (Tier A: recent full, Tier B: older summary, Tier C: user text summary). `role="orientation"` in DA mode. |
 | Evidence Form (Payload-driven) | **Implemented** | `_determine_evidence_form()` and `SubmissionClassification` deleted. Form set by payload context. |
 | Evidence Classification | **Implemented** | Single-phase creation with LLM evaluation |

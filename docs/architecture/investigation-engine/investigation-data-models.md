@@ -1329,6 +1329,9 @@ category: EvidenceCategory    # Determines milestone advancement
 data_type: DataType           # Type of data (LOGS, METRICS, etc.)
 summary: str                  # Brief description (<500 chars)
 content_ref: str              # Storage location
+original_filename: Optional[str]  # Original upload filename (e.g., 'OpenSSH_2k.log')
+                                  # Set during _preprocess_attachment(). Used by
+                                  # search_file tool for display in results.
 
 # Hypothesis linkage (for CAUSAL_EVIDENCE)
 tests_hypothesis_id: Optional[str]

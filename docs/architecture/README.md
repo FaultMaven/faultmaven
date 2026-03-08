@@ -162,37 +162,23 @@ All documents referenced by architecture-overview.md remain at the root level fo
 
 ---
 
-## 📌 Latest Addition (2025-10-13)
+## 📌 Latest Updates (2026-03-08)
 
-### Data Preprocessing System v4.0
+### Data Preprocessing v5.0 + Investigation Engine Updates
 
-**[data-preprocessing-design-specification.md](data-processing/data-preprocessing-design-specification.md)** - Complete design specification for data preprocessing system
+**[data-preprocessing-design-specification.md](data-processing/data-preprocessing-design-specification.md)** — Scenario-driven processing model (v5.0)
 
-**What it covers**:
-- 3-step pipeline architecture (Classify → Preprocess → LLM Analysis)
-- 8 data types with detailed specifications (LOG_FILE, ERROR_REPORT, CONFIG_FILE, METRICS_DATA, etc.)
-- Complete preprocessor implementations for each type
-- LLM integration and prompt structure
-- Security & privacy (PII redaction, sanitization)
-- Phased implementation roadmap with effort estimates
-- Dependencies and testing strategy
+**Key changes**:
 
-**Status**: ✅ Final design - Ready for implementation
-
-**Quick Summary**:
-```
-Step 1: Classify (✅ Implemented)
-  ↓
-Step 2: Preprocess (⚠️ To Implement - THIS DOCUMENT)
-  ├─ LogPreprocessor (P1 - 6 hours)
-  ├─ ErrorPreprocessor (P1 - 6 hours)
-  ├─ ConfigPreprocessor (P2 - 8 hours)
-  ├─ MetricsPreprocessor (P2 - 8 hours)
-  └─ Others (P3-P5)
-  ↓
-Step 3: LLM Analysis (✅ Ready)
-```
+- **DA Tool Loop**: Bounded tool-calling (`_tool_augmented_generate()`) for Directed Analysis turns — LLM iterates `search_file` + `schema_tool` up to 4 times with iteration-0 guardrail
+- **Diagnostic Reasoning Validator**: Validates agent responses for OBSERVATION + ANALYSIS structure, evidence grounding, causal reasoning. Self-correction retry with DA causal reasoning downgrade
+- **Dual-path evidence resolution**: `search_file` resolves content via standalone `evidence_artifacts` table or case-embedded `case_repo`
+- **Evidence `original_filename`**: Display filename set during `_preprocess_attachment()`, shown in search results
+- **Per-evidence DA failure tracking**: `EvidenceDAState` with 4 independent triggers and auto-vectorization
 
 **Related Documents**:
-- [evidence-classification-design.md](data-processing/evidence-classification-design.md) - Evidence classification and submission types
+
+- [Orchestration Capabilities §5.4](investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) — DA Tool Loop details
+- [Error Handling §3.2](investigation-engine/error-handling-and-recovery.md#32-reasoning-validation-with-self-correction) — Diagnostic reasoning validator
+- [Evidence Flow Architecture](data-processing/evidence-flow-architecture.md) — Updated flow diagrams
 

@@ -201,11 +201,19 @@ k8s-deployment.yaml → config_file (confidence: 1.0)
 - Tier 1 structural index lacks detail for the user's question
 - Agent needs specific lines, values, or patterns from raw file
 - Re-running domain extractors with different parameters
+- Within the DA Tool Loop (`_tool_augmented_generate()`) during Directed Analysis turns — the LLM iterates `search_file` + `schema_tool` up to 4 times with an iteration-0 guardrail
 
 **Search Modes**:
 - **keyword** (default): Two-pass strategy. Pass 1 requires ALL keywords on same line (high relevance). Pass 2 falls back to individual keywords with `partial_match: True` (capped at 5 results).
 - **regex**: Treats query as regex pattern. Useful for timestamps, error codes, IP addresses.
 - **extractor**: Re-runs domain-specific extractor with overridden parameters (e.g., `min_severity`, `z_score_threshold`).
+
+**Evidence Resolution** (dual-path):
+
+- **Path 1 (standalone)**: Query `evidence_artifacts` table by evidence ID → read raw content from `content_ref`
+- **Path 2 (case-embedded)**: Load case via `case_repo.get()` → find matching `Evidence` object → read content from `content_ref`
+
+The `Evidence.original_filename` field (set during `_preprocess_attachment()`) provides the display filename in search results instead of the opaque evidence ID.
 
 **Zero-Result Recovery**:
 When any search mode returns 0 results, vocabulary extraction runs on the file content (first 100KB):
@@ -444,6 +452,6 @@ class CustomAPITool(BaseTool):
 
 ---
 
-**Last Updated**: 2026-03-04
+**Last Updated**: 2026-03-08
 **Maintained By**: Architecture Team
 

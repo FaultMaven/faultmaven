@@ -363,6 +363,19 @@ async def search_file(
     """
 ```
 
+#### Dual-Path Evidence Resolution
+
+The `search_file` tool resolves evidence content through two paths:
+
+- **Path 1 (standalone)**: Query `evidence_artifacts` table by evidence ID → read raw content from `content_ref`. Used when the evidence exists as a standalone artifact.
+- **Path 2 (case-embedded)**: Load case via `case_repo.get()` → find matching `Evidence` object → read content from `content_ref`. Used when evidence is embedded in the case object.
+
+The `Evidence.original_filename` field (set during `_preprocess_attachment()`) provides the display filename in search results instead of the opaque evidence ID. This gives users meaningful context about which file a search result came from (e.g., `app.log` instead of `ev_abc123`).
+
+#### DA Tool Loop Integration
+
+In Directed Analysis turns, `search_file` is available as a function-calling tool within the bounded DA Tool Loop (`_tool_augmented_generate()` in `milestone_engine.py`). The LLM iterates up to 4 times calling `search_file` and `schema_tool`, with an iteration-0 guardrail that forces at least one search before generating a structured response. See [Orchestration Capabilities §5.4](../investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) for full details.
+
 ### 3.3 Search Modes
 
 #### A. Keyword Search (Two-Pass Strategy — v4.2)

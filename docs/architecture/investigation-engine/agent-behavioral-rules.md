@@ -96,6 +96,18 @@ If OBSERVATION is empty, you are hallucinating. Ask for data instead.
 
 **Why this is the strongest rule**: It relies on a forced output structure — the single most effective prompt engineering technique for constraining LLM behavior. The OBSERVATION → ANALYSIS → SUGGESTION chain makes hallucination structurally visible.
 
+**Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which checks LLM responses for:
+
+1. **OBSERVATION section** — markers like "OBSERVATION:", "I NOTICE", "EVIDENCE SHOWS"
+2. **ANALYSIS section** — markers like "ANALYSIS:", "THIS SUGGESTS", "BECAUSE"
+3. **Specific evidence references** — at least 2 of 4 categories: timestamps (HH:MM, YYYY-MM-DD), metrics/percentages, specific IDs (commit hashes, deployment IDs), error messages/log excerpts
+4. **Causal reasoning** — language like "causes", "leads to", "because", "therefore"
+5. **Anti-patterns** — checklist engineering (5+ bullets, "try these N things"), generic best practices ("implement monitoring", "follow best practices")
+
+When violations are detected, a self-correction retry feeds the specific violations back to the LLM for one rewrite attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction).
+
+**DA turn exception**: For Directed Analysis turns answering factual lookups, causal reasoning is downgraded to a warning when it is the sole violation (factual answers like "these 3 usernames attempted login" are not causal chains).
+
 ---
 
 ## Rule 3: Advisor Role

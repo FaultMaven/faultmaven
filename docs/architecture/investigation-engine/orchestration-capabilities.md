@@ -129,3 +129,40 @@ See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-speci
 5. High-signal keywords: `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`.
 
 **Key**: Compression only affects what the LLM sees. The uncompressed content is preserved in the `AgentToolCall` record for audit and debugging.
+
+### 5.4 DA Tool Loop: Bounded Tool-Calling (v5.0)
+
+**Problem**: In Directed Analysis turns, the LLM needs to search evidence files for specific data (timestamps, error codes, usernames) before generating a grounded response. Without tool access during generation, the LLM either hallucinates details or produces generic answers not grounded in case evidence.
+
+**Mechanism** (`_tool_augmented_generate()` in `milestone_engine.py`):
+
+1. When `query_mode == "directed_analysis"`, the milestone engine routes inference through a bounded tool-calling loop instead of single-shot generation.
+2. The LLM receives `search_file` and `schema_tool` as function-calling tools, with a DA-specific system instruction that includes keyword-first search guidance and a required OBSERVATION + ANALYSIS response format.
+3. **Iteration-0 guardrail**: At iteration 0, only investigation tools (`search_file`) are available — the schema tool is withheld. This forces the LLM to perform at least one search before attempting to generate a structured response.
+4. The loop runs for up to 4 iterations. Each iteration either:
+   - Executes a tool call (search_file or schema_tool) and feeds the result back to the LLM
+   - Terminates when the LLM returns a structured response via `schema_tool`
+5. If the loop exhausts all iterations without a structured response, it falls back to single-shot `_generate_structured_output()`.
+
+**DA System Instruction**: The system instruction injected for DA turns includes:
+
+* **Entity-first search**: Extract specific entities (IPs, usernames, timestamps, error codes) from the user's question and search for those exact terms
+* **Keyword-first search mode**: Use `search_type: "keyword"` by default; fall back to regex only for pattern matching
+* **PII token warnings**: Explicit instruction that PII tokens (IPs, hostnames, usernames) in uploaded evidence are NOT real PII and must not be redacted from tool calls
+* **RESPONSE FORMAT**: Requires OBSERVATION section (cite specific data from at least 2 different categories — timestamps, error messages, IPs/usernames, metrics/counts) followed by ANALYSIS section (explain WHY using causal language)
+
+**Dual-Path Evidence Resolution**: The `search_file` tool resolves evidence content through two paths:
+
+* **Path 1 (standalone)**: Query `evidence_artifacts` table by evidence ID → read raw content from `content_ref`
+* **Path 2 (case-embedded)**: Load case via `case_repo.get()` → find matching `Evidence` object → read content from `content_ref`
+
+The `Evidence.original_filename` field (set during `_preprocess_attachment()`) provides the display filename in search results instead of the opaque evidence ID.
+
+**Key characteristics:**
+
+* Zero additional LLM calls for search (search_file is mechanical, $0)
+* At most 1 additional LLM call per tool iteration (for the loop's inference step)
+* Falls back gracefully to single-shot on loop exhaustion
+* Iteration-0 guardrail ensures at least one evidence search before response
+
+See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.

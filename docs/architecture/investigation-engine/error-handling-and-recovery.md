@@ -293,15 +293,23 @@ When the LLM produces a structurally valid response but omits required reasoning
 
 ```python
 # Self-correction flow (milestone_engine.py):
-is_valid, violations = validate_reasoning_first(response_obj, case)
+is_valid, violations = validate_diagnostic_reasoning(case, agent_response, contains_suggestion)
 if not is_valid:
-    # Build correction prompt with specific violations
+    # Build correction prompt with specific violations AND original response
     correction_feedback = (
-        "[SYSTEM CORRECTION REQUIRED]\n"
-        "Your previous response failed diagnostic reasoning validation.\n"
+        "\n\n[SYSTEM CORRECTION REQUIRED]\n"
+        "Your previous response failed diagnostic reasoning validation. "
         "You MUST fix these issues:\n"
         + "\n".join(f"- {v}" for v in violations)
-        + "\nRewrite your response to address ALL violations above."
+        + "\n\nHere is your previous response to rewrite:\n"
+        + response_obj.agent_response
+        + "\n\nRewrite the agent_response to address ALL violations above. "
+        "Structure it as: OBSERVATION (cite specific data from at least 2 "
+        "categories — timestamps like HH:MM, error messages, IPs/usernames, "
+        "or metrics/counts — directly from the search results above) then "
+        "ANALYSIS (explain WHY using causal language like 'because', "
+        "'therefore', 'this indicates'). "
+        "Keep all state_updates from your previous response unchanged."
     )
     corrected_prompt = original_prompt + correction_feedback
 
@@ -311,20 +319,43 @@ if not is_valid:
     # Re-validate
     is_valid_retry, retry_violations = validate_reasoning(corrected_response)
     if is_valid_retry:
-        # Use corrected response
         response_obj = corrected_response
     else:
         # Proceed with corrected response anyway (may be partially improved)
-        # Wire remaining violations to system_feedback for next turn
         response_obj = corrected_response
         metadata["diagnostic_reasoning_violations"] = retry_violations
 ```
 
 **Key behaviors:**
 - Maximum 1 self-correction retry per turn (prevents infinite loops)
+- The correction prompt includes the **original agent_response** so the LLM can rewrite it without losing context (the retry does not re-run investigation tools, so search results are only available if the original response is provided)
 - If retry also fails, the retried response is used (may be partially improved)
 - Remaining violations are wired to `system_feedback` so the next turn's LLM context includes the correction instructions
 - Never crashes the turn with a 500 error for reasoning validation failures
+
+#### DA Causal Reasoning Downgrade
+
+For **Directed Analysis** turns that answer factual lookup questions (e.g., "What usernames did IP X try?"), the causal reasoning check is inherently unsatisfiable — the answer is a list of facts, not a causal chain. When causal reasoning is the **sole** violation on a DA turn, the validator downgrades it to a warning instead of triggering a self-correction retry:
+
+```python
+_CAUSAL_VIOLATION = "Missing causal reasoning"
+is_da_turn = query_mode == "directed_analysis"
+
+if not is_valid_reasoning and is_da_turn:
+    causal_violations = [v for v in violations if _CAUSAL_VIOLATION in v]
+    retry_violations_list = [v for v in violations if _CAUSAL_VIOLATION not in v]
+    if causal_violations and not retry_violations_list:
+        # Sole violation is causal reasoning — downgrade to warning
+        logger.info("DA turn: downgrading causal reasoning violation to warning")
+        metadata["diagnostic_reasoning_violations"] = causal_violations
+        is_valid_reasoning = True
+        violations = []
+    elif causal_violations and retry_violations_list:
+        # Other violations exist — retry without causal reasoning requirement
+        violations = retry_violations_list
+```
+
+This prevents unnecessary retries on factual DA lookups while still enforcing all other diagnostic reasoning requirements.
 
 ### 3.3 System Feedback Loop
 

@@ -16,8 +16,8 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 ### Operations
 
-- **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, and Streaming
-- **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns and recovery strategies
+- **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, Streaming, and DA Tool Loop
+- **[Error Handling and Recovery](./error-handling-and-recovery.md)** - Error handling patterns, recovery strategies, diagnostic reasoning validation
 - **[Implementation Gap Analysis](./implementation-gap-analysis.md)** - Design vs implementation alignment tracker
 
 ### Deprecated
@@ -38,10 +38,12 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Evidence-Driven Investigation Framework | Implemented | 2-stage model with mitigation detour (DIAGNOSIS, TREATMENT + MITIGATION detour) operational |
-| Investigation Data Models | Implemented | All core models in production (gate milestones + progress milestones) |
+| Investigation Data Models | Implemented | All core models in production (gate milestones + progress milestones). Evidence model includes `original_filename` field. |
 | Investigation Lifecycle Logic | Implemented | Case actions, inference-based stage transitions, path routing |
 | Prompt Engineering System | Implemented | Three-template system (DIAGNOSIS, MITIGATION, TREATMENT prompts) |
-| Error Handling and Recovery | Implemented | LLM retry, stagnation detection, compliance detection, degraded mode |
+| DA Tool Loop | **Implemented** | Bounded tool-calling loop (`_tool_augmented_generate()`) for Directed Analysis turns. LLM iterates `search_file` + `schema_tool` up to 4 times with iteration-0 guardrail. See [Orchestration Capabilities §5.4](./orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling). |
+| Diagnostic Reasoning Validator | **Implemented** | Validates agent responses for OBSERVATION + ANALYSIS structure, evidence grounding (≥2 of 4 categories), causal reasoning. Self-correction retry with single attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction). |
+| Error Handling and Recovery | Implemented | LLM retry, stagnation detection, compliance detection, diagnostic reasoning validation with self-correction retry |
 | Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated |
 | Knowledge Fast-Track Resolution | Design Complete | Data model exists, milestone engine wiring deferred |
 | `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles transition, no evidence check |
