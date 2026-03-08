@@ -220,7 +220,13 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
     def _sanitize_text(self, text: str) -> str:
         """
-        Sanitize sensitive information from text
+        Sanitize sensitive information from text using consistent pseudonymization.
+
+        Each unique sensitive value gets a stable indexed placeholder (e.g.,
+        ``<IP_ADDRESS_1>``, ``<IP_ADDRESS_2>``), so the same value always maps to
+        the same placeholder within a single sanitize() call. This preserves
+        analytical relationships (the LLM can distinguish entities) while
+        protecting privacy.
 
         Args:
             text: Input text to sanitize
@@ -233,14 +239,35 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         sanitized_text = text
 
-        # Apply pattern replacements in priority order
-        for pattern_str, replacement in self.pattern_replacements:
+        # Entity registry: tracks unique values → indexed placeholder per type.
+        # Shared across regex and Presidio to ensure consistent numbering.
+        entity_registry: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
+
+        def _get_placeholder(entity_type: str, value: str) -> str:
+            """Return a consistent indexed placeholder for a given entity value."""
+            if entity_type not in entity_registry:
+                entity_registry[entity_type] = {}
+            type_map = entity_registry[entity_type]
+            if value not in type_map:
+                idx = len(type_map) + 1
+                type_map[value] = f"<{entity_type}_{idx}>"
+            return type_map[value]
+
+        # Apply pattern replacements with consistent indexing
+        for pattern_str, replacement_template in self.pattern_replacements:
             pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
-            sanitized_text = pattern.sub(replacement, sanitized_text)
+            # Derive entity type from the replacement template, e.g.
+            # "[IP_ADDRESS_REDACTED]" → "IP_ADDRESS"
+            entity_type = replacement_template.strip("[]").replace("_REDACTED", "")
+
+            def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
+                return _get_placeholder(_type, match.group(0))
+
+            sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
 
         # Apply K8s Presidio PII detection if available
         if self.analyzer_available and self.anonymizer_available:
-            sanitized_text = self._apply_presidio(sanitized_text)
+            sanitized_text = self._apply_presidio(sanitized_text, entity_registry)
 
         return sanitized_text
 
@@ -334,16 +361,25 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             self.logger.debug(f"Health check failed for {service_url}: {e}")
             return False
 
-    def _apply_presidio(self, text: str) -> str:
-        """Apply K8s Presidio PII detection and redaction with external call wrapping"""
+    def _apply_presidio(
+        self, text: str, entity_registry: Dict[str, Dict[str, str]] | None = None
+    ) -> str:
+        """Apply K8s Presidio PII detection with consistent pseudonymization.
+
+        Uses the Presidio *analyzer* to detect entities, then performs our own
+        indexed replacement (skipping the Presidio anonymizer) so that each
+        unique entity value gets a distinct, stable placeholder.
+        """
         if not (self.analyzer_available and self.anonymizer_available):
             self.logger.debug("Presidio services not available, skipping PII detection")
             return text
 
+        if entity_registry is None:
+            entity_registry = {}
+
         try:
             # Step 1: Analyze text for PII entities using K8s analyzer service
             def analyze_text():
-                # Only detect truly sensitive PII - exclude dates, times, locations, etc.
                 analyze_payload = {
                     "text": text,
                     "language": "en",
@@ -361,7 +397,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                         "US_DRIVER_LICENSE",
                         "US_BANK_NUMBER",
                     ],
-                    "score_threshold": 0.6,  # Require 60% confidence to reduce false positives
+                    "score_threshold": 0.6,
                 }
 
                 analyze_response = self.session.post(
@@ -385,38 +421,36 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             )
 
             if not analyzer_results:
-                # No PII detected
                 return text
 
-            # Step 2: Anonymize text using K8s anonymizer service
-            def anonymize_text():
-                anonymize_payload = {"text": text, "analyzer_results": analyzer_results}
-
-                anonymize_response = self.session.post(
-                    f"{self.anonymizer_url}/anonymize",
-                    json=anonymize_payload,
-                    timeout=self.request_timeout,
-                )
-
-                if anonymize_response.status_code != 200:
-                    raise RuntimeError(
-                        f"Presidio anonymizer failed with status {anonymize_response.status_code}"
-                    )
-
-                return anonymize_response.json()
-
-            anonymize_result = self.call_external_sync(
-                operation_name="anonymize_pii",
-                call_func=anonymize_text,
-                retries=1,
-                retry_delay=1.0,
+            # Step 2: Build indexed replacements from analyzer results.
+            # Sort by start position descending so we can replace right-to-left
+            # without invalidating earlier offsets.
+            sorted_results = sorted(
+                analyzer_results, key=lambda r: r["start"], reverse=True
             )
 
-            return anonymize_result.get("text", text)
+            result = text
+            for entity in sorted_results:
+                start = entity["start"]
+                end = entity["end"]
+                entity_type = entity["entity_type"]
+                original_value = text[start:end]
+
+                # Get or create indexed placeholder via shared registry
+                if entity_type not in entity_registry:
+                    entity_registry[entity_type] = {}
+                type_map = entity_registry[entity_type]
+                if original_value not in type_map:
+                    idx = len(type_map) + 1
+                    type_map[original_value] = f"<{entity_type}_{idx}>"
+
+                result = result[:start] + type_map[original_value] + result[end:]
+
+            return result
 
         except Exception as e:
             self.logger.warning(f"Presidio K8s service error: {e}")
-            # Mark services as unavailable for next requests on connection errors
             if "Connection" in str(e) or "Timeout" in str(e):
                 self.analyzer_available = False
                 self.anonymizer_available = False

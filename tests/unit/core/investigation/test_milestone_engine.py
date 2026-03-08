@@ -101,7 +101,12 @@ class TestMilestoneEngine:
             EvidenceForm,
         )
 
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Add evidence to the case (required for milestone completion)
         base_case.evidence.append(
@@ -174,7 +179,12 @@ class TestMilestoneEngine:
     @pytest.mark.asyncio
     async def test_process_turn_inquiry(self, mock_llm, mock_repo):
         """Test processing a turn in INQUIRY status"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         case = Case(
             case_id="case_1234567890ab",
@@ -207,7 +217,12 @@ class TestMilestoneEngine:
     @pytest.mark.asyncio
     async def test_no_progress_detection(self, mock_llm, mock_repo, base_case):
         """Test no-op detection when no milestones/evidence added"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response with NO state updates
         mock_response_content = json.dumps(
@@ -318,7 +333,12 @@ class TestMilestoneEngine:
         self, mock_llm, mock_repo, base_case
     ):
         """Test that missing_critical_data surfaces as system_feedback, not degraded mode"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response with blocker detection
         mock_response_content = json.dumps(
@@ -353,7 +373,12 @@ class TestMilestoneEngine:
     @pytest.mark.asyncio
     async def test_evidence_quality_issues_logged(self, mock_llm, mock_repo, base_case):
         """Test that evidence quality issues are processed without error"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response with quality issues
         mock_response_content = json.dumps(
@@ -392,7 +417,12 @@ class TestMilestoneEngine:
         NLP-detected intent sets pending_transition, NOT an immediate state change.
         The user must confirm in the next turn for the transition to execute.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Set case to INVESTIGATING status
         base_case.status = CaseStatus.INVESTIGATING
@@ -450,7 +480,12 @@ class TestMilestoneEngine:
         self, mock_llm, mock_repo, base_case
     ):
         """Test that user intent detection is case-insensitive (proposes transition)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         base_case.status = CaseStatus.INVESTIGATING
 
@@ -480,7 +515,12 @@ class TestMilestoneEngine:
         self, mock_llm, mock_repo, base_case
     ):
         """Test that user intent detection doesn't trigger on unrelated phrases"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         base_case.status = CaseStatus.INVESTIGATING
 
@@ -532,7 +572,12 @@ class TestMilestoneEngine:
         the LLM may still attempt milestone updates. Reasoning validation should be
         skipped since the case is in the process of transitioning.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         base_case.status = CaseStatus.INVESTIGATING
         # Simulate a pending transition from a previous turn's propose_transition()
@@ -580,7 +625,12 @@ class TestMilestoneEngine:
         Design Decision B: Terminal transitions are irreversible, so the agent
         proposes and the user explicitly confirms.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Start in INVESTIGATING with some progress
         base_case.status = CaseStatus.INVESTIGATING
@@ -669,7 +719,12 @@ class TestMilestoneEngine:
         2. Resolution patterns (medium priority) → RESOLVED
         3. Ambiguous close patterns (lowest priority) → RESOLVED (backward compatible)
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Start in INVESTIGATING with some progress
         base_case.status = CaseStatus.INVESTIGATING
@@ -729,7 +784,12 @@ class TestMilestoneEngine:
         the system proposes a transition and asks the user to clarify whether they mean
         resolved (problem fixed) or closed (without solution).
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Start in INVESTIGATING with some progress
         base_case.status = CaseStatus.INVESTIGATING
@@ -762,7 +822,12 @@ class TestMilestoneEngine:
         self, mock_llm, mock_repo
     ):
         """Test explicit status_transition intent: INQUIRY → CLOSED via dropdown"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Create case in INQUIRY status
         inquiry_case = Case(
@@ -820,7 +885,12 @@ class TestMilestoneEngine:
         self, mock_llm, mock_repo, base_case
     ):
         """Test explicit status_transition intent: INVESTIGATING → CLOSED via dropdown"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Start in INVESTIGATING with some progress
         base_case.status = CaseStatus.INVESTIGATING
@@ -872,7 +942,12 @@ class TestMilestoneEngine:
         the multi-turn problem statement flow. When the LLM sets
         user_confirmed_investigation=True, the transition fires automatically.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Create case in INQUIRY status with a proposed problem statement
         inquiry_case = Case(
@@ -935,7 +1010,12 @@ class TestMilestoneEngine:
         Design: Dropdown = message. Without a problem statement, the LLM should
         ask the user to describe the problem rather than silently transitioning.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         inquiry_case = Case(
             case_id="case_0987654321cd",
@@ -979,7 +1059,12 @@ class TestMilestoneEngine:
         Design: Dropdown = message. The first click proposes the transition;
         it does NOT execute immediately. The user must confirm on the next turn.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for the proposal turn
         mock_response_content = json.dumps(
@@ -1018,7 +1103,12 @@ class TestMilestoneEngine:
         If the user clicks Resolve again when a pending transition already
         exists, it acts as confirmation and executes the transition.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Set up pending transition from a previous turn
         base_case.pending_transition = {
@@ -1049,7 +1139,12 @@ class TestMilestoneEngine:
         self, mock_llm, mock_repo, base_case
     ):
         """Dropdown RESOLVED with empty message injects pre-composed message."""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         mock_response_content = json.dumps(
             {
@@ -1080,7 +1175,12 @@ class TestMilestoneEngine:
         Design: CLOSED transitions have optional info requirements, so
         immediate execution is intentional.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         result = await engine.process_turn(
             case=base_case,
@@ -1107,7 +1207,12 @@ class TestMechanicalConfirmationFallback:
         self, mock_llm, mock_repo
     ):
         """LLM doesn't set user_confirmed_investigation but user says 'yes' → fallback triggers."""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         case = Case(
             case_id="case_1234567890ab",
@@ -1141,7 +1246,12 @@ class TestMechanicalConfirmationFallback:
         self, mock_llm, mock_repo
     ):
         """Fallback should not fire if there's no proposed_problem_statement."""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         case = Case(
             case_id="case_1234567890ab",
@@ -1171,7 +1281,12 @@ class TestMechanicalConfirmationFallback:
     @pytest.mark.asyncio
     async def test_llm_path_takes_priority_over_fallback(self, mock_llm, mock_repo):
         """When LLM sets user_confirmed_investigation=True, the LLM path fires (not fallback)."""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         case = Case(
             case_id="case_1234567890ab",

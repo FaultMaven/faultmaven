@@ -227,7 +227,7 @@ class TestTruncation:
 
         assert "[TRUNCATED:" in result
         assert "more characters" in result
-        assert "search_file" in result or "read_file" in result
+        assert "suggest a targeted command" in result
         # The displayed content should be capped at EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
         assert (
             len(long_content[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM])

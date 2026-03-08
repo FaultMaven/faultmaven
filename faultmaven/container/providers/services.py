@@ -56,8 +56,22 @@ def create_case_service(
 def create_milestone_engine(
     llm_provider: Any,
     case_repository: Any | None,
+    investigation_tools: Any,
+    evidence_service: Any,
+    da_provider: Any | None = None,
+    da_model: str | None = None,
 ) -> Any | None:
-    """Create milestone engine for investigation workflow."""
+    """Create milestone engine for investigation workflow.
+
+    Args:
+        llm_provider: LLM provider (ILLMProvider interface)
+        case_repository: Case persistence layer (required)
+        investigation_tools: AgentToolRegistry with investigation tools (required)
+        evidence_service: Evidence service for tool context (required)
+        da_provider: Dedicated provider for DA (directed analysis) turns
+            (configured via DA_PROVIDER). Falls back to llm_provider when None.
+        da_model: Model to use with da_provider (e.g., claude-sonnet-4-5).
+    """
     if not case_repository:
         return None
 
@@ -67,13 +81,49 @@ def create_milestone_engine(
         engine = MilestoneEngine(
             llm_provider=llm_provider,
             repository=case_repository,
+            investigation_tools=investigation_tools,
+            evidence_service=evidence_service,
+            da_provider=da_provider,
+            da_model=da_model,
             trace_enabled=True,
         )
-        logger.debug("MilestoneEngine initialized")
+        logger.debug("MilestoneEngine initialized with investigation tools")
         return engine
     except Exception as e:
         logger.warning(f"MilestoneEngine initialization failed: {e}")
         return None
+
+
+def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
+    """Create an AgentToolRegistry with investigation tools for MilestoneEngine.
+
+    Registers tools that the LLM can call during the tool loop to search
+    and analyze evidence files. Currently includes search_file and deep_analysis.
+
+    Returns:
+        AgentToolRegistry with investigation tools, or None if no tools available.
+    """
+    from faultmaven.modules.agent.tools.base import AgentToolRegistry
+
+    registry = AgentToolRegistry()
+    tool_count = 0
+
+    search_file_tool = getattr(container, "search_file_tool", None)
+    if search_file_tool:
+        registry.register(search_file_tool)
+        tool_count += 1
+
+    deep_analysis_tool = getattr(container, "deep_analysis_tool", None)
+    if deep_analysis_tool:
+        registry.register(deep_analysis_tool)
+        tool_count += 1
+
+    if tool_count == 0:
+        logger.debug("Investigation tools: none available, skipping")
+        return None
+
+    logger.debug(f"DA tool registry created with {tool_count} tools")
+    return registry
 
 
 def create_investigation_service(
@@ -727,17 +777,51 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("case_service", case_service)
 
-    # Milestone Engine
+    # Evidence Service (create before MilestoneEngine — engine needs it for tool context)
+    evidence_service = create_evidence_service(case_repository, settings)
+    container.evidence_service = evidence_service
+    if evidence_service:
+        container._register_service("evidence_service", evidence_service)
+
+    # Milestone Engine (with investigation tools for evidence searching)
     llm_provider = container.get_service("llm_provider")
-    milestone_engine = create_milestone_engine(llm_provider, case_repository)
+    investigation_tools = _create_investigation_tools(container)
+
+    # Dedicated DA provider for directed analysis tool loop (DA_PROVIDER in .env)
+    from faultmaven.container.providers.infrastructure import create_da_provider
+
+    da_provider, da_model = create_da_provider()
+
+    milestone_engine = create_milestone_engine(
+        llm_provider,
+        case_repository,
+        investigation_tools=investigation_tools,
+        evidence_service=evidence_service,
+        da_provider=da_provider,
+        da_model=da_model,
+    )
     container.milestone_engine = milestone_engine
     if milestone_engine:
         container._register_service("milestone_engine", milestone_engine)
 
     # Investigation Service
     preprocessing_service = container.get_service("preprocessing_service")
+    # File storage for raw evidence access (attachment storage)
+    try:
+        from faultmaven.services.file_storage_service import FileStorageService
+
+        file_storage_service = FileStorageService(
+            storage_root=settings.evidence_storage_root,
+            max_file_size_bytes=settings.max_evidence_file_size,
+        )
+    except Exception:
+        file_storage_service = None
+
     investigation_service = create_investigation_service(
-        milestone_engine, case_repository, preprocessing_service
+        milestone_engine,
+        case_repository,
+        preprocessing_service,
+        file_storage_service,
     )
     container.investigation_service = investigation_service
     if investigation_service:
@@ -752,12 +836,6 @@ def register_services(container: BaseDIContainer) -> None:
         container._register_service(
             "investigation_orchestrator", investigation_orchestrator
         )
-
-    # Evidence Service (migrated to use Case repository)
-    evidence_service = create_evidence_service(case_repository, settings)
-    container.evidence_service = evidence_service
-    if evidence_service:
-        container._register_service("evidence_service", evidence_service)
 
     # Team Service (organization_repository already created above)
     team_service = create_team_service(db_session, organization_repository, settings)

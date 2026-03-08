@@ -80,6 +80,8 @@ def _make_engine() -> MilestoneEngine:
     return MilestoneEngine(
         llm_provider=MagicMock(),
         repository=MagicMock(),
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
     )
 
 

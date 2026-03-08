@@ -163,6 +163,7 @@ class LLMSettings(BaseSettings):
         default=None, env="CLASSIFIER_PROVIDER"
     )
     code_provider: Optional[LLMProvider] = Field(default=None, env="CODE_PROVIDER")
+    da_provider: Optional[LLMProvider] = Field(default=None, env="DA_PROVIDER")
 
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(default=None, env="OPENAI_API_KEY")
@@ -195,6 +196,7 @@ class LLMSettings(BaseSettings):
         default="gpt-4o-mini", env="OPENAI_CLASSIFIER_MODEL"
     )
     openai_code_model: str = Field(default="gpt-4o", env="OPENAI_CODE_MODEL")
+    openai_da_model: Optional[str] = Field(default=None, env="OPENAI_DA_MODEL")
 
     # Anthropic models
     anthropic_chat_model: str = Field(
@@ -212,6 +214,7 @@ class LLMSettings(BaseSettings):
     anthropic_code_model: str = Field(
         default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CODE_MODEL"
     )
+    anthropic_da_model: Optional[str] = Field(default=None, env="ANTHROPIC_DA_MODEL")
 
     # Fireworks models
     fireworks_chat_model: str = Field(
@@ -234,6 +237,7 @@ class LLMSettings(BaseSettings):
         default="accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
         env="FIREWORKS_CODE_MODEL",
     )
+    fireworks_da_model: Optional[str] = Field(default=None, env="FIREWORKS_DA_MODEL")
 
     # Google Gemini models
     gemini_chat_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CHAT_MODEL")
@@ -247,6 +251,7 @@ class LLMSettings(BaseSettings):
         default="gemini-1.5-flash", env="GEMINI_CLASSIFIER_MODEL"
     )
     gemini_code_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CODE_MODEL")
+    gemini_da_model: Optional[str] = Field(default=None, env="GEMINI_DA_MODEL")
 
     # Cohere models
     cohere_chat_model: str = Field(default="command-r-plus", env="COHERE_CHAT_MODEL")
@@ -260,6 +265,7 @@ class LLMSettings(BaseSettings):
         default="command-r-plus", env="COHERE_CLASSIFIER_MODEL"
     )
     cohere_code_model: str = Field(default="command-r-plus", env="COHERE_CODE_MODEL")
+    cohere_da_model: Optional[str] = Field(default=None, env="COHERE_DA_MODEL")
 
     # HuggingFace models
     huggingface_chat_model: str = Field(
@@ -276,6 +282,9 @@ class LLMSettings(BaseSettings):
     )
     huggingface_code_model: str = Field(
         default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CODE_MODEL"
+    )
+    huggingface_da_model: Optional[str] = Field(
+        default=None, env="HUGGINGFACE_DA_MODEL"
     )
 
     # OpenRouter models
@@ -294,6 +303,7 @@ class LLMSettings(BaseSettings):
     openrouter_code_model: str = Field(
         default="openrouter-default", env="OPENROUTER_CODE_MODEL"
     )
+    openrouter_da_model: Optional[str] = Field(default=None, env="OPENROUTER_DA_MODEL")
 
     # Groq models
     groq_chat_model: str = Field(
@@ -311,6 +321,7 @@ class LLMSettings(BaseSettings):
     groq_code_model: str = Field(
         default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CODE_MODEL"
     )
+    groq_da_model: Optional[str] = Field(default=None, env="GROQ_DA_MODEL")
 
     # Model configuration
     openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
@@ -416,7 +427,7 @@ class LLMSettings(BaseSettings):
         """Get model for current provider and specific task
 
         Args:
-            task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code')
+            task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code', 'da')
         """
         provider = self.provider
         model_map = {
@@ -426,6 +437,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.openai_synthesis_model,
                 "classifier": self.openai_classifier_model,
                 "code": self.openai_code_model,
+                "da": self.openai_da_model or self.openai_model,
             },
             LLMProvider.ANTHROPIC: {
                 "chat": self.anthropic_chat_model,
@@ -433,6 +445,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.anthropic_synthesis_model,
                 "classifier": self.anthropic_classifier_model,
                 "code": self.anthropic_code_model,
+                "da": self.anthropic_da_model or self.anthropic_model,
             },
             LLMProvider.FIREWORKS: {
                 "chat": self.fireworks_chat_model,
@@ -440,6 +453,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.fireworks_synthesis_model,
                 "classifier": self.fireworks_classifier_model,
                 "code": self.fireworks_code_model,
+                "da": self.fireworks_da_model or self.fireworks_model,
             },
             LLMProvider.COHERE: {
                 "chat": self.cohere_chat_model,
@@ -447,6 +461,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.cohere_synthesis_model,
                 "classifier": self.cohere_classifier_model,
                 "code": self.cohere_code_model,
+                "da": self.cohere_da_model or self.cohere_model,
             },
             LLMProvider.GROQ: {
                 "chat": self.groq_chat_model,
@@ -454,12 +469,14 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.groq_synthesis_model,
                 "classifier": self.groq_classifier_model,
                 "code": self.groq_code_model,
+                "da": self.groq_da_model or self.groq_chat_model,
             },
             LLMProvider.LOCAL: {
                 "chat": self.local_model,
                 "multimodal": self.local_model,
                 "synthesis": self.local_model,
                 "classifier": self.local_model,
+                "da": self.local_model,
                 "code": self.local_model,
             },
         }
@@ -516,6 +533,15 @@ class LLMSettings(BaseSettings):
         provider = self.get_code_provider()
         return self._get_model_for_provider_and_task(provider, "code")
 
+    def get_da_provider(self) -> LLMProvider:
+        """Get DA (directed analysis) provider (falls back to chat provider if not set)"""
+        return self.da_provider or self.provider
+
+    def get_da_model(self) -> str:
+        """Get model for DA provider using task-specific configuration"""
+        provider = self.get_da_provider()
+        return self._get_model_for_provider_and_task(provider, "da")
+
     def _get_model_for_provider_and_task(self, provider: LLMProvider, task: str) -> str:
         """Helper method to get model for any provider and task combination"""
         model_map = {
@@ -525,6 +551,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.openai_synthesis_model,
                 "classifier": self.openai_classifier_model,
                 "code": self.openai_code_model,
+                "da": self.openai_da_model or self.openai_model,
             },
             LLMProvider.ANTHROPIC: {
                 "chat": self.anthropic_chat_model,
@@ -532,6 +559,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.anthropic_synthesis_model,
                 "classifier": self.anthropic_classifier_model,
                 "code": self.anthropic_code_model,
+                "da": self.anthropic_da_model or self.anthropic_model,
             },
             LLMProvider.FIREWORKS: {
                 "chat": self.fireworks_chat_model,
@@ -539,6 +567,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.fireworks_synthesis_model,
                 "classifier": self.fireworks_classifier_model,
                 "code": self.fireworks_code_model,
+                "da": self.fireworks_da_model or self.fireworks_model,
             },
             LLMProvider.COHERE: {
                 "chat": self.cohere_chat_model,
@@ -546,6 +575,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.cohere_synthesis_model,
                 "classifier": self.cohere_classifier_model,
                 "code": self.cohere_code_model,
+                "da": self.cohere_da_model or self.cohere_model,
             },
             LLMProvider.GEMINI: {
                 "chat": self.gemini_chat_model,
@@ -553,6 +583,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.gemini_synthesis_model,
                 "classifier": self.gemini_classifier_model,
                 "code": self.gemini_code_model,
+                "da": self.gemini_da_model or self.gemini_model,
             },
             LLMProvider.HUGGINGFACE: {
                 LLMProvider.GROQ: {
@@ -561,12 +592,14 @@ class LLMSettings(BaseSettings):
                     "synthesis": self.groq_synthesis_model,
                     "classifier": self.groq_classifier_model,
                     "code": self.groq_code_model,
+                    "da": self.groq_da_model or self.groq_chat_model,
                 },
                 "chat": self.huggingface_chat_model,
                 "multimodal": self.huggingface_multimodal_model,
                 "synthesis": self.huggingface_synthesis_model,
                 "classifier": self.huggingface_classifier_model,
                 "code": self.huggingface_code_model,
+                "da": self.huggingface_da_model or self.huggingface_chat_model,
             },
             LLMProvider.OPENROUTER: {
                 "chat": self.openrouter_chat_model,
@@ -574,6 +607,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.openrouter_synthesis_model,
                 "classifier": self.openrouter_classifier_model,
                 "code": self.openrouter_code_model,
+                "da": self.openrouter_da_model or self.openrouter_model,
             },
             LLMProvider.LOCAL: {
                 "chat": self.local_model,
@@ -581,6 +615,7 @@ class LLMSettings(BaseSettings):
                 "synthesis": self.local_model,
                 "classifier": self.local_model,
                 "code": self.local_model,
+                "da": self.local_model,
             },
         }
 

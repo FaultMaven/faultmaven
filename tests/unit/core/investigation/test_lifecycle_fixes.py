@@ -90,7 +90,12 @@ async def test_path_selection_triggered_after_verification(
     mock_llm, mock_repo, base_case
 ):
     """Test Bug #3: Path selection triggers only after symptom verification"""
-    engine = MilestoneEngine(mock_llm, mock_repo)
+    engine = MilestoneEngine(
+        mock_llm,
+        mock_repo,
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
 
     # Setup: Case has None path_selection
     base_case.path_selection = None
@@ -145,7 +150,12 @@ async def test_path_selection_triggered_after_verification(
 @pytest.mark.asyncio
 async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
     """Test Bug #4: Evidence added in same turn as milestone is linked"""
-    engine = MilestoneEngine(mock_llm, mock_repo)
+    engine = MilestoneEngine(
+        mock_llm,
+        mock_repo,
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
 
     # Add existing evidence for validation
     base_case.evidence.append(
@@ -209,7 +219,12 @@ async def test_evidence_linking_to_milestones(mock_llm, mock_repo, base_case):
 @pytest.mark.asyncio
 async def test_turn_outcome_logic(mock_llm, mock_repo, base_case):
     """Test Bug #8: Robust turn outcome logic"""
-    engine = MilestoneEngine(mock_llm, mock_repo)
+    engine = MilestoneEngine(
+        mock_llm,
+        mock_repo,
+        investigation_tools=MagicMock(),
+        evidence_service=MagicMock(),
+    )
 
     # Add existing evidence for validation
     base_case.evidence.append(

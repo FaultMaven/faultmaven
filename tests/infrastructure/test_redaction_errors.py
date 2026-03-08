@@ -19,7 +19,7 @@ def test_sanitizer_handles_k8s_service_unavailable():
 
     # Should redact the AWS key even without Presidio service
     assert "AKIAIOSFODNN7EXAMPLE" not in sanitized_text
-    assert "[AWS_ACCESS_KEY_REDACTED]" in sanitized_text
+    assert "<AWS_ACCESS_KEY_" in sanitized_text
 
 
 def test_sanitizer_handles_network_timeout():
@@ -52,4 +52,4 @@ def test_sanitizer_handles_network_timeout():
 
         # This should be redacted by regex patterns even when Presidio times out
         assert "AKIAIOSFODNN7EXAMPLE" not in sanitized_aws
-        assert "[AWS_ACCESS_KEY_REDACTED]" in sanitized_aws
+        assert "<AWS_ACCESS_KEY_" in sanitized_aws

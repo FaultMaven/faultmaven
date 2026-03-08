@@ -741,6 +741,132 @@ class TestFallbackChain:
         mock_provider_classes["fireworks"].generate.assert_called_once()
         mock_provider_classes["openai"].generate.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_route_request_skips_confidence_check_when_tools_present(
+        self, clean_env, sample_env_vars, mock_provider_classes
+    ):
+        """When tools are present, return the first response regardless of confidence.
+
+        Tool-calling requests have different confidence characteristics. The
+        caller (DA tool loop) has its own retry logic and must receive the raw
+        response to inspect tool_calls.
+        """
+        os.environ.update(sample_env_vars)
+
+        # Provider returns 0.0 confidence (empty content, no tool calls)
+        mock_provider_classes["fireworks"].generate = AsyncMock(
+            return_value=LLMResponse(
+                content="",
+                model="test-model",
+                provider="fireworks",
+                tokens_used=0,
+                response_time_ms=100,
+                confidence=0.0,
+            )
+        )
+
+        registry = ProviderRegistry()
+        registry._initialized = True
+        registry._providers = {
+            "fireworks": mock_provider_classes["fireworks"],
+            "openai": mock_provider_classes["openai"],
+        }
+        registry._fallback_chain = ["fireworks", "openai"]
+        registry._provider_states = {
+            name: ProviderState(name=name) for name in registry._fallback_chain
+        }
+
+        # With tools present, should return first response even at 0.0 confidence
+        tools = [{"type": "function", "function": {"name": "test_tool"}}]
+        response = await registry.route_request(
+            prompt="Test", confidence_threshold=0.8, tools=tools
+        )
+
+        assert response.confidence == 0.0
+        assert response.provider == "fireworks"
+        # Should NOT have tried the second provider
+        mock_provider_classes["openai"].generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_request_without_tools_still_filters_by_confidence(
+        self, clean_env, sample_env_vars, mock_provider_classes
+    ):
+        """Without tools, confidence filtering still applies normally."""
+        os.environ.update(sample_env_vars)
+
+        mock_provider_classes["fireworks"].generate = AsyncMock(
+            return_value=LLMResponse(
+                content="Low confidence",
+                model="test-model",
+                provider="fireworks",
+                tokens_used=10,
+                response_time_ms=100,
+                confidence=0.3,
+            )
+        )
+        mock_provider_classes["openai"].generate = AsyncMock(
+            return_value=LLMResponse(
+                content="High confidence",
+                model="test-model",
+                provider="openai",
+                tokens_used=10,
+                response_time_ms=100,
+                confidence=0.9,
+            )
+        )
+
+        registry = ProviderRegistry()
+        registry._initialized = True
+        registry._providers = {
+            "fireworks": mock_provider_classes["fireworks"],
+            "openai": mock_provider_classes["openai"],
+        }
+        registry._fallback_chain = ["fireworks", "openai"]
+        registry._provider_states = {
+            name: ProviderState(name=name) for name in registry._fallback_chain
+        }
+
+        response = await registry.route_request(prompt="Test", confidence_threshold=0.8)
+
+        # Should have skipped fireworks (0.3) and used openai (0.9)
+        assert response.confidence == 0.9
+        assert response.provider == "openai"
+        mock_provider_classes["fireworks"].generate.assert_called_once()
+        mock_provider_classes["openai"].generate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_route_request_best_low_confidence_includes_zero(
+        self, clean_env, sample_env_vars, mock_provider_classes
+    ):
+        """A 0.0 confidence response should still be saved as best low-confidence fallback."""
+        os.environ.update(sample_env_vars)
+
+        mock_provider_classes["fireworks"].generate = AsyncMock(
+            return_value=LLMResponse(
+                content="",
+                model="test-model",
+                provider="fireworks",
+                tokens_used=0,
+                response_time_ms=100,
+                confidence=0.0,
+            )
+        )
+
+        registry = ProviderRegistry()
+        registry._initialized = True
+        registry._providers = {"fireworks": mock_provider_classes["fireworks"]}
+        registry._fallback_chain = ["fireworks"]
+        registry._provider_states = {"fireworks": ProviderState(name="fireworks")}
+
+        # Without tools, confidence filtering applies.
+        # The only provider returns 0.0 which is below threshold.
+        # With the fix, this 0.0 response is saved as best_low_confidence
+        # and returned instead of raising "All providers failed".
+        response = await registry.route_request(prompt="Test", confidence_threshold=0.8)
+
+        assert response.confidence == 0.0
+        assert "(low-confidence)" in response.provider
+
 
 class TestProviderHealthAndStatus:
     """Test provider health checking and status reporting."""

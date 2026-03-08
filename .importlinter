@@ -112,6 +112,7 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
     faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.contracts
+    faultmaven.modules.case.infrastructure.sqlite_case_repository -> faultmaven.modules.case.domain.owned_models.*
     faultmaven.modules.case.infrastructure.sessionless_case_repository -> faultmaven.modules.case.contracts
     faultmaven.modules.case.contracts -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.contracts -> faultmaven.modules.case.domain.owned_models.*

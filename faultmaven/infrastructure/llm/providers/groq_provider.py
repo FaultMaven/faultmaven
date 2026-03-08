@@ -127,8 +127,8 @@ class GroqProvider(BaseLLMProvider):
 
         # Add response format if specified in kwargs
         # The capability system in base.py handles detection and fallback
-        if "response_format" in kwargs:
-            response_format = kwargs.pop("response_format")
+        response_format = kwargs.pop("response_format", None)
+        if response_format:
 
             # Use capability system to check if we need to fall back
             # (Keep backward compatibility while transitioning to capability system)

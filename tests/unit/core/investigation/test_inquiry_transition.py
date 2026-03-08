@@ -105,7 +105,12 @@ class TestInquiryTransitionLogic:
         Turn N: Agent presents problem statement + asks for confirmation
         Turn N+1: User confirms → transition fires
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for critical production outage
         mock_response = json.dumps(
@@ -148,7 +153,12 @@ class TestInquiryTransitionLogic:
     @pytest.mark.asyncio
     async def test_vague_query_no_transition(self, mock_llm, mock_repo, inquiry_case):
         """Scenario 2: Vague query → No transition (no problem detected)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for vague query
         mock_response = json.dumps(
@@ -175,7 +185,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Scenario 3: Informational query → No transition (no problem)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for informational query
         mock_response = json.dumps(
@@ -201,7 +216,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Scenario 4: Post-mortem → No auto-transition (not ongoing)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for historical post-mortem
         mock_response = json.dumps(
@@ -245,7 +265,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Scenario 5: Medium urgency → No auto-transition (not CRITICAL/HIGH)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for medium urgency issue
         mock_response = json.dumps(
@@ -287,7 +312,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Scenario 6: Multi-turn escalation → Stays INQUIRY until user explicitly confirms"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Turn 1: Vague initial query
         mock_response_turn1 = json.dumps(
@@ -354,7 +384,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Scenario 7: Original bug → No premature transition (development context)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response matching the original bug report
         mock_response = json.dumps(
@@ -398,7 +433,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Test HIGH urgency + ongoing stays in INQUIRY (waits for user confirmation)"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response for HIGH urgency ongoing issue
         mock_response = json.dumps(
@@ -437,7 +477,12 @@ class TestInquiryTransitionLogic:
         self, mock_llm, mock_repo, inquiry_case
     ):
         """Test Stage 1 fallback when preliminary_guidance is None — stays INQUIRY"""
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Mock LLM response with proposed_problem_statement but no preliminary_guidance
         mock_response = json.dumps(
@@ -486,7 +531,12 @@ class TestInquiryTransitionLogic:
         Turn 1: Agent presents problem statement (stays INQUIRY)
         Turn 2: User confirms → LLM sets user_confirmed_investigation=True → transition fires
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Turn 1: Agent detects incident and presents problem statement
         mock_response_turn1 = json.dumps(
@@ -551,7 +601,12 @@ class TestInquiryTransitionLogic:
         When user says "No" or provides corrections, user_confirmed_investigation
         stays False and case remains in INQUIRY.
         """
-        engine = MilestoneEngine(mock_llm, mock_repo)
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # Turn 1: Agent detects incident and presents problem statement
         mock_response_turn1 = json.dumps(

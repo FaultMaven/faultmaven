@@ -130,7 +130,12 @@ class TestMilestoneEngineFunctionCalling:
         self, function_calling_provider, mock_repo, base_case
     ):
         """Test that FUNCTION_CALLING mode passes tools parameter"""
-        engine = MilestoneEngine(function_calling_provider, mock_repo)
+        engine = MilestoneEngine(
+            function_calling_provider,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # This will fail validation but we just want to check the parameters passed
         try:
@@ -159,7 +164,12 @@ class TestMilestoneEngineFunctionCalling:
         self, function_calling_provider, mock_repo, base_case
     ):
         """Test that FUNCTION_CALLING mode doesn't include schema in prompt"""
-        engine = MilestoneEngine(function_calling_provider, mock_repo)
+        engine = MilestoneEngine(
+            function_calling_provider,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
 
         # This will fail validation but we just want to check the prompt
         try:

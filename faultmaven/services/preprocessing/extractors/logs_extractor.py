@@ -6,6 +6,7 @@ No LLM calls required - pure keyword-based extraction.
 """
 
 import re
+from collections import Counter
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
@@ -96,9 +97,14 @@ class LogsAndErrorsExtractor:
                 else:
                     result = self._extract_single_error_context(lines, primary_error)
 
-        # Coverage metadata
-        from collections import Counter
+        # Entity profiling: scan full content for key entities.
+        # Prepend to result so it's visible even when the structural index
+        # is truncated by the context builder's per-item character cap.
+        entity_profile = self._build_entity_profile(content)
+        if entity_profile:
+            result = entity_profile + "\n\n" + result
 
+        # Coverage metadata
         severity_counts = Counter(e["keyword"] for e in errors)
         time_range = extract_time_range(content)
         result += format_coverage_metadata(
@@ -348,3 +354,44 @@ class LogsAndErrorsExtractor:
         ]
 
         return "\n".join(formatted)
+
+    # Regex patterns for entity profiling (compiled once)
+    _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+    _USER_RE = re.compile(
+        r"(?:user[= ]+|for (?:invalid user )?|user=)([a-zA-Z0-9._\-]+)",
+        re.IGNORECASE,
+    )
+
+    def _build_entity_profile(self, content: str, top_n: int = 10) -> str:
+        """
+        Scan full content for key entities and produce a frequency summary.
+
+        This gives the LLM an explicit enumeration of distinct actors/hosts
+        without requiring it to manually scan hundreds of log lines.
+        """
+        ip_counts: Counter = Counter()
+        user_counts: Counter = Counter()
+
+        for line in content.split("\n"):
+            for ip in self._IP_RE.findall(line):
+                ip_counts[ip] += 1
+            for user in self._USER_RE.findall(line):
+                if user:
+                    user_counts[user] += 1
+
+        if not ip_counts and not user_counts:
+            return ""
+
+        parts = ["ENTITY PROFILE (full file scan):"]
+
+        if ip_counts:
+            parts.append(f"  Distinct IPs: {len(ip_counts)}")
+            for ip, count in ip_counts.most_common(top_n):
+                parts.append(f"    {ip}: {count} occurrences")
+
+        if user_counts:
+            parts.append(f"  Distinct usernames: {len(user_counts)}")
+            for user, count in user_counts.most_common(top_n):
+                parts.append(f"    {user}: {count} occurrences")
+
+        return "\n".join(parts)

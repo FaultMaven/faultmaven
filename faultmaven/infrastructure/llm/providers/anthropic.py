@@ -93,10 +93,19 @@ class AnthropicProvider(BaseLLMProvider):
             "model": selected_model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "messages": [{"role": "user", "content": prompt}],
         }
 
-        # Add any additional parameters
+        # Handle messages for multi-turn conversations
+        messages = kwargs.pop("messages", None)
+        if messages:
+            converted = self._convert_messages_to_anthropic(messages)
+            request_body["messages"] = converted["messages"]
+            if converted.get("system"):
+                request_body["system"] = converted["system"]
+        else:
+            request_body["messages"] = [{"role": "user", "content": prompt}]
+
+        # Add any additional parameters (system kwarg overrides messages-extracted system)
         if "system" in kwargs:
             request_body["system"] = kwargs["system"]
 
@@ -152,15 +161,6 @@ class AnthropicProvider(BaseLLMProvider):
                     )
 
                 response_data = await response.json()
-
-        # DEBUG: Log raw response to understand what Anthropic returns
-        import logging
-
-        logger = logging.getLogger(__name__)
-        logger.info(f"🔍 RAW ANTHROPIC RESPONSE: {response_data}")
-        logger.info(f"🔍 Response keys: {response_data.keys()}")
-        if "content" in response_data:
-            logger.info(f"🔍 Content blocks: {response_data['content']}")
 
         # Extract content from Anthropic response format
         content = ""
@@ -286,3 +286,91 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Ensure confidence is within valid range
         return min(1.0, max(0.0, model_confidence))
+
+    def _convert_messages_to_anthropic(self, messages: list) -> dict:
+        """Convert OpenAI-format messages to Anthropic API format.
+
+        Handles:
+        - system messages → extracted to top-level 'system' field
+        - user messages → passed through
+        - assistant messages with tool_calls → content blocks with tool_use
+        - tool messages → user messages with tool_result content blocks
+        - Consecutive tool results grouped into single user message
+
+        Returns:
+            Dict with 'messages' list and optional 'system' string.
+        """
+        system_parts = []
+        anthropic_messages = []
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_parts.append(content)
+
+            elif role == "user":
+                anthropic_messages.append({"role": "user", "content": content})
+
+            elif role == "assistant":
+                content_blocks = []
+                if content:
+                    content_blocks.append({"type": "text", "text": content})
+
+                for tc in msg.get("tool_calls", []):
+                    func = tc.get("function", {})
+                    args = func.get("arguments", "{}")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id", ""),
+                            "name": func.get("name", ""),
+                            "input": args,
+                        }
+                    )
+
+                if content_blocks:
+                    anthropic_messages.append(
+                        {"role": "assistant", "content": content_blocks}
+                    )
+                else:
+                    anthropic_messages.append(
+                        {"role": "assistant", "content": content or ""}
+                    )
+
+            elif role == "tool":
+                tool_result = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": content,
+                }
+
+                # Group consecutive tool results into one user message
+                if (
+                    anthropic_messages
+                    and anthropic_messages[-1]["role"] == "user"
+                    and isinstance(anthropic_messages[-1]["content"], list)
+                    and anthropic_messages[-1]["content"]
+                    and anthropic_messages[-1]["content"][0].get("type")
+                    == "tool_result"
+                ):
+                    anthropic_messages[-1]["content"].append(tool_result)
+                else:
+                    anthropic_messages.append(
+                        {
+                            "role": "user",
+                            "content": [tool_result],
+                        }
+                    )
+
+        result = {"messages": anthropic_messages}
+        if system_parts:
+            result["system"] = "\n\n".join(system_parts)
+
+        return result

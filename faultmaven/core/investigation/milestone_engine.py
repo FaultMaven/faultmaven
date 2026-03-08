@@ -22,12 +22,14 @@ Architecture:
 """
 
 import asyncio
+import difflib
 import hashlib
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 # Module initialization
@@ -42,6 +44,7 @@ from faultmaven.core.investigation.llm_error_handler import (
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
+    EvidenceToAdd,
     InquiryResponse,
     TerminalResponse,
     get_schema_for_stage,
@@ -95,9 +98,6 @@ from faultmaven.modules.case.domain.services.investigation_router import (
     determine_investigation_path,
 )
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
-
-logger = logging.getLogger(__name__)
-
 
 # =============================================================================
 # Evidence Category - Milestone Mapping (Option 2.5: System-Inferred Attribution)
@@ -367,7 +367,7 @@ def validate_reasoning_first(
 
     # Debug logging for Turn 2 issue
     logger.debug(
-        f"🔍 validate_reasoning_first: response_type={type(response_obj).__name__}, "
+        f"validate_reasoning_first: response_type={type(response_obj).__name__}, "
         f"case_status={case.status.value}, "
         f"is_InquiryResponse={isinstance(response_obj, InquiryResponse)}, "
         f"is_TerminalResponse={isinstance(response_obj, TerminalResponse)}"
@@ -375,14 +375,12 @@ def validate_reasoning_first(
 
     # Only validate investigation responses (not INQUIRY or TERMINAL)
     if isinstance(response_obj, (InquiryResponse, TerminalResponse)):
-        logger.debug("🔍 Skipping reasoning validation (INQUIRY or TERMINAL response)")
+        logger.debug("Skipping reasoning validation (INQUIRY or TERMINAL response)")
         return True, []
 
     # Skip validation if case is already in terminal state
     if case.is_terminal:
-        logger.debug(
-            "🔍 Skipping reasoning validation (case already in terminal state)"
-        )
+        logger.debug("Skipping reasoning validation (case already in terminal state)")
         return True, []
 
     # Check if response has internal_reasoning field
@@ -414,7 +412,7 @@ def validate_reasoning_first(
 
         if has_pending or already_solution_verified:
             logger.debug(
-                f"🔍 Skipping reasoning validation (terminal transition in progress: "
+                f"Skipping reasoning validation (terminal transition in progress: "
                 f"pending={has_pending}, solution_verified={already_solution_verified})"
             )
             return True, []
@@ -492,10 +490,6 @@ def validate_reasoning_first(
 # =============================================================================
 # Design Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md
 
-
-import re
-from typing import Optional
-from faultmaven.core.investigation.schemas import EvidenceToAdd
 
 # Pattern definitions for detecting external data when LLM misclassifies
 LOG_PATTERNS = [
@@ -680,24 +674,42 @@ class MilestoneEngine:
         self,
         llm_provider: ILLMProvider,
         repository: Any,  # Case repository abstraction (duck typing)
+        investigation_tools: Any,
+        evidence_service: Any,
         knowledge_service: IKnowledgeService | None = None,
         trace_enabled: bool = True,
         checkpoint_service: Any | None = None,
+        da_provider: Any | None = None,
+        da_model: str | None = None,
     ):
         """Initialize milestone engine.
 
         Args:
             llm_provider: LLM provider implementation (ILLMProvider interface)
             repository: Case repository with save/get methods
+            investigation_tools: AgentToolRegistry with investigation tools
+                (search_file, deep_analysis, etc.). Required — DA turns use
+                these for evidence searching during generation.
+            evidence_service: Evidence service for tool context. Required for
+                building tool execution context.
             knowledge_service: Optional knowledge service for KB searches
             trace_enabled: Enable observability tracing
             checkpoint_service: Optional CheckpointService for state snapshots
+            da_provider: Dedicated provider for DA (directed analysis) turns
+                (configured via DA_PROVIDER in .env).
+                When None, falls back to llm_provider.
+            da_model: Model to use with da_provider. When None,
+                the provider's default model is used.
         """
         self.llm_provider = llm_provider
         self.repository = repository
         self.knowledge_service = knowledge_service
         self.trace_enabled = trace_enabled
         self.checkpoint_service = checkpoint_service
+        self.investigation_tools = investigation_tools
+        self.evidence_service = evidence_service
+        self.da_provider = da_provider
+        self.da_model = da_model
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.stagnation_detector = StagnationDetector()
@@ -756,7 +768,11 @@ class MilestoneEngine:
         # interleaving reads/writes on the same case state
         async with self._case_locks[case.case_id]:
             return await self._process_turn_impl(
-                case, user_message, attachments, intent_type, intent_data
+                case,
+                user_message,
+                attachments,
+                intent_type,
+                intent_data,
             )
 
     async def _process_turn_impl(
@@ -780,13 +796,13 @@ class MilestoneEngine:
         # Note: current_turn already incremented before this point
         if case.status == CaseStatus.INQUIRY:
             logger.info(
-                f"🔍 Turn {case.current_turn} starting: status={case.status.value}, "
+                f"Turn {case.current_turn} starting: status={case.status.value}, "
                 f"confirmed={case.inquiry.problem_statement_confirmed}, "
                 f"decided_to_investigate={case.inquiry.decided_to_investigate}"
             )
         else:
             logger.info(
-                f"🔍 Turn {case.current_turn} starting: status={case.status.value}, "
+                f"Turn {case.current_turn} starting: status={case.status.value}, "
                 f"stage={case.current_stage}"
             )
 
@@ -802,23 +818,6 @@ class MilestoneEngine:
                 "status_transitioned": False,
                 "outcome": TurnOutcome.CONVERSATION,
             }
-
-            # 0. CRITICAL: Auto-create Evidence from user message BEFORE LLM prompt
-            # This ensures ALL data has concrete Evidence IDs that the LLM can reference
-            # Eliminates the need for USER_MESSAGE_* pseudo-ID workarounds
-            user_message_evidence_id = None
-            if user_message and user_message.strip():
-                from uuid import uuid4
-
-                # ================================================================
-                # EVIDENCE CLASSIFICATION REDESIGN (Phase 4)
-                # ================================================================
-                # Evidence creation happens in two places:
-                # 1. Attachments: Preprocessed in Step 1 of process_turn() (before LLM)
-                # 2. Agent findings: Created from evidence_to_add in _apply_*_updates()
-                # ================================================================
-
-                user_message_evidence_id = None  # No longer auto-created
 
             # 0b. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"
@@ -857,7 +856,7 @@ class MilestoneEngine:
                     )
 
                 logger.info(
-                    f"🎯 Explicit status_transition intent: {from_status_str} → {to_status_str} "
+                    f"Explicit status_transition intent: {from_status_str} → {to_status_str} "
                     f"for case {case.case_id}"
                 )
 
@@ -883,7 +882,7 @@ class MilestoneEngine:
                         )
 
                     logger.info(
-                        f"✅ Case {case.case_id} transitioned to CLOSED via explicit intent"
+                        f"Case {case.case_id} transitioned to CLOSED via explicit intent"
                     )
 
                     # Save and return immediately (skip LLM)
@@ -1007,7 +1006,7 @@ class MilestoneEngine:
 
             elif intent_type == "confirmation":
                 logger.info(
-                    f"🎯 Explicit confirmation intent for case {case.case_id} "
+                    f"Explicit confirmation intent for case {case.case_id} "
                     f"(has_pending_statement={bool(case.inquiry.proposed_problem_statement)})"
                 )
 
@@ -1039,7 +1038,7 @@ class MilestoneEngine:
                     )
 
                     logger.info(
-                        f"✅ Case {case.case_id} transitioned to INVESTIGATING via confirmation intent"
+                        f"Case {case.case_id} transitioned to INVESTIGATING via confirmation intent"
                     )
 
                     # Continue to normal LLM flow for investigation kickoff message
@@ -1051,7 +1050,6 @@ class MilestoneEngine:
             # 1. Explicit intent (frontend buttons) → Handled above with intent_data
             # 2. Natural language (user types) → Pattern matching below
             #
-            # SKIP PATTERN MATCHING if explicit intent provided by frontend
             # SKIP PATTERN MATCHING if explicit intent provided by frontend
             # UNLESS intent is "conversation" (which is default for user typing)
             if user_message and (not intent_type or intent_type == "conversation"):
@@ -1078,7 +1076,7 @@ class MilestoneEngine:
                         pattern in user_msg_lower for pattern in close_inquiry_patterns
                     ):
                         logger.info(
-                            f"🎯 Detected user intent to CLOSE from INQUIRY for case {case.case_id}: '{user_message[:50]}...'"
+                            f"Detected user intent to CLOSE from INQUIRY for case {case.case_id}: '{user_message[:50]}...'"
                         )
                         from faultmaven.core.investigation.terminal_transitions import (
                             close_from_inquiry,
@@ -1090,7 +1088,7 @@ class MilestoneEngine:
                         )
 
                         logger.info(
-                            f"✅ Case {case.case_id} transitioned to CLOSED (inquiry_only) based on user intent"
+                            f"Case {case.case_id} transitioned to CLOSED (inquiry_only) based on user intent"
                         )
 
                 # ========================================
@@ -1168,7 +1166,7 @@ class MilestoneEngine:
                     )
                     if has_abandonment and not has_negation:
                         logger.info(
-                            f"🎯 Detected explicit user intent to ABANDON case {case.case_id} (CLOSED): '{user_message[:50]}...'"
+                            f"Detected explicit user intent to ABANDON case {case.case_id} (CLOSED): '{user_message[:50]}...'"
                         )
                         # Import here to avoid circular dependency
                         from faultmaven.core.investigation.terminal_transitions import (
@@ -1183,7 +1181,7 @@ class MilestoneEngine:
                         )
 
                         logger.info(
-                            f"✅ Case {case.case_id} transitioned to CLOSED (abandoned) based on user intent"
+                            f"Case {case.case_id} transitioned to CLOSED (abandoned) based on user intent"
                         )
 
                     # CHECK RESOLUTION (medium priority)
@@ -1193,7 +1191,7 @@ class MilestoneEngine:
                     # and the user confirms on the next turn.
                     elif any(pattern in user_msg_lower for pattern in resolve_patterns):
                         logger.info(
-                            f"🎯 Detected NLP intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
+                            f"Detected NLP intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
                         )
                         from faultmaven.core.investigation.terminal_transitions import (
                             propose_transition,
@@ -1207,7 +1205,7 @@ class MilestoneEngine:
                         )
 
                         logger.info(
-                            f"📋 Proposed RESOLVED transition for case {case.case_id} (pending user confirmation)"
+                            f"Proposed RESOLVED transition for case {case.case_id} (pending user confirmation)"
                         )
                         # Mark that we proposed a transition this turn, so we don't immediately confirm it
                         metadata["transition_proposed_this_turn"] = True
@@ -1217,7 +1215,7 @@ class MilestoneEngine:
                     # Propose resolution and let the LLM ask user to clarify.
                     elif any(pattern in user_msg_lower for pattern in close_patterns):
                         logger.info(
-                            f"🎯 Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...'"
+                            f"Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...'"
                         )
                         from faultmaven.core.investigation.terminal_transitions import (
                             propose_transition,
@@ -1231,7 +1229,7 @@ class MilestoneEngine:
                         )
 
                         logger.info(
-                            f"📋 Proposed transition for case {case.case_id} (pending user clarification)"
+                            f"Proposed transition for case {case.case_id} (pending user clarification)"
                         )
                         # Mark that we proposed a transition this turn, so we don't immediately confirm it
                         metadata["transition_proposed_this_turn"] = True
@@ -1283,13 +1281,13 @@ class MilestoneEngine:
             if case.status == CaseStatus.INQUIRY:
                 schema_model = InquiryResponse
                 logger.info(
-                    f"🔍 Turn {case.current_turn} schema selection: "
+                    f"Turn {case.current_turn} schema selection: "
                     f"status={case.status.value}, schema=InquiryResponse"
                 )
             elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
                 schema_model = TerminalResponse
                 logger.info(
-                    f"🔍 Turn {case.current_turn} schema selection: "
+                    f"Turn {case.current_turn} schema selection: "
                     f"status={case.status.value}, schema=TerminalResponse"
                 )
             else:
@@ -1297,17 +1295,38 @@ class MilestoneEngine:
                     case.current_stage or InvestigationStage.DIAGNOSIS
                 )
                 logger.info(
-                    f"🔍 Turn {case.current_turn} schema selection: "
+                    f"Turn {case.current_turn} schema selection: "
                     f"status={case.status.value}, stage={case.current_stage}, "
                     f"schema={schema_model.__name__}"
                 )
 
             # 2. Invoke LLM with structured output
-            response_obj = await self._generate_structured_output(prompt, schema_model)
+            # For DA turns, use tool-augmented generation so the LLM can
+            # search evidence files directly during reasoning.
+            query_mode = (intent_data or {}).get("query_mode")
+            if query_mode == "directed_analysis" and case.evidence:
+                if not self.investigation_tools:
+                    raise MilestoneEngineError(
+                        "Directed analysis requires investigation_tools but none configured. "
+                        "Ensure search_file and deep_analysis tools are registered."
+                    )
+
+                da_tools = self._build_da_tool_schemas()
+                da_context = self._build_tool_context(case, intent_data)
+                response_obj = await self._generate_structured_output(
+                    prompt,
+                    schema_model,
+                    investigation_tools=da_tools,
+                    tool_context=da_context,
+                )
+            else:
+                response_obj = await self._generate_structured_output(
+                    prompt, schema_model
+                )
 
             # Debug: Log what type was actually returned
             logger.info(
-                f"🔍 Turn {case.current_turn} response type: {type(response_obj).__name__}"
+                f"Turn {case.current_turn} response type: {type(response_obj).__name__}"
             )
 
             # 3. Validate reasoning BEFORE applying state (design: error-handling §3.2)
@@ -1321,21 +1340,63 @@ class MilestoneEngine:
                 agent_response=response_obj.agent_response,
                 contains_suggestion=None,  # Auto-detect
             )
+
+            # For DA turns (tool-augmented), "Missing causal reasoning" is a
+            # false positive on factual lookups (e.g., "What usernames did X try?").
+            # Downgrade it from retry-triggering to warning-only so we don't waste
+            # a 5-7s retry that can never satisfy the check. Other violations
+            # (checklist, generic advice, missing observation) still trigger retry.
+            _CAUSAL_VIOLATION = "Missing causal reasoning"
+            is_da_turn = query_mode == "directed_analysis"
+            if not is_valid_reasoning and is_da_turn:
+                causal_violations = [v for v in violations if _CAUSAL_VIOLATION in v]
+                retry_violations_list = [
+                    v for v in violations if _CAUSAL_VIOLATION not in v
+                ]
+
+                if causal_violations and not retry_violations_list:
+                    # ONLY causal reasoning is missing — this is likely a factual lookup.
+                    # Skip retry, log as warning, feed back to next turn.
+                    logger.info(
+                        f"DA turn: downgrading causal reasoning violation to warning "
+                        f"(no retry). Violations: {causal_violations}"
+                    )
+                    metadata["diagnostic_reasoning_violations"] = causal_violations
+                    is_valid_reasoning = True  # Skip retry block
+                    violations = []
+                elif causal_violations and retry_violations_list:
+                    # Other violations exist too — retry for those, but remove causal
+                    # from the retry prompt since it can't be satisfied for factual lookups.
+                    violations = retry_violations_list
+                    logger.info(
+                        f"DA turn: removed causal reasoning from retry violations "
+                        f"(remaining: {retry_violations_list})"
+                    )
+
             if not is_valid_reasoning:
                 logger.warning(
                     f"Diagnostic reasoning validation failed: {violations}. "
                     "Attempting self-correction retry."
                 )
 
-                # Self-correction: retry once with violation feedback
+                # Self-correction: retry once with violation feedback.
+                # Include the original response so the retry LLM has the search
+                # data found during the DA tool loop (which isn't re-run here).
                 try:
                     correction_feedback = (
                         "\n\n[SYSTEM CORRECTION REQUIRED]\n"
                         "Your previous response failed diagnostic reasoning validation. "
                         "You MUST fix these issues:\n"
                         + "\n".join(f"- {v}" for v in violations)
-                        + "\n\nRewrite your response to address ALL violations above. "
-                        "Ground your reasoning in THIS case's specific evidence."
+                        + "\n\nHere is your previous response to rewrite:\n"
+                        + response_obj.agent_response
+                        + "\n\nRewrite the agent_response to address ALL violations above. "
+                        "Structure it as: OBSERVATION (cite specific data from at least 2 "
+                        "categories — timestamps like HH:MM, error messages, IPs/usernames, "
+                        "or metrics/counts — directly from the search results above) then "
+                        "ANALYSIS (explain WHY using causal language like 'because', "
+                        "'therefore', 'this indicates'). "
+                        "Keep all state_updates from your previous response unchanged."
                     )
                     corrected_prompt = prompt + correction_feedback
                     corrected_response = await self._generate_structured_output(
@@ -1613,8 +1674,530 @@ class MilestoneEngine:
     # Prompt Generation
     # =========================================================================
 
+    # Constants for tool-augmented generation
+    MAX_TOOL_ITERATIONS = 4
+    TOOL_RESULT_MAX_CHARS = 8000
+    MAX_DEEP_ANALYSIS = 1
+
+    async def _tool_augmented_generate(
+        self,
+        prompt: str,
+        schema_model: Any,
+        investigation_tools: list[dict],
+        tool_context: Any,
+        max_tokens: int = 8000,
+    ) -> BaseInteractionResponse:
+        """Run a bounded tool-calling loop for DA turns.
+
+        The LLM gets real investigation tools (search_file, deep_analysis)
+        alongside the response schema tool. It searches evidence until ready,
+        then calls the schema tool to produce structured output.
+
+        Algorithm:
+        1. Build schema tool from Pydantic model (reuses existing converter)
+        2. Combine: all_tools = investigation_tools + schema_tools
+        3. Loop with tool_choice="required" (LLM must always call a tool —
+           either an investigation tool to gather data, or the schema tool
+           to produce the final structured response)
+        4. When LLM calls schema tool → parse and return structured output
+        5. After max iterations → force schema with only schema tools available
+
+        Args:
+            prompt: Full investigation prompt
+            schema_model: Pydantic model class for structured output
+            investigation_tools: OpenAI-format tool defs for search/analysis
+            tool_context: ToolContext for tool execution
+            max_tokens: Max tokens for LLM calls
+
+        Returns:
+            Instantiated Pydantic model (BaseInteractionResponse)
+        """
+        from faultmaven.utils.schema_converter import pydantic_to_openai_tools
+
+        # Use dedicated DA provider (DA_PROVIDER from .env) if available,
+        # otherwise fall back to the default router
+        provider = self.da_provider or self.llm_provider
+        provider_name = getattr(provider, "provider_name", type(provider).__name__)
+        model_info = f", model: {self.da_model}" if self.da_model else ""
+        logger.info(
+            f"Tool-augmented generate using provider: {provider_name}{model_info}"
+        )
+
+        # Build schema tool (same pattern used by single-shot path)
+        schema_tools = pydantic_to_openai_tools(schema_model)
+        schema_tool_name = schema_tools[0]["function"]["name"]
+
+        # Combine investigation tools + schema tool
+        all_tools = investigation_tools + schema_tools
+
+        # Build tool name list for the DA system instruction
+        tool_names = [t["function"]["name"] for t in investigation_tools]
+
+        # Initialize conversation with DA system instruction + user prompt
+        da_system_instruction = self._build_da_system_instruction(
+            tool_names,
+            schema_tool_name,
+        )
+        messages = [
+            {"role": "system", "content": da_system_instruction},
+            {"role": "user", "content": prompt},
+        ]
+        deep_analysis_count = 0
+
+        force_schema_next = False
+
+        for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
+            is_final = iteration == self.MAX_TOOL_ITERATIONS
+
+            # Tool availability per iteration:
+            # - Iteration 0: investigation tools ONLY (force at least one search)
+            # - Iterations 1..N-1: all tools (investigation + schema)
+            # - Final iteration / force_schema: schema tools ONLY
+            if is_final or force_schema_next:
+                tools_for_call = schema_tools
+            elif iteration == 0 and investigation_tools:
+                tools_for_call = investigation_tools
+            else:
+                tools_for_call = all_tools
+
+            # Force tool choice on all iterations to prevent plain-text responses
+            choice = "required"
+
+            logger.info(
+                f"Tool loop iteration {iteration}/{self.MAX_TOOL_ITERATIONS} "
+                f"(is_final={is_final}, force_schema={force_schema_next}, tool_choice={choice})"
+            )
+
+            # Pass da_model when using dedicated provider
+            generate_kwargs = dict(
+                prompt="",
+                messages=messages,
+                tools=tools_for_call,
+                tool_choice=choice,
+                max_tokens=max_tokens,
+                temperature=0.2,
+            )
+            if self.da_model and self.da_provider:
+                generate_kwargs["model"] = self.da_model
+
+            response = await provider.generate(**generate_kwargs)
+
+            # Check for tool calls in response
+            if not hasattr(response, "tool_calls") or not response.tool_calls:
+                # No tool calls — shouldn't happen with tool_choice=auto/required
+                # but handle gracefully by appending to messages and forcing schema
+                if is_final or force_schema_next:
+                    raise MilestoneEngineError(
+                        "Tool loop: LLM returned no tool calls on forced final iteration"
+                    )
+                logger.warning(
+                    "Tool loop: LLM returned no tool calls at iteration %d, "
+                    "will force schema on next iteration",
+                    iteration,
+                )
+
+                # Append the plain text response so the LLM knows what it said
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response.content
+                        or "I should use a tool to proceed.",
+                    }
+                )
+
+                force_schema_next = True
+                continue
+
+            # Reset the flag on successful tool usage
+            force_schema_next = False
+
+            # Check if LLM called the schema tool (termination signal)
+            for tc in response.tool_calls:
+                func_name = tc.function.get("name", "")
+                if func_name == schema_tool_name:
+                    logger.info(
+                        "Tool loop: schema tool called at iteration %d, "
+                        "parsing structured output",
+                        iteration,
+                    )
+                    return self._parse_schema_tool_call(tc, schema_model)
+
+            # Build assistant message with tool calls
+            assistant_msg = self._build_assistant_message(response)
+            messages.append(assistant_msg)
+
+            # Execute each investigation tool call
+            for tc in response.tool_calls:
+                func_name = tc.function.get("name", "")
+                args_str = tc.function.get("arguments", "{}")
+                logger.info(
+                    "Tool loop iter %d: LLM called tool=%s args=%s",
+                    iteration,
+                    func_name,
+                    (
+                        args_str[:200]
+                        if isinstance(args_str, str)
+                        else str(args_str)[:200]
+                    ),
+                )
+
+                try:
+                    args = (
+                        json.loads(args_str) if isinstance(args_str, str) else args_str
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+
+                # Enforce deep_analysis limit
+                if (
+                    func_name == "deep_analysis"
+                    and deep_analysis_count >= self.MAX_DEEP_ANALYSIS
+                ):
+                    result_text = (
+                        "deep_analysis is limited to 1 call per turn. "
+                        "Use search_file for additional searches."
+                    )
+                else:
+                    tool_result = await self.investigation_tools.execute_tool(
+                        func_name,
+                        args,
+                        tool_context,
+                    )
+                    if func_name == "deep_analysis":
+                        deep_analysis_count += 1
+
+                    result_text = self._format_tool_result(tool_result)
+
+                # Truncate long results
+                if len(result_text) > self.TOOL_RESULT_MAX_CHARS:
+                    result_text = (
+                        result_text[: self.TOOL_RESULT_MAX_CHARS] + "\n[truncated]"
+                    )
+
+                # Append tool result message
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": func_name,
+                        "content": result_text,
+                    }
+                )
+
+        # Should not reach here (final iteration forces schema)
+        raise MilestoneEngineError(
+            "Tool loop exhausted without producing structured output"
+        )
+
+    def _build_da_tool_schemas(self) -> list[dict]:
+        """Build OpenAI-format tool definitions for DA investigation tools."""
+        if not self.investigation_tools:
+            return []
+
+        tools = []
+        for agent_tool in self.investigation_tools.get_all_tools():
+            schema = agent_tool.get_schema()
+            tools.append(
+                {
+                    "type": "function",
+                    "function": schema,
+                }
+            )
+        return tools
+
+    @staticmethod
+    def _build_da_system_instruction(
+        tool_names: list[str],
+        schema_tool_name: str,
+    ) -> str:
+        """Build the system instruction that tells the LLM how to use DA tools.
+
+        Adapts to whichever investigation tools are actually registered.
+        Without this, the LLM sees tool definitions but has no guidance on
+        when or why to call them, leading to non-deterministic tool usage.
+        """
+        has_search = "search_file" in tool_names
+        has_da = "deep_analysis" in tool_names
+
+        # Build tool guidance based on what's actually available
+        search_mode_guidance = (
+            "search_file modes:\n"
+            "- keyword (DEFAULT): Splits query into tokens and finds lines "
+            "containing all of them. Use for IPs, hostnames, error codes, "
+            "service names, usernames. Just pass the raw value as query — "
+            'e.g., query="173.234.31.186" or query="timeout connection".\n'
+            "- regex: Only when keyword mode cannot express the pattern "
+            "(e.g., timestamp ranges, capture groups). Regex is error-prone "
+            "— prefer keyword mode unless you specifically need pattern matching."
+        )
+
+        if has_search and has_da:
+            tool_guidance = (
+                "You have two investigation tools:\n"
+                "- search_file: keyword/regex search against raw evidence files. "
+                "Use for exact matches — IPs, timestamps, error codes, service names.\n"
+                "- deep_analysis: LLM-interpreted analysis of specific evidence sections. "
+                "Use for analytical questions keyword search cannot answer. "
+                "Limited to 1 call per turn.\n\n"
+                "Choose the right tool for the question. Use search_file for "
+                "lookups, deep_analysis for interpretation.\n\n"
+                f"{search_mode_guidance}"
+            )
+        elif has_search:
+            tool_guidance = (
+                "You have one investigation tool:\n"
+                "- search_file: keyword/regex search against raw evidence files. "
+                "Use it to find specific data — IPs, timestamps, error codes, "
+                "service names, log patterns.\n\n"
+                "Call search_file with a specific evidence_id and query. "
+                "Formulate targeted queries based on the structural indexes "
+                "in <evidence_collected>. Multiple searches are allowed.\n\n"
+                f"{search_mode_guidance}"
+            )
+        else:
+            tool_guidance = (
+                "No investigation tools are available for this turn. "
+                "Base your analysis on the evidence context provided."
+            )
+
+        return (
+            "You have investigation tools available to search and analyze "
+            "the raw evidence files attached to this case.\n\n"
+            f"{tool_guidance}\n\n"
+            "You MUST search the raw evidence before producing your response. "
+            "The structural indexes are summaries — they lack the specific values "
+            "(exact IPs, usernames, timestamps, error messages) needed for grounded "
+            f"analysis. After searching, call {schema_tool_name} to produce your "
+            "structured response.\n\n"
+            "IMPORTANT — Search for the specific entity, not the event type:\n"
+            "When the user asks about a specific IP, hostname, username, error "
+            "code, or timestamp, search for THAT value directly — e.g., "
+            'query="173.234.31.186", not query="Failed password". Searching '
+            "for event types returns results for ALL entities and buries the "
+            "relevant lines.\n\n"
+            "IMPORTANT — PII tokens vs raw data:\n"
+            "The <evidence_collected> summaries use PII placeholders "
+            "(e.g., <IP_ADDRESS_1>). The raw files contain ORIGINAL values. "
+            "When calling search_file, use ORIGINAL values from the user's "
+            "message, NOT PII tokens.\n\n"
+            "RESPONSE FORMAT — Your agent_response MUST follow this structure:\n"
+            "1. OBSERVATION: State what specific data you found — cite exact "
+            "values from at least 2 different categories: timestamps (e.g., "
+            "14:03 UTC), error messages (e.g., 'Failed password'), IPs/hostnames/"
+            "usernames, or metrics/counts. Quote or paraphrase actual log lines.\n"
+            "2. ANALYSIS: Explain WHY the evidence points to your conclusion. "
+            "Use causal language — 'because', 'this indicates', 'leads to', "
+            "'therefore'. Connect specific findings to your diagnosis.\n"
+            "This structure is REQUIRED. Responses that list possibilities "
+            "without citing specific evidence from THIS case will be rejected."
+        )
+
+    def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:
+        """Build ToolContext for tool execution during DA turns."""
+        from faultmaven.modules.agent.tools.base import ToolContext
+
+        user_id = (intent_data or {}).get("user_id", "system")
+        organization_id = getattr(case, "organization_id", "")
+
+        return ToolContext(
+            session_id=case.case_id,
+            case_id=case.case_id,
+            organization_id=organization_id,
+            user_id=user_id,
+            evidence_service=self.evidence_service,
+        )
+
+    def _parse_schema_tool_call(
+        self,
+        tool_call: Any,
+        schema_model: Any,
+    ) -> BaseInteractionResponse:
+        """Parse a schema tool call response into a Pydantic model.
+
+        Applies the same JSON cleanup (nested parsing + enum fixing) as the
+        single-shot path in _generate_structured_output.
+        """
+        args = tool_call.function.get("arguments", "{}")
+        if isinstance(args, dict):
+            content = json.dumps(args)
+        else:
+            content = args
+
+        # Parse JSON
+        content_obj = json.loads(content)
+
+        # Recursively parse nested JSON strings
+        content_obj = self._parse_nested_json(content_obj)
+
+        # Fix hallucinated enum values
+        schema_dict = schema_model.model_json_schema()
+        content_obj = self._fix_enum_violations(
+            content_obj,
+            schema_dict,
+            root_defs=schema_dict.get("$defs"),
+        )
+
+        # Validate with Pydantic
+        content = json.dumps(content_obj)
+        return schema_model.model_validate_json(content)
+
+    @staticmethod
+    def _build_assistant_message(response: Any) -> dict:
+        """Convert LLMResponse to OpenAI-format assistant message."""
+        tool_calls_list = []
+        for tc in response.tool_calls or []:
+            tool_calls_list.append(
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": tc.function,
+                }
+            )
+
+        msg = {
+            "role": "assistant",
+            "content": response.content or "",
+        }
+        if tool_calls_list:
+            msg["tool_calls"] = tool_calls_list
+        return msg
+
+    @staticmethod
+    def _format_tool_result(result: Any) -> str:
+        """Format a ToolResult into a string for the LLM."""
+        if result.success:
+            if isinstance(result.data, str):
+                return result.data
+            elif result.data is not None:
+                return json.dumps(result.data)
+            return "Success (no data returned)"
+        return f"Error: {result.error or 'Unknown error'}"
+
+    @staticmethod
+    def _parse_nested_json(obj):
+        """Recursively parse JSON strings in a dict/list structure."""
+        if isinstance(obj, dict):
+            return {k: MilestoneEngine._parse_nested_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [MilestoneEngine._parse_nested_json(item) for item in obj]
+        elif isinstance(obj, str):
+            try:
+                parsed = json.loads(obj)
+                return MilestoneEngine._parse_nested_json(parsed)
+            except (json.JSONDecodeError, TypeError):
+                return obj
+        else:
+            return obj
+
+    @staticmethod
+    def _fix_enum_violations(obj, schema_dict, root_defs=None):
+        """Recursively fix enum violations in the response object."""
+
+        if not isinstance(obj, dict):
+            return obj
+
+        properties = schema_dict.get("properties", {})
+        if root_defs is None:
+            root_defs = schema_dict.get("$defs", {})
+        local_defs = schema_dict.get("$defs", {})
+        all_defs = {**local_defs, **root_defs}
+
+        fixed_obj = {}
+        for key, value in obj.items():
+            if key not in properties:
+                fixed_obj[key] = value
+                continue
+
+            prop_schema = properties[key]
+
+            if "enum" in prop_schema and isinstance(value, str):
+                valid_values = prop_schema["enum"]
+                if value not in valid_values:
+                    closest_match = difflib.get_close_matches(
+                        value, valid_values, n=1, cutoff=0.6
+                    )
+                    if closest_match:
+                        corrected = closest_match[0]
+                        logger.warning(
+                            f"Auto-correcting hallucinated enum value: "
+                            f"'{value}' -> '{corrected}' for field '{key}'"
+                        )
+                        fixed_obj[key] = corrected
+                    else:
+                        fallback = valid_values[0]
+                        logger.warning(
+                            f"No close match for hallucinated enum '{value}', "
+                            f"using fallback '{fallback}' for field '{key}'"
+                        )
+                        fixed_obj[key] = fallback
+                else:
+                    fixed_obj[key] = value
+
+            elif isinstance(value, dict):
+                nested_schema = None
+                if "$ref" in prop_schema:
+                    ref_name = prop_schema["$ref"].split("/")[-1]
+                    nested_schema = all_defs.get(ref_name, {})
+                elif "anyOf" in prop_schema:
+                    for option in prop_schema["anyOf"]:
+                        if "$ref" in option:
+                            ref_name = option["$ref"].split("/")[-1]
+                            nested_schema = all_defs.get(ref_name, {})
+                            break
+                        elif option.get("type") != "null":
+                            nested_schema = option
+                            break
+                elif "properties" in prop_schema:
+                    nested_schema = prop_schema
+
+                if nested_schema:
+                    fixed_obj[key] = MilestoneEngine._fix_enum_violations(
+                        value, nested_schema, root_defs
+                    )
+                else:
+                    fixed_obj[key] = value
+
+            elif isinstance(value, list):
+                fixed_list = []
+                item_schema = None
+                if "items" in prop_schema:
+                    if "$ref" in prop_schema["items"]:
+                        ref_name = prop_schema["items"]["$ref"].split("/")[-1]
+                        item_schema = all_defs.get(ref_name, {})
+                    else:
+                        item_schema = prop_schema["items"]
+                elif "anyOf" in prop_schema:
+                    for option in prop_schema["anyOf"]:
+                        if option.get("type") == "array" and "items" in option:
+                            if "$ref" in option["items"]:
+                                ref_name = option["items"]["$ref"].split("/")[-1]
+                                item_schema = all_defs.get(ref_name, {})
+                            else:
+                                item_schema = option["items"]
+                            break
+
+                for item in value:
+                    if isinstance(item, dict) and item_schema:
+                        fixed_list.append(
+                            MilestoneEngine._fix_enum_violations(
+                                item, item_schema, root_defs
+                            )
+                        )
+                    else:
+                        fixed_list.append(item)
+                fixed_obj[key] = fixed_list
+
+            else:
+                fixed_obj[key] = value
+
+        return fixed_obj
+
     async def _generate_structured_output(
-        self, prompt: str, schema_model: Any
+        self,
+        prompt: str,
+        schema_model: Any,
+        investigation_tools: list[dict] | None = None,
+        tool_context: Any | None = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -1626,13 +2209,27 @@ class MilestoneEngine:
         - FUNCTION_CALLING mode: Uses tool calling pattern (Anthropic Claude)
         - NONE mode: Schema only in prompt, no API support (legacy models)
 
+        When investigation_tools and tool_context are provided, routes through
+        _tool_augmented_generate for a bounded tool-calling loop (DA turns).
+
         Args:
             prompt: User prompt
             schema_model: Pydantic model class for expected output
+            investigation_tools: OpenAI-format tool defs for search_file/deep_analysis
+            tool_context: ToolContext for tool execution
 
         Returns:
             Instantiated Pydantic model
         """
+        # Branch to tool-augmented generation for DA turns with tools
+        if investigation_tools and tool_context:
+            return await self._tool_augmented_generate(
+                prompt,
+                schema_model,
+                investigation_tools,
+                tool_context,
+            )
+
         # Get provider-specific structured output strategy
         schema = schema_model.model_json_schema()
         strategy = self.llm_provider.get_structured_output_strategy(schema)
@@ -1724,8 +2321,6 @@ class MilestoneEngine:
                         # Handle both cases:
                         # 1. ```json\n{...}\n```
                         # 2. Some text\n```json\n{...}\n```\nMore text
-                        import re
-
                         # Match ```json (or ```JSON or just ```) followed by content until closing ```
                         pattern = r"```(?:json|JSON)?\s*\n(.*?)\n```"
                         match = re.search(pattern, content, re.DOTALL)
@@ -1740,157 +2335,6 @@ class MilestoneEngine:
                                 lines = lines[:-1]
                             content = "\n".join(lines).strip()
 
-            # PROVIDER-AGNOSTIC FIX: Parse nested JSON strings in function call arguments
-            # Some LLMs return nested objects as JSON strings instead of dicts
-            # E.g., {'state_updates': '{"field": "value"}'} instead of {'state_updates': {"field": "value"}}
-            def parse_nested_json(obj):
-                """Recursively parse JSON strings in a dict/list structure."""
-                if isinstance(obj, dict):
-                    return {k: parse_nested_json(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [parse_nested_json(item) for item in obj]
-                elif isinstance(obj, str):
-                    # Try to parse as JSON
-                    try:
-                        parsed = json.loads(obj)
-                        # Recursively parse the parsed object
-                        return parse_nested_json(parsed)
-                    except (json.JSONDecodeError, TypeError):
-                        # Not JSON, return as-is
-                        return obj
-                else:
-                    return obj
-
-            # PROVIDER-AGNOSTIC FIX: Validate and fix hallucinated enum values
-            # LLMs using function calling (not strict JSON mode) can hallucinate enum values
-            # that aren't in the schema. We detect and auto-correct these.
-            def fix_enum_violations(obj, schema_dict, root_defs=None):
-                """Recursively fix enum violations in the response object.
-
-                Args:
-                    obj: The object to fix
-                    schema_dict: Schema for this level of the object
-                    root_defs: Root-level $defs (carried through recursion for $ref resolution)
-                """
-                import difflib
-
-                if not isinstance(obj, dict):
-                    return obj
-
-                # Get the schema for this object type
-                properties = schema_dict.get("properties", {})
-
-                # Use root_defs if provided, otherwise use local defs
-                if root_defs is None:
-                    root_defs = schema_dict.get("$defs", {})
-
-                # Also check for local defs
-                local_defs = schema_dict.get("$defs", {})
-                # Merge: root defs take precedence
-                all_defs = {**local_defs, **root_defs}
-
-                fixed_obj = {}
-                for key, value in obj.items():
-                    if key not in properties:
-                        fixed_obj[key] = value
-                        continue
-
-                    prop_schema = properties[key]
-
-                    # Check if this property has enum constraints
-                    if "enum" in prop_schema and isinstance(value, str):
-                        valid_values = prop_schema["enum"]
-                        if value not in valid_values:
-                            # Find closest match using fuzzy matching
-                            closest_match = difflib.get_close_matches(
-                                value, valid_values, n=1, cutoff=0.6
-                            )
-                            if closest_match:
-                                corrected = closest_match[0]
-                                logger.warning(
-                                    f"Auto-correcting hallucinated enum value: "
-                                    f"'{value}' → '{corrected}' for field '{key}'"
-                                )
-                                fixed_obj[key] = corrected
-                            else:
-                                # No close match, use first valid value as fallback
-                                fallback = valid_values[0]
-                                logger.warning(
-                                    f"No close match for hallucinated enum '{value}', "
-                                    f"using fallback '{fallback}' for field '{key}'"
-                                )
-                                fixed_obj[key] = fallback
-                        else:
-                            fixed_obj[key] = value
-
-                    # Recursively process nested objects
-                    elif isinstance(value, dict):
-                        # Find the schema for this nested object
-                        nested_schema = None
-                        if "$ref" in prop_schema:
-                            ref_name = prop_schema["$ref"].split("/")[-1]
-                            nested_schema = all_defs.get(ref_name, {})
-                        elif "anyOf" in prop_schema:
-                            # Handle Optional fields with anyOf
-                            for option in prop_schema["anyOf"]:
-                                if "$ref" in option:
-                                    ref_name = option["$ref"].split("/")[-1]
-                                    nested_schema = all_defs.get(ref_name, {})
-                                    break
-                                elif option.get("type") != "null":
-                                    nested_schema = option
-                                    break
-                        elif "properties" in prop_schema:
-                            nested_schema = prop_schema
-
-                        if nested_schema:
-                            # Pass root_defs through recursion for $ref resolution
-                            fixed_obj[key] = fix_enum_violations(
-                                value, nested_schema, root_defs
-                            )
-                        else:
-                            fixed_obj[key] = value
-
-                    # Recursively process lists
-                    elif isinstance(value, list):
-                        fixed_list = []
-                        # Resolve item schema — handle both direct {items: ...}
-                        # and Optional[List[...]] which produces {anyOf: [{items: ..., type: "array"}, {type: "null"}]}
-                        item_schema = None
-                        if "items" in prop_schema:
-                            if "$ref" in prop_schema["items"]:
-                                ref_name = prop_schema["items"]["$ref"].split("/")[-1]
-                                item_schema = all_defs.get(ref_name, {})
-                            else:
-                                item_schema = prop_schema["items"]
-                        elif "anyOf" in prop_schema:
-                            # Handle Optional[List[Model]] — items is inside the array option
-                            for option in prop_schema["anyOf"]:
-                                if option.get("type") == "array" and "items" in option:
-                                    if "$ref" in option["items"]:
-                                        ref_name = option["items"]["$ref"].split("/")[
-                                            -1
-                                        ]
-                                        item_schema = all_defs.get(ref_name, {})
-                                    else:
-                                        item_schema = option["items"]
-                                    break
-
-                        for item in value:
-                            if isinstance(item, dict) and item_schema:
-                                # Pass root_defs through recursion
-                                fixed_list.append(
-                                    fix_enum_violations(item, item_schema, root_defs)
-                                )
-                            else:
-                                fixed_list.append(item)
-                        fixed_obj[key] = fixed_list
-
-                    else:
-                        fixed_obj[key] = value
-
-                return fixed_obj
-
             try:
                 # First, try to load content as JSON if it's a string
                 if isinstance(content, str):
@@ -1898,22 +2342,13 @@ class MilestoneEngine:
                 else:
                     content_obj = content
 
-                # Parse any nested JSON strings
-                content_obj = parse_nested_json(content_obj)
+                # Parse any nested JSON strings (reuse class static method)
+                content_obj = MilestoneEngine._parse_nested_json(content_obj)
 
-                # Fix any hallucinated enum values
+                # Fix any hallucinated enum values (reuse class static method)
                 schema_dict = schema_model.model_json_schema()
-                logger.debug(
-                    f"🔍 Schema has $defs: {list(schema_dict.get('$defs', {}).keys())}"
-                )
-                logger.debug(
-                    f"🔍 Content before enum fix: {json.dumps(content_obj, indent=2)[:500]}"
-                )
-                content_obj = fix_enum_violations(
+                content_obj = MilestoneEngine._fix_enum_violations(
                     content_obj, schema_dict, root_defs=schema_dict.get("$defs")
-                )
-                logger.debug(
-                    f"🔍 Content after enum fix: {json.dumps(content_obj, indent=2)[:500]}"
                 )
 
                 # Convert back to JSON string for Pydantic validation
@@ -2243,7 +2678,6 @@ class MilestoneEngine:
 
         # Evidence creation (single-phase): Create evidence from LLM-classified submissions
         # This code is shared between INQUIRY and INVESTIGATING phases
-        from uuid import uuid4
 
         # Evidence creation from LLM's evidence_to_add
         # Preprocessing now happens in Step 1 of process_turn() (before LLM).
@@ -2252,7 +2686,7 @@ class MilestoneEngine:
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
         logger.info(
-            f"🔍 Evidence creation check (INQUIRY): "
+            f"Evidence creation check (INQUIRY): "
             f"hasattr(updates, 'evidence_to_add')={has_attr}, "
             f"evidence_to_add={evidence_list}, "
             f"count={evidence_count}"
@@ -2290,7 +2724,7 @@ class MilestoneEngine:
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
                 logger.info(
-                    f"✅ Created evidence (INQUIRY): {ev.evidence_id} | "
+                    f"Created evidence (INQUIRY): {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
                     f"form={ev.form.value}, "
                     f"summary='{ev.summary[:80]}...'"
@@ -2444,7 +2878,7 @@ class MilestoneEngine:
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
         logger.info(
-            f"🔍 Evidence creation check: "
+            f"Evidence creation check: "
             f"hasattr(updates, 'evidence_to_add')={has_attr}, "
             f"evidence_to_add={evidence_list}, "
             f"count={evidence_count}"
@@ -2498,7 +2932,7 @@ class MilestoneEngine:
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
                 logger.info(
-                    f"✅ Created evidence: {ev.evidence_id} | "
+                    f"Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
                     f"form={ev.form.value}, "
                     f"summary='{ev.summary[:80]}...'"
@@ -2813,7 +3247,7 @@ class MilestoneEngine:
             # Don't confirm a transition that was just proposed in this same turn
             if metadata.get("transition_proposed_this_turn", False):
                 logger.info(
-                    f"⏭️  Skipping confirmation check - transition was just proposed this turn"
+                    f"Skipping confirmation check - transition was just proposed this turn"
                 )
             else:
                 from faultmaven.core.investigation.terminal_transitions import (

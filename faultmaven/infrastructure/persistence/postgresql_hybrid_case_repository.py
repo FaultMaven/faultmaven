@@ -866,7 +866,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "category": evidence.data_type,  # Maps to evidence_category enum
                     "summary": evidence.summary,
                     "preprocessed_content": evidence.preprocessed_content or "",
-                    "content_ref": evidence.storage_ref,
+                    "content_ref": evidence.content_ref,
                     "file_size": evidence.file_size,
                     "filename": evidence.filename,
                     "upload_timestamp": evidence.timestamp,
