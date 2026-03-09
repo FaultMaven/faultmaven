@@ -121,41 +121,7 @@ class KnowledgeService:
         # Advanced knowledge caching and optimization
         self._query_cache: Dict[str, Any] = {}  # Result caching
         self._user_patterns: Dict[str, Dict[str, Any]] = {}  # User behavior patterns
-        self._knowledge_graph: Dict[str, List[str]] = {}  # Knowledge connections
-        self._search_index_cache: Dict[str, Any] = {}  # Pre-computed search indices
-        self._content_cluster_cache: Dict[str, List[str]] = {}  # Content clustering
         self._frequent_query_cache: Dict[str, Any] = {}  # High-frequency query cache
-
-        # Performance optimization components
-        self._executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="knowledge_opt"
-        )
-        self._vector_index_cache = {}  # Pre-computed vector indices
-        self._semantic_clusters = defaultdict(list)  # Semantic content clusters
-        self._query_optimization_patterns = defaultdict(int)  # Query pattern analysis
-        self._background_indexing_queue = deque()  # Background indexing queue
-
-        # Enhanced performance metrics
-        self._metrics = {
-            "enhanced_searches_performed": 0,
-            "memory_integrations": 0,
-            "reasoning_enhancements": 0,
-            "knowledge_curations": 0,
-            "cache_hits": 0,
-            "cache_misses": 0,
-            "vector_cache_hits": 0,
-            "cluster_cache_hits": 0,
-            "parallel_searches": 0,
-            "index_optimizations": 0,
-            "avg_search_time": 0.0,
-            "avg_relevance_improvement": 0.0,
-            "optimization_time_saved": 0.0,
-        }
-
-        # Start background optimization if enhanced mode is available
-        self._optimization_running = False
-        if self._enhanced_mode:
-            self._start_background_optimization()
 
         # In-memory storage for testing/development (used if Redis not available)
         self._documents_store = {}
@@ -421,13 +387,8 @@ class KnowledgeService:
             )
             cached_result = await self._check_optimized_cache(cache_key)
             if cached_result:
-                self._metrics["cache_hits"] += 1
-                cache_time = (time.time() - search_start) * 1000
-                self._metrics["optimization_time_saved"] += cache_time
                 logger.info(f"Optimized cache hit for query: {sanitized_query[:50]}...")
                 return cached_result
-
-            self._metrics["cache_misses"] += 1
 
             # Retrieve memory context for enhancement
             memory_insights = []
@@ -442,7 +403,6 @@ class KnowledgeService:
                         memory_insights = conversation_context.relevant_insights
                     if hasattr(conversation_context, "domain_context"):
                         domain_context = conversation_context.domain_context
-                    self._metrics["memory_integrations"] += 1
                 except Exception as e:
                     logger.warning(f"Memory context retrieval failed: {e}")
 
@@ -519,9 +479,7 @@ class KnowledgeService:
 
             await self._cache_search_results_optimized(cache_key, final_results)
 
-            # Update metrics
             search_time = (time.time() - search_start) * 1000
-            self._update_search_metrics(search_time, final_results["confidence_score"])
 
             logger.info(
                 f"Enhanced search completed in {search_time:.2f}ms with confidence {final_results['confidence_score']:.3f}"
@@ -801,8 +759,6 @@ class KnowledgeService:
 
             # Re-sort by final score
             sorted_content.sort(key=lambda x: x["final_score"], reverse=True)
-
-            self._metrics["knowledge_curations"] += 1
 
             return {
                 "reasoning_type": reasoning_type,
@@ -2001,105 +1957,10 @@ class KnowledgeService:
             "avg_response_time": 0.0,
             "hit_rate": 0.0,
             "category_distribution": {},
-            "enhanced_metrics": self._metrics if self._enhanced_mode else {},
+            "enhanced_metrics": {},
         }
 
     # Enhanced helper methods for performance optimization and advanced functionality
-
-    def _start_background_optimization(self):
-        """Start background optimization processes for enhanced performance"""
-        if self._optimization_running:
-            return
-
-        self._optimization_running = True
-
-        # Start background tasks for optimization
-        try:
-            # Background vector index optimization
-            asyncio.create_task(self._background_vector_indexing())
-
-            # Background content clustering
-            asyncio.create_task(self._background_content_clustering())
-
-            # Background cache optimization
-            asyncio.create_task(self._background_cache_optimization())
-
-            logger.info("Background optimization processes started")
-
-        except Exception as e:
-            logger.warning(f"Background optimization startup failed: {e}")
-
-    async def _background_vector_indexing(self):
-        """Background process for vector index optimization"""
-        try:
-            while self._optimization_running:
-                await asyncio.sleep(300)  # Run every 5 minutes
-
-                if self._background_indexing_queue:
-                    logger.debug("Processing background vector indexing queue")
-
-                    # Process up to 10 items from the queue
-                    for _ in range(min(10, len(self._background_indexing_queue))):
-                        if not self._background_indexing_queue:
-                            break
-
-                        indexing_task = self._background_indexing_queue.popleft()
-
-                        try:
-                            # Process the indexing task
-                            await self._process_background_indexing_task(indexing_task)
-                            self._metrics["index_optimizations"] += 1
-
-                        except Exception as e:
-                            logger.warning(f"Background indexing task failed: {e}")
-
-                        await asyncio.sleep(0.1)  # Small delay between tasks
-
-        except asyncio.CancelledError:
-            logger.info("Background vector indexing cancelled")
-        except Exception as e:
-            logger.error(f"Background vector indexing error: {e}")
-
-    async def _background_content_clustering(self):
-        """Background process for content clustering optimization"""
-        try:
-            while self._optimization_running:
-                await asyncio.sleep(600)  # Run every 10 minutes
-
-                if len(self._semantic_clusters) > 100:  # Only if we have enough content
-                    try:
-                        await self._optimize_content_clusters()
-                        logger.debug("Content clusters optimized")
-
-                    except Exception as e:
-                        logger.warning(f"Content clustering optimization failed: {e}")
-
-        except asyncio.CancelledError:
-            logger.info("Background content clustering cancelled")
-        except Exception as e:
-            logger.error(f"Background content clustering error: {e}")
-
-    async def _background_cache_optimization(self):
-        """Background process for cache optimization"""
-        try:
-            while self._optimization_running:
-                await asyncio.sleep(1800)  # Run every 30 minutes
-
-                try:
-                    # Optimize various caches
-                    await self._optimize_query_cache()
-                    await self._optimize_vector_cache()
-                    await self._optimize_cluster_cache()
-
-                    logger.debug("Cache optimization completed")
-
-                except Exception as e:
-                    logger.warning(f"Cache optimization failed: {e}")
-
-        except asyncio.CancelledError:
-            logger.info("Background cache optimization cancelled")
-        except Exception as e:
-            logger.error(f"Background cache optimization error: {e}")
 
     async def _validate_search_inputs(
         self, query: str, session_id: str, reasoning_type: str
@@ -2527,40 +2388,6 @@ class KnowledgeService:
 
         return min(alignment_score, 1.0)
 
-    # Additional optimization helper methods
-
-    async def _process_background_indexing_task(self, task: Dict[str, Any]) -> None:
-        """Process a background indexing optimization task"""
-        try:
-            task_type = task.get("type", "unknown")
-
-            if task_type == "vector_optimization":
-                # Optimize vector indices
-                await self._optimize_vector_indices()
-
-            elif task_type == "cluster_update":
-                # Update semantic clusters
-                await self._update_semantic_clusters(task.get("data"))
-
-            elif task_type == "cache_cleanup":
-                # Clean up stale cache entries
-                await self._cleanup_stale_caches()
-
-        except Exception as e:
-            logger.warning(f"Background indexing task failed: {e}")
-
-    async def _optimize_vector_indices(self) -> None:
-        """Optimize vector search indices"""
-        # This would implement vector index optimization
-        # For now, just log the operation
-        logger.debug("Vector indices optimization completed")
-
-    async def _update_semantic_clusters(self, data: Optional[Any]) -> None:
-        """Update semantic content clusters"""
-        # This would implement semantic clustering
-        # For now, just log the operation
-        logger.debug("Semantic clusters updated")
-
     async def _cleanup_stale_caches(self) -> None:
         """Clean up stale cache entries"""
         current_time = time.time()
@@ -2584,30 +2411,6 @@ class KnowledgeService:
             del self._frequent_query_cache[key]
 
         logger.debug(f"Cleaned up {len(stale_keys)} stale cache entries")
-
-    async def _optimize_content_clusters(self) -> None:
-        """Optimize content clustering for better search performance"""
-        # This would implement content clustering optimization
-        # For now, just log the operation
-        logger.debug("Content clusters optimization completed")
-
-    async def _optimize_query_cache(self) -> None:
-        """Optimize query cache performance"""
-        # This would implement query cache optimization
-        # For now, just log the operation
-        logger.debug("Query cache optimization completed")
-
-    async def _optimize_vector_cache(self) -> None:
-        """Optimize vector cache performance"""
-        # This would implement vector cache optimization
-        # For now, just log the operation
-        logger.debug("Vector cache optimization completed")
-
-    async def _optimize_cluster_cache(self) -> None:
-        """Optimize cluster cache performance"""
-        # This would implement cluster cache optimization
-        # For now, just log the operation
-        logger.debug("Cluster cache optimization completed")
 
 
 # Phase 4 Complete: Adapter classes have been removed as core components now implement interfaces directly
