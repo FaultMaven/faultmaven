@@ -202,14 +202,19 @@ Follow this progression based on conversation state:
 │   - Clear, specific, actionable statement              │
 │   - Include: symptoms, frequency, impact               │
 │ • In your response: Present statement for confirmation  │
+│   Adapt phrasing based on who surfaced the issue:       │
+│   - User reported: Confirm understanding of their report│
+│   - Agent found in data: Present the finding directly   │
 │                                                         │
-│ Example Response:                                       │
-│ "Let me confirm my understanding:                       │
+│ Example (user reported the problem):                    │
+│ "Let me make sure I understand: your API is             │
+│  intermittently timing out with a 10% request failure   │
+│  rate affecting all endpoints. Is that accurate?"       │
 │                                                         │
-│  **Problem**: API intermittently timing out with 10%   │
-│  request failure rate affecting all endpoints          │
-│                                                         │
-│  Is this accurate? Any corrections or additions?"      │
+│ Example (agent discovered from uploaded data):          │
+│ "Looking at the logs, I can see 142 timeout errors      │
+│  across 3 endpoints in the last hour, with a 10%        │
+│  failure rate. Would you like to investigate this?"     │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐

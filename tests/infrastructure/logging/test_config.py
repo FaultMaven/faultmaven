@@ -39,10 +39,12 @@ class TestFaultMavenLogger:
         """Test configure_structlog sets up proper configuration."""
         logger_config = FaultMavenLogger()
 
-        # Check that basic logging was configured
-        mock_basic_config.assert_called_once_with(
-            format="%(message)s", level=logging.INFO
-        )
+        # Check that basic logging was configured with format and the config's log level
+        # (log level comes from settings/env, so don't hardcode a specific level)
+        mock_basic_config.assert_called_once()
+        call_kwargs = mock_basic_config.call_args[1]
+        assert call_kwargs["format"] == "%(message)s"
+        assert call_kwargs["level"] == logger_config.config.get_log_level()
 
         # Check that structlog was configured
         mock_configure.assert_called_once()

@@ -422,6 +422,58 @@ class TestFireworksProviderOverride:
         assert capability == StructuredOutputCapability.BEST_EFFORT
 
 
+class TestFireworksToolCallingSupport:
+    """Test Fireworks provider tool calling support.
+
+    All Fireworks models should report tool calling as supported (True),
+    relying on Layer 2 runtime fallback (ToolCallingUnsupportedError) for
+    models that genuinely can't handle tools.
+    """
+
+    @pytest.fixture
+    def fireworks_config(self):
+        return ProviderConfig(
+            name="fireworks",
+            api_key="test-key",
+            base_url="https://api.fireworks.ai/inference/v1",
+            models=["accounts/fireworks/models/deepseek-v3"],
+            default_model="accounts/fireworks/models/deepseek-v3",
+        )
+
+    def test_deepseek_v3_supports_tool_calling(self, fireworks_config):
+        """DeepSeek V3 on Fireworks supports OpenAI-compatible tool calling."""
+        provider = FireworksProvider(fireworks_config)
+        assert (
+            provider.supports_tool_calling("accounts/fireworks/models/deepseek-v3")
+            is True
+        )
+
+    def test_deepseek_r1_supports_tool_calling(self, fireworks_config):
+        """DeepSeek R1 should not be pre-blocked — Layer 2 handles failures."""
+        provider = FireworksProvider(fireworks_config)
+        assert (
+            provider.supports_tool_calling("accounts/fireworks/models/deepseek-r1")
+            is True
+        )
+
+    def test_llama_supports_tool_calling(self):
+        """Llama models on Fireworks support tool calling."""
+        config = ProviderConfig(
+            name="fireworks",
+            api_key="test-key",
+            base_url="https://api.fireworks.ai/inference/v1",
+            models=["accounts/fireworks/models/llama-v3-70b-instruct"],
+            default_model="accounts/fireworks/models/llama-v3-70b-instruct",
+        )
+        provider = FireworksProvider(config)
+        assert provider.supports_tool_calling() is True
+
+    def test_default_model_supports_tool_calling(self, fireworks_config):
+        """Default model (None) should report tool calling supported."""
+        provider = FireworksProvider(fireworks_config)
+        assert provider.supports_tool_calling(None) is True
+
+
 class TestProviderOverrideConsistency:
     """Test consistency across provider override implementations"""
 
