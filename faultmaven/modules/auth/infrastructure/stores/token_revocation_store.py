@@ -176,11 +176,13 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
         async with self.session_factory() as session:
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO oauth_revoked_tokens (jti, expires_at)
                 VALUES (:jti, :expires_at)
                 ON CONFLICT (jti) DO NOTHING
-            """)
+            """
+            )
 
             await session.execute(
                 query,
@@ -203,10 +205,12 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
         from sqlalchemy import text
 
         async with self.session_factory() as session:
-            query = text("""
+            query = text(
+                """
                 SELECT 1 FROM oauth_revoked_tokens
                 WHERE jti = :jti AND expires_at > NOW()
-            """)
+            """
+            )
 
             result = await session.execute(query, {"jti": jti})
             return result.fetchone() is not None
@@ -220,10 +224,12 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
         from sqlalchemy import text
 
         async with self.session_factory() as session:
-            query = text("""
+            query = text(
+                """
                 DELETE FROM oauth_revoked_tokens
                 WHERE expires_at <= NOW()
-            """)
+            """
+            )
 
             result = await session.execute(query)
             await session.commit()
