@@ -235,8 +235,8 @@ class TestPartialMatchFallback:
         assert result.data["results_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_partial_match_capped_at_five(self, tool):
-        """Partial match results are capped at 5."""
+    async def test_partial_match_returns_all_merged(self, tool):
+        """Partial match returns all merged results (cap applied externally)."""
         # Build content with a keyword appearing on many lines
         lines = [f"line {i} keyword_alpha data" for i in range(100)]
         content = "\n".join(lines)
@@ -246,7 +246,8 @@ class TestPartialMatchFallback:
             content, "keyword_alpha nonexistent_zzz"
         )
 
-        assert len(results) <= 5
+        # Internal method returns all merged results; cap is in execute_with_context
+        assert len(results) == 100
 
 
 class TestVocabularyExtraction:
@@ -391,6 +392,345 @@ class TestVocabularyExtraction:
         assert len(vocab["patterns"]) > 0
 
 
+class TestTruncationReporting:
+    """Tests for result truncation transparency."""
+
+    @pytest.fixture
+    def many_matches_context(self):
+        """Context with content that produces many non-overlapping matches."""
+        evidence = MagicMock()
+        evidence.case_id = "case_123"
+        evidence.data_type = "logs"
+
+        # Space ERROR lines 20 apart so context windows (±5) don't overlap.
+        # This produces many distinct merged results that exceed max_results=3.
+        lines = []
+        for i in range(400):
+            if i % 20 == 0:
+                lines.append(f"2024-01-15 10:{i:04d} ERROR service failure #{i // 20}")
+            else:
+                lines.append(f"2024-01-15 10:{i:04d} INFO normal operation")
+        content = "\n".join(lines)
+
+        evidence_service = AsyncMock()
+        evidence_service.get_evidence.return_value = evidence
+        evidence_service.download_evidence.return_value = (
+            content.encode(),
+            "app.log",
+            "text/plain",
+        )
+
+        return ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            organization_id="org_1",
+            user_id="user_1",
+            evidence_service=evidence_service,
+        )
+
+    @pytest.mark.asyncio
+    async def test_truncated_results_include_total_matches(
+        self, tool, many_matches_context
+    ):
+        """When results exceed max_results, total_matches reports the full count."""
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR"},
+            context=many_matches_context,
+        )
+
+        assert result.success is True
+        assert result.data["truncated"] is True
+        assert result.data["total_matches"] > result.data["results_count"]
+        assert result.data["results_count"] <= 3  # fixture tool has max_results=3
+        assert result.data["total_matches"] == 20  # 400 lines / 20 spacing = 20 matches
+
+    @pytest.mark.asyncio
+    async def test_truncated_results_include_truncation_note(
+        self, tool, many_matches_context
+    ):
+        """Truncated results include a note for the LLM."""
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR"},
+            context=many_matches_context,
+        )
+
+        assert "truncation_note" in result.data
+        assert "Showing" in result.data["truncation_note"]
+        assert str(result.data["total_matches"]) in result.data["truncation_note"]
+
+    @pytest.mark.asyncio
+    async def test_non_truncated_results_have_no_note(self, tool, context):
+        """Non-truncated results don't include a truncation_note."""
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR"},
+            context=context,
+        )
+
+        assert result.success is True
+        assert result.data["truncated"] is False
+        assert result.data["total_matches"] == result.data["results_count"]
+        assert "truncation_note" not in result.data
+
+    @pytest.mark.asyncio
+    async def test_zero_results_include_truncation_fields(self, tool, context):
+        """Zero-result responses include truncation fields for consistency."""
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "nonexistent_pattern_xyz"},
+            context=context,
+        )
+
+        assert result.success is True
+        assert result.data["total_matches"] == 0
+        assert result.data["truncated"] is False
+
+
+class TestMaxResultsOverride:
+    """Tests for LLM-requested max_results parameter."""
+
+    @pytest.fixture
+    def many_lines_context(self):
+        """Context with many matching lines."""
+        evidence = MagicMock()
+        evidence.case_id = "case_123"
+        evidence.data_type = "logs"
+
+        lines = [
+            f"2024-01-15 10:30:{i % 60:02d} ERROR failure #{i}" for i in range(100)
+        ]
+        content = "\n".join(lines)
+
+        evidence_service = AsyncMock()
+        evidence_service.get_evidence.return_value = evidence
+        evidence_service.download_evidence.return_value = (
+            content.encode(),
+            "app.log",
+            "text/plain",
+        )
+
+        return ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            organization_id="org_1",
+            user_id="user_1",
+            evidence_service=evidence_service,
+        )
+
+    @pytest.mark.asyncio
+    async def test_max_results_override_increases_limit(self, many_lines_context):
+        """LLM can request more results via max_results parameter."""
+        tool = SearchFileTool(context_lines=0, max_results=3)
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR", "max_results": 50},
+            context=many_lines_context,
+        )
+
+        assert result.success is True
+        assert result.data["results_count"] == 50
+
+    @pytest.mark.asyncio
+    async def test_max_results_capped_at_ceiling(self, many_lines_context):
+        """max_results is capped at MAX_RESULTS_CEILING (200)."""
+        tool = SearchFileTool(context_lines=0, max_results=3)
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR", "max_results": 999},
+            context=many_lines_context,
+        )
+
+        assert result.success is True
+        # 100 lines total, ceiling is 200, so we get all 100
+        assert result.data["results_count"] == 100
+        assert result.data["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_default_max_results_when_not_specified(self, many_lines_context):
+        """Without max_results param, uses the tool's default."""
+        tool = SearchFileTool(context_lines=0, max_results=5)
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "ERROR"},
+            context=many_lines_context,
+        )
+
+        assert result.success is True
+        assert result.data["results_count"] == 5
+        assert result.data["truncated"] is True
+        assert result.data["total_matches"] == 100
+
+
+class TestCountOutputFormat:
+    """Tests for output_format='count' — compact results for aggregation."""
+
+    @pytest.fixture
+    def ip_log_context(self):
+        """Context simulating HDFS log with many IPs."""
+        evidence = MagicMock()
+        evidence.case_id = "case_123"
+        evidence.data_type = "logs"
+
+        # 200 log lines, 50 with IPs in 10.251.x.x range
+        lines = []
+        for i in range(200):
+            if i % 4 == 0:
+                lines.append(
+                    f"081109 2035{i:02d} INFO dfs.DataNode: "
+                    f"Receiving block from /10.251.{i % 256}.{(i * 7) % 256}:50010"
+                )
+            else:
+                lines.append(
+                    f"081109 2035{i:02d} INFO dfs.NameSystem: "
+                    f"addStoredBlock: blockMap updated"
+                )
+        content = "\n".join(lines)
+
+        evidence_service = AsyncMock()
+        evidence_service.get_evidence.return_value = evidence
+        evidence_service.download_evidence.return_value = (
+            content.encode(),
+            "hdfs.log",
+            "text/plain",
+        )
+
+        return ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            organization_id="org_1",
+            user_id="user_1",
+            evidence_service=evidence_service,
+        )
+
+    @pytest.mark.asyncio
+    async def test_count_returns_match_count(self, tool, ip_log_context):
+        """Count mode returns accurate match_count for all matching lines."""
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": "10.251",
+                "output_format": "count",
+            },
+            context=ip_log_context,
+        )
+
+        assert result.success is True
+        assert result.data["output_format"] == "count"
+        assert result.data["match_count"] == 50  # every 4th line out of 200
+
+    @pytest.mark.asyncio
+    async def test_count_returns_compact_matched_lines(self, tool, ip_log_context):
+        """Count mode returns compact 'LINE: CONTENT' strings, no context windows."""
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": "10.251",
+                "output_format": "count",
+            },
+            context=ip_log_context,
+        )
+
+        assert "matched_lines" in result.data
+        for line_str in result.data["matched_lines"]:
+            # Each entry is "LINE_NUM: CONTENT" — a flat string, not a dict
+            assert isinstance(line_str, str)
+            assert ": " in line_str
+            assert "10.251" in line_str
+
+    @pytest.mark.asyncio
+    async def test_count_no_context_windows(self, tool, ip_log_context):
+        """Count mode does NOT return excerpt-style results with context."""
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": "10.251",
+                "output_format": "count",
+            },
+            context=ip_log_context,
+        )
+
+        assert "results" not in result.data  # No excerpt-style results
+        assert "matched_lines" in result.data  # Compact lines instead
+
+    @pytest.mark.asyncio
+    async def test_count_defaults_to_high_max_results(self, ip_log_context):
+        """Count mode defaults to MAX_RESULTS_CEILING, not the tool's default."""
+        tool = SearchFileTool(max_results=3)  # Low default for excerpts
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": "10.251",
+                "output_format": "count",
+            },
+            context=ip_log_context,
+        )
+
+        # Should return all 50 matches, not cap at 3
+        assert result.data["results_count"] == 50
+        assert result.data["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_count_with_regex(self, tool, ip_log_context):
+        """Count mode works with regex search."""
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": r"10\.251\.\d+\.\d+",
+                "search_type": "regex",
+                "output_format": "count",
+            },
+            context=ip_log_context,
+        )
+
+        assert result.success is True
+        assert result.data["match_count"] == 50
+
+    @pytest.mark.asyncio
+    async def test_count_zero_matches(self, tool, context):
+        """Count mode with zero matches returns vocabulary."""
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": "nonexistent_xyz",
+                "output_format": "count",
+            },
+            context=context,
+        )
+
+        assert result.success is True
+        assert result.data["match_count"] == 0
+        assert result.data["results_count"] == 0
+        assert "vocabulary" in result.data
+
+    @pytest.mark.asyncio
+    async def test_count_preserves_individual_matches(self, ip_log_context):
+        """Count mode returns each match individually; excerpts merge them.
+
+        This is the key advantage: for 'how many unique IPs?' the LLM gets
+        all 50 matched lines individually, not merged into a few context blobs.
+        """
+        tool = SearchFileTool(context_lines=3, max_results=200)
+
+        # Excerpts mode: adjacent matches merge into fewer windows
+        excerpts_result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc", "query": "10.251"},
+            context=ip_log_context,
+        )
+        # Count mode: every match is a separate line
+        count_result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_abc",
+                "query": "10.251",
+                "output_format": "count",
+            },
+            context=ip_log_context,
+        )
+
+        # Count mode: 50 individual matched lines, one per match
+        assert len(count_result.data["matched_lines"]) == 50
+
+        # Excerpts mode: merging collapses 50 matches into far fewer results
+        assert excerpts_result.data["results_count"] < 50
+
+        # Count mode's match_count is accurate regardless
+        assert count_result.data["match_count"] == 50
+
+
 class TestToolProperties:
     def test_name(self, tool):
         assert tool.name == "search_file"
@@ -400,4 +740,6 @@ class TestToolProperties:
         assert "evidence_id" in schema["properties"]
         assert "query" in schema["properties"]
         assert "search_type" in schema["properties"]
+        assert "output_format" in schema["properties"]
+        assert "max_results" in schema["properties"]
         assert schema["required"] == ["evidence_id", "query"]

@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 # the TOOL_RESULT_MAX_CHARS truncation to cut off matches.
 DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_RESULTS = 20
+# Ceiling for LLM-requested max_results (prevents unbounded memory use)
+MAX_RESULTS_CEILING = 200
 
 
 class SearchFileTool(AgentTool):
@@ -55,9 +57,9 @@ class SearchFileTool(AgentTool):
     def description(self) -> str:
         return (
             "Search a previously uploaded evidence file for specific information. "
-            "Use when the evidence summary mentions something relevant but lacks detail, "
-            "or you need specific lines, values, or patterns from the raw file. "
-            "Supports keyword search, regex patterns, and extractor re-runs. "
+            "Two output formats: 'excerpts' (default) returns context windows for "
+            "detailed investigation; 'count' returns compact matched lines for "
+            "counting and aggregation queries (e.g. 'how many unique IPs?'). "
             "Use list_evidence first to find the evidence_id."
         )
 
@@ -95,6 +97,24 @@ class SearchFileTool(AgentTool):
                         '{"z_score_threshold": 2.0} for metrics extractor'
                     ),
                 },
+                "output_format": {
+                    "type": "string",
+                    "enum": ["excerpts", "count"],
+                    "description": (
+                        "Output format. 'excerpts' (default): context windows with "
+                        "surrounding lines for detailed investigation. "
+                        "'count': compact matched lines only (no context) for "
+                        "counting and aggregation queries. Use 'count' when you "
+                        "need to know how many matches exist or enumerate all values."
+                    ),
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum number of results to return (up to 200). "
+                        "Default: 20 for excerpts, 200 for count mode."
+                    ),
+                },
             },
             "required": ["evidence_id", "query"],
         }
@@ -109,6 +129,17 @@ class SearchFileTool(AgentTool):
         query = params.get("query", "")
         search_type = params.get("search_type", "keyword")
         extractor_params = params.get("extractor_params", {})
+        output_format = params.get("output_format", "excerpts")
+
+        # Resolve effective max_results: LLM override → format default → instance default
+        requested_max = params.get("max_results")
+        if requested_max is not None:
+            effective_max_results = min(int(requested_max), MAX_RESULTS_CEILING)
+        elif output_format == "count":
+            # Count mode defaults to ceiling — completeness over detail
+            effective_max_results = MAX_RESULTS_CEILING
+        else:
+            effective_max_results = self.max_results
 
         if not evidence_id:
             return ToolResult(success=False, data=None, error="evidence_id is required")
@@ -135,23 +166,43 @@ class SearchFileTool(AgentTool):
                 )
             content, filename, evidence_obj = resolved
 
-            # Dispatch by search type
+            # Route by output format
+            if output_format == "count":
+                return self._execute_count_format(
+                    content,
+                    filename,
+                    evidence_id,
+                    query,
+                    search_type,
+                    effective_max_results,
+                )
+
+            # --- Excerpts format (default) ---
+            # Dispatch by search type — get all merged results, then cap
             if search_type == "regex":
-                results = self._regex_search(content, query)
+                all_results = self._regex_search(content, query)
             elif search_type == "extractor":
-                results = await self._extractor_rerun(
+                all_results = await self._extractor_rerun(
                     content, evidence_obj, extractor_params
                 )
             else:
-                results = self._keyword_search(content, query)
+                all_results = self._keyword_search(content, query)
+
+            # Apply result cap and track truncation
+            total_matches = len(all_results)
+            truncated = total_matches > effective_max_results
+            results = all_results[:effective_max_results]
 
             logger.info(
-                "search_file: %s (%s), mode=%s, query='%s', results=%d",
+                "search_file: %s (%s), mode=%s, format=excerpts, query='%s', "
+                "results=%d (total=%d, truncated=%s)",
                 evidence_id,
                 filename,
                 search_type,
                 query[:50],
                 len(results),
+                total_matches,
+                truncated,
             )
 
             if not results:
@@ -167,7 +218,10 @@ class SearchFileTool(AgentTool):
                         "filename": filename,
                         "search_type": search_type,
                         "query": query,
+                        "output_format": "excerpts",
                         "results_count": 0,
+                        "total_matches": 0,
+                        "truncated": False,
                         "results": [],
                         "vocabulary": vocabulary,
                         "suggestion": (
@@ -179,17 +233,25 @@ class SearchFileTool(AgentTool):
                     },
                 )
 
-            return ToolResult(
-                success=True,
-                data={
-                    "evidence_id": evidence_id,
-                    "filename": filename,
-                    "search_type": search_type,
-                    "query": query,
-                    "results_count": len(results),
-                    "results": results,
-                },
-            )
+            data = {
+                "evidence_id": evidence_id,
+                "filename": filename,
+                "search_type": search_type,
+                "query": query,
+                "output_format": "excerpts",
+                "results_count": len(results),
+                "total_matches": total_matches,
+                "truncated": truncated,
+                "results": results,
+            }
+            if truncated:
+                data["truncation_note"] = (
+                    f"Showing {len(results)} of {total_matches} matches. "
+                    "Results are capped — use output_format='count' for "
+                    "counting/aggregation queries."
+                )
+
+            return ToolResult(success=True, data=data)
 
         except Exception as e:
             logger.exception("search_file failed for %s: %s", evidence_id, e)
@@ -198,6 +260,116 @@ class SearchFileTool(AgentTool):
                 data=None,
                 error=f"Search failed: {str(e)}",
             )
+
+    def _execute_count_format(
+        self,
+        content: str,
+        filename: str,
+        evidence_id: str,
+        query: str,
+        search_type: str,
+        effective_max_results: int,
+    ) -> ToolResult:
+        """Count format: compact matched lines for counting/aggregation queries.
+
+        Returns matched lines as "LINE: CONTENT" strings — no context windows.
+        ~7x more compact than excerpts, fits far more results within the
+        milestone engine's TOOL_RESULT_MAX_CHARS budget.
+        """
+        all_matches = self._count_search(content, query, search_type)
+        match_count = len(all_matches)
+        truncated = match_count > effective_max_results
+        returned = all_matches[:effective_max_results]
+
+        logger.info(
+            "search_file: %s (%s), mode=%s, format=count, query='%s', "
+            "match_count=%d (returned=%d, truncated=%s)",
+            evidence_id,
+            filename,
+            search_type,
+            query[:50],
+            match_count,
+            len(returned),
+            truncated,
+        )
+
+        if not returned:
+            vocabulary = self._extract_file_vocabulary(content)
+            top_terms = (
+                vocabulary.get("patterns", []) + vocabulary.get("frequent_tokens", [])
+            )[:10]
+            return ToolResult(
+                success=True,
+                data={
+                    "evidence_id": evidence_id,
+                    "filename": filename,
+                    "search_type": search_type,
+                    "query": query,
+                    "output_format": "count",
+                    "match_count": 0,
+                    "results_count": 0,
+                    "truncated": False,
+                    "matched_lines": [],
+                    "vocabulary": vocabulary,
+                    "suggestion": (
+                        f"No matches found. File contains these terms: "
+                        f"{', '.join(top_terms)}"
+                        if top_terms
+                        else "No matches found and no recognizable terms extracted."
+                    ),
+                },
+            )
+
+        # Format as compact "LINE: CONTENT" strings
+        matched_lines = [f"{m['line']}: {m['content']}" for m in returned]
+
+        data: dict[str, Any] = {
+            "evidence_id": evidence_id,
+            "filename": filename,
+            "search_type": search_type,
+            "query": query,
+            "output_format": "count",
+            "match_count": match_count,
+            "results_count": len(returned),
+            "truncated": truncated,
+            "matched_lines": matched_lines,
+        }
+        if truncated:
+            data["truncation_note"] = (
+                f"Showing {len(returned)} of {match_count} matched lines."
+            )
+
+        return ToolResult(success=True, data=data)
+
+    def _count_search(
+        self, content: str, query: str, search_type: str
+    ) -> list[dict[str, Any]]:
+        """Compact search: returns matched lines only, no context windows.
+
+        Returns list of {"line": N, "content": "..."} dicts.
+        """
+        lines = content.split("\n")
+
+        if search_type == "regex":
+            try:
+                regex = re.compile(query, re.IGNORECASE | re.MULTILINE)
+            except re.error as e:
+                return [{"line": 0, "content": f"Invalid regex: {e}"}]
+            return [
+                {"line": i + 1, "content": line}
+                for i, line in enumerate(lines)
+                if regex.search(line)
+            ]
+
+        # Keyword mode
+        keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
+        if not keywords:
+            return []
+        return [
+            {"line": i + 1, "content": line}
+            for i, line in enumerate(lines)
+            if all(kw in line.lower() for kw in keywords)
+        ]
 
     async def _resolve_evidence_content(
         self,
@@ -345,7 +517,7 @@ class SearchFileTool(AgentTool):
                     }
                 )
 
-        merged = self._merge_overlapping(matches)[: self.max_results]
+        merged = self._merge_overlapping(matches)
         if merged:
             return merged
 
@@ -369,7 +541,7 @@ class SearchFileTool(AgentTool):
                                 "partial_match": True,
                             }
                         )
-            return self._merge_overlapping(partial_matches)[: self.max_results]
+            return self._merge_overlapping(partial_matches)
 
         return []
 
@@ -399,7 +571,7 @@ class SearchFileTool(AgentTool):
                     }
                 )
 
-        return self._merge_overlapping(matches)[: self.max_results]
+        return self._merge_overlapping(matches)
 
     async def _extractor_rerun(
         self,

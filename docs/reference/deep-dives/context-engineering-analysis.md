@@ -714,7 +714,7 @@ A targeted application of Principle 4 ("Structured Note-Taking") is **INQUIRY st
 
 ### The Problem
 
-The INQUIRY→INVESTIGATING transition requires `user_confirmed_investigation=True` in the LLM's structured output. However, the INQUIRY template was blind to the current inquiry state — it didn't tell the LLM that a problem statement had already been proposed. This caused the LLM to re-ask "Let me confirm the problem..." across multiple turns even when the user had implicitly confirmed by uploading data or asking about the issue.
+The INQUIRY→INVESTIGATING transition requires `user_confirmed_investigation=True` in the LLM's structured output. However, the INQUIRY template was blind to the current inquiry state — it didn't tell the LLM that a problem statement had already been proposed. This caused the LLM to re-propose the problem statement across multiple turns even when the user had implicitly confirmed by uploading data or asking about the issue.
 
 ### The Solution
 

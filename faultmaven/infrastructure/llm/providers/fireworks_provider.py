@@ -36,17 +36,12 @@ class FireworksProvider(BaseLLMProvider):
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Check if the model supports OpenAI-compatible tool calling on Fireworks.
 
-        DeepSeek models use proprietary tool-calling tokens (e.g.
-        <｜tool▁calls▁begin｜>) that are incompatible with Fireworks'
-        OpenAI-compatible tools API, causing generation errors.
+        Returns True for all models. Earlier versions blocked DeepSeek models
+        due to proprietary tool-calling tokens in older versions (V2, R1), but
+        DeepSeek V3+ supports OpenAI-compatible tool calling on Fireworks.
+        Layer 2 runtime fallback (ToolCallingUnsupportedError) catches any
+        models that genuinely can't handle tools.
         """
-        effective_model = self.get_effective_model(model)
-        model_lower = effective_model.lower()
-
-        # DeepSeek models don't support OpenAI-compatible tool calling on Fireworks
-        if "deepseek" in model_lower:
-            return False
-
         return True
 
     def get_structured_output_capability(

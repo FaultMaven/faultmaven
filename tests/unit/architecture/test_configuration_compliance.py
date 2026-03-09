@@ -350,8 +350,16 @@ class TestConfigurationArchitectureCompliance:
         assert "issues" in compatibility
         assert "warnings" in compatibility
 
-        # Test with problematic configuration
-        with patch.dict(os.environ, {"SESSION_TIMEOUT_MINUTES": "2"}, clear=False):
+        # Test with problematic configuration (short timeout)
+        # Must also set cleanup interval <= timeout to pass cross-field validation
+        with patch.dict(
+            os.environ,
+            {
+                "SESSION_TIMEOUT_MINUTES": "2",
+                "SESSION_CLEANUP_INTERVAL_MINUTES": "1",
+            },
+            clear=False,
+        ):
             reset_settings()
             settings = get_settings()
             compatibility = settings.validate_frontend_compatibility()
