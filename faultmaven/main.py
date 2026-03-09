@@ -165,6 +165,41 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
 
     if has_provider:
         logger.info(f"✅ LLM Provider configured: {provider_name}")
+
+        # Check if effective DA provider supports tool calling
+        try:
+            from .infrastructure.llm.providers.registry import get_registry
+
+            registry = get_registry()
+            llm_settings = settings.llm
+
+            effective_da_provider = llm_settings.get_da_provider()
+            effective_da_model = llm_settings.get_da_model()
+            da_provider_name = (
+                effective_da_provider.value
+                if hasattr(effective_da_provider, "value")
+                else str(effective_da_provider)
+            )
+
+            da_provider_instance = registry.get_provider(da_provider_name)
+            if da_provider_instance and not da_provider_instance.supports_tool_calling(
+                effective_da_model
+            ):
+                source = (
+                    "DA_PROVIDER"
+                    if llm_settings.da_provider is not None
+                    else "CHAT_PROVIDER (no DA_PROVIDER override set)"
+                )
+                logger.warning(
+                    f"{da_provider_name}/{effective_da_model} does not support tool calling "
+                    f"(resolved from {source}). "
+                    "Directed Analysis features (search_file, deep_analysis) will be unavailable. "
+                    "Investigation responses will be limited to structural index summaries. "
+                    "To enable full investigation, set DA_PROVIDER to a tool-capable provider "
+                    "(anthropic, openai, gemini)."
+                )
+        except Exception as e:
+            logger.debug(f"Could not check DA provider tool calling capability: {e}")
     else:
         # Print prominent warning banner
         banner = """

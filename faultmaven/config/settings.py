@@ -113,18 +113,18 @@ class MetricsExporter(str, Enum):
 class ServerSettings(BaseSettings):
     """Core server configuration"""
 
-    host: str = Field(default="0.0.0.0", env="HOST")
-    port: int = Field(default=8090, env="PORT")
-    reload: bool = Field(default=False, env="RELOAD")
-    workers: int = Field(default=1, env="WORKERS")
+    host: str = Field(default="0.0.0.0")
+    port: int = Field(default=8090)
+    reload: bool = Field(default=False)
+    workers: int = Field(default=1)
 
     # Environment and behavior
-    environment: Environment = Field(default=Environment.DEVELOPMENT, env="ENVIRONMENT")
-    debug: bool = Field(default=False, env="DEBUG")
-    skip_service_checks: bool = Field(default=False, env="SKIP_SERVICE_CHECKS")
+    environment: Environment = Field(default=Environment.DEVELOPMENT)
+    debug: bool = Field(default=False)
+    skip_service_checks: bool = Field(default=False)
 
     # Testing configuration
-    pytest_current_test: Optional[str] = Field(default=None, env="PYTEST_CURRENT_TEST")
+    pytest_current_test: Optional[str] = Field(default=None)
 
     # Scheduler configuration - opt-in for single-process convenience mode
     # When True, starts APScheduler in-process during app startup.
@@ -132,7 +132,6 @@ class ServerSettings(BaseSettings):
     # Set RUN_SCHEDULER=true only for single-process development/convenience mode.
     run_scheduler: bool = Field(
         default=False,
-        env="RUN_SCHEDULER",
         description="Enable in-process APScheduler. Default False for operational neutrality. "
         "Set to True only for single-process convenience mode (not recommended for production).",
     )
@@ -140,7 +139,6 @@ class ServerSettings(BaseSettings):
     # Debug endpoints configuration
     enable_debug_endpoints: bool = Field(
         default=False,
-        env="ENABLE_DEBUG_ENDPOINTS",
         description="Enable debug endpoints (development/testing only). "
         "Automatically enabled if ENVIRONMENT is development/testing/test.",
     )
@@ -153,191 +151,113 @@ class LLMSettings(BaseSettings):
 
     # Task-specific provider selection
     provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, alias="CHAT_PROVIDER")
-    multimodal_provider: Optional[LLMProvider] = Field(
-        default=None, env="MULTIMODAL_PROVIDER"
-    )
-    synthesis_provider: Optional[LLMProvider] = Field(
-        default=None, env="SYNTHESIS_PROVIDER"
-    )
-    classifier_provider: Optional[LLMProvider] = Field(
-        default=None, env="CLASSIFIER_PROVIDER"
-    )
-    code_provider: Optional[LLMProvider] = Field(default=None, env="CODE_PROVIDER")
-    da_provider: Optional[LLMProvider] = Field(default=None, env="DA_PROVIDER")
+    multimodal_provider: Optional[LLMProvider] = Field(default=None)
+    synthesis_provider: Optional[LLMProvider] = Field(default=None)
+    classifier_provider: Optional[LLMProvider] = Field(default=None)
+    code_provider: Optional[LLMProvider] = Field(default=None)
+    da_provider: Optional[LLMProvider] = Field(default=None)
 
     # API Keys (SecretStr for security)
-    openai_api_key: Optional[SecretStr] = Field(default=None, env="OPENAI_API_KEY")
-    anthropic_api_key: Optional[SecretStr] = Field(
-        default=None, env="ANTHROPIC_API_KEY"
-    )
-    fireworks_api_key: Optional[SecretStr] = Field(
-        default=None, env="FIREWORKS_API_KEY"
-    )
-    cohere_api_key: Optional[SecretStr] = Field(default=None, env="COHERE_API_KEY")
-    gemini_api_key: Optional[SecretStr] = Field(default=None, env="GEMINI_API_KEY")
-    huggingface_api_key: Optional[SecretStr] = Field(
-        default=None, env="HUGGINGFACE_API_KEY"
-    )
-    openrouter_api_key: Optional[SecretStr] = Field(
-        default=None, env="OPENROUTER_API_KEY"
-    )
-    groq_api_key: Optional[SecretStr] = Field(default=None, env="GROQ_API_KEY")
+    openai_api_key: Optional[SecretStr] = Field(default=None)
+    anthropic_api_key: Optional[SecretStr] = Field(default=None)
+    fireworks_api_key: Optional[SecretStr] = Field(default=None)
+    cohere_api_key: Optional[SecretStr] = Field(default=None)
+    gemini_api_key: Optional[SecretStr] = Field(default=None)
+    huggingface_api_key: Optional[SecretStr] = Field(default=None)
+    openrouter_api_key: Optional[SecretStr] = Field(default=None)
+    groq_api_key: Optional[SecretStr] = Field(default=None)
 
     # Flexible model configuration per provider and task
     # OpenAI models
-    openai_chat_model: str = Field(default="gpt-4o", env="OPENAI_CHAT_MODEL")
-    openai_multimodal_model: str = Field(
-        default="gpt-4o-vision", env="OPENAI_MULTIMODAL_MODEL"
-    )
-    openai_synthesis_model: str = Field(
-        default="gpt-4o-mini", env="OPENAI_SYNTHESIS_MODEL"
-    )
-    openai_classifier_model: str = Field(
-        default="gpt-4o-mini", env="OPENAI_CLASSIFIER_MODEL"
-    )
-    openai_code_model: str = Field(default="gpt-4o", env="OPENAI_CODE_MODEL")
-    openai_da_model: Optional[str] = Field(default=None, env="OPENAI_DA_MODEL")
+    openai_chat_model: str = Field(default="gpt-4o")
+    openai_multimodal_model: str = Field(default="gpt-4o-vision")
+    openai_synthesis_model: str = Field(default="gpt-4o-mini")
+    openai_classifier_model: str = Field(default="gpt-4o-mini")
+    openai_code_model: str = Field(default="gpt-4o")
+    openai_da_model: Optional[str] = Field(default=None)
 
     # Anthropic models
-    anthropic_chat_model: str = Field(
-        default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CHAT_MODEL"
-    )
-    anthropic_multimodal_model: str = Field(
-        default="claude-3-5-sonnet-20241022", env="ANTHROPIC_MULTIMODAL_MODEL"
-    )
-    anthropic_synthesis_model: str = Field(
-        default="claude-3-haiku", env="ANTHROPIC_SYNTHESIS_MODEL"
-    )
-    anthropic_classifier_model: str = Field(
-        default="claude-3-haiku", env="ANTHROPIC_CLASSIFIER_MODEL"
-    )
-    anthropic_code_model: str = Field(
-        default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CODE_MODEL"
-    )
-    anthropic_da_model: Optional[str] = Field(default=None, env="ANTHROPIC_DA_MODEL")
+    anthropic_chat_model: str = Field(default="claude-3-5-sonnet-20241022")
+    anthropic_multimodal_model: str = Field(default="claude-3-5-sonnet-20241022")
+    anthropic_synthesis_model: str = Field(default="claude-3-haiku")
+    anthropic_classifier_model: str = Field(default="claude-3-haiku")
+    anthropic_code_model: str = Field(default="claude-3-5-sonnet-20241022")
+    anthropic_da_model: Optional[str] = Field(default=None)
 
     # Fireworks models
     fireworks_chat_model: str = Field(
         default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-        env="FIREWORKS_CHAT_MODEL",
     )
     fireworks_multimodal_model: str = Field(
         default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-        env="FIREWORKS_MULTIMODAL_MODEL",
     )
     fireworks_synthesis_model: str = Field(
         default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-        env="FIREWORKS_SYNTHESIS_MODEL",
     )
     fireworks_classifier_model: str = Field(
         default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-        env="FIREWORKS_CLASSIFIER_MODEL",
     )
     fireworks_code_model: str = Field(
         default="accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
-        env="FIREWORKS_CODE_MODEL",
     )
-    fireworks_da_model: Optional[str] = Field(default=None, env="FIREWORKS_DA_MODEL")
+    fireworks_da_model: Optional[str] = Field(default=None)
 
     # Google Gemini models
-    gemini_chat_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CHAT_MODEL")
-    gemini_multimodal_model: str = Field(
-        default="gemini-1.5-pro", env="GEMINI_MULTIMODAL_MODEL"
-    )
-    gemini_synthesis_model: str = Field(
-        default="gemini-1.5-flash", env="GEMINI_SYNTHESIS_MODEL"
-    )
-    gemini_classifier_model: str = Field(
-        default="gemini-1.5-flash", env="GEMINI_CLASSIFIER_MODEL"
-    )
-    gemini_code_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CODE_MODEL")
-    gemini_da_model: Optional[str] = Field(default=None, env="GEMINI_DA_MODEL")
+    gemini_chat_model: str = Field(default="gemini-1.5-pro")
+    gemini_multimodal_model: str = Field(default="gemini-1.5-pro")
+    gemini_synthesis_model: str = Field(default="gemini-1.5-flash")
+    gemini_classifier_model: str = Field(default="gemini-1.5-flash")
+    gemini_code_model: str = Field(default="gemini-1.5-pro")
+    gemini_da_model: Optional[str] = Field(default=None)
 
     # Cohere models
-    cohere_chat_model: str = Field(default="command-r-plus", env="COHERE_CHAT_MODEL")
-    cohere_multimodal_model: str = Field(
-        default="command-r-plus", env="COHERE_MULTIMODAL_MODEL"
-    )
-    cohere_synthesis_model: str = Field(
-        default="command-r-plus", env="COHERE_SYNTHESIS_MODEL"
-    )
-    cohere_classifier_model: str = Field(
-        default="command-r-plus", env="COHERE_CLASSIFIER_MODEL"
-    )
-    cohere_code_model: str = Field(default="command-r-plus", env="COHERE_CODE_MODEL")
-    cohere_da_model: Optional[str] = Field(default=None, env="COHERE_DA_MODEL")
+    cohere_chat_model: str = Field(default="command-r-plus")
+    cohere_multimodal_model: str = Field(default="command-r-plus")
+    cohere_synthesis_model: str = Field(default="command-r-plus")
+    cohere_classifier_model: str = Field(default="command-r-plus")
+    cohere_code_model: str = Field(default="command-r-plus")
+    cohere_da_model: Optional[str] = Field(default=None)
 
     # HuggingFace models
-    huggingface_chat_model: str = Field(
-        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CHAT_MODEL"
-    )
-    huggingface_multimodal_model: str = Field(
-        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MULTIMODAL_MODEL"
-    )
-    huggingface_synthesis_model: str = Field(
-        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_SYNTHESIS_MODEL"
-    )
-    huggingface_classifier_model: str = Field(
-        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CLASSIFIER_MODEL"
-    )
-    huggingface_code_model: str = Field(
-        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CODE_MODEL"
-    )
-    huggingface_da_model: Optional[str] = Field(
-        default=None, env="HUGGINGFACE_DA_MODEL"
-    )
+    huggingface_chat_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    huggingface_multimodal_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    huggingface_synthesis_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    huggingface_classifier_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    huggingface_code_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    huggingface_da_model: Optional[str] = Field(default=None)
 
     # OpenRouter models
-    openrouter_chat_model: str = Field(
-        default="openrouter-default", env="OPENROUTER_CHAT_MODEL"
-    )
-    openrouter_multimodal_model: str = Field(
-        default="openrouter-default", env="OPENROUTER_MULTIMODAL_MODEL"
-    )
-    openrouter_synthesis_model: str = Field(
-        default="openrouter-default", env="OPENROUTER_SYNTHESIS_MODEL"
-    )
-    openrouter_classifier_model: str = Field(
-        default="openrouter-default", env="OPENROUTER_CLASSIFIER_MODEL"
-    )
-    openrouter_code_model: str = Field(
-        default="openrouter-default", env="OPENROUTER_CODE_MODEL"
-    )
-    openrouter_da_model: Optional[str] = Field(default=None, env="OPENROUTER_DA_MODEL")
+    openrouter_chat_model: str = Field(default="openrouter-default")
+    openrouter_multimodal_model: str = Field(default="openrouter-default")
+    openrouter_synthesis_model: str = Field(default="openrouter-default")
+    openrouter_classifier_model: str = Field(default="openrouter-default")
+    openrouter_code_model: str = Field(default="openrouter-default")
+    openrouter_da_model: Optional[str] = Field(default=None)
 
     # Groq models
-    groq_chat_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CHAT_MODEL"
-    )
+    groq_chat_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct")
     groq_multimodal_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_MULTIMODAL_MODEL"
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct"
     )
     groq_synthesis_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_SYNTHESIS_MODEL"
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct"
     )
     groq_classifier_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CLASSIFIER_MODEL"
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct"
     )
-    groq_code_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CODE_MODEL"
-    )
-    groq_da_model: Optional[str] = Field(default=None, env="GROQ_DA_MODEL")
+    groq_code_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct")
+    groq_da_model: Optional[str] = Field(default=None)
 
     # Model configuration
-    openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
-    anthropic_model: str = Field(
-        default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL"
-    )
+    openai_model: str = Field(default="gpt-4o")
+    anthropic_model: str = Field(default="claude-3-sonnet-20240229")
     fireworks_model: str = Field(
         default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-        env="FIREWORKS_MODEL",
     )
-    cohere_model: str = Field(default="command-r-plus", env="COHERE_MODEL")
-    gemini_model: str = Field(default="gemini-1.5-pro", env="GEMINI_MODEL")
-    huggingface_model: str = Field(
-        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MODEL"
-    )
-    openrouter_model: str = Field(default="openrouter-default", env="OPENROUTER_MODEL")
+    cohere_model: str = Field(default="command-r-plus")
+    gemini_model: str = Field(default="gemini-1.5-pro")
+    huggingface_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    openrouter_model: str = Field(default="openrouter-default")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, alias="LOCAL_LLM_URL")
@@ -345,29 +265,31 @@ class LLMSettings(BaseSettings):
 
     # Base URLs for each provider
     openai_base_url: str = Field(
-        default="https://api.openai.com/v1", env="OPENAI_API_BASE"
+        default="https://api.openai.com/v1", validation_alias="OPENAI_API_BASE"
     )
     anthropic_base_url: str = Field(
-        default="https://api.anthropic.com/v1", env="ANTHROPIC_API_BASE"
+        default="https://api.anthropic.com/v1", validation_alias="ANTHROPIC_API_BASE"
     )
     fireworks_base_url: str = Field(
-        default="https://api.fireworks.ai/inference/v1", env="FIREWORKS_API_BASE"
+        default="https://api.fireworks.ai/inference/v1",
+        validation_alias="FIREWORKS_API_BASE",
     )
     cohere_base_url: str = Field(
-        default="https://api.cohere.ai/v1", env="COHERE_API_BASE"
+        default="https://api.cohere.ai/v1", validation_alias="COHERE_API_BASE"
     )
     gemini_base_url: str = Field(
         default="https://generativelanguage.googleapis.com/v1beta",
-        env="GEMINI_API_BASE",
+        validation_alias="GEMINI_API_BASE",
     )
     huggingface_base_url: str = Field(
-        default="https://api-inference.huggingface.co/models", env="HUGGINGFACE_API_URL"
+        default="https://api-inference.huggingface.co/models",
+        validation_alias="HUGGINGFACE_API_URL",
     )
     openrouter_base_url: str = Field(
-        default="https://openrouter.ai/api/v1", env="OPENROUTER_API_BASE"
+        default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_API_BASE"
     )
     groq_base_url: str = Field(
-        default="https://api.groq.com/openai/v1", env="GROQ_API_BASE"
+        default="https://api.groq.com/openai/v1", validation_alias="GROQ_API_BASE"
     )
 
     # Request configuration
@@ -378,7 +300,6 @@ class LLMSettings(BaseSettings):
     # Provider behavior
     strict_provider_mode: bool = Field(
         default=True,  # Changed to True for predictability and transparency
-        env="STRICT_PROVIDER_MODE",
         description="When enabled, only use the primary provider with no fallbacks. "
         "Default: True (single LLM for consistency). Set to false for automatic fallback to other providers.",
     )
@@ -390,7 +311,7 @@ class LLMSettings(BaseSettings):
     # Phase/Tool response limits (separate from provider limits)
     phase_response_max_tokens: int = Field(
         default=2000,
-        env="LLM_PHASE_RESPONSE_MAX_TOKENS",
+        validation_alias="LLM_PHASE_RESPONSE_MAX_TOKENS",
         ge=500,
         le=4096,
         description="Maximum tokens for phase handler and tool responses (OODA structure needs 400-1500 tokens)",
@@ -684,25 +605,22 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     database_url: str = Field(
         default="sqlite+aiosqlite:///./data/faultmaven.db",
-        env="DATABASE_URL",
         description="Primary database URL (SQLite for dev, PostgreSQL for prod)",
     )
-    database_echo: bool = Field(
-        default=False, env="DATABASE_ECHO", description="Echo SQL statements to log"
-    )
-    database_pool_size: int = Field(default=5, env="DATABASE_POOL_SIZE")
-    database_max_overflow: int = Field(default=10, env="DATABASE_MAX_OVERFLOW")
-    database_pool_timeout: int = Field(default=30, env="DATABASE_POOL_TIMEOUT")
-    database_pool_recycle: int = Field(default=1800, env="DATABASE_POOL_RECYCLE")
+    database_echo: bool = Field(default=False, description="Echo SQL statements to log")
+    database_pool_size: int = Field(default=5)
+    database_max_overflow: int = Field(default=10)
+    database_pool_timeout: int = Field(default=30)
+    database_pool_recycle: int = Field(default=1800)
 
     # ============================================
     # Redis Configuration (K8s ClusterIP internal service)
     # ============================================
-    redis_host: str = Field(default="faultmaven-redis-master", env="REDIS_HOST")
-    redis_port: int = Field(default=6379, env="REDIS_PORT")
-    redis_db: int = Field(default=0, env="REDIS_DB")
-    redis_password: Optional[SecretStr] = Field(default=None, env="REDIS_PASSWORD")
-    redis_url: Optional[str] = Field(default=None, env="REDIS_URL")
+    redis_host: str = Field(default="faultmaven-redis-master")
+    redis_port: int = Field(default=6379)
+    redis_db: int = Field(default=0)
+    redis_password: Optional[SecretStr] = Field(default=None)
+    redis_url: Optional[str] = Field(default=None)
 
     model_config = {
         "env_file": ".env",
@@ -714,48 +632,38 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     # ChromaDB Configuration (K8s Ingress for HTTP)
     # ============================================
-    chromadb_host: str = Field(default="chromadb.faultmaven.local", env="CHROMADB_HOST")
-    chromadb_port: int = Field(default=30080, env="CHROMADB_PORT")
-    chromadb_url: str = Field(
-        default="http://chromadb.faultmaven.local:30080", env="CHROMADB_URL"
-    )
-    chromadb_api_key: Optional[SecretStr] = Field(default=None, env="CHROMADB_API_KEY")
+    chromadb_host: str = Field(default="chromadb.faultmaven.local")
+    chromadb_port: int = Field(default=30080)
+    chromadb_url: str = Field(default="http://chromadb.faultmaven.local:30080")
+    chromadb_api_key: Optional[SecretStr] = Field(default=None)
 
     # ChromaDB Extended Configuration (merged from EnhancedDatabaseSettings)
-    chromadb_auth_token: Optional[SecretStr] = Field(
-        default=None, env="CHROMADB_AUTH_TOKEN"
-    )
-    chromadb_collection: str = Field(default="faultmaven_kb", env="CHROMADB_COLLECTION")
-    chromadb_persist_dir: str = Field(
-        default="./data/chroma", env="CHROMADB_PERSIST_DIR"
-    )
+    chromadb_auth_token: Optional[SecretStr] = Field(default=None)
+    chromadb_collection: str = Field(default="faultmaven_kb")
+    chromadb_persist_dir: str = Field(default="./data/chroma")
 
     # Vector Database Settings
-    embedding_model: str = Field(default="BAAI/bge-m3", env="EMBEDDING_MODEL")
-    similarity_threshold: float = Field(default=0.7, env="SIMILARITY_THRESHOLD")
-    max_search_results: int = Field(default=10, env="MAX_SEARCH_RESULTS")
+    embedding_model: str = Field(default="BAAI/bge-m3")
+    similarity_threshold: float = Field(default=0.7)
+    max_search_results: int = Field(default=10)
 
     # ============================================
     # Pinecone Configuration (Optional Vector Backend)
     # ============================================
     pinecone_api_key: Optional[SecretStr] = Field(
         default=None,
-        env="PINECONE_API_KEY",
         description="Pinecone API key (required if VECTOR_BACKEND=pinecone)",
     )
     pinecone_index: str = Field(
         default="faultmaven",
-        env="PINECONE_INDEX",
         description="Pinecone index name",
     )
     pinecone_environment: str = Field(
         default="us-east-1",
-        env="PINECONE_ENVIRONMENT",
         description="Pinecone environment/region",
     )
     pinecone_dimension: int = Field(
         default=1536,
-        env="PINECONE_DIMENSION",
         description="Vector dimension for Pinecone index",
     )
 
@@ -764,24 +672,22 @@ class DatabaseSettings(BaseSettings):
     # ============================================
 
     # Storage adapter selection
-    user_storage_type: str = Field(default="inmemory", env="USER_STORAGE_TYPE")
-    case_storage_type: str = Field(default="inmemory", env="CASE_STORAGE_TYPE")
+    user_storage_type: str = Field(default="inmemory")
+    case_storage_type: str = Field(default="inmemory")
 
     # PostgreSQL - Auth Database (for user data)
-    auth_db_host: str = Field(default="postgres.faultmaven.local", env="AUTH_DB_HOST")
-    auth_db_port: int = Field(default=30432, env="AUTH_DB_PORT")
-    auth_db_name: str = Field(default="auth_db", env="AUTH_DB_NAME")
-    auth_db_user: str = Field(default="auth_service", env="AUTH_DB_USER")
-    auth_db_password: Optional[SecretStr] = Field(default=None, env="AUTH_DB_PASSWORD")
+    auth_db_host: str = Field(default="postgres.faultmaven.local")
+    auth_db_port: int = Field(default=30432)
+    auth_db_name: str = Field(default="auth_db")
+    auth_db_user: str = Field(default="auth_service")
+    auth_db_password: Optional[SecretStr] = Field(default=None)
 
     # PostgreSQL - Cases Database (for case data)
-    cases_db_host: str = Field(default="postgres.faultmaven.local", env="CASES_DB_HOST")
-    cases_db_port: int = Field(default=30432, env="CASES_DB_PORT")
-    cases_db_name: str = Field(default="cases_db", env="CASES_DB_NAME")
-    cases_db_user: str = Field(default="case_service", env="CASES_DB_USER")
-    cases_db_password: Optional[SecretStr] = Field(
-        default=None, env="CASES_DB_PASSWORD"
-    )
+    cases_db_host: str = Field(default="postgres.faultmaven.local")
+    cases_db_port: int = Field(default=30432)
+    cases_db_name: str = Field(default="cases_db")
+    cases_db_user: str = Field(default="case_service")
+    cases_db_password: Optional[SecretStr] = Field(default=None)
 
     @property
     def auth_db_url(self) -> str:
@@ -802,12 +708,12 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     # Session Storage Adapter Configuration
     # ============================================
-    session_storage_type: str = Field(default="inmemory", env="SESSION_STORAGE_TYPE")
+    session_storage_type: str = Field(default="inmemory")
 
     # ============================================
     # Vector Storage Adapter Configuration
     # ============================================
-    vector_storage_type: str = Field(default="inmemory", env="VECTOR_STORAGE_TYPE")
+    vector_storage_type: str = Field(default="inmemory")
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -816,26 +722,26 @@ class SessionSettings(BaseSettings):
     """Session management configuration"""
 
     timeout_minutes: int = Field(
-        default=30, env="SESSION_TIMEOUT_MINUTES", ge=1, le=1440
+        default=30, validation_alias="SESSION_TIMEOUT_MINUTES", ge=1, le=1440
     )
     cleanup_interval_minutes: int = Field(
-        default=15, env="SESSION_CLEANUP_INTERVAL_MINUTES"
+        default=15, validation_alias="SESSION_CLEANUP_INTERVAL_MINUTES"
     )
-    max_memory_mb: int = Field(default=100, env="SESSION_MAX_MEMORY_MB")
+    max_memory_mb: int = Field(default=100, validation_alias="SESSION_MAX_MEMORY_MB")
     heartbeat_interval_seconds: int = Field(
-        default=30, env="SESSION_HEARTBEAT_INTERVAL_SECONDS"
+        default=30, validation_alias="SESSION_HEARTBEAT_INTERVAL_SECONDS"
     )
-    max_sessions_per_user: int = Field(default=10, env="MAX_SESSIONS_PER_USER")
+    max_sessions_per_user: int = Field(default=10)
 
     # Session timeout bounds for validation (used by API routes)
     min_timeout_minutes: int = Field(
-        default=60, env="SESSION_MIN_TIMEOUT_MINUTES", ge=1
+        default=60, validation_alias="SESSION_MIN_TIMEOUT_MINUTES", ge=1
     )
     max_timeout_minutes: int = Field(
-        default=480, env="SESSION_MAX_TIMEOUT_MINUTES", le=1440
+        default=480, validation_alias="SESSION_MAX_TIMEOUT_MINUTES", le=1440
     )
     default_timeout_minutes: int = Field(
-        default=180, env="SESSION_DEFAULT_TIMEOUT_MINUTES"
+        default=180, validation_alias="SESSION_DEFAULT_TIMEOUT_MINUTES"
     )
 
     @field_validator("heartbeat_interval_seconds")
@@ -874,7 +780,6 @@ class CaseSettings(BaseSettings):
     # Title generation settings
     title_generation_use_fallback: bool = Field(
         default=True,
-        env="TITLE_GENERATION_USE_FALLBACK",
         description="Use fallback title when LLM-generated title fails validation",
     )
 
@@ -886,45 +791,34 @@ class SecuritySettings(BaseSettings):
 
     # JWT configuration (RS256 for production-ready asymmetric encryption)
     # For development/testing, HS256 with jwt_secret_key is also supported
-    jwt_algorithm: str = Field(default="RS256", env="JWT_ALGORITHM")
-    jwt_private_key_path: Optional[str] = Field(
-        default=None, env="JWT_PRIVATE_KEY_PATH"
-    )
-    jwt_public_key_path: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY_PATH")
-    jwt_private_key: Optional[SecretStr] = Field(default=None, env="JWT_PRIVATE_KEY")
-    jwt_public_key: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY")
+    jwt_algorithm: str = Field(default="RS256")
+    jwt_private_key_path: Optional[str] = Field(default=None)
+    jwt_public_key_path: Optional[str] = Field(default=None)
+    jwt_private_key: Optional[SecretStr] = Field(default=None)
+    jwt_public_key: Optional[str] = Field(default=None)
     # HS256 fallback secret key (for development/testing when RSA keys are not configured)
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
-        env="JWT_SECRET_KEY",
         description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured.",
     )
-    jwt_access_token_expire_minutes: int = Field(
-        default=60, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES"
-    )
-    jwt_refresh_token_expire_days: int = Field(
-        default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS"
-    )
+    jwt_access_token_expire_minutes: int = Field(default=60)
+    jwt_refresh_token_expire_days: int = Field(default=7)
 
     # Refresh token rotation (security best practice)
     jwt_rotate_refresh_tokens: bool = Field(
         default=True,
-        env="JWT_ROTATE_REFRESH_TOKENS",
         description="Rotate refresh tokens on use (one-time use tokens)",
     )
-    jwt_issuer: str = Field(default="faultmaven-api", env="JWT_ISSUER")
-    jwt_audience: str = Field(default="faultmaven-app", env="JWT_AUDIENCE")
+    jwt_issuer: str = Field(default="faultmaven-api")
+    jwt_audience: str = Field(default="faultmaven-app")
 
     # Token revocation (Redis)
-    token_revocation_prefix: str = Field(
-        default="revoked:token:", env="TOKEN_REVOCATION_PREFIX"
-    )
+    token_revocation_prefix: str = Field(default="revoked:token:")
 
     # CORS configuration
-    cors_allow_credentials: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
+    cors_allow_credentials: bool = Field(default=True)
     cors_allow_origins: List[str] = Field(
         default=["http://localhost:3333", "chrome-extension://*", "moz-extension://*"],
-        env="CORS_ALLOW_ORIGINS",
     )
     cors_expose_headers: List[str] = Field(
         default=[
@@ -937,15 +831,12 @@ class SecuritySettings(BaseSettings):
             "Retry-After",
             "X-RateLimit-Remaining",
         ],
-        env="CORS_EXPOSE_HEADERS",
     )
 
     # Rate limiting
-    rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
-    rate_limit_requests_per_minute: int = Field(
-        default=60, env="RATE_LIMIT_REQUESTS_PER_MINUTE"
-    )
-    rate_limit_burst_size: int = Field(default=10, env="RATE_LIMIT_BURST_SIZE")
+    rate_limit_enabled: bool = Field(default=True)
+    rate_limit_requests_per_minute: int = Field(default=60)
+    rate_limit_burst_size: int = Field(default=10)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -991,28 +882,24 @@ class AuthSettings(BaseSettings):
     # Authentication mode selection
     auth_mode: AuthMode = Field(
         default=AuthMode.LOCAL,
-        env="AUTH_MODE",
         description="Authentication mode: 'local' (self-hosted) or 'oauth' (cloud)",
     )
 
     # OAuth Configuration (only used when auth_mode=oauth)
     oauth_enabled: bool = Field(
         default=False,
-        env="OAUTH_ENABLED",
         description="Enable OAuth 2.0 + PKCE authentication (production mode)",
     )
 
     # Dashboard URL (OAuth IdP)
     dashboard_url: str = Field(
         default="https://app.faultmaven.ai",
-        env="DASHBOARD_URL",
         description="Dashboard URL (acts as IdP for OAuth flow)",
     )
 
     # OAuth authorization code settings
     oauth_code_expiry_seconds: int = Field(
         default=600,
-        env="OAUTH_CODE_EXPIRY_SECONDS",
         ge=60,
         le=1800,
         description="Authorization code expiry (10 minutes default, PKCE-protected)",
@@ -1025,20 +912,17 @@ class AuthSettings(BaseSettings):
     # Database persistence is optional for compliance/audit (not for code retrieval)
     oauth_use_cache: bool = Field(
         default=True,
-        env="OAUTH_USE_CACHE",
         description="Use cache layer for OAuth codes (in-memory local, Redis cloud)",
     )
 
     oauth_persist_codes_to_db: bool = Field(
         default=False,
-        env="OAUTH_PERSIST_CODES_TO_DB",
         description="Persist OAuth codes to database for audit trail (optional)",
     )
 
     # Allowed OAuth clients (extension IDs)
     oauth_allowed_clients: List[str] = Field(
         default=["faultmaven-copilot"],
-        env="OAUTH_ALLOWED_CLIENTS",
         description="Allowed OAuth client IDs",
     )
 
@@ -1048,28 +932,24 @@ class AuthSettings(BaseSettings):
             r"^chrome-extension://[a-z]{32}/callback\.html$",
             r"^moz-extension://[a-f0-9-]{36}/callback\.html$",
         ],
-        env="OAUTH_REDIRECT_URI_PATTERNS",
         description="Allowed redirect URI patterns (regex) for OAuth",
     )
 
     # OAuth consent settings
     oauth_require_consent: bool = Field(
         default=True,
-        env="OAUTH_REQUIRE_CONSENT",
         description="Require user consent screen (production). Set false for auto-approval (dev/test only)",
     )
 
     # OAuth security settings
     oauth_require_https_redirect: bool = Field(
         default=True,
-        env="OAUTH_REQUIRE_HTTPS_REDIRECT",
         description="Require HTTPS for redirect URIs (production security). Set false for local dev",
     )
 
     # Local mode settings (only used when auth_mode=local)
     local_token_expiry_hours: int = Field(
         default=24,
-        env="LOCAL_TOKEN_EXPIRY_HOURS",
         ge=1,
         le=168,
         description="Local mode token expiry (hours)",
@@ -1078,12 +958,12 @@ class AuthSettings(BaseSettings):
     # JWT token expiry settings (common for both modes per iam-design.md)
     jwt_access_token_expire_minutes: int = Field(
         default=60,
-        env="JWT_ACCESS_TOKEN_EXPIRY",
+        validation_alias="JWT_ACCESS_TOKEN_EXPIRY",
         description="Access token expiry (minutes)",
     )
     jwt_refresh_token_expire_days: int = Field(
         default=7,
-        env="JWT_REFRESH_TOKEN_EXPIRY",
+        validation_alias="JWT_REFRESH_TOKEN_EXPIRY",
         description="Refresh token expiry (days). Default 7 days = 10080 minutes",
     )
 
@@ -1120,14 +1000,10 @@ class ProtectionSettings(BaseSettings):
 
     # Basic Protection Control
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio)
-    protection_enabled: bool = Field(default=False, env="PROTECTION_ENABLED")
-    fail_open: bool = Field(default=True, env="PROTECTION_FAIL_OPEN")
-    basic_protection_enabled: bool = Field(
-        default=False, env="BASIC_PROTECTION_ENABLED"
-    )
-    intelligent_protection_enabled: bool = Field(
-        default=False, env="INTELLIGENT_PROTECTION_ENABLED"
-    )
+    protection_enabled: bool = Field(default=False)
+    fail_open: bool = Field(default=True, validation_alias="PROTECTION_FAIL_OPEN")
+    basic_protection_enabled: bool = Field(default=False)
+    intelligent_protection_enabled: bool = Field(default=False)
 
     # PII Sanitization Control
     # When True: Always sanitize PII before sending to LLM (safer, recommended for external LLMs)
@@ -1135,34 +1011,26 @@ class ProtectionSettings(BaseSettings):
     # Note: This affects data sent to LLM providers. Disable only if using LOCAL provider
     #       or if you trust your external LLM provider with sensitive data.
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio libraries)
-    sanitize_pii: bool = Field(default=False, validation_alias="SANITIZE_PII")
+    sanitize_pii: bool = Field(default=False)
 
     # Auto-detect: Only sanitize when using external LLM providers
     # When True: Automatically disable sanitization for LOCAL provider, enable for others
     # When False: Use sanitize_pii setting regardless of provider
     # Default True: Safe default for external providers. Set to False in .env
     # for security investigations where IPs/hostnames must not be redacted.
-    auto_sanitize_based_on_provider: bool = Field(
-        default=True, validation_alias="AUTO_SANITIZE_BASED_ON_PROVIDER"
-    )
+    auto_sanitize_based_on_provider: bool = Field(default=True)
 
     # Presidio Configuration (K8s Ingress-based to avoid port conflicts)
     presidio_analyzer_url: str = Field(
         default="http://presidio-analyzer.faultmaven.local:30080",
-        validation_alias="PRESIDIO_ANALYZER_URL",
     )
     presidio_anonymizer_url: str = Field(
         default="http://presidio-anonymizer.faultmaven.local:30080",
-        validation_alias="PRESIDIO_ANONYMIZER_URL",
     )
 
     # PII Protection Settings
-    min_score_threshold: float = Field(
-        default=0.8, validation_alias="MIN_SCORE_THRESHOLD"
-    )
-    supported_languages: List[str] = Field(
-        default=["en"], validation_alias="SUPPORTED_LANGUAGES"
-    )
+    min_score_threshold: float = Field(default=0.8)
+    supported_languages: List[str] = Field(default=["en"])
     entities_to_protect: List[str] = Field(
         default=[
             "CREDIT_CARD",
@@ -1183,57 +1051,32 @@ class ProtectionSettings(BaseSettings):
             "US_PASSPORT",
             "US_SSN",
         ],
-        validation_alias="ENTITIES_TO_PROTECT",
     )
 
     # Behavioral Analysis (merged from EnhancedProtectionSettings)
-    behavioral_analysis_enabled: bool = Field(
-        default=True, validation_alias="BEHAVIORAL_ANALYSIS_ENABLED"
-    )
-    behavior_analysis_window: int = Field(
-        default=3600, validation_alias="BEHAVIOR_ANALYSIS_WINDOW"
-    )
-    behavior_pattern_threshold: float = Field(
-        default=0.8, validation_alias="BEHAVIOR_PATTERN_THRESHOLD"
-    )
+    behavioral_analysis_enabled: bool = Field(default=True)
+    behavior_analysis_window: int = Field(default=3600)
+    behavior_pattern_threshold: float = Field(default=0.8)
 
     # ML Anomaly Detection (merged from EnhancedProtectionSettings)
-    ml_anomaly_detection_enabled: bool = Field(
-        default=True, validation_alias="ML_ANOMALY_DETECTION_ENABLED"
-    )
-    ml_model_path: str = Field(
-        default="/tmp/faultmaven_ml", validation_alias="ML_MODEL_PATH"
-    )
-    ml_training_enabled: bool = Field(
-        default=True, validation_alias="ML_TRAINING_ENABLED"
-    )
-    ml_online_learning_enabled: bool = Field(
-        default=True, validation_alias="ML_ONLINE_LEARNING_ENABLED"
-    )
+    ml_anomaly_detection_enabled: bool = Field(default=True)
+    ml_model_path: str = Field(default="/tmp/faultmaven_ml")
+    ml_training_enabled: bool = Field(default=True)
+    ml_online_learning_enabled: bool = Field(default=True)
 
     # Circuit Breaker (merged from EnhancedProtectionSettings)
-    smart_circuit_breakers_enabled: bool = Field(
-        default=True, env="SMART_CIRCUIT_BREAKERS_ENABLED"
-    )
-    circuit_failure_threshold: int = Field(default=5, env="CIRCUIT_FAILURE_THRESHOLD")
-    circuit_timeout_seconds: int = Field(default=60, env="CIRCUIT_TIMEOUT_SECONDS")
+    smart_circuit_breakers_enabled: bool = Field(default=True)
+    circuit_failure_threshold: int = Field(default=5)
+    circuit_timeout_seconds: int = Field(default=60)
 
     # Reputation System (merged from EnhancedProtectionSettings)
-    reputation_system_enabled: bool = Field(
-        default=True, env="REPUTATION_SYSTEM_ENABLED"
-    )
-    reputation_decay_rate: float = Field(default=0.05, env="REPUTATION_DECAY_RATE")
-    reputation_recovery_threshold: float = Field(
-        default=0.1, env="REPUTATION_RECOVERY_THRESHOLD"
-    )
+    reputation_system_enabled: bool = Field(default=True)
+    reputation_decay_rate: float = Field(default=0.05)
+    reputation_recovery_threshold: float = Field(default=0.1)
 
     # Monitoring Intervals (merged from EnhancedProtectionSettings)
-    protection_monitoring_interval: int = Field(
-        default=300, env="PROTECTION_MONITORING_INTERVAL"
-    )
-    protection_cleanup_interval: int = Field(
-        default=3600, env="PROTECTION_CLEANUP_INTERVAL"
-    )
+    protection_monitoring_interval: int = Field(default=300)
+    protection_cleanup_interval: int = Field(default=3600)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1242,56 +1085,48 @@ class ObservabilitySettings(BaseSettings):
     """Unified observability and monitoring configuration"""
 
     # Core Opik configuration
-    opik_project_name: str = Field(default="faultmaven", env="OPIK_PROJECT_NAME")
-    opik_url_override: Optional[str] = Field(default=None, env="OPIK_URL_OVERRIDE")
-    opik_use_local: bool = Field(default=False, env="OPIK_USE_LOCAL")
-    opik_local_url: str = Field(default="http://localhost:3001", env="OPIK_LOCAL_URL")
-    opik_local_host: str = Field(
-        default="opik-api.faultmaven.local", env="OPIK_LOCAL_HOST"
-    )
+    opik_project_name: str = Field(default="faultmaven")
+    opik_url_override: Optional[str] = Field(default=None)
+    opik_use_local: bool = Field(default=False)
+    opik_local_url: str = Field(default="http://localhost:3001")
+    opik_local_host: str = Field(default="opik-api.faultmaven.local")
 
     # Opik API and tracking controls (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    opik_api_key: Optional[SecretStr] = Field(default=None, env="OPIK_API_KEY")
-    opik_enabled: bool = Field(default=False, env="OPIK_ENABLED")
-    opik_track_disable: bool = Field(default=True, env="OPIK_TRACK_DISABLE")
-    opik_track_users: str = Field(default="", env="OPIK_TRACK_USERS")
-    opik_track_sessions: str = Field(default="", env="OPIK_TRACK_SESSIONS")
-    opik_track_operations: str = Field(default="", env="OPIK_TRACK_OPERATIONS")
+    opik_api_key: Optional[SecretStr] = Field(default=None)
+    opik_enabled: bool = Field(default=False)
+    opik_track_disable: bool = Field(default=True)
+    opik_track_users: str = Field(default="")
+    opik_track_sessions: str = Field(default="")
+    opik_track_operations: str = Field(default="")
 
     # APM Integration (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    prometheus_enabled: bool = Field(default=False, env="PROMETHEUS_ENABLED")
-    prometheus_pushgateway_url: str = Field(
-        default="http://localhost:9091", env="PROMETHEUS_PUSHGATEWAY_URL"
-    )
-    generic_apm_enabled: bool = Field(default=False, env="GENERIC_APM_ENABLED")
-    generic_apm_url: Optional[str] = Field(default=None, env="GENERIC_APM_URL")
-    generic_apm_api_key: Optional[SecretStr] = Field(
-        default=None, env="GENERIC_APM_API_KEY"
-    )
+    prometheus_enabled: bool = Field(default=False)
+    prometheus_pushgateway_url: str = Field(default="http://localhost:9091")
+    generic_apm_enabled: bool = Field(default=False)
+    generic_apm_url: Optional[str] = Field(default=None)
+    generic_apm_api_key: Optional[SecretStr] = Field(default=None)
 
     # Workspace integration (merged from WorkspaceSettings)
-    comet_workspace: Optional[str] = Field(default=None, env="COMET_WORKSPACE")
-    instance_id: str = Field(default="localhost:8090", env="INSTANCE_ID")
+    comet_workspace: Optional[str] = Field(default=None)
+    instance_id: str = Field(default="localhost:8090")
 
     # Performance monitoring (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Basic monitoring only
-    enable_performance_monitoring: bool = Field(
-        default=False, env="ENABLE_PERFORMANCE_MONITORING"
-    )
-    enable_detailed_tracing: bool = Field(default=False, env="ENABLE_DETAILED_TRACING")
+    enable_performance_monitoring: bool = Field(default=False)
+    enable_detailed_tracing: bool = Field(default=False)
 
     # Basic tracing configuration
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    tracing_enabled: bool = Field(default=False, env="TRACING_ENABLED")
-    trace_llm_calls: bool = Field(default=False, env="TRACE_LLM_CALLS")
-    trace_agent_workflows: bool = Field(default=False, env="TRACE_AGENT_WORKFLOWS")
+    tracing_enabled: bool = Field(default=False)
+    trace_llm_calls: bool = Field(default=False)
+    trace_agent_workflows: bool = Field(default=False)
 
     # Metrics
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    metrics_enabled: bool = Field(default=False, env="METRICS_ENABLED")
-    metrics_port: int = Field(default=9090, env="METRICS_PORT")
+    metrics_enabled: bool = Field(default=False)
+    metrics_port: int = Field(default=9090)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1299,35 +1134,34 @@ class ObservabilitySettings(BaseSettings):
 class LoggingSettings(BaseSettings):
     """Logging configuration"""
 
-    level: LogLevel = Field(default=LogLevel.INFO, env="LOG_LEVEL")
+    level: LogLevel = Field(default=LogLevel.INFO, validation_alias="LOG_LEVEL")
     format: str = Field(
-        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s", env="LOG_FORMAT"
+        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        validation_alias="LOG_FORMAT",
     )
 
     # Structlog format type: 'json' or 'console'
-    log_output_format: str = Field(default="json", env="LOG_OUTPUT_FORMAT")
+    log_output_format: str = Field(default="json")
 
     # Log deduplication (prevents repeated log messages)
-    log_dedupe: bool = Field(default=True, env="LOG_DEDUPE")
+    log_dedupe: bool = Field(default=True)
 
     # Buffered logging configuration
-    log_buffer_size: int = Field(default=100, env="LOG_BUFFER_SIZE")
-    log_flush_interval: float = Field(default=5.0, env="LOG_FLUSH_INTERVAL")
+    log_buffer_size: int = Field(default=100)
+    log_flush_interval: float = Field(default=5.0)
 
     # Human-readable output (console renderer instead of JSON)
-    log_human_readable: bool = Field(default=False, env="LOG_HUMAN_READABLE")
+    log_human_readable: bool = Field(default=False)
 
     # File logging
-    log_to_file: bool = Field(default=False, env="LOG_TO_FILE")
-    log_file_path: str = Field(default="logs/faultmaven.log", env="LOG_FILE_PATH")
-    log_file_max_bytes: int = Field(
-        default=10 * 1024 * 1024, env="LOG_FILE_MAX_BYTES"
-    )  # 10MB
-    log_file_backup_count: int = Field(default=5, env="LOG_FILE_BACKUP_COUNT")
+    log_to_file: bool = Field(default=False)
+    log_file_path: str = Field(default="logs/faultmaven.log")
+    log_file_max_bytes: int = Field(default=10 * 1024 * 1024)  # 10MB
+    log_file_backup_count: int = Field(default=5)
 
     # Structured logging
-    structured_logging: bool = Field(default=True, env="STRUCTURED_LOGGING")
-    include_trace_id: bool = Field(default=True, env="INCLUDE_TRACE_ID")
+    structured_logging: bool = Field(default=True)
+    include_trace_id: bool = Field(default=True)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1337,7 +1171,6 @@ class UploadSettings(BaseSettings):
 
     max_upload_size_mb: int = Field(
         default=10,
-        env="MAX_UPLOAD_SIZE_MB",
         description="Maximum file size for uploads (also used as document processing limit)",
     )
     allowed_mime_types: List[str] = Field(
@@ -1349,12 +1182,9 @@ class UploadSettings(BaseSettings):
             "text/xml",
             "application/yaml",
         ],
-        env="ALLOWED_MIME_TYPES",
     )
-    upload_timeout_seconds: int = Field(
-        default=300, env="UPLOAD_TIMEOUT_SECONDS"
-    )  # 5 minutes
-    temp_storage_path: str = Field(default="/tmp/faultmaven", env="TEMP_STORAGE_PATH")
+    upload_timeout_seconds: int = Field(default=300)  # 5 minutes
+    temp_storage_path: str = Field(default="/tmp/faultmaven")
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1362,15 +1192,15 @@ class UploadSettings(BaseSettings):
 class KnowledgeSettings(BaseSettings):
     """Knowledge base and search configuration"""
 
-    enable_web_search: bool = Field(default=True, env="ENABLE_WEB_SEARCH")
-    serp_api_key: Optional[SecretStr] = Field(default=None, env="SERP_API_KEY")
-    tavily_api_key: Optional[SecretStr] = Field(default=None, env="TAVILY_API_KEY")
+    enable_web_search: bool = Field(default=True)
+    serp_api_key: Optional[SecretStr] = Field(default=None)
+    tavily_api_key: Optional[SecretStr] = Field(default=None)
 
     # Search limits
     max_search_results: int = Field(
         default=5, validation_alias="KNOWLEDGE_MAX_SEARCH_RESULTS"
     )
-    search_timeout_seconds: int = Field(default=30, env="SEARCH_TIMEOUT_SECONDS")
+    search_timeout_seconds: int = Field(default=30)
 
     # Document processing (size limit now in UploadSettings.max_upload_size_mb)
     chunk_size: int = Field(default=1000, validation_alias="DOCUMENT_CHUNK_SIZE")
@@ -1385,73 +1215,62 @@ class EmbeddingSettings(BaseSettings):
     # OpenAI Embeddings
     embedding_model: str = Field(
         default="text-embedding-3-small",
-        env="EMBEDDING_MODEL",
         description="OpenAI embedding model to use",
     )
     embedding_dimensions: int = Field(
         default=1536,
-        env="EMBEDDING_DIMENSIONS",
         description="Embedding vector dimensions (1536 for text-embedding-3-small)",
     )
 
     # Embedding API configuration
     embedding_max_retries: int = Field(
         default=3,
-        env="EMBEDDING_MAX_RETRIES",
         ge=1,
         le=10,
         description="Maximum retry attempts for embedding API calls",
     )
     embedding_retry_delay: float = Field(
         default=1.0,
-        env="EMBEDDING_RETRY_DELAY",
         ge=0.1,
         le=30.0,
         description="Base delay between retries (exponential backoff)",
     )
     embedding_timeout: int = Field(
         default=60,
-        env="EMBEDDING_TIMEOUT",
         ge=10,
         le=300,
         description="Timeout for embedding API calls in seconds",
     )
     embedding_batch_size: int = Field(
         default=100,
-        env="EMBEDDING_BATCH_SIZE",
         ge=1,
         le=2048,
         description="Number of texts per batch for embedding generation",
     )
     embedding_max_text_length: int = Field(
         default=8191,
-        env="EMBEDDING_MAX_TEXT_LENGTH",
         description="Maximum text length for embedding (OpenAI limit)",
     )
 
     # ChromaDB Vector Store
     chroma_persist_directory: str = Field(
         default="./data/chroma",
-        env="CHROMA_PERSIST_DIRECTORY",
         description="Directory for ChromaDB persistence",
     )
     chroma_collection_name: str = Field(
         default="knowledge_items",
-        env="CHROMA_COLLECTION_NAME",
         description="ChromaDB collection name for knowledge items",
     )
 
     # Hybrid Search
     semantic_search_weight: float = Field(
         default=0.7,
-        env="SEMANTIC_SEARCH_WEIGHT",
         ge=0.0,
         le=1.0,
         description="Weight for semantic similarity in hybrid search",
     )
     text_search_weight: float = Field(
         default=0.3,
-        env="TEXT_SEARCH_WEIGHT",
         ge=0.0,
         le=1.0,
         description="Weight for text search in hybrid search",
@@ -1460,7 +1279,6 @@ class EmbeddingSettings(BaseSettings):
     # Indexing Job
     indexing_batch_size: int = Field(
         default=50,
-        env="INDEXING_BATCH_SIZE",
         ge=1,
         le=500,
         description="Batch size for background indexing job",
@@ -1482,14 +1300,12 @@ class EmbeddingSettings(BaseSettings):
     # ML Model Loading Strategy
     lazy_load_ml_models: bool = Field(
         default=True,
-        env="LAZY_LOAD_ML_MODELS",
         description="If True, ML models (BGE-M3, etc.) are loaded on first use. "
         "If False, models are pre-loaded at startup for warm starts. "
         "Lazy loading improves startup time but first request may be slower.",
     )
     preload_models: list = Field(
         default_factory=list,
-        env="PRELOAD_MODELS",
         description="List of model names to pre-load at startup even with lazy_load_ml_models=True. "
         "Example: ['BAAI/bge-m3'] to pre-load only BGE-M3.",
     )
@@ -1509,51 +1325,45 @@ class OODASettings(BaseSettings):
     # Investigation Strategy
     default_strategy: str = Field(
         default="active_incident",
-        env="DEFAULT_INVESTIGATION_STRATEGY",
+        validation_alias="DEFAULT_INVESTIGATION_STRATEGY",
         description="active_incident (fast, 70% confidence) or post_mortem (thorough, 85% confidence)",
     )
 
     default_intensity: str = Field(
         default="medium",
-        env="DEFAULT_OODA_INTENSITY",
+        validation_alias="DEFAULT_OODA_INTENSITY",
         description="OODA cycle intensity: light (1-2 iterations), medium (2-4), full (3-6)",
     )
 
     # Memory Management (4-Tier Hierarchical System)
     hot_memory_tokens: int = Field(
         default=500,
-        env="HOT_MEMORY_TOKENS",
         description="Hot tier: last 2 iterations, full fidelity",
     )
 
     warm_memory_tokens: int = Field(
         default=300,
-        env="WARM_MEMORY_TOKENS",
         description="Warm tier: iterations 3-5, LLM-summarized",
     )
 
     cold_memory_tokens: int = Field(
         default=100,
-        env="COLD_MEMORY_TOKENS",
         description="Cold tier: older iterations, key facts only",
     )
 
     persistent_memory_tokens: int = Field(
         default=100,
-        env="PERSISTENT_MEMORY_TOKENS",
         description="Persistent tier: always accessible insights",
     )
 
     # Phase Control
     enable_phase_skip: bool = Field(
         default=True,
-        env="ENABLE_PHASE_SKIP",
         description="Allow skipping phases in active incident strategy",
     )
 
     min_confidence_to_advance: float = Field(
         default=0.70,
-        env="MIN_CONFIDENCE_TO_ADVANCE",
         ge=0.0,
         le=1.0,
         description="Minimum confidence required to advance to next phase",
@@ -1561,7 +1371,6 @@ class OODASettings(BaseSettings):
 
     stall_detection_iterations: int = Field(
         default=3,
-        env="STALL_DETECTION_ITERATIONS",
         ge=2,
         description="Number of iterations without progress before marking as stalled",
     )
@@ -1569,13 +1378,11 @@ class OODASettings(BaseSettings):
     # Consultant Mode Settings
     problem_signal_threshold: str = Field(
         default="moderate",
-        env="PROBLEM_SIGNAL_THRESHOLD",
         description="Threshold to offer investigation: weak|moderate|strong",
     )
 
     max_consultant_turns: int = Field(
         default=5,
-        env="MAX_CONSULTANT_TURNS",
         ge=1,
         description="Max turns in Consultant mode before suggesting Lead Investigator",
     )
@@ -1583,12 +1390,11 @@ class OODASettings(BaseSettings):
     # Context Management (merged from ConversationThresholds)
     max_clarifications: int = Field(
         default=3,
-        env="MAX_CLARIFICATIONS",
         ge=0,
         description="Maximum clarifying-question turns before suggesting escalation/progress",
     )
-    max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS")
-    max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS")
+    max_conversation_turns: int = Field(default=20)
+    max_conversation_tokens: int = Field(default=4000)
 
     @field_validator("warm_memory_tokens")
     @classmethod
@@ -1651,49 +1457,27 @@ class OODASettings(BaseSettings):
 class FeatureSettings(BaseSettings):
     """Feature flags and toggles"""
 
-    use_di_container: bool = Field(default=True, env="USE_DI_CONTAINER")
-    use_refactored_services: bool = Field(default=True, env="USE_REFACTORED_SERVICES")
-    use_refactored_api: bool = Field(default=True, env="USE_REFACTORED_API")
+    use_di_container: bool = Field(default=True)
+    use_refactored_services: bool = Field(default=True)
+    use_refactored_api: bool = Field(default=True)
 
     # Token-Aware Context Management
-    enable_token_aware_context: bool = Field(
-        default=True, env="ENABLE_TOKEN_AWARE_CONTEXT"
-    )
-    enable_conversation_summarization: bool = Field(
-        default=True, env="ENABLE_CONVERSATION_SUMMARIZATION"
-    )
+    enable_token_aware_context: bool = Field(default=True)
+    enable_conversation_summarization: bool = Field(default=True)
     # Note: Token budgets and thresholds live under settings.ooda
 
     # DEPRECATED: Query Classification System (Replaced by OODA v3.2.0)
     # These settings are no longer used - OODA uses structured responses instead of classification
     # Will be removed in v4.0.0
-    llm_classification_mode: str = Field(
-        default="enhancement", env="LLM_CLASSIFICATION_MODE", deprecated=True
-    )
-    enable_multidimensional_confidence: bool = Field(
-        default=True, env="ENABLE_MULTIDIMENSIONAL_CONFIDENCE", deprecated=True
-    )
-    pattern_weighted_scoring: bool = Field(
-        default=True, env="PATTERN_WEIGHTED_SCORING", deprecated=True
-    )
-    pattern_exclusion_rules: bool = Field(
-        default=True, env="PATTERN_EXCLUSION_RULES", deprecated=True
-    )
-    enable_structure_analysis: bool = Field(
-        default=True, env="ENABLE_STRUCTURE_ANALYSIS", deprecated=True
-    )
-    enable_linguistic_analysis: bool = Field(
-        default=True, env="ENABLE_LINGUISTIC_ANALYSIS", deprecated=True
-    )
-    enable_entity_analysis: bool = Field(
-        default=True, env="ENABLE_ENTITY_ANALYSIS", deprecated=True
-    )
-    enable_context_analysis: bool = Field(
-        default=True, env="ENABLE_CONTEXT_ANALYSIS", deprecated=True
-    )
-    enable_disambiguation_check: bool = Field(
-        default=True, env="ENABLE_DISAMBIGUATION_CHECK", deprecated=True
-    )
+    llm_classification_mode: str = Field(default="enhancement", deprecated=True)
+    enable_multidimensional_confidence: bool = Field(default=True, deprecated=True)
+    pattern_weighted_scoring: bool = Field(default=True, deprecated=True)
+    pattern_exclusion_rules: bool = Field(default=True, deprecated=True)
+    enable_structure_analysis: bool = Field(default=True, deprecated=True)
+    enable_linguistic_analysis: bool = Field(default=True, deprecated=True)
+    enable_entity_analysis: bool = Field(default=True, deprecated=True)
+    enable_context_analysis: bool = Field(default=True, deprecated=True)
+    enable_disambiguation_check: bool = Field(default=True, deprecated=True)
 
     # Note: Self-correction thresholds moved to ConversationThresholds class above
     # Deprecated: SELF_CORRECTION_THRESHOLD → use ConversationThresholds.self_correction_max_confidence
@@ -1702,19 +1486,14 @@ class FeatureSettings(BaseSettings):
     # Job Runner Configuration
     job_runner_type: str = Field(
         default="inmemory",
-        env="JOB_RUNNER_TYPE",
         description="Background job scheduler type. Options: 'apscheduler' (production), "
         "'inmemory' (development). APScheduler requires the apscheduler package.",
     )
 
     # Experimental features
-    enable_advanced_reasoning: bool = Field(
-        default=False, env="ENABLE_ADVANCED_REASONING"
-    )
-    enable_multi_agent: bool = Field(default=False, env="ENABLE_MULTI_AGENT")
-    enable_workflow_optimization: bool = Field(
-        default=False, env="ENABLE_WORKFLOW_OPTIMIZATION"
-    )
+    enable_advanced_reasoning: bool = Field(default=False)
+    enable_multi_agent: bool = Field(default=False)
+    enable_workflow_optimization: bool = Field(default=False)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1723,15 +1502,12 @@ class ToolsSettings(BaseSettings):
     """Tools and external service configuration"""
 
     # Web search configuration
-    web_search_api_key: Optional[SecretStr] = Field(
-        default=None, env="WEB_SEARCH_API_KEY"
-    )
+    web_search_api_key: Optional[SecretStr] = Field(default=None)
     web_search_api_endpoint: str = Field(
         default="https://www.googleapis.com/customsearch/v1",
-        env="WEB_SEARCH_API_ENDPOINT",
     )
-    web_search_engine_id: str = Field(default="", env="WEB_SEARCH_ENGINE_ID")
-    web_search_max_results: int = Field(default=3, env="WEB_SEARCH_MAX_RESULTS")
+    web_search_engine_id: str = Field(default="")
+    web_search_max_results: int = Field(default=3)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1749,13 +1525,13 @@ class ToolsSettings(BaseSettings):
 class AlertingSettings(BaseSettings):
     """Email and webhook alerting configuration"""
 
-    alert_from_email: Optional[str] = Field(default=None, env="ALERT_FROM_EMAIL")
-    alert_to_emails: str = Field(default="", env="ALERT_TO_EMAILS")
-    alert_webhook_url: Optional[str] = Field(default=None, env="ALERT_WEBHOOK_URL")
+    alert_from_email: Optional[str] = Field(default=None)
+    alert_to_emails: str = Field(default="")
+    alert_webhook_url: Optional[str] = Field(default=None)
 
     # SMTP Configuration
-    smtp_host: str = Field(default="localhost", env="SMTP_HOST")
-    smtp_port: int = Field(default=587, env="SMTP_PORT")
+    smtp_host: str = Field(default="localhost")
+    smtp_port: int = Field(default=587)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1763,12 +1539,10 @@ class AlertingSettings(BaseSettings):
 class WorkspaceSettings(BaseSettings):
     """Workspace and collaboration settings (comet_workspace moved to ObservabilitySettings)"""
 
-    comet_api_key: Optional[SecretStr] = Field(default=None, env="COMET_API_KEY")
+    comet_api_key: Optional[SecretStr] = Field(default=None)
 
     # Feature toggles for experimental features
-    enable_experimental_features: bool = Field(
-        default=False, env="ENABLE_EXPERIMENTAL_FEATURES"
-    )
+    enable_experimental_features: bool = Field(default=False)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1779,26 +1553,22 @@ class PreprocessingSettings(BaseSettings):
     # Chunking thresholds
     chunk_trigger_tokens: int = Field(
         default=8000,
-        env="CHUNK_TRIGGER_TOKENS",
         description="Documents >8K tokens trigger map-reduce chunking",
     )
 
     # Chunking parameters
     chunk_size_tokens: int = Field(
         default=4000,
-        env="CHUNK_SIZE_TOKENS",
         description="Target chunk size for map-reduce (~16KB text)",
     )
 
     chunk_overlap_tokens: int = Field(
         default=200,
-        env="CHUNK_OVERLAP_TOKENS",
         description="Overlap between chunks for context preservation",
     )
 
     map_reduce_max_parallel: int = Field(
         default=5,
-        env="MAP_REDUCE_MAX_PARALLEL",
         ge=1,
         le=10,
         description="Maximum parallel LLM calls during MAP phase",
@@ -1807,7 +1577,6 @@ class PreprocessingSettings(BaseSettings):
     # Provider for chunking (defaults to synthesis provider)
     chunking_provider: str = Field(
         default="synthesis",
-        env="CHUNKING_PROVIDER",
         description="LLM provider for chunking operations (synthesis, chat, or specific provider)",
     )
 
@@ -1862,25 +1631,25 @@ class DeepAnalysisSettings(BaseSettings):
 
     backend: str = Field(
         default="disabled",
-        env="DEEP_ANALYSIS_BACKEND",
+        validation_alias="DEEP_ANALYSIS_BACKEND",
         description="Deep analysis backend: external | local | basic | disabled",
     )
 
     url: str = Field(
         default="",
-        env="DEEP_ANALYSIS_URL",
+        validation_alias="DEEP_ANALYSIS_URL",
         description="URL for external deep analysis backend",
     )
 
     api_key: str = Field(
         default="",
-        env="DEEP_ANALYSIS_API_KEY",
+        validation_alias="DEEP_ANALYSIS_API_KEY",
         description="API key for external deep analysis backend",
     )
 
     timeout_seconds: int = Field(
         default=30,
-        env="DEEP_ANALYSIS_TIMEOUT_SECONDS",
+        validation_alias="DEEP_ANALYSIS_TIMEOUT_SECONDS",
         ge=5,
         le=120,
         description="Timeout for deep analysis calls",
@@ -1904,20 +1673,20 @@ class AgentSettings(BaseSettings):
     # LLM Provider for Agent Orchestration
     agent_provider: str = Field(
         default="anthropic",
-        env="AGENT_LLM_PROVIDER",
+        validation_alias="AGENT_LLM_PROVIDER",
         description="LLM provider for agent execution (anthropic, openai)",
     )
 
     agent_model: str = Field(
         default="claude-sonnet-4-20250514",
-        env="AGENT_LLM_MODEL",
+        validation_alias="AGENT_LLM_MODEL",
         description="Model to use for agent execution",
     )
 
     # Retry configuration
     max_retries: int = Field(
         default=3,
-        env="AGENT_MAX_RETRIES",
+        validation_alias="AGENT_MAX_RETRIES",
         ge=0,
         le=10,
         description="Maximum retry attempts for LLM calls",
@@ -1925,7 +1694,7 @@ class AgentSettings(BaseSettings):
 
     retry_initial_delay: float = Field(
         default=1.0,
-        env="AGENT_RETRY_INITIAL_DELAY",
+        validation_alias="AGENT_RETRY_INITIAL_DELAY",
         ge=0.1,
         le=30.0,
         description="Initial delay for exponential backoff (seconds)",
@@ -1934,7 +1703,7 @@ class AgentSettings(BaseSettings):
     # Tool execution configuration
     tool_timeout: int = Field(
         default=30,
-        env="AGENT_TOOL_TIMEOUT",
+        validation_alias="AGENT_TOOL_TIMEOUT",
         ge=5,
         le=300,
         description="Timeout for tool execution (seconds)",
@@ -1942,7 +1711,7 @@ class AgentSettings(BaseSettings):
 
     max_parallel_tools: int = Field(
         default=5,
-        env="AGENT_MAX_PARALLEL_TOOLS",
+        validation_alias="AGENT_MAX_PARALLEL_TOOLS",
         ge=1,
         le=20,
         description="Maximum parallel tool executions",
@@ -1951,7 +1720,6 @@ class AgentSettings(BaseSettings):
     # LLM Request configuration
     agent_max_tokens: int = Field(
         default=4096,
-        env="AGENT_MAX_TOKENS",
         ge=100,
         le=128000,
         description="Maximum tokens for agent responses",
@@ -1959,7 +1727,6 @@ class AgentSettings(BaseSettings):
 
     agent_temperature: float = Field(
         default=0.7,
-        env="AGENT_TEMPERATURE",
         ge=0.0,
         le=2.0,
         description="Temperature for agent responses",
@@ -1967,7 +1734,6 @@ class AgentSettings(BaseSettings):
 
     agent_request_timeout: int = Field(
         default=120,
-        env="AGENT_REQUEST_TIMEOUT",
         ge=30,
         le=600,
         description="Request timeout for LLM calls (seconds)",
@@ -1976,14 +1742,12 @@ class AgentSettings(BaseSettings):
     # Token budget defaults
     default_session_token_budget: Optional[int] = Field(
         default=None,
-        env="DEFAULT_SESSION_TOKEN_BUDGET",
         description="Default token budget for new sessions (None = unlimited)",
     )
 
     # Execution limits
     max_tool_calls_per_execution: int = Field(
         default=20,
-        env="MAX_TOOL_CALLS_PER_EXECUTION",
         ge=1,
         le=100,
         description="Maximum tool calls per single execution",
@@ -1991,7 +1755,6 @@ class AgentSettings(BaseSettings):
 
     max_iterations_per_execution: int = Field(
         default=10,
-        env="MAX_ITERATIONS_PER_EXECUTION",
         ge=1,
         le=50,
         description="Maximum LLM iterations (tool call loops) per execution",
@@ -2000,7 +1763,6 @@ class AgentSettings(BaseSettings):
     # Vectorization configuration (scenario-driven data processing)
     vectorization_min_size_bytes: int = Field(
         default=50_000,
-        env="VECTORIZATION_MIN_SIZE_BYTES",
         ge=1000,
         le=10_000_000,
         description="Minimum file size in bytes for auto-vectorization eligibility",
@@ -2023,42 +1785,36 @@ class ProviderSettings(BaseSettings):
     # Tenant isolation strategy
     tenant_provider: TenantProvider = Field(
         default=TenantProvider.SINGLE,
-        env="TENANT_PROVIDER",
         description="Tenant isolation: 'single' (local/community) or 'multi' (cloud/enterprise)",
     )
 
     # Database backend
     db_backend: DbBackend = Field(
         default=DbBackend.SQLITE,
-        env="DB_BACKEND",
         description="Database backend: 'sqlite' (local) or 'postgres' (production)",
     )
 
     # Cache backend
     cache_backend: CacheBackend = Field(
         default=CacheBackend.MEMORY,
-        env="CACHE_BACKEND",
         description="Cache backend: 'memory' (local) or 'redis' (production)",
     )
 
     # Vector database backend
     vector_backend: VectorBackend = Field(
         default=VectorBackend.CHROMA,
-        env="VECTOR_BACKEND",
         description="Vector DB backend: 'chroma' (local/cloud) or 'pinecone' (cloud)",
     )
 
     # File storage backend
     storage_backend: StorageBackend = Field(
         default=StorageBackend.FILESYSTEM,
-        env="STORAGE_BACKEND",
         description="File storage: 'filesystem' (local) or 's3' (cloud)",
     )
 
     # Metrics exporter (PR #5 - observability neutrality)
     metrics_exporter: MetricsExporter = Field(
         default=MetricsExporter.NONE,
-        env="METRICS_EXPORTER",
         description="Metrics exporter: 'none' (default, no /metrics) or 'prometheus_http' (mount /metrics)",
     )
 
@@ -2080,14 +1836,12 @@ class EvidenceStorageSettings(BaseSettings):
     # Storage root directory for evidence files
     evidence_storage_root: str = Field(
         default="./data/evidence",
-        env="EVIDENCE_STORAGE_ROOT",
         description="Root directory for evidence file storage",
     )
 
     # Maximum file size (100MB default)
     max_evidence_file_size: int = Field(
         default=100 * 1024 * 1024,
-        env="MAX_EVIDENCE_FILE_SIZE",
         ge=1024,  # Minimum 1KB
         le=1024 * 1024 * 1024,  # Maximum 1GB
         description="Maximum evidence file size in bytes (default 100MB)",
@@ -2096,7 +1850,6 @@ class EvidenceStorageSettings(BaseSettings):
     # Allowed MIME types (empty list = allow all)
     allowed_evidence_mime_types: List[str] = Field(
         default=[],
-        env="ALLOWED_EVIDENCE_MIME_TYPES",
         description="Allowed MIME types for evidence files (empty = allow all)",
     )
 
@@ -2112,28 +1865,24 @@ class EvidenceStorageSettings(BaseSettings):
     # These settings are used when STORAGE_BACKEND=s3
     s3_bucket_name: Optional[str] = Field(
         default=None,
-        env="S3_BUCKET_NAME",
         description="S3 bucket name for evidence storage (required if STORAGE_BACKEND=s3)",
     )
     s3_region: str = Field(
         default="us-east-1",
-        env="S3_REGION",
         description="AWS region for S3 bucket",
     )
     s3_key_prefix: str = Field(
         default="evidence/",
-        env="S3_KEY_PREFIX",
         description="Key prefix for S3 object keys",
     )
     s3_endpoint_url: Optional[str] = Field(
         default=None,
-        env="S3_ENDPOINT_URL",
         description="Custom S3 endpoint URL (for S3-compatible services like MinIO)",
     )
 
     # Future: Additional cloud storage backends
-    # azure_container: Optional[str] = Field(default=None, env="EVIDENCE_AZURE_CONTAINER")
-    # gcs_bucket: Optional[str] = Field(default=None, env="EVIDENCE_GCS_BUCKET")
+    # azure_container: Optional[str] = Field(default=None)
+    # gcs_bucket: Optional[str] = Field(default=None)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
