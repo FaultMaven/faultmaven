@@ -267,6 +267,20 @@ class BaseLLMProvider(ABC):
 
         raise ValueError(f"No valid model available for provider {self.provider_name}")
 
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+        """Whether this provider/model supports function calling (tools API).
+
+        Default returns True since most providers support OpenAI-compatible
+        tool calling. Providers should override for models that don't support it.
+
+        Args:
+            model: Model name to check (uses default if None)
+
+        Returns:
+            True if tool calling is supported
+        """
+        return True
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:

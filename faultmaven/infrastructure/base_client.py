@@ -434,6 +434,26 @@ class BaseExternalClient(ABC):
                         "error_type": type(call_error).__name__,
                     }
 
+                    # Non-retryable errors (e.g. HTTP 4xx) — fail fast,
+                    # don't waste time retrying a request that will fail again.
+                    if getattr(call_error, "retryable", True) is False:
+                        self.connection_metrics["failed_calls"] += 1
+                        self.connection_metrics["last_failure_time"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
+
+                        if self.circuit_breaker:
+                            self.circuit_breaker.record_failure(call_error)
+
+                        self.logger.warning(
+                            f"Non-retryable error for {self.service_name}.{operation_name}, "
+                            f"failing fast: {call_error}",
+                            client=self.client_name,
+                            service=self.service_name,
+                        )
+
+                        raise
+
                     # Log the error (will be retried if more attempts remain)
                     if attempt < retries:
                         self.logger.warning(
@@ -691,6 +711,25 @@ class BaseExternalClient(ABC):
                         "error": str(call_error),
                         "error_type": type(call_error).__name__,
                     }
+
+                    # Non-retryable errors (e.g. HTTP 4xx) — fail fast
+                    if getattr(call_error, "retryable", True) is False:
+                        self.connection_metrics["failed_calls"] += 1
+                        self.connection_metrics["last_failure_time"] = datetime.now(
+                            timezone.utc
+                        ).isoformat()
+
+                        if self.circuit_breaker:
+                            self.circuit_breaker.record_failure(call_error)
+
+                        self.logger.warning(
+                            f"Non-retryable error for {self.service_name}.{operation_name}, "
+                            f"failing fast: {call_error}",
+                            client=self.client_name,
+                            service=self.service_name,
+                        )
+
+                        raise
 
                     # Log the error (will be retried if more attempts remain)
                     if attempt < retries:

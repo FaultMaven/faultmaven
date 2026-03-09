@@ -1,6 +1,6 @@
 # LLM Provider Documentation
 
-This guide documents FaultMaven's **centralized provider registry system** with comprehensive multi-LLM support, including all 7 supported providers and instructions for adding new ones.
+This guide documents FaultMaven's **centralized provider registry system** with comprehensive multi-LLM support, including all 9 supported providers and instructions for adding new ones.
 
 ## Architecture Overview
 
@@ -13,7 +13,7 @@ FaultMaven's LLM system is built on **clean architecture principles** with:
 - **Health Monitoring**: Real-time provider availability and performance tracking
 - **Zero-Configuration Setup**: Providers auto-initialize based on environment variables
 
-## Currently Supported Providers (7 Total)
+## Currently Supported Providers (9 Total)
 
 FaultMaven supports 7 LLM providers out of the box with automatic registration:
 
@@ -253,7 +253,7 @@ PROVIDER_SCHEMA = {
         "max_retries": 3,
         "timeout": 30
     },
-    # ... 6 other providers
+    # ... 8 other providers
 }
 ```
 
@@ -425,7 +425,7 @@ Edit `faultmaven/infrastructure/llm/providers/registry.py` and add your provider
 
 ```python
 PROVIDER_SCHEMA = {
-    # ... existing 7 providers ...
+    # ... existing providers ...
     
     # Example: Adding Together AI (OpenAI-compatible)
     "together": {
@@ -617,7 +617,7 @@ from .cohere_provider import CohereProvider
 
 # Add to centralized schema
 PROVIDER_SCHEMA = {
-    # ... existing 7 providers ...
+    # ... existing providers ...
     
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
@@ -655,7 +655,7 @@ class AgentService:
 from .cohere_provider import CohereProvider
 
 __all__ = [
-    # ... existing 7 providers ...
+    # ... existing providers ...
     "CohereProvider",
 ]
 ```
@@ -843,10 +843,33 @@ service = AgentService(
 ```
 
 **Required Methods Summary**:
+
 - ✅ `async def generate()` - Core LLM generation (returns `LLMResponse`)
 - ✅ `def is_available()` - Configuration validation (returns `bool`)
 - ✅ `def get_supported_models()` - Model listing (returns `List[str]`)
 - ✅ `property provider_name` - Unique identifier (returns `str`)
+
+**Optional Capability Methods** (override from `BaseLLMProvider` when needed):
+
+- `def supports_tool_calling(model=None) -> bool` - Whether the model supports OpenAI-compatible function calling. Default: `True`. Override to return `False` for models that don't support tools (e.g., HuggingFace Inference API, DeepSeek on Fireworks). When `False`, the investigation engine falls back to single-shot generation without DA tool use.
+- `def get_structured_output_capability(model=None) -> StructuredOutputCapability` - Structured output support level (`STRICT`, `BEST_EFFORT`, `FUNCTION_CALLING`, `NONE`). Default: `BEST_EFFORT`. Override for providers with strict JSON schema support (e.g., OpenAI → `STRICT`).
+
+**Error Handling**:
+
+All HTTP errors from `generate()` should raise `LLMException` with `status_code`:
+
+```python
+from faultmaven.exceptions import LLMException
+
+if response.status != 200:
+    error_text = await response.text()
+    raise LLMException(
+        f"Provider API error {response.status}: {error_text}",
+        status_code=response.status,  # Determines retryability (4xx=non-retryable, 5xx=retryable)
+    )
+```
+
+The `status_code` drives retry behavior in the router: 4xx errors fail fast (non-retryable), 5xx errors are retried with backoff. Default retryability is `False` (fail-fast) — opt in to retries with `retryable=True` for specific transient errors.
 
 ## Examples of Compatible APIs
 
@@ -1007,4 +1030,4 @@ Existing FaultMaven installations automatically benefit from new providers:
 3. Restart application
 4. New providers immediately available in fallback chain
 
-**Total Supported**: **7 providers out-of-the-box** + unlimited custom providers through the extensible registry system.
+**Total Supported**: **9 providers out-of-the-box** + unlimited custom providers through the extensible registry system.

@@ -1780,7 +1780,36 @@ class MilestoneEngine:
             if self.da_model and self.da_provider:
                 generate_kwargs["model"] = self.da_model
 
-            response = await provider.generate(**generate_kwargs)
+            try:
+                response = await provider.generate(**generate_kwargs)
+            except Exception as e:
+                # On the first iteration, a generate failure with tools is likely
+                # a model/provider incompatibility (e.g., DeepSeek on Fireworks
+                # doesn't support OpenAI-compatible tool calling). Raise a
+                # specific exception so the caller can fall back to the non-tool
+                # structured output path.
+                if iteration == 0:
+                    from faultmaven.exceptions import ToolCallingUnsupportedError
+
+                    logger.warning(
+                        "Tool loop: first generate with tools failed "
+                        "(provider=%s, model=%s): %s. "
+                        "Raising ToolCallingUnsupportedError for fallback.",
+                        provider_name,
+                        model_info,
+                        e,
+                    )
+                    raise ToolCallingUnsupportedError(
+                        message=(
+                            f"Tool calling failed on first attempt: {e}. "
+                            f"Model may not support function calling."
+                        ),
+                        provider=provider_name,
+                        model=self.da_model,
+                    ) from e
+                # On later iterations the model already succeeded with tools,
+                # so a failure is a transient issue — propagate as-is.
+                raise
 
             # Check for tool calls in response
             if not hasattr(response, "tool_calls") or not response.tool_calls:
@@ -2221,14 +2250,41 @@ class MilestoneEngine:
         Returns:
             Instantiated Pydantic model
         """
-        # Branch to tool-augmented generation for DA turns with tools
+        # Branch to tool-augmented generation for DA turns with tools.
+        # Two layers of protection:
+        # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
+        # 2. Runtime fallback: if tool calling fails on first attempt, catch
+        #    ToolCallingUnsupportedError and fall through to non-tool path
         if investigation_tools and tool_context:
-            return await self._tool_augmented_generate(
-                prompt,
-                schema_model,
-                investigation_tools,
-                tool_context,
-            )
+            from faultmaven.exceptions import ToolCallingUnsupportedError
+
+            # Layer 1: Pre-check for known-incompatible providers/models
+            provider = self.da_provider or self.llm_provider
+            model = self.da_model if self.da_provider else None
+            if hasattr(
+                provider, "supports_tool_calling"
+            ) and not provider.supports_tool_calling(model):
+                logger.warning(
+                    "Provider %s (model: %s) does not support tool calling. "
+                    "Falling back to non-tool structured output path.",
+                    getattr(provider, "provider_name", type(provider).__name__),
+                    model or "default",
+                )
+            else:
+                # Layer 2: Runtime fallback for unknown incompatibilities
+                try:
+                    return await self._tool_augmented_generate(
+                        prompt,
+                        schema_model,
+                        investigation_tools,
+                        tool_context,
+                    )
+                except ToolCallingUnsupportedError as e:
+                    logger.warning(
+                        "Tool calling failed at runtime: %s. "
+                        "Falling back to non-tool structured output path.",
+                        e,
+                    )
 
         # Get provider-specific structured output strategy
         schema = schema_model.model_json_schema()

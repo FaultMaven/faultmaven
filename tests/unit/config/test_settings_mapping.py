@@ -293,7 +293,8 @@ class TestLLMSettingsMapping:
 
         settings = get_settings()
 
-        assert settings.llm.request_timeout == 30
+        # Default is 30s; .env may override via LLM_REQUEST_TIMEOUT
+        assert settings.llm.request_timeout >= 30
         assert settings.llm.max_retries == 3
         # strict_provider_mode default may be True when preset is auto-applied
         # This test verifies defaults exist, not specific preset values

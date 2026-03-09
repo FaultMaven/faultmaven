@@ -5,6 +5,7 @@ This module implements the Anthropic Claude LLM provider for high-quality
 reasoning and analysis tasks using the Claude API.
 """
 
+import asyncio
 import json
 import time
 from typing import List, Optional
@@ -146,21 +147,28 @@ class AnthropicProvider(BaseLLMProvider):
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                headers=headers,
-                json=request_body,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-            ) as response:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=request_body,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
 
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise LLMException(
-                        f"Anthropic API request failed: {response.status} - {error_text}"
-                    )
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise LLMException(
+                            f"Anthropic API request failed: {response.status} - {error_text}",
+                            status_code=response.status,
+                        )
 
-                response_data = await response.json()
+                    response_data = await response.json()
+        except asyncio.TimeoutError:
+            raise LLMException(
+                f"Anthropic API request timed out after {self.config.timeout}s "
+                f"(model: {selected_model})"
+            )
 
         # Extract content from Anthropic response format
         content = ""

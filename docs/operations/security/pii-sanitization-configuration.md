@@ -22,75 +22,79 @@ By default, FaultMaven sends data to **external 3rd-party LLM APIs** (OpenAI, An
 
 FaultMaven provides **adaptive PII sanitization** with two configuration modes:
 
-### Mode 1: Auto-Detect (Recommended - Default)
+### Mode 1: Off (Default)
 
-Automatically enables/disables sanitization based on LLM provider:
-
-```bash
-# .env configuration
-AUTO_SANITIZE_BASED_ON_PROVIDER=true  # Default
-```
-
-**Behavior:**
-- `CHAT_PROVIDER=local` → **No sanitization** (preserves all data)
-- `CHAT_PROVIDER=openai` → **Sanitizes PII** (protects privacy)
-- `CHAT_PROVIDER=anthropic` → **Sanitizes PII**
-- `CHAT_PROVIDER=fireworks` → **Sanitizes PII**
-
-### Mode 2: Manual Control
-
-Explicitly enable/disable sanitization regardless of provider:
+PII sanitization is **off by default**. FaultMaven is a troubleshooting tool — redacting IPs, hostnames, and usernames defeats the core use case for security investigations.
 
 ```bash
-# .env configuration
+# .env configuration (default — no action needed)
 AUTO_SANITIZE_BASED_ON_PROVIDER=false
-SANITIZE_PII=false  # Disable sanitization (use with caution!)
 ```
 
-**⚠️ Warning:** Disabling sanitization with external providers exposes user data to 3rd parties.
+### Mode 2: Auto-Detect
 
-## Configuration Examples
-
-### Example 1: Local LLM (Ollama) - No Sanitization
+Automatically enables sanitization for external providers, disables for local:
 
 ```bash
-# Best for: Maximum data preservation with local models
-CHAT_PROVIDER=local
-LOCAL_LLM_URL=http://localhost:11434
-LOCAL_LLM_MODEL=llama2
-
-# Auto mode automatically disables sanitization
+# .env configuration
 AUTO_SANITIZE_BASED_ON_PROVIDER=true
 ```
 
-**Result:** ✅ Zero data loss, all PII preserved (safe because data stays local)
+**Behavior:**
 
-### Example 2: External Provider - Auto Sanitization
+- `LLM_PROVIDER=local` → **No sanitization** (preserves all data)
+- `LLM_PROVIDER=openai` → **Sanitizes PII** (protects privacy)
+- `LLM_PROVIDER=anthropic` → **Sanitizes PII**
+- `LLM_PROVIDER=fireworks` → **Sanitizes PII**
+
+### Mode 3: Manual Control
+
+Explicitly enable sanitization regardless of provider:
 
 ```bash
-# Best for: Production use with external APIs
-CHAT_PROVIDER=openai
+# .env configuration
+SANITIZE_PII=true
+```
+
+**⚠️ Note:** When `AUTO_SANITIZE_BASED_ON_PROVIDER=false` (default), the `SANITIZE_PII` setting controls sanitization directly.
+
+## Configuration Examples
+
+### Example 1: Security Investigation (Default)
+
+```bash
+# Best for: Troubleshooting security incidents — IPs, hostnames, usernames preserved
+LLM_PROVIDER=fireworks
+FIREWORKS_API_KEY=fw_...
+
+# Default: no sanitization (no config needed)
+```
+
+**Result:** ✅ All investigation data preserved — IPs, hostnames, usernames visible to the LLM
+
+### Example 2: External Provider with Auto-Sanitization
+
+```bash
+# Best for: Production use where privacy matters more than investigation fidelity
+LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 
-# Auto mode automatically enables sanitization
+# Enable auto-detect mode
 AUTO_SANITIZE_BASED_ON_PROVIDER=true
 ```
 
 **Result:** 🔒 PII sanitized before sending to OpenAI (protects user privacy)
 
-### Example 3: Trusted External Provider - Manual Override
+### Example 3: Local LLM (Ollama)
 
 ```bash
-# For: Enterprise users with BAA/DPA agreements with LLM provider
-CHAT_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Explicitly disable sanitization
-AUTO_SANITIZE_BASED_ON_PROVIDER=false
-SANITIZE_PII=false
+# Best for: Maximum privacy — data never leaves the machine
+LLM_PROVIDER=local
+LOCAL_LLM_URL=http://localhost:11434
+LOCAL_LLM_MODEL=llama2
 ```
 
-**Result:** ⚠️ Full data sent to Anthropic (only use if you have legal agreements!)
+**Result:** ✅ Zero data loss, all PII preserved (data stays local)
 
 ## What Gets Sanitized
 
@@ -120,13 +124,15 @@ Check the logs to see sanitization status:
 ## Best Practices
 
 ### ✅ DO:
-- Use `AUTO_SANITIZE_BASED_ON_PROVIDER=true` (recommended default)
+
+- Enable `AUTO_SANITIZE_BASED_ON_PROVIDER=true` when handling customer PII with external providers
 - Use local LLMs when handling highly sensitive data
 - Review your LLM provider's data retention policy
 - Test sanitization with sample data before production use
 
 ### ❌ DON'T:
-- Disable sanitization with external providers without legal justification
+
+- Enable sanitization for security investigations (it redacts IPs, hostnames — the data you need)
 - Assume external providers don't log data (check their policies)
 - Upload customer production data without proper safeguards
 
@@ -145,28 +151,28 @@ FaultMaven also implements size-based adaptive preprocessing:
 
 ## Troubleshooting
 
-### Problem: Sanitization removes important data
+### Problem: Sanitization removes important investigation data
 
-**Solution 1:** Use local LLM provider
-```bash
-CHAT_PROVIDER=local
-```
+Sanitization is off by default. If you see redacted data (`<IP_ADDRESS>`, `<PERSON>`), check for explicit opt-in:
 
-**Solution 2:** Manually disable (if safe to do so)
-```bash
-AUTO_SANITIZE_BASED_ON_PROVIDER=false
-SANITIZE_PII=false
-```
-
-### Problem: Data still being sent to external provider
-
-**Solution:** Verify configuration is loaded:
 ```bash
 # Check logs for:
-🔓 PII sanitization DISABLED (using LOCAL LLM provider)
+🔒 LLM Router: Applying PII sanitization
+
+# Fix: ensure these are not set
+# AUTO_SANITIZE_BASED_ON_PROVIDER=true  ← remove or set to false
+# SANITIZE_PII=true                     ← remove or set to false
 ```
 
-If you see `🔒 ENABLED`, check your `CHAT_PROVIDER` setting.
+### Problem: Want to enable sanitization for privacy
+
+```bash
+# Option 1: Auto-detect (sanitizes for external providers, skips for local)
+AUTO_SANITIZE_BASED_ON_PROVIDER=true
+
+# Option 2: Always sanitize
+SANITIZE_PII=true
+```
 
 ## Related Configuration
 
@@ -177,5 +183,6 @@ See also:
 
 ## Version History
 
+- **v3.3.0** - Changed default to off (investigation-first); auto-detect is opt-in via `AUTO_SANITIZE_BASED_ON_PROVIDER=true`
 - **v3.2.0** - Added adaptive PII sanitization with auto-detect mode
 - **v3.1.0** - Basic PII sanitization (always enabled)

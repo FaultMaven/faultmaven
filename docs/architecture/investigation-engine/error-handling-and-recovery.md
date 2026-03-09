@@ -33,14 +33,24 @@ This document defines error handling and recovery strategies for the FaultMaven 
 ## 1. Error Categories
 
 ### 1.1 Transient Errors (Retryable)
-- LLM API rate limiting
+
+- LLM API rate limiting (HTTP 429)
 - Network timeouts
-- Temporary service unavailability
+- Temporary service unavailability (HTTP 5xx)
 - Redis connection failures
 
-**Strategy**: Automatic retry with exponential backoff
+**Strategy**: Automatic retry with exponential backoff. `LLMException` with `status_code >= 500` or explicit `retryable=True` triggers retries.
 
-### 1.2 User-Recoverable Errors
+### 1.2 Non-Retryable Client Errors (Fail Fast)
+
+- Invalid API key (HTTP 401)
+- Malformed request / invalid model (HTTP 400, 404)
+- Tool calling incompatibility (e.g., DeepSeek proprietary tokens)
+
+**Strategy**: Fail immediately, no retries. `LLMException` with `status_code` 4xx or `retryable=False` (default). The router fails fast rather than burning timeout retrying errors that will never succeed.
+
+### 1.3 User-Recoverable Errors
+
 - Invalid user input
 - Missing required information
 - Ambiguous evidence classification
@@ -48,7 +58,8 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 **Strategy**: Request clarification or alternative input
 
-### 1.3 System Errors (Escalation Required)
+### 1.4 System Errors (Escalation Required)
+
 - LLM authentication failures
 - State corruption
 - Database connection loss
@@ -68,27 +79,31 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 ## 2. LLM Error Handling
 
-### 2.1 Retry Configuration
+### 2.1 Retry Configuration and Error Retryability
+
+LLM errors carry retryability information via `LLMException`:
 
 ```python
-from dataclasses import dataclass
-from typing import Tuple
+from faultmaven.exceptions import LLMException
 
-@dataclass
-class RetryConfig:
-    """Configuration for LLM retry behavior."""
-    max_retries: int = 3
-    base_delay_seconds: float = 2.0
-    max_delay_seconds: float = 30.0
-    exponential_base: float = 2.0
-
-    # Error types that should be retried
-    retryable_errors: Tuple[type, ...] = (
-        RateLimitError,
-        TimeoutError,
-        ConnectionError,
-    )
+class LLMException(FaultMavenException):
+    def __init__(self, message, status_code=None, retryable=None):
+        self.status_code = status_code
+        # Retryability: explicit > status_code-based > default False
+        if retryable is not None:
+            self.retryable = retryable
+        elif status_code is not None:
+            self.retryable = status_code >= 500  # 5xx retryable, 4xx not
+        else:
+            self.retryable = False  # Fail-fast default
 ```
+
+The `BaseExternalClient.call_external()` method checks `retryable` before retrying:
+
+- `retryable=True` (5xx, explicit): retry with exponential backoff
+- `retryable=False` (4xx, default): fail immediately, no retries
+
+The provider registry re-raises the last provider's error directly (preserving retryability) rather than wrapping in a generic exception.
 
 ### 2.2 Error Handler Implementation
 

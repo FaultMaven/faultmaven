@@ -358,8 +358,18 @@ class LogsAndErrorsExtractor:
     # Regex patterns for entity profiling (compiled once)
     _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
     _USER_RE = re.compile(
-        r"(?:user[= ]+|for (?:invalid user )?|user=)([a-zA-Z0-9._\-]+)",
+        r"(?:\buser[= ]+|\bfor (?:invalid user )?\b|\buser=)([a-zA-Z0-9._\-]+)",
         re.IGNORECASE,
+    )
+
+    # SSH event type patterns for semantic counting
+    _FAILED_PASSWORD_RE = re.compile(r"Failed password", re.IGNORECASE)
+    _ACCEPTED_PASSWORD_RE = re.compile(
+        r"Accepted (?:password|publickey)", re.IGNORECASE
+    )
+    _INVALID_USER_RE = re.compile(r"invalid user", re.IGNORECASE)
+    _CONNECTION_CLOSED_RE = re.compile(
+        r"Connection closed|Connection reset", re.IGNORECASE
     )
 
     def _build_entity_profile(self, content: str, top_n: int = 10) -> str:
@@ -371,6 +381,7 @@ class LogsAndErrorsExtractor:
         """
         ip_counts: Counter = Counter()
         user_counts: Counter = Counter()
+        event_counts: Counter = Counter()
 
         for line in content.split("\n"):
             for ip in self._IP_RE.findall(line):
@@ -378,20 +389,35 @@ class LogsAndErrorsExtractor:
             for user in self._USER_RE.findall(line):
                 if user:
                     user_counts[user] += 1
+            # Semantic event classification
+            if self._FAILED_PASSWORD_RE.search(line):
+                event_counts["failed_password"] += 1
+            elif self._ACCEPTED_PASSWORD_RE.search(line):
+                event_counts["accepted_login"] += 1
+            elif self._INVALID_USER_RE.search(line):
+                event_counts["invalid_user"] += 1
+            elif self._CONNECTION_CLOSED_RE.search(line):
+                event_counts["connection_closed"] += 1
 
-        if not ip_counts and not user_counts:
+        if not ip_counts and not user_counts and not event_counts:
             return ""
 
         parts = ["ENTITY PROFILE (full file scan):"]
 
+        # Event types first — most useful for LLM interpretation
+        if event_counts:
+            parts.append("  Event types:")
+            for event, count in event_counts.most_common():
+                parts.append(f"    {event}: {count}")
+
         if ip_counts:
             parts.append(f"  Distinct IPs: {len(ip_counts)}")
             for ip, count in ip_counts.most_common(top_n):
-                parts.append(f"    {ip}: {count} occurrences")
+                parts.append(f"    {ip}: {count} line mentions")
 
         if user_counts:
             parts.append(f"  Distinct usernames: {len(user_counts)}")
             for user, count in user_counts.most_common(top_n):
-                parts.append(f"    {user}: {count} occurrences")
+                parts.append(f"    {user}: {count} line mentions")
 
         return "\n".join(parts)

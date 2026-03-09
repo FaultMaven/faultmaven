@@ -7,6 +7,7 @@ Cohere provides Command-R models optimized for RAG, tool use, and enterprise app
 API Reference: https://docs.cohere.com/reference/chat
 """
 
+import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
@@ -102,10 +103,13 @@ class CohereProvider(BaseLLMProvider):
             "X-Client-Name": "faultmaven",  # Identify client
         }
 
+        # Handle messages for multi-turn conversations
+        messages = kwargs.pop("messages", None)
+
         # Prepare request payload in Cohere v2 format
         payload = {
             "model": effective_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages if messages else [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
@@ -138,8 +142,8 @@ class CohereProvider(BaseLLMProvider):
         if "response_format" in kwargs:
             payload["response_format"] = kwargs.pop("response_format")
 
-        # Add any additional kwargs
-        payload.update(kwargs)
+        # Add any additional kwargs, filtering out None values
+        payload.update({k: v for k, v in kwargs.items() if v is not None})
 
         # Make request to Cohere API
         try:
@@ -154,7 +158,8 @@ class CohereProvider(BaseLLMProvider):
                     if response.status != 200:
                         error_text = await response.text()
                         raise LLMException(
-                            f"Cohere API error {response.status}: {error_text}"
+                            f"Cohere API error {response.status}: {error_text}",
+                            status_code=response.status,
                         )
 
                     data = await response.json()
@@ -210,5 +215,10 @@ class CohereProvider(BaseLLMProvider):
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
                     )
+        except asyncio.TimeoutError:
+            raise LLMException(
+                f"Cohere API request timed out after {self.config.timeout}s "
+                f"(model: {effective_model})"
+            )
         except aiohttp.ClientError as e:
-            raise LLMException(f"Cohere connection error: {str(e)}")
+            raise LLMException(f"Cohere connection error: {str(e)}", retryable=True)

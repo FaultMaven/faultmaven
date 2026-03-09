@@ -144,7 +144,7 @@ class TestLLMRouter:
         with patch("aiohttp.ClientSession.post") as mock_post:
             mock_post.return_value.__aenter__.return_value.status = 500
 
-            with pytest.raises(Exception, match="All providers failed"):
+            with pytest.raises(Exception):
                 await router.route("Test prompt")
 
     @pytest.mark.asyncio

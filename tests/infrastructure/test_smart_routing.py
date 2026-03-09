@@ -364,7 +364,7 @@ class TestAllProvidersDown:
         gemini.generate = AsyncMock(side_effect=Exception("Gemini error"))
         fireworks.generate = AsyncMock(side_effect=Exception("Fireworks error"))
 
-        with pytest.raises(Exception, match="All providers failed"):
+        with pytest.raises(Exception, match="Fireworks error"):
             await registry.route_request("test prompt")
 
 
