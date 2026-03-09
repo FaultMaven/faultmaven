@@ -668,22 +668,28 @@ class TestFallbackChain:
         for provider in mock_provider_classes.values():
             provider.generate = AsyncMock(side_effect=Exception("Provider failed"))
 
-        # Act & Assert - Inject mock settings and verify all providers fail
-        with patch.multiple(
-            "faultmaven.infrastructure.llm.providers.registry",
-            FireworksProvider=lambda config: mock_provider_classes["fireworks"],
-            OpenAIProvider=lambda config: mock_provider_classes["openai"],
-            LocalProvider=lambda config: mock_provider_classes["local"],
+        # Patch PROVIDER_SCHEMA so the registry uses our mock providers.
+        # patch.multiple on module-level class names doesn't work because
+        # the registry reads provider_class from PROVIDER_SCHEMA, not the module namespace.
+        schema_overrides = {}
+        for name in PROVIDER_SCHEMA:
+            if name in mock_provider_classes:
+                schema_overrides[name] = {
+                    **PROVIDER_SCHEMA[name],
+                    "provider_class": lambda config, n=name: mock_provider_classes[n],
+                }
+
+        with patch.dict(
+            "faultmaven.infrastructure.llm.providers.registry.PROVIDER_SCHEMA",
+            schema_overrides,
         ):
             registry = ProviderRegistry(settings=mock_settings)
             registry._ensure_initialized()
 
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(Exception, match="Provider failed"):
                 await registry.route_request(
                     prompt="Test prompt", max_tokens=100, temperature=0.7
                 )
-
-            assert "All providers failed" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_route_request_confidence_threshold(

@@ -371,9 +371,9 @@ class LLMSettings(BaseSettings):
     )
 
     # Request configuration
-    request_timeout: int = Field(default=30, env="LLM_REQUEST_TIMEOUT")
-    max_retries: int = Field(default=3, env="LLM_MAX_RETRIES")
-    retry_delay: float = Field(default=1.0, env="LLM_RETRY_DELAY")
+    request_timeout: int = Field(default=30, validation_alias="LLM_REQUEST_TIMEOUT")
+    max_retries: int = Field(default=3, validation_alias="LLM_MAX_RETRIES")
+    retry_delay: float = Field(default=1.0, validation_alias="LLM_RETRY_DELAY")
 
     # Provider behavior
     strict_provider_mode: bool = Field(
@@ -384,8 +384,8 @@ class LLMSettings(BaseSettings):
     )
 
     # Token limits
-    max_tokens: int = Field(default=4096, env="LLM_MAX_TOKENS")
-    context_window: int = Field(default=128000, env="LLM_CONTEXT_WINDOW")
+    max_tokens: int = Field(default=4096, validation_alias="LLM_MAX_TOKENS")
+    context_window: int = Field(default=128000, validation_alias="LLM_CONTEXT_WINDOW")
 
     # Phase/Tool response limits (separate from provider limits)
     phase_response_max_tokens: int = Field(
@@ -1135,28 +1135,34 @@ class ProtectionSettings(BaseSettings):
     # Note: This affects data sent to LLM providers. Disable only if using LOCAL provider
     #       or if you trust your external LLM provider with sensitive data.
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio libraries)
-    sanitize_pii: bool = Field(default=False, env="SANITIZE_PII")
+    sanitize_pii: bool = Field(default=False, validation_alias="SANITIZE_PII")
 
     # Auto-detect: Only sanitize when using external LLM providers
     # When True: Automatically disable sanitization for LOCAL provider, enable for others
     # When False: Use sanitize_pii setting regardless of provider
+    # Default True: Safe default for external providers. Set to False in .env
+    # for security investigations where IPs/hostnames must not be redacted.
     auto_sanitize_based_on_provider: bool = Field(
-        default=True, env="AUTO_SANITIZE_BASED_ON_PROVIDER"
+        default=True, validation_alias="AUTO_SANITIZE_BASED_ON_PROVIDER"
     )
 
     # Presidio Configuration (K8s Ingress-based to avoid port conflicts)
     presidio_analyzer_url: str = Field(
         default="http://presidio-analyzer.faultmaven.local:30080",
-        env="PRESIDIO_ANALYZER_URL",
+        validation_alias="PRESIDIO_ANALYZER_URL",
     )
     presidio_anonymizer_url: str = Field(
         default="http://presidio-anonymizer.faultmaven.local:30080",
-        env="PRESIDIO_ANONYMIZER_URL",
+        validation_alias="PRESIDIO_ANONYMIZER_URL",
     )
 
     # PII Protection Settings
-    min_score_threshold: float = Field(default=0.8, env="MIN_SCORE_THRESHOLD")
-    supported_languages: List[str] = Field(default=["en"], env="SUPPORTED_LANGUAGES")
+    min_score_threshold: float = Field(
+        default=0.8, validation_alias="MIN_SCORE_THRESHOLD"
+    )
+    supported_languages: List[str] = Field(
+        default=["en"], validation_alias="SUPPORTED_LANGUAGES"
+    )
     entities_to_protect: List[str] = Field(
         default=[
             "CREDIT_CARD",
@@ -1177,26 +1183,32 @@ class ProtectionSettings(BaseSettings):
             "US_PASSPORT",
             "US_SSN",
         ],
-        env="ENTITIES_TO_PROTECT",
+        validation_alias="ENTITIES_TO_PROTECT",
     )
 
     # Behavioral Analysis (merged from EnhancedProtectionSettings)
     behavioral_analysis_enabled: bool = Field(
-        default=True, env="BEHAVIORAL_ANALYSIS_ENABLED"
+        default=True, validation_alias="BEHAVIORAL_ANALYSIS_ENABLED"
     )
-    behavior_analysis_window: int = Field(default=3600, env="BEHAVIOR_ANALYSIS_WINDOW")
+    behavior_analysis_window: int = Field(
+        default=3600, validation_alias="BEHAVIOR_ANALYSIS_WINDOW"
+    )
     behavior_pattern_threshold: float = Field(
-        default=0.8, env="BEHAVIOR_PATTERN_THRESHOLD"
+        default=0.8, validation_alias="BEHAVIOR_PATTERN_THRESHOLD"
     )
 
     # ML Anomaly Detection (merged from EnhancedProtectionSettings)
     ml_anomaly_detection_enabled: bool = Field(
-        default=True, env="ML_ANOMALY_DETECTION_ENABLED"
+        default=True, validation_alias="ML_ANOMALY_DETECTION_ENABLED"
     )
-    ml_model_path: str = Field(default="/tmp/faultmaven_ml", env="ML_MODEL_PATH")
-    ml_training_enabled: bool = Field(default=True, env="ML_TRAINING_ENABLED")
+    ml_model_path: str = Field(
+        default="/tmp/faultmaven_ml", validation_alias="ML_MODEL_PATH"
+    )
+    ml_training_enabled: bool = Field(
+        default=True, validation_alias="ML_TRAINING_ENABLED"
+    )
     ml_online_learning_enabled: bool = Field(
-        default=True, env="ML_ONLINE_LEARNING_ENABLED"
+        default=True, validation_alias="ML_ONLINE_LEARNING_ENABLED"
     )
 
     # Circuit Breaker (merged from EnhancedProtectionSettings)
@@ -1355,12 +1367,14 @@ class KnowledgeSettings(BaseSettings):
     tavily_api_key: Optional[SecretStr] = Field(default=None, env="TAVILY_API_KEY")
 
     # Search limits
-    max_search_results: int = Field(default=5, env="KNOWLEDGE_MAX_SEARCH_RESULTS")
+    max_search_results: int = Field(
+        default=5, validation_alias="KNOWLEDGE_MAX_SEARCH_RESULTS"
+    )
     search_timeout_seconds: int = Field(default=30, env="SEARCH_TIMEOUT_SECONDS")
 
     # Document processing (size limit now in UploadSettings.max_upload_size_mb)
-    chunk_size: int = Field(default=1000, env="DOCUMENT_CHUNK_SIZE")
-    chunk_overlap: int = Field(default=100, env="DOCUMENT_CHUNK_OVERLAP")
+    chunk_size: int = Field(default=1000, validation_alias="DOCUMENT_CHUNK_SIZE")
+    chunk_overlap: int = Field(default=100, validation_alias="DOCUMENT_CHUNK_OVERLAP")
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

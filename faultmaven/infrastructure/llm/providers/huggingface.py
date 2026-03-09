@@ -5,6 +5,7 @@ This module implements the Hugging Face Inference API provider for
 accessing open-source models and specialized models.
 """
 
+import asyncio
 import json
 import time
 from typing import List, Optional
@@ -33,6 +34,10 @@ class HuggingFaceProvider(BaseLLMProvider):
     def get_supported_models(self) -> List[str]:
         """Get list of supported Hugging Face models"""
         return self.config.models.copy()
+
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+        """HuggingFace Inference API does not support tool calling."""
+        return False
 
     def get_structured_output_capability(
         self, model: Optional[str] = None
@@ -118,29 +123,36 @@ class HuggingFaceProvider(BaseLLMProvider):
         # Make API request to Hugging Face
         url = f"{self.config.base_url.rstrip('/')}/{selected_model}"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                headers=headers,
-                json=request_body,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-            ) as response:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=request_body,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
 
-                if response.status == 503:
-                    # Model is loading - raise ModelLoadingException for orchestration layer to handle
-                    raise ModelLoadingException(
-                        message=f"HuggingFace model '{selected_model}' is loading",
-                        retry_after=10,
-                        model_name=selected_model,
-                    )
+                    if response.status == 503:
+                        # Model is loading - raise ModelLoadingException for orchestration layer to handle
+                        raise ModelLoadingException(
+                            message=f"HuggingFace model '{selected_model}' is loading",
+                            retry_after=10,
+                            model_name=selected_model,
+                        )
 
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise LLMException(
-                        f"Hugging Face API request failed: {response.status} - {error_text}"
-                    )
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise LLMException(
+                            f"Hugging Face API request failed: {response.status} - {error_text}",
+                            status_code=response.status,
+                        )
 
-                response_data = await response.json()
+                    response_data = await response.json()
+        except asyncio.TimeoutError:
+            raise LLMException(
+                f"HuggingFace API request timed out after {self.config.timeout}s "
+                f"(model: {selected_model})"
+            )
 
         # Extract content from Hugging Face response format
         content = ""

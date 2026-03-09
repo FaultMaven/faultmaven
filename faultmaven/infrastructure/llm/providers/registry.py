@@ -777,10 +777,13 @@ class ProviderRegistry:
             )
             return best_low_confidence_response
 
-        # All providers failed completely
-        error_msg = f"All providers failed. Last error: {last_error}"
-        self.logger.error(error_msg)
-        raise Exception(error_msg)
+        # All providers failed completely — re-raise the last error directly
+        # so that retryability metadata (e.g. LLMException.retryable) is
+        # preserved for upstream retry logic in call_external().
+        self.logger.error(f"All providers failed. Last error: {last_error}")
+        if last_error is not None:
+            raise last_error
+        raise Exception("All providers failed with no error details")
 
     def get_provider_status(self) -> Dict[str, Dict[str, any]]:
         """Get status information for all providers"""

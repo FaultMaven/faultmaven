@@ -5,6 +5,7 @@ This module implements the Google Gemini LLM provider with multi-modal
 capabilities for text and image processing.
 """
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -193,22 +194,29 @@ class GeminiProvider(BaseLLMProvider):
 
         headers = {"Content-Type": "application/json"}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                params=params,
-                headers=headers,
-                json=request_body,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-            ) as response:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    params=params,
+                    headers=headers,
+                    json=request_body,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
 
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise LLMException(
-                        f"Gemini API request failed: {response.status} - {error_text}"
-                    )
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise LLMException(
+                            f"Gemini API request failed: {response.status} - {error_text}",
+                            status_code=response.status,
+                        )
 
-                response_data = await response.json()
+                    response_data = await response.json()
+        except asyncio.TimeoutError:
+            raise LLMException(
+                f"Gemini API request timed out after {self.config.timeout}s "
+                f"(model: {selected_model})"
+            )
 
         # Extract content from Gemini response format
         content = ""
@@ -264,7 +272,8 @@ class GeminiProvider(BaseLLMProvider):
                 raise LLMException(
                     f"Response truncated due to token limit (finishReason=MAX_TOKENS). "
                     f"Response length: {len(content)} chars. "
-                    "Increase max_tokens parameter or simplify prompt."
+                    "Increase max_tokens parameter or simplify prompt.",
+                    retryable=True,
                 )
 
         # Calculate metrics

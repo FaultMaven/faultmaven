@@ -67,9 +67,7 @@ async def sqlite_session(sqlite_engine):
 async def create_test_schema(session: AsyncSession):
     """Create minimal schema required for case repository testing."""
     # Create cases table
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS cases (
             case_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -94,14 +92,10 @@ async def create_test_schema(session: AsyncSession):
             progress TEXT,
             metadata TEXT
         )
-    """
-        )
-    )
+    """))
 
     # Create evidence table
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS evidence (
             evidence_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -115,14 +109,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     # Create hypotheses table
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS hypotheses (
             hypothesis_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -146,14 +136,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     # Create solutions table
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS solutions (
             solution_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -176,14 +162,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     # Create uploaded_files table (per case-schema.md §4.6)
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -198,14 +180,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     # Create case_messages table (per case-schema.md §4.7)
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS case_messages (
             message_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -217,14 +195,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT DEFAULT '{}',
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     # Create case_actions table (audit trail of case actions)
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS case_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             case_id TEXT NOT NULL,
@@ -235,14 +209,10 @@ async def create_test_schema(session: AsyncSession):
             metadata TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     # Create evidence_artifacts table (matches production schema — no tags column)
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS evidence_artifacts (
             evidence_id TEXT PRIMARY KEY,
             case_id TEXT,
@@ -261,14 +231,10 @@ async def create_test_schema(session: AsyncSession):
             description TEXT,
             is_primary INTEGER DEFAULT 0
         )
-    """
-        )
-    )
+    """))
 
     # Create reports table
-    await session.execute(
-        text(
-            """
+    await session.execute(text("""
         CREATE TABLE IF NOT EXISTS reports (
             report_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
@@ -286,9 +252,7 @@ async def create_test_schema(session: AsyncSession):
             updated_at TIMESTAMP,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
-    """
-        )
-    )
+    """))
 
     await session.commit()
 

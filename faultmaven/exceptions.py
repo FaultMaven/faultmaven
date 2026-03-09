@@ -91,9 +91,32 @@ class KnowledgeBaseException(FaultMavenException):
 
 
 class LLMException(FaultMavenException):
-    """Raised when LLM operations fail."""
+    """Raised when LLM operations fail.
 
-    pass
+    Attributes:
+        status_code: HTTP status code from the provider API (if applicable).
+        retryable: Whether the error is worth retrying. Derived from
+            status_code when provided, otherwise defaults to False (fail fast).
+            - 4xx → non-retryable (client error, same request will fail again)
+            - 5xx → retryable (transient server error)
+            - No status code → non-retryable (callers must opt-in to retry)
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        retryable: Optional[bool] = None,
+        **kwargs,
+    ):
+        self.status_code = status_code
+        if retryable is not None:
+            self.retryable = retryable
+        elif status_code is not None:
+            self.retryable = status_code >= 500
+        else:
+            self.retryable = False
+        super().__init__(message, **kwargs)
 
 
 class ModelLoadingException(LLMException):
@@ -118,6 +141,29 @@ class ModelLoadingException(LLMException):
         self.model_name = model_name
         super().__init__(
             message, details={"retry_after": retry_after, "model_name": model_name}
+        )
+
+
+class ToolCallingUnsupportedError(LLMException):
+    """Raised when a model/provider does not support tool/function calling.
+
+    This signals to the orchestration layer that tool calling failed due to
+    model incompatibility (not a transient error), and it should fall back
+    to a non-tool generation path.
+    """
+
+    def __init__(
+        self,
+        message: str = "Model does not support tool calling",
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ):
+        self.provider = provider
+        self.model = model
+        super().__init__(
+            message,
+            retryable=False,
+            details={"provider": provider, "model": model},
         )
 
 

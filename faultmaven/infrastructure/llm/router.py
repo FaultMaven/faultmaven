@@ -235,6 +235,23 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         """Get status of all providers"""
         return self.registry.get_provider_status()
 
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+        """Check if the primary provider/model supports tool calling.
+
+        Delegates to the primary provider in the fallback chain.
+        """
+        self.registry._ensure_initialized()
+
+        fallback_chain = self.registry.get_fallback_chain()
+        if not fallback_chain:
+            return False
+
+        primary_provider = self.registry._providers.get(fallback_chain[0])
+        if not primary_provider:
+            return False
+
+        return primary_provider.supports_tool_calling(model)
+
     def get_structured_output_capability(self, model: Optional[str] = None):
         """
         Get the structured output capability for the primary provider/model.

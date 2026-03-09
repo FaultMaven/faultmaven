@@ -38,6 +38,20 @@ class LocalProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+        """Check if the local model supports tool calling.
+
+        Only functionary and hermes models have native function calling support.
+        Other local models (Ollama, llama.cpp) do not support the tools API.
+        """
+        effective_model = self.get_effective_model(model)
+        model_lower = effective_model.lower()
+
+        if "functionary" in model_lower or "hermes" in model_lower:
+            return True
+
+        return False
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
@@ -144,7 +158,8 @@ class LocalProvider(BaseLLMProvider):
                 if response.status != 200:
                     error_text = await response.text()
                     raise LLMException(
-                        f"Ollama API error {response.status}: {error_text}"
+                        f"Ollama API error {response.status}: {error_text}",
+                        status_code=response.status,
                     )
 
                 data = await response.json()
@@ -193,11 +208,16 @@ class LocalProvider(BaseLLMProvider):
             "temperature": temperature,
         }
 
+        # Handle messages for multi-turn conversations
+        messages = kwargs.pop("messages", None)
+        if messages:
+            payload["messages"] = messages
+
         # Add any additional kwargs
         if "response_format" in kwargs:
             payload["response_format"] = kwargs.pop("response_format")
 
-        payload.update(kwargs)
+        payload.update({k: v for k, v in kwargs.items() if v is not None})
 
         self.logger.debug(f"Request payload: {payload}")
 
@@ -216,7 +236,7 @@ class LocalProvider(BaseLLMProvider):
                         error_text = await response.text()
                         error_msg = f"Local OpenAI-compatible API error {response.status}: {error_text}"
                         self.logger.error(f"HTTP Error: {error_msg}")
-                        raise LLMException(error_msg)
+                        raise LLMException(error_msg, status_code=response.status)
 
                     data = await response.json()
                     self.logger.debug(f"Response data: {data}")
@@ -290,9 +310,9 @@ class LocalProvider(BaseLLMProvider):
             "stream": False,
         }
 
-        # Add any additional options
+        # Add any additional options, filtering out None values
         if kwargs:
-            payload.update(kwargs)
+            payload.update({k: v for k, v in kwargs.items() if v is not None})
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -304,7 +324,8 @@ class LocalProvider(BaseLLMProvider):
                 if response.status != 200:
                     error_text = await response.text()
                     raise LLMException(
-                        f"Raw llama.cpp server API error {response.status}: {error_text}"
+                        f"Raw llama.cpp server API error {response.status}: {error_text}",
+                        status_code=response.status,
                     )
 
                 data = await response.json()

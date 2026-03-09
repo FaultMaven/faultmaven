@@ -5,6 +5,7 @@ This module implements the Fireworks AI LLM provider for high-performance
 inference with open-source models.
 """
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -32,6 +33,22 @@ class FireworksProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+        """Check if the model supports OpenAI-compatible tool calling on Fireworks.
+
+        DeepSeek models use proprietary tool-calling tokens (e.g.
+        <｜tool▁calls▁begin｜>) that are incompatible with Fireworks'
+        OpenAI-compatible tools API, causing generation errors.
+        """
+        effective_model = self.get_effective_model(model)
+        model_lower = effective_model.lower()
+
+        # DeepSeek models don't support OpenAI-compatible tool calling on Fireworks
+        if "deepseek" in model_lower:
+            return False
+
+        return True
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
@@ -58,6 +75,7 @@ class FireworksProvider(BaseLLMProvider):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate response using Fireworks AI with optional function calling"""
@@ -73,10 +91,19 @@ class FireworksProvider(BaseLLMProvider):
             "Content-Type": "application/json",
         }
 
+        # Fireworks API requires stream=true for max_tokens > 4096.
+        # Cap at 4096 since streaming is not implemented.
+        effective_max_tokens = min(max_tokens, 4096)
+
+        # Use explicit messages if provided, otherwise construct from prompt
+        effective_messages = (
+            messages if messages is not None else [{"role": "user", "content": prompt}]
+        )
+
         payload = {
             "model": effective_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
+            "messages": effective_messages,
+            "max_tokens": effective_max_tokens,
             "temperature": temperature,
         }
 
@@ -86,56 +113,68 @@ class FireworksProvider(BaseLLMProvider):
             if tool_choice:
                 payload["tool_choice"] = tool_choice
 
-        # Add any additional kwargs
-        payload.update(kwargs)
+        # Add any additional kwargs, filtering out None values to avoid
+        # overwriting constructed payload fields
+        payload.update({k: v for k, v in kwargs.items() if v is not None})
 
         # Make request
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.config.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-            ) as response:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.config.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
 
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise LLMException(
-                        f"Fireworks API error {response.status}: {error_text}"
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise LLMException(
+                            f"Fireworks API error {response.status}: {error_text}",
+                            status_code=response.status,
+                        )
+
+                    data = await response.json()
+
+                    # Extract response content
+                    if not data.get("choices") or len(data["choices"]) == 0:
+                        raise LLMException("Fireworks API returned no choices")
+
+                    message = data["choices"][0]["message"]
+                    content = message.get("content") or ""
+                    content = (
+                        self._validate_response_content(content) if content else ""
                     )
 
-                data = await response.json()
+                    # Extract tool calls if present
+                    tool_calls = None
+                    if message.get("tool_calls"):
+                        from .base import ToolCall
 
-                # Extract response content
-                if not data.get("choices") or len(data["choices"]) == 0:
-                    raise LLMException("Fireworks API returned no choices")
+                        tool_calls = [
+                            ToolCall(
+                                id=tc["id"], type=tc["type"], function=tc["function"]
+                            )
+                            for tc in message["tool_calls"]
+                        ]
 
-                message = data["choices"][0]["message"]
-                content = message.get("content") or ""
-                content = self._validate_response_content(content) if content else ""
+                    # Extract token usage
+                    usage = data.get("usage", {})
+                    tokens_used = usage.get("total_tokens", 0)
 
-                # Extract tool calls if present
-                tool_calls = None
-                if message.get("tool_calls"):
-                    from .base import ToolCall
+                    response_time = self._get_response_time_ms()
 
-                    tool_calls = [
-                        ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
-                        for tc in message["tool_calls"]
-                    ]
-
-                # Extract token usage
-                usage = data.get("usage", {})
-                tokens_used = usage.get("total_tokens", 0)
-
-                response_time = self._get_response_time_ms()
-
-                return LLMResponse(
-                    content=content,
-                    confidence=self.config.confidence_score,
-                    provider=self.provider_name,
-                    model=effective_model,
-                    tokens_used=tokens_used,
-                    response_time_ms=response_time,
-                    tool_calls=tool_calls,
-                )
+                    return LLMResponse(
+                        content=content,
+                        confidence=self.config.confidence_score,
+                        provider=self.provider_name,
+                        model=effective_model,
+                        tokens_used=tokens_used,
+                        response_time_ms=response_time,
+                        tool_calls=tool_calls,
+                    )
+        except asyncio.TimeoutError:
+            raise LLMException(
+                f"Fireworks API request timed out after {self.config.timeout}s "
+                f"(model: {effective_model})"
+            )
