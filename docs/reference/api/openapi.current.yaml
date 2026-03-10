@@ -2331,7 +2331,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2403,7 +2403,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SessionResponse'
+                  $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
                 title: Response List Sessions Api V1 Cases  Case Id  Sessions Get
         '422':
           description: Validation Error
@@ -2449,7 +2449,7 @@ paths:
             application/json:
               schema:
                 anyOf:
-                - $ref: '#/components/schemas/SessionResponse'
+                - $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
                 - type: 'null'
                 title: Response Get Active Session Api V1 Cases  Case Id  Sessions
                   Active Get
@@ -2502,7 +2502,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2557,7 +2557,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2607,7 +2607,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2657,7 +2657,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -2716,7 +2716,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__api__models__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -4868,7 +4868,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/faultmaven__models__api__SessionResponse'
+                $ref: '#/components/schemas/SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -6375,14 +6375,14 @@ components:
           default: ''
         status:
           $ref: '#/components/schemas/CaseStatus'
-          description: Current lifecycle status
+          description: Current lifecycle status (phase or disposition)
           default: inquiry
-        status_history:
+        action_history:
           items:
-            $ref: '#/components/schemas/CaseStatusTransition'
+            $ref: '#/components/schemas/CaseAction'
           type: array
-          title: Status History
-          description: Complete history of status changes
+          title: Action History
+          description: Complete history of case actions (phase transitions and dispositions)
         closure_reason:
           anyOf:
           - type: string
@@ -6569,6 +6569,38 @@ components:
       description: 'Root case entity.
 
         Represents one complete troubleshooting investigation.'
+    CaseAction:
+      properties:
+        from_status:
+          $ref: '#/components/schemas/CaseStatus'
+          description: Status before the action
+        to_status:
+          $ref: '#/components/schemas/CaseStatus'
+          description: Status after the action
+        triggered_at:
+          type: string
+          format: date-time
+          title: Triggered At
+          description: When the action occurred
+        triggered_by:
+          type: string
+          title: Triggered By
+          description: 'Who triggered: user_id or ''system'' for automatic actions'
+        reason:
+          type: string
+          maxLength: 500
+          title: Reason
+          description: Human-readable reason for the action
+      type: object
+      required:
+      - from_status
+      - to_status
+      - triggered_by
+      - reason
+      title: CaseAction
+      description: 'Record of one case action (phase transition or disposition change).
+
+        Provides audit trail for case lifecycle.'
     CaseCreateRequest:
       properties:
         title:
@@ -6934,42 +6966,14 @@ components:
       - resolved
       - closed
       title: CaseStatus
-      description: "Case lifecycle status.\n\nLifecycle Flow:\n  INQUIRY -> INVESTIGATING\
-        \ -> RESOLVED (terminal)\n                             -> CLOSED (terminal)\n\
-        \           -> CLOSED (terminal)\n\nTerminal States: RESOLVED, CLOSED (no\
-        \ further transitions)"
-    CaseStatusTransition:
-      properties:
-        from_status:
-          $ref: '#/components/schemas/CaseStatus'
-          description: Status before transition
-        to_status:
-          $ref: '#/components/schemas/CaseStatus'
-          description: Status after transition
-        triggered_at:
-          type: string
-          format: date-time
-          title: Triggered At
-          description: When transition occurred
-        triggered_by:
-          type: string
-          title: Triggered By
-          description: 'Who triggered: user_id or ''system'' for automatic transitions'
-        reason:
-          type: string
-          maxLength: 500
-          title: Reason
-          description: Human-readable reason for transition
-      type: object
-      required:
-      - from_status
-      - to_status
-      - triggered_by
-      - reason
-      title: CaseStatusTransition
-      description: 'Record of one status change.
-
-        Provides audit trail for case lifecycle.'
+      description: "Case lifecycle status \u2014 passive label describing a case's\
+        \ current condition.\n\nValues fall into two categories:\n- **Phases** (active\
+        \ work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution):\
+        \ RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n\
+        \  INQUIRY \u2192 INVESTIGATING  (phase transition)\n  INQUIRY \u2192 RESOLVED\
+        \       (fast-track disposition)\n  INQUIRY \u2192 CLOSED         (disposition)\n\
+        \  INVESTIGATING \u2192 RESOLVED (disposition)\n  INVESTIGATING \u2192 CLOSED\
+        \   (disposition)"
     CaseSummary:
       properties:
         case_id:
@@ -7160,6 +7164,11 @@ components:
           format: date-time
           title: Updated At
           description: Last update timestamp
+        uploaded_files_count:
+          type: integer
+          title: Uploaded Files Count
+          description: Number of uploaded files
+          default: 0
         valid_next_states:
           items:
             type: string
@@ -7273,6 +7282,11 @@ components:
           format: date-time
           title: Resolved At
           description: When case was resolved
+        uploaded_files_count:
+          type: integer
+          title: Uploaded Files Count
+          description: Number of uploaded files
+          default: 0
         valid_next_states:
           items:
             type: string
@@ -7840,8 +7854,22 @@ components:
             maxLength: 100
           - type: 'null'
           title: Extraction Method
-          description: 'Tier 1 extraction method used: structural_index, statistical_profile,
+          description: 'Extraction method used: structural_index, statistical_profile,
             parse_and_sanitize, ast_extraction, structure_extraction, metadata_extraction'
+        processing_mode:
+          anyOf:
+          - type: string
+            maxLength: 50
+          - type: 'null'
+          title: Processing Mode
+          description: 'Processing mode: triage | directed_analysis | semantic_search'
+        da_invocation_count:
+          type: integer
+          minimum: 0.0
+          title: Da Invocation Count
+          description: 'DA invocations across turns for this evidence (failure trigger
+            #4)'
+          default: 0
         source_type:
           $ref: '#/components/schemas/EvidenceSourceType'
           description: Type of evidence source
@@ -7855,6 +7883,14 @@ components:
           title: Source File Id
           description: ID of the UploadedFile this evidence was derived from (None
             if from user input)
+        original_filename:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Original Filename
+          description: Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used
+            by search_file tool for display.
         advances_milestones:
           items:
             type: string
@@ -8179,6 +8215,19 @@ components:
           minimum: 0.0
           title: Relevance Score
           description: Relevance to current investigation (0.0-1.0)
+        collected_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Collected At Turn
+          description: Turn number when evidence was collected
+          default: 0
+        category:
+          type: string
+          maxLength: 50
+          title: Category
+          description: 'Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE
+            | OTHER'
+          default: OTHER
       type: object
       required:
       - evidence_id
@@ -8655,9 +8704,8 @@ components:
       title: InvestigationPath
       description: "Investigation routing strategy (2-stage model with mitigation\
         \ detour).\n\nIMPORTANT: Path is SYSTEM-DETERMINED from matrix (temporal_state\
-        \ x urgency_level).\n\
-        LLM provides inputs (temporal_state, urgency_level) during DIAGNOSIS.\nSystem\
-        \ calls determine_investigation_path() to select path deterministically.\n\
+        \ x urgency_level).\nLLM provides inputs (temporal_state, urgency_level) during\
+        \ DIAGNOSIS.\nSystem calls determine_investigation_path() to select path deterministically.\n\
         \nTwo paths through the 2-stage model:\n- MITIGATION_FIRST: DIAGNOSIS \u2192\
         \ MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT\n- ROOT_CAUSE: DIAGNOSIS\
         \ \u2192 TREATMENT"
@@ -8816,16 +8864,18 @@ components:
       - mitigation
       - treatment
       title: InvestigationStage
-      description: "Investigation stage within INVESTIGATING status (2-stage model\
-        \ with mitigation detour).\nComputed from stage-gate milestones.\n\nCore stages:\n\
-        - DIAGNOSIS: Understand,\
-        \ diagnose, propose actions\n- MITIGATION: Apply and verify temporary fix\
-        \ (optional detour)\n- TREATMENT: Verify permanent fix, resolve case\n\nStage\
-        \ transitions are inference-based \u2014 user compliance with\nproposed actions\
-        \ triggers transitions via compliance detection.\nThe stage determines which\
-        \ prompt template the LLM receives.\n\nInvestigation Paths:\n- ROOT_CAUSE:\
-        \ DIAGNOSIS \u2192 TREATMENT\n- MITIGATION_FIRST: DIAGNOSIS \u2192 MITIGATION\
-        \ \u2192 DIAGNOSIS \u2192 TREATMENT"
+      description: "Investigation stage within the Investigating Phase.\n\n2-stage\
+        \ model with mitigation detour:\n- DIAGNOSIS: Understand, diagnose, propose\
+        \ actions (core stage)\n- TREATMENT: Verify permanent fix, resolve case (core\
+        \ stage)\n- MITIGATION: Apply and verify temporary fix (optional detour)\n\
+        \nDIAGNOSIS and TREATMENT are the two core stages every investigation\npasses\
+        \ through. MITIGATION is an optional detour that temporarily\nnarrows focus\
+        \ to \"stop the bleeding\" before returning to DIAGNOSIS.\n\nComputed from\
+        \ stage-gate milestones. Stage transitions are\ninference-based \u2014 user\
+        \ compliance with proposed actions triggers\ntransitions via compliance detection.\
+        \ The stage determines which\nprompt template the LLM receives.\n\nInvestigation\
+        \ Paths:\n- ROOT_CAUSE: DIAGNOSIS \u2192 TREATMENT\n- MITIGATION_FIRST: DIAGNOSIS\
+        \ \u2192 MITIGATION (detour) \u2192 DIAGNOSIS \u2192 TREATMENT"
     InvestigationStrategy:
       type: string
       enum:
@@ -10362,83 +10412,53 @@ components:
       description: Request model for creating investigation session.
     SessionResponse:
       properties:
+        schema_version:
+          type: string
+          enum:
+          - 3.1.0
+          const: 3.1.0
+          title: Schema Version
+          default: 3.1.0
         session_id:
           type: string
           title: Session Id
-        case_id:
-          type: string
-          title: Case Id
         user_id:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: User Id
-        organization_id:
-          type: string
-          title: Organization Id
+        client_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Id
         status:
-          $ref: '#/components/schemas/SessionStatus'
-        started_at:
-          type: string
-          format: date-time
-          title: Started At
-        ended_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Ended At
-        last_activity_at:
-          type: string
-          format: date-time
-          title: Last Activity At
-        total_duration_ms:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Total Duration Ms
-        session_goal:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Session Goal
-        findings_summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Findings Summary
-        total_token_usage:
-          type: integer
-          title: Total Token Usage
-        total_agent_executions:
-          type: integer
-          title: Total Agent Executions
-        token_budget_limit:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Token Budget Limit
+          $ref: '#/components/schemas/AuthSessionStatus'
+          default: active
         created_at:
           type: string
-          format: date-time
           title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          title: Updated At
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+        session_resumed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Session Resumed
       type: object
       required:
       - session_id
-      - case_id
-      - user_id
-      - organization_id
-      - status
-      - started_at
-      - last_activity_at
-      - total_token_usage
-      - total_agent_executions
       - created_at
-      - updated_at
       title: SessionResponse
-      description: Response model for investigation session.
+      description: Response payload for auth session operations - API spec compliance.
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -11660,55 +11680,85 @@ components:
       - last_updated
       title: WorkingConclusionSummary
       description: Agent's current understanding during INVESTIGATING phase.
-    faultmaven__models__api__SessionResponse:
+    faultmaven__api__models__SessionResponse:
       properties:
-        schema_version:
-          type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
-          title: Schema Version
-          default: 3.1.0
         session_id:
           type: string
           title: Session Id
+        case_id:
+          type: string
+          title: Case Id
         user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
+          type: string
           title: User Id
-        client_id:
+        organization_id:
+          type: string
+          title: Organization Id
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        last_activity_at:
+          type: string
+          format: date-time
+          title: Last Activity At
+        total_duration_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Duration Ms
+        session_goal:
           anyOf:
           - type: string
           - type: 'null'
-          title: Client Id
-        status:
-          $ref: '#/components/schemas/AuthSessionStatus'
-          default: active
+          title: Session Goal
+        findings_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Findings Summary
+        total_token_usage:
+          type: integer
+          title: Total Token Usage
+        total_agent_executions:
+          type: integer
+          title: Total Agent Executions
+        token_budget_limit:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Token Budget Limit
         created_at:
           type: string
+          format: date-time
           title: Created At
-        expires_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Expires At
-        metadata:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Metadata
-        session_resumed:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Session Resumed
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
       type: object
       required:
       - session_id
+      - case_id
+      - user_id
+      - organization_id
+      - status
+      - started_at
+      - last_activity_at
+      - total_token_usage
+      - total_agent_executions
       - created_at
+      - updated_at
       title: SessionResponse
-      description: Response payload for auth session operations - API spec compliance.
+      description: Response model for investigation session.
   securitySchemes:
     HTTPBearer:
       type: http

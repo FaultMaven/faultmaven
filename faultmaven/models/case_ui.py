@@ -149,6 +149,16 @@ class EvidenceSummary(BaseModel):
         ge=0.0, le=1.0, description="Relevance to current investigation (0.0-1.0)"
     )
 
+    collected_at_turn: int = Field(
+        default=0, ge=0, description="Turn number when evidence was collected"
+    )
+
+    category: str = Field(
+        default="OTHER",
+        description="Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER",
+        max_length=50,
+    )
+
 
 class RootCauseSummary(BaseModel):
     """Root cause information for RESOLVED phase."""
@@ -404,6 +414,8 @@ class CaseUIResponse_Investigating(BaseModel):
 
     updated_at: datetime = Field(description="Last update timestamp")
 
+    uploaded_files_count: int = Field(default=0, description="Number of uploaded files")
+
     valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
@@ -482,6 +494,8 @@ class CaseUIResponse_Resolved(BaseModel):
     updated_at: datetime = Field(description="Last update timestamp")
 
     resolved_at: datetime = Field(description="When case was resolved")
+
+    uploaded_files_count: int = Field(default=0, description="Number of uploaded files")
 
     valid_next_states: List[str] = Field(
         default_factory=list,

@@ -344,6 +344,12 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                     summary=ev.summary,
                     timestamp=ev.collected_at,
                     relevance_score=0.8,  # Could compute from hypothesis links
+                    collected_at_turn=ev.collected_at_turn,
+                    category=(
+                        ev.category.value
+                        if hasattr(ev.category, "value")
+                        else str(ev.category)
+                    ),
                 )
             )
 
@@ -371,6 +377,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         current_turn=case.current_turn,
         created_at=case.created_at,
         updated_at=case.updated_at,
+        uploaded_files_count=len(case.uploaded_files),
         working_conclusion=working_conclusion,
         progress=progress,
         active_hypotheses=hypothesis_summaries,
@@ -499,6 +506,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         created_at=case.created_at,
         updated_at=case.updated_at,
         resolved_at=case.resolved_at if case.resolved_at else case.updated_at,
+        uploaded_files_count=len(case.uploaded_files),
         root_cause=root_cause,
         solution_applied=solution_applied,
         verification_status=verification_status,
