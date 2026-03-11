@@ -5,6 +5,7 @@ Documentation for FaultMaven's authentication, authorization, and security archi
 ## Documents
 
 - **[IAM Design](./iam-design.md)** - Identity and Access Management: authentication, authorization, RBAC, and token handling
+- **[Case-Scoped PII Redaction](./case-scoped-pii-redaction.md)** - Case-scoped bidirectional PII redaction at the LLM boundary
 
 ## Purpose
 

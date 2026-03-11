@@ -151,27 +151,16 @@ class TestProcessUpload:
         assert isinstance(result, PreprocessingResult)
 
     @pytest.mark.asyncio
-    async def test_sanitization_detected(self, service):
-        service.sanitizer.sanitize.side_effect = lambda x: x.replace(
-            "NullPointerException", "***REDACTED***"
-        )
+    async def test_no_sanitization_at_extraction_layer(self, service):
+        """Extraction never sanitizes — PII redaction happens at the LLM boundary."""
         result = await service.process_upload(
             raw_content=b"NullPointerException",
             filename="app.log",
             content_type="text/plain",
             case_id="case_abc",
         )
-        assert result.sanitization_applied is True
-
-    @pytest.mark.asyncio
-    async def test_no_sanitization(self, service):
-        result = await service.process_upload(
-            raw_content=b"clean content",
-            filename="app.log",
-            content_type="text/plain",
-            case_id="case_abc",
-        )
         assert result.sanitization_applied is False
+        service.sanitizer.sanitize.assert_not_called()
         assert result.redactions_count == 0
 
     @pytest.mark.asyncio

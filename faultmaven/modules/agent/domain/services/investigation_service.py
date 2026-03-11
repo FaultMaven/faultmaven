@@ -253,6 +253,12 @@ class InvestigationService:
             updated_case = result["case_updated"]
             agent_response_text = result["agent_response"]
 
+            # Reverse-substitute PII placeholders so user sees real values.
+            # The LLM worked with redacted content; the user should not.
+            redaction_ctx = result.get("redaction_ctx")
+            if redaction_ctx:
+                agent_response_text = redaction_ctx.reverse(agent_response_text)
+
             # 4. Save agent response to conversation history
             from uuid import uuid4
 

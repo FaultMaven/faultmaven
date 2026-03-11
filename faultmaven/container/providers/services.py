@@ -60,6 +60,8 @@ def create_milestone_engine(
     evidence_service: Any,
     da_provider: Any | None = None,
     da_model: str | None = None,
+    sanitizer: Any | None = None,
+    redis_client: Any | None = None,
 ) -> Any | None:
     """Create milestone engine for investigation workflow.
 
@@ -71,6 +73,8 @@ def create_milestone_engine(
         da_provider: Dedicated provider for DA (directed analysis) turns
             (configured via DA_PROVIDER). Falls back to llm_provider when None.
         da_model: Model to use with da_provider (e.g., claude-sonnet-4-5).
+        sanitizer: DataSanitizer for case-scoped PII redaction at LLM boundary.
+        redis_client: Async Redis client for persisting redaction registries.
     """
     if not case_repository:
         return None
@@ -85,6 +89,8 @@ def create_milestone_engine(
             evidence_service=evidence_service,
             da_provider=da_provider,
             da_model=da_model,
+            sanitizer=sanitizer,
+            redis_client=redis_client,
             trace_enabled=True,
         )
         logger.debug("MilestoneEngine initialized with investigation tools")
@@ -792,6 +798,10 @@ def register_services(container: BaseDIContainer) -> None:
 
     da_provider, da_model = create_da_provider()
 
+    # Sanitizer + Redis for case-scoped PII redaction at LLM boundary
+    sanitizer = container.get_service("sanitizer", required=False)
+    redis_client = getattr(container, "redis_client", None)
+
     milestone_engine = create_milestone_engine(
         llm_provider,
         case_repository,
@@ -799,6 +809,8 @@ def register_services(container: BaseDIContainer) -> None:
         evidence_service=evidence_service,
         da_provider=da_provider,
         da_model=da_model,
+        sanitizer=sanitizer,
+        redis_client=redis_client,
     )
     container.milestone_engine = milestone_engine
     if milestone_engine:

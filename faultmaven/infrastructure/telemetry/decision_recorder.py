@@ -361,6 +361,11 @@ class DecisionRecorder:
             if not self._tracer:
                 return
 
+            # Avoid circular import by getting settings lazily or locally where needed
+            from faultmaven.config.settings import get_settings
+
+            settings = get_settings()
+
             # Create Opik trace entry
             with self._tracer.trace("decision_record") as span:
                 span.set_attribute("correlation_id", correlation_id)
@@ -372,6 +377,17 @@ class DecisionRecorder:
                 )
                 span.set_attribute("status", record.status)
                 span.set_attribute("latency_ms", record.latency_ms)
+
+                # DANGER: Local debugging capability to explicitly bypass the telemetry
+                # sanitization pipeline and log the raw unfiltered string to Opik.
+                if settings.observability.opik_log_raw_prompts:
+                    # 'raw_prompt' isn't explicitly on the standard DecisionRecord schema yet,
+                    # but if injected dynamically via `kwargs` at creation, log it.
+                    if hasattr(record, "raw_prompt") and record.raw_prompt:
+                        span.set_attribute("llm.raw_prompt", record.raw_prompt)
+                    # Always include the response
+                    if record.final_response:
+                        span.set_attribute("llm.response", record.final_response)
 
                 # Add confidence metrics
                 if record.confidence:

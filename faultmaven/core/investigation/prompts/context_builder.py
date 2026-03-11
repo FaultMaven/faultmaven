@@ -543,6 +543,11 @@ def _build_evidence_context(case: Case, processing_mode: Optional[str] = None) -
                 ' role="orientation"' if processing_mode == "directed_analysis" else ""
             )
             result += f"    <structural_index{role_attr}>\n"
+            # Content-level source attribution: reinforces the XML attribute
+            # so the LLM sees which file this content belongs to while reading
+            # through multi-evidence blocks, not just in the enclosing tag.
+            if ev.source_file_id and str(ev.source_file_id) in file_lookup:
+                result += f"[Source: {file_lookup[str(ev.source_file_id)]}]\n"
             result += structural_index
             if truncated:
                 result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Work with the visible content above. If you need specific details beyond what's shown, suggest a targeted command the user can run.]"

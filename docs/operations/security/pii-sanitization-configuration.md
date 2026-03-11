@@ -2,187 +2,183 @@
 
 ## Overview
 
-FaultMaven provides flexible PII (Personally Identifiable Information) sanitization controls to protect sensitive data when using external LLM providers while allowing full data preservation when using local/self-hosted models.
+FaultMaven provides case-scoped PII redaction that protects sensitive data when sending evidence to external LLM providers. When enabled, PII is redacted before LLM calls and restored in user-facing responses — the LLM never sees raw PII, but the user always does.
+
+## Configuration
+
+One setting controls PII redaction:
+
+```bash
+# .env
+SANITIZE_PII=true    # Enable PII redaction (default: false)
+```
+
+That's it. When `SANITIZE_PII=true`:
+
+- All prompts are redacted before LLM calls
+- Tool results (search_file, deep_analysis) are redacted before returning to the LLM
+- User-facing responses have placeholders reversed back to original values
+- The same PII value gets the same placeholder across all files in a case
+
+When `SANITIZE_PII=false` (default): no redaction at any layer.
 
 ## The Problem
 
-By default, FaultMaven sends data to **external 3rd-party LLM APIs** (OpenAI, Anthropic, Fireworks). This creates privacy risks:
+FaultMaven is a SaaS product where user log data crosses a trust boundary: user data → external LLM provider. Without redaction, production logs containing emails, IPs, API keys, and hostnames are sent to third-party APIs.
 
-- Production logs containing customer emails
-- Stack traces with API keys or credentials
-- System configs with internal hostnames/IPs
-- Error messages with sensitive user data
+However, FaultMaven is also a troubleshooting tool. Naively redacting IPs and hostnames defeats security investigations — the core use case. This creates a tension between privacy and utility.
 
-**Without sanitization**, this data is sent to external providers and may be:
-- Logged by the provider
-- Used for model training (depending on provider terms)
-- Subject to the provider's data retention policies
+## How It Works
 
-## The Solution
+Case-scoped redaction solves both problems:
 
-FaultMaven provides **adaptive PII sanitization** with two configuration modes:
+1. **The LLM sees placeholders** — `<IP_ADDRESS_1>`, `<EMAIL_ADDRESS_2>` — protecting privacy
+2. **Placeholders are consistent within a case** — the same IP always maps to the same placeholder across all evidence files, preserving correlation ability
+3. **The user sees real values** — placeholders are reversed before the response reaches the user
 
-### Mode 1: Off (Default)
+### Data Flow
 
-PII sanitization is **off by default**. FaultMaven is a troubleshooting tool — redacting IPs, hostnames, and usernames defeats the core use case for security investigations.
-
-```bash
-# .env configuration (default — no action needed)
-AUTO_SANITIZE_BASED_ON_PROVIDER=false
+```text
+User uploads evidence
+    → stored raw (never redacted at rest)
+    → preprocessing extracts structural index
+    ↓
+MilestoneEngine._process_turn_impl()
+    ├─ Load CaseRedactionContext from Redis
+    ├─ Context builder assembles prompt (raw content)
+    ├─ Redact prompt with case-scoped registry
+    ├─ Send redacted prompt to LLM
+    ├─ LLM calls search_file → raw result → redact with SAME registry → return to LLM
+    ├─ LLM responds with placeholders
+    └─ Save registry to Redis
+    ↓
+InvestigationService.process_turn()
+    ├─ Reverse-substitute placeholders → original values
+    └─ Return to user (user sees real IPs, names, etc.)
 ```
 
-### Mode 2: Auto-Detect
+## What Gets Redacted
 
-Automatically enables sanitization for external providers, disables for local:
+### Pattern-Based (Regex)
 
-```bash
-# .env configuration
-AUTO_SANITIZE_BASED_ON_PROVIDER=true
-```
+| Entity | Example | Placeholder |
+|--------|---------|-------------|
+| API keys | `sk-1234567890abcdef` | `<API_KEY_1>` |
+| AWS access keys | `AKIAIOSFODNN7EXAMPLE` | `<AWS_ACCESS_KEY_1>` |
+| Database URLs | `postgresql://user:pass@host/db` | `<DATABASE_URL_1>` |
+| JWT tokens | `eyJhbGciOiJIUzI1...` | `<JWT_TOKEN_1>` |
 
-**Behavior:**
+### Presidio-Based (NLP, requires K8s Presidio services)
 
-- `LLM_PROVIDER=local` → **No sanitization** (preserves all data)
-- `LLM_PROVIDER=openai` → **Sanitizes PII** (protects privacy)
-- `LLM_PROVIDER=anthropic` → **Sanitizes PII**
-- `LLM_PROVIDER=fireworks` → **Sanitizes PII**
-
-### Mode 3: Manual Control
-
-Explicitly enable sanitization regardless of provider:
-
-```bash
-# .env configuration
-SANITIZE_PII=true
-```
-
-**⚠️ Note:** When `AUTO_SANITIZE_BASED_ON_PROVIDER=false` (default), the `SANITIZE_PII` setting controls sanitization directly.
+| Entity | Example | Placeholder |
+|--------|---------|-------------|
+| Email addresses | `john@example.com` | `<EMAIL_ADDRESS_1>` |
+| Phone numbers | `+1-555-123-4567` | `<PHONE_NUMBER_1>` |
+| Credit cards | `4111-1111-1111-1111` | `<CREDIT_CARD_1>` |
+| IP addresses | `192.168.1.100` | `<IP_ADDRESS_1>` |
+| Person names | `John Smith` | `<PERSON_1>` |
+| US SSN | `123-45-6789` | `<US_SSN_1>` |
+| Locations | `San Francisco` | `<LOCATION_1>` |
 
 ## Configuration Examples
 
-### Example 1: Security Investigation (Default)
+### Default: No Redaction
 
 ```bash
-# Best for: Troubleshooting security incidents — IPs, hostnames, usernames preserved
-LLM_PROVIDER=fireworks
-FIREWORKS_API_KEY=fw_...
-
-# Default: no sanitization (no config needed)
+# Best for: Security investigations, troubleshooting
+# IPs, hostnames, usernames all visible to the LLM
+# No config needed — this is the default
 ```
 
-**Result:** ✅ All investigation data preserved — IPs, hostnames, usernames visible to the LLM
-
-### Example 2: External Provider with Auto-Sanitization
+### SaaS Production: Redaction Enabled
 
 ```bash
-# Best for: Production use where privacy matters more than investigation fidelity
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-
-# Enable auto-detect mode
-AUTO_SANITIZE_BASED_ON_PROVIDER=true
-```
-
-**Result:** 🔒 PII sanitized before sending to OpenAI (protects user privacy)
-
-### Example 3: Local LLM (Ollama)
-
-```bash
-# Best for: Maximum privacy — data never leaves the machine
-LLM_PROVIDER=local
-LOCAL_LLM_URL=http://localhost:11434
-LOCAL_LLM_MODEL=llama2
-```
-
-**Result:** ✅ Zero data loss, all PII preserved (data stays local)
-
-## What Gets Sanitized
-
-When sanitization is enabled, FaultMaven redacts:
-
-- **Email addresses** → `<EMAIL_ADDRESS>`
-- **Phone numbers** → `<PHONE_NUMBER>`
-- **Credit card numbers** → `<CREDIT_CARD>`
-- **US Social Security Numbers** → `<US_SSN>`
-- **IP addresses** → `<IP_ADDRESS>`
-- **Person names** → `<PERSON>` (if detected)
-- **Locations** → `<LOCATION>` (if detected)
-- **API keys/tokens** → `<API_KEY>` (pattern-based)
-
-## Verification
-
-Check the logs to see sanitization status:
-
-```
-# With LOCAL provider:
-🔓 PII sanitization DISABLED (using LOCAL LLM provider)
-
-# With external provider:
-🔒 PII sanitization ENABLED (using external provider: openai)
-```
-
-## Best Practices
-
-### ✅ DO:
-
-- Enable `AUTO_SANITIZE_BASED_ON_PROVIDER=true` when handling customer PII with external providers
-- Use local LLMs when handling highly sensitive data
-- Review your LLM provider's data retention policy
-- Test sanitization with sample data before production use
-
-### ❌ DON'T:
-
-- Enable sanitization for security investigations (it redacts IPs, hostnames — the data you need)
-- Assume external providers don't log data (check their policies)
-- Upload customer production data without proper safeguards
-
-## Size-Based Adaptive Processing
-
-FaultMaven also implements size-based adaptive preprocessing:
-
-| Data Size | Processing Tier | PII Sanitization |
-|-----------|----------------|------------------|
-| < 5K chars | Tier 1: Raw pass-through | Applied if enabled |
-| 5K-50K | Tier 2: Augmented preprocessing | Applied if enabled |
-| 50K-500K | Tier 3: Smart summarization | Applied if enabled |
-| > 500K | Tier 4: Chunk-based processing | Applied if enabled |
-
-**Note:** Sanitization is applied **after** preprocessing but **before** sending to LLM.
-
-## Troubleshooting
-
-### Problem: Sanitization removes important investigation data
-
-Sanitization is off by default. If you see redacted data (`<IP_ADDRESS>`, `<PERSON>`), check for explicit opt-in:
-
-```bash
-# Check logs for:
-🔒 LLM Router: Applying PII sanitization
-
-# Fix: ensure these are not set
-# AUTO_SANITIZE_BASED_ON_PROVIDER=true  ← remove or set to false
-# SANITIZE_PII=true                     ← remove or set to false
-```
-
-### Problem: Want to enable sanitization for privacy
-
-```bash
-# Option 1: Auto-detect (sanitizes for external providers, skips for local)
-AUTO_SANITIZE_BASED_ON_PROVIDER=true
-
-# Option 2: Always sanitize
+# Best for: Multi-tenant SaaS with external LLM providers
 SANITIZE_PII=true
 ```
 
-## Related Configuration
+The LLM sees `<IP_ADDRESS_1>` instead of `192.168.1.100`. The user sees `192.168.1.100` in the response.
 
-See also:
-- [LLM Provider Configuration](../getting-started/configuration.md)
-- [Security Best Practices](../security/best-practices.md)
-- [Local LLM Setup](../how-to/setup-local-llm.md)
+### Self-Hosted with Local LLM
+
+```bash
+# Best for: Enterprise on-prem — data never leaves the network
+LLM_PROVIDER=local
+LOCAL_LLM_URL=http://localhost:11434
+# No redaction needed — data stays local
+```
+
+## Advanced Configuration
+
+### Registry TTL
+
+The redaction registry (mapping between real values and placeholders) is persisted in Redis for cross-turn consistency. Default TTL is 7 days:
+
+```bash
+# Optional: Adjust how long redaction mappings are kept per case
+# REDACTION_REGISTRY_TTL_HOURS=168    # Default: 7 days
+```
+
+After expiry, a new registry starts and placeholders may renumber. This only affects cases inactive for longer than the TTL period.
+
+### Presidio Services
+
+Presidio NLP-based detection requires running Presidio Analyzer and Anonymizer services:
+
+```bash
+# K8s Ingress-based (default)
+PRESIDIO_ANALYZER_URL=http://presidio-analyzer.faultmaven.local:30080
+PRESIDIO_ANONYMIZER_URL=http://presidio-anonymizer.faultmaven.local:30080
+```
+
+Without Presidio, only regex-based patterns are applied. Presidio adds NLP-based entity detection (person names, locations, etc.).
+
+## Verification
+
+Check logs for redaction status:
+
+```text
+# When enabled:
+🔒 LLM Router: Applying PII sanitization
+
+# When disabled (default):
+🔓 LLM Router: Skipping PII sanitization
+```
+
+## Troubleshooting
+
+### Problem: User sees placeholders in responses
+
+If users see `<IP_ADDRESS_1>` in agent responses, reverse-substitution may have failed. Check:
+
+- Redis connectivity (registry persistence)
+- Server logs for "Failed to load redaction registry" warnings
+
+### Problem: Redaction removes investigation-critical data
+
+Redaction is off by default. If you see redacted data unexpectedly:
+
+```bash
+# Check your .env — remove or set to false:
+# SANITIZE_PII=true  ← this enables redaction
+```
+
+### Problem: Same IP gets different placeholders across files
+
+This indicates the case-scoped registry is not loading from Redis. Check:
+
+- Redis is running and accessible
+- No Redis connection errors in logs
+- The case hasn't been inactive longer than the registry TTL
+
+## Related
+
+- [Case-Scoped PII Redaction Architecture](../../architecture/security/case-scoped-pii-redaction.md) — Design document
+- [Architecture Overview](../../architecture/architecture-overview.md) — System architecture
 
 ## Version History
 
-- **v3.3.0** - Changed default to off (investigation-first); auto-detect is opt-in via `AUTO_SANITIZE_BASED_ON_PROVIDER=true`
-- **v3.2.0** - Added adaptive PII sanitization with auto-detect mode
-- **v3.1.0** - Basic PII sanitization (always enabled)
+- **v4.0.0** — Case-scoped redaction: consistent placeholders across files, tool result redaction, reverse-substitution. Removed `AUTO_SANITIZE_BASED_ON_PROVIDER` (single `SANITIZE_PII` setting)
+- **v3.3.0** — Changed default to off (investigation-first)
+- **v3.2.0** — Added adaptive PII sanitization with auto-detect mode
+- **v3.1.0** — Basic PII sanitization (always enabled)

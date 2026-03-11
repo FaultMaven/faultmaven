@@ -278,9 +278,9 @@ class PreprocessingService:
                 f"but ChunkingService not available - will truncate instead"
             )
 
-        # Step 4: Sanitization
-        logger.info("Applying PII/secret sanitization")
-        sanitized = self.sanitizer.sanitize(extracted)
+        # PII redaction is handled at the LLM boundary (MilestoneEngine),
+        # not at extraction time. Structural indices are stored raw.
+        sanitized = extracted
 
         # Check for security issues
         security_flags = []
@@ -493,13 +493,11 @@ class PreprocessingService:
                 metadata={"fallback": True},
             )
 
-        # Sanitize
-        sanitized_content = self.sanitizer.sanitize(extraction.content)
+        # PII redaction is handled at the LLM boundary (MilestoneEngine),
+        # not at extraction time. Structural indices are stored raw.
+        sanitized_content = extraction.content
+        sanitization_applied = False
         redactions_count = 0
-        sanitization_applied = sanitized_content != extraction.content
-        if sanitization_applied:
-            # Rough count of redactions by counting redaction markers
-            redactions_count = sanitized_content.count("***") // 2
 
         # Store raw file (if storage service is available)
         content_ref = None
@@ -587,12 +585,11 @@ class PreprocessingService:
                 metadata={"fallback": True},
             )
 
-        # Sanitize
-        sanitized_content = self.sanitizer.sanitize(extraction.content)
-        sanitization_applied = sanitized_content != extraction.content
+        # PII redaction is handled at the LLM boundary (MilestoneEngine),
+        # not at extraction time. Structural indices are stored raw.
+        sanitized_content = extraction.content
+        sanitization_applied = False
         redactions_count = 0
-        if sanitization_applied:
-            redactions_count = sanitized_content.count("***") // 2
 
         # Compute content hash from text (not raw bytes like process_upload)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()

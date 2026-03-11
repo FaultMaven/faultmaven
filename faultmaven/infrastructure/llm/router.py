@@ -95,6 +95,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             cached_response = self.cache.check(sanitized_prompt, cache_model)
             if cached_response:
                 self.logger.info("✅ Using cached response")
+                # Attach raw prompt for telemetry if enabled
+                if self.settings.observability.opik_log_raw_prompts:
+                    setattr(cached_response, "raw_prompt", prompt)
                 return cached_response
 
         # Route through registry with BaseExternalClient wrapping
@@ -131,6 +134,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 # Store with the requested model key for consistent cache lookup
                 store_model = model or response.model
                 self.cache.store(sanitized_prompt, store_model, response)
+
+            # Attach raw prompt for telemetry if enabled
+            if self.settings.observability.opik_log_raw_prompts:
+                setattr(response, "raw_prompt", prompt)
 
             return response
 
@@ -196,40 +203,17 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
     def _sanitize_if_needed(self, prompt: str) -> str:
         """
-        Conditionally sanitize prompt based on settings and provider type
+        Conditionally sanitize prompt based on SANITIZE_PII setting.
 
         Returns:
             Sanitized or original prompt
         """
-        # Check if auto-detect is enabled
-        if self.settings.protection.auto_sanitize_based_on_provider:
-            # Auto mode: Sanitize only for external providers (not LOCAL)
-            from faultmaven.config.settings import LLMProvider
-
-            is_local = self.settings.llm.provider == LLMProvider.LOCAL
-
-            if is_local:
-                self.logger.debug(
-                    "🔓 LLM Router: Skipping PII sanitization (LOCAL provider)"
-                )
-                return prompt
-            else:
-                self.logger.debug(
-                    f"🔒 LLM Router: Applying PII sanitization (provider: {self.settings.llm.provider})"
-                )
-                return self.sanitizer.sanitize(prompt)
+        if self.settings.protection.sanitize_pii:
+            self.logger.debug("🔒 LLM Router: Applying PII sanitization")
+            return self.sanitizer.sanitize(prompt)
         else:
-            # Manual mode: Use explicit setting
-            if self.settings.protection.sanitize_pii:
-                self.logger.debug(
-                    "🔒 LLM Router: Applying PII sanitization (explicit config)"
-                )
-                return self.sanitizer.sanitize(prompt)
-            else:
-                self.logger.debug(
-                    "🔓 LLM Router: Skipping PII sanitization (explicit config)"
-                )
-                return prompt
+            self.logger.debug("🔓 LLM Router: Skipping PII sanitization")
+            return prompt
 
     def get_provider_status(self):
         """Get status of all providers"""

@@ -681,6 +681,8 @@ class MilestoneEngine:
         checkpoint_service: Any | None = None,
         da_provider: Any | None = None,
         da_model: str | None = None,
+        sanitizer: Any | None = None,
+        redis_client: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -700,6 +702,11 @@ class MilestoneEngine:
                 When None, falls back to llm_provider.
             da_model: Model to use with da_provider. When None,
                 the provider's default model is used.
+            sanitizer: DataSanitizer for case-scoped PII redaction.
+                When None, PII redaction at the engine level is disabled.
+            redis_client: Async Redis client for persisting redaction
+                registries across turns. When None, registries are
+                in-memory only (consistent within turn).
         """
         self.llm_provider = llm_provider
         self.repository = repository
@@ -710,6 +717,8 @@ class MilestoneEngine:
         self.evidence_service = evidence_service
         self.da_provider = da_provider
         self.da_model = da_model
+        self.sanitizer = sanitizer
+        self.redis_client = redis_client
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.stagnation_detector = StagnationDetector()
@@ -721,6 +730,19 @@ class MilestoneEngine:
         self._case_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
         logger.info("MilestoneEngine initialized with structured output engine")
+
+    def _should_redact(self) -> bool:
+        """Determine whether PII redaction should be applied at the engine level.
+
+        Checks SANITIZE_PII setting. Returns False when no sanitizer is
+        configured (redaction disabled at DI level).
+        """
+        if not self.sanitizer:
+            return False
+
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().protection.sanitize_pii
 
     async def process_turn(
         self,
@@ -1250,6 +1272,28 @@ class MilestoneEngine:
                         extra={"case_id": case.case_id, "turn": case.current_turn},
                     )
 
+            # Initialize case-scoped PII redaction context.
+            # Created fresh each turn — the assembled prompt contains raw
+            # structural indices from ALL evidence files, so a single
+            # sanitize() call builds a collision-free registry. Redis
+            # load() provides cross-turn numbering consistency (same IP
+            # keeps the same placeholder across turns) but is not required
+            # for correctness.
+            from faultmaven.infrastructure.security.case_redaction import (
+                CaseRedactionContext,
+            )
+            from faultmaven.config.settings import get_settings
+
+            redaction_settings = get_settings()
+            redaction_ctx = CaseRedactionContext(
+                case_id=case.case_id,
+                sanitizer=self.sanitizer,
+                redis_client=self.redis_client,
+                enabled=self._should_redact(),
+                ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
+            )
+            await redaction_ctx.load()
+
             # Build prompt using the adaptive template system
             # Gap #6: Pass provider info for dynamic token budget calculation
             provider_name = getattr(self.llm_provider, "provider_name", None)
@@ -1318,10 +1362,13 @@ class MilestoneEngine:
                     schema_model,
                     investigation_tools=da_tools,
                     tool_context=da_context,
+                    redaction_ctx=redaction_ctx,
                 )
             else:
                 response_obj = await self._generate_structured_output(
-                    prompt, schema_model
+                    prompt,
+                    schema_model,
+                    redaction_ctx=redaction_ctx,
                 )
 
             # Debug: Log what type was actually returned
@@ -1400,7 +1447,9 @@ class MilestoneEngine:
                     )
                     corrected_prompt = prompt + correction_feedback
                     corrected_response = await self._generate_structured_output(
-                        corrected_prompt, schema_model
+                        corrected_prompt,
+                        schema_model,
+                        redaction_ctx=redaction_ctx,
                     )
 
                     # Re-validate the corrected response
@@ -1636,10 +1685,14 @@ class MilestoneEngine:
                     ]
                 )
 
+            # Persist redaction registry for cross-turn consistency
+            await redaction_ctx.save()
+
             return {
                 "agent_response": response_obj.agent_response,
                 "suggested_follow_ups": follow_ups,
                 "case_updated": case_updated,
+                "redaction_ctx": redaction_ctx,
                 "metadata": {
                     "turn_number": case_updated.current_turn,
                     "milestones_completed": metadata.get("milestones_completed", []),
@@ -1686,6 +1739,7 @@ class MilestoneEngine:
         investigation_tools: list[dict],
         tool_context: Any,
         max_tokens: int = 8000,
+        redaction_ctx: Any | None = None,
     ) -> BaseInteractionResponse:
         """Run a bounded tool-calling loop for DA turns.
 
@@ -1896,6 +1950,12 @@ class MilestoneEngine:
                         deep_analysis_count += 1
 
                     result_text = self._format_tool_result(tool_result)
+
+                # Redact PII in tool results before sending to LLM.
+                # Tool results contain raw file content (search_file,
+                # deep_analysis) which bypasses prompt-level redaction.
+                if redaction_ctx:
+                    result_text = redaction_ctx.sanitize(result_text)
 
                 # Truncate long results
                 if len(result_text) > self.TOOL_RESULT_MAX_CHARS:
@@ -2227,6 +2287,7 @@ class MilestoneEngine:
         schema_model: Any,
         investigation_tools: list[dict] | None = None,
         tool_context: Any | None = None,
+        redaction_ctx: Any | None = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -2246,10 +2307,15 @@ class MilestoneEngine:
             schema_model: Pydantic model class for expected output
             investigation_tools: OpenAI-format tool defs for search_file/deep_analysis
             tool_context: ToolContext for tool execution
+            redaction_ctx: Case-scoped redaction context for PII sanitization
 
         Returns:
             Instantiated Pydantic model
         """
+        # Apply case-scoped PII redaction to the prompt before any LLM call.
+        # This covers both the tool-augmented (DA) and single-shot paths.
+        if redaction_ctx:
+            prompt = redaction_ctx.sanitize(prompt)
         # Branch to tool-augmented generation for DA turns with tools.
         # Two layers of protection:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
@@ -2278,6 +2344,7 @@ class MilestoneEngine:
                         schema_model,
                         investigation_tools,
                         tool_context,
+                        redaction_ctx=redaction_ctx,
                     )
                 except ToolCallingUnsupportedError as e:
                     logger.warning(

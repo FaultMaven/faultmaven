@@ -89,13 +89,11 @@ class TestClassifyAndExtract:
         assert call_args[0][0] == "user_paste.log"
 
     @pytest.mark.asyncio
-    async def test_sanitization_applied(self, service, mock_sanitizer):
-        """Sanitizer is called on extraction output."""
-        mock_sanitizer.sanitize.side_effect = lambda x: x.replace(
-            "password=secret", "password=***"
-        )
-        await service.classify_and_extract(content="data with password=secret")
-        mock_sanitizer.sanitize.assert_called_once()
+    async def test_no_sanitization_at_extraction_layer(self, service, mock_sanitizer):
+        """Extraction never sanitizes — PII redaction happens at the LLM boundary."""
+        result = await service.classify_and_extract(content="data with password=secret")
+        mock_sanitizer.sanitize.assert_not_called()
+        assert result.sanitization_applied is False
 
     @pytest.mark.asyncio
     async def test_content_hash_computed_from_text(self, service):

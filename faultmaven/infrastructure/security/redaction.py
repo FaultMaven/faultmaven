@@ -271,6 +271,55 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         return sanitized_text
 
+    def sanitize_text_with_registry(
+        self,
+        text: str,
+        entity_registry: Dict[str, Dict[str, str]],
+    ) -> str:
+        """Sanitize text using an externally-provided entity registry.
+
+        Same detection logic as _sanitize_text() (regex patterns + Presidio)
+        but uses the shared registry for cross-call placeholder consistency.
+        The registry is mutated in place — new entries are added as PII is
+        discovered.
+
+        Args:
+            text: Input text to sanitize.
+            entity_registry: External registry mapping
+                {entity_type: {original_value: placeholder}}. Will be
+                mutated with new entries.
+
+        Returns:
+            Sanitized text with consistent placeholders.
+        """
+        if not text or not isinstance(text, str):
+            return text
+
+        sanitized_text = text
+
+        def _get_placeholder(entity_type: str, value: str) -> str:
+            if entity_type not in entity_registry:
+                entity_registry[entity_type] = {}
+            type_map = entity_registry[entity_type]
+            if value not in type_map:
+                idx = len(type_map) + 1
+                type_map[value] = f"<{entity_type}_{idx}>"
+            return type_map[value]
+
+        for pattern_str, replacement_template in self.pattern_replacements:
+            pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
+            entity_type = replacement_template.strip("[]").replace("_REDACTED", "")
+
+            def _indexed_replacer(match: re.Match, _type: str = entity_type) -> str:
+                return _get_placeholder(_type, match.group(0))
+
+            sanitized_text = pattern.sub(_indexed_replacer, sanitized_text)
+
+        if self.analyzer_available and self.anonymizer_available:
+            sanitized_text = self._apply_presidio(sanitized_text, entity_registry)
+
+        return sanitized_text
+
     def _sanitize_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Sanitize dictionary data recursively

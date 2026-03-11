@@ -50,6 +50,7 @@ Master index for all architecture documentation.
 |----------|---------|
 | **[Dependency Injection System](core-architecture/dependency-injection-system.md)** | DI container and service interfaces |
 | **[IAM Design](security/iam-design.md)** | Identity and Access Management |
+| **[Case-Scoped PII Redaction](security/case-scoped-pii-redaction.md)** | Bidirectional PII redaction at LLM boundary |
 
 ### Implementation Guides
 

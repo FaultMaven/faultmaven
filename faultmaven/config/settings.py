@@ -1013,12 +1013,10 @@ class ProtectionSettings(BaseSettings):
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio libraries)
     sanitize_pii: bool = Field(default=False)
 
-    # Auto-detect: Only sanitize when using external LLM providers
-    # When True: Automatically disable sanitization for LOCAL provider, enable for others
-    # When False: Use sanitize_pii setting regardless of provider
-    # Default True: Safe default for external providers. Set to False in .env
-    # for security investigations where IPs/hostnames must not be redacted.
-    auto_sanitize_based_on_provider: bool = Field(default=True)
+    # TTL for case-scoped redaction registries in Redis (hours).
+    # Controls how long the bidirectional PII mapping is kept for a case.
+    # After expiry, a new registry starts (placeholders may renumber).
+    redaction_registry_ttl_hours: int = Field(default=168)  # 7 days
 
     # Presidio Configuration (K8s Ingress-based to avoid port conflicts)
     presidio_analyzer_url: str = Field(
@@ -1099,6 +1097,10 @@ class ObservabilitySettings(BaseSettings):
     opik_track_users: str = Field(default="")
     opik_track_sessions: str = Field(default="")
     opik_track_operations: str = Field(default="")
+    opik_log_raw_prompts: bool = Field(
+        default=False,
+        description="DANGER: Log raw LLM prompts bypassing sanitization. Only use for local debugging.",
+    )
 
     # APM Integration (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
