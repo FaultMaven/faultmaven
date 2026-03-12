@@ -108,6 +108,19 @@ A new method on `DataSanitizer` identical to `_sanitize_text()` but accepting an
 
 The existing `sanitize()` and `_sanitize_text()` methods are unchanged.
 
+### DataSanitizer Detection Pipeline
+
+The sanitizer has two detection stages, both configurable through `ProtectionSettings`:
+
+**Stage 1 — Regex patterns** (`pattern_replacements`): Matches secrets and credentials (API keys, AWS keys, database URLs, JWT tokens, passwords). Password patterns use `\b` word boundaries to avoid corrupting compound tokens in log data (e.g., `failed_password: 520` must survive intact).
+
+**Stage 2 — Presidio NLP** (`_apply_presidio()`): Sends text to Presidio Analyzer/Anonymizer services for NLP-based entity detection. Two settings control behavior:
+
+- `entities_to_protect` — which entity types Presidio detects. Default excludes `PERSON`, `DATE_TIME`, `NRP`, `LOCATION`, and `URL` because spaCy NER (trained on prose) produces false positives on machine-generated log data (month abbreviations, hostnames, and syslog fields misclassified as person names).
+- `min_score_threshold` — minimum confidence for Presidio detections (default: 0.85). Higher thresholds reduce false positives at the cost of missing some true PII.
+
+Both values are read from `ProtectionSettings` in the constructor. The constructor always resolves settings via `get_settings()` if none are injected.
+
 ### MilestoneEngine Integration
 
 **File:** `core/investigation/milestone_engine.py`
@@ -151,13 +164,15 @@ if redaction_ctx:
 
 ## Configuration
 
-One setting: `SANITIZE_PII=true/false` (default: `false`).
+One setting controls whether redaction is active: `SANITIZE_PII=true/false` (default: `false`).
+
+Additional settings for detection tuning:
+
+- `REDACTION_REGISTRY_TTL_HOURS` — Redis key TTL for case-scoped registry (default: 168 hours / 7 days)
+- `MIN_SCORE_THRESHOLD` — Presidio confidence threshold (default: 0.85)
+- `ENTITIES_TO_PROTECT` — Presidio entity types to detect (default excludes `PERSON`, `DATE_TIME`, `NRP`, `LOCATION`, `URL` — see Detection Pipeline above)
 
 See [PII Sanitization Configuration](../../operations/security/pii-sanitization-configuration.md) for operational details.
-
-Additional setting for registry persistence:
-
-- `REDACTION_REGISTRY_TTL_HOURS` — Redis key TTL (default: 168 hours / 7 days)
 
 ## Edge Cases
 
@@ -182,12 +197,12 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | File | Change | Risk |
 | --- | --- | --- |
 | `infrastructure/security/case_redaction.py` | New file | None |
-| `infrastructure/security/redaction.py` | Added `sanitize_text_with_registry()` | Low (additive) |
+| `infrastructure/security/redaction.py` | Added `sanitize_text_with_registry()`, wired Presidio config to settings, `\b` word boundary on password regex, removed dead code | Low |
 | `core/investigation/milestone_engine.py` | Redaction lifecycle in turn processing + tool loop | Medium |
 | `modules/agent/domain/services/investigation_service.py` | Extraction-layer context creation + reverse-substitution | Low |
 | `services/preprocessing/preprocessing_service.py` | `redaction_context` param on all 3 sanitize paths | Low |
 | `container/providers/services.py` | Pass sanitizer + redis_client to engine | Low |
-| `config/settings.py` | Added `redaction_registry_ttl_hours`, removed `auto_sanitize_based_on_provider` | Low |
+| `config/settings.py` | Added `redaction_registry_ttl_hours`, updated `entities_to_protect` defaults (removed false-positive-prone entities), raised `min_score_threshold` to 0.85 | Low |
 
 ## What Is Not Changed
 
@@ -212,10 +227,18 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 - Custom TTL propagation
 - `sanitize_text_with_registry()` consistency
 
+`tests/infrastructure/test_redaction.py` — includes regression tests:
+
+- `TestPasswordRegexWordBoundary` (5 tests): verifies compound tokens like `failed_password: 520` survive sanitization intact, while standalone `password=secret` is still redacted
+- `TestPresidioSettingsWiring` (4 tests): verifies settings injection, custom entity list honored, default entity list excludes `PERSON`/`DATE_TIME`/`NRP`/`LOCATION`/`URL`, default threshold is 0.85
+
 ### Integration Verification
 
 Playbook scenario S6 (Cross-Evidence Correlation) with `SANITIZE_PII=true`:
 
-- Turn 3 response should not contain raw IPs
-- User-facing response should show real IPs (reverse-substituted)
-- IPs from Linux_2k.log and OpenSSH_2k.log should get different placeholders
+- `failed_password: 520` survives intact in structural index (no `<PASSWORD_1>` corruption)
+- No `<PERSON_N>` false positives on timestamps or log tokens
+- IPs correctly redacted to `<IP_ADDRESS_N>` placeholders
+- User-facing response shows real IPs (reverse-substituted)
+- IPs from Linux_2k.log and OpenSSH_2k.log get different placeholders
+- Response quality at parity with `SANITIZE_PII=false` runs

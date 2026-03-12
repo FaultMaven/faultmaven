@@ -70,15 +70,34 @@ InvestigationService.process_turn()
 
 ### Presidio-Based (NLP, requires K8s Presidio services)
 
+Default entities detected (configurable via `ENTITIES_TO_PROTECT`):
+
 | Entity | Example | Placeholder |
 |--------|---------|-------------|
-| Email addresses | `john@example.com` | `<EMAIL_ADDRESS_1>` |
-| Phone numbers | `+1-555-123-4567` | `<PHONE_NUMBER_1>` |
 | Credit cards | `4111-1111-1111-1111` | `<CREDIT_CARD_1>` |
+| Crypto addresses | `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa` | `<CRYPTO_1>` |
+| Email addresses | `john@example.com` | `<EMAIL_ADDRESS_1>` |
+| IBAN codes | `GB29NWBK60161331926819` | `<IBAN_CODE_1>` |
 | IP addresses | `192.168.1.100` | `<IP_ADDRESS_1>` |
-| Person names | `John Smith` | `<PERSON_1>` |
+| Phone numbers | `+1-555-123-4567` | `<PHONE_NUMBER_1>` |
+| Medical licenses | `DEA# AB1234567` | `<MEDICAL_LICENSE_1>` |
+| US bank numbers | `1234567890` | `<US_BANK_NUMBER_1>` |
+| US driver licenses | `D123-456-78-901` | `<US_DRIVER_LICENSE_1>` |
+| US ITIN | `9XX-XX-XXXX` | `<US_ITIN_1>` |
+| US passports | `123456789` | `<US_PASSPORT_1>` |
 | US SSN | `123-45-6789` | `<US_SSN_1>` |
-| Locations | `San Francisco` | `<LOCATION_1>` |
+
+Entities **excluded by default** (produce false positives on log data):
+
+| Entity | Why excluded |
+|--------|-------------|
+| `PERSON` | spaCy NER misclassifies month names (`Jan`, `Mar`), hostnames, and syslog fields as person names |
+| `DATE_TIME` | Timestamps are essential for log correlation — redacting them destroys timeline analysis |
+| `NRP` | Nationality/religious/political — irrelevant for system logs, false positives on technical terms |
+| `LOCATION` | Irrelevant for system logs, false positives on server/region names |
+| `URL` | URLs in logs are diagnostically important (endpoints, services) |
+
+To re-enable any of these, add them to `ENTITIES_TO_PROTECT` in your `.env`.
 
 ## Configuration Examples
 
@@ -121,6 +140,17 @@ The redaction registry (mapping between real values and placeholders) is persist
 
 After expiry, a new registry starts and placeholders may renumber. This only affects cases inactive for longer than the TTL period.
 
+### Presidio Detection Tuning
+
+```bash
+# Confidence threshold for Presidio detections (default: 0.85)
+# Higher = fewer false positives, lower = more aggressive detection
+# MIN_SCORE_THRESHOLD=0.85
+
+# Entity types to detect (comma-separated, default shown below)
+# ENTITIES_TO_PROTECT=CREDIT_CARD,CRYPTO,EMAIL_ADDRESS,IBAN_CODE,IP_ADDRESS,PHONE_NUMBER,MEDICAL_LICENSE,US_BANK_NUMBER,US_DRIVER_LICENSE,US_ITIN,US_PASSPORT,US_SSN
+```
+
 ### Presidio Services
 
 Presidio NLP-based detection requires running Presidio Analyzer and Anonymizer services:
@@ -131,7 +161,7 @@ PRESIDIO_ANALYZER_URL=http://presidio-analyzer.faultmaven.local:30080
 PRESIDIO_ANONYMIZER_URL=http://presidio-anonymizer.faultmaven.local:30080
 ```
 
-Without Presidio, only regex-based patterns are applied. Presidio adds NLP-based entity detection (person names, locations, etc.).
+Without Presidio, only regex-based patterns are applied. Presidio adds NLP-based entity detection for the configured entity types.
 
 ## Verification
 
@@ -178,6 +208,7 @@ This indicates the case-scoped registry is not loading from Redis. Check:
 
 ## Version History
 
+- **v4.1.0** — Presidio settings wired to configuration: `MIN_SCORE_THRESHOLD` (default 0.85) and `ENTITIES_TO_PROTECT` are now read from settings. Removed `PERSON`, `DATE_TIME`, `NRP`, `LOCATION`, `URL` from defaults (false positives on log data). Fixed password regex corrupting compound tokens like `failed_password: 520`.
 - **v4.0.0** — Case-scoped redaction: consistent placeholders across files, tool result redaction, reverse-substitution. Removed `AUTO_SANITIZE_BASED_ON_PROVIDER` (single `SANITIZE_PII` setting)
 - **v3.3.0** — Changed default to off (investigation-first)
 - **v3.2.0** — Added adaptive PII sanitization with auto-detect mode
