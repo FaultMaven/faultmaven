@@ -33,6 +33,9 @@ if "torch" not in sys.modules:
             return Mock()
 
     _mock_torch = _MockTorchModule("torch")
+    _mock_torch.__path__ = (
+        []
+    )  # Must be iterable; import system iterates __path__ for subpackages
     _mock_torch.Tensor = type("Tensor", (), {})
     _mock_torch.device = Mock
     _mock_torch.dtype = Mock

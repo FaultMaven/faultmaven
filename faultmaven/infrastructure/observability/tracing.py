@@ -51,7 +51,7 @@ try:
     import opik
 
     OPIK_AVAILABLE = True
-    logging.info("Opik SDK loaded successfully")
+    logging.debug("Opik SDK loaded successfully")
 except ImportError:
     OPIK_AVAILABLE = False
     logging.warning("Comet Opik not available")
@@ -95,6 +95,21 @@ if PROMETHEUS_AVAILABLE:
         "Generic function duration in seconds",
         ["function_name", "status"],
     )
+
+
+class _NoOpSpan:
+    """No-op span yielded by OpikTracer for general (non-LLM) operations.
+
+    LLM-specific Opik tracing is handled by @opik.track on the LLM router.
+    Other callers (knowledge service, case ingestion) use OpikTracer for
+    context scoping only and don't need real Opik spans.
+    """
+
+    def set_attribute(self, key: str, value):
+        pass
+
+    def set_status(self, status: str):
+        pass
 
 
 class OpikTracer(BaseExternalClient, ITracer):
@@ -149,70 +164,28 @@ class OpikTracer(BaseExternalClient, ITracer):
     @contextmanager
     def _create_trace_context(self, operation: str):
         """
-        Create a trace context manager with external call wrapping
+        Context manager for general (non-LLM) operation scoping.
+
+        Yields a _NoOpSpan. LLM-specific Opik tracing is handled separately
+        by @opik.track on the LLM router, which uses the native Opik SDK to
+        create properly nested traces and spans with prompt/response data.
+
+        This context manager is used by knowledge service, case data ingestion,
+        and other general operations that need timing/scoping but not LLM spans.
 
         Args:
-            operation: Operation name to trace
+            operation: Operation name for metrics
 
         Yields:
-            Trace span object or None if tracing unavailable
+            _NoOpSpan
         """
         start_time = time.time()
-        span = None
-
-        # Runtime check for tracing disable/enable
-        if not self._should_trace(operation):
-            self.logger.debug(f"Tracing disabled for operation: {operation}")
-            yield None
-            self._record_fallback_metrics(operation, start_time, "disabled")
-            return
-
-        if self.opik_available and OPIK_AVAILABLE:
-            try:
-                # Create span with external call wrapping
-                def create_opik_span():
-                    span_tags = {}
-                    if self.use_local_opik:
-                        span_tags.update(
-                            {
-                                "opik_local_host": self.local_opik_host,
-                                "opik_local_url": self.local_opik_url,
-                            }
-                        )
-
-                    # Use Opik tracing with external call protection
-                    return opik.track(name=operation, tags=span_tags)
-
-                # Use synchronous external call for span creation
-                opik_span = self.call_external_sync(
-                    operation_name="create_trace_span",
-                    call_func=create_opik_span,
-                    retries=1,
-                    retry_delay=1.0,
-                )
-
-                if opik_span:
-                    with opik_span as span:
-                        self.logger.debug(f"Opik trace started: {operation}")
-                        yield span
-                else:
-                    yield None
-
-            except Exception as e:
-                # Fallback - log warning but continue without tracing
-                self.logger.warning(
-                    f"Opik tracing failed for operation '{operation}': {e}"
-                )
-                self._record_fallback_metrics(operation, start_time, "error")
-                yield None
-        else:
-            # No Opik available - use fallback
-            self.logger.debug(f"Fallback trace: {operation} (Opik unavailable)")
-            yield None
-
-        # Record completion metrics
-        if span is None:
+        try:
+            yield _NoOpSpan()
             self._record_fallback_metrics(operation, start_time, "success")
+        except Exception:
+            self._record_fallback_metrics(operation, start_time, "error")
+            raise
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -221,8 +194,6 @@ class OpikTracer(BaseExternalClient, ITracer):
         Returns:
             Dictionary containing health status and metrics
         """
-        from typing import Any, Dict
-
         base_health = await super().health_check()
 
         # Add tracing-specific health data
@@ -289,68 +260,6 @@ class OpikTracer(BaseExternalClient, ITracer):
 
         return base_health
 
-    def _should_trace(self, operation: str) -> bool:
-        """
-        Determine if tracing should be enabled for this operation based on various criteria.
-
-        Supports:
-        - Global disable: OPIK_TRACK_DISABLE=true
-        - Target users: OPIK_TRACK_USERS=user1,user2,user3
-        - Target sessions: OPIK_TRACK_SESSIONS=session1,session2
-        - Target operations: OPIK_TRACK_OPERATIONS=llm_query,knowledge_search
-
-        Args:
-            operation: Operation name being traced
-
-        Returns:
-            True if tracing should be enabled, False otherwise
-        """
-        # Global disable check
-        if self.settings.observability.opik_track_disable:
-            return False
-
-        # Get current request context for targeted tracing
-        try:
-            from faultmaven.infrastructure.logging.coordinator import request_context
-
-            context = request_context.get()
-        except Exception:
-            context = None
-
-        # Check for targeted user tracing
-        target_users = self.settings.observability.opik_track_users.strip()
-        if target_users:
-            target_user_list = [u.strip() for u in target_users.split(",") if u.strip()]
-            if target_user_list:
-                if not context or not context.user_id:
-                    return False  # No user context, but targeting specific users
-                if context.user_id not in target_user_list:
-                    return False  # User not in target list
-
-        # Check for targeted session tracing
-        target_sessions = self.settings.observability.opik_track_sessions.strip()
-        if target_sessions:
-            target_session_list = [
-                s.strip() for s in target_sessions.split(",") if s.strip()
-            ]
-            if target_session_list:
-                if not context or not context.session_id:
-                    return False  # No session context, but targeting specific sessions
-                if context.session_id not in target_session_list:
-                    return False  # Session not in target list
-
-        # Check for targeted operation tracing
-        target_operations = self.settings.observability.opik_track_operations.strip()
-        if target_operations:
-            target_op_list = [
-                op.strip() for op in target_operations.split(",") if op.strip()
-            ]
-            if target_op_list:
-                if operation not in target_op_list:
-                    return False  # Operation not in target list
-
-        return True  # Default to enabled if no restrictions apply
-
     def _record_fallback_metrics(self, operation: str, start_time: float, status: str):
         """
         Record fallback metrics when Opik is unavailable
@@ -379,173 +288,115 @@ def init_opik_tracing(
     settings=None,
 ):
     """
-    Initialize Comet Opik tracing with support for local and cloud instances.
+    Initialize Opik tracing by setting the environment variables that the
+    Opik SDK's ``OpikConfig`` (pydantic-settings with ``env_prefix="opik_"``)
+    reads at runtime.
 
-    This function uses BaseExternalClient patterns for robust service connectivity.
+    We intentionally do NOT call ``opik.configure()`` because:
+      - It triggers interactive prompts (workspace confirmation, API key input)
+      - It makes GET health-check requests that can hit the wrong URL
+      - It writes to ~/.opik.config which persists stale state
 
-    Args:
-        api_key: Comet API key (optional, can be set via settings)
-        project_name: Project name for tracing
-        settings: FaultMavenSettings instance for configuration
+    Instead we set the four env vars that OpikConfig reads directly:
+      - OPIK_URL_OVERRIDE  (the full API base URL, e.g. https://www.comet.com/opik/api/)
+      - OPIK_API_KEY
+      - OPIK_WORKSPACE
+      - OPIK_PROJECT_NAME
+
+    The ``@opik.track`` decorator lazily creates its client on first
+    invocation via ``OpikConfig``, so these env vars are picked up
+    automatically — no explicit ``configure()`` call is needed.
     """
     if not OPIK_AVAILABLE:
-        logging.warning("Comet Opik not available, skipping tracing initialization")
+        logging.warning("Opik SDK not installed, skipping tracing initialization")
         return
 
-    # Get settings if not provided
     if settings is None:
         from faultmaven.config.settings import get_settings
 
         settings = get_settings()
 
+    if not settings.observability.opik_enabled:
+        logging.info("Opik tracing disabled (OPIK_ENABLED=false)")
+        return
+
     try:
-        # Check for local Opik configuration first
-        local_opik_url = settings.observability.opik_local_url
-        local_opik_host = settings.observability.opik_local_host
-        use_local_opik = settings.observability.opik_use_local
+        obs = settings.observability
+        project = obs.opik_project_name or project_name
 
-        # Check for cloud Opik configuration
-        url_override = settings.observability.opik_url_override
-        api_key = api_key or (
-            settings.observability.opik_api_key.get_secret_value()
-            if settings.observability.opik_api_key
-            else None
-        )
-
-        # Determine which Opik instance to use
-        if use_local_opik:
-            # Configure for local Opik instance
-            logging.info(f"Configuring Opik for local instance at {local_opik_url}")
-
-            # Check if local Opik service is accessible with external call pattern
-            def check_opik_health():
-                import requests
-
-                response = requests.get(f"{local_opik_url}/health", timeout=5)
-                return response.status_code
-
-            try:
-                # Use a temporary external client for health checking (simplified)
-                status_code = check_opik_health()
-                if status_code == 200:
-                    logging.info(
-                        f"Local Opik service health check passed (HTTP {status_code})"
-                    )
-                elif status_code == 404:
-                    logging.info(
-                        f"Local Opik service is running but health endpoint not found. Proceeding with configuration."
-                    )
-                else:
-                    logging.warning(f"Local Opik service returned status {status_code}")
-            except Exception as e:
-                logging.info(
-                    f"Could not reach local Opik service: {e}. Will attempt configuration anyway."
-                )
-
-            # Set environment variables for Opik SDK
-            os.environ["OPIK_URL_OVERRIDE"] = local_opik_url
-            os.environ["OPIK_PROJECT_NAME"] = project_name
-
-            # Configure Opik SDK with retry pattern
-            def configure_opik():
-                try:
-                    # First try with minimal configuration
-                    opik.configure(url=local_opik_url)
-                    return True
-                except Exception as e1:
-                    # Check if this is a 404 endpoint issue (expected for local instances)
-                    error_str = str(e1).lower()
-                    if "404" in error_str and (
-                        "workspace" in error_str or "api key" in error_str
-                    ):
-                        logging.info(
-                            f"Local Opik service detected at {local_opik_url} but API endpoints differ from cloud version"
-                        )
-                        return True  # Continue with basic capability
-
-                    # Try with default API key
-                    local_api_key = api_key or (
-                        settings.observability.opik_api_key.get_secret_value()
-                        if settings.observability.opik_api_key
-                        else "local-dev-key"
-                    )
-                    opik.configure(url=local_opik_url, api_key=local_api_key)
-                    return True
-
-            try:
-                if configure_opik():
-                    logging.info(
-                        f"Local Opik tracing initialized successfully at {local_opik_url}"
-                    )
-
-                    # Reduce Opik library's own logging verbosity
-                    import logging as logging_module
-
-                    opik_logger = logging_module.getLogger("opik")
-                    opik_logger.setLevel(
-                        logging_module.WARNING
-                    )  # Only show warnings and errors
-
-                    # Set project name separately if needed
-                    try:
-                        opik.set_project_name(project_name)
-                    except AttributeError:
-                        os.environ["OPIK_PROJECT_NAME"] = project_name
-                    except Exception as e:
-                        logging.warning(f"Failed to set project name: {e}")
-
-                    logging.info(f"Local Opik tracing setup completed")
-                else:
-                    logging.info(
-                        "FaultMaven will continue running without Opik tracing"
-                    )
-
-            except Exception as e:
-                logging.warning(f"Opik SDK configuration failed: {e}")
-                logging.info("FaultMaven will continue running without Opik tracing")
-
-        elif url_override or api_key:
-            # Configure for cloud Opik instance
-            logging.info("Configuring Opik for cloud instance")
-
-            config_params = {}
-
-            if api_key:
-                config_params["api_key"] = api_key
-
-            if url_override:
-                config_params["url"] = url_override
-
-            opik.configure(**config_params)
-
-            # Set project name and workspace as environment variables
-            os.environ["OPIK_PROJECT_NAME"] = project_name
-            if settings.observability.comet_workspace:
-                os.environ["COMET_WORKSPACE"] = settings.observability.comet_workspace
-
-            logging.info("Cloud Opik tracing initialized successfully")
-
+        if obs.opik_use_local:
+            # Self-hosted Opik (local Docker or K8s)
+            # Local Opik expects: {base}/api/  (no /opik prefix)
+            url = obs.opik_local_url.rstrip("/") + "/api/"
+            logging.info(f"Configuring Opik for self-hosted instance: {url}")
+        elif obs.opik_url_override:
+            # Cloud Opik (Comet) or custom endpoint
+            url = obs.opik_url_override.rstrip("/") + "/"
+            logging.info(f"Configuring Opik for cloud instance: {url}")
         else:
             logging.warning(
-                "No Opik configuration found. Set OPIK_USE_LOCAL=true for local instance "
-                "or provide COMET_API_KEY for cloud instance. Tracing will be disabled."
+                "Opik enabled but no URL configured. "
+                "Set OPIK_USE_LOCAL=true or OPIK_URL_OVERRIDE. Tracing will be disabled."
             )
             return
+
+        # Resolve API key
+        resolved_api_key = api_key or (
+            obs.opik_api_key.get_secret_value() if obs.opik_api_key else None
+        )
+
+        # Resolve workspace (FaultMaven uses COMET_WORKSPACE; Opik SDK reads OPIK_WORKSPACE)
+        workspace = obs.comet_workspace or "default"
+
+        # Set the env vars that OpikConfig reads (env_prefix="opik_")
+        os.environ["OPIK_URL_OVERRIDE"] = url
+        os.environ["OPIK_PROJECT_NAME"] = project
+        os.environ["OPIK_WORKSPACE"] = workspace
+        if resolved_api_key:
+            os.environ["OPIK_API_KEY"] = resolved_api_key
+
+        # Disable the SDK's connection monitor health-check ping.
+        # The SDK pings /is-alive/ping every 10s but has a URL bug (urljoin
+        # with absolute path strips /opik/api/ prefix).  The ping hits the
+        # Comet homepage, gets 200 HTML, and creates log noise.  Traces are
+        # sent to the correct URL regardless, so we disable the ping and
+        # only log errors if actual trace POSTs fail.
+        os.environ["OPIK_CONNECTION_MONITOR_PING_INTERVAL"] = "999999"
+
+        # Also update the session config so already-created OpikConfig instances refresh
+        try:
+            import opik.config
+
+            opik.config.update_session_config("url_override", url)
+            opik.config.update_session_config("project_name", project)
+            opik.config.update_session_config("workspace", workspace)
+            opik.config.update_session_config(
+                "connection_monitor_ping_interval", 999999
+            )
+            if resolved_api_key:
+                opik.config.update_session_config("api_key", resolved_api_key)
+        except Exception as e:
+            logging.debug(f"Could not update Opik session config: {e}")
+
+        logging.info(
+            f"Opik tracing initialized: url={url}, project={project}, workspace={workspace}"
+        )
 
     except Exception as e:
         logging.error(f"Failed to initialize Opik tracing: {e}")
         logging.info("Continuing without tracing...")
 
 
-def trace(name: str, tags: Optional[dict] = None, settings=None):
+def trace(name: str, settings=None):
     """
-    Decorator to trace function calls with external service protection.
+    Decorator for local performance metrics (Prometheus counters/histograms).
 
-    Uses simplified external call patterns for span creation with fallback.
+    This decorator does NOT create Opik traces. LLM-specific Opik tracing is
+    handled by @opik.track on the LLM router, which uses the native Opik SDK
+    to create properly nested traces and spans with prompt/response data.
 
     Args:
-        name: Name for the trace span
-        tags: Optional tags for the span
+        name: Name for the metric label
         settings: Optional FaultMavenSettings instance
 
     Returns:
@@ -557,80 +408,13 @@ def trace(name: str, tags: Optional[dict] = None, settings=None):
 
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
-                # Get settings if not provided
-                trace_settings = settings
-                if trace_settings is None:
-                    try:
-                        from faultmaven.config.settings import get_settings
-
-                        trace_settings = get_settings()
-                    except Exception:
-                        trace_settings = None
-
                 start_time = time.time()
-
-                # Runtime check for tracing disable/targeting
-                if not _should_trace_operation(name, trace_settings):
-                    logging.debug(f"Tracing disabled for async function: {name}")
-                    try:
-                        result = await func(*args, **kwargs)
-                        duration = time.time() - start_time
-                        _record_metrics(name, duration, "success_no_trace")
-                        return result
-                    except Exception as e:
-                        duration = time.time() - start_time
-                        _record_metrics(name, duration, "error_no_trace")
-                        raise
-
-                # Create span if Opik is available
-                span = None
-                if OPIK_AVAILABLE:
-                    try:
-                        # Add local Opik headers if using local instance
-                        span_tags = tags or {}
-                        if (
-                            trace_settings
-                            and trace_settings.observability.opik_use_local
-                        ):
-                            span_tags.update(
-                                {
-                                    "opik_local_host": trace_settings.observability.opik_local_host,
-                                    "opik_local_url": trace_settings.observability.opik_local_url,
-                                }
-                            )
-
-                        # Simple span tracking for local Opik instance with protection
-                        def create_simple_span():
-                            return {
-                                "name": name,
-                                "tags": span_tags,
-                                "start_time": start_time,
-                            }
-
-                        span = create_simple_span()
-                        # Reduce logging noise for heartbeat operations
-                        if not (
-                            "heartbeat" in name.lower()
-                            or "update_last_activity" in name.lower()
-                        ):
-                            logging.debug(f"Opik span started: {name}")
-                    except Exception as e:
-                        logging.warning(f"Failed to create Opik span: {e}")
-
                 try:
-                    # Execute the async function
                     result = await func(*args, **kwargs)
-
-                    # Record success metrics
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "success")
-
+                    _record_metrics(name, time.time() - start_time, "success")
                     return result
-
-                except Exception as e:
-                    # Record error metrics
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "error")
+                except Exception:
+                    _record_metrics(name, time.time() - start_time, "error")
                     raise
 
             return async_wrapper
@@ -638,97 +422,14 @@ def trace(name: str, tags: Optional[dict] = None, settings=None):
 
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
-                # Get settings if not provided
-                trace_settings = settings
-                if trace_settings is None:
-                    try:
-                        from faultmaven.config.settings import get_settings
-
-                        trace_settings = get_settings()
-                    except Exception:
-                        trace_settings = None
-
                 start_time = time.time()
-
-                # Runtime check for tracing disable/targeting
-                if not _should_trace_operation(name, trace_settings):
-                    logging.debug(f"Tracing disabled for function: {name}")
-                    try:
-                        result = func(*args, **kwargs)
-                        duration = time.time() - start_time
-                        _record_metrics(name, duration, "success_no_trace")
-                        return result
-                    except Exception as e:
-                        duration = time.time() - start_time
-                        _record_metrics(name, duration, "error_no_trace")
-                        raise
-
-                # Create span if Opik is available
-                span = None
-                if OPIK_AVAILABLE:
-                    try:
-                        # Add local Opik headers if using local instance
-                        span_tags = tags or {}
-                        if (
-                            trace_settings
-                            and trace_settings.observability.opik_use_local
-                        ):
-                            span_tags.update(
-                                {
-                                    "opik_local_host": trace_settings.observability.opik_local_host,
-                                    "opik_local_url": trace_settings.observability.opik_local_url,
-                                }
-                            )
-
-                        # Simple span tracking for local Opik instance with protection
-                        def create_simple_span():
-                            return {
-                                "name": name,
-                                "tags": span_tags,
-                                "start_time": start_time,
-                            }
-
-                        span = create_simple_span()
-                        # Reduce logging noise for heartbeat operations
-                        if not (
-                            "heartbeat" in name.lower()
-                            or "update_last_activity" in name.lower()
-                        ):
-                            logging.debug(f"Opik span started: {name}")
-                    except Exception as e:
-                        logging.warning(f"Failed to create Opik span: {e}")
-
                 try:
-                    # Execute the function
                     result = func(*args, **kwargs)
-
-                    # Record success metrics
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "success")
-
+                    _record_metrics(name, time.time() - start_time, "success")
                     return result
-
-                except Exception as e:
-                    # Record error metrics
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "error")
-
-                    # Log error
-                    logging.error(f"Function {name} failed after {duration:.3f}s: {e}")
+                except Exception:
+                    _record_metrics(name, time.time() - start_time, "error")
                     raise
-
-                finally:
-                    # Finalize span logging
-                    if span and OPIK_AVAILABLE:
-                        duration = time.time() - start_time
-                        # Reduce logging noise for heartbeat operations
-                        if not (
-                            "heartbeat" in span.get("name", "").lower()
-                            or "update_last_activity" in span.get("name", "").lower()
-                        ):
-                            logging.debug(
-                                f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)"
-                            )
 
             return wrapper
 
@@ -787,172 +488,3 @@ def _record_metrics(function_name: str, duration: float, status: str):
 
     except Exception as e:
         logging.warning(f"Failed to record metrics: {e}")
-
-
-def create_span(name: str, tags: Optional[dict] = None, settings=None):
-    """
-    Context manager for creating spans with external service protection.
-
-    Args:
-        name: Name for the span
-        tags: Optional tags for the span
-        settings: Optional FaultMavenSettings instance
-
-    Returns:
-        Span context manager
-    """
-    # Get settings if not provided
-    if settings is None:
-        try:
-            from faultmaven.config.settings import get_settings
-
-            settings = get_settings()
-        except Exception:
-            settings = None
-
-    class DummySpan:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            pass
-
-    # Runtime check for tracing disable/targeting
-    if not _should_trace_operation(name, settings):
-        logging.debug(f"Tracing disabled for span: {name}")
-        return DummySpan()
-
-    if not OPIK_AVAILABLE:
-        return DummySpan()
-
-    try:
-        # Create span with protection - return a context manager
-        class ProtectedSpan:
-            def __init__(self, name, tags):
-                self.name = name
-                self.tags = tags
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                pass
-
-        span_tags = tags or {}
-        if settings and settings.observability.opik_use_local:
-            span_tags.update(
-                {
-                    "opik_local_host": settings.observability.opik_local_host,
-                    "opik_local_url": settings.observability.opik_local_url,
-                }
-            )
-
-        return ProtectedSpan(name, span_tags)
-
-    except Exception as e:
-        logging.warning(f"Failed to create span: {e}")
-        return DummySpan()
-
-
-def set_global_tags(tags: dict):
-    """
-    Set global tags for all spans
-
-    Args:
-        tags: Dictionary of tags to set globally
-    """
-    if not OPIK_AVAILABLE:
-        logging.warning("Comet Opik not available, cannot set global tags")
-        return
-
-    try:
-        opik.set_global_tags(tags)
-        logging.info(f"Set global tags: {tags}")
-    except Exception as e:
-        logging.error(f"Failed to set global tags: {e}")
-
-
-def _should_trace_operation(operation_name: str, settings=None) -> bool:
-    """
-    Standalone function to check if an operation should be traced.
-    Used by decorators and standalone functions.
-
-    Args:
-        operation_name: Name of the operation
-        settings: Optional FaultMavenSettings instance
-
-    Returns:
-        True if tracing should be enabled, False otherwise
-    """
-    # Get settings if not provided
-    if settings is None:
-        try:
-            from faultmaven.config.settings import get_settings
-
-            settings = get_settings()
-        except Exception:
-            # If settings can't be loaded, default to enabled
-            return True
-
-    # Global disable check
-    if settings.observability.opik_track_disable:
-        return False
-
-    # Get current request context for targeted tracing
-    try:
-        from faultmaven.infrastructure.logging.coordinator import request_context
-
-        context = request_context.get()
-    except Exception:
-        context = None
-
-    # Check for targeted user tracing
-    target_users = settings.observability.opik_track_users.strip()
-    if target_users:
-        target_user_list = [u.strip() for u in target_users.split(",") if u.strip()]
-        if target_user_list:
-            if not context or not context.user_id:
-                return False  # No user context, but targeting specific users
-            if context.user_id not in target_user_list:
-                return False  # User not in target list
-
-    # Check for targeted session tracing
-    target_sessions = settings.observability.opik_track_sessions.strip()
-    if target_sessions:
-        target_session_list = [
-            s.strip() for s in target_sessions.split(",") if s.strip()
-        ]
-        if target_session_list:
-            if not context or not context.session_id:
-                return False  # No session context, but targeting specific sessions
-            if context.session_id not in target_session_list:
-                return False  # Session not in target list
-
-    # Check for targeted operation tracing
-    target_operations = settings.observability.opik_track_operations.strip()
-    if target_operations:
-        target_op_list = [
-            op.strip() for op in target_operations.split(",") if op.strip()
-        ]
-        if target_op_list:
-            if operation_name not in target_op_list:
-                return False  # Operation not in target list
-
-    return True  # Default to enabled if no restrictions apply
-
-
-def record_exception(exception: Exception, tags: Optional[dict] = None):
-    """
-    Record an exception in tracing
-
-    Args:
-        exception: Exception to record
-        tags: Optional tags for the exception
-    """
-    if not OPIK_AVAILABLE:
-        return
-
-    try:
-        opik.record_exception(exception, tags=tags or {})
-    except Exception as e:
-        logging.warning(f"Failed to record exception: {e}")

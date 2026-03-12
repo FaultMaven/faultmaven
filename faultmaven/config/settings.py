@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # =============================================================================
@@ -1086,7 +1086,7 @@ class ObservabilitySettings(BaseSettings):
     opik_project_name: str = Field(default="faultmaven")
     opik_url_override: Optional[str] = Field(default=None)
     opik_use_local: bool = Field(default=False)
-    opik_local_url: str = Field(default="http://localhost:3001")
+    opik_local_url: str = Field(default="http://localhost:5173")
     opik_local_host: str = Field(default="opik-api.faultmaven.local")
 
     # Opik API and tracking controls (merged from EnhancedObservabilitySettings)
@@ -1131,6 +1131,16 @@ class ObservabilitySettings(BaseSettings):
     metrics_port: int = Field(default=9090)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def validate_raw_prompt_safety(self) -> "ObservabilitySettings":
+        """Prevent raw prompt logging unless using a local Opik instance."""
+        if self.opik_log_raw_prompts and not self.opik_use_local:
+            raise ValueError(
+                "OPIK_LOG_RAW_PROMPTS=true requires OPIK_USE_LOCAL=true. "
+                "Raw prompt logging is only permitted with local Opik instances."
+            )
+        return self
 
 
 class LoggingSettings(BaseSettings):

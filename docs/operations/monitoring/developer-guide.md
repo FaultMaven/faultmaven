@@ -824,22 +824,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         
         return response
 
-# Observability pattern for span filtering
+# Prometheus metrics for routine operations
 @trace("session_heartbeat")
 async def traced_heartbeat_operation():
     """
-    Observability integration with routine operation filtering.
-    
-    The @trace decorator includes logic to reduce span logging noise:
-    - Spans are still created for tracing (metrics preserved)
-    - Verbose span logging is suppressed for routine operations
-    - Full tracing available for debugging when needed
+    Prometheus metrics tracking for routine operations.
+
+    The @trace decorator (from tracing.py) records Prometheus metrics only:
+    - Tracks execution time, call counts, and error rates
+    - Does NOT create Opik traces (LLM tracing uses @opik.track on the router)
+    - Lightweight — suitable for high-frequency operations like heartbeats
     """
-    # In tracing.py:
-    # if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
-    #     logging.debug(f"Opik span started: {name}")
-    # # Span still created for observability, just not logged verbosely
-    
     result = await perform_heartbeat_logic()
     return result
 ```

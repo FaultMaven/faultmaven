@@ -59,10 +59,10 @@ class TestCoreObservability:
         with pytest.raises(RuntimeError, match="Async error"):
             await failing_async_function()
 
-    def test_trace_decorator_with_tags(self):
-        """Test that @trace decorator accepts tags without crashing."""
+    def test_trace_decorator_with_settings_param(self):
+        """Test that @trace decorator accepts settings param without crashing."""
 
-        @trace("test_tags", tags={"env": "test"})
+        @trace("test_settings_param", settings=None)
         def tagged_function(value):
             return value * 3
 
@@ -210,17 +210,9 @@ class TestObservabilityConfiguration:
 
     def test_tracing_functions_import(self):
         """Test that tracing utility functions can be imported."""
-        from faultmaven.infrastructure.observability.tracing import (
-            create_span,
-            init_opik_tracing,
-            record_exception,
-            set_global_tags,
-        )
+        from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
         assert callable(init_opik_tracing)
-        assert callable(create_span)
-        assert callable(record_exception)
-        assert callable(set_global_tags)
 
     def test_init_opik_tracing_graceful_failure(self):
         """Test that init_opik_tracing handles failures gracefully."""

@@ -99,11 +99,18 @@ class APMIntegration:
         if self.settings:
             # Use settings-based configuration
             # Opik configuration (FaultMaven's primary observability tool)
+            # Resolve endpoint: self-hosted URL takes priority, then cloud override
+            if self.settings.observability.opik_use_local:
+                opik_endpoint = self.settings.observability.opik_local_url
+            elif self.settings.observability.opik_url_override:
+                opik_endpoint = self.settings.observability.opik_url_override
+            else:
+                opik_endpoint = None  # SDK uses its default
+
             opik_config = APMConfiguration(
                 provider=APMProvider.OPIK,
                 enabled=self.settings.observability.opik_enabled,
-                endpoint_url=self.settings.observability.opik_url_override
-                or "http://localhost:3003",
+                endpoint_url=opik_endpoint,
                 api_key=(
                     self.settings.observability.opik_api_key.get_secret_value()
                     if self.settings.observability.opik_api_key
@@ -145,8 +152,8 @@ class APMIntegration:
             # Fallback configuration when settings are unavailable
             opik_config = APMConfiguration(
                 provider=APMProvider.OPIK,
-                enabled=True,
-                endpoint_url="http://localhost:3003",
+                enabled=False,
+                endpoint_url=None,
                 api_key=None,
                 project_name="faultmaven",
                 custom_headers={"User-Agent": "FaultMaven-APM-Integration/1.0"},
@@ -297,42 +304,16 @@ class APMIntegration:
     async def _export_to_opik(
         self, metrics: List[APMMetrics], config: APMConfiguration
     ) -> None:
-        """Export metrics to Opik."""
-        try:
-            # Try to use existing Opik integration if available
-            from ...observability.tracing import OpikTracer
+        """No-op: APM HTTP metrics are not exported to Opik.
 
-            # Convert metrics to Opik format
-            for metric in metrics:
-                try:
-                    # Create Opik span data
-                    span_data = {
-                        "name": metric.operation_name,
-                        "start_time": metric.timestamp.isoformat(),
-                        "end_time": (
-                            metric.timestamp
-                            + timedelta(milliseconds=metric.duration_ms)
-                        ).isoformat(),
-                        "status": metric.status,
-                        "tags": {**config.custom_tags, **metric.tags},
-                        "metadata": metric.attributes,
-                    }
-
-                    if metric.trace_id:
-                        span_data["trace_id"] = metric.trace_id
-                    if metric.span_id:
-                        span_data["span_id"] = metric.span_id
-                    if metric.parent_span_id:
-                        span_data["parent_span_id"] = metric.parent_span_id
-
-                    # This would integrate with the actual Opik client
-                    self.logger.debug(f"Exported to Opik: {metric.operation_name}")
-
-                except Exception as e:
-                    self.logger.warning(f"Failed to export metric to Opik: {e}")
-
-        except ImportError:
-            self.logger.warning("Opik integration not available")
+        Opik is used for LLM observability (prompts, responses, model metadata).
+        LLM tracing is handled by @opik.track on the LLM router, not here.
+        APM metrics (HTTP request/response timings) go to Prometheus instead.
+        """
+        self.logger.debug(
+            f"Skipping Opik export for {len(metrics)} APM metrics "
+            "(Opik is for LLM tracing, use Prometheus for APM)"
+        )
 
     async def _export_to_prometheus(
         self, metrics: List[APMMetrics], config: APMConfiguration

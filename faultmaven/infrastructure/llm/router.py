@@ -15,13 +15,37 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
 from .cache import SemanticCache
 from .providers import LLMResponse, get_registry
+
+# Opik native tracing for LLM calls
+try:
+    import opik
+    from opik import opik_context
+
+    OPIK_AVAILABLE = True
+except ImportError:
+    OPIK_AVAILABLE = False
+
+TELEMETRY_PAYLOAD_MAX_CHARS = 8000
+
+
+def _opik_track_llm(name: str):
+    """Decorator: wraps function with @opik.track(type='llm') when Opik is available."""
+    if OPIK_AVAILABLE:
+        return opik.track(
+            name=name, type="llm", capture_input=False, capture_output=False
+        )
+
+    # No-op passthrough when Opik is not installed
+    def identity(func):
+        return func
+
+    return identity
 
 
 class LLMRouter(BaseExternalClient, ILLMProvider):
@@ -55,7 +79,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         )
         self.logger.info("🔍 LLMRouter registry will be initialized on first use")
 
-    @trace("llm_router_route")
+    @_opik_track_llm("llm_router_route")
     async def route(
         self,
         prompt: str,
@@ -95,9 +119,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             cached_response = self.cache.check(sanitized_prompt, cache_model)
             if cached_response:
                 self.logger.info("✅ Using cached response")
-                # Attach raw prompt for telemetry if enabled
+                cached_response.sanitized_prompt = sanitized_prompt
                 if self.settings.observability.opik_log_raw_prompts:
-                    setattr(cached_response, "raw_prompt", prompt)
+                    cached_response.raw_prompt = prompt
+                self._update_opik_span(cached_response, sanitized_prompt, cached=True)
                 return cached_response
 
         # Route through registry with BaseExternalClient wrapping
@@ -135,9 +160,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 store_model = model or response.model
                 self.cache.store(sanitized_prompt, store_model, response)
 
-            # Attach raw prompt for telemetry if enabled
+            # Attach prompt data for telemetry
+            response.sanitized_prompt = sanitized_prompt
             if self.settings.observability.opik_log_raw_prompts:
-                setattr(response, "raw_prompt", prompt)
+                response.raw_prompt = prompt
+
+            # Update the current Opik span with LLM-specific data
+            self._update_opik_span(response, sanitized_prompt)
 
             return response
 
@@ -148,7 +177,51 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             raise
 
-    @trace("llm_router_generate")
+    def _update_opik_span(
+        self, response: LLMResponse, sanitized_prompt: str, cached: bool = False
+    ) -> None:
+        """Update the current Opik span with LLM call data.
+
+        Uses opik_context.update_current_span() to attach prompt, response,
+        model, provider, and token usage to whichever span is currently active.
+        This works whether the span was created by @opik.track on this function
+        or by a parent caller.
+        """
+        if not OPIK_AVAILABLE:
+            self.logger.warning("Opik SDK not available — skipping span update")
+            return
+
+        try:
+            input_data = {
+                "prompt": sanitized_prompt[:TELEMETRY_PAYLOAD_MAX_CHARS],
+            }
+            output_data = {}
+            if response.content:
+                output_data["response"] = response.content[:TELEMETRY_PAYLOAD_MAX_CHARS]
+
+            metadata = {
+                "cached": cached or response.cached,
+                "tokens_used": response.tokens_used,
+                "response_time_ms": response.response_time_ms,
+                "confidence": response.confidence,
+            }
+
+            usage = None
+            if response.tokens_used:
+                usage = {"total_tokens": response.tokens_used}
+
+            opik_context.update_current_span(
+                input=input_data,
+                output=output_data,
+                metadata=metadata,
+                model=response.model,
+                provider=response.provider,
+                usage=usage,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to update Opik span: {e}")
+
+    @_opik_track_llm("llm_router_generate")
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """
         ILLMProvider interface implementation - delegates to route()
