@@ -161,6 +161,8 @@ class LLMResponse:
     response_time_ms: int
     cached: bool = False
     tool_calls: Optional[List[ToolCall]] = None  # Function calling support
+    sanitized_prompt: Optional[str] = None  # PII-sanitized prompt for telemetry
+    raw_prompt: Optional[str] = None  # Raw prompt (local debugging only)
 
 
 @dataclass

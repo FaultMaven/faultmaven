@@ -228,6 +228,14 @@ class DecisionRecord(BaseModel):
     )
     final_response: str = Field(description="Final response to user")
 
+    # Telemetry fields
+    sanitized_prompt: Optional[str] = Field(
+        default=None, description="PII-sanitized prompt for telemetry"
+    )
+    raw_prompt: Optional[str] = Field(
+        default=None, description="Raw prompt (local debugging only)"
+    )
+
     # Status and error handling
     status: str = Field(default="completed", description="Turn completion status")
     errors: List[Dict[str, Any]] = Field(

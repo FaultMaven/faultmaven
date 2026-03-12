@@ -244,35 +244,25 @@ from .modules.report.api.routes import router as report_router
 
 # SessionManager now handled via DI container - services.session.SessionService
 
-# Optional opik middleware import
+# Optional Opik middleware import
 try:
     import opik
 
-    # Try different middleware import patterns for different Opik versions
+    OPIK_AVAILABLE = True
+
     try:
         from opik.integrations.fastapi import OpikMiddleware
 
         OPIK_MIDDLEWARE_AVAILABLE = True
     except ImportError:
-        try:
-            from opik import OpikMiddleware
-
-            OPIK_MIDDLEWARE_AVAILABLE = True
-        except ImportError:
-            OPIK_MIDDLEWARE_AVAILABLE = False
-            logger.info(
-                "Opik middleware class not available, tracing will work without middleware"
-            )
-
-    OPIK_AVAILABLE = True
-    logger.info("Opik SDK loaded successfully")
+        OPIK_MIDDLEWARE_AVAILABLE = False
+        logger.debug(
+            "Opik middleware class not available, tracing will work without middleware"
+        )
 except ImportError:
-    logger.warning("Opik not available, running without tracing")
     OPIK_AVAILABLE = False
     OPIK_MIDDLEWARE_AVAILABLE = False
-
-# Note: For local Opik, we'll rely on environment variable configuration
-# The Opik SDK should pick up the custom URL and headers automatically
+    logger.info("Opik not available, running without tracing")
 
 
 @asynccontextmanager

@@ -31,8 +31,11 @@ from uuid import uuid4
 
 from faultmaven.exceptions import ServiceException
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models.contracts.core_contracts import DecisionRecord, TurnContext
 from faultmaven.models.interfaces import ITracer
+
+TELEMETRY_PAYLOAD_MAX_CHARS = 8000
 
 
 class DecisionRecorder:
@@ -69,6 +72,7 @@ class DecisionRecorder:
         """
         self._logger = logging.getLogger(self.__class__.__name__)
         self._tracer = tracer
+        self._sanitizer = DataSanitizer()
         self._retention_period = timedelta(days=retention_days)
         self._enable_structured_logging = enable_structured_logging
         self._enable_performance_tracking = enable_performance_tracking
@@ -151,6 +155,8 @@ class DecisionRecorder:
         agent_latencies: Optional[Dict[str, int]] = None,
         agent_results: Optional[Dict[str, Any]] = None,
         final_response: str = "",
+        sanitized_prompt: Optional[str] = None,
+        raw_prompt: Optional[str] = None,
         status: str = "completed",
         errors: Optional[List[Dict[str, Any]]] = None,
         correlation_id: Optional[str] = None,
@@ -172,6 +178,8 @@ class DecisionRecorder:
             agent_latencies: Per-agent execution times
             agent_results: Results from each selected agent
             final_response: Final response to user
+            sanitized_prompt: PII-sanitized prompt for telemetry
+            raw_prompt: Raw prompt (local debugging only)
             status: Turn completion status
             errors: Any errors encountered
             correlation_id: Optional correlation ID for request tracking
@@ -203,6 +211,8 @@ class DecisionRecorder:
                 agent_latencies=agent_latencies or {},
                 agent_results=agent_results or {},
                 final_response=final_response,
+                sanitized_prompt=sanitized_prompt,
+                raw_prompt=raw_prompt,
                 status=status,
                 errors=errors or [],
                 started_at=datetime.now(timezone.utc),
@@ -361,12 +371,10 @@ class DecisionRecorder:
             if not self._tracer:
                 return
 
-            # Avoid circular import by getting settings lazily or locally where needed
             from faultmaven.config.settings import get_settings
 
             settings = get_settings()
 
-            # Create Opik trace entry
             with self._tracer.trace("decision_record") as span:
                 span.set_attribute("correlation_id", correlation_id)
                 span.set_attribute("record_id", record.record_id)
@@ -378,16 +386,27 @@ class DecisionRecorder:
                 span.set_attribute("status", record.status)
                 span.set_attribute("latency_ms", record.latency_ms)
 
-                # DANGER: Local debugging capability to explicitly bypass the telemetry
-                # sanitization pipeline and log the raw unfiltered string to Opik.
-                if settings.observability.opik_log_raw_prompts:
-                    # 'raw_prompt' isn't explicitly on the standard DecisionRecord schema yet,
-                    # but if injected dynamically via `kwargs` at creation, log it.
-                    if hasattr(record, "raw_prompt") and record.raw_prompt:
-                        span.set_attribute("llm.raw_prompt", record.raw_prompt)
-                    # Always include the response
-                    if record.final_response:
-                        span.set_attribute("llm.response", record.final_response)
+                # Always log sanitized prompt for production observability
+                if record.sanitized_prompt:
+                    span.set_attribute(
+                        "llm.prompt",
+                        record.sanitized_prompt[:TELEMETRY_PAYLOAD_MAX_CHARS],
+                    )
+
+                # Sanitize response to close PII reflection loophole
+                if record.final_response:
+                    sanitized_response = self._sanitizer.sanitize(record.final_response)
+                    span.set_attribute(
+                        "llm.response",
+                        sanitized_response[:TELEMETRY_PAYLOAD_MAX_CHARS],
+                    )
+
+                # Raw prompt: local debugging only (guarded by startup validator)
+                if settings.observability.opik_log_raw_prompts and record.raw_prompt:
+                    span.set_attribute(
+                        "llm.raw_prompt",
+                        record.raw_prompt[:TELEMETRY_PAYLOAD_MAX_CHARS],
+                    )
 
                 # Add confidence metrics
                 if record.confidence:
