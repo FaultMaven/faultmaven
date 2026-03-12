@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 
 from faultmaven.infrastructure.security.redaction import DataSanitizer
@@ -9,16 +11,8 @@ class TestDataSanitizer:
     def test_init_default_patterns(self):
         """Test DataSanitizer initialization with default patterns."""
         sanitizer = DataSanitizer()
-        assert sanitizer.custom_patterns is not None
-        # custom_patterns can be empty by default, that's ok
-        assert sanitizer.replacements is not None
-
-    def test_init_custom_patterns(self):
-        """Test DataSanitizer initialization with custom patterns."""
-        # The current implementation doesn't support custom patterns in constructor
-        # This test verifies the default initialization works
-        sanitizer = DataSanitizer()
-        assert sanitizer.custom_patterns is not None
+        assert sanitizer.pattern_replacements is not None
+        assert len(sanitizer.pattern_replacements) > 0
 
     @pytest.mark.parametrize(
         "input_text,expected_redacted",
@@ -178,3 +172,106 @@ class TestDataSanitizer:
         # Should redact MAC address with indexed pseudonym
         assert "<MAC_ADDRESS_" in result
         assert "00:1B:44:11:3A:B7" not in result
+
+
+class TestPasswordRegexWordBoundary:
+    """Verify password regex does not corrupt compound tokens like failed_password."""
+
+    def test_password_regex_preserves_event_type_names(self):
+        """Entity profile event types must survive sanitization intact."""
+        sanitizer = DataSanitizer()
+        text = "  Event types:\n    failed_password: 520\n    accepted_login: 3"
+        result = sanitizer.sanitize(text)
+
+        assert "failed_password: 520" in result
+        assert "accepted_login: 3" in result
+        assert "<PASSWORD_" not in result
+
+    def test_password_regex_still_redacts_password_equals(self):
+        """password=value pattern must still be redacted."""
+        sanitizer = DataSanitizer()
+        result = sanitizer.sanitize("password=MySecret123")
+
+        assert "MySecret123" not in result
+        assert "<PASSWORD_" in result
+
+    def test_password_regex_still_redacts_password_colon(self):
+        """password: value pattern must still be redacted when password is standalone."""
+        sanitizer = DataSanitizer()
+        result = sanitizer.sanitize("password: MySecret123")
+
+        assert "MySecret123" not in result
+        assert "<PASSWORD_" in result
+
+    def test_passwd_regex_preserves_compound_tokens(self):
+        """Compound tokens containing passwd must survive."""
+        sanitizer = DataSanitizer()
+        result = sanitizer.sanitize("user_passwd: changed_ok")
+
+        # user_passwd is a compound token, not a credential
+        assert "user_passwd" in result
+
+    def test_passwd_regex_still_redacts_standalone(self):
+        """Standalone passwd=value must still be redacted."""
+        sanitizer = DataSanitizer()
+        result = sanitizer.sanitize("passwd=secret456")
+
+        assert "secret456" not in result
+        assert "<PASSWORD_" in result
+
+
+class TestPresidioSettingsWiring:
+    """Verify Presidio entity list and threshold are read from settings."""
+
+    def _make_settings(self, entities=None, threshold=None):
+        """Create a mock settings object with protection config."""
+        settings = MagicMock()
+        settings.protection.entities_to_protect = entities or [
+            "CREDIT_CARD",
+            "EMAIL_ADDRESS",
+        ]
+        settings.protection.min_score_threshold = threshold or 0.9
+        settings.protection.presidio_analyzer_url = "http://fake:8080"
+        settings.protection.presidio_anonymizer_url = "http://fake:8081"
+        settings.server.skip_service_checks = True
+        return settings
+
+    def test_presidio_config_from_settings(self):
+        """DataSanitizer reads entities and threshold from settings."""
+        settings = self._make_settings(
+            entities=["CREDIT_CARD", "EMAIL_ADDRESS"],
+            threshold=0.9,
+        )
+        sanitizer = DataSanitizer(settings=settings)
+
+        assert sanitizer._presidio_entities == ["CREDIT_CARD", "EMAIL_ADDRESS"]
+        assert sanitizer._presidio_score_threshold == 0.9
+
+    def test_presidio_config_custom_entities(self):
+        """Custom entity list is honored."""
+        custom_entities = ["IP_ADDRESS", "PERSON", "PHONE_NUMBER"]
+        settings = self._make_settings(entities=custom_entities)
+        sanitizer = DataSanitizer(settings=settings)
+
+        assert sanitizer._presidio_entities == custom_entities
+        assert "PERSON" in sanitizer._presidio_entities
+
+    def test_default_settings_exclude_person(self):
+        """Default settings exclude PERSON from entity list."""
+        sanitizer = DataSanitizer()
+
+        assert "PERSON" not in sanitizer._presidio_entities
+        assert "DATE_TIME" not in sanitizer._presidio_entities
+        assert "NRP" not in sanitizer._presidio_entities
+        assert "LOCATION" not in sanitizer._presidio_entities
+        assert "URL" not in sanitizer._presidio_entities
+        # Core financial/infrastructure entities remain
+        assert "CREDIT_CARD" in sanitizer._presidio_entities
+        assert "IP_ADDRESS" in sanitizer._presidio_entities
+        assert "EMAIL_ADDRESS" in sanitizer._presidio_entities
+
+    def test_default_settings_threshold(self):
+        """Default settings use 0.85 threshold."""
+        sanitizer = DataSanitizer()
+
+        assert sanitizer._presidio_score_threshold == 0.85

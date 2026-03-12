@@ -26,6 +26,7 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -60,33 +61,16 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             circuit_breaker_timeout=30,  # Shorter timeout for privacy service recovery
         )
 
-        # Lazy import to avoid circular import at module import time
-        self._settings = settings
-
-        # Determine service endpoints from unified settings if available
-        analyzer_url = None
-        anonymizer_url = None
-        if settings is not None:
-            try:
-                # Prefer explicit URLs in protection settings
-                # Use unified protection settings for Presidio configuration
-                if getattr(settings, "protection", None):
-                    analyzer_url = settings.protection.presidio_analyzer_url
-                    anonymizer_url = settings.protection.presidio_anonymizer_url
-            except Exception:
-                # Fall through to env-based defaults
-                analyzer_url = None
-                anonymizer_url = None
-
-        # Configure K8s Presidio service endpoints using unified protection settings
-        if not analyzer_url or not anonymizer_url:
+        # Resolve settings — use injected settings or fall back to global
+        if settings is None:
             from faultmaven.config.settings import get_settings
 
             settings = get_settings()
-            analyzer_url = analyzer_url or settings.protection.presidio_analyzer_url
-            anonymizer_url = (
-                anonymizer_url or settings.protection.presidio_anonymizer_url
-            )
+        self._settings = settings
+
+        # Presidio service endpoints
+        analyzer_url = settings.protection.presidio_analyzer_url
+        anonymizer_url = settings.protection.presidio_anonymizer_url
 
         self.analyzer_url = analyzer_url
         self.anonymizer_url = anonymizer_url
@@ -102,12 +86,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         )
 
         # Determine whether to skip external checks (e.g., in tests)
-        skip_checks = False
-        if settings is not None and getattr(settings, "server", None):
-            try:
-                skip_checks = bool(settings.server.skip_service_checks)
-            except Exception:
-                skip_checks = False
+        skip_checks = getattr(settings.server, "skip_service_checks", False)
 
         # Test service connectivity unless skipping checks
         if skip_checks:
@@ -126,6 +105,10 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                     f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}"
                 )
                 self.logger.info("📝 Falling back to regex-only sanitization")
+
+        # Presidio detection config from settings
+        self._presidio_entities = list(settings.protection.entities_to_protect)
+        self._presidio_score_threshold = settings.protection.min_score_threshold
 
         # Pattern-to-replacement mapping (in priority order)
         # IMPORTANT: Order matters - more specific patterns should come first
@@ -161,8 +144,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             # Kubernetes secrets
             (r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", "[K8S_SECRET_REDACTED]"),
             # Password patterns
-            (r"password[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
-            (r"passwd[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
+            (r"\bpassword[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
+            (r"\bpasswd[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
             # IP addresses (internal ranges)
             (
                 r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b",
@@ -173,22 +156,6 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             # AWS Secret Access Keys (very generic - put last to avoid conflicts)
             (r"\b[0-9a-zA-Z/+]{40}\b", "[AWS_SECRET_KEY_REDACTED]"),
         ]
-
-        # Keep original custom_patterns for backwards compatibility but not used
-        self.custom_patterns = []
-
-        # Replacement patterns
-        self.replacements = {
-            "aws_access_key": "[AWS_ACCESS_KEY_REDACTED]",
-            "aws_secret_key": "[AWS_SECRET_KEY_REDACTED]",
-            "api_key": "[API_KEY_REDACTED]",
-            "database_url": "[DATABASE_URL_REDACTED]",
-            "jwt_token": "[JWT_TOKEN_REDACTED]",
-            "private_key": "[PRIVATE_KEY_REDACTED]",
-            "password": "[PASSWORD_REDACTED]",
-            "ip_address": "[IP_ADDRESS_REDACTED]",
-            "mac_address": "[MAC_ADDRESS_REDACTED]",
-        }
 
     def sanitize(self, data: Any) -> Any:
         """
@@ -244,13 +211,13 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         entity_registry: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
 
         def _get_placeholder(entity_type: str, value: str) -> str:
-            """Return a consistent indexed placeholder for a given entity value."""
+            """Return a consistent hashed placeholder for a given entity value."""
             if entity_type not in entity_registry:
                 entity_registry[entity_type] = {}
             type_map = entity_registry[entity_type]
             if value not in type_map:
-                idx = len(type_map) + 1
-                type_map[value] = f"<{entity_type}_{idx}>"
+                hash_val = hashlib.md5(value.encode("utf-8")).hexdigest()[:6]
+                type_map[value] = f"<{entity_type}_{hash_val}>"
             return type_map[value]
 
         # Apply pattern replacements with consistent indexing
@@ -302,8 +269,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 entity_registry[entity_type] = {}
             type_map = entity_registry[entity_type]
             if value not in type_map:
-                idx = len(type_map) + 1
-                type_map[value] = f"<{entity_type}_{idx}>"
+                hash_val = hashlib.md5(value.encode("utf-8")).hexdigest()[:6]
+                type_map[value] = f"<{entity_type}_{hash_val}>"
             return type_map[value]
 
         for pattern_str, replacement_template in self.pattern_replacements:
@@ -432,21 +399,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 analyze_payload = {
                     "text": text,
                     "language": "en",
-                    "entities": [
-                        "CREDIT_CARD",
-                        "CRYPTO",
-                        "EMAIL_ADDRESS",
-                        "IBAN_CODE",
-                        "IP_ADDRESS",
-                        "MEDICAL_LICENSE",
-                        "PERSON",
-                        "PHONE_NUMBER",
-                        "US_SSN",
-                        "US_PASSPORT",
-                        "US_DRIVER_LICENSE",
-                        "US_BANK_NUMBER",
-                    ],
-                    "score_threshold": 0.6,
+                    "entities": self._presidio_entities,
+                    "score_threshold": self._presidio_score_threshold,
                 }
 
                 analyze_response = self.session.post(
@@ -486,13 +440,15 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 entity_type = entity["entity_type"]
                 original_value = text[start:end]
 
-                # Get or create indexed placeholder via shared registry
+                # Get or create hashed placeholder via shared registry
                 if entity_type not in entity_registry:
                     entity_registry[entity_type] = {}
                 type_map = entity_registry[entity_type]
                 if original_value not in type_map:
-                    idx = len(type_map) + 1
-                    type_map[original_value] = f"<{entity_type}_{idx}>"
+                    hash_val = hashlib.md5(original_value.encode("utf-8")).hexdigest()[
+                        :6
+                    ]
+                    type_map[original_value] = f"<{entity_type}_{hash_val}>"
 
                 result = result[:start] + type_map[original_value] + result[end:]
 
@@ -558,25 +514,11 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             try:
 
                 def check_sensitivity():
-                    # Use same entity list as _apply_presidio
                     analyze_payload = {
                         "text": text,
                         "language": "en",
-                        "entities": [
-                            "CREDIT_CARD",
-                            "CRYPTO",
-                            "EMAIL_ADDRESS",
-                            "IBAN_CODE",
-                            "IP_ADDRESS",
-                            "MEDICAL_LICENSE",
-                            "PERSON",
-                            "PHONE_NUMBER",
-                            "US_SSN",
-                            "US_PASSPORT",
-                            "US_DRIVER_LICENSE",
-                            "US_BANK_NUMBER",
-                        ],
-                        "score_threshold": 0.6,  # Require 60% confidence to reduce false positives
+                        "entities": self._presidio_entities,
+                        "score_threshold": self._presidio_score_threshold,
                     }
 
                     analyze_response = self.session.post(
@@ -624,8 +566,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                     "analyzer_url": self.analyzer_url,
                     "anonymizer_url": self.anonymizer_url,
                 },
-                "custom_patterns_count": len(self.pattern_replacements),
-                "replacement_patterns_count": len(self.replacements),
+                "pattern_replacements_count": len(self.pattern_replacements),
             }
 
             # Determine overall status

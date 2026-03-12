@@ -1027,22 +1027,17 @@ class ProtectionSettings(BaseSettings):
     )
 
     # PII Protection Settings
-    min_score_threshold: float = Field(default=0.8)
+    min_score_threshold: float = Field(default=0.85)
     supported_languages: List[str] = Field(default=["en"])
     entities_to_protect: List[str] = Field(
         default=[
             "CREDIT_CARD",
             "CRYPTO",
-            "DATE_TIME",
             "EMAIL_ADDRESS",
             "IBAN_CODE",
             "IP_ADDRESS",
-            "NRP",
-            "LOCATION",
-            "PERSON",
             "PHONE_NUMBER",
             "MEDICAL_LICENSE",
-            "URL",
             "US_BANK_NUMBER",
             "US_DRIVER_LICENSE",
             "US_ITIN",
