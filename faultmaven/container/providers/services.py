@@ -103,8 +103,12 @@ def create_milestone_engine(
 def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     """Create an AgentToolRegistry with investigation tools for MilestoneEngine.
 
-    Registers tools that the LLM can call during the tool loop to search
-    and analyze evidence files. Currently includes search_file and deep_analysis.
+    Registers tools that the LLM can call during the tool loop:
+    - search_file: keyword/regex search on raw evidence files
+    - deep_analysis: LLM-interpreted analysis of evidence files
+    - web_search: trusted domain web search (Google CSE or Tavily)
+    - global_kb_qa: system-wide knowledge base Q&A
+    - user_kb_qa: user's personal runbook/procedure Q&A
 
     Returns:
         AgentToolRegistry with investigation tools, or None if no tools available.
@@ -122,6 +126,21 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     deep_analysis_tool = getattr(container, "deep_analysis_tool", None)
     if deep_analysis_tool:
         registry.register(deep_analysis_tool)
+        tool_count += 1
+
+    web_search_tool = getattr(container, "web_search_tool", None)
+    if web_search_tool:
+        registry.register(web_search_tool)
+        tool_count += 1
+
+    global_kb_adapter = getattr(container, "global_kb_adapter", None)
+    if global_kb_adapter:
+        registry.register(global_kb_adapter)
+        tool_count += 1
+
+    user_kb_adapter = getattr(container, "user_kb_adapter", None)
+    if user_kb_adapter:
+        registry.register(user_kb_adapter)
         tool_count += 1
 
     if tool_count == 0:

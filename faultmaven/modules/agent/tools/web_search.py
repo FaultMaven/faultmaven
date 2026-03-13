@@ -1,374 +1,326 @@
-"""
-Web Search Tool for FaultMaven Agent.
+"""Web Search Tool for Investigation DA Loop
 
-This tool provides web search capabilities with domain filtering and
-safety controls. It should be used as a last resort when the knowledge
-base doesn't have relevant information.
+Provides web search capabilities within the investigation pipeline's
+directed analysis tool loop. Searches trusted technical domains for
+error messages, documentation, and solutions.
+
+Provider abstraction supports Google Custom Search and Tavily,
+auto-selected based on configured API keys.
 """
+
+from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import httpx
-from langchain.tools import BaseTool as LangChainBaseTool
 
-from faultmaven.models.interfaces import BaseTool as IBaseTool
 from faultmaven.models.interfaces import ToolResult
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+
+logger = logging.getLogger(__name__)
+
+# Trusted technical domains for domain-filtered search
+TRUSTED_DOMAINS: List[str] = [
+    "stackoverflow.com",
+    "docs.microsoft.com",
+    "learn.microsoft.com",
+    "docs.aws.amazon.com",
+    "kubernetes.io",
+    "docs.docker.com",
+    "github.com",
+    "redis.io",
+    "mongodb.com",
+    "nginx.org",
+    "apache.org",
+    "python.org",
+    "nodejs.org",
+]
+
+# Stage-aware query enrichment terms
+_STAGE_ENRICHMENT = {
+    "DIAGNOSIS": {
+        "error": "root cause possible reasons diagnosis",
+        "default": "troubleshoot diagnose analyze",
+    },
+    "MITIGATION": {
+        "error": "temporary fix workaround mitigation",
+        "default": "workaround temporary mitigation",
+    },
+    "TREATMENT": {
+        "error": "fix solution resolve remediation",
+        "default": "fix solution resolve remediation permanent",
+    },
+}
 
 
-class WebSearchTool(LangChainBaseTool, IBaseTool):
-    """
-    Web search tool with domain filtering for safe and relevant results.
+@dataclass
+class SearchResult:
+    """Single search result from a provider."""
 
-    This tool searches the public internet for general error messages,
-    open-source documentation, or solutions to common software problems
-    ONLY if the KnowledgeBaseTool returns no results.
-    """
+    title: str
+    url: str
+    snippet: str
 
-    name: str = "web_search"
-    description: str = (
-        "Use this tool as a last resort to search the public internet for "
-        "general error messages, open-source documentation, or solutions "
-        "to common software problems ONLY if the KnowledgeBaseTool "
-        "returns no results. Searches are limited to trusted domains "
-        "for safety and relevance."
-    )
 
-    # Define as private attributes to avoid Pydantic field conflicts
-    _api_key: str = ""
-    _api_endpoint: str = ""
-    _search_engine_id: str = ""
-    _trusted_domains: List[str] = []
-    _max_results: int = 3
-    _logger: Optional[logging.Logger] = None
+class SearchProvider(ABC):
+    """Abstract search provider interface."""
+
+    @abstractmethod
+    async def search(self, query: str, max_results: int) -> List[SearchResult]:
+        """Execute a search query and return results."""
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """Check if this provider is configured and available."""
+
+
+class GoogleCSEProvider(SearchProvider):
+    """Google Custom Search Engine provider."""
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        api_endpoint: Optional[str] = None,
-        trusted_domains: Optional[List[str]] = None,
-        max_results: int = 3,
-        settings=None,
+        api_key: str,
+        engine_id: str,
+        api_endpoint: str = "https://www.googleapis.com/customsearch/v1",
     ):
-        """
-        Initialize the WebSearchTool.
+        self._api_key = api_key
+        self._engine_id = engine_id
+        self._api_endpoint = api_endpoint
 
-        Args:
-            api_key: API key for search service
-            api_endpoint: API endpoint for search service
-            trusted_domains: List of trusted domains to search
-            max_results: Maximum number of results to return
-            settings: Settings instance for configuration (replaces os.getenv calls)
-        """
-        # Initialize both parent classes properly
-        LangChainBaseTool.__init__(self)
-        IBaseTool.__init__(self)
-
-        # Use settings-based configuration or fallback to direct parameters
-        if settings:
-            self._api_key = api_key or (
-                settings.tools.web_search_api_key.get_secret_value()
-                if settings.tools.web_search_api_key
-                else ""
-            )
-            self._api_endpoint = api_endpoint or settings.tools.web_search_api_endpoint
-            self._search_engine_id = settings.tools.web_search_engine_id
-        else:
-            # Fallback to environment variables if settings not provided
-            from faultmaven.config.settings import get_settings
-
-            settings = get_settings()
-            self._api_key = api_key or (
-                settings.tools.web_search_api_key.get_secret_value()
-                if settings.tools.web_search_api_key
-                else ""
-            )
-            self._api_endpoint = api_endpoint or settings.tools.web_search_api_endpoint
-            self._search_engine_id = settings.tools.web_search_engine_id
-
-        # Default trusted domains for technical documentation
-        self._trusted_domains = trusted_domains or [
-            "stackoverflow.com",
-            "docs.microsoft.com",
-            "learn.microsoft.com",
-            "docs.aws.amazon.com",
-            "kubernetes.io",
-            "docs.docker.com",
-            "github.com",
-            "redis.io",
-            "mongodb.com",
-            "nginx.org",
-            "apache.org",
-            "python.org",
-            "nodejs.org",
-        ]
-
-        self._max_results = max_results
-        self._logger = logging.getLogger(__name__)
-
-        # Check if API key is available
-        if not self._api_key:
-            if self._logger:
-                self._logger.info(
-                    "No web search API key provided. Web search will be disabled."
-                )
-
-    def _run(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Synchronous run method - not implemented for async tool"""
-        raise NotImplementedError(
-            "WebSearchTool only supports async execution via _arun"
-        )
-
-    async def _arun(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Asynchronously perform a web search and return formatted results.
-
-        Args:
-            query: Search query string
-            context: Optional context for enhanced search
-
-        Returns:
-            Formatted search results or error message
-        """
-        if self._logger:
-            self._logger.info(f"Executing web search for: {query}")
-
-        # Check if API key is available
-        if not self._api_key:
-            return "Web search is not available: No API key configured."
-
-        try:
-            # Enhance query with context if available
-            enhanced_query = self._enhance_query_with_context(query, context)
-
-            # Construct the search query with trusted domains
-            site_query = " OR ".join(
-                [f"site:{domain}" for domain in self._trusted_domains]
-            )
-            full_query = f"{enhanced_query} ({site_query})"
-
-            # Make the API call
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await self._make_search_request(client, full_query)
-                results = response.json()
-
-            # Format and return results
-            return self._format_search_results(results, query)
-
-        except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException):
-            return "Web search encountered an unexpected error"
-        except Exception as e:
-            if self._logger:
-                self._logger.error(f"Web search failed: {e}")
-            return "Web search encountered an unexpected error"
-
-    def _enhance_query_with_context(
-        self, query: str, context: Optional[Dict[str, Any]]
-    ) -> str:
-        """
-        Enhance the search query with context information.
-
-        Args:
-            query: Original search query
-            context: Context information from the agent
-
-        Returns:
-            Enhanced search query
-        """
-        if not context:
-            return query
-
-        # Add phase-specific terms
-        phase = context.get("phase", "")
-        if "error" in query.lower() or "exception" in query.lower():
-            if phase == "define_blast_radius":
-                query += " impact scope affected systems"
-            elif phase == "establish_timeline":
-                query += " when started occurred timeline"
-            elif phase == "formulate_hypothesis":
-                query += " root cause possible reasons"
-            elif phase == "validate_hypothesis":
-                query += " test validate confirm"
-            elif phase == "propose_solution":
-                query += " fix solution resolve"
-
-        # Add environment context if available
-        if "environment" in context:
-            env = context["environment"]
-            if env in ["production", "staging", "development"]:
-                query += f" {env} environment"
-
-        return query
-
-    async def _make_search_request(
-        self, client: httpx.AsyncClient, query: str
-    ) -> Optional[httpx.Response]:
-        """
-        Make the actual search API request.
-
-        Args:
-            client: HTTP client
-            query: Search query
-
-        Returns:
-            Response object or None if failed
-
-        Raises:
-            httpx.RequestError: Network error during request
-            httpx.HTTPStatusError: HTTP error during request
-            Exception: Other unexpected errors
-        """
-        # Using Google Custom Search API as default
+    async def search(self, query: str, max_results: int) -> List[SearchResult]:
         params: Dict[str, str] = {
             "key": self._api_key,
-            "cx": self._search_engine_id,
+            "cx": self._engine_id,
             "q": query,
-            "num": str(self._max_results),
+            "num": str(min(max_results, 10)),  # Google CSE max is 10
         }
 
-        response = await client.get(self._api_endpoint, params=params)
-        response.raise_for_status()
-        return response
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(self._api_endpoint, params=params)
+            response.raise_for_status()
+            data = response.json()
 
-    def _format_search_results(
-        self, results: Dict[str, Any], original_query: str
-    ) -> str:
-        """
-        Format search results into a clean, readable string.
-
-        Args:
-            results: Raw search results from API
-            original_query: Original search query
-
-        Returns:
-            Formatted results string
-        """
-        if not results or "items" not in results:
-            return f"No relevant results found on the web for '{original_query}'."
-
-        items = results.get("items", [])
-        if not items:
-            return f"No relevant results found on the web for '{original_query}'."
-
-        formatted_results = [f"Web search results for '{original_query}':"]
-
-        for i, item in enumerate(items[: self._max_results], 1):
-            title = item.get("title", "No title")
-            link = item.get("link", "No link")
+        results: List[SearchResult] = []
+        for item in data.get("items", []):
             snippet = item.get("snippet", "No description available")
-
-            # Clean up the snippet
             snippet = snippet.replace("\n", " ").strip()
             if len(snippet) > 200:
                 snippet = snippet[:197] + "..."
-
-            formatted_results.append(
-                f"\n{i}. **{title}**\n" f"   URL: {link}\n" f"   Summary: {snippet}"
+            results.append(
+                SearchResult(
+                    title=item.get("title", "No title"),
+                    url=item.get("link", ""),
+                    snippet=snippet,
+                )
             )
-
-        # Add disclaimer
-        formatted_results.append(
-            "\n---\n"
-            "⚠️ **Note**: These are external web results. "
-            "Always verify solutions in a test environment before applying to production."
-        )
-
-        return "\n".join(formatted_results)
+        return results
 
     def is_available(self) -> bool:
+        return bool(self._api_key and self._engine_id)
+
+
+class TavilyProvider(SearchProvider):
+    """Tavily AI search provider."""
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    async def search(self, query: str, max_results: int) -> List[SearchResult]:
+        from tavily import AsyncTavilyClient
+
+        client = AsyncTavilyClient(api_key=self._api_key)
+        response = await client.search(
+            query=query,
+            max_results=max_results,
+            search_depth="basic",
+            include_domains=TRUSTED_DOMAINS,
+        )
+
+        results: List[SearchResult] = []
+        for item in response.get("results", []):
+            snippet = item.get("content", "No description available")
+            if len(snippet) > 300:
+                snippet = snippet[:297] + "..."
+            results.append(
+                SearchResult(
+                    title=item.get("title", "No title"),
+                    url=item.get("url", ""),
+                    snippet=snippet,
+                )
+            )
+        return results
+
+    def is_available(self) -> bool:
+        return bool(self._api_key)
+
+
+class WebSearchTool(AgentTool):
+    """Web search tool for the investigation DA loop.
+
+    Searches trusted technical domains for error messages, documentation,
+    and solutions. Supports Google CSE and Tavily providers, auto-selected
+    based on configured API keys.
+    """
+
+    def __init__(
+        self,
+        settings: Optional[Any] = None,
+        provider: Optional[SearchProvider] = None,
+        max_results: int = 3,
+    ):
+        self._max_results = max_results
+        self._provider: Optional[SearchProvider] = provider
+
+        if self._provider is None and settings is not None:
+            self._provider = self._auto_select_provider(settings)
+
+    @staticmethod
+    def _auto_select_provider(settings: Any) -> Optional[SearchProvider]:
+        """Auto-select provider based on configured API keys.
+
+        Priority: Tavily (cleaner content) > Google CSE (legacy).
         """
-        Check if the web search tool is properly configured and available.
+        # Check Tavily first
+        tavily_key = settings.knowledge.tavily_api_key
+        if tavily_key:
+            key_value = (
+                tavily_key.get_secret_value()
+                if hasattr(tavily_key, "get_secret_value")
+                else str(tavily_key)
+            )
+            if key_value:
+                return TavilyProvider(api_key=key_value)
 
-        Returns:
-            True if the tool can be used, False otherwise
-        """
-        return bool(self._api_key and self._api_endpoint)
+        # Fall back to Google CSE
+        google_key = settings.tools.web_search_api_key
+        if google_key:
+            key_value = (
+                google_key.get_secret_value()
+                if hasattr(google_key, "get_secret_value")
+                else str(google_key)
+            )
+            engine_id = settings.tools.web_search_engine_id
+            if key_value and engine_id:
+                return GoogleCSEProvider(
+                    api_key=key_value,
+                    engine_id=engine_id,
+                    api_endpoint=settings.tools.web_search_api_endpoint,
+                )
 
-    def get_search_domains(self) -> List[str]:
-        """
-        Get the list of trusted domains being searched.
+        return None
 
-        Returns:
-            List of trusted domain names
-        """
-        return self._trusted_domains.copy()
+    @property
+    def name(self) -> str:
+        return "web_search"
 
-    def add_trusted_domain(self, domain: str) -> None:
-        """
-        Add a new trusted domain to the search list.
+    @property
+    def description(self) -> str:
+        return (
+            "Search trusted technical websites (Stack Overflow, official docs, GitHub) "
+            "for error messages, solutions, and documentation. Use as a supplementary "
+            "source when case evidence and knowledge base do not contain the answer. "
+            "Provide a focused technical query."
+        )
 
-        Args:
-            domain: Domain name to add (e.g., 'example.com')
-        """
-        if domain not in self._trusted_domains:
-            self._trusted_domains.append(domain)
-            if self._logger:
-                self._logger.info(f"Added trusted domain: {domain}")
-
-    def remove_trusted_domain(self, domain: str) -> None:
-        """
-        Remove a domain from the trusted search list.
-
-        Args:
-            domain: Domain name to remove
-        """
-        if domain in self._trusted_domains:
-            self._trusted_domains.remove(domain)
-            if self._logger:
-                self._logger.info(f"Removed trusted domain: {domain}")
-
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
-        """
-        Execute the web search tool using our interface.
-
-        Args:
-            params: Parameters dictionary containing 'query' and optional 'context'
-
-        Returns:
-            ToolResult with success/data/error
-        """
-        try:
-            query = params.get("query", "")
-            context = params.get("context")
-
-            if not query or not query.strip():
-                return ToolResult(success=False, data=None, error="No query provided")
-
-            # Call existing LangChain method
-            result = await self._arun(query, context)
-
-            return ToolResult(success=True, data=result, error=None)
-        except Exception as e:
-            if self._logger:
-                self._logger.error(f"Web search execution failed: {e}")
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def get_schema(self) -> Dict[str, Any]:
-        """
-        Get the tool schema for our interface compliance.
-
-        Returns:
-            Tool schema dictionary
-        """
+    @property
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for web search",
-                    },
-                    "context": {
-                        "type": "object",
-                        "description": "Optional context to enhance search specificity",
-                        "properties": {
-                            "phase": {"type": "string"},
-                            "environment": {"type": "string"},
-                        },
-                    },
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Technical search query. Be specific — include error messages, "
+                        "technology names, and version numbers when available."
+                    ),
                 },
-                "required": ["query"],
             },
+            "required": ["query"],
         }
+
+    def is_available(self) -> bool:
+        """Check if a search provider is configured and available."""
+        return self._provider is not None and self._provider.is_available()
+
+    async def execute_with_context(
+        self,
+        params: Dict[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
+        """Execute web search within the DA loop."""
+        query = params.get("query", "").strip()
+        if not query:
+            return ToolResult(success=False, data=None, error="No query provided")
+
+        if not self._provider or not self._provider.is_available():
+            return ToolResult(
+                success=False,
+                data=None,
+                error="Web search is not available: no search provider configured.",
+            )
+
+        try:
+            # Enrich query with investigation stage context
+            enhanced_query = self._enhance_query_with_context(query, context)
+
+            # For Google CSE, append domain filter to query
+            # (Tavily handles this via include_domains parameter)
+            search_query = enhanced_query
+            if isinstance(self._provider, GoogleCSEProvider):
+                site_query = " OR ".join(f"site:{domain}" for domain in TRUSTED_DOMAINS)
+                search_query = f"{enhanced_query} ({site_query})"
+
+            results = await self._provider.search(search_query, self._max_results)
+            return ToolResult(
+                success=True,
+                data=self._format_results(results, query),
+                error=None,
+            )
+
+        except Exception as e:
+            logger.error(f"Web search failed: {e}")
+            return ToolResult(
+                success=False,
+                data=None,
+                error="Web search encountered an error. Try a different query.",
+            )
+
+    def _enhance_query_with_context(self, query: str, context: ToolContext) -> str:
+        """Enrich query with investigation stage context."""
+        stage = context.metadata.get("stage", "")
+        if not stage:
+            return query
+
+        enrichment = _STAGE_ENRICHMENT.get(stage, {})
+        has_error_terms = any(
+            term in query.lower() for term in ("error", "exception", "fail", "crash")
+        )
+        suffix = enrichment.get("error" if has_error_terms else "default", "")
+
+        if suffix:
+            return f"{query} {suffix}"
+        return query
+
+    @staticmethod
+    def _format_results(results: List[SearchResult], original_query: str) -> str:
+        """Format search results into a readable string for the LLM."""
+        if not results:
+            return f"No relevant results found for '{original_query}'."
+
+        lines = [f"Web search results for '{original_query}':"]
+        for i, result in enumerate(results, 1):
+            lines.append(
+                f"\n{i}. **{result.title}**\n"
+                f"   URL: {result.url}\n"
+                f"   Summary: {result.snippet}"
+            )
+
+        lines.append(
+            "\n---\n"
+            "Note: These are external web results. "
+            "Verify solutions against the case evidence before recommending."
+        )
+        return "\n".join(lines)

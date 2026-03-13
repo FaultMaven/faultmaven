@@ -943,7 +943,27 @@ def get_prompt_for_case(
         # Add stage to context for schema reference
         ctx["stage"] = stage.value if stage else "diagnosis"
 
-        return INVESTIGATION_BASE.format(adaptive_instructions=adaptive_instr, **ctx)
+        prompt = INVESTIGATION_BASE.format(adaptive_instructions=adaptive_instr, **ctx)
+
+        # Knowledge query escape: relax evidence-grounding and diagnostic
+        # reasoning requirements when the classifier has identified a general
+        # knowledge question (e.g., "What is Opik?"). Without this, the
+        # EVIDENCE GROUNDING and DIAGNOSTIC REASONING REQUIREMENTS sections
+        # force the LLM to cite case evidence for questions that cannot be
+        # answered from evidence.
+        if processing_mode == "knowledge_query":
+            prompt += (
+                "\n\nKNOWLEDGE QUERY OVERRIDE:\n"
+                "The user is asking a general knowledge question, not a "
+                "case-specific question. You MAY answer from your built-in "
+                "knowledge without citing case evidence. The DIAGNOSTIC "
+                "REASONING REQUIREMENTS and EVIDENCE GROUNDING rules above "
+                "do not apply to this response. If the answer is relevant "
+                "to the current case, connect it to the investigation context "
+                "naturally — but this is optional, not required."
+            )
+
+        return prompt
 
     else:  # TERMINAL (RESOLVED/CLOSED)
         return TERMINAL_TEMPLATE.format(
