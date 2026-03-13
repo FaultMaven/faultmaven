@@ -1348,6 +1348,12 @@ class MilestoneEngine:
             # For DA turns, use tool-augmented generation so the LLM can
             # search evidence files directly during reasoning.
             query_mode = (intent_data or {}).get("query_mode")
+            # Route through tool-augmented DA loop ONLY for directed_analysis.
+            # Knowledge queries use the non-tool path — the LLM answers from
+            # built-in knowledge (the KNOWLEDGE QUERY OVERRIDE in the prompt
+            # relaxes evidence-grounding requirements). Routing them through
+            # the tool loop would force tool_choice="required", adding latency
+            # and cost for questions the LLM can answer directly.
             if query_mode == "directed_analysis" and case.evidence:
                 if not self.investigation_tools:
                     raise MilestoneEngineError(
@@ -1378,15 +1384,28 @@ class MilestoneEngine:
 
             # 3. Validate reasoning BEFORE applying state (design: error-handling §3.2)
             # This prevents duplicate state mutations if self-correction retry is needed.
+            #
+            # EXCEPTION: Knowledge queries skip diagnostic reasoning validation
+            # entirely. These are general knowledge questions (e.g., "What is Opik?")
+            # that don't reference case evidence and cannot satisfy the
+            # OBSERVATION/ANALYSIS format requirement. Validating them would
+            # always trigger a false-positive retry.
+            is_knowledge_turn = query_mode == "knowledge_query"
+
             from faultmaven.core.investigation.diagnostic_reasoning_validator import (
                 validate_diagnostic_reasoning,
             )
 
-            is_valid_reasoning, violations = validate_diagnostic_reasoning(
-                case=case,
-                agent_response=response_obj.agent_response,
-                contains_suggestion=None,  # Auto-detect
-            )
+            if is_knowledge_turn:
+                is_valid_reasoning = True
+                violations = []
+                logger.info("Knowledge query: skipping diagnostic reasoning validation")
+            else:
+                is_valid_reasoning, violations = validate_diagnostic_reasoning(
+                    case=case,
+                    agent_response=response_obj.agent_response,
+                    contains_suggestion=None,  # Auto-detect
+                )
 
             # For DA turns (tool-augmented), "Missing causal reasoning" is a
             # false positive on factual lookups (e.g., "What usernames did X try?").
@@ -1804,13 +1823,10 @@ class MilestoneEngine:
             is_final = iteration == self.MAX_TOOL_ITERATIONS
 
             # Tool availability per iteration:
-            # - Iteration 0: investigation tools ONLY (force at least one search)
-            # - Iterations 1..N-1: all tools (investigation + schema)
+            # - Iteration 0..N-1: all tools (investigation + schema)
             # - Final iteration / force_schema: schema tools ONLY
             if is_final or force_schema_next:
                 tools_for_call = schema_tools
-            elif iteration == 0 and investigation_tools:
-                tools_for_call = investigation_tools
             else:
                 tools_for_call = all_tools
 
@@ -2007,6 +2023,9 @@ class MilestoneEngine:
         """
         has_search = "search_file" in tool_names
         has_da = "deep_analysis" in tool_names
+        has_web = "web_search" in tool_names
+        has_global_kb = "global_kb_qa" in tool_names
+        has_user_kb = "user_kb_qa" in tool_names
 
         # Build tool guidance based on what's actually available
         search_mode_guidance = (
@@ -2020,29 +2039,68 @@ class MilestoneEngine:
             "— prefer keyword mode unless you specifically need pattern matching."
         )
 
-        if has_search and has_da:
-            tool_guidance = (
-                "You have two investigation tools:\n"
+        # Core evidence tools
+        tool_lines = []
+        if has_search:
+            tool_lines.append(
                 "- search_file: keyword/regex search against raw evidence files. "
-                "Use for exact matches — IPs, timestamps, error codes, service names.\n"
+                "Use for exact matches — IPs, timestamps, error codes, service names."
+            )
+        if has_da:
+            tool_lines.append(
                 "- deep_analysis: LLM-interpreted analysis of specific evidence sections. "
                 "Use for analytical questions keyword search cannot answer. "
-                "Limited to 1 call per turn.\n\n"
-                "Choose the right tool for the question. Use search_file for "
-                "lookups, deep_analysis for interpretation.\n\n"
-                f"{search_mode_guidance}"
+                "Limited to 1 call per turn."
             )
-        elif has_search:
+        if has_global_kb:
+            tool_lines.append(
+                "- global_kb_qa: Query the system-wide knowledge base for documented "
+                "solutions, best practices, and troubleshooting guidance."
+            )
+        if has_user_kb:
+            tool_lines.append(
+                "- user_kb_qa: Query the user's personal runbooks and procedures "
+                "for their documented approach to similar issues."
+            )
+        if has_web:
+            tool_lines.append(
+                "- web_search: Search trusted technical websites (Stack Overflow, "
+                "official docs) for error messages and solutions."
+            )
+
+        if tool_lines:
+            # Build priority guidance
+            priority_parts = []
+            if has_search or has_da:
+                priority_parts.append(
+                    "1. Start with case evidence (search_file, deep_analysis) — "
+                    "ground your analysis in THIS case's data first."
+                )
+            if has_global_kb or has_user_kb:
+                kb_names = []
+                if has_global_kb:
+                    kb_names.append("global_kb_qa")
+                if has_user_kb:
+                    kb_names.append("user_kb_qa")
+                priority_parts.append(
+                    f"2. Check knowledge bases ({', '.join(kb_names)}) for "
+                    "documented solutions when evidence alone doesn't explain the issue."
+                )
+            if has_web:
+                priority_parts.append(
+                    "3. Use web_search as a last resort when evidence and KB "
+                    "have no answers — e.g., unfamiliar error messages or "
+                    "technology-specific issues."
+                )
+
             tool_guidance = (
-                "You have one investigation tool:\n"
-                "- search_file: keyword/regex search against raw evidence files. "
-                "Use it to find specific data — IPs, timestamps, error codes, "
-                "service names, log patterns.\n\n"
-                "Call search_file with a specific evidence_id and query. "
-                "Formulate targeted queries based on the structural indexes "
-                "in <evidence_collected>. Multiple searches are allowed.\n\n"
-                f"{search_mode_guidance}"
+                f"You have {len(tool_lines)} investigation tools:\n"
+                + "\n".join(tool_lines)
+                + "\n\nTool priority:\n"
+                + "\n".join(priority_parts)
             )
+            if has_search:
+                tool_guidance += f"\n\n{search_mode_guidance}"
         else:
             tool_guidance = (
                 "No investigation tools are available for this turn. "
@@ -2053,11 +2111,34 @@ class MilestoneEngine:
             "You have investigation tools available to search and analyze "
             "the raw evidence files attached to this case.\n\n"
             f"{tool_guidance}\n\n"
-            "You MUST search the raw evidence before producing your response. "
-            "The structural indexes are summaries — they lack the specific values "
-            "(exact IPs, usernames, timestamps, error messages) needed for grounded "
-            f"analysis. After searching, call {schema_tool_name} to produce your "
-            "structured response.\n\n"
+            "QUESTION ROUTING — Decide which type of question the user is asking:\n\n"
+            "TYPE A — CASE QUESTION (about THIS case's evidence):\n"
+            "Questions about specific data in the submitted files — IPs, errors, "
+            "timestamps, patterns, configurations, or anything that requires "
+            "examining the evidence. Examples: 'What IPs failed auth?', "
+            "'What happened at 14:00?', 'Is there a pattern in the errors?'\n"
+            "→ You MUST search the evidence (search_file, deep_analysis) before "
+            "responding. The structural indexes are summaries — they lack the "
+            "specific values needed for grounded analysis. After searching, call "
+            f"{schema_tool_name} to produce your structured response.\n\n"
+            "TYPE B — KNOWLEDGE QUESTION (general technical knowledge):\n"
+            "Questions about technologies, concepts, best practices, or setup "
+            "procedures that are NOT answerable from case evidence. Examples: "
+            "'What is Opik?', 'How to set up Redis clustering?', "
+            "'Common causes of OOM kills?'\n"
+            "→ Answer from your own knowledge. Optionally use web_search or "
+            "global_kb_qa for supplementary detail. Connect your answer to the "
+            f"case context when relevant, then call {schema_tool_name}.\n\n"
+            "TYPE C — HYBRID (needs both evidence AND knowledge):\n"
+            "Questions that bridge case data and external knowledge. Examples: "
+            "'Is our Redis config following best practices?', "
+            "'Are these SSH settings secure?'\n"
+            "→ Search evidence first to understand the current state, then use "
+            "your knowledge, web_search, or KB tools for the reference baseline.\n\n"
+            "DEFAULT: When uncertain, treat it as Type A (case question) — "
+            "evidence search is always safe. Only skip evidence search when "
+            "the question clearly cannot be answered from log files, configs, "
+            "or other submitted data.\n\n"
             "IMPORTANT — Search for the specific entity, not the event type:\n"
             "When the user asks about a specific IP, hostname, username, error "
             "code, or timestamp, search for THAT value directly — e.g., "
@@ -2070,15 +2151,13 @@ class MilestoneEngine:
             "When calling search_file, use ORIGINAL values from the user's "
             "message, NOT PII tokens.\n\n"
             "RESPONSE FORMAT — Your agent_response MUST follow this structure:\n"
-            "1. OBSERVATION: State what specific data you found — cite exact "
-            "values from at least 2 different categories: timestamps (e.g., "
-            "14:03 UTC), error messages (e.g., 'Failed password'), IPs/hostnames/"
-            "usernames, or metrics/counts. Quote or paraphrase actual log lines.\n"
-            "2. ANALYSIS: Explain WHY the evidence points to your conclusion. "
-            "Use causal language — 'because', 'this indicates', 'leads to', "
-            "'therefore'. Connect specific findings to your diagnosis.\n"
-            "This structure is REQUIRED. Responses that list possibilities "
-            "without citing specific evidence from THIS case will be rejected."
+            "1. OBSERVATION: For case questions, cite specific data found — "
+            "exact values from timestamps, error messages, IPs/hostnames, or "
+            "metrics. For knowledge questions, state the relevant facts.\n"
+            "2. ANALYSIS: Explain the significance. For case questions, use "
+            "causal language connecting findings to your diagnosis. For knowledge "
+            "questions, relate the information to the user's investigation context "
+            "when possible."
         )
 
     def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:
@@ -2088,12 +2167,26 @@ class MilestoneEngine:
         user_id = (intent_data or {}).get("user_id", "system")
         organization_id = getattr(case, "organization_id", "")
 
+        # Extract current investigation stage for tool context enrichment
+        metadata: dict[str, Any] = {}
+        progress = getattr(case, "investigation_progress", None)
+        if progress:
+            current_stage = getattr(progress, "current_stage", None)
+            if current_stage:
+                stage_value = (
+                    current_stage.value
+                    if hasattr(current_stage, "value")
+                    else str(current_stage)
+                )
+                metadata["stage"] = stage_value.upper()
+
         return ToolContext(
             session_id=case.case_id,
             case_id=case.case_id,
             organization_id=organization_id,
             user_id=user_id,
             evidence_service=self.evidence_service,
+            metadata=metadata,
         )
 
     def _parse_schema_tool_call(

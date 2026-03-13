@@ -79,54 +79,70 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — is al
          ┌──────────────────────────────┐
          │  QUERY CLASSIFIER            │  Mechanical. No LLM.
          │  classify_query(message,     │  Regex entity detection +
-         │    has_attachments)           │  generic phrase analysis.
+         │    has_attachments)           │  phrasing analysis.
          └──────────────┬───────────────┘
                         │
-              ┌─────────┼─────────┐
-              v         v         v
-     ┌────────────┐ ┌─────────────────┐ ┌──────────────────┐
-     │  TRIAGE    │ │  DIRECTED       │ │  SEMANTIC SEARCH │
-     │            │ │  ANALYSIS       │ │                  │
-     │ Structural │ │ Structural index│ │ Auto-triggered   │
-     │ index IS   │ │ as orientation  │ │ when DA fails on │
-     │ the answer.│ │ map. Agent uses │ │ large files.     │
-     │ Summarize  │ │ deep_analysis   │ │ vectorize_file   │
-     │ key        │ │ and search_file │ │ → knowledge_base │
-     │ findings.  │ │ as primary      │ │ _search.         │
-     │            │ │ tools.          │ │                  │
-     └────────────┘ └────────┬────────┘ └──────────────────┘
-                             │
-                    DA failure signals?
-                    (timeout, empty searches,
-                     low confidence, 3+ DA calls)
-                             │
-                        ┌────┴────┐
-                     NO │         │ YES + file qualifies
-                        │         v
-                        │  ┌──────────────────────────┐
-                        │  │  AUTO-VECTORIZATION       │  Mechanical trigger.
-                        │  │  No user confirmation.    │  Per-evidence tracking.
-                        │  │  → Semantic search via    │
-                        │  │    knowledge_base_search  │
-                        │  └──────────────────────────┘
-                        │         │
-                        v         v
-         ┌──────────────────────────────┐
-         │  AGENT RESPONSE              │
-         │  → May create Evidence via   │
-         │    evidence_to_add           │
-         └──────────────────────────────┘
+           ┌────────────┼────────────┬─────────────┐
+           v            v            v             v
+  ┌────────────┐ ┌───────────┐ ┌──────────────┐ ┌──────────────┐
+  │  TRIAGE    │ │ DIRECTED  │ │  KNOWLEDGE   │ │  SEMANTIC    │
+  │            │ │ ANALYSIS  │ │  QUERY       │ │  SEARCH      │
+  │ Structural │ │ Tool loop │ │              │ │              │
+  │ index IS   │ │ with 5    │ │ LLM answers  │ │ Auto-trigger │
+  │ the answer.│ │ tools:    │ │ from built-in│ │ when DA fails│
+  │ Summarize  │ │ search_   │ │ knowledge.   │ │ on large     │
+  │ key        │ │ file,     │ │ No tool loop.│ │ files.       │
+  │ findings.  │ │ deep_     │ │ Evidence     │ │ vectorize →  │
+  │            │ │ analysis, │ │ grounding    │ │ kb_search.   │
+  │            │ │ web_      │ │ relaxed.     │ │              │
+  │            │ │ search,   │ │              │ │              │
+  │            │ │ global_   │ │              │ │              │
+  │            │ │ kb_qa,    │ │              │ │              │
+  │            │ │ user_     │ │              │ │              │
+  │            │ │ kb_qa     │ │              │ │              │
+  └────────────┘ └─────┬─────┘ └──────────────┘ └──────────────┘
+                       │
+              DA failure signals?
+              (timeout, empty searches,
+               low confidence, 3+ DA calls)
+                       │
+                  ┌────┴────┐
+               NO │         │ YES + file qualifies
+                  │         v
+                  │  ┌──────────────────────────┐
+                  │  │  AUTO-VECTORIZATION       │  Mechanical trigger.
+                  │  │  No user confirmation.    │  Per-evidence tracking.
+                  │  │  → Semantic search via    │
+                  │  │    knowledge_base_search  │
+                  │  └──────────────────────────┘
+                  │         │
+                  v         v
+   ┌──────────────────────────────┐
+   │  AGENT RESPONSE              │
+   │  → May create Evidence via   │
+   │    evidence_to_add           │
+   └──────────────────────────────┘
 ```
 
 **Mode selection (heuristic, no LLM):**
 
 | Signal | Result | Example |
 |--------|--------|---------|
+| Knowledge-seeking phrasing ("what is", "how does", "explain") WITHOUT case references or hard entities | **Knowledge Query** (confidence 0.85) | "What is Opik?", "How does Redis clustering work?" |
 | Specific entities (timestamps, HTTP status codes, error keywords, service names, IPs) + interrogative structure | **Directed Analysis** (high confidence) | "what caused the 502 errors at 14:00?" |
 | Entities + non-generic phrasing | **Directed Analysis** | "investigate 502s at 14:00" |
 | Generic phrasing ("analyze this", "what's in here") without entities | **Triage** | "analyze this log file" |
 | No message + attachments | **Triage** | User drops file with no question |
 | Ambiguous (no entities, no generic phrasing, no question) | **Directed Analysis** (default) | "performance degradation" |
+
+**Knowledge Query detection (3-gate system):**
+
+Knowledge questions are detected by matching ALL three gates:
+1. **Knowledge phrase match**: Message matches knowledge-seeking patterns ("what is X?", "how does X work?", "explain X", "best practices for X")
+2. **No hard case-specific entities**: No timestamps, HTTP status codes, or IP addresses. Service names and error keywords are allowed (they can be the *subject* of a knowledge question, e.g., "How does Redis clustering work?")
+3. **No case references**: No possessive/locational references to case data ("the error", "in the logs", "we're seeing"). All case reference patterns require a prefix (the/this/our/in/from) to avoid matching bare nouns like "What is a null pointer exception?"
+
+Knowledge queries bypass the DA tool loop entirely — the LLM answers from built-in knowledge via the non-tool path. Diagnostic reasoning validation is skipped, and a KNOWLEDGE QUERY OVERRIDE escape clause relaxes evidence-grounding requirements in the prompt.
 
 ### 1.2 Design Principles
 
@@ -147,6 +163,9 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — is al
 | *(structural index in context)* | $0.00 | <2s | No | Always — Tier 0+1 on every submission |
 | `search_file` | $0.00 | ~0.5-2s | No | Agent needs specific data from raw file |
 | `deep_analysis` | ~$0.01-0.05 | 3-15s | Yes | Agent needs interpreted analysis |
+| `web_search` | $0.00 | 1-2s | No | Error messages, external docs (Google CSE or Tavily) |
+| `global_kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | System-wide KB: documented solutions, best practices |
+| `user_kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | User's personal runbooks and procedures |
 | `vectorize_file` | ~$0.05-0.50 | 10-60s | Embed only | Auto-triggered on DA failure; file must pass size gates |
 | `knowledge_base_search` | $0.00 | ~0.5s | No | After vectorization, semantic search |
 
@@ -716,6 +735,7 @@ The `classify_query()` function in `modules/agent/domain/services/query_classifi
 class ProcessingMode(str, Enum):
     TRIAGE = "triage"
     DIRECTED_ANALYSIS = "directed_analysis"
+    KNOWLEDGE_QUERY = "knowledge_query"
     SEMANTIC_SEARCH = "semantic_search"
 
 @dataclass
@@ -733,12 +753,15 @@ def classify_query(user_message: str, has_attachments: bool) -> QueryClassificat
 **Classification logic:**
 
 1. No message + attachments → **TRIAGE** (confidence 0.95)
-2. Specific entities + interrogative structure ("what", "why", "how") → **DIRECTED_ANALYSIS** (confidence 0.9)
-3. Entities + non-generic phrasing → **DIRECTED_ANALYSIS** (confidence 0.75)
-4. Generic phrasing without entities → **TRIAGE** (confidence 0.85)
-5. Generic phrasing WITH entities → entities win → **DIRECTED_ANALYSIS** (confidence 0.65)
-6. Interrogative without entities → **DIRECTED_ANALYSIS** (confidence 0.6)
-7. Ambiguous → **DIRECTED_ANALYSIS** (confidence 0.5, DA subsumes Triage)
+2. Knowledge-seeking phrasing WITHOUT hard entities or case references → **KNOWLEDGE_QUERY** (confidence 0.85)
+3. Specific entities + interrogative structure ("what", "why", "how") → **DIRECTED_ANALYSIS** (confidence 0.9)
+4. Entities + non-generic phrasing → **DIRECTED_ANALYSIS** (confidence 0.75)
+5. Generic phrasing without entities → **TRIAGE** (confidence 0.85)
+6. Generic phrasing WITH entities → entities win → **DIRECTED_ANALYSIS** (confidence 0.65)
+7. Interrogative without entities → **DIRECTED_ANALYSIS** (confidence 0.6)
+8. Ambiguous → **DIRECTED_ANALYSIS** (confidence 0.5, DA subsumes Triage)
+
+**Knowledge query detection** uses a 3-gate system (see Section 1.1 for details). The check runs *before* entity-based routing to prevent knowledge questions from falling through to DIRECTED_ANALYSIS.
 
 ### Mode-Specific System Prompts
 
@@ -774,6 +797,16 @@ You do NOT need to try search_file before deep_analysis. Use whichever is
 appropriate for the question. If your analysis is insufficient, the system will
 automatically index large files for semantic search — you do not need to manage this.
 ```
+
+**Knowledge Query mode**: Knowledge queries bypass the DA tool loop entirely and use the non-tool generation path. The investigation prompt is appended with a `KNOWLEDGE QUERY OVERRIDE` escape clause that relaxes evidence-grounding and diagnostic reasoning requirements. The LLM answers from built-in knowledge, optionally connecting to the case context.
+
+**DA System Instruction (Type A/B/C routing)**: Within the DA tool loop, the system instruction includes question routing guidance:
+
+- **TYPE A — Case question**: Questions about THIS case's evidence (IPs, errors, timestamps). Agent MUST search evidence before responding.
+- **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from knowledge, optionally using `web_search` or `global_kb_qa`.
+- **TYPE C — Hybrid**: Questions bridging case data and external knowledge. Agent searches evidence first, then applies knowledge/KB context.
+
+Default is Type A (evidence search is always safe).
 
 **Structural index tagging**: In DA mode, structural indexes are tagged `<structural_index role="orientation">` to signal they are orientation data, not the primary output. In Triage mode, plain `<structural_index>` is used.
 
@@ -990,6 +1023,9 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 | *(evidence context)* | $0 | No | Always available (structural index in LLM context) |
 | `search_file` | $0 | No | Agent needs specific data from raw file |
 | `deep_analysis` | ~$0.01 | Yes | Agent needs interpreted analysis |
+| `web_search` | $0 | No | External docs/solutions (Google CSE or Tavily) |
+| `global_kb_qa` | ~$0.01 | Yes (synthesis) | System-wide KB: documented solutions, best practices |
+| `user_kb_qa` | ~$0.01 | Yes (synthesis) | User's personal runbooks and procedures |
 | `vectorize_file` | ~$0.05+ | Embed only | Auto-triggered on DA failure (no user confirmation) |
 | `knowledge_base_search` | $0 | No | After vectorization, semantic search |
 

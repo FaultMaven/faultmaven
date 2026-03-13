@@ -1,8 +1,12 @@
 """Query classifier for scenario-driven data processing.
 
-Classifies user messages as either Triage (generic request) or Directed
-Analysis (specific inquiry) based on entity detection heuristics. No LLM
-call — this is a fast, deterministic classifier.
+Classifies user messages into processing modes based on entity detection
+heuristics. No LLM call — this is a fast, deterministic classifier.
+
+Modes:
+- TRIAGE: generic request, no specific inquiry, file-only uploads
+- DIRECTED_ANALYSIS: specific inquiry with entities, timestamps, error codes
+- KNOWLEDGE_QUERY: general knowledge question not answerable from case evidence
 
 Design Reference: docs/architecture/data-processing/README.md
 """
@@ -18,6 +22,7 @@ class ProcessingMode(str, Enum):
 
     TRIAGE = "triage"
     DIRECTED_ANALYSIS = "directed_analysis"
+    KNOWLEDGE_QUERY = "knowledge_query"
     SEMANTIC_SEARCH = "semantic_search"
 
 
@@ -108,6 +113,57 @@ _SERVICE_PATTERN = re.compile(
 # IP addresses and ports
 _IP_PORT_PATTERN = re.compile(r"\b(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d+)?)\b")
 
+# Knowledge question patterns — phrasing that seeks general knowledge,
+# not case-specific evidence analysis
+_KNOWLEDGE_PHRASES = [
+    re.compile(r"\bwhat (?:is|are) (?:an? |the )?(\w+)", re.I),  # "what is X?"
+    re.compile(r"\bhow (?:does|do|can|should|to)\b", re.I),  # "how does X work?"
+    re.compile(r"\bexplain\b", re.I),  # "explain X"
+    re.compile(r"\bwhat(?:'s| is) the (?:difference|purpose|role|benefit)\b", re.I),
+    re.compile(r"\bcan you (?:explain|describe|tell me about)\b", re.I),
+    re.compile(r"\bwhat does .+ (?:do|mean)\b", re.I),  # "what does X do?"
+    re.compile(r"\bwhat(?:'s| is) .+ used for\b", re.I),  # "what is X used for?"
+    re.compile(r"\bhow (?:is|are) .+ (?:different|related|used|configured)\b", re.I),
+    re.compile(
+        r"\b(?:best practices?|common causes?|typical|standard approach)\b", re.I
+    ),
+]
+
+# Case reference patterns — phrases that anchor a question to case data,
+# overriding knowledge classification even if phrasing looks knowledge-seeking.
+#
+# IMPORTANT: All patterns require a possessive/locational prefix (the, this,
+# my, our, in, from) to avoid matching bare nouns. Without this, "What is a
+# null pointer exception?" would match on "exception" and block KNOWLEDGE_QUERY.
+_CASE_REFERENCE_PHRASES = [
+    # "in the logs", "from my file", "the data" — require at least one prefix
+    re.compile(
+        r"\b(?:in |from )(?:the |this |my |our )?(?:log|logs|file|files|evidence|data|dump|trace|output)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:the |this |my |our )(?:log|logs|file|files|evidence|data|dump|trace|output)\b",
+        re.I,
+    ),
+    # "the error", "this exception", "our incident" — require possessive prefix
+    re.compile(
+        r"\b(?:the|this|our|that) (?:error|errors|exception|exceptions|crash|incident|issue|alert)\b",
+        re.I,
+    ),
+    # "we're seeing", "I'm getting" — experiential phrasing (always case-specific)
+    re.compile(
+        r"\b(?:we(?:'re| are)|I(?:'m| am)) (?:seeing|getting|experiencing|having)\b",
+        re.I,
+    ),
+    # "this service", "the server", "our cluster" — require possessive prefix
+    re.compile(
+        r"\b(?:this|the|our|that) (?:service|server|pod|container|cluster|instance|node|system)\b",
+        re.I,
+    ),
+    # "what happened", "what went wrong" — inherently case-referencing
+    re.compile(r"\b(?:what happened|what went wrong|what caused)\b", re.I),
+]
+
 
 def _extract_entities(message: str) -> dict[str, list[str]]:
     """Extract technical entities from a user message."""
@@ -149,6 +205,32 @@ def _is_generic_request(message: str) -> bool:
     return any(pattern.search(message) for pattern in _GENERIC_PHRASES)
 
 
+def _has_case_reference(message: str) -> bool:
+    """Check if the message references case-specific data (logs, errors, etc.)."""
+    return any(pattern.search(message) for pattern in _CASE_REFERENCE_PHRASES)
+
+
+def _is_knowledge_question(message: str, entities: dict[str, list[str]]) -> bool:
+    """Check if the message is a general knowledge question.
+
+    A knowledge question has knowledge-seeking phrasing AND does NOT
+    reference case data or contain hard case-specific entities (timestamps,
+    status codes, IPs). Service names and error keywords are allowed because
+    they can appear as the SUBJECT of a knowledge question (e.g., "What is
+    Redis?", "How does connection pooling work?").
+
+    This prevents "what happened at 14:00?" from being classified as knowledge
+    while allowing "How to configure Redis sentinel?" through.
+    """
+    # Hard case-specific entities always block knowledge classification
+    _CASE_SPECIFIC_ENTITY_TYPES = {"timestamps", "status_codes", "ip_addresses"}
+    if any(etype in entities for etype in _CASE_SPECIFIC_ENTITY_TYPES):
+        return False
+    if _has_case_reference(message):
+        return False
+    return any(pattern.search(message) for pattern in _KNOWLEDGE_PHRASES)
+
+
 def _has_interrogative_structure(message: str) -> bool:
     """Check if the message contains a specific question structure."""
     # Question mark with content beyond just generic phrasing
@@ -170,6 +252,8 @@ def classify_query(
 
     Routes to:
     - TRIAGE: generic requests, no specific inquiry, file-only uploads
+    - KNOWLEDGE_QUERY: general knowledge questions not answerable from
+      case evidence (e.g., "What is Opik?", "How does Redis clustering work?")
     - DIRECTED_ANALYSIS: specific questions with entities, timestamps,
       error codes, or technical conditions to investigate
 
@@ -203,6 +287,16 @@ def classify_query(
     is_generic = _is_generic_request(message)
     has_question = _has_interrogative_structure(message)
     has_entities = bool(entities)
+
+    # Knowledge question — general knowledge-seeking phrasing WITHOUT
+    # case references or hard case-specific entities. Must be checked
+    # before entity-based routing to prevent knowledge questions from
+    # falling through to DIRECTED_ANALYSIS.
+    if _is_knowledge_question(message, entities):
+        return QueryClassification(
+            mode=ProcessingMode.KNOWLEDGE_QUERY,
+            confidence=0.85,
+        )
 
     # Specific entities + question → Directed Analysis (high confidence)
     if has_entities and has_question:

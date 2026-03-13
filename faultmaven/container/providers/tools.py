@@ -57,12 +57,18 @@ def create_registry_tools(
         except Exception as e:
             logger.warning(f"Knowledge base tool creation failed: {e}")
 
-    # Web search tool is optional (may be disabled if API key is missing).
+    # Web search tool is optional (may be disabled if no API key configured).
     try:
         from faultmaven.modules.agent.tools.web_search import WebSearchTool
 
-        tools.append(WebSearchTool(settings=settings))
+        web_search = WebSearchTool(settings=settings)
+        if web_search.is_available():
+            tools.append(web_search)
+        else:
+            web_search = None
+            logger.debug("Web search tool skipped (no search provider configured)")
     except Exception as e:
+        web_search = None
         logger.warning(f"Web search tool creation failed: {e}")
 
     return tools
@@ -156,9 +162,16 @@ def register_tools(container: BaseDIContainer) -> None:
         container._register_service("knowledge_ingester", ingester)
     container.knowledge_ingester = ingester
 
-    # Create registry tools
+    # Create registry tools (includes web search if configured)
     tools = create_registry_tools(ingester, settings)
     container.tools = tools
+
+    # Extract web_search_tool from registry tools for DA loop registration
+    from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
+    container.web_search_tool = next(
+        (t for t in tools if isinstance(t, WebSearchTool)), None
+    )
 
     # Create document Q&A tools
     llm_provider = container.get_service("llm_provider")
@@ -186,6 +199,23 @@ def register_tools(container: BaseDIContainer) -> None:
         tools_to_add.insert(1, qa_tools["user_kb_qa_tool"])
 
     container.tools.extend([t for t in tools_to_add if t is not None])
+
+    # Create KB adapters (AgentTool wrappers for the DA loop)
+    from faultmaven.modules.agent.tools.kb_tool_adapter import (
+        GlobalKBToolAdapter,
+        UserKBToolAdapter,
+    )
+
+    container.global_kb_adapter = (
+        GlobalKBToolAdapter(wrapped_tool=qa_tools["global_kb_qa_tool"])
+        if qa_tools["global_kb_qa_tool"]
+        else None
+    )
+    container.user_kb_adapter = (
+        UserKBToolAdapter(wrapped_tool=qa_tools["user_kb_qa_tool"])
+        if qa_tools["user_kb_qa_tool"]
+        else None
+    )
 
     # Deep analysis tool (LLM-interpreted analysis)
     deep_analysis_service = (

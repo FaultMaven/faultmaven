@@ -1,4 +1,47 @@
+import os
 import sys
+from unittest.mock import Mock
+
+# CRITICAL: Aggressively clear LLM credentials from os.environ at the VERY START of collection.
+# This prevents early-imported modules from capturing real credentials during Pytest collection.
+LLM_VARS_TO_WIPE = [
+    "CHAT_PROVIDER",
+    "FIREWORKS_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY",
+    "HUGGINGFACE_API_KEY",
+    "COHERE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "STRICT_PROVIDER_MODE",
+]
+for var in LLM_VARS_TO_WIPE:
+    os.environ.pop(var, None)
+
+# CRITICAL: Prevent .env file loading in tests to avoid environment contamination
+# This must happen before ANY other imports, as some modules load settings at import time.
+# Pydantic BaseSettings uses dotenv.dotenv_values() internally (not load_dotenv),
+# so we patch BOTH to fully prevent .env leakage into nested settings models.
+try:
+    import dotenv
+
+    # Patch dotenv globally to be a no-op during tests
+    dotenv.load_dotenv = Mock(return_value=None)
+    dotenv.dotenv_values = Mock(return_value={})
+
+    # Also patch DotEnvSettingsSource directly in case pydantic_settings was already imported
+    try:
+        import pydantic_settings.sources.providers.dotenv as pydantic_dotenv
+
+        pydantic_dotenv.dotenv_values = dotenv.dotenv_values
+        # To be absolutely sure, patch the method that reads the files
+        pydantic_dotenv.DotEnvSettingsSource._read_env_files = lambda self: {}
+    except (ImportError, AttributeError):
+        pass
+except ImportError:
+    pass  # dotenv not installed, which is fine for tests
+
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
@@ -324,18 +367,6 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-
-# CRITICAL: Prevent .env file loading in tests to avoid environment contamination
-# This must happen BEFORE any module imports that might load settings
-_original_load_dotenv = None
-try:
-    # Patch dotenv.load_dotenv globally to be a no-op during tests
-    import dotenv
-    from dotenv import load_dotenv as _original_load_dotenv
-
-    dotenv.load_dotenv = Mock(return_value=None)
-except ImportError:
-    pass  # dotenv not installed, which is fine for tests
 
 
 # Session-level fixture to clear .env variables that may have been loaded before tests started

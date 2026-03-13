@@ -32,6 +32,9 @@ def _make_mock_tool(name: str) -> MagicMock:
 def _make_mock_container(
     has_search_file: bool = False,
     has_deep_analysis: bool = False,
+    has_web_search: bool = False,
+    has_global_kb: bool = False,
+    has_user_kb: bool = False,
 ) -> MagicMock:
     """Create a mock DI container with optional tool attributes."""
     container = MagicMock()
@@ -45,6 +48,21 @@ def _make_mock_container(
         container.deep_analysis_tool = _make_mock_tool("deep_analysis")
     else:
         container.deep_analysis_tool = None
+
+    if has_web_search:
+        container.web_search_tool = _make_mock_tool("web_search")
+    else:
+        container.web_search_tool = None
+
+    if has_global_kb:
+        container.global_kb_adapter = _make_mock_tool("global_kb_qa")
+    else:
+        container.global_kb_adapter = None
+
+    if has_user_kb:
+        container.user_kb_adapter = _make_mock_tool("user_kb_qa")
+    else:
+        container.user_kb_adapter = None
 
     return container
 

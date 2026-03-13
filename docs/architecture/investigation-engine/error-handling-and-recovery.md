@@ -372,6 +372,10 @@ if not is_valid_reasoning and is_da_turn:
 
 This prevents unnecessary retries on factual DA lookups while still enforcing all other diagnostic reasoning requirements.
 
+#### Knowledge Query Bypass
+
+**Knowledge queries** (`query_mode == "knowledge_query"`) skip diagnostic reasoning validation entirely. These are general technical questions (e.g., "What is Opik?", "How does Redis clustering work?") that are answered from the LLM's built-in knowledge without case evidence. The OBSERVATION + ANALYSIS structure and evidence-grounding requirements are inapplicable — there is no case data to observe or cite. The query classifier's 3-gate detection (knowledge phrase match + no hard entities + no case references) ensures only genuinely non-case questions take this path.
+
 ### 3.3 System Feedback Loop
 
 Validation errors from multiple sources are merged into `system_feedback` on the turn record, which `build_investigation_context()` includes in the next turn's prompt:
