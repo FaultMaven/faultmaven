@@ -78,7 +78,6 @@ Default entities detected (configurable via `ENTITIES_TO_PROTECT`):
 | Crypto addresses | `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa` | `<CRYPTO_1>` |
 | Email addresses | `john@example.com` | `<EMAIL_ADDRESS_1>` |
 | IBAN codes | `GB29NWBK60161331926819` | `<IBAN_CODE_1>` |
-| IP addresses | `192.168.1.100` | `<IP_ADDRESS_1>` |
 | Phone numbers | `+1-555-123-4567` | `<PHONE_NUMBER_1>` |
 | Medical licenses | `DEA# AB1234567` | `<MEDICAL_LICENSE_1>` |
 | US bank numbers | `1234567890` | `<US_BANK_NUMBER_1>` |
@@ -91,6 +90,7 @@ Entities **excluded by default** (produce false positives on log data):
 
 | Entity | Why excluded |
 |--------|-------------|
+| `IP_ADDRESS` | IPs are investigation evidence — redacting attacker IPs defeats security analysis. Private IPs (RFC1918) are still caught by the regex layer |
 | `PERSON` | spaCy NER misclassifies month names (`Jan`, `Mar`), hostnames, and syslog fields as person names |
 | `DATE_TIME` | Timestamps are essential for log correlation — redacting them destroys timeline analysis |
 | `NRP` | Nationality/religious/political — irrelevant for system logs, false positives on technical terms |
@@ -148,7 +148,7 @@ After expiry, a new registry starts and placeholders may renumber. This only aff
 # MIN_SCORE_THRESHOLD=0.85
 
 # Entity types to detect (comma-separated, default shown below)
-# ENTITIES_TO_PROTECT=CREDIT_CARD,CRYPTO,EMAIL_ADDRESS,IBAN_CODE,IP_ADDRESS,PHONE_NUMBER,MEDICAL_LICENSE,US_BANK_NUMBER,US_DRIVER_LICENSE,US_ITIN,US_PASSPORT,US_SSN
+# ENTITIES_TO_PROTECT=CREDIT_CARD,CRYPTO,EMAIL_ADDRESS,IBAN_CODE,PHONE_NUMBER,MEDICAL_LICENSE,US_BANK_NUMBER,US_DRIVER_LICENSE,US_ITIN,US_PASSPORT,US_SSN
 ```
 
 ### Presidio Services
@@ -208,6 +208,7 @@ This indicates the case-scoped registry is not loading from Redis. Check:
 
 ## Version History
 
+- **v4.2.0** — Removed `IP_ADDRESS` from Presidio default entities. Public IPs are investigation evidence, not PII. Private IPs (RFC1918: 10.x, 172.16-31.x, 192.168.x) remain redacted by the regex layer.
 - **v4.1.0** — Presidio settings wired to configuration: `MIN_SCORE_THRESHOLD` (default 0.85) and `ENTITIES_TO_PROTECT` are now read from settings. Removed `PERSON`, `DATE_TIME`, `NRP`, `LOCATION`, `URL` from defaults (false positives on log data). Fixed password regex corrupting compound tokens like `failed_password: 520`.
 - **v4.0.0** — Case-scoped redaction: consistent placeholders across files, tool result redaction, reverse-substitution. Removed `AUTO_SANITIZE_BASED_ON_PROVIDER` (single `SANITIZE_PII` setting)
 - **v3.3.0** — Changed default to off (investigation-first)

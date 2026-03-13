@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
+
+- Removed `IP_ADDRESS` from Presidio default `entities_to_protect` — public IPs are investigation evidence, not PII. Private IPs (RFC1918) remain redacted by the regex layer.
+
+### Fixed
+
+- **Opik Ghost Spans**: Removed duplicate `@opik.track` decorator from `LLMRouter.generate()` — it created an empty outer span on every LLM call since `generate()` is a thin delegate to `route()` which already has the decorator
+- **Router Timeout Enforcement**: Changed `timeout=None` to `timeout=self.request_timeout` in `LLMRouter.route()` — the configured timeout (default 30s) was never enforced at the router level, allowing unbounded latency when the fallback chain tried multiple slow providers
+- **Test Mock Setup**: Fixed 3 tests in `test_router.py` where `aiohttp` response mocks were missing `response.text` setup, causing `AsyncMock` objects to leak into error messages recorded by Opik tracing
+
+### Added (Existing)
+
 - Session-level tools documentation in `docs/tools/`
 - MCP (Model Context Protocol) integration guide
 - Comprehensive tool catalog and developer guide
@@ -17,14 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `scripts/resolve_duplicate_emails.py` - Resolve duplicate emails (auto/interactive modes)
   - `scripts/backfill_closed_at_timestamps.py` - Backfill missing closed_at timestamps
 
-### Changed
+### Changed (Existing)
 
 - Documentation reorganization: cleaner folder structure
 - Renamed `guides/` to `how-to/` for clarity
 - Moved historical docs to `archive/`
 - Consolidated specifications into `architecture/specifications/`
 
-### Fixed
+### Fixed (Existing)
 
 - **CRITICAL**: Storage infrastructure gaps causing data loss (Commits 52bfb854, b434152a, ecaafed7)
   - **Message Persistence**: Fixed PostgreSQL repositories missing `_upsert_messages()` call

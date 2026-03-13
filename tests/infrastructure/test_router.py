@@ -20,6 +20,7 @@ class TestLLMRouter:
         os.environ["OPENAI_API_KEY"] = "test-openai-key"
         os.environ["GROQ_API_KEY"] = ""  # Disable groq for controlled testing
         os.environ["CHAT_PROVIDER"] = "fireworks"
+        os.environ["STRICT_PROVIDER_MODE"] = "false"
 
         # Reset singletons to pick up new environment
         reset_settings()
@@ -115,16 +116,15 @@ class TestLLMRouter:
                 return mock_success_response
 
             # Mock the post method to return context managers
-            # The registry tries providers in order with retry logic
-            # Retry 1: fireworks (fails on first attempt, succeeds on retry)
-            # We need to provide enough failures to force fallback to openai
+            # We must use AsyncMock(return_value=None) for __aexit__ to prevent Python
+            # from suppressing exceptions raised inside the async with block.
             mock_post = Mock()
             mock_post.side_effect = [
                 Mock(
-                    __aenter__=fail_context, __aexit__=AsyncMock()
+                    __aenter__=fail_context, __aexit__=AsyncMock(return_value=None)
                 ),  # Fireworks attempt 1 fails
                 Mock(
-                    __aenter__=success_context, __aexit__=AsyncMock()
+                    __aenter__=success_context, __aexit__=AsyncMock(return_value=None)
                 ),  # OpenAI attempt 1 succeeds
             ]
             mock_session.post = mock_post
@@ -143,6 +143,9 @@ class TestLLMRouter:
         """Test handling when all providers fail."""
         with patch("aiohttp.ClientSession.post") as mock_post:
             mock_post.return_value.__aenter__.return_value.status = 500
+            mock_post.return_value.__aenter__.return_value.text = AsyncMock(
+                return_value="Internal Server Error"
+            )
 
             with pytest.raises(Exception):
                 await router.route("Test prompt")
@@ -180,7 +183,7 @@ class TestLLMRouter:
             # Mock the post method
             mock_post = Mock()
             mock_post.return_value = Mock(
-                __aenter__=success_context, __aexit__=AsyncMock()
+                __aenter__=success_context, __aexit__=AsyncMock(return_value=None)
             )
             mock_session.post = mock_post
 
@@ -288,19 +291,19 @@ class TestLLMRouter:
 
     @pytest.mark.asyncio
     async def test_route_with_retry_logic(self, router):
-        """Test retry logic for failed requests."""
+        """Test that a successful provider response is returned."""
         mock_response = {
             "choices": [{"message": {"content": "Retry response"}}],
             "usage": {"total_tokens": 10},
         }
 
         with patch("aiohttp.ClientSession.post") as mock_post:
-            # First two calls fail, third succeeds
-            mock_post.return_value.__aenter__.return_value.status = 500
-            mock_post.return_value.__aenter__.return_value.status = 500
             mock_post.return_value.__aenter__.return_value.status = 200
             mock_post.return_value.__aenter__.return_value.json = AsyncMock(
                 return_value=mock_response
+            )
+            mock_post.return_value.__aenter__.return_value.text = AsyncMock(
+                return_value=""
             )
 
             result = await router.route("Test prompt")
@@ -316,10 +319,12 @@ class TestLLMRouter:
         }
 
         with patch("aiohttp.ClientSession.post") as mock_post:
-            mock_post.return_value.__aenter__.return_value.status = 429  # Rate limit
             mock_post.return_value.__aenter__.return_value.status = 200
             mock_post.return_value.__aenter__.return_value.json = AsyncMock(
                 return_value=mock_response
+            )
+            mock_post.return_value.__aenter__.return_value.text = AsyncMock(
+                return_value=""
             )
 
             result = await router.route("Test prompt")

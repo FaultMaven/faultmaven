@@ -82,7 +82,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     @_opik_track_llm("llm_router_route")
     async def route(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
@@ -96,7 +96,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Route request through the centralized provider registry
 
         Args:
-            prompt: Input prompt
+            prompt: Input prompt (optional if messages is provided)
             model: Specific model to use (optional)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
@@ -105,24 +105,27 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Returns:
             LLMResponse with generated content
         """
-        # Validate prompt
-        if prompt is None:
-            raise TypeError("Prompt cannot be None")
+        # Validate prompt or messages
+        if prompt is None and not messages:
+            raise TypeError("Either prompt or messages must be provided")
 
-        # Sanitize prompt before sending to external providers (conditional)
-        sanitized_prompt = self._sanitize_if_needed(prompt)
+        # Sanitize before sending to external providers (conditional)
+        sanitized_prompt = self._sanitize_if_needed(prompt) if prompt else None
+        sanitized_messages = self._sanitize_if_needed(messages) if messages else None
 
         # Check cache first (skip for multi-turn conversations — not cacheable)
         # The cache will be stored with the effective model used
         cache_model = model  # Use the requested model for cache lookup
-        if cache_model and not messages:
+        if cache_model and not messages and sanitized_prompt:
             cached_response = self.cache.check(sanitized_prompt, cache_model)
             if cached_response:
                 self.logger.info("✅ Using cached response")
                 cached_response.sanitized_prompt = sanitized_prompt
                 if self.settings.observability.opik_log_raw_prompts:
                     cached_response.raw_prompt = prompt
-                self._update_opik_span(cached_response, sanitized_prompt, cached=True)
+                self._update_opik_span(
+                    cached_response, sanitized_prompt=sanitized_prompt, cached=True
+                )
                 return cached_response
 
         # Route through registry with BaseExternalClient wrapping
@@ -147,15 +150,15 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_format,
-                messages=messages,
+                messages=sanitized_messages,
                 confidence_threshold=self.confidence_threshold,
-                timeout=self.request_timeout,  # Configurable timeout from environment/settings
-                retries=1,  # Single retry for failed LLM calls
-                retry_delay=2.0,
+                timeout=self.request_timeout,  # Enforce router-level timeout ceiling
+                retries=0,  # Do not duplicate retries at the router level
+                retry_delay=1.0,
             )
 
             # Store successful response in cache
-            if response.confidence >= self.confidence_threshold:
+            if response.confidence >= self.confidence_threshold and sanitized_prompt:
                 # Store with the requested model key for consistent cache lookup
                 store_model = model or response.model
                 self.cache.store(sanitized_prompt, store_model, response)
@@ -164,9 +167,16 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             response.sanitized_prompt = sanitized_prompt
             if self.settings.observability.opik_log_raw_prompts:
                 response.raw_prompt = prompt
+                response.raw_messages = messages
+
+            response.sanitized_messages = sanitized_messages
 
             # Update the current Opik span with LLM-specific data
-            self._update_opik_span(response, sanitized_prompt)
+            self._update_opik_span(
+                response,
+                sanitized_prompt=sanitized_prompt,
+                sanitized_messages=sanitized_messages,
+            )
 
             return response
 
@@ -178,7 +188,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             raise
 
     def _update_opik_span(
-        self, response: LLMResponse, sanitized_prompt: str, cached: bool = False
+        self,
+        response: LLMResponse,
+        sanitized_prompt: Optional[str] = None,
+        sanitized_messages: Optional[List[Dict[str, Any]]] = None,
+        cached: bool = False,
     ) -> None:
         """Update the current Opik span with LLM call data.
 
@@ -192,9 +206,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             return
 
         try:
-            input_data = {
-                "prompt": sanitized_prompt[:TELEMETRY_PAYLOAD_MAX_CHARS],
-            }
+            input_data = {}
+            if sanitized_prompt:
+                input_data["prompt"] = sanitized_prompt[:TELEMETRY_PAYLOAD_MAX_CHARS]
+            if sanitized_messages:
+                # Truncate messages if they become too large for telemetry stringification
+                messages_str = str(sanitized_messages)
+                input_data["messages"] = messages_str[:TELEMETRY_PAYLOAD_MAX_CHARS]
             output_data = {}
             if response.content:
                 output_data["response"] = response.content[:TELEMETRY_PAYLOAD_MAX_CHARS]
@@ -221,8 +239,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         except Exception as e:
             self.logger.warning(f"Failed to update Opik span: {e}")
 
-    @_opik_track_llm("llm_router_generate")
-    async def generate(self, prompt: str, **kwargs) -> LLMResponse:
+    async def generate(self, prompt: Optional[str] = None, **kwargs) -> LLMResponse:
         """
         ILLMProvider interface implementation - delegates to route()
 
@@ -231,7 +248,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         fallback strategies, and provider registry management.
 
         Args:
-            prompt: Input prompt for text generation
+            prompt: Input prompt for text generation (optional if messages is provided in kwargs)
             **kwargs: Additional parameters including:
                 - model: Specific model to use (optional)
                 - max_tokens: Maximum tokens to generate (default: 1000)
@@ -274,19 +291,19 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Return the full LLMResponse (milestone_engine expects this)
         return response
 
-    def _sanitize_if_needed(self, prompt: str) -> str:
+    def _sanitize_if_needed(self, data: Any) -> Any:
         """
-        Conditionally sanitize prompt based on SANITIZE_PII setting.
+        Conditionally sanitize data based on SANITIZE_PII setting.
 
         Returns:
-            Sanitized or original prompt
+            Sanitized or original data
         """
         if self.settings.protection.sanitize_pii:
             self.logger.debug("🔒 LLM Router: Applying PII sanitization")
-            return self.sanitizer.sanitize(prompt)
+            return self.sanitizer.sanitize(data)
         else:
             self.logger.debug("🔓 LLM Router: Skipping PII sanitization")
-            return prompt
+            return data
 
     def get_provider_status(self):
         """Get status of all providers"""

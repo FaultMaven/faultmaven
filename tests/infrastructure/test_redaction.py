@@ -265,10 +265,12 @@ class TestPresidioSettingsWiring:
         assert "NRP" not in sanitizer._presidio_entities
         assert "LOCATION" not in sanitizer._presidio_entities
         assert "URL" not in sanitizer._presidio_entities
-        # Core financial/infrastructure entities remain
+        # Core financial entities remain
         assert "CREDIT_CARD" in sanitizer._presidio_entities
-        assert "IP_ADDRESS" in sanitizer._presidio_entities
         assert "EMAIL_ADDRESS" in sanitizer._presidio_entities
+        # IP_ADDRESS excluded — IPs are investigation evidence, not PII.
+        # Private IPs are still caught by regex patterns in DataSanitizer.
+        assert "IP_ADDRESS" not in sanitizer._presidio_entities
 
     def test_default_settings_threshold(self):
         """Default settings use 0.85 threshold."""

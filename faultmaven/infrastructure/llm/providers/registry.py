@@ -230,13 +230,9 @@ class ProviderRegistry:
         # self._initialize_from_environment()
 
     def _ensure_initialized(self):
-        """Ensure providers are initialized before use.
-
-        Note: This method no longer reloads .env files. All environment variable
-        loading is handled by the unified settings system (faultmaven.config.settings).
-        """
+        """Ensure providers are initialized (lazy initialization)"""
         if not self._initialized:
-            self.logger.info("🔍 Lazy-initializing provider registry...")
+            self.logger.info("Lazy-initializing provider registry...")
 
             # Re-fetch settings to ensure we have the latest configuration
             if self.settings is None:
@@ -250,25 +246,12 @@ class ProviderRegistry:
     def _initialize_from_settings(self):
         """Initialize providers based on settings configuration using schema"""
         if self.settings:
-            # Use settings-based configuration
-            self.logger.info(f"🔍 Settings-based provider configuration:")
-            self.logger.info(f"🔍 CHAT_PROVIDER: {self.settings.llm.provider}")
             self.logger.info(
-                f"🔍 LOCAL_LLM_URL: {self.settings.llm.local_url or 'NOT_SET'}"
+                f"Provider configuration: CHAT_PROVIDER={self.settings.llm.provider}"
             )
-            self.logger.info(
-                f"🔍 LOCAL_LLM_MODEL: {self.settings.llm.local_model or 'NOT_SET'}"
-            )
-            fireworks_key_preview = "NOT_SET"
-            if self.settings.llm.fireworks_api_key:
-                fireworks_key_preview = (
-                    self.settings.llm.fireworks_api_key.get_secret_value()[:10] + "..."
-                )
-            self.logger.info(f"🔍 FIREWORKS_API_KEY: {fireworks_key_preview}")
 
             # Get primary provider from settings (convert enum to string)
             primary_provider = self.settings.llm.provider
-            # Convert enum to string if needed (LLMProvider enum inherits from str)
             if hasattr(primary_provider, "value"):
                 primary_provider = primary_provider.value
         else:
@@ -281,14 +264,19 @@ class ProviderRegistry:
                 context={"settings_available": self.settings is not None},
             )
 
-        # Validate that primary_provider is in schema
-        if primary_provider not in PROVIDER_SCHEMA:
-            valid_options = list(PROVIDER_SCHEMA.keys())
-            self.logger.error(
-                f"❌ Invalid CHAT_PROVIDER: '{primary_provider}'. "
-                f"Valid options: {valid_options}. Defaulting to 'local'"
+        # Safeguard: ensure it's a string for dictionary lookup
+        primary_provider_key = str(
+            primary_provider.value
+            if hasattr(primary_provider, "value")
+            else primary_provider
+        ).lower()
+        if primary_provider_key not in PROVIDER_SCHEMA:
+            self.logger.warning(
+                f"⚠️ Unknown primary provider {primary_provider_key} (type={type(primary_provider)}). Defaulting to 'local'."
             )
-            primary_provider = "local"
+            primary_provider_key = "local"
+
+        primary_provider = primary_provider_key
 
         # Check if strict mode is enabled
         strict_mode = self.settings.llm.strict_provider_mode
@@ -413,7 +401,6 @@ class ProviderRegistry:
             model = llm_settings.cohere_chat_model or schema["default_model"]
             base_url = llm_settings.cohere_base_url or schema["default_base_url"]
 
-        # Skip providers without required API keys (except local)
         if schema.get("api_key_var") and not api_key and provider_name != "local":
             self.logger.warning(
                 f"⚠️ Skipping provider '{provider_name}': "
@@ -434,20 +421,14 @@ class ProviderRegistry:
                 )
                 return None
 
-        # Debug configuration values
-        self.logger.info(f"🔍 Provider '{provider_name}' config:")
-        self.logger.info(f"🔍   Model: {model} (from {schema.get('model_var', 'N/A')})")
-        self.logger.info(
-            f"🔍   Base URL: {base_url} (from {schema.get('base_url_var', 'default')})"
-        )
-        self.logger.info(f"🔍   API Key: {'SET' if api_key else 'NOT_SET'}")
-
         # Get timeout and max_retries from schema or settings
         timeout = schema.get("timeout", llm_settings.request_timeout)
         max_retries = schema.get("max_retries", llm_settings.max_retries)
 
-        self.logger.info(f"🔍   Timeout: {timeout}s")
-        self.logger.info(f"🔍   Max Retries: {max_retries}")
+        self.logger.debug(
+            f"Provider '{provider_name}': model={model}, "
+            f"api_key={'SET' if api_key else 'NOT_SET'}, timeout={timeout}s"
+        )
 
         return ProviderConfig(
             name=provider_name,
@@ -809,9 +790,7 @@ def get_registry(settings=None) -> ProviderRegistry:
     """Get the global provider registry instance"""
     global _registry
     if _registry is None:
-        print("🔍 Creating new ProviderRegistry instance...")
         _registry = ProviderRegistry(settings=settings)
-        print("🔍 ProviderRegistry instance created")
     return _registry
 
 

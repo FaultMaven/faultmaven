@@ -289,7 +289,9 @@ MIN_EXTRACTIVE_WORDS = (
 )
 
 # LLM generation settings (optimized for title quality)
-LLM_TITLE_MAX_TOKENS = 64  # Prevent truncation (increased from 24 after Gemini errors)
+LLM_TITLE_MAX_TOKENS = (
+    128  # Prevent truncation (Gemini may emit reasoning tokens before the title)
+)
 LLM_TITLE_TEMPERATURE = 0.2  # More deterministic generation
 LLM_TITLE_TOP_P = 0.9  # Focused sampling
 

@@ -12,9 +12,10 @@ ARCHITECTURAL PRINCIPLES:
 """
 
 import logging
+import os
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union, Type
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -150,7 +151,9 @@ class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
 
     # Task-specific provider selection
-    provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, alias="CHAT_PROVIDER")
+    provider: LLMProvider = Field(
+        default=LLMProvider.FIREWORKS, validation_alias="CHAT_PROVIDER"
+    )
     multimodal_provider: Optional[LLMProvider] = Field(default=None)
     synthesis_provider: Optional[LLMProvider] = Field(default=None)
     classifier_provider: Optional[LLMProvider] = Field(default=None)
@@ -158,14 +161,30 @@ class LLMSettings(BaseSettings):
     da_provider: Optional[LLMProvider] = Field(default=None)
 
     # API Keys (SecretStr for security)
-    openai_api_key: Optional[SecretStr] = Field(default=None)
-    anthropic_api_key: Optional[SecretStr] = Field(default=None)
-    fireworks_api_key: Optional[SecretStr] = Field(default=None)
-    cohere_api_key: Optional[SecretStr] = Field(default=None)
-    gemini_api_key: Optional[SecretStr] = Field(default=None)
-    huggingface_api_key: Optional[SecretStr] = Field(default=None)
-    openrouter_api_key: Optional[SecretStr] = Field(default=None)
-    groq_api_key: Optional[SecretStr] = Field(default=None)
+    openai_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="OPENAI_API_KEY"
+    )
+    anthropic_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="ANTHROPIC_API_KEY"
+    )
+    fireworks_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="FIREWORKS_API_KEY"
+    )
+    cohere_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="COHERE_API_KEY"
+    )
+    gemini_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="GEMINI_API_KEY"
+    )
+    huggingface_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="HUGGINGFACE_API_KEY"
+    )
+    openrouter_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="OPENROUTER_API_KEY"
+    )
+    groq_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="GROQ_API_KEY"
+    )
 
     # Flexible model configuration per provider and task
     # OpenAI models
@@ -260,8 +279,8 @@ class LLMSettings(BaseSettings):
     openrouter_model: str = Field(default="openrouter-default")
 
     # Local provider configuration
-    local_url: Optional[str] = Field(default=None, alias="LOCAL_LLM_URL")
-    local_model: Optional[str] = Field(default=None, alias="LOCAL_LLM_MODEL")
+    local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
+    local_model: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_MODEL")
 
     # Base URLs for each provider
     openai_base_url: str = Field(
@@ -1035,7 +1054,6 @@ class ProtectionSettings(BaseSettings):
             "CRYPTO",
             "EMAIL_ADDRESS",
             "IBAN_CODE",
-            "IP_ADDRESS",
             "PHONE_NUMBER",
             "MEDICAL_LICENSE",
             "US_BANK_NUMBER",
@@ -2161,24 +2179,18 @@ def get_settings() -> FaultMavenSettings:
                 for error in preset_errors:
                     logger.warning(f"Preset configuration warning: {error}")
 
-            # Debug: Log what we're loading
             import logging
 
             logger = logging.getLogger(__name__)
             preset_name = get_current_preset_name()
             if preset_name:
                 logger.info(f"Settings loading with preset '{preset_name}'")
-            logger.info(
-                f"Settings loading - CHAT_PROVIDER={os.getenv('CHAT_PROVIDER')}"
-            )
-            logger.info(
-                f"Settings loading - LOCAL_LLM_URL={os.getenv('LOCAL_LLM_URL')}"
-            )
-            logger.info(
-                f"Settings loading - LOCAL_LLM_MODEL={os.getenv('LOCAL_LLM_MODEL')}"
-            )
 
-            _settings_instance = FaultMavenSettings()
+            # When running tests, allow bypassing .env file to prevent credential leakage
+            if os.getenv("FAULTMAVEN_SKIP_DOTENV"):
+                _settings_instance = FaultMavenSettings(_env_file=None)
+            else:
+                _settings_instance = FaultMavenSettings()
         except Exception as e:
             from faultmaven.models.exceptions import ConfigurationError
 
