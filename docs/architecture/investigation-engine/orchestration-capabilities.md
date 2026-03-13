@@ -136,20 +136,44 @@ See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-speci
 
 **Mechanism** (`_tool_augmented_generate()` in `milestone_engine.py`):
 
-1. When `query_mode == "directed_analysis"`, the milestone engine routes inference through a bounded tool-calling loop instead of single-shot generation.
-2. The LLM receives `search_file` and `schema_tool` as function-calling tools, with a DA-specific system instruction that includes keyword-first search guidance and a required OBSERVATION + ANALYSIS response format.
-3. **Iteration-0 guardrail**: At iteration 0, only investigation tools (`search_file`) are available — the schema tool is withheld. This forces the LLM to perform at least one search before attempting to generate a structured response.
-4. The loop runs for up to 4 iterations. Each iteration either:
-   - Executes a tool call (search_file or schema_tool) and feeds the result back to the LLM
+1. When `query_mode == "directed_analysis"`, the milestone engine routes inference through a bounded tool-calling loop instead of single-shot generation. Knowledge queries (`query_mode == "knowledge_query"`) bypass the tool loop entirely and use the non-tool generation path.
+2. The LLM receives up to 5 investigation tools plus the schema tool as function-calling tools, with a DA-specific system instruction that includes Type A/B/C question routing and a required OBSERVATION + ANALYSIS response format.
+3. All tools are available from iteration 0. The loop runs for up to 4 iterations. Each iteration either:
+   - Executes a tool call and feeds the result back to the LLM
    - Terminates when the LLM returns a structured response via `schema_tool`
-5. If the loop exhausts all iterations without a structured response, it falls back to single-shot `_generate_structured_output()`.
+4. If the loop exhausts all iterations without a structured response, it falls back to single-shot `_generate_structured_output()`.
 
-**DA System Instruction**: The system instruction injected for DA turns includes:
+**Investigation Tools** (registered in `_create_investigation_tools()`):
+
+| Tool | Purpose | Cost |
+|------|---------|------|
+| `search_file` | Keyword/regex search on raw evidence files | $0 |
+| `deep_analysis` | LLM-interpreted analysis of evidence sections (1/turn limit) | ~$0.01 |
+| `web_search` | Search trusted technical domains (Google CSE or Tavily provider) | $0 |
+| `global_kb_qa` | System-wide KB: documented solutions, best practices | ~$0.01 |
+| `user_kb_qa` | User's personal runbooks and procedures | ~$0.01 |
+
+Tools are registered conditionally — only available tools appear in the LLM's function-calling schema. If no search provider API key is configured, `web_search` is omitted. If KB vector stores aren't populated, `global_kb_qa`/`user_kb_qa` are omitted.
+
+**DA System Instruction (Type A/B/C question routing)**: The system instruction injected for DA turns includes:
+
+* **TYPE A — Case question**: Questions about THIS case's evidence (IPs, errors, timestamps, patterns). Agent MUST search evidence (`search_file`, `deep_analysis`) before responding. The structural indexes are summaries — they lack specific values needed for grounded analysis.
+* **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from own knowledge, optionally using `web_search` or `global_kb_qa` for supplementary detail. Connect to case context when relevant.
+* **TYPE C — Hybrid**: Questions bridging case data and external knowledge (e.g., "Is our Redis config following best practices?"). Agent searches evidence first, then applies knowledge/KB context for the reference baseline.
+* **Default**: When uncertain, treat as Type A — evidence search is always safe. Only skip evidence search when the question clearly cannot be answered from log files, configs, or other submitted data.
+
+**Tool priority guidance** in the DA system instruction:
+
+1. Start with case evidence (`search_file`, `deep_analysis`) — ground analysis in THIS case's data first
+2. Check knowledge bases (`global_kb_qa`, `user_kb_qa`) for documented solutions when evidence alone doesn't explain the issue
+3. Use `web_search` as a last resort when evidence and KB have no answers
+
+**Additional DA system instruction elements:**
 
 * **Entity-first search**: Extract specific entities (IPs, usernames, timestamps, error codes) from the user's question and search for those exact terms
 * **Keyword-first search mode**: Use `search_type: "keyword"` by default; fall back to regex only for pattern matching
 * **PII token warnings**: Explicit instruction that PII tokens (IPs, hostnames, usernames) in uploaded evidence are NOT real PII and must not be redacted from tool calls
-* **RESPONSE FORMAT**: Requires OBSERVATION section (cite specific data from at least 2 different categories — timestamps, error messages, IPs/usernames, metrics/counts) followed by ANALYSIS section (explain WHY using causal language)
+* **RESPONSE FORMAT**: Requires OBSERVATION section (cite specific data for case questions; state relevant facts for knowledge questions) followed by ANALYSIS section (explain significance with causal language for case questions; relate to investigation context for knowledge questions)
 
 **Dual-Path Evidence Resolution**: The `search_file` tool resolves evidence content through two paths:
 
@@ -158,11 +182,14 @@ See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-speci
 
 The `Evidence.original_filename` field (set during `_preprocess_attachment()`) provides the display filename in search results instead of the opaque evidence ID.
 
+**Stage-aware context**: `_build_tool_context()` injects the current investigation stage (`DIAGNOSIS`, `MITIGATION`, `TREATMENT`) into `ToolContext.metadata["stage"]`, enabling `web_search` to enrich queries with stage-appropriate terms (e.g., "root cause diagnosis" vs "workaround mitigation").
+
 **Key characteristics:**
 
-* Zero additional LLM calls for search (search_file is mechanical, $0)
+* Zero additional LLM calls for mechanical tools (search_file, web_search are $0)
+* KB tools cost ~$0.01 per call (vector search + LLM synthesis)
 * At most 1 additional LLM call per tool iteration (for the loop's inference step)
 * Falls back gracefully to single-shot on loop exhaustion
-* Iteration-0 guardrail ensures at least one evidence search before response
+* Knowledge queries bypass the tool loop entirely (no tool_choice="required" overhead)
 
 See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.

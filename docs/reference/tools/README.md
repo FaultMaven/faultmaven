@@ -22,19 +22,21 @@ FaultMaven implements a **pluggable tool system**:
 ```mermaid
 graph TB
     Agent[AI Agent] --> Registry[Tool Registry]
-    Registry --> Interface[BaseTool Interface]
-    
-    Interface --> KB[Knowledge Base Tool]
+    Registry --> Interface[AgentTool Interface]
+
+    Interface --> SearchFile[Search File Tool]
+    Interface --> DeepAnalysis[Deep Analysis Tool]
     Interface --> Web[Web Search Tool]
-    Interface --> Log[Log Analyzer Tool]
+    Interface --> GlobalKB[Global KB QA]
+    Interface --> UserKB[User KB QA]
     Interface --> Custom[Custom Tools]
     Interface --> MCP[MCP Server Tools]
-    
-    KB --> ChromaDB[(ChromaDB)]
-    Web --> SearchAPI[Search API]
-    Log --> Analysis[Local Analysis]
-    MCP --> External[External MCP Servers]
-    
+
+    Web --> Tavily[Tavily API]
+    Web --> GoogleCSE[Google CSE API]
+    GlobalKB --> ChromaDB[(ChromaDB)]
+    UserKB --> ChromaDB
+
     style Registry fill:#e3f2fd
     style Interface fill:#f3e5f5
     style MCP fill:#fff3e0
@@ -54,7 +56,9 @@ graph TB
 Tools for retrieving information from internal and external sources.
 
 - **[Knowledge Base Search](./implemented/knowledge-base-tool.md)** ✅ - Internal runbooks and documentation
-- **[Web Search](./implemented/web-search-tool.md)** ✅ - External technical documentation
+- **[Web Search](./implemented/web-search-tool.md)** ✅ - External technical documentation (Google CSE + Tavily providers)
+- **Global KB QA** ✅ - System-wide KB: documented solutions, best practices (DA Tool Loop)
+- **User KB QA** ✅ - User's personal runbooks and procedures (DA Tool Loop)
 
 ### 2. Data Analysis Tools
 Tools for processing and analyzing uploaded evidence.
@@ -206,12 +210,13 @@ Execute shell commands for diagnostics:
 Tools are configured via environment variables in `.env`:
 
 ```env
-# Web Search Tool
+# Web Search Tool (Tavily preferred, Google CSE fallback)
+TAVILY_API_KEY=tvly-xxx
 WEB_SEARCH_API_KEY=your_google_api_key
 WEB_SEARCH_ENGINE_ID=your_engine_id
 WEB_SEARCH_MAX_RESULTS=3
 
-# Knowledge Base Tool (automatic from infrastructure)
+# Knowledge Base Tools (Global KB QA + User KB QA)
 CHROMADB_URL=http://chromadb.faultmaven.local:30080
 EMBEDDING_MODEL=BAAI/bge-m3
 
@@ -240,6 +245,8 @@ MCP_API_KEY=your_mcp_key
 **Safe Tools** (unrestricted):
 - Knowledge Base Search
 - Web Search (trusted domains only)
+- Global KB QA (read-only vector search)
+- User KB QA (read-only, user-scoped)
 - Log Analyzer (read-only)
 - Data Classifier
 
@@ -297,8 +304,8 @@ See **[Contributing Guidelines](../CONTRIBUTING.md)** for:
 
 ---
 
-**Last Updated**: 2025-10-12  
-**Version**: 1.0  
+**Last Updated**: 2026-03-13
+**Version**: 1.1
 **Maintainer**: Architecture Team
 
 

@@ -43,30 +43,30 @@ SIMILARITY_THRESHOLD=0.7
 ---
 
 ### Web Search Tool
-**Status**: ✅ Production  
-**File**: `faultmaven/tools/web_search.py`  
-**Type**: External API Integration
+**Status**: ✅ Production
+**File**: `faultmaven/modules/agent/tools/web_search.py`
+**Type**: External API Integration (AgentTool interface)
 
-**Purpose**: Search public internet for technical documentation and solutions when internal knowledge base lacks information.
+**Purpose**: Search public internet for technical documentation and solutions when case evidence and knowledge bases lack information. Available as an investigation tool in the DA Tool Loop.
 
 **When Used**:
-- Fallback when knowledge base returns insufficient results
-- Phase 3 (Hypothesis) for external error documentation
-- Phase 5 (Solution) for implementation guides
+- Within the DA Tool Loop during Directed Analysis turns (Type B and Type C questions)
+- Last resort after `search_file`, `deep_analysis`, and KB tools have been tried
+- Stage-aware query enrichment (DIAGNOSIS → root cause terms, MITIGATION → workaround terms, TREATMENT → fix/solution terms)
 
-**Capabilities**:
-- Trusted domain filtering (Stack Overflow, GitHub, official docs, etc.)
-- Context-enhanced queries (adds phase-specific search terms)
-- Privacy-first (all queries PII-sanitized before external call)
-- Limited to 3 results by default for focused answers
+**Provider Abstraction**:
+Two search providers, auto-selected based on configured API keys:
+- **TavilyProvider** (preferred): Uses Tavily AI search API. Cleaner content extraction than Google CSE snippets. Requires `TAVILY_API_KEY`.
+- **GoogleCSEProvider** (fallback): Google Custom Search Engine with trusted domain filtering via `site:` operators. Requires `WEB_SEARCH_API_KEY` + `WEB_SEARCH_ENGINE_ID`.
 
-**Trusted Domains**:
-- stackoverflow.com
+If neither provider is configured, the tool is omitted from the DA tool registry.
+
+**Trusted Domains** (Google CSE `site:` filtering):
+- stackoverflow.com, serverfault.com
 - github.com
 - docs.microsoft.com, learn.microsoft.com
 - docs.aws.amazon.com
-- kubernetes.io
-- docs.docker.com
+- kubernetes.io, docs.docker.com
 - redis.io, mongodb.com
 - nginx.org, apache.org
 - python.org, nodejs.org
@@ -80,6 +80,10 @@ SIMILARITY_THRESHOLD=0.7
 
 **Configuration**:
 ```env
+# Tavily provider (preferred)
+TAVILY_API_KEY=tvly-xxx
+
+# Google CSE provider (fallback)
 WEB_SEARCH_API_KEY=your_google_api_key
 WEB_SEARCH_ENGINE_ID=your_search_engine_id
 WEB_SEARCH_API_ENDPOINT=https://www.googleapis.com/customsearch/v1
@@ -87,12 +91,53 @@ WEB_SEARCH_MAX_RESULTS=3
 ```
 
 **Safety Features**:
-- Double PII sanitization (before and after external call)
-- Domain whitelist enforcement
-- Result disclaimer added to responses
-- 10-second timeout protection
+- Domain whitelist enforcement (Google CSE)
+- Result verification disclaimer added to responses
+- Stage-aware query enrichment via `ToolContext.metadata["stage"]`
 
 **See**: [Web Search Tool Documentation](./implemented/web-search-tool.md)
+
+---
+
+### Global KB QA Tool
+**Status**: ✅ Production
+**File**: `faultmaven/modules/agent/tools/kb_tool_adapter.py`
+**Type**: Adapter (wraps `AnswerFromGlobalKB` → AgentTool interface)
+
+**Purpose**: Query the system-wide knowledge base for documented solutions, best practices, and historical incident resolutions. Available as an investigation tool in the DA Tool Loop.
+
+**When Used**:
+- Within the DA Tool Loop during Directed Analysis turns
+- After case evidence tools (`search_file`, `deep_analysis`) when evidence alone doesn't explain the issue
+- Before `web_search` — prefer internal knowledge over external search
+
+**Capabilities**:
+- Semantic search using BGE-M3 embeddings over global knowledge base (ChromaDB)
+- LLM synthesis of retrieved chunks into a focused answer with source citations
+- No user scoping — searches the entire global knowledge base
+
+**Cost**: ~$0.01 per call (vector search + LLM synthesis)
+
+---
+
+### User KB QA Tool
+**Status**: ✅ Production
+**File**: `faultmaven/modules/agent/tools/kb_tool_adapter.py`
+**Type**: Adapter (wraps `AnswerFromUserKB` → AgentTool interface)
+
+**Purpose**: Query the user's personal knowledge base for their runbooks, procedures, and custom documentation. Available as an investigation tool in the DA Tool Loop.
+
+**When Used**:
+- Within the DA Tool Loop during Directed Analysis turns
+- When the user's personal runbooks or procedures may contain relevant troubleshooting steps
+- User-scoped: passes `context.user_id` to restrict search to the requesting user's documents
+
+**Capabilities**:
+- Semantic search scoped to a specific user's uploaded knowledge documents
+- LLM synthesis with source citations
+- User isolation enforced via `user_id` parameter
+
+**Cost**: ~$0.01 per call (vector search + LLM synthesis)
 
 ---
 
@@ -201,7 +246,7 @@ k8s-deployment.yaml → config_file (confidence: 1.0)
 - Tier 1 structural index lacks detail for the user's question
 - Agent needs specific lines, values, or patterns from raw file
 - Re-running domain extractors with different parameters
-- Within the DA Tool Loop (`_tool_augmented_generate()`) during Directed Analysis turns — the LLM iterates `search_file` + `schema_tool` up to 4 times with an iteration-0 guardrail
+- Within the DA Tool Loop (`_tool_augmented_generate()`) during Directed Analysis turns — the LLM iterates up to 5 investigation tools (`search_file`, `deep_analysis`, `web_search`, `global_kb_qa`, `user_kb_qa`) + `schema_tool` for up to 4 iterations
 
 **Search Modes**:
 - **keyword** (default): Two-pass strategy. Pass 1 requires ALL keywords on same line (high relevance). Pass 2 falls back to individual keywords with `partial_match: True` (capped at 5 results).
@@ -445,6 +490,8 @@ class CustomAPITool(BaseTool):
 |------|-------------|--------------|----------------|
 | Knowledge Base Search | 200-500ms | 98% | 60% |
 | Web Search | 1-2s | 95% | 40% |
+| Global KB QA | 1-3s | 95% | N/A |
+| User KB QA | 1-3s | 95% | N/A |
 | Log Analyzer | 800ms/MB | 99% | N/A |
 | Data Classifier | 50-200ms | 99.5% | N/A |
 | Search File (Tier 2) | 0.5-2s | 99% | N/A |
@@ -452,6 +499,6 @@ class CustomAPITool(BaseTool):
 
 ---
 
-**Last Updated**: 2026-03-08
+**Last Updated**: 2026-03-13
 **Maintained By**: Architecture Team
 
