@@ -813,11 +813,6 @@ class InquiryData(BaseModel):
     # ============================================================
     # Investigation Decision
     # ============================================================
-    quick_suggestions: List[str] = Field(
-        default_factory=list,
-        description="Quick fixes or guidance provided during inquiry"
-    )
-
     decided_to_investigate: bool = Field(
         default=False,
         description="Whether user committed to formal investigation"

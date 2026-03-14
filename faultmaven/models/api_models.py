@@ -416,11 +416,14 @@ class AttachmentResult(BaseModel):
 
 
 class SuggestedActionResponse(BaseModel):
-    """A clickable follow-up action returned with agent responses."""
+    """A follow-up suggestion returned with agent responses."""
 
     label: str
-    type: str  # "question_template" | "command" | "upload_data"
+    type: str  # "COOPERATIVE" | "EVIDENCE" | "FREE_SPEECH"
     payload: str
+    body: Optional[str] = None
+    cooperative_action: Optional[str] = None  # "query_submit" | "command_copy"
+    hints: Optional[List[str]] = None  # FREE_SPEECH: short framework tags
 
 
 class TurnResponse(BaseModel):

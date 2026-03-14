@@ -198,12 +198,6 @@ class InquiryStateUpdate(BaseModel):
         description="Whether agent/user decided to start formal investigation",
     )
 
-    next_clarifying_questions: List[str] = Field(
-        default_factory=list,
-        description="Questions agent wants answered before deciding to investigate",
-        max_length=5,
-    )
-
 
 class InquiryResponse(BaseModel):
     """

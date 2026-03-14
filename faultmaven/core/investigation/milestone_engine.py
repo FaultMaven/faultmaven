@@ -1679,30 +1679,20 @@ class MilestoneEngine:
                 hasattr(response_obj, "suggested_follow_ups")
                 and response_obj.suggested_follow_ups
             ):
-                follow_ups = [
-                    {
+                for f in response_obj.suggested_follow_ups:
+                    suggestion = {
                         "label": f.label,
                         "action_type": f.action_type,
                         "payload": f.payload,
                     }
-                    for f in response_obj.suggested_follow_ups
-                ]
-            # Also merge INQUIRY quick_suggestions if present
-            if hasattr(response_obj, "state_updates") and hasattr(
-                response_obj.state_updates, "quick_suggestions"
-            ):
-                qs = response_obj.state_updates.quick_suggestions or []
-                follow_ups.extend(
-                    [
-                        {
-                            "label": s[:40],
-                            "action_type": "question_template",
-                            "payload": s,
-                        }
-                        for s in qs
-                        if s  # skip empty strings
-                    ]
-                )
+                    # Optional fields — include only if present
+                    if f.body:
+                        suggestion["body"] = f.body
+                    if f.cooperative_action:
+                        suggestion["cooperative_action"] = f.cooperative_action
+                    if f.hints:
+                        suggestion["hints"] = f.hints
+                    follow_ups.append(suggestion)
 
             # Persist redaction registry for cross-turn consistency
             await redaction_ctx.save()

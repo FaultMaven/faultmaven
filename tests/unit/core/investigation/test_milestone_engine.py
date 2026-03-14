@@ -201,7 +201,6 @@ class TestMilestoneEngine:
                 "agent_response": "How can I help?",
                 "state_updates": {
                     "proposed_problem_statement": "Proposed issue",
-                    "quick_suggestions": ["Reboot"],
                     "outcome": "conversation",
                 },
             }

@@ -1,6 +1,6 @@
 # Contributing to FaultMaven
 
-First off, thank you for considering contributing to FaultMaven! We welcome any and all contributions, from bug reports and feature requests to code and documentation improvements. Every contribution helps make FaultMaven a better tool for the entire SRE and DevOps community.
+First off, thank you for considering contributing to FaultMaven! We welcome any and all contributions, from bug reports and feature requests to code and documentation improvements. Every contribution helps make FaultMaven a better troubleshooting tool for the community.
 
 This document provides a set of guidelines to help you get started.
 

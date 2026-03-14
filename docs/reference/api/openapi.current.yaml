@@ -8593,12 +8593,6 @@ components:
           - type: 'null'
           title: Problem Statement Confirmed At
           description: When user confirmed the problem statement
-        quick_suggestions:
-          items:
-            type: string
-          type: array
-          title: Quick Suggestions
-          description: Quick fixes or guidance provided during inquiry
         decided_to_investigate:
           type: boolean
           title: Decided To Investigate

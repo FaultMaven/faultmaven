@@ -91,8 +91,6 @@ def sample_case_with_data() -> Case:
     inquiry.proposed_problem_statement = "API experiencing high latency and errors"
     inquiry.problem_statement_confirmed = True
     inquiry.decided_to_investigate = True
-    inquiry.quick_suggestions = ["Check logs", "Verify deployment"]
-
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="test-user-002",
@@ -712,9 +710,6 @@ async def test_case_data_integrity(
     assert (
         retrieved.investigation_strategy == sample_case_with_data.investigation_strategy
     )
-
-    # Verify inquiry data preserved
-    assert retrieved.inquiry.quick_suggestions == ["Check logs", "Verify deployment"]
 
     # Verify progress preserved
     assert retrieved.progress.symptom_verified is True

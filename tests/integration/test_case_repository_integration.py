@@ -228,8 +228,6 @@ async def test_full_case_lifecycle(db_repository: DatabaseCaseRepository):
     case.inquiry.proposed_problem_statement = "Test problem statement"
     case.status = CaseStatus.INVESTIGATING
     case.current_turn = 5
-    case.inquiry.quick_suggestions = ["Check database", "Review logs"]
-
     updated = await db_repository.save(case)
     assert updated.title == "Updated Lifecycle Test"
 
@@ -450,21 +448,26 @@ async def test_repository_factory_invalid_type():
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.xfail(
-    reason="SQLAlchemy async session not thread-safe for concurrent operations - needs separate sessions per task",
-    strict=False,
-)
-async def test_concurrent_case_creation(db_repository: DatabaseCaseRepository):
-    """Test creating multiple cases concurrently."""
+async def test_concurrent_case_creation(test_engine):
+    """Test creating multiple cases concurrently.
+
+    Each concurrent call gets its own session, matching production behavior
+    where each request creates a session via get_db_session().
+    """
+    session_factory = async_sessionmaker(
+        test_engine, class_=AsyncSession, expire_on_commit=False
+    )
 
     async def create_case(index: int) -> Case:
-        case = Case(
-            case_id=f"case_{uuid4().hex[:12]}",
-            user_id="concurrent-test-user",
-            organization_id="concurrent-test-org",
-            title=f"Concurrent Case {index}",
-        )
-        return await db_repository.save(case)
+        async with session_factory() as session:
+            repo = DatabaseCaseRepository(session)
+            case = Case(
+                case_id=f"case_{uuid4().hex[:12]}",
+                user_id="concurrent-test-user",
+                organization_id="concurrent-test-org",
+                title=f"Concurrent Case {index}",
+            )
+            return await repo.save(case)
 
     # Create 10 cases concurrently
     cases = await asyncio.gather(*[create_case(i) for i in range(10)])
@@ -474,38 +477,50 @@ async def test_concurrent_case_creation(db_repository: DatabaseCaseRepository):
     assert len(set(c.case_id for c in cases)) == 10  # All unique IDs
 
     # Verify all retrievable
-    for case in cases:
-        retrieved = await db_repository.get(case.case_id)
-        assert retrieved is not None
+    async with session_factory() as session:
+        repo = DatabaseCaseRepository(session)
+        for case in cases:
+            retrieved = await repo.get(case.case_id)
+            assert retrieved is not None
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.xfail(
-    reason="SQLAlchemy async session not thread-safe for concurrent operations - needs separate sessions per task",
-    strict=False,
-)
-async def test_concurrent_message_addition(db_repository: DatabaseCaseRepository):
-    """Test adding messages concurrently."""
-    # Create case
-    case = Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id="concurrent-msg-user",
-        organization_id="concurrent-msg-org",
-        title="Concurrent Messages Test",
+async def test_concurrent_message_addition(test_engine):
+    """Test adding messages concurrently.
+
+    Each concurrent call gets its own session, matching production behavior
+    where each request creates a session via get_db_session(). A single
+    AsyncSession is not safe for concurrent use.
+    """
+    session_factory = async_sessionmaker(
+        test_engine, class_=AsyncSession, expire_on_commit=False
     )
-    await db_repository.save(case)
+
+    # Create case with its own session
+    case_id = f"case_{uuid4().hex[:12]}"
+    async with session_factory() as session:
+        repo = DatabaseCaseRepository(session)
+        case = Case(
+            case_id=case_id,
+            user_id="concurrent-msg-user",
+            organization_id="concurrent-msg-org",
+            title="Concurrent Messages Test",
+        )
+        await repo.save(case)
 
     async def add_message(index: int) -> bool:
-        return await db_repository.add_message(
-            case.case_id,
-            {
-                "message_id": f"msg_{uuid4().hex[:12]}",
-                "role": "user" if index % 2 == 0 else "assistant",
-                "content": f"Message {index}",
-                "timestamp": datetime.now(timezone.utc),
-            },
-        )
+        async with session_factory() as session:
+            repo = DatabaseCaseRepository(session)
+            return await repo.add_message(
+                case_id,
+                {
+                    "message_id": f"msg_{uuid4().hex[:12]}",
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": f"Message {index}",
+                    "timestamp": datetime.now(timezone.utc),
+                },
+            )
 
     # Add 10 messages concurrently
     results = await asyncio.gather(*[add_message(i) for i in range(10)])
@@ -514,7 +529,9 @@ async def test_concurrent_message_addition(db_repository: DatabaseCaseRepository
     assert all(results)
 
     # Verify all messages stored
-    messages = await db_repository.get_messages(case.case_id, limit=20)
+    async with session_factory() as session:
+        repo = DatabaseCaseRepository(session)
+        messages = await repo.get_messages(case_id, limit=20)
     assert len(messages) == 10
 
 
@@ -570,7 +587,6 @@ async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
             proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
-            quick_suggestions=["Check logs", "Restart service"],
             inquiry_turns=3,
         ),
     )
@@ -595,7 +611,6 @@ async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
     assert retrieved.title == "Complex Case Test"
     assert retrieved.status == CaseStatus.INVESTIGATING
     assert retrieved.investigation_strategy == InvestigationStrategy.ACTIVE_INCIDENT
-    assert retrieved.inquiry.quick_suggestions == ["Check logs", "Restart service"]
     assert retrieved.inquiry.inquiry_turns == 3
     assert retrieved.progress.symptom_verified is True
     assert retrieved.progress.scope_assessed is True

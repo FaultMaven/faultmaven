@@ -1033,9 +1033,7 @@ class StructuredLLMResponse(BaseModel):
     answer: str
     reasoning: Optional[str] = None
     suggested_actions: Optional[List[SuggestedAction]] = None
-    clarifying_questions: Optional[List[str]] = None
     command_validation: Optional[Dict[str, Any]] = None
-    suggested_commands: Optional[List[Dict[str, Any]]] = None
 
 
 class AgentResponse(BaseModel):

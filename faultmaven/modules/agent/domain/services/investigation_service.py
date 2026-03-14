@@ -284,6 +284,9 @@ class InvestigationService:
                     label=f["label"],
                     type=f["action_type"],
                     payload=f["payload"],
+                    body=f.get("body"),
+                    cooperative_action=f.get("cooperative_action"),
+                    hints=f.get("hints"),
                 )
                 for f in raw_follow_ups
             ]
@@ -592,7 +595,7 @@ class InvestigationService:
 
         # Static response (saving tokens and latency)
         agent_response = (
-            "Hello! I'm FaultMaven, an expert SRE troubleshooting copilot. "
+            "Hello! I'm FaultMaven, your AI-powered troubleshooting copilot. "
             "I can help you diagnose issues, analyze logs, and verify solutions. "
             "Please describe the problem you're observing."
         )
@@ -603,13 +606,20 @@ class InvestigationService:
             "suggested_follow_ups": [
                 {
                     "label": "Describe your issue",
-                    "action_type": "question_template",
-                    "payload": "I'm seeing an issue with...",
+                    "action_type": "FREE_SPEECH",
+                    "payload": "What problem are you experiencing?",
+                    "hints": [
+                        "symptoms",
+                        "error messages",
+                        "timeline",
+                        "affected services",
+                    ],
                 },
                 {
-                    "label": "Paste error logs",
-                    "action_type": "upload_data",
-                    "payload": "Upload or paste your error logs",
+                    "label": "Share error logs",
+                    "action_type": "EVIDENCE",
+                    "payload": "Application error logs from the affected service",
+                    "body": "Error logs will help identify the root cause faster.",
                 },
             ],
             "case_updated": case,

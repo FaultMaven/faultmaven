@@ -506,12 +506,14 @@ class TestExecuteAgentErrorHandling:
             "is_over_budget": False
         }
         mock_case_repo.get.return_value = sample_case
-        mock_case_repo.create_agent_execution.return_value = AgentExecution(
+        execution = AgentExecution(
             execution_id="exec_new",
             case_id=sample_case.case_id,
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
+        mock_case_repo.create_agent_execution.return_value = execution
+        mock_case_repo.get_agent_execution.return_value = execution
         mock_case_repo.update_agent_execution.return_value = None
         mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
@@ -565,6 +567,7 @@ class TestExecuteAgentErrorHandling:
 
         async def mock_stream(**kwargs):
             raise LLMException("Connection failed")
+            yield  # unreachable — makes this an async generator so callers can `async for` over it
 
         orchestration_service._llm_client.stream_completion = mock_stream
 

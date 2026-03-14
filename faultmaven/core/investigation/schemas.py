@@ -518,20 +518,42 @@ class SolutionToAdd(BaseModel):
 
 
 class SuggestedFollowUp(BaseModel):
-    """A follow-up action the user can take."""
+    """A follow-up suggestion for the user, classified by intended user action."""
 
     label: str = Field(
-        description="Short button text shown to user (e.g., 'Check pod logs')"
+        description="Short card title (3-8 words, e.g., 'Search KB for incidents')"
     )
-    action_type: Literal["question_template", "command", "upload_data"] = Field(
-        default="question_template",
+    action_type: Literal["COOPERATIVE", "EVIDENCE", "FREE_SPEECH"] = Field(
+        default="COOPERATIVE",
         description=(
-            "question_template = submits as user message; "
-            "command = copy-to-clipboard; "
-            "upload_data = prompts file upload"
+            "COOPERATIVE = click submits query or copies command; "
+            "EVIDENCE = informational, tells user what data to provide; "
+            "FREE_SPEECH = informational, asks user a question with framework hints"
         ),
     )
-    payload: str = Field(description="The text submitted or copied when clicked")
+    payload: str = Field(
+        description=(
+            "COOPERATIVE: pre-composed query text or shell command; "
+            "EVIDENCE: description of what data to provide and why; "
+            "FREE_SPEECH: the question text shown to the user"
+        )
+    )
+    body: Optional[str] = Field(
+        default=None,
+        description="Reasoning text shown on card (why the user should take this action)",
+    )
+
+    # COOPERATIVE fields
+    cooperative_action: Optional[Literal["query_submit", "command_copy"]] = Field(
+        default=None,
+        description="query_submit = auto-submit as user message; command_copy = copy to clipboard",
+    )
+
+    # FREE_SPEECH fields
+    hints: Optional[List[str]] = Field(
+        default=None,
+        description="Short framework tags guiding what aspects the user should address (e.g., 'symptoms', 'timeline', 'affected services')",
+    )
 
 
 class BaseInteractionResponse(BaseModel):
@@ -564,7 +586,6 @@ class InquiryResponse(BaseInteractionResponse):
                 "present the problem statement — wait for the user's next message."
             ),
         )
-        quick_suggestions: Optional[List[str]] = Field(default_factory=list)
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
             default_factory=list,
             description="Evidence to create from agent findings during this turn",

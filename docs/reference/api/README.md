@@ -5496,7 +5496,6 @@ Captures early problem exploration before formal investigation commitment.
         
 - `problem_statement_confirmed` (boolean) ❌ - User confirmed the formalized problem statement
 - `problem_statement_confirmed_at` (unknown) ❌ - When user confirmed the problem statement
-- `quick_suggestions` (array) ❌ - Quick fixes or guidance provided during inquiry
 - `decided_to_investigate` (boolean) ❌ - Whether user committed to formal investigation
 - `decision_made_at` (unknown) ❌ - When user decided to investigate (or not)
 - `inquiry_turns` (integer) ❌ - Number of turns spent in INQUIRY status

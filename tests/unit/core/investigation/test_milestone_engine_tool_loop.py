@@ -8,7 +8,7 @@ via the schema tool (termination signal).
 
 import json
 from typing import List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from pydantic import BaseModel, Field
@@ -562,6 +562,8 @@ class TestGenerateStructuredOutputRouting:
             {"agent_response": "tool augmented", "next_action": "continue"}
         )
         mock_provider.generate = AsyncMock(return_value=schema_response)
+        # supports_tool_calling is a sync method on real providers
+        mock_provider.supports_tool_calling = Mock(return_value=True)
 
         engine = _make_engine(mock_provider=mock_provider)
 
