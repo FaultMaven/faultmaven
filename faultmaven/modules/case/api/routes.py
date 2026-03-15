@@ -2047,11 +2047,11 @@ async def submit_turn(
                 Attachment(
                     content=pasted_content.encode("utf-8"),
                     filename=(
-                        f"page-capture-{ts}.html"
+                        f"page-capture-{ts}.txt"
                         if page_match
                         else f"pasted-content-{ts}.txt"
                     ),
-                    content_type="text/html" if page_match else "text/plain",
+                    content_type="text/plain",
                     source_metadata=source_meta,
                 )
             )

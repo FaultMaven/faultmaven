@@ -58,6 +58,160 @@ logger = logging.getLogger(__name__)
 
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
 
+# Stopwords excluded from query-section keyword matching (common English words
+# that would cause false-positive matches across unrelated sections).
+_RERANK_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "must",
+        "can",
+        "could",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "out",
+        "off",
+        "over",
+        "under",
+        "again",
+        "further",
+        "then",
+        "once",
+        "and",
+        "but",
+        "or",
+        "nor",
+        "not",
+        "no",
+        "so",
+        "if",
+        "when",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "this",
+        "that",
+        "these",
+        "those",
+        "am",
+        "it",
+        "its",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "they",
+        "them",
+        "their",
+        "any",
+        "all",
+        "each",
+        "every",
+        "how",
+        "why",
+        "where",
+        "there",
+        "here",
+        "up",
+        "down",
+        "about",
+    }
+)
+
+
+def _rerank_page_capture_sections(content: str, query: str) -> str:
+    """Rerank page-capture sections by relevance to the user's query.
+
+    Page captures from ``htmlToStructuredText`` use ``## `` headings as section
+    delimiters.  This function splits on those headings, scores each section by
+    normalised keyword overlap with *query*, and reassembles in descending
+    relevance order so that the most pertinent panels/messages survive the
+    per-item character cap applied downstream.
+
+    The **preamble** (everything before the first ``## ``) is always pinned at
+    position 0 — it contains ``[captured_at: …]`` and the page title which
+    provide essential temporal context.
+
+    Scoring: ``len(query_terms ∩ section_terms) / len(query_terms)``.
+    Ties preserve original document order (stable sort).
+    """
+    # Split on heading boundaries, keeping the delimiter with its section
+    parts = content.split("\n## ")
+    if len(parts) <= 1:
+        # No headings or single section — nothing to reorder
+        return content
+
+    preamble = parts[0]
+    sections = parts[1:]  # each starts with the heading text (after "## ")
+
+    # Tokenise query into meaningful keywords
+    query_terms = {
+        w
+        for w in re.sub(r"[^\w\s]", " ", query.lower()).split()
+        if w not in _RERANK_STOPWORDS and len(w) > 1
+    }
+    if not query_terms:
+        return content
+
+    # Score each section by keyword overlap
+    scored: list[tuple[int, float, str]] = []
+    for idx, section in enumerate(sections):
+        section_lower = section.lower()
+        section_words = set(re.sub(r"[^\w\s]", " ", section_lower).split())
+        overlap = len(query_terms & section_words)
+        score = overlap / len(query_terms)
+        scored.append((idx, score, section))
+
+    # Stable sort descending by score (preserves original order on ties)
+    scored.sort(key=lambda t: -t[1])
+
+    return preamble + "\n## " + "\n## ".join(s[2] for s in scored)
+
 
 def _smart_truncate_agent_response(
     response: str,
@@ -454,7 +608,11 @@ def _score_evidence_for_tier_a(ev, case) -> float:
     return score
 
 
-def _build_evidence_context(case: Case, processing_mode: Optional[str] = None) -> str:
+def _build_evidence_context(
+    case: Case,
+    processing_mode: Optional[str] = None,
+    user_query: str = "",
+) -> str:
     """
     Build the evidence context section using a three-tier sliding window.
 
@@ -513,6 +671,17 @@ def _build_evidence_context(case: Case, processing_mode: Optional[str] = None) -
     # Tier A: Recent data evidence with structural index
     for ev in tier_a:
         structural_index = ev.preprocessed_content or ""
+
+        # Rerank page capture sections by query relevance before truncation
+        # so the most pertinent panels/messages survive the per-item char cap.
+        if (
+            user_query
+            and getattr(ev, "extraction_method", None) == "page_capture_passthrough"
+        ):
+            structural_index = _rerank_page_capture_sections(
+                structural_index, user_query
+            )
+
         truncated = False
 
         # Per-item cap
@@ -873,7 +1042,9 @@ def build_investigation_context(
     # Tier B (older data, summary only), Tier C (user text, summary only).
     # Fixes "I don't have access to file content" bug by including
     # structural indexes in the LLM context for recent evidence.
-    evidence_str = _build_evidence_context(case, processing_mode=processing_mode)
+    evidence_str = _build_evidence_context(
+        case, processing_mode=processing_mode, user_query=user_message_safe
+    )
 
     # 5. Hypothesis Summary
     hypothesis_str = ""

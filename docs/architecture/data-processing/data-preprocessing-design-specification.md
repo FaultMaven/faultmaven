@@ -1,12 +1,23 @@
-# Data Preprocessing Design Specification v5.0
+# Data Preprocessing Design Specification v5.1
 
 **Status**: FINAL
-**Date**: 2026-03-06
-**Supersedes**: v4.2
+**Date**: 2026-03-15
+**Supersedes**: v5.0
 
 ---
 
 ## Change Summary
+
+### v5.0 → v5.1 (Page Capture Pipeline)
+
+| Area | v5.0 | v5.1 |
+|------|------|------|
+| **Page capture** | Raw HTML capture → UNSTRUCTURED_TEXT extractor | Semantic DOM extraction (frontend) → structured markdown → pass-through (backend). Error-first priority ordering, stat panel detection, ARIA alert promotion. |
+| **ClassificationResult** | No source origin tracking | Added `source_type` field propagated from `source_metadata.source_type` through all 5 classification priority tiers. |
+| **Preprocessing service** | All content routed through Tier 1 extractors | Page captures (`source_type="page_capture"`) bypass UnstructuredTextExtractor via `page_capture_passthrough` branch. |
+| **Evidence filename** | Page captures saved as `.html` | Page captures saved as `.txt` with `content_type="text/plain"` (content is structured markdown, not HTML). |
+| **System prompt** | No page capture format guidance | Added "WORKING WITH EVIDENCE DATA" section describing page capture markdown format (headings = panels, label:value = metrics, error-promoted sections, captured_at timestamp). |
+| **Future work** | - | Stage 2 (query-time reranking) implemented in v5.2. Stage 3 (platform-specific extraction), Stage 4 (viewport sync) documented in Deferred Items. |
 
 ### v4.2 → v5.0 (Scenario-Driven Processing)
 
@@ -217,6 +228,9 @@ The classification system has two layers. The **detailed layer** (12 types) driv
 | 10 | `DOCUMENTATION` | `DocumentationExtractor` | `documentation_structure` | Section classification (troubleshooting/procedure/configuration), operational command filtering (kubectl, docker, systemctl, etc.), TOC generation | **TEXT** |
 | 11 | `VISUAL_EVIDENCE` | `VisualEvidenceExtractor` | `vision` | Metadata only: format, dimensions, byte size (placeholder for Phase 3 multimodal LLM vision analysis) | **IMAGE** |
 | 12 | `UNANALYZABLE` | *(none — fallback)* | — | Truncation to 10,000 chars | **TEXT** |
+| 13 | *(page capture pass-through)* | *(none)* | `page_capture_passthrough` | Pre-structured markdown from frontend (htmlToStructuredText): headings, tables, lists, code blocks, forms, stat panels, ARIA alerts, error-first priority ordering, `[captured_at]` timestamp | **TEXT** |
+
+**Page Capture Pass-Through:** When `source_metadata.source_type` = `"page_capture"`, the preprocessing service bypasses the UnstructuredTextExtractor entirely. The content arrives as structured markdown from the browser extension's `htmlToStructuredText()` function (semantic DOM extraction with visibility checks, stat panel detection, ARIA alert promotion, and error-first static priority pass), so no additional extraction is needed. The pass-through branch sets `method="page_capture_passthrough"` and preserves the structured markdown output.
 
 **Key insight**: The 4 extractors under LOGS produce fundamentally different output. A distributed trace parsed by `trace_correlation` (service call chain, critical path) is nothing like a log file parsed by `crime_scene` (error clusters, timeline). The 12→6 unification is a lossy compression for the external API; internally, the system leverages all 11 extractors.
 
@@ -297,7 +311,11 @@ return ClassificationResult(
 
 The extractor fallback chain (Section 4.9 of v3.2) ensures no extractor propagates errors. Best-effort dispatch gives the specialized extractor a *chance* to find something valuable, with the same safety net as before.
 
-### 2.4 Pasted Text Processing
+### 2.4 Pasted Text and Page Capture Processing
+
+> **Updated v5.1**: Page captures arrive as pre-structured markdown from the copilot extension via
+> the `pasted_content` form field with `source_metadata.source_type = "page_capture"`. They bypass
+> the UnstructuredTextExtractor via a pass-through branch in the preprocessing service.
 
 > **Updated v4.1**: Pasted text is now submitted as an attachment via the unified
 > `POST /cases/{id}/turns` endpoint (using the `pasted_content` form field). It is
@@ -1045,6 +1063,9 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | **Deep analysis file size cap** | `DEEP_ANALYSIS_MAX_FILE_SIZE_MB` config to reject oversized files before sending to Tier 3 backend | When large file uploads are common |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |
+| ~~**Page Capture Stage 2: Query-Time Reranking**~~ | **Implemented in v5.2.** `_rerank_page_capture_sections()` in `context_builder.py` splits page capture structural indexes on `\n##` headings, scores each section against user query via normalised keyword overlap (stopwords excluded), reorders so query-relevant content appears first. Preamble (`[captured_at: …]` + page title) pinned at position 0. Runs before per-item char cap so relevant sections survive truncation. Triggered only for `extraction_method="page_capture_passthrough"` evidence. | ~~Post-v5.1~~ Done |
+| **Page Capture Stage 3: Platform-Specific Extraction** | Tool-specific DOM heuristics for Grafana, Datadog, PagerDuty, etc. CSS-in-JS makes CSS-selector-based extraction fragile — prefer DOM structure + ARIA attribute heuristics. Generic `htmlToStructuredText` already handles most dashboards via tryKeyValue/tryStatValue; platform extractors would add precision, not coverage. Related to `platform-specific-extractors.md`. | Post-v5.1 |
+| **Page Capture Stage 4: Viewport Sync / Real-Time Capture** | Current capture is one-shot snapshot — stale for live dashboards (Grafana auto-refresh). Options: periodic re-capture, MutationObserver for DOM changes, or explicit "refresh capture" button. Trade-off: bandwidth vs freshness. | Post-v5.1 |
 
 ---
 
@@ -1201,7 +1222,7 @@ No re-run parameters. These extractors have no tunable thresholds.
 
 ---
 
-**Document Version**: 5.0
-**Last Updated**: 2026-03-06
+**Document Version**: 5.1
+**Last Updated**: 2026-03-15
 **Status**: FINAL
-**Predecessor**: v4.2 (data-preprocessing-design-specification.md)
+**Predecessor**: v5.0 (data-preprocessing-design-specification.md)

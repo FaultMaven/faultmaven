@@ -250,6 +250,14 @@ WORKING WITH EVIDENCE DATA:
   visible and note that additional detail may exist beyond what's shown.
 - If you need detail the structural index doesn't have: suggest a specific command
   the user can run to extract it. Use suggested_follow_ups with action_type "COOPERATIVE" and cooperative_action "command_copy".
+- PAGE CAPTURES: Evidence captured from web pages (dashboards, alerts, status pages)
+  arrives as structured markdown with error-priority ordering. The format:
+  • Headings (## / ###) = panel titles or page sections
+  • "Label: value" lines = metric readings or key-value pairs
+  • Fenced code blocks = log snippets or code on the page
+  • Sections containing error signals (firing, critical, alert, etc.) are promoted
+    to the top of the capture — prioritise these sections in your analysis.
+  • [captured_at: ISO timestamp] at the top indicates when the page was captured.
 
 When your analysis discovers NEW findings not in the structural index, create
 evidence records via evidence_to_add with appropriate category and summary.

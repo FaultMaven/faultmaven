@@ -809,6 +809,11 @@ class ClassificationResult(BaseModel):
     suggested_types: Optional[List[DataType]] = Field(
         None, description="Suggested data types for ambiguous cases (user fallback)"
     )
+    source_type: Optional[str] = Field(
+        None,
+        description="Origin of the content: page_capture, user_paste, file_upload. "
+        "Propagated from Attachment.source_metadata when available.",
+    )
 
 
 class ExtractionMetadata(BaseModel):

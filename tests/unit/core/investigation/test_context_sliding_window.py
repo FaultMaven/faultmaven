@@ -24,6 +24,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     EVIDENCE_CONTEXT_MAX_TOTAL_CHARS,
     EVIDENCE_CONTEXT_RECENT_COUNT,
     _build_evidence_context,
+    _rerank_page_capture_sections,
 )
 from faultmaven.modules.case.contracts import (
     CaseStatus,
@@ -590,3 +591,201 @@ class TestProcessingModeOrientation:
         # Tier A (recent 3): should have role="orientation"
         assert '<structural_index role="orientation">' in result
         # The older items (Tier B) should be summary-only — no structural_index at all
+
+
+# ============================================================
+# Page Capture Section Reranking (Stage 2)
+# ============================================================
+
+# Sample page capture content mimicking htmlToStructuredText output
+_PAGE_CAPTURE_CONTENT = (
+    "[captured_at: 2026-03-15T14:00:00Z]\n"
+    "# Grafana - Production Dashboard\n"
+    "Production system overview\n"
+    "\n"
+    "## Network\n"
+    "Packets in: 1200/s\n"
+    "Packets out: 980/s\n"
+    "Latency: 2ms\n"
+    "\n"
+    "## Memory\n"
+    "Used: 14GB\n"
+    "Available: 18GB\n"
+    "Swap: 0B\n"
+    "\n"
+    "## Disk IO\n"
+    "Read: 50MB/s\n"
+    "Write: 30MB/s\n"
+    "IOPS: 1200\n"
+    "\n"
+    "## CPU Usage\n"
+    "User CPU: 92%\n"
+    "System CPU: 5%\n"
+    "Load average: 8.2\n"
+    "\n"
+    "## Deployments\n"
+    "Last deploy: v2.3.1 at 13:45\n"
+    "Rollback available: v2.3.0\n"
+)
+
+
+class TestReankPageCaptureSections:
+    """Tests for _rerank_page_capture_sections pure function."""
+
+    def test_promotes_query_relevant_section(self):
+        """Section matching query terms is promoted above non-matching sections."""
+        result = _rerank_page_capture_sections(
+            _PAGE_CAPTURE_CONTENT, "why is CPU usage so high"
+        )
+        sections = result.split("\n## ")
+        # CPU Usage section should be first after preamble
+        assert sections[1].startswith("CPU Usage")
+
+    def test_preamble_always_first(self):
+        """Preamble (captured_at + title) stays at position 0."""
+        result = _rerank_page_capture_sections(
+            _PAGE_CAPTURE_CONTENT, "disk IO throughput"
+        )
+        assert result.startswith("[captured_at: 2026-03-15T14:00:00Z]")
+
+    def test_no_op_without_query(self):
+        """Empty query returns content unchanged."""
+        result = _rerank_page_capture_sections(_PAGE_CAPTURE_CONTENT, "")
+        assert result == _PAGE_CAPTURE_CONTENT
+
+    def test_no_op_single_section(self):
+        """Content without ## headings passes through unchanged."""
+        simple = "[captured_at: 2026-03-15T14:00:00Z]\nJust some text"
+        result = _rerank_page_capture_sections(simple, "CPU usage")
+        assert result == simple
+
+    def test_stable_sort_on_tie(self):
+        """Sections with equal scores preserve original document order."""
+        # Query "system" doesn't match any section-specific terms beyond preamble
+        content = (
+            "Preamble\n"
+            "## Alpha\n"
+            "First section\n"
+            "## Beta\n"
+            "Second section\n"
+            "## Gamma\n"
+            "Third section\n"
+        )
+        result = _rerank_page_capture_sections(content, "unrelated query xyz")
+        sections = result.split("\n## ")
+        assert sections[1].startswith("Alpha")
+        assert sections[2].startswith("Beta")
+        assert sections[3].startswith("Gamma")
+
+    def test_multiple_query_terms_score_higher(self):
+        """Section matching more query terms scores higher than partial match."""
+        result = _rerank_page_capture_sections(
+            _PAGE_CAPTURE_CONTENT, "disk read write throughput"
+        )
+        sections = result.split("\n## ")
+        # Disk IO has "read" and "write" — best match
+        assert sections[1].startswith("Disk IO")
+
+    def test_stopwords_ignored_in_scoring(self):
+        """Common words like 'is', 'the', 'what' don't influence section scoring."""
+        # "what is the" are all stopwords; only "memory" is meaningful
+        result = _rerank_page_capture_sections(
+            _PAGE_CAPTURE_CONTENT, "what is the memory usage"
+        )
+        sections = result.split("\n## ")
+        assert sections[1].startswith("Memory")
+
+    def test_case_insensitive_matching(self):
+        """Query matching is case-insensitive."""
+        result = _rerank_page_capture_sections(
+            _PAGE_CAPTURE_CONTENT, "CPU USAGE HIGH LOAD"
+        )
+        sections = result.split("\n## ")
+        assert sections[1].startswith("CPU Usage")
+
+
+class TestPageCaptureRerankingIntegration:
+    """Integration tests: reranking within _build_evidence_context."""
+
+    def test_page_capture_evidence_is_reranked(self):
+        """Page capture evidence with extraction_method='page_capture_passthrough'
+        has its sections reranked by user_query."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Grafana dashboard capture",
+            preprocessed_content=_PAGE_CAPTURE_CONTENT,
+            data_type="text",
+            extraction_method="page_capture_passthrough",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case, user_query="CPU usage high")
+        # CPU Usage section should appear before Network in the structural index
+        cpu_pos = result.find("## CPU Usage")
+        network_pos = result.find("## Network")
+        assert (
+            cpu_pos < network_pos
+        ), f"CPU Usage (pos={cpu_pos}) should appear before Network (pos={network_pos})"
+
+    def test_non_page_capture_not_reranked(self):
+        """Evidence without extraction_method='page_capture_passthrough'
+        is not reranked regardless of user_query."""
+        content = (
+            "Header\n"
+            "## Zebra\n"
+            "Last section\n"
+            "## Alpha\n"
+            "First section alpha query match\n"
+        )
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Regular log file",
+            preprocessed_content=content,
+            data_type="LOGS",
+            extraction_method="structural_index",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case, user_query="alpha")
+        # Original order preserved — Zebra before Alpha
+        zebra_pos = result.find("## Zebra")
+        alpha_pos = result.find("## Alpha")
+        assert zebra_pos < alpha_pos
+
+    def test_no_query_preserves_original_order(self):
+        """Without user_query, page capture sections stay in original order."""
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Dashboard",
+            preprocessed_content=_PAGE_CAPTURE_CONTENT,
+            data_type="text",
+            extraction_method="page_capture_passthrough",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case)  # no user_query
+        # Original order: Network before CPU Usage
+        network_pos = result.find("## Network")
+        cpu_pos = result.find("## CPU Usage")
+        assert network_pos < cpu_pos
+
+    def test_reranked_content_survives_truncation(self):
+        """Relevant section promoted above per-item char cap survives truncation."""
+        # Build content where the relevant section is at the end, past char cap
+        filler = "x" * 1500  # large filler per section
+        content = (
+            "[captured_at: 2026-03-15T14:00:00Z]\n"
+            f"## Filler A\n{filler}\n"
+            f"## Filler B\n{filler}\n"
+            f"## Filler C\n{filler}\n"
+            f"## Target Section\nCPU usage: 95%\nLoad average: 12.3\n"
+        )
+        ev = _make_evidence(
+            form=EvidenceForm.DOCUMENT,
+            summary="Large dashboard",
+            preprocessed_content=content,
+            data_type="text",
+            extraction_method="page_capture_passthrough",
+        )
+        case = _make_case_with_evidence([ev])
+        result = _build_evidence_context(case, user_query="CPU load average")
+        # Target section should survive truncation because it's promoted to top
+        assert "Target Section" in result
+        assert "CPU usage: 95%" in result

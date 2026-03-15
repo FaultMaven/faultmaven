@@ -570,20 +570,39 @@ class PreprocessingService:
         )
 
         # Tier 1: Extract structural index with timeout enforcement
-        extractor = self.extractors.get(detailed_data_type)
-
-        if extractor:
-            extraction = await self._extract_with_timeout(extractor, content, filename)
-        else:
-            logger.warning(
-                f"No extractor for {detailed_data_type.value}, "
-                f"using direct truncation"
+        #
+        # Page captures arrive as pre-distilled structured markdown from
+        # htmlToStructuredText (copilot extension).  Running them through
+        # the UnstructuredTextExtractor would re-parse headings, strip
+        # error lines, and cap sections at 500 chars — destroying the
+        # carefully prioritised output.  Pass through with a char cap.
+        if classification.source_type == "page_capture":
+            logger.info(
+                "classify_and_extract: page_capture detected, "
+                "skipping extractor (content already structured)"
             )
             extraction = ExtractionResult(
-                method="direct",
+                method="page_capture_passthrough",
                 content=self._fallback_direct_extraction(content),
-                metadata={"fallback": True},
+                metadata={"passthrough": True, "source_type": "page_capture"},
             )
+        else:
+            extractor = self.extractors.get(detailed_data_type)
+
+            if extractor:
+                extraction = await self._extract_with_timeout(
+                    extractor, content, filename
+                )
+            else:
+                logger.warning(
+                    f"No extractor for {detailed_data_type.value}, "
+                    f"using direct truncation"
+                )
+                extraction = ExtractionResult(
+                    method="direct",
+                    content=self._fallback_direct_extraction(content),
+                    metadata={"fallback": True},
+                )
 
         # PII redaction is handled at the LLM boundary (MilestoneEngine),
         # not at extraction time. Structural indices are stored raw.

@@ -1,8 +1,8 @@
 # Data Classification Strategy: Highly Effective Rules and Fallback Design
 
-**Version**: 2.0
+**Version**: 2.1
 **Status**: Design Specification
-**Date**: 2026-02-12
+**Date**: 2026-03-15
 **Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-level fallback for accurate data type detection
 
 **Role in Four-Tier Model**: This document specifies **Tier 0: Classification** — the first stage in the [Data Preprocessing v4.1](./data-preprocessing-design-specification.md) four-tier model. Tier 0 runs on every submission (file uploads and pasted text via `POST /cases/{id}/turns`), completes in <100ms with zero LLM calls, and produces a `DataType` enum + confidence score that determines which Tier 1 extractor runs next.
@@ -81,7 +81,25 @@ Tier 1: Type-specific Mechanical Extraction (0 LLM, <2s)
 Evidence created (form=DOCUMENT) → Context Sliding Window → LLM Inference (Step 2)
 ```
 
-**Pasted text**: Submitted as the `pasted_content` form field on `/turns`, converted to an attachment with synthetic filename (`pasted-content-{ts}.txt`), and routed through the same Tier 0+1 pipeline as file uploads. Since pasted text lacks filename extension hints, the classifier relies entirely on content patterns.
+**Pasted text**: Submitted as the `pasted_content` form field on `/turns`, converted to an attachment with synthetic filename (`pasted-content-{ts}.txt` or `page-capture-{ts}.txt`), and routed through the same Tier 0+1 pipeline as file uploads. Since pasted text lacks filename extension hints, the classifier relies entirely on content patterns.
+
+### ClassificationResult with Source Tracking (v5.1)
+
+The `ClassificationResult` schema includes an optional `source_type` field propagated from `Attachment.source_metadata`:
+
+```python
+class ClassificationResult:
+    data_type: DataType              # LOGS, METRICS, CONFIGURATION, CODE, TEXT, IMAGE
+    confidence: float                # 0.0-1.0
+    reasoning: str                   # Why this classification
+    fallback_level: int              # Which level matched (1-6)
+    metadata: dict                   # Subtype and other details
+    source_type: Optional[str]       # Origin: page_capture, user_paste, file_upload
+```
+
+**Purpose**: The `source_type` field allows downstream systems (preprocessing service, LLM prompts) to apply origin-specific routing logic. For example, page captures (`source_type="page_capture"`) bypass the UnstructuredTextExtractor because the content arrives pre-structured from the copilot extension.
+
+**Propagation**: Set from `source_metadata.source_type` when available, propagated through all 5 classification priority tiers via the `_origin` variable in the classifier.
 
 ### How Fine-Grained Subtypes Map to DataType
 

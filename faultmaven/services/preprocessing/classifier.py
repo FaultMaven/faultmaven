@@ -62,6 +62,14 @@ class DataClassifier:
             ClassificationResult with data_type, confidence, and source
         """
 
+        # Propagate content origin (page_capture, user_paste, etc.)
+        # so downstream components can branch on it.
+        _origin = (
+            source_metadata.source_type
+            if source_metadata and hasattr(source_metadata, "source_type")
+            else None
+        )
+
         # Priority 1: User override (100% confidence)
         if user_override:
             return ClassificationResult(
@@ -69,6 +77,7 @@ class DataClassifier:
                 confidence=1.0,
                 source="user_override",
                 classification_failed=False,
+                source_type=_origin,
             )
 
         # Priority 2: Agent hint (95% confidence if validated)
@@ -78,6 +87,7 @@ class DataClassifier:
                 confidence=0.95,
                 source="agent_hint",
                 classification_failed=False,
+                source_type=_origin,
             )
 
         # Priority 3: Source URL patterns (page captures - NEW)
@@ -87,16 +97,20 @@ class DataClassifier:
                 source_metadata.source_url, source_metadata.source_type
             )
             if url_result:
+                url_result.source_type = _origin
                 return url_result
 
         # Priority 4: Browser context (confidence adjusted for ranking)
         if browser_context:
             context_result = self._classify_from_browser_context(browser_context)
             if context_result:
+                context_result.source_type = _origin
                 return context_result
 
         # Priority 5: Rule-based patterns with source_type boost
-        return self._classify_with_rules(filename, content, source_metadata)
+        result = self._classify_with_rules(filename, content, source_metadata)
+        result.source_type = _origin
+        return result
 
     def _validate_hint(self, filename: str, content: str, hint: DataType) -> bool:
         """

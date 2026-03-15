@@ -21,18 +21,23 @@ This document primarily describes the Tier 1 (frontend) approach. For Tier 3 int
 
 ## Current Implementation
 
-### What We Have Now
-When a user clicks "Inject current page":
-1. ✅ Capture entire HTML content
-2. ✅ Store page URL as metadata
-3. ✅ Send raw HTML to backend for analysis
-4. ✅ Backend processes it as unstructured text
+### What We Have Now (Stage 1 — Implemented)
+When a user captures a page via the copilot side panel:
+1. ✅ `htmlToStructuredText()` converts live DOM to structured markdown
+2. ✅ Error-first priority pass: sections with error keywords promoted to top
+3. ✅ `tryStatValue` heuristic: detects large-font stat panels (fontSize >= 24px) with monitoring units (`%`, `ms`, `req/s`, etc.)
+4. ✅ `tryKeyValue` heuristic: detects label + value patterns in child elements
+5. ✅ ARIA alert promotion: `role="alert"` elements wrapped in `## Alert` heading
+6. ✅ Form value extraction via `.value` property (not lost like with `outerHTML`)
+7. ✅ `[captured_at: ISO timestamp]` preamble for temporal context
+8. ✅ Backend pass-through: page captures skip UnstructuredTextExtractor entirely
+9. ✅ System prompt describes structured markdown format for LLM interpretation
 
-### Limitations
-- ❌ All pages treated as generic HTML
-- ❌ Important structured data buried in HTML
-- ❌ No platform-aware parsing
-- ❌ Suboptimal LLM context usage
+### What Remains (Limitations of Generic Extraction)
+- ❌ No platform-aware parsing (Grafana panel types, Datadog monitor states)
+- ❌ No structured query extraction (PromQL, Datadog metrics queries)
+- ❌ No threshold/alert configuration extraction from platform-specific DOM
+- ❌ No cross-panel correlation (which metrics share the same time range)
 
 ---
 
@@ -258,6 +263,10 @@ structured = llm.extract_structured_data(prompt)
 
 ## Status
 
-**Current:** Generic HTML capture only (Tier 1 structural extraction handles HTML as TEXT)
-**Next Steps:** Monitor usage patterns, validate need with users. Consider implementing as a Tier 3 backend for platform-aware deep analysis.
-**Target:** Q2 2026 (post-MVP)
+**Current (Stage 1 — Implemented):** Semantic DOM extraction via `htmlToStructuredText()` converts pages to structured markdown with error-first priority ordering, stat panel detection, and ARIA alert promotion. Backend passes content through without re-processing. The generic extraction handles most dashboard patterns via `tryKeyValue` and `tryStatValue` heuristics.
+
+**Stage 2 (Implemented):** Query-time section reranking via `_rerank_page_capture_sections()` in `context_builder.py`. When assembling Tier A evidence for an LLM call, page capture structural indexes are split on `\n##` headings, each section scored against the user's query by normalised keyword overlap (stopwords excluded), and reassembled in descending relevance order. Preamble pinned at position 0. Runs before per-item char cap so query-relevant sections survive truncation.
+
+**Stage 3 (Future):** Platform-specific extractors would add precision on top of the generic extraction. CSS-in-JS makes CSS-selector-based extraction fragile — prefer DOM structure + ARIA attribute heuristics. Consider implementing as Tier 1 frontend extractors or Tier 3 backends.
+
+**Stage 4 (Future):** Viewport sync / real-time capture for live dashboards (Grafana auto-refresh, Datadog live mode). Options: periodic re-capture, MutationObserver, or explicit "refresh capture" button.

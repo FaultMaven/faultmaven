@@ -1,7 +1,7 @@
 # Evidence Flow Architecture
 
-**Version:** 2.5
-**Date:** 2026-03-06
+**Version:** 2.6
+**Date:** 2026-03-15
 **Status:** Design Specification
 
 ---
@@ -42,7 +42,9 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │ 1. Compute content_hash (SHA-256)                                  │ │
 │  │ 2. Check for duplicate (early exit if hash exists)                │ │
 │  │ 3. Tier 0: Classify data type → DataType enum + confidence        │ │
+│  │    (also propagates source_type from source_metadata)             │ │
 │  │ 4. Tier 1: Type-specific mechanical extraction (structural index) │ │
+│  │    (page captures skip Tier 1 — pass-through as structured MD)   │ │
 │  │ 5. Upload raw file to S3 with TTL metadata (24h)                  │ │
 │  │ 6. Generate PreprocessingResult (summary, structural_index, etc.) │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
@@ -888,12 +890,24 @@ evidence.storage_size_bytes
 
 ---
 
+## Page Capture Pipeline (v2.6)
+
+Page captures from the FaultMaven Copilot browser extension follow a distinct path through the evidence pipeline:
+
+1. **Frontend**: The copilot extension's `htmlToStructuredText()` converts the live DOM into structured markdown with error-first priority ordering, stat panel detection (fontSize >= 24px), and ARIA alert promotion.
+2. **Submission**: Content is submitted via `POST /cases/{id}/turns` as `pasted_content` with `source_metadata.source_type = "page_capture"` and filename `page-capture-{ts}.txt`.
+3. **Tier 0**: Classified as `UNSTRUCTURED_TEXT` (rule-based). `source_type` is propagated from `source_metadata` onto `ClassificationResult`.
+4. **Tier 1**: **Bypassed**. The preprocessing service detects `source_type == "page_capture"` and uses a pass-through branch (`page_capture_passthrough`) instead of running the `UnstructuredTextExtractor`. The content is already structured markdown — running it through extraction would over-process it (re-parse headings, strip error lines, cap sections at 500 chars).
+5. **LLM context**: The system prompt includes guidance for interpreting page capture format (headings = sections, `Label: value` = metrics, error sections promoted to top, `[captured_at]` timestamp).
+
+---
+
 ## Related Documentation
 
 - [Evidence Classification Design](./evidence-classification-design.md) — Evidence taxonomy, categories, and DataType enum
 - [Evidence Failure Modes](./evidence-failure-modes.md) — Failure handling for single-phase creation
-- [Data Preprocessing Design Specification v5.0](./data-preprocessing-design-specification.md) — Scenario-driven processing model, unified ingestion pipeline, query classifier, and orchestration hardening
-- [Data Classification Strategy v2.0](./data-classification-strategy.md) — Tier 0 classification rules
+- [Data Preprocessing Design Specification v5.1](./data-preprocessing-design-specification.md) — Scenario-driven processing model, unified ingestion pipeline, query classifier, page capture pass-through, and orchestration hardening
+- [Data Classification Strategy v2.1](./data-classification-strategy.md) — Tier 0 classification rules, source_type propagation
 
 ---
 

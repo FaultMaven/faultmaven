@@ -84,7 +84,8 @@ All documents in this section share a single DataType taxonomy:
 | Evidence Form (Payload-driven) | **Implemented** | `_determine_evidence_form()` and `SubmissionClassification` deleted. Form set by payload context. |
 | Evidence Classification | **Implemented** | Single-phase creation with LLM evaluation |
 | Evidence Failure Modes | Design Complete | Async retry, orphan cleanup designed; deferred to post-MVP |
-| Platform-Specific Extractors | Planned | Future enhancement for SRE/DevOps tool parsing |
+| Page Capture Pipeline | **Implemented** | Stage 1: Semantic DOM extraction via `htmlToStructuredText` (copilot), backend pass-through for `source_type=page_capture`. Stage 2: Query-time section reranking in `context_builder.py` — scores page capture sections against user query, promotes relevant content before char-cap truncation. |
+| Platform-Specific Extractors | Planned | Future enhancement for SRE/DevOps tool parsing. Generic extraction (Stage 1) handles most dashboard patterns via tryKeyValue/tryStatValue. |
 | Coverage Metadata (Tier 1) | **Implemented** | All 10 extractors append `--- COVERAGE METADATA ---` with key-value pairs (Lines, Time range, Format, etc.) |
 | Orchestration Hardening | **Implemented** | R3: coverage gap detection, R4: per-evidence DA failure tracking + auto-vectorization, R5: 30K char context budget with compression |
 | Pattern Learning System | Planned | Adaptive classification from user corrections (Phase 3) |
