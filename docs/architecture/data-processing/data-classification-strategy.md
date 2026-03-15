@@ -73,7 +73,7 @@ Tier 0: DataClassifier (THIS DOC): "What type of data?" → DataType + confidenc
 Tier 1: Type-specific Mechanical Extraction (0 LLM, <2s)
   - LOGS → Structural Index (error clusters, timeline)
   - METRICS → Statistical Profile (anomalies, distributions)
-  - CONFIGURATION → Parse & Sanitize (redact secrets)
+  - CONFIGURATION → Parse & Sanitize (redact secrets via suffix-anchored key patterns + value detection)
   - CODE → AST Extraction (functions, classes, imports)
   - TEXT → Structure Extraction (headings, key sentences)
   - IMAGE → Metadata Extraction (format, dimensions)

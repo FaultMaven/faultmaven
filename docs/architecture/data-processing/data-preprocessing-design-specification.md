@@ -211,7 +211,7 @@ The classification system has two layers. The **detailed layer** (12 types) driv
 | 4 | `COMMAND_OUTPUT` | `CommandOutputExtractor` | `command_parsing` | Format-specific parsing for `top`/`ps`/`netstat`/`df`/`free`/`iostat`/`vmstat`, CPU/memory/disk saturation thresholds (CPU >70%, mem >80%, disk >85%), offending process identification by PID | **LOGS** |
 | 5 | `METRICS_AND_PERFORMANCE` | `MetricsAndPerformanceExtractor` | `statistical` | Auto-detect JSON/CSV/Prometheus format, per-metric stats (min/max/mean/std/p50/p95/p99), z-score anomaly detection (spikes >3σ, drops >50% below mean) | **METRICS** |
 | 6 | `PROFILING_DATA` | `ProfilingDataExtractor` | `profiling_hotspot` | cProfile/flame graph/perf stat parsing, hotspot detection (>5% total time), recursive call flags, I/O function classification, optimization suggestions (memoization for recursion, async I/O for file/network) | **METRICS** |
-| 7 | `STRUCTURED_CONFIG` | `StructuredConfigExtractor` | `direct` | YAML/JSON/TOML/INI/.env parsing, dual-layer secret redaction (key-name patterns + value patterns), hierarchical text output | **CONFIGURATION** |
+| 7 | `STRUCTURED_CONFIG` | `StructuredConfigExtractor` | `direct` | YAML/JSON/TOML/INI/.env parsing, dual-layer secret redaction (suffix-anchored key patterns + value patterns + detect-secrets), non-secret value bypass, hierarchical text output | **CONFIGURATION** |
 | 8 | `SOURCE_CODE` | `SourceCodeExtractor` | `ast_parse` | Python AST (imports, class hierarchy, function signatures with return types, async markers), multi-language regex fallback (JS/TS/Java/Go/Rust/C/C++), TODO/FIXME extraction | **CODE** |
 | 9 | `UNSTRUCTURED_TEXT` | `UnstructuredTextExtractor` | `direct` | Embedded error/code extraction from mixed text, markdown + plain text dual path, paragraph-based sections, error-keyword lines with ±2-line context | **TEXT** |
 | 10 | `DOCUMENTATION` | `DocumentationExtractor` | `documentation_structure` | Section classification (troubleshooting/procedure/configuration), operational command filtering (kubectl, docker, systemctl, etc.), TOC generation | **TEXT** |
@@ -1182,6 +1182,11 @@ When the agent calls `search_file` with `search_type="extractor"`, the extractor
 ### STRUCTURED_CONFIG — `StructuredConfigExtractor`
 
 No re-run parameters. Config extraction is deterministic — same input always produces same output.
+
+**Secret redaction** is always-on (not gated by `sanitize_pii`) since structural indexes are persisted and sent to LLMs. Two layers:
+
+1. **Key-based**: Suffix-anchored patterns match the terminal key segment only (e.g., `_password$`, `_token$`, `_secret$`). Keys where the secret word is a prefix (e.g., `token_type`, `auth_method`) are NOT redacted. A non-secret value bypass skips redaction for obvious enum/boolean values (e.g., `require_password=true`).
+2. **Value-based**: Regex patterns for long alphanumeric strings, OpenAI-style keys, all-caps hex strings, plus detect-secrets structured token detectors (JWT, GitHub, AWS, Stripe, etc.).
 
 ### SOURCE_CODE — `SourceCodeExtractor`
 

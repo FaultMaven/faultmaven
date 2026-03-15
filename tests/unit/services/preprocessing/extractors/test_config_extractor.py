@@ -149,3 +149,118 @@ level=debug
         assert "database" in result
         assert "localhost" in result
         assert "debug" in result
+
+    # --- False-positive prevention (tightened key patterns) ---
+
+    def test_auth_type_not_redacted(self, extractor):
+        """AUTH_TYPE is a mode selector, not a secret."""
+        config = json.dumps({"AUTH_TYPE": "bearer"})
+        result = extractor.extract(config)
+        assert "bearer" in result
+        assert "[REDACTED]" not in result
+
+    def test_auth_method_not_redacted(self, extractor):
+        """auth_method describes auth approach, not a credential."""
+        config = json.dumps({"auth_method": "oauth2"})
+        result = extractor.extract(config)
+        assert "oauth2" in result
+        assert "[REDACTED]" not in result
+
+    def test_authentication_mode_not_redacted(self, extractor):
+        """authentication_mode is config metadata, not a secret."""
+        config = json.dumps({"authentication_mode": "saml"})
+        result = extractor.extract(config)
+        assert "saml" in result
+        assert "[REDACTED]" not in result
+
+    def test_oauth_redirect_uri_not_redacted(self, extractor):
+        """oauth_redirect_uri is a URL, not a secret."""
+        config = json.dumps({"oauth_redirect_uri": "https://app.example.com/callback"})
+        result = extractor.extract(config)
+        assert "https://app.example.com/callback" in result
+
+    def test_token_type_not_redacted(self, extractor):
+        """token_type describes the kind of token, not a credential."""
+        config = json.dumps({"token_type": "bearer"})
+        result = extractor.extract(config)
+        assert "bearer" in result
+        assert "[REDACTED]" not in result
+
+    def test_token_expiry_not_redacted(self, extractor):
+        """token_expiry is a numeric setting, not a secret."""
+        config = json.dumps({"token_expiry": "3600"})
+        result = extractor.extract(config)
+        assert "3600" in result
+        assert "[REDACTED]" not in result
+
+    def test_keycloak_url_not_redacted(self, extractor):
+        """keycloak_url is a service URL, not a secret."""
+        config = json.dumps({"keycloak_url": "https://keycloak.example.com"})
+        result = extractor.extract(config)
+        assert "https://keycloak.example.com" in result
+
+    def test_key_format_not_redacted(self, extractor):
+        """key_format describes a format, not a credential."""
+        config = json.dumps({"key_format": "pem"})
+        result = extractor.extract(config)
+        assert "pem" in result
+        assert "[REDACTED]" not in result
+
+    # --- Non-secret value bypass ---
+
+    def test_require_password_boolean_not_redacted(self, extractor):
+        """require_password=true is a boolean flag, not a credential."""
+        config = json.dumps({"require_password": "true"})
+        result = extractor.extract(config)
+        assert "true" in result
+        assert "[REDACTED]" not in result
+
+    def test_token_with_bearer_enum_not_redacted(self, extractor):
+        """token=bearer is a mode enum, not a credential."""
+        config = json.dumps({"token": "bearer"})
+        result = extractor.extract(config)
+        assert "bearer" in result
+        assert "[REDACTED]" not in result
+
+    def test_secret_key_with_real_value_still_redacted(self, extractor):
+        """require_password with an actual password value is still redacted."""
+        config = json.dumps({"require_password": "hunter2isMyPass"})
+        result = extractor.extract(config)
+        assert "[REDACTED]" in result
+        assert "hunter2isMyPass" not in result
+
+    # --- Regression: real secrets still redacted ---
+
+    def test_client_secret_redacted(self, extractor):
+        """client_secret contains an actual secret value."""
+        config = json.dumps({"client_secret": "s3cr3t-v4lu3-h3r3"})
+        result = extractor.extract(config)
+        assert "[REDACTED]" in result
+        assert "s3cr3t-v4lu3-h3r3" not in result
+
+    def test_nested_auth_token_redacted(self, extractor):
+        """Nested auth.auth_token should still be redacted."""
+        config = json.dumps({"auth": {"auth_token": "mytoken12345678"}})
+        result = extractor.extract(config)
+        assert "[REDACTED]" in result
+        assert "mytoken12345678" not in result
+
+    def test_database_password_nested_redacted(self, extractor):
+        """database.password still redacted with dotted path."""
+        config = json.dumps({"database": {"password": "dbpass123"}})
+        result = extractor.extract(config)
+        assert "[REDACTED]" in result
+        assert "dbpass123" not in result
+
+    def test_signing_key_redacted(self, extractor):
+        """signing_key is a secret-holding key."""
+        config = json.dumps({"signing_key": "supersecretkey12345"})
+        result = extractor.extract(config)
+        assert "[REDACTED]" in result
+        assert "supersecretkey12345" not in result
+
+    def test_access_key_env_redacted(self, extractor):
+        """AWS access key in .env format still redacted."""
+        content = "AWS_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE"
+        result = extractor.extract(content)
+        assert "[REDACTED]" in result

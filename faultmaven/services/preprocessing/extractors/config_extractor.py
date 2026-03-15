@@ -61,20 +61,40 @@ _DS_PLUGINS = {
 class StructuredConfigExtractor:
     """Parse and sanitize configuration files (0 LLM calls)"""
 
-    # Patterns that indicate secrets (case-insensitive)
-    SECRET_PATTERNS = [
-        r"password",
-        r"passwd",
-        r"secret",
-        r"api[_-]?key",
-        r"token",
-        r"credentials?",
-        r"auth",
-        r"private[_-]?key",
-        r"access[_-]?key",
+    # Key-name patterns that indicate the VALUE is a secret.
+    # Matched against the TERMINAL segment (last component after '.') of the
+    # dotted key path. Each pattern uses anchoring so that the secret indicator
+    # must appear as the ENTIRE key or as a SUFFIX preceded by _ or -.
+    #
+    # Examples:  password ✓  db_password ✓  AUTH_TYPE ✗  token_type ✗
+    SECRET_KEY_PATTERNS = [
+        r"(?:^|[_-])password$",
+        r"(?:^|[_-])passwd$",
+        r"(?:^|[_-])secret$",
+        r"(?:^|[_-])token$",  # auth_token YES, token_type NO
+        r"(?:^|[_-])credentials?$",
+        r"^api[_-]?key$",
+        r"^access[_-]?key$",
+        r"^secret[_-]?key$",
+        r"^private[_-]?key$",
+        r"(?:^|[_-])signing[_-]?key$",
+        r"(?:^|[_-])encryption[_-]?key$",
     ]
 
-    # Values that should be redacted
+    # Values that are obviously NOT secrets even if the key matches.
+    # Booleans, auth-mode enums, algorithm names, small integers.
+    _NON_SECRET_VALUE_RE = re.compile(
+        r"^("
+        r"true|false|yes|no|on|off|none|null|"
+        r"bearer|basic|digest|oauth2?|oidc|saml|ldap|local|hmac|"
+        r"hs256|hs384|hs512|rs256|rs384|rs512|es256|es384|es512|"
+        r"required|optional|enabled|disabled|"
+        r"\d{1,5}"
+        r")$",
+        re.IGNORECASE,
+    )
+
+    # Values that should be redacted regardless of key name.
     SECRET_VALUE_PATTERNS = [
         r"^[a-zA-Z0-9]{20,}$",  # Long alphanumeric strings (likely tokens)
         r"^sk-[a-zA-Z0-9]+$",  # OpenAI-style keys
@@ -262,7 +282,7 @@ class StructuredConfigExtractor:
                 count += c
             return result, count
         elif isinstance(data, str):
-            if self._is_secret_key(path):
+            if self._is_secret_key(path, value=data):
                 return "[REDACTED]", 1
             if self._is_secret_value(data, key_path=path):
                 return "[REDACTED]", 1
@@ -270,10 +290,31 @@ class StructuredConfigExtractor:
         else:
             return data, 0
 
-    def _is_secret_key(self, key_path: str) -> bool:
-        """Check if key name suggests it's a secret"""
-        key_lower = key_path.lower()
-        return any(re.search(pattern, key_lower) for pattern in self.SECRET_PATTERNS)
+    def _is_secret_key(self, key_path: str, value: str = "") -> bool:
+        """Check if key name suggests it holds a secret value.
+
+        Matches against the terminal segment of the dotted key path
+        (the last component after '.') to avoid false positives from
+        parent key names like 'auth' in 'auth.method'.
+
+        Also skips redaction when the value is an obvious non-secret
+        (boolean, enum, small integer).
+        """
+        # Extract terminal key segment
+        terminal_key = key_path.rsplit(".", 1)[-1].lower()
+
+        is_match = any(
+            re.search(pattern, terminal_key) for pattern in self.SECRET_KEY_PATTERNS
+        )
+
+        if not is_match:
+            return False
+
+        # Even if key matches, skip redaction for obviously non-secret values
+        if value and self._NON_SECRET_VALUE_RE.match(value.strip()):
+            return False
+
+        return True
 
     def _is_secret_value(self, value: str, key_path: str = "") -> bool:
         """Check if value looks like a secret.
