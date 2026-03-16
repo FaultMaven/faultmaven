@@ -143,6 +143,16 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
         registry.register(user_kb_adapter)
         tool_count += 1
 
+    vectorize_file_tool = getattr(container, "vectorize_file_tool", None)
+    if vectorize_file_tool:
+        registry.register(vectorize_file_tool)
+        tool_count += 1
+
+    case_evidence_qa_adapter = getattr(container, "case_evidence_qa_adapter", None)
+    if case_evidence_qa_adapter:
+        registry.register(case_evidence_qa_adapter)
+        tool_count += 1
+
     if tool_count == 0:
         logger.debug("Investigation tools: none available, skipping")
         return None

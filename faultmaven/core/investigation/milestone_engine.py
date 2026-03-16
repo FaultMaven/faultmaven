@@ -1369,6 +1369,7 @@ class MilestoneEngine:
                     investigation_tools=da_tools,
                     tool_context=da_context,
                     redaction_ctx=redaction_ctx,
+                    case=case,
                 )
             else:
                 response_obj = await self._generate_structured_output(
@@ -1749,6 +1750,7 @@ class MilestoneEngine:
         tool_context: Any,
         max_tokens: int = 8000,
         redaction_ctx: Any | None = None,
+        case: Any | None = None,
     ) -> BaseInteractionResponse:
         """Run a bounded tool-calling loop for DA turns.
 
@@ -1765,12 +1767,19 @@ class MilestoneEngine:
         4. When LLM calls schema tool → parse and return structured output
         5. After max iterations → force schema with only schema tools available
 
+        Vectorization (v5.2):
+        - Proactive: starts background vectorization for large evidence files
+          at loop entry. Runs concurrently with tool calls.
+        - Reactive: tracks per-evidence DA failure signals (empty searches,
+          timeouts, low confidence). Triggers vectorization as fallback.
+
         Args:
             prompt: Full investigation prompt
             schema_model: Pydantic model class for structured output
             investigation_tools: OpenAI-format tool defs for search/analysis
             tool_context: ToolContext for tool execution
             max_tokens: Max tokens for LLM calls
+            case: Case object for evidence access and DA count persistence
 
         Returns:
             Instantiated Pydantic model (BaseInteractionResponse)
@@ -1806,6 +1815,21 @@ class MilestoneEngine:
             {"role": "user", "content": prompt},
         ]
         deep_analysis_count = 0
+
+        # Per-evidence DA failure tracking for auto-vectorization (v5.2)
+        # Same pattern as deep_analysis_count above — mechanical counters
+        # that trigger system actions when thresholds are met.
+        da_empty_search_counts: dict[str, int] = {}  # evidence_id → consecutive empties
+        da_vectorized: set[str] = set()  # evidence IDs already vectorized
+
+        # Proactive vectorization: start background tasks for large evidence
+        # files before the tool loop begins. Runs concurrently so semantic
+        # search is available by the time the agent needs it.
+        proactive_tasks: dict[str, asyncio.Task] = {}
+        if case:
+            proactive_tasks = await self._start_proactive_vectorization(
+                case, tool_context
+            )
 
         force_schema_next = False
 
@@ -1957,6 +1981,23 @@ class MilestoneEngine:
 
                     result_text = self._format_tool_result(tool_result)
 
+                    # --- Per-evidence DA failure tracking (v5.2) ---
+                    # Track search_file empty results and check vectorization
+                    # triggers. Same pattern as deep_analysis_count above.
+                    evidence_id = args.get("evidence_id", "")
+                    if evidence_id and func_name in ("search_file", "deep_analysis"):
+                        result_text = await self._track_da_result(
+                            func_name=func_name,
+                            evidence_id=evidence_id,
+                            tool_result=tool_result,
+                            result_text=result_text,
+                            case=case,
+                            tool_context=tool_context,
+                            da_empty_search_counts=da_empty_search_counts,
+                            da_vectorized=da_vectorized,
+                            proactive_tasks=proactive_tasks,
+                        )
+
                 # Redact PII in tool results before sending to LLM.
                 # Tool results contain raw file content (search_file,
                 # deep_analysis) which bypasses prompt-level redaction.
@@ -1983,6 +2024,265 @@ class MilestoneEngine:
         raise MilestoneEngineError(
             "Tool loop exhausted without producing structured output"
         )
+
+    # ================================================================
+    # Vectorization tracking (v5.2) — mechanical safety nets
+    # Same pattern as deep_analysis_count / MAX_DEEP_ANALYSIS above.
+    # ================================================================
+
+    async def _start_proactive_vectorization(
+        self,
+        case: Any,
+        tool_context: Any,
+    ) -> dict[str, asyncio.Task]:
+        """Start background vectorization for qualifying DA-mode evidence.
+
+        Runs concurrently with the tool loop so case_evidence_search
+        is available by the time the agent needs it. Only vectorizes
+        files above the size threshold that haven't been vectorized yet.
+        """
+        from faultmaven.config.settings import get_settings
+        from faultmaven.modules.agent.tools.vectorize_file_tool import (
+            VECTORIZATION_MAX_SIZE_BYTES,
+        )
+
+        settings = get_settings()
+        min_size = settings.agent.vectorization_min_size_bytes
+        tasks: dict[str, asyncio.Task] = {}
+
+        for ev in getattr(case, "evidence", []):
+            size = getattr(ev, "content_size_bytes", 0) or 0
+            if (
+                size >= min_size
+                and size <= VECTORIZATION_MAX_SIZE_BYTES
+                and not getattr(ev, "vectorized", False)
+            ):
+                tasks[ev.evidence_id] = asyncio.create_task(
+                    self._vectorize_evidence(ev.evidence_id, tool_context)
+                )
+                logger.info(
+                    "proactive_vectorization_started",
+                    extra={
+                        "evidence_id": ev.evidence_id,
+                        "content_size_bytes": size,
+                    },
+                )
+        return tasks
+
+    async def _vectorize_evidence(
+        self,
+        evidence_id: str,
+        tool_context: Any,
+    ) -> bool:
+        """Vectorize a single evidence file via the registered tool."""
+        try:
+            result = await asyncio.wait_for(
+                self.investigation_tools.execute_tool(
+                    "vectorize_file",
+                    {"evidence_id": evidence_id},
+                    tool_context,
+                ),
+                timeout=60,
+            )
+            if not result.success:
+                logger.warning(
+                    "vectorize_file returned failure for %s: %s",
+                    evidence_id,
+                    result.error,
+                )
+            else:
+                logger.info(
+                    "vectorize_file succeeded for %s",
+                    evidence_id,
+                )
+            return result.success
+        except Exception as e:
+            logger.warning(
+                "Vectorization failed for %s: %s",
+                evidence_id,
+                e,
+                exc_info=True,
+            )
+            return False
+
+    async def _track_da_result(
+        self,
+        func_name: str,
+        evidence_id: str,
+        tool_result: Any,
+        result_text: str,
+        case: Any | None,
+        tool_context: Any,
+        da_empty_search_counts: dict[str, int],
+        da_vectorized: set[str],
+        proactive_tasks: dict[str, asyncio.Task],
+    ) -> str:
+        """Track DA failure signals and trigger vectorization when needed.
+
+        Returns result_text, potentially with [SYSTEM] messages appended.
+        """
+        # Check if proactive vectorization completed for this evidence
+        if evidence_id not in da_vectorized and evidence_id in proactive_tasks:
+            task = proactive_tasks[evidence_id]
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                if exc:
+                    logger.warning(
+                        "Proactive vectorization task failed for %s: %s",
+                        evidence_id,
+                        exc,
+                    )
+                elif task.result():
+                    da_vectorized.add(evidence_id)
+                    result_text += (
+                        "\n\n[SYSTEM] This file has been automatically "
+                        "indexed for semantic search. Use "
+                        "case_evidence_search to find content by "
+                        "meaning rather than keywords."
+                    )
+                    logger.info(
+                        "proactive_vectorization_completed",
+                        extra={"evidence_id": evidence_id},
+                    )
+
+        # Track search_file empty results
+        if func_name == "search_file" and tool_result.success:
+            try:
+                data = (
+                    json.loads(tool_result.data)
+                    if isinstance(tool_result.data, str)
+                    else tool_result.data
+                )
+                if isinstance(data, dict) and data.get("results_count", 0) == 0:
+                    da_empty_search_counts[evidence_id] = (
+                        da_empty_search_counts.get(evidence_id, 0) + 1
+                    )
+                else:
+                    da_empty_search_counts[evidence_id] = 0
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Advisory after 3 consecutive empty searches
+            count = da_empty_search_counts.get(evidence_id, 0)
+            if count >= 3:
+                result_text += (
+                    f"\n\n[SYSTEM] Last {count} search_file calls on this "
+                    "file returned zero results. Consider using "
+                    "deep_analysis with a different query approach."
+                )
+
+        # Track deep_analysis confidence + persist cross-turn counter
+        if func_name == "deep_analysis" and tool_result.success and case:
+            try:
+                data = (
+                    json.loads(tool_result.data)
+                    if isinstance(tool_result.data, str)
+                    else tool_result.data
+                )
+                if isinstance(data, dict):
+                    confidence = float(data.get("confidence", 1.0))
+                    # Persist da_invocation_count for cross-turn tracking
+                    for ev in getattr(case, "evidence", []):
+                        if ev.evidence_id == evidence_id:
+                            ev.da_invocation_count = (
+                                getattr(ev, "da_invocation_count", 0) + 1
+                            )
+                            break
+                    try:
+                        await self.repository.save(case)
+                    except Exception as e:
+                        logger.debug("Failed to persist da_invocation_count: %s", e)
+
+                    # Low confidence trigger
+                    if confidence < 0.2 and evidence_id not in da_vectorized:
+                        result_text = await self._reactive_vectorize(
+                            evidence_id,
+                            tool_context,
+                            da_vectorized,
+                            result_text,
+                            "low_confidence",
+                        )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        # Track timeouts
+        if (
+            not tool_result.success
+            and "timed out" in (getattr(tool_result, "error", "") or "").lower()
+        ):
+            if evidence_id not in da_vectorized:
+                result_text = await self._reactive_vectorize(
+                    evidence_id,
+                    tool_context,
+                    da_vectorized,
+                    result_text,
+                    "tool_timeout",
+                )
+
+        # Reactive vectorization on repeated empty searches
+        empty_count = da_empty_search_counts.get(evidence_id, 0)
+        if empty_count >= 3 and evidence_id not in da_vectorized:
+            result_text = await self._reactive_vectorize(
+                evidence_id,
+                tool_context,
+                da_vectorized,
+                result_text,
+                "repeated_empty_searches",
+            )
+
+        return result_text
+
+    async def _reactive_vectorize(
+        self,
+        evidence_id: str,
+        tool_context: Any,
+        da_vectorized: set[str],
+        result_text: str,
+        trigger: str,
+    ) -> str:
+        """Attempt reactive vectorization for a qualifying evidence file."""
+        from faultmaven.config.settings import get_settings
+        from faultmaven.modules.agent.tools.vectorize_file_tool import (
+            VECTORIZATION_MAX_SIZE_BYTES,
+        )
+
+        # Get evidence size for size gate check
+        ev_size = 0
+        try:
+            ev = await tool_context.evidence_service.get_evidence(
+                evidence_id,
+                tool_context.organization_id,
+            )
+            ev_size = (
+                getattr(ev, "file_size", 0) or getattr(ev, "content_size_bytes", 0) or 0
+            )
+        except Exception:
+            return result_text
+
+        settings = get_settings()
+        if ev_size < settings.agent.vectorization_min_size_bytes:
+            return result_text
+        if ev_size > VECTORIZATION_MAX_SIZE_BYTES:
+            return result_text
+
+        success = await self._vectorize_evidence(evidence_id, tool_context)
+        if success:
+            da_vectorized.add(evidence_id)
+            result_text += (
+                "\n\n[SYSTEM] This file has been automatically "
+                "indexed for semantic search. Use "
+                "case_evidence_search to find content by "
+                "meaning rather than keywords."
+            )
+            logger.info(
+                "reactive_vectorization_triggered",
+                extra={
+                    "evidence_id": evidence_id,
+                    "trigger": trigger,
+                    "content_size_bytes": ev_size,
+                },
+            )
+        return result_text
 
     def _build_da_tool_schemas(self) -> list[dict]:
         """Build OpenAI-format tool definitions for DA investigation tools."""
@@ -2195,8 +2495,8 @@ class MilestoneEngine:
         else:
             content = args
 
-        # Parse JSON
-        content_obj = json.loads(content)
+        # Parse JSON (strict=False allows control chars in LLM-generated strings)
+        content_obj = json.loads(content, strict=False)
 
         # Recursively parse nested JSON strings
         content_obj = self._parse_nested_json(content_obj)
@@ -2371,6 +2671,7 @@ class MilestoneEngine:
         investigation_tools: list[dict] | None = None,
         tool_context: Any | None = None,
         redaction_ctx: Any | None = None,
+        case: Any | None = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -2428,6 +2729,7 @@ class MilestoneEngine:
                         investigation_tools,
                         tool_context,
                         redaction_ctx=redaction_ctx,
+                        case=case,
                     )
                 except ToolCallingUnsupportedError as e:
                     logger.warning(
@@ -2544,7 +2846,7 @@ class MilestoneEngine:
             try:
                 # First, try to load content as JSON if it's a string
                 if isinstance(content, str):
-                    content_obj = json.loads(content)
+                    content_obj = json.loads(content, strict=False)
                 else:
                     content_obj = content
 
@@ -3368,7 +3670,10 @@ class MilestoneEngine:
         # Hydrate from problem confirmation if available
         if case.inquiry.problem_confirmation:
             pc = case.inquiry.problem_confirmation
-            verification_kwargs["severity"] = pc.severity_guess.upper()
+            if pc.severity_guess.upper() in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                verification_kwargs["severity"] = pc.severity_guess.upper()
+            # else: keep default "MEDIUM" — severity_guess="unknown" is valid
+            # for ProblemConfirmation but not for ProblemVerification
 
         # Hydrate from preliminary urgency if available
         if case.inquiry.preliminary_urgency:

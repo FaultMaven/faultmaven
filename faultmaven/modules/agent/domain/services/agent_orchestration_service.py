@@ -68,6 +68,9 @@ from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.services.preprocessing.extractors.utils import COVERAGE_SEPARATOR
 
 from faultmaven.config.settings import get_settings
+from faultmaven.modules.agent.tools.vectorize_file_tool import (
+    VECTORIZATION_MAX_SIZE_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1150,6 +1153,15 @@ class AgentOrchestrationService:
         # R5: Context budget tracking
         tool_result_chars = 0
 
+        # Proactive vectorization: start background tasks for DA-mode large files
+        proactive_vectorization_tasks: dict[str, asyncio.Task] = {}
+        processing_mode = context.context_data.get("processing_mode", "")
+        if processing_mode == "directed_analysis":
+            proactive_vectorization_tasks = await self._start_proactive_vectorization(
+                context,
+                tool_context,
+            )
+
         while iteration < max_iterations:
             iteration += 1
 
@@ -1238,16 +1250,61 @@ class AgentOrchestrationService:
                     "search_file",
                     "deep_analysis",
                 ):
-                    # Lazy-init per-evidence state
+                    # Lazy-init per-evidence state with cross-turn count
                     if evidence_id not in evidence_da_states:
                         ev_size = await self._get_evidence_size(
                             evidence_id, tool_context
                         )
+                        persisted_da_count = await self._get_persisted_da_count(
+                            evidence_id,
+                            context.context_data.get("case_id", ""),
+                        )
+                        # Check if proactive vectorization already completed
+                        proactive_done = False
+                        if evidence_id in proactive_vectorization_tasks:
+                            task = proactive_vectorization_tasks[evidence_id]
+                            if task.done():
+                                proactive_done = (
+                                    not task.cancelled()
+                                    and task.exception() is None
+                                    and task.result()
+                                )
                         evidence_da_states[evidence_id] = EvidenceDAState(
                             evidence_id=evidence_id,
                             content_size_bytes=ev_size,
+                            da_call_count=persisted_da_count,
+                            vectorized=proactive_done,
                         )
                     state = evidence_da_states[evidence_id]
+
+                    # Check proactive vectorization on subsequent iterations
+                    if (
+                        not state.vectorized
+                        and evidence_id in proactive_vectorization_tasks
+                    ):
+                        task = proactive_vectorization_tasks[evidence_id]
+                        if task.done():
+                            success = (
+                                not task.cancelled()
+                                and task.exception() is None
+                                and task.result()
+                            )
+                            if success:
+                                state.vectorized = True
+                                content_for_context += (
+                                    "\n\n[SYSTEM] This file has been "
+                                    "automatically indexed for semantic "
+                                    "search. Use knowledge_base_search to "
+                                    "find content by meaning rather than "
+                                    "keywords."
+                                )
+                                logger.info(
+                                    "proactive_vectorization_completed",
+                                    extra={
+                                        "evidence_id": evidence_id,
+                                        "content_size_bytes": state.content_size_bytes,
+                                    },
+                                )
 
                     # Track search_file empty results
                     if result.tool_name == "search_file" and result.success:
@@ -1344,27 +1401,23 @@ class AgentOrchestrationService:
                     elif (
                         not state.vectorized
                         and self._da_has_failed(state)
-                        and not self._should_auto_vectorize(state)
-                        and state.content_size_bytes > 0
+                        and 0
+                        < state.content_size_bytes
+                        < get_settings().agent.vectorization_min_size_bytes
                     ):
-                        settings = get_settings()
-                        if (
-                            state.content_size_bytes
-                            < settings.agent.vectorization_min_size_bytes
-                        ):
-                            try:
-                                raw_content = await self._get_raw_file_content(
-                                    evidence_id, tool_context
+                        try:
+                            raw_content = await self._get_raw_file_content(
+                                evidence_id, tool_context
+                            )
+                            if raw_content:
+                                content_for_context += (
+                                    f"\n\n[SYSTEM] Full file content "
+                                    f"(small file, "
+                                    f"{state.content_size_bytes} bytes):\n"
+                                    f"{raw_content[:50000]}"
                                 )
-                                if raw_content:
-                                    content_for_context += (
-                                        f"\n\n[SYSTEM] Full file content "
-                                        f"(small file, "
-                                        f"{state.content_size_bytes} bytes):\n"
-                                        f"{raw_content[:50000]}"
-                                    )
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
                 # R5: Track budget and compress if needed
                 tool_result_chars += len(content_for_context)
@@ -1566,12 +1619,14 @@ class AgentOrchestrationService:
     async def _get_evidence_size(
         self, evidence_id: str, tool_context: ToolContext
     ) -> int:
-        """Get the content_size_bytes for an evidence record."""
+        """Get the file size in bytes for an evidence record."""
         try:
             ev = await tool_context.evidence_service.get_evidence(
                 evidence_id, tool_context.organization_id
             )
-            return getattr(ev, "content_size_bytes", 0) or 0
+            return (
+                getattr(ev, "file_size", 0) or getattr(ev, "content_size_bytes", 0) or 0
+            )
         except Exception:
             return 0
 
@@ -1599,14 +1654,22 @@ class AgentOrchestrationService:
 
         Returns True only if the file exceeds the size threshold AND at
         least one DA failure signal has fired. No LLM judgment involved.
+
+        Note (v5.2): da_call_count >= 3 removed — 3 DA calls is thorough
+        investigation, not failure. Replaced by proactive vectorization.
         """
         settings = get_settings()
         if state.content_size_bytes < settings.agent.vectorization_min_size_bytes:
+            logger.debug(
+                "Auto-vectorize blocked by size gate: %d < %d for %s",
+                state.content_size_bytes,
+                settings.agent.vectorization_min_size_bytes,
+                state.evidence_id,
+            )
             return False
         return (
             state.has_timed_out
             or state.empty_search_count >= 3
-            or state.da_call_count >= 3
             or (state.da_call_count >= 1 and state.last_da_confidence < 0.2)
         )
 
@@ -1616,9 +1679,70 @@ class AgentOrchestrationService:
         return (
             state.has_timed_out
             or state.empty_search_count >= 3
-            or state.da_call_count >= 3
             or (state.da_call_count >= 1 and state.last_da_confidence < 0.2)
         )
+
+    async def _start_proactive_vectorization(
+        self,
+        context: AgentContext,
+        tool_context: ToolContext,
+    ) -> dict[str, asyncio.Task]:
+        """Start background vectorization for qualifying DA-mode evidence.
+
+        Returns a dict of evidence_id → asyncio.Task for each file that
+        qualifies (above size threshold, not already vectorized). Tasks
+        run concurrently with the DA tool loop.
+        """
+        settings = get_settings()
+        case_id = context.context_data.get("case_id", "")
+        if not case_id:
+            return {}
+
+        try:
+            case = await self.case_repo.get(case_id)
+        except Exception:
+            return {}
+        if not case:
+            return {}
+
+        tasks: dict[str, asyncio.Task] = {}
+        for ev in case.evidence:
+            size = getattr(ev, "content_size_bytes", 0) or 0
+            if (
+                size >= settings.agent.vectorization_min_size_bytes
+                and size <= VECTORIZATION_MAX_SIZE_BYTES
+                and not getattr(ev, "vectorized", False)
+            ):
+                tasks[ev.evidence_id] = asyncio.create_task(
+                    self._auto_vectorize(ev.evidence_id, tool_context)
+                )
+                logger.info(
+                    "proactive_vectorization_started",
+                    extra={
+                        "evidence_id": ev.evidence_id,
+                        "content_size_bytes": size,
+                        "case_id": case_id,
+                    },
+                )
+        return tasks
+
+    async def _get_persisted_da_count(
+        self,
+        evidence_id: str,
+        case_id: str,
+    ) -> int:
+        """Load persisted da_invocation_count for cross-turn continuity."""
+        if not case_id:
+            return 0
+        try:
+            case = await self.case_repo.get(case_id)
+            if case:
+                for ev in case.evidence:
+                    if ev.evidence_id == evidence_id:
+                        return getattr(ev, "da_invocation_count", 0)
+        except Exception:
+            pass
+        return 0
 
     async def _auto_vectorize(
         self, evidence_id: str, tool_context: ToolContext
@@ -1645,8 +1769,6 @@ class AgentOrchestrationService:
             return "tool_timeout"
         if state.empty_search_count >= 3:
             return "repeated_empty_searches"
-        if state.da_call_count >= 3:
-            return "cumulative_da_calls"
         if state.last_da_confidence < 0.2:
             return "low_confidence"
         return "unknown"

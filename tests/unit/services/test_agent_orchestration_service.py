@@ -1845,10 +1845,11 @@ class TestShouldAutoVectorize:
     @patch(
         "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
     )
-    def test_three_da_calls_triggers(self, mock_settings, service):
+    def test_three_da_calls_no_longer_triggers(self, mock_settings, service):
+        """v5.2: da_call_count >= 3 removed — replaced by proactive vectorization."""
         mock_settings.return_value.agent.vectorization_min_size_bytes = 50_000
         state = self._make_state(da_call_count=3)
-        assert service._should_auto_vectorize(state) is True
+        assert service._should_auto_vectorize(state) is False
 
     @patch(
         "faultmaven.modules.agent.domain.services.agent_orchestration_service.get_settings"
@@ -1918,9 +1919,10 @@ class TestDAHasFailed:
         state = self._make_state(empty_search_count=3)
         assert AgentOrchestrationService._da_has_failed(state) is True
 
-    def test_three_da_calls_is_failure(self):
+    def test_three_da_calls_not_failure(self):
+        """v5.2: da_call_count >= 3 removed — thorough investigation, not failure."""
         state = self._make_state(da_call_count=3)
-        assert AgentOrchestrationService._da_has_failed(state) is True
+        assert AgentOrchestrationService._da_has_failed(state) is False
 
     def test_low_confidence_is_failure(self):
         state = self._make_state(da_call_count=1, last_da_confidence=0.1)
@@ -1961,11 +1963,11 @@ class TestVectorizationTriggerReason:
             == "repeated_empty_searches"
         )
 
-    def test_da_calls_reason(self):
+    def test_da_calls_without_low_confidence_returns_unknown(self):
+        """v5.2: da_call_count >= 3 no longer a trigger, returns unknown."""
         state = self._make_state(da_call_count=3)
         assert (
-            AgentOrchestrationService._vectorization_trigger_reason(state)
-            == "cumulative_da_calls"
+            AgentOrchestrationService._vectorization_trigger_reason(state) == "unknown"
         )
 
     def test_low_confidence_reason(self):
@@ -2011,3 +2013,84 @@ class TestEvidenceDAState:
 
         assert state_b.empty_search_count == 0
         assert state_b.has_timed_out is False
+
+
+class TestGetEvidenceSize:
+    """Tests for _get_evidence_size — resolves file size from evidence service.
+
+    The evidence_service returns EvidenceArtifact objects which have 'file_size'
+    (not 'content_size_bytes'). The method must read the correct attribute.
+    """
+
+    @pytest.fixture
+    def service(
+        self,
+        mock_session_service,
+        mock_evidence_service,
+        mock_case_repo,
+        mock_tool_registry,
+        mock_llm_client,
+    ):
+        return AgentOrchestrationService(
+            case_repo=mock_case_repo,
+            session_service=mock_session_service,
+            evidence_service=mock_evidence_service,
+            tool_registry=mock_tool_registry,
+            llm_client=mock_llm_client,
+        )
+
+    @pytest.fixture
+    def tool_context(self):
+        ctx = MagicMock(spec=ToolContext)
+        ctx.evidence_service = AsyncMock()
+        ctx.organization_id = "org_test"
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_reads_file_size_from_evidence_artifact(self, service, tool_context):
+        """EvidenceArtifact has file_size, not content_size_bytes."""
+        ev = MagicMock()
+        ev.file_size = 196268
+        del ev.content_size_bytes  # ensure attribute doesn't exist
+        tool_context.evidence_service.get_evidence.return_value = ev
+
+        size = await service._get_evidence_size("ev_test", tool_context)
+        assert size == 196268
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_content_size_bytes(self, service, tool_context):
+        """Case-embedded Evidence has content_size_bytes, not file_size."""
+        ev = MagicMock()
+        ev.file_size = 0
+        ev.content_size_bytes = 150000
+        tool_context.evidence_service.get_evidence.return_value = ev
+
+        size = await service._get_evidence_size("ev_test", tool_context)
+        assert size == 150000
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_no_size_attributes(self, service, tool_context):
+        """Returns 0 when evidence has neither size attribute."""
+        ev = MagicMock()
+        ev.file_size = 0
+        del ev.content_size_bytes
+        tool_context.evidence_service.get_evidence.return_value = ev
+
+        size = await service._get_evidence_size("ev_test", tool_context)
+        assert size == 0
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_on_exception(self, service, tool_context):
+        """Returns 0 when evidence service raises."""
+        tool_context.evidence_service.get_evidence.side_effect = Exception("not found")
+
+        size = await service._get_evidence_size("ev_test", tool_context)
+        assert size == 0
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_evidence_is_none(self, service, tool_context):
+        """Returns 0 when evidence service returns None."""
+        tool_context.evidence_service.get_evidence.return_value = None
+
+        size = await service._get_evidence_size("ev_test", tool_context)
+        assert size == 0

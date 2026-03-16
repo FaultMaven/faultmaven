@@ -91,11 +91,21 @@ class VectorizeFileTool(AgentTool):
             )
 
         try:
-            # Get evidence metadata
+            # Get evidence metadata (dual-path: standalone table → case-embedded)
             evidence = await context.evidence_service.get_evidence(
                 evidence_id=evidence_id,
-                organization_id=context.organization_id,
             )
+
+            # Fallback: case-embedded evidence (unified ingestion pipeline)
+            if not evidence:
+                case_repo = getattr(context.evidence_service, "case_repository", None)
+                if case_repo:
+                    case = await case_repo.get(context.case_id)
+                    if case:
+                        for ev in getattr(case, "evidence", []):
+                            if getattr(ev, "evidence_id", None) == evidence_id:
+                                evidence = ev
+                                break
 
             if not evidence:
                 return ToolResult(
@@ -104,7 +114,11 @@ class VectorizeFileTool(AgentTool):
                     error=f"Evidence not found: {evidence_id}",
                 )
 
-            if evidence.case_id != context.case_id:
+            if (
+                hasattr(evidence, "case_id")
+                and evidence.case_id
+                and evidence.case_id != context.case_id
+            ):
                 return ToolResult(
                     success=False,
                     data=None,

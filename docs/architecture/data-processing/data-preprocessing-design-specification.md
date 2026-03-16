@@ -1,12 +1,22 @@
-# Data Preprocessing Design Specification v5.1
+# Data Preprocessing Design Specification v5.2
 
 **Status**: FINAL
 **Date**: 2026-03-15
-**Supersedes**: v5.0
+**Supersedes**: v5.1
 
 ---
 
 ## Change Summary
+
+### v5.1 → v5.2 (Proactive Vectorization)
+
+| Area | v5.1 | v5.2 |
+|------|------|------|
+| **Vectorization trigger** | Reactive: auto-vectorize after 3+ DA calls, 3+ empty searches, timeout, or low confidence | Proactive: background vectorization starts immediately for DA-mode large files. Reactive triggers retained as fallback (timeout, empty searches, low confidence). `da_call_count >= 3` trigger removed. |
+| **Integration point** | `agent_orchestration_service._execute_with_streaming()` (secondary `/sessions/execute` path only) | `milestone_engine._tool_augmented_generate()` (primary `/turns` path). Tracking lives where tools execute — same pattern as `deep_analysis_count` / `MAX_DEEP_ANALYSIS` enforcement already in the method. |
+| **Cross-turn DA init** | `EvidenceDAState` initialized with `da_call_count=0` every turn; persistent count synced only after a DA call completes | `da_invocation_count` persisted on Evidence model via `repository.save(case)` after each `deep_analysis` call. |
+| **Reactive triggers** | 4 triggers: timeout, 3+ empty searches, 3+ DA calls, low confidence | 3 triggers: timeout, 3+ empty searches, low confidence. DA call count trigger removed (replaced by proactive vectorization). |
+| **Small-file fallback condition** | Redundant `not self._should_auto_vectorize(state)` check | Simplified to direct size check: `content_size_bytes < vectorization_min_size_bytes`. |
 
 ### v5.0 → v5.1 (Page Capture Pipeline)
 
@@ -98,36 +108,48 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — is al
   ┌────────────┐ ┌───────────┐ ┌──────────────┐ ┌──────────────┐
   │  TRIAGE    │ │ DIRECTED  │ │  KNOWLEDGE   │ │  SEMANTIC    │
   │            │ │ ANALYSIS  │ │  QUERY       │ │  SEARCH      │
-  │ Structural │ │ Tool loop │ │              │ │              │
-  │ index IS   │ │ with 5    │ │ LLM answers  │ │ Auto-trigger │
-  │ the answer.│ │ tools:    │ │ from built-in│ │ when DA fails│
-  │ Summarize  │ │ search_   │ │ knowledge.   │ │ on large     │
-  │ key        │ │ file,     │ │ No tool loop.│ │ files.       │
-  │ findings.  │ │ deep_     │ │ Evidence     │ │ vectorize →  │
-  │            │ │ analysis, │ │ grounding    │ │ kb_search.   │
-  │            │ │ web_      │ │ relaxed.     │ │              │
-  │            │ │ search,   │ │              │ │              │
-  │            │ │ global_   │ │              │ │              │
-  │            │ │ kb_qa,    │ │              │ │              │
-  │            │ │ user_     │ │              │ │              │
-  │            │ │ kb_qa     │ │              │ │              │
+  │ Structural │ │           │ │              │ │              │
+  │ index IS   │ │ Two       │ │ LLM answers  │ │ Reactive     │
+  │ the answer.│ │ parallel  │ │ from built-in│ │ fallback     │
+  │ Summarize  │ │ paths:    │ │ knowledge.   │ │ when DA fails│
+  │ key        │ │           │ │ No tool loop.│ │ on large     │
+  │ findings.  │ │ 1. BG     │ │ Evidence     │ │ files.       │
+  │            │ │ vectorize │ │ grounding    │ │ vectorize →  │
+  │            │ │ (large    │ │ relaxed.     │ │ kb_search.   │
+  │            │ │  files)   │ │              │ │              │
+  │            │ │           │ │              │ │              │
+  │            │ │ 2. Tool   │ │              │ │              │
+  │            │ │ loop with │ │              │ │              │
+  │            │ │ 5 tools   │ │              │ │              │
   └────────────┘ └─────┬─────┘ └──────────────┘ └──────────────┘
                        │
-              DA failure signals?
-              (timeout, empty searches,
-               low confidence, 3+ DA calls)
-                       │
-                  ┌────┴────┐
-               NO │         │ YES + file qualifies
-                  │         v
-                  │  ┌──────────────────────────┐
-                  │  │  AUTO-VECTORIZATION       │  Mechanical trigger.
-                  │  │  No user confirmation.    │  Per-evidence tracking.
-                  │  │  → Semantic search via    │
-                  │  │    knowledge_base_search  │
-                  │  └──────────────────────────┘
-                  │         │
-                  v         v
+              ┌────────┴────────┐
+              │                 │
+              v                 v
+   ┌──────────────────┐  ┌──────────────────────────┐
+   │  DA TOOL LOOP    │  │  PROACTIVE VECTORIZATION  │
+   │  search_file,    │  │  Background task for      │
+   │  deep_analysis,  │  │  large files (>50KB).      │
+   │  web_search,     │  │  Runs concurrently with   │
+   │  global_kb_qa,   │  │  tool loop. kb_search     │
+   │  user_kb_qa      │  │  available when done.     │
+   └────────┬─────────┘  └──────────────────────────┘
+            │
+   Reactive fallback?
+   (timeout, empty searches,
+    low confidence)
+            │
+       ┌────┴────┐
+    NO │         │ YES + file qualifies
+       │         v
+       │  ┌──────────────────────────┐
+       │  │  REACTIVE VECTORIZATION  │  Fallback trigger.
+       │  │  No user confirmation.   │  Per-evidence tracking.
+       │  │  → Semantic search via   │
+       │  │    case_evidence_search │
+       │  └──────────────────────────┘
+       │         │
+       v         v
    ┌──────────────────────────────┐
    │  AGENT RESPONSE              │
    │  → May create Evidence via   │
@@ -165,7 +187,7 @@ Knowledge queries bypass the DA tool loop entirely — the LLM answers from buil
 
 4. **Re-runnable extractors.** Domain-specific extractors (Crime Scene, Anomaly Detection, etc.) can be re-invoked with different parameters on follow-up queries, not just at upload time.
 
-5. **Auto-vectorization on DA failure.** When directed analysis fails mechanically (tool timeouts, repeated empty searches, low confidence, cumulative DA calls), the system auto-vectorizes qualifying files without user confirmation. Per-evidence tracking ensures independent failure detection. *(Updated v5.0: was "Agent decides, user approves".)*
+5. **Proactive vectorization for DA-mode large files.** When a DA-mode query targets evidence above the vectorization size threshold, vectorization starts as a background task before the tool loop begins. Reactive fallback triggers (timeout, empty searches, low confidence) handle edge cases. No user confirmation required. *(Updated v5.2: was reactive-only via DA failure signals. v5.0: was "Agent decides, user approves".)*
 
 ### 1.3 Tool Cost Matrix
 
@@ -178,7 +200,7 @@ Knowledge queries bypass the DA tool loop entirely — the LLM answers from buil
 | `global_kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | System-wide KB: documented solutions, best practices |
 | `user_kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | User's personal runbooks and procedures |
 | `vectorize_file` | ~$0.05-0.50 | 10-60s | Embed only | Auto-triggered on DA failure; file must pass size gates |
-| `knowledge_base_search` | $0.00 | ~0.5s | No | After vectorization, semantic search |
+| `case_evidence_search` | $0.00 | ~0.5s | No | After vectorization, semantic search |
 
 ---
 
@@ -596,13 +618,15 @@ DEEP_ANALYSIS_TIMEOUT_SECONDS=30
 
 ## 5. Vectorization (Redesigned v5.0)
 
-### 5.1 Key Changes: Eager → On-Demand → Auto-Triggered
+### 5.1 Key Changes: Eager → On-Demand → Auto-Triggered → Proactive
 
 **v3.2**: After every file upload, the Tier 1 structural index is chunked, embedded, and stored in ChromaDB as a background async task. Every file gets vectorized.
 
 **v4.0**: Vectorization only when the agent proposes and user approves.
 
-**v5.0**: Vectorization is **auto-triggered mechanically** when directed analysis fails on qualifying files. No user confirmation required. The orchestration layer tracks per-evidence DA failure signals and triggers `vectorize_file` automatically.
+**v5.0**: Vectorization is auto-triggered mechanically when directed analysis fails on qualifying files. No user confirmation required.
+
+**v5.2**: For DA-mode queries, vectorization starts **proactively as a background task** for qualifying large files at the beginning of the tool loop — before any DA failures occur. The agent tool loop runs concurrently, and `case_evidence_search` becomes available as soon as vectorization completes. Reactive fallback triggers (timeout, empty searches, low confidence) are retained for edge cases. The `da_call_count >= 3` reactive trigger is removed — it conflated thorough investigation with failure.
 
 ### 5.2 Qualification: Size Gates
 
@@ -630,41 +654,65 @@ VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
 For files above the cap, the agent should use `search_file` (targeted search) and `deep_analysis` (windowed LLM analysis) instead.
 
-### 5.3 Auto-Vectorization Triggers (v5.0)
+### 5.3 Proactive + Reactive Vectorization (v5.2)
 
-Vectorization is triggered mechanically by the orchestration layer when **any single** DA failure signal fires on a qualifying file. No user confirmation needed.
+Vectorization uses a two-layer strategy: **proactive** for DA-mode queries with large files, **reactive** as a fallback when the proactive path wasn't taken or failed.
 
-**Four independent trigger signals** (per-evidence, tracked by `EvidenceDAState`):
+#### Proactive Vectorization (Primary — v5.2)
+
+When the query classifier routes to DIRECTED_ANALYSIS and evidence exceeds the vectorization size threshold, vectorization starts as a **background task** before the DA tool loop begins. The tool loop runs concurrently — the agent can use `search_file` and `deep_analysis` immediately. When vectorization completes, `case_evidence_search` becomes available.
+
+```python
+# In milestone_engine._tool_augmented_generate() — called only for DA turns
+async def _start_proactive_vectorization(
+    self, case: Case, tool_context: ToolContext,
+) -> dict[str, asyncio.Task]:
+    """Start background vectorization for qualifying DA-mode evidence."""
+    settings = get_settings()
+    tasks = {}
+    for ev in case.evidence:
+        size = getattr(ev, "content_size_bytes", 0) or 0
+        if (
+            size >= settings.agent.vectorization_min_size_bytes
+            and size <= VECTORIZATION_MAX_SIZE_BYTES
+            and not getattr(ev, "vectorized", False)
+        ):
+            tasks[ev.evidence_id] = asyncio.create_task(
+                self._vectorize_evidence(ev.evidence_id, tool_context)
+            )
+    return tasks
+```
+
+**Why proactive works:** Vectorization cost (~$0.05 for embedding) is comparable to a single DA call ($0.01-0.05). Starting it in parallel with the tool loop means semantic search is typically available by the time the agent finishes its first DA call — no wasted wait time. If DA succeeds immediately, the vectorization cost is negligible.
+
+**When proactive vectorization is NOT started:**
+- Triage mode (structural index is the answer — no DA tools used)
+- Knowledge query mode (no evidence search needed)
+- Files below size threshold (structural index is sufficient)
+- Files above 50MB hard cap (too expensive)
+- Evidence already vectorized (idempotency check)
+
+#### Reactive Vectorization (Fallback — v5.0, updated v5.2)
+
+Three independent fallback trigger signals remain for cases where proactive vectorization wasn't started or failed. Tracked per-evidence via simple counters in `_tool_augmented_generate()` (same pattern as `deep_analysis_count`):
 
 | Signal | Threshold | Rationale |
 |--------|-----------|-----------|
 | **Tool timeout** | Any `deep_analysis` or `search_file` call times out | File is too large for point queries |
 | **Repeated empty searches** | 3+ consecutive `search_file` calls return 0 results | Agent's keyword strategy is failing; semantic search may find what keywords miss |
-| **Cumulative DA invocations** | 3+ `deep_analysis` calls on the same evidence | Agent is repeatedly probing the file without resolution |
 | **Low confidence** | Any `deep_analysis` returns confidence < 0.2 | Analysis produced unreliable results |
 
-**Cross-turn persistence**: `da_invocation_count` is stored on the Evidence model and persisted via the case repository, enabling vectorization triggers that span multiple conversation turns.
+> **Removed in v5.2:** The `da_call_count >= 3` trigger. Calling DA 3 times on a file is legitimate thorough investigation (e.g., error patterns, timeline, root cause), not failure. This trigger conflated investigation depth with tool inadequacy.
 
-**Decision flow:**
+**Cross-turn persistence**: `da_invocation_count` is stored on the Evidence model and persisted via `repository.save(case)` after each `deep_analysis` call.
 
-```python
-def _should_auto_vectorize(state: EvidenceDAState) -> bool:
-    """Mechanical decision: should this evidence be auto-vectorized?"""
-    if state.content_size_bytes < get_settings().agent.vectorization_min_size_bytes:
-        return False
-    return (
-        state.has_timed_out
-        or state.empty_search_count >= 3
-        or state.da_call_count >= 3
-        or (state.da_call_count >= 1 and state.last_da_confidence < 0.2)
-    )
-```
+**Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file.
 
-When auto-vectorization fires, a `[SYSTEM]` message is injected into the tool result context:
+When auto-vectorization fires (proactive or reactive), a `[SYSTEM]` message is injected into the tool result context:
 
 ```text
 [SYSTEM] This file has been automatically indexed for semantic search.
-Use knowledge_base_search to find content by meaning rather than keywords.
+Use case_evidence_search to find content by meaning rather than keywords.
 ```
 
 **Early advisory**: When `empty_search_count` reaches 3 (before the auto-vectorization size gate is checked), a `[SYSTEM]` advisory is injected into the tool result to redirect the agent toward `deep_analysis`:
@@ -698,7 +746,7 @@ async def vectorize_file(
     Vectorize a previously uploaded evidence file for semantic search.
 
     Chunks the file content, generates embeddings, and stores them in
-    ChromaDB. After vectorization, use knowledge_base_search to find
+    ChromaDB. After vectorization, use case_evidence_search to find
     content semantically. Triggered automatically when directed analysis
     fails on large files.
 
@@ -828,9 +876,9 @@ Default is Type A (evidence search is always safe).
 
 **Structural index tagging**: In DA mode, structural indexes are tagged `<structural_index role="orientation">` to signal they are orientation data, not the primary output. In Triage mode, plain `<structural_index>` is used.
 
-### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2, updated v5.0)
+### 6.1 Orchestration Hardening: Mechanical Safety Nets (v4.2, updated v5.2)
 
-Three mechanical safety nets in `AgentOrchestrationService` — coverage gap detection, per-evidence DA failure tracking with auto-vectorization, and context budgeting.
+Four mechanical safety nets in `AgentOrchestrationService` — proactive vectorization, coverage gap detection, per-evidence DA failure tracking with reactive vectorization, and context budgeting.
 
 #### R3: Coverage Gap Detection
 
@@ -842,39 +890,39 @@ Before each LLM call, the orchestration service extracts entities from the user'
 
 3. **Advisory injection** — Gap descriptions are appended to the LLM system prompt as `[COVERAGE ADVISORY]` blocks. Example: `"User asks about 14:00 but evidence ev_abc only covers 13:42-13:57. Agent should acknowledge the gap or search for additional data."`
 
-#### R4: Per-Evidence DA Failure Tracking and Auto-Vectorization (v5.0)
+#### R4: Proactive Vectorization + Per-Evidence Reactive Fallback (v5.2)
 
-> **v5.0 change**: Replaces the v4.2 global `consecutive_empty_searches` counter. Tracking is now **per-evidence** via `EvidenceDAState`, and triggers **auto-vectorization** instead of injecting an escalation advisory.
+> **v5.2 change**: Proactive background vectorization for DA-mode large files. `da_call_count >= 3` reactive trigger removed. Cross-turn DA count initialized from persisted value at state creation.
+> **v5.0 change**: Replaced v4.2 global `consecutive_empty_searches` counter with per-evidence `EvidenceDAState`.
 
-The orchestration service tracks DA failure signals independently for each evidence file during agent execution:
+**Proactive path (v5.2):** At the start of `_tool_augmented_generate()` in `milestone_engine.py`, `_start_proactive_vectorization()` starts `asyncio.create_task()` for each qualifying evidence file (above size threshold, not already vectorized). These tasks run concurrently with the DA tool loop. Since `_tool_augmented_generate()` is only called for DA-mode turns, no mode check is needed.
+
+**Reactive fallback:** The tool loop also tracks DA failure signals per-evidence using simple counters (same pattern as `deep_analysis_count`):
 
 ```python
-@dataclass
-class EvidenceDAState:
-    """Per-evidence directed analysis tracking within a single execution."""
-    evidence_id: str
-    empty_search_count: int = 0       # search_file calls with 0 results
-    da_call_count: int = 0            # deep_analysis invocations
-    last_da_confidence: float = 1.0   # confidence from last deep_analysis result
-    has_timed_out: bool = False       # any tool timed out on this evidence
-    content_size_bytes: int = 0       # file size (for vectorization threshold)
-    vectorized: bool = False          # already auto-vectorized this execution
+# Per-evidence tracking in _tool_augmented_generate()
+da_empty_search_counts: dict[str, int] = {}   # evidence_id → consecutive empties
+da_vectorized: set[str] = set()               # evidence IDs already vectorized
 ```
 
-**Tracking rules:**
+**Tracking rules** (in `_track_da_result()`, called after each tool execution):
 
-- `search_file` returns 0 results → `empty_search_count += 1`
-- `search_file` returns results → `empty_search_count = 0` (reset)
-- `deep_analysis` completes → `da_call_count += 1`, `last_da_confidence` updated
-- Any tool times out → `has_timed_out = True`
+- `search_file` returns 0 results → `da_empty_search_counts[evidence_id] += 1`
+- `search_file` returns results → `da_empty_search_counts[evidence_id] = 0` (reset)
+- `deep_analysis` completes → `da_invocation_count` persisted on Evidence model
+- Any tool times out → triggers reactive vectorization immediately
 
-**Auto-vectorization**: When any trigger fires AND the file passes the size gate, `vectorize_file` is called automatically. When the file is below the size gate, raw content is injected into context instead (see Section 5.4).
+**Reactive vectorization**: When any reactive trigger fires AND the file passes the size gate AND proactive vectorization hasn't already completed, `_reactive_vectorize()` is called. It checks size gates, calls `_vectorize_evidence()`, and injects the `[SYSTEM]` message on success.
 
-**Cross-turn persistence**: `da_invocation_count` on the Evidence model (persisted via `case_repo`) enables vectorization triggers that accumulate across separate conversation turns. After each `deep_analysis` call, the count is persisted:
+**Cross-turn persistence**: `da_invocation_count` on the Evidence model is incremented and persisted via `repository.save(case)` after each `deep_analysis` call in `_track_da_result()`:
 
 ```python
-ev.da_invocation_count = getattr(ev, "da_invocation_count", 0) + 1
-await tool_context.evidence_service.update_evidence(ev)
+# In _track_da_result() — after deep_analysis completes:
+for ev in case.evidence:
+    if ev.evidence_id == evidence_id:
+        ev.da_invocation_count = getattr(ev, "da_invocation_count", 0) + 1
+        break
+await self.repository.save(case)
 ```
 
 #### R5: Context Budget Tracking and Tool Result Compression
@@ -1045,7 +1093,7 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 | `global_kb_qa` | ~$0.01 | Yes (synthesis) | System-wide KB: documented solutions, best practices |
 | `user_kb_qa` | ~$0.01 | Yes (synthesis) | User's personal runbooks and procedures |
 | `vectorize_file` | ~$0.05+ | Embed only | Auto-triggered on DA failure (no user confirmation) |
-| `knowledge_base_search` | $0 | No | After vectorization, semantic search |
+| `case_evidence_search` | $0 | No | After vectorization, semantic search |
 
 ---
 
@@ -1222,7 +1270,7 @@ No re-run parameters. These extractors have no tunable thresholds.
 
 ---
 
-**Document Version**: 5.1
+**Document Version**: 5.2
 **Last Updated**: 2026-03-15
 **Status**: FINAL
-**Predecessor**: v5.0 (data-preprocessing-design-specification.md)
+**Predecessor**: v5.1 (data-preprocessing-design-specification.md)

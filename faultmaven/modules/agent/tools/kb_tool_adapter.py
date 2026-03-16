@@ -150,3 +150,69 @@ class UserKBToolAdapter(AgentTool):
                 data=None,
                 error="User knowledge base query failed. Your KB may not be populated yet.",
             )
+
+
+class CaseEvidenceQAAdapter(AgentTool):
+    """Adapter: AnswerFromCaseEvidence -> AgentTool interface.
+
+    Semantic search over vectorized case evidence. Available after
+    auto-vectorization indexes large evidence files into the vector DB.
+    Queries are scoped to the current case.
+    """
+
+    def __init__(self, wrapped_tool: Any):
+        self._wrapped = wrapped_tool
+
+    @property
+    def name(self) -> str:
+        return "case_evidence_search"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Semantic search over vectorized case evidence files. Use this tool "
+            "when keyword search (search_file) returns no results — this tool "
+            "finds content by meaning rather than exact keyword matches. "
+            "Only works on files that have been indexed for semantic search."
+        )
+
+    @property
+    def parameters_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "A natural language question about the evidence content. "
+                        "E.g., 'what tasks is the executor running?' or "
+                        "'are there any memory-related operations?'"
+                    ),
+                },
+            },
+            "required": ["question"],
+        }
+
+    async def execute_with_context(
+        self,
+        params: Dict[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
+        question = params.get("question", "").strip()
+        if not question:
+            return ToolResult(success=False, data=None, error="No question provided")
+
+        try:
+            result = await self._wrapped._arun(
+                case_id=context.case_id,
+                question=question,
+                k=5,
+            )
+            return ToolResult(success=True, data=result, error=None)
+        except Exception as e:
+            logger.error(f"Case evidence search failed: {e}")
+            return ToolResult(
+                success=False,
+                data=None,
+                error="Case evidence search failed. The evidence may not be vectorized yet.",
+            )

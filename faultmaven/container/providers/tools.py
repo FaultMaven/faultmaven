@@ -202,6 +202,7 @@ def register_tools(container: BaseDIContainer) -> None:
 
     # Create KB adapters (AgentTool wrappers for the DA loop)
     from faultmaven.modules.agent.tools.kb_tool_adapter import (
+        CaseEvidenceQAAdapter,
         GlobalKBToolAdapter,
         UserKBToolAdapter,
     )
@@ -214,6 +215,11 @@ def register_tools(container: BaseDIContainer) -> None:
     container.user_kb_adapter = (
         UserKBToolAdapter(wrapped_tool=qa_tools["user_kb_qa_tool"])
         if qa_tools["user_kb_qa_tool"]
+        else None
+    )
+    container.case_evidence_qa_adapter = (
+        CaseEvidenceQAAdapter(wrapped_tool=qa_tools["case_evidence_qa_tool"])
+        if qa_tools["case_evidence_qa_tool"]
         else None
     )
 
