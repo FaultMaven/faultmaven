@@ -315,8 +315,9 @@ class SQLiteCaseRepository(CaseRepository):
                 SELECT
                     evidence_id, case_id, category, summary,
                     preprocessed_content, content_ref, file_size,
-                    upload_timestamp, metadata, collected_at_turn,
-                    content_hash, source_file_id
+                    filename, upload_timestamp, metadata,
+                    source_type_new, content_hash, collected_at_turn,
+                    source_file_id
                 FROM evidence
                 WHERE case_id = :case_id
                 ORDER BY upload_timestamp DESC
@@ -334,6 +335,13 @@ class SQLiteCaseRepository(CaseRepository):
                     except ValueError:
                         category = EvidenceCategory.CONTEXTUAL_EVIDENCE
 
+                    # Parse source_type from DB (col 10), fall back to LOGS
+                    source_type_str = row[10] or "logs"
+                    try:
+                        source_type = EvidenceSourceType(source_type_str)
+                    except ValueError:
+                        source_type = EvidenceSourceType.LOGS
+
                     evidence_list.append(
                         Evidence(
                             evidence_id=str(row[0]),
@@ -343,13 +351,14 @@ class SQLiteCaseRepository(CaseRepository):
                             preprocessed_content=row[4] if row[4] else "",
                             content_ref=row[5],
                             content_size_bytes=row[6] if row[6] else 0,
+                            original_filename=row[7],
                             preprocessing_method="loaded",
-                            source_type=EvidenceSourceType.LOGS,
+                            source_type=source_type,
                             form=EvidenceForm.DOCUMENT,
                             collected_by="user",
-                            collected_at_turn=row[9] if row[9] else 0,
-                            content_hash=row[10],
-                            source_file_id=row[11],
+                            collected_at_turn=row[12] if row[12] else 0,
+                            content_hash=row[11],
+                            source_file_id=row[13],
                         )
                     )
                 except Exception as ev_err:
@@ -1222,18 +1231,31 @@ class SQLiteCaseRepository(CaseRepository):
             query = text("""
                 INSERT INTO evidence (
                     evidence_id, case_id, category, summary, preprocessed_content,
-                    content_ref, file_size, filename, upload_timestamp, metadata
+                    content_ref, file_size, filename, upload_timestamp, metadata,
+                    source_type_new, content_hash, collected_at_turn, source_file_id
                 ) VALUES (
                     :evidence_id, :case_id, :category, :summary, :preprocessed_content,
-                    :content_ref, :file_size, :filename, :upload_timestamp, :metadata
+                    :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
+                    :source_type_new, :content_hash, :collected_at_turn, :source_file_id
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
                     category = EXCLUDED.category,
                     summary = EXCLUDED.summary,
                     preprocessed_content = EXCLUDED.preprocessed_content,
                     content_ref = EXCLUDED.content_ref,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    source_type_new = EXCLUDED.source_type_new,
+                    content_hash = EXCLUDED.content_hash,
+                    collected_at_turn = EXCLUDED.collected_at_turn,
+                    source_file_id = EXCLUDED.source_file_id,
+                    filename = EXCLUDED.filename
             """)
+
+            source_type_val = (
+                evidence.source_type.value
+                if hasattr(evidence.source_type, "value")
+                else str(evidence.source_type)
+            )
 
             await self.db.execute(
                 query,
@@ -1245,9 +1267,13 @@ class SQLiteCaseRepository(CaseRepository):
                     "preprocessed_content": evidence.preprocessed_content or "",
                     "content_ref": evidence.content_ref,
                     "file_size": evidence.content_size_bytes,
-                    "filename": "",  # Evidence doesn't have filename - would come from source
+                    "filename": getattr(evidence, "original_filename", None) or "",
                     "upload_timestamp": evidence.collected_at.isoformat(),
                     "metadata": json.dumps({}),
+                    "source_type_new": source_type_val,
+                    "content_hash": getattr(evidence, "content_hash", None) or "",
+                    "collected_at_turn": evidence.collected_at_turn,
+                    "source_file_id": getattr(evidence, "source_file_id", None),
                 },
             )
 
