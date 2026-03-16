@@ -1862,7 +1862,7 @@ class MilestoneEngine:
                 tool_choice=choice,
                 max_tokens=max_tokens,
                 temperature=0.2,
-                case_id=case.case_id,
+                case_id=case.case_id if case is not None else None,
             )
             if self.da_model and self.da_provider:
                 generate_kwargs["model"] = self.da_model

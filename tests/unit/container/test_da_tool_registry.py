@@ -64,6 +64,10 @@ def _make_mock_container(
     else:
         container.user_kb_adapter = None
 
+    # Ensure remaining tool attributes are explicitly None to avoid MagicMock auto-attributes
+    container.vectorize_file_tool = None
+    container.case_evidence_qa_adapter = None
+
     return container
 
 
