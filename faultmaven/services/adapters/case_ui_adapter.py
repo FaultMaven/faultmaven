@@ -350,6 +350,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                         if hasattr(ev.category, "value")
                         else str(ev.category)
                     ),
+                    source_filename=getattr(ev, "original_filename", None),
                 )
             )
 

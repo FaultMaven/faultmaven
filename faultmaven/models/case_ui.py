@@ -159,6 +159,12 @@ class EvidenceSummary(BaseModel):
         max_length=50,
     )
 
+    source_filename: Optional[str] = Field(
+        default=None,
+        description="Original filename of the source file, if evidence originated from an attachment.",
+        max_length=255,
+    )
+
 
 class RootCauseSummary(BaseModel):
     """Root cause information for RESOLVED phase."""
