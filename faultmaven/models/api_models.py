@@ -413,6 +413,14 @@ class AttachmentResult(BaseModel):
     data_type: str
     file_size: int
     processing_status: str
+    uploaded_at: str = Field(
+        default="",
+        description="ISO 8601 timestamp of when the attachment was processed",
+    )
+    source_type: str = Field(
+        default="file_upload",
+        description="Input origin: file_upload | text_paste | page_capture",
+    )
 
 
 class SuggestedActionResponse(BaseModel):

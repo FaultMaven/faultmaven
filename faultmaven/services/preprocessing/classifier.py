@@ -199,6 +199,17 @@ class DataClassifier:
             ("honeycomb.io", DataType.METRICS_AND_PERFORMANCE, 0.90),
             ("jaeger", DataType.METRICS_AND_PERFORMANCE, 0.88),
             ("zipkin", DataType.METRICS_AND_PERFORMANCE, 0.88),
+            # LLM Observability platforms (traces contain embedded prompts — classify as TRACE_DATA
+            # so the extractor treats them as diagnostic data, not raw logs or unstructured text)
+            ("comet.com/opik", DataType.TRACE_DATA, 0.92),
+            ("opik.comet.com", DataType.TRACE_DATA, 0.92),
+            ("app.opik.com", DataType.TRACE_DATA, 0.92),
+            ("langfuse.com", DataType.TRACE_DATA, 0.90),
+            ("smith.langchain.com", DataType.TRACE_DATA, 0.90),
+            ("langsmith", DataType.TRACE_DATA, 0.90),
+            ("phoenix.arize.com", DataType.TRACE_DATA, 0.90),
+            ("wandb.ai", DataType.METRICS_AND_PERFORMANCE, 0.88),
+            ("app.helicone.ai", DataType.TRACE_DATA, 0.88),
             (
                 "/metrics/",
                 DataType.METRICS_AND_PERFORMANCE,
@@ -581,7 +592,32 @@ class DataClassifier:
                 classification_failed=False,
             )
 
-        # 6. Check for DOCUMENTATION vs UNSTRUCTURED_TEXT
+        # 6. Check for WEB_PAGE (HTML content) - before DOCUMENTATION to avoid misclassification
+        # Triggers on .html/.htm extensions OR strong HTML structural patterns in content
+        html_exts = [".html", ".htm"]
+        html_patterns = [
+            r"<!doctype\s+html",  # DOCTYPE declaration
+            r"<html[\s>]",  # Root element
+            r"<head[\s>]",  # Head section
+            r"<body[\s>]",  # Body section
+            r"<div[\s>]",  # Common container
+            r"<script[\s>]",  # Script tag (strong indicator)
+            r"<meta\s+",  # Meta tags
+            r'<link\s+rel="',  # Stylesheet links
+        ]
+        html_score = sum(
+            1 for p in html_patterns if re.search(p, sample, re.IGNORECASE)
+        )
+
+        if ext in html_exts or html_score >= 3:
+            return ClassificationResult(
+                data_type=DataType.DOCUMENTATION,
+                confidence=min(0.88 + confidence_boost, 0.95),
+                source="rule_based",
+                classification_failed=False,
+            )
+
+        # 7. Check for DOCUMENTATION vs UNSTRUCTURED_TEXT
         doc_exts = [".md", ".rst", ".adoc"]
         text_exts = [".txt"]
 

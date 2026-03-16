@@ -91,6 +91,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         tool_choice: Optional[str] = None,
         response_format: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
+        case_id: Optional[str] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -117,7 +118,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # The cache will be stored with the effective model used
         cache_model = model  # Use the requested model for cache lookup
         if cache_model and not messages and sanitized_prompt:
-            cached_response = self.cache.check(sanitized_prompt, cache_model)
+            cached_response = self.cache.check(
+                sanitized_prompt, cache_model, case_id=case_id
+            )
             if cached_response:
                 self.logger.info("✅ Using cached response")
                 cached_response.sanitized_prompt = sanitized_prompt
@@ -161,7 +164,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             if response.confidence >= self.confidence_threshold and sanitized_prompt:
                 # Store with the requested model key for consistent cache lookup
                 store_model = model or response.model
-                self.cache.store(sanitized_prompt, store_model, response)
+                self.cache.store(
+                    sanitized_prompt, store_model, response, case_id=case_id
+                )
 
             # Attach prompt data for telemetry
             response.sanitized_prompt = sanitized_prompt
@@ -274,6 +279,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         tool_choice = kwargs.get("tool_choice")
         response_format = kwargs.get("response_format")
         messages = kwargs.get("messages")
+        case_id = kwargs.get("case_id")
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -286,6 +292,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             tool_choice=tool_choice,
             response_format=response_format,
             messages=messages,
+            case_id=case_id,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)

@@ -37,9 +37,11 @@ class SemanticCache:
                 "BGE-M3 model not available, using simple cache without semantic similarity"
             )
 
-    def _get_cache_key(self, prompt: str, model: str) -> str:
-        """Generate cache key for prompt and model"""
-        content = f"{prompt}:{model}"
+    def _get_cache_key(
+        self, prompt: str, model: str, case_id: Optional[str] = None
+    ) -> str:
+        """Generate cache key scoped to case, prompt, and model"""
+        content = f"{case_id or ''}:{prompt}:{model}"
         return hashlib.sha256(content.encode()).hexdigest()
 
     def _compute_embedding(self, text: str) -> Optional[np.ndarray]:
@@ -63,12 +65,14 @@ class SemanticCache:
         except Exception:
             return 0.0
 
-    def check(self, prompt: str, model: str) -> Optional[LLMResponse]:
-        """Check cache for semantically similar response"""
+    def check(
+        self, prompt: str, model: str, case_id: Optional[str] = None
+    ) -> Optional[LLMResponse]:
+        """Check cache for semantically similar response, scoped to case_id."""
 
         # Simple hash-based cache if no embeddings
         if not self.encoder:
-            cache_key = self._get_cache_key(prompt, model)
+            cache_key = self._get_cache_key(prompt, model, case_id)
             if cache_key in self.cache:
                 cache_entry = self.cache[cache_key]
                 return LLMResponse(
@@ -87,12 +91,15 @@ class SemanticCache:
         if prompt_embedding is None:
             return None
 
-        # Find most similar cached response
+        # Find most similar cached response, restricted to same case and model
         best_similarity = 0.0
         best_response = None
 
         for cache_key, cache_entry in self.cache.items():
             if cache_entry["model"] != model:
+                continue
+            # Strict case isolation: never serve a cached response across cases
+            if cache_entry.get("case_id") != case_id:
                 continue
 
             cached_embedding = self.embeddings.get(cache_key)
@@ -117,9 +124,15 @@ class SemanticCache:
 
         return None
 
-    def store(self, prompt: str, model: str, response: LLMResponse):
-        """Store response in cache"""
-        cache_key = self._get_cache_key(prompt, model)
+    def store(
+        self,
+        prompt: str,
+        model: str,
+        response: LLMResponse,
+        case_id: Optional[str] = None,
+    ):
+        """Store response in cache, tagged with case_id."""
+        cache_key = self._get_cache_key(prompt, model, case_id)
 
         # Store response
         self.cache[cache_key] = {
@@ -129,6 +142,7 @@ class SemanticCache:
             "model": response.model,
             "tokens_used": response.tokens_used,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "case_id": case_id,
         }
 
         # Store embedding if available

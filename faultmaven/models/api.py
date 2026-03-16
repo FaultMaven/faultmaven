@@ -799,6 +799,7 @@ class ClassificationResult(BaseModel):
         "user_override",
         "agent_hint",
         "browser_context",
+        "source_url",
         "rule_based",
         "rule_based_best_effort",
     ] = Field(..., description="How the classification was determined")

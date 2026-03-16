@@ -1376,6 +1376,7 @@ class MilestoneEngine:
                     prompt,
                     schema_model,
                     redaction_ctx=redaction_ctx,
+                    case=case,
                 )
 
             # Debug: Log what type was actually returned
@@ -1470,6 +1471,7 @@ class MilestoneEngine:
                         corrected_prompt,
                         schema_model,
                         redaction_ctx=redaction_ctx,
+                        case=case,
                     )
 
                     # Re-validate the corrected response
@@ -1860,6 +1862,7 @@ class MilestoneEngine:
                 tool_choice=choice,
                 max_tokens=max_tokens,
                 temperature=0.2,
+                case_id=case.case_id,
             )
             if self.da_model and self.da_provider:
                 generate_kwargs["model"] = self.da_model
@@ -2362,8 +2365,11 @@ class MilestoneEngine:
             # Build priority guidance
             priority_parts = []
             if has_search or has_da:
+                evidence_tools = ", ".join(
+                    t for t in ["search_file", "deep_analysis"] if t in tool_names
+                )
                 priority_parts.append(
-                    "1. Start with case evidence (search_file, deep_analysis) — "
+                    f"1. Start with case evidence ({evidence_tools}) — "
                     "ground your analysis in THIS case's data first."
                 )
             if has_global_kb or has_user_kb:
@@ -2407,7 +2413,7 @@ class MilestoneEngine:
             "timestamps, patterns, configurations, or anything that requires "
             "examining the evidence. Examples: 'What IPs failed auth?', "
             "'What happened at 14:00?', 'Is there a pattern in the errors?'\n"
-            "→ You MUST search the evidence (search_file, deep_analysis) before "
+            f"→ You MUST search the evidence ({', '.join(t for t in ['search_file', 'deep_analysis'] if t in tool_names)}) before "
             "responding. The structural indexes are summaries — they lack the "
             "specific values needed for grounded analysis. After searching, call "
             f"{schema_tool_name} to produce your structured response.\n\n"
@@ -2780,6 +2786,7 @@ class MilestoneEngine:
                 "prompt": final_prompt,
                 "max_tokens": current_max_tokens,
                 "temperature": 0.2,  # Lower temperature for structured output
+                "case_id": case.case_id if case is not None else None,
             }
 
             logger.debug(

@@ -1981,6 +1981,8 @@ async def submit_turn(
     pasted_content: Optional[str] = Form(None),
     intent_type: Optional[str] = Form(None),
     intent_data: Optional[str] = Form(None),
+    input_type: Optional[str] = Form(None),
+    source_url: Optional[str] = Form(None),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service=Depends(get_investigation_service),
     current_user: UserDTO = Depends(require_authentication),
@@ -2023,6 +2025,11 @@ async def submit_turn(
             )
 
         # Build attachments list
+        # Every attachment carries source_metadata so the classifier knows the
+        # input origin and can apply the correct confidence boosts:
+        #   file_upload  → user selected a local OS file
+        #   text_paste   → user pasted raw text into the scratchpad
+        #   page_capture → browser extension captured a web page (has source URL)
         attachments = []
         for f in files:
             content = await f.read()
@@ -2031,26 +2038,32 @@ async def submit_turn(
                     content=content,
                     filename=f.filename or "unnamed_file",
                     content_type=f.content_type or "application/octet-stream",
+                    source_metadata={"source_type": "file_upload"},
                 )
             )
         if pasted_content:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-            # Detect page captures by the URL header the frontend embeds
+
+            # Determine source type — prefer explicit field sent by the frontend,
+            # then fall back to the legacy header embedded in the content body.
             page_match = re.match(r"^--- Page Content \((.+?)\) ---\n", pasted_content)
-            source_meta = None
-            if page_match:
-                source_meta = {
-                    "source_type": "page_capture",
-                    "source_url": page_match.group(1),
-                }
+            is_page_capture = (input_type == "page_capture") or bool(page_match)
+
+            if is_page_capture:
+                # URL: prefer explicit form field, fall back to header extraction
+                url = source_url or (page_match.group(1) if page_match else None)
+                source_meta = {"source_type": "page_capture"}
+                if url:
+                    source_meta["source_url"] = url
+                filename = f"page-capture-{ts}.txt"
+            else:
+                source_meta = {"source_type": "text_paste"}
+                filename = f"pasted-content-{ts}.txt"
+
             attachments.append(
                 Attachment(
                     content=pasted_content.encode("utf-8"),
-                    filename=(
-                        f"page-capture-{ts}.txt"
-                        if page_match
-                        else f"pasted-content-{ts}.txt"
-                    ),
+                    filename=filename,
                     content_type="text/plain",
                     source_metadata=source_meta,
                 )

@@ -25,6 +25,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,
     IntentType,
@@ -43,6 +44,25 @@ from faultmaven.modules.case.domain.models import (
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+_DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
+    DataType.LOGS_AND_ERRORS: EvidenceSourceType.LOGS,
+    DataType.ERROR_REPORT: EvidenceSourceType.LOGS,
+    DataType.COMMAND_OUTPUT: EvidenceSourceType.LOGS,
+    DataType.TRACE_DATA: EvidenceSourceType.LOGS,
+    DataType.METRICS_AND_PERFORMANCE: EvidenceSourceType.METRICS,
+    DataType.PROFILING_DATA: EvidenceSourceType.METRICS,
+    DataType.STRUCTURED_CONFIG: EvidenceSourceType.CONFIGURATION,
+    DataType.SOURCE_CODE: EvidenceSourceType.CODE,
+    DataType.DOCUMENTATION: EvidenceSourceType.TEXT,
+    DataType.UNSTRUCTURED_TEXT: EvidenceSourceType.TEXT,
+    DataType.VISUAL_EVIDENCE: EvidenceSourceType.IMAGE,
+    DataType.UNANALYZABLE: EvidenceSourceType.TEXT,
+}
+
+
+def _infer_source_type(data_type: DataType) -> EvidenceSourceType:
+    return _DATA_TYPE_TO_SOURCE_TYPE.get(data_type, EvidenceSourceType.TEXT)
 
 
 class InvestigationService:
@@ -311,6 +331,12 @@ class InvestigationService:
                         data_type=ev.data_type or "",
                         file_size=ev.content_size_bytes,
                         processing_status="completed",
+                        uploaded_at=datetime.now(timezone.utc).isoformat(),
+                        source_type=(
+                            att.source_metadata.get("source_type", "file_upload")
+                            if att.source_metadata
+                            else "file_upload"
+                        ),
                     )
                     for att, ev in zip(payload.attachments, evidence_created)
                 ],
@@ -442,7 +468,7 @@ class InvestigationService:
             evidence_id=f"ev_{uuid4().hex[:12]}",
             form=EvidenceForm.DOCUMENT,
             category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
+            source_type=_infer_source_type(preprocessing_result.data_type),
             primary_purpose="user_submitted_data",
             summary=preprocessing_result.summary,
             preprocessed_content=preprocessing_result.structural_index,
