@@ -44,7 +44,6 @@ from faultmaven.core.investigation.llm_error_handler import (
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
-    EvidenceToAdd,
     InquiryResponse,
     TerminalResponse,
     get_schema_for_stage,
@@ -485,162 +484,53 @@ def validate_reasoning_first(
     return len(errors) == 0, errors
 
 
-# =============================================================================
-# LLM Failure Mitigation - Pattern Detection and Fallback
-# =============================================================================
-# Design Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md
-
-
-# Pattern definitions for detecting external data when LLM misclassifies
-LOG_PATTERNS = [
-    r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}",  # Timestamp: 2026-02-11 14:03:21
-    r"\b(ERROR|WARN|WARNING|FATAL|CRITICAL|DEBUG|INFO|TRACE)\b",  # Log levels
-    r"\b(Exception|Traceback|Stack trace|stack trace)\b",  # Error indicators
-    r"\[[\w\-]+\]",  # Log tags: [pool], [api], [database]
-]
-
-METRIC_PATTERNS = [
-    r"(\d+\.?\d*)\s*(ms|MB|GB|KB|%|req/s|rps|queries/s)",  # Numeric metrics
-    r"\bp\d{2}[:=]\s*\d+",  # Percentiles: p95: 200, p99=500
-    r"\b(latency|throughput|cpu|memory|disk|timeout)\b",  # Metric keywords
-]
-
-CONFIG_PATTERNS = [
-    r"^\s*[\w\-]+\s*[:=]\s*.+",  # Key-value pairs: max_connections: 50
-    r"^\s*[{\[]",  # JSON/YAML start
-    r"\b(config|configuration|setting|parameter)\b",  # Config keywords
-]
-
-
-def _detect_external_data_patterns(message: str) -> Optional[EvidenceToAdd]:
-    """
-    Fallback: Detect external data when LLM misclassifies user messages.
-
-    This function implements automatic pattern-based evidence creation as a defensive
-    mechanism against LLM classification failures. When the LLM fails to properly
-    classify log data, metrics, or configuration as external_data and doesn't create
-    evidence records, this function detects the patterns and creates fallback evidence.
-
-    Design Philosophy:
-    - Make the system robust regardless of LLM quality
-    - Never lose critical evidence due to classification failures
-    - Prefer false positives (creating evidence for conversation) over false negatives
-      (missing critical evidence)
-
-    Args:
-        message: User message to analyze for data patterns
-
-    Returns:
-        EvidenceToAdd object if patterns detected, None if pure conversation
-
-    Pattern Categories:
-        - Logs: Timestamps, log levels, exceptions, stack traces
-        - Metrics: Numeric values with units, percentiles, performance indicators
-        - Configuration: Key-value pairs, JSON/YAML, config keywords
-
-    Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md (Strategy 1)
-    """
-    # Check for log patterns
-    log_match_count = sum(
-        1 for p in LOG_PATTERNS if re.search(p, message, re.IGNORECASE | re.MULTILINE)
-    )
-    if (
-        log_match_count >= 2
-    ):  # Require at least 2 log patterns to reduce false positives
-        return EvidenceToAdd(
-            summary=(
-                f"Log data (auto-detected): {message[:200]}..."
-                if len(message) > 200
-                else f"Log data (auto-detected): {message}"
-            ),
-            category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            content_ref=None,
-        )
-
-    # Check for metric patterns
-    metric_match_count = sum(
-        1
-        for p in METRIC_PATTERNS
-        if re.search(p, message, re.IGNORECASE | re.MULTILINE)
-    )
-    if metric_match_count >= 2:  # Require at least 2 metric patterns
-        return EvidenceToAdd(
-            summary=(
-                f"Metrics (auto-detected): {message[:200]}..."
-                if len(message) > 200
-                else f"Metrics (auto-detected): {message}"
-            ),
-            category=EvidenceCategory.SYMPTOM_EVIDENCE,
-            source_type=EvidenceSourceType.METRICS,
-            content_ref=None,
-        )
-
-    # Check for config patterns
-    config_match_count = sum(
-        1
-        for p in CONFIG_PATTERNS
-        if re.search(p, message, re.IGNORECASE | re.MULTILINE)
-    )
-    if config_match_count >= 2:  # Require at least 2 config patterns
-        return EvidenceToAdd(
-            summary=(
-                f"Configuration (auto-detected): {message[:200]}..."
-                if len(message) > 200
-                else f"Configuration (auto-detected): {message}"
-            ),
-            category=EvidenceCategory.CONTEXTUAL_EVIDENCE,
-            source_type=EvidenceSourceType.CONFIGURATION,
-            content_ref=None,
-        )
-
-    # No clear patterns detected - likely pure conversation
-    return None
-
-
 def _post_process_llm_response(
     updates: Any,
     user_message: str,
     case: Case,
 ) -> Any:
     """
-    Post-process and repair LLM response to handle evidence creation failures.
+    Post-process LLM response — currently a no-op pass-through.
 
-    Detects external data patterns in user messages and creates fallback
-    evidence when the LLM fails to recognize submitted data.
+    Previously this function ran regex-based pattern detection on the user
+    message to create fallback evidence when the LLM didn't produce any.
+    That approach was removed because:
+
+    1. It second-guessed the LLM with crude regexes. When the LLM
+       deliberately chose NOT to classify a message as data (e.g., an SSH
+       banner with incidental "memory" / "8%" text), the fallback overrode
+       that judgment and created bogus SYMPTOM_EVIDENCE records.
+
+    2. It conflated "user pasted data into the text box" with "user
+       submitted external data for analysis". A user who pastes terminal
+       output as a conversational message should get a conversational
+       response — or a clarifying question — not silent evidence creation.
+
+    3. When attachments existed, it duplicated the attachment pipeline's
+       evidence with a lower-quality regex-derived record.
+
+    The LLM already sees every user message and can:
+    - Create evidence via ``evidence_to_add`` when it recognizes data.
+    - Ask for clarification when the message is ambiguous.
+    - Treat non-data messages as conversation.
+
+    If the LLM consistently fails to recognise a specific class of data,
+    the fix belongs in the prompt or LLM schema, not in a post-hoc regex
+    layer that cannot understand context.
 
     Args:
         updates: Parsed LLM response (InquiryResponse or InvestigationResponse_*)
-        user_message: Original user message for pattern analysis
+        user_message: Original user message (retained for future use / logging)
         case: Current case state
 
     Returns:
-        Modified updates object with repaired evidence_to_add if needed
-
-    Reference: docs/working/LLM-FAILURE-MITIGATION-STRATEGY.md (Strategy 4)
+        The updates object, unmodified.
     """
     evidence_to_add = getattr(updates, "evidence_to_add", []) or []
     logger.debug(
         f"Post-processing LLM response: "
         f"evidence_to_add_count={len(evidence_to_add)}"
     )
-
-    # If no evidence created, check for external data patterns in user message
-    if not evidence_to_add:
-        fallback_evidence = _detect_external_data_patterns(user_message)
-        if fallback_evidence and hasattr(updates, "evidence_to_add"):
-            # Only add fallback evidence if the StateUpdate type supports it
-            # (TerminalStateUpdate doesn't have evidence_to_add field)
-            if updates.evidence_to_add is None:
-                updates.evidence_to_add = []
-            updates.evidence_to_add.append(fallback_evidence)
-            logger.warning(
-                f"LLM created no evidence but external data detected. "
-                f"Auto-created fallback evidence: {fallback_evidence.source_type.value} "
-                f"(category={fallback_evidence.category.value}). "
-                f"Message preview: {user_message[:100]}..."
-            )
-
     return updates
 
 
