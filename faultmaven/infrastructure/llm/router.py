@@ -9,6 +9,7 @@ Inherits from BaseExternalClient for unified logging, retry logic, and
 circuit breaker patterns for external LLM provider calls.
 """
 
+import functools
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -43,7 +44,11 @@ def _opik_track_llm(name: str):
 
     # No-op passthrough when Opik is not installed
     def identity(func):
-        return func
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            return await func(*args, **kwargs)
+
+        return wrapper
 
     return identity
 
