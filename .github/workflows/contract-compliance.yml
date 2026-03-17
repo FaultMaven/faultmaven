@@ -73,8 +73,9 @@ jobs:
         else:
             print('✅ No dangling references found')
             
-        # Check critical schemas exist (only schemas actually used in API endpoints)
-        critical_schemas = ['AgentResponse', 'CaseSummary']
+        # Check critical schemas exist (only schemas returned as JSON responses;
+        # AgentResponse is excluded — agent endpoint uses SSE streaming, not JSON)
+        critical_schemas = ['CaseSummary', 'LLMConfigResponse', 'EnvConfigStatusResponse']
         missing = [s for s in critical_schemas if s not in schemas]
         if missing:
             print(f'❌ Missing critical schemas: {missing}')
