@@ -1197,15 +1197,16 @@ class TestMilestoneEngine:
         assert not mock_llm.generate.called
 
 
-class TestMechanicalConfirmationFallback:
-    """Test that user_confirms() acts as a mechanical fallback when the LLM
-    fails to set user_confirmed_investigation=True in structured output."""
+class TestInquiryConfirmation:
+    """Test that INQUIRY→INVESTIGATING transition relies on the LLM setting
+    user_confirmed_investigation=True. No mechanical keyword fallback."""
 
     @pytest.mark.asyncio
-    async def test_fallback_fires_when_llm_misses_confirmation(
+    async def test_stays_in_inquiry_when_llm_misses_confirmation(
         self, mock_llm, mock_repo
     ):
-        """LLM doesn't set user_confirmed_investigation but user says 'yes' → fallback triggers."""
+        """LLM doesn't set user_confirmed_investigation → stays in INQUIRY,
+        even if user message contains 'yes'. The LLM is solely responsible."""
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -1235,10 +1236,9 @@ class TestMechanicalConfirmationFallback:
         result = await engine.process_turn(case, "yes, that's correct")
 
         updated_case = result["case_updated"]
-        # Mechanical fallback should have caught "yes" and transitioned
-        assert updated_case.inquiry.problem_statement_confirmed is True
-        assert updated_case.inquiry.decided_to_investigate is True
-        assert updated_case.status == CaseStatus.INVESTIGATING
+        # No fallback — LLM is the sole decision-maker for confirmation
+        assert updated_case.status == CaseStatus.INQUIRY
+        assert updated_case.inquiry.problem_statement_confirmed is False
 
     @pytest.mark.asyncio
     async def test_fallback_does_not_fire_without_proposed_statement(

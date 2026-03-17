@@ -36,7 +36,6 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-from faultmaven.core.investigation.inquiry_handler import user_confirms
 from faultmaven.core.investigation.llm_error_handler import (
     ErrorAction,
     LLMErrorHandler,
@@ -2998,23 +2997,6 @@ class MilestoneEngine:
             case.inquiry.decision_made_at = datetime.now(UTC)
             logger.info(
                 f"User confirmed problem statement — transitioning to INVESTIGATING. "
-                f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"
-            )
-        elif (
-            not getattr(updates, "user_confirmed_investigation", False)
-            and case.inquiry.proposed_problem_statement
-            and case.inquiry.proposed_problem_statement.strip()
-            and not case.inquiry.problem_statement_confirmed
-            and user_confirms(user_message)
-        ):
-            # Mechanical fallback: LLM missed the confirmation but user message
-            # matches known confirmation phrases (e.g., "yes", "proceed", "looks good").
-            case.inquiry.problem_statement_confirmed = True
-            case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
-            case.inquiry.decided_to_investigate = True
-            case.inquiry.decision_made_at = datetime.now(UTC)
-            logger.info(
-                f"Mechanical fallback: user_confirms() detected confirmation the LLM missed. "
                 f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"
             )
         elif (

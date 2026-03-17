@@ -578,15 +578,14 @@ class InquiryResponse(BaseInteractionResponse):
         user_confirmed_investigation: bool = Field(
             default=False,
             description=(
-                "Set to True when the user confirms the problem statement, either "
-                "explicitly or through problem-engaged behavior. "
+                "Set to True when the user confirms the problem statement. Err toward "
+                "True when ambiguous — a user engaged with the problem likely wants "
+                "to proceed. "
                 "Explicit: 'Yes', 'Correct', 'Let's investigate', 'That's right'. "
                 "Implicit (after problem statement was presented): user provides "
-                "additional evidence about the problem, asks diagnostic questions "
-                "('what's causing this?'), or expresses urgency ('customers are affected'). "
-                "Do NOT count: same turn you first present the problem statement, "
-                "generic questions unrelated to the problem, or bare acknowledgments "
-                "like 'ok' or 'I see'."
+                "additional evidence, asks diagnostic questions, or expresses urgency. "
+                "Set False only when: same turn you first present the problem statement, "
+                "user explicitly disagrees, or message is unrelated to the problem."
             ),
         )
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
