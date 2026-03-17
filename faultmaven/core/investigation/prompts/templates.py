@@ -77,9 +77,10 @@ TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
 - ONLY ask for confirmation and signal the investigation phase. Keep it focused.
 
 TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
-- User says "Yes", "Correct", "Let's investigate", etc. — OR asks a specific
-  follow-up question about the data (implicit confirmation via engagement).
-- Set user_confirmed_investigation=True.
+- User EXPLICITLY says "Yes", "Correct", "Let's investigate", "That's right", etc.
+- Do NOT treat follow-up questions, data uploads, or general engagement as confirmation.
+  The user may be providing context without committing to a formal investigation.
+- Set user_confirmed_investigation=True only on explicit confirmation.
 - Do NOT repeat the problem statement or anything from the previous turn.
 - CRITICAL: Check <evidence_collected> BEFORE asking for data.
   * If evidence with structural indexes already exists: Do NOT ask the user to upload

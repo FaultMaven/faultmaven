@@ -97,19 +97,18 @@ def user_confirms(user_message: str) -> bool:
     if len(message_lower) > 100:
         return False
 
+    # Only unambiguous confirmation phrases. Removed "start", "do it",
+    # "go ahead", "investigate" — these appear in normal conversation
+    # (e.g., "where do I start", "let me investigate this").
     confirmation_phrases = [
         "yes",
         "correct",
         "that's right",
         "proceed",
-        "investigate",
-        "let's go",
-        "lets go",
-        "do it",
-        "start",
+        "let's investigate",
+        "yes, investigate",
         "looks good",
         "sounds good",
-        "go ahead",
     ]
 
     return any(

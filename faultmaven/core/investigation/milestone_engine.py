@@ -3098,6 +3098,14 @@ class MilestoneEngine:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
+            # Derive source filename from uploaded files submitted this turn
+            turn_files = [
+                uf
+                for uf in case.uploaded_files
+                if uf.uploaded_at_turn == case.current_turn
+            ]
+            source_filename = turn_files[0].filename if len(turn_files) == 1 else None
+
             for ev_item in updates.evidence_to_add:
                 # During INQUIRY phase, milestones are not yet being tracked,
                 # so we don't infer milestone attribution (advances_milestones will be empty)
@@ -3125,6 +3133,7 @@ class MilestoneEngine:
                     preprocessing_method="none",
                     data_type=None,
                     content_hash=content_hash,
+                    original_filename=source_filename,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
@@ -3290,6 +3299,14 @@ class MilestoneEngine:
         )
 
         if hasattr(updates, "evidence_to_add") and updates.evidence_to_add:
+            # Derive source filename from uploaded files submitted this turn
+            turn_files = [
+                uf
+                for uf in case.uploaded_files
+                if uf.uploaded_at_turn == case.current_turn
+            ]
+            source_filename = turn_files[0].filename if len(turn_files) == 1 else None
+
             for ev_item in updates.evidence_to_add:
                 # Infer milestone attribution (Tier 2 + Tier 3)
                 # Tier 2: System infers from category + milestones completed this turn
@@ -3333,6 +3350,7 @@ class MilestoneEngine:
                     preprocessing_method="none",
                     data_type=None,
                     content_hash=content_hash,
+                    original_filename=source_filename,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)

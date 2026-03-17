@@ -325,12 +325,10 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                 )
             )
 
-    # Build evidence summaries (last 5 evidence items)
+    # Build evidence summaries (oldest first, matching files order)
     evidence_summaries = []
     if case.evidence:
-        sorted_evidence = sorted(
-            case.evidence, key=lambda e: e.collected_at, reverse=True
-        )[:5]
+        sorted_evidence = sorted(case.evidence, key=lambda e: e.collected_at)[-5:]
 
         for ev in sorted_evidence:
             evidence_summaries.append(
