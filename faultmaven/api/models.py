@@ -598,3 +598,101 @@ class OrganizationUserListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ============================================================
+# LLM Configuration Models (Dashboard Phase 1a)
+# ============================================================
+
+
+class LLMProviderDetail(BaseModel):
+    """Individual LLM provider status for dashboard display."""
+
+    name: str
+    display_name: str
+    enabled: bool = Field(
+        description="Provider is initialized and in the fallback chain"
+    )
+    connected: bool = Field(description="Provider responded to last health check")
+    has_api_key: bool = Field(description="API key is configured (value never exposed)")
+    models: List[str] = Field(default_factory=list)
+    error_message: Optional[str] = None
+    health: str = Field(
+        default="unknown", description="HEALTHY, DEGRADED, UNHEALTHY, or UNKNOWN"
+    )
+    avg_latency_ms: float = 0.0
+
+
+class LLMConfigResponse(BaseModel):
+    """LLM configuration and provider status response."""
+
+    primary_provider: str
+    strict_mode: bool
+    fallback_chain: List[str]
+    providers: Dict[str, LLMProviderDetail]
+    timestamp: datetime
+
+
+class LLMConnectionTestRequest(BaseModel):
+    """Request to test an LLM provider connection."""
+
+    provider: str = Field(
+        ..., description="Provider name to test (e.g. 'anthropic', 'openai')"
+    )
+
+
+class LLMConnectionTestResponse(BaseModel):
+    """Result of an LLM provider connection test."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    provider: str
+    connected: bool
+    response_time_ms: int = 0
+    error_message: Optional[str] = None
+    model_used: Optional[str] = None
+    timestamp: datetime
+
+
+class LLMConfigUpdateRequest(BaseModel):
+    """Request to update LLM configuration."""
+
+    primary_provider: Optional[str] = Field(
+        None, description="New primary provider name"
+    )
+    fallback_chain: Optional[List[str]] = Field(
+        None, description="New fallback chain order"
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider to update API key for"
+    )
+    api_key: Optional[str] = Field(
+        None, description="New API key value for the specified provider"
+    )
+
+
+class LLMConfigUpdateResponse(BaseModel):
+    """Response after updating LLM configuration."""
+
+    updated_keys: List[str] = Field(description="Config keys that were updated")
+    message: str
+    timestamp: datetime
+
+
+# ============================================================
+# Environment Configuration Status Models (Dashboard Phase 1a)
+# ============================================================
+
+
+class EnvConfigStatusResponse(BaseModel):
+    """Read-only environment configuration status for dashboard display."""
+
+    auth_mode: str = Field(description="'local' or 'oauth'")
+    environment: str = Field(description="'development', 'staging', or 'production'")
+    db_backend: str = Field(description="'sqlite' or 'postgresql'")
+    session_storage: str = Field(description="'inmemory' or 'redis'")
+    vector_storage: str = Field(description="'inmemory' or 'chromadb'")
+    llm_provider: str = Field(description="Primary LLM provider name")
+    pii_redaction_enabled: bool
+    rate_limit_enabled: bool
+    timestamp: datetime

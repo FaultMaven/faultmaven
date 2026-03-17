@@ -311,11 +311,24 @@ ENDPOINT_VISIBILITY = {
     "/api/v1/auth/logout": ["local", "oauth"], # Always available
 }
 
-# Admin/debug endpoints - development only
+# Debug endpoints - development only
 DEVELOPMENT_ONLY_ENDPOINTS = [
-    "/api/v1/auth/admin/list-users",
-    "/api/v1/auth/admin/delete-user",
-    "/api/v1/auth/admin/revoke-all-tokens",
+    "/debug/routes",
+    "/debug/health",
+    "/debug/config",
+    "/debug/llm-providers",
+]
+
+# Production admin endpoints - always registered, auth-gated via require_admin / get_current_user
+ADMIN_ENDPOINTS = [
+    "/api/v1/admin/users",                    # GET: list users (admin only)
+    "/api/v1/admin/users/{user_id}",          # GET: user details (admin only)
+    "/api/v1/admin/users/{user_id}/activate",  # POST: activate user (admin only)
+    "/api/v1/admin/users/{user_id}/deactivate", # POST: deactivate user (admin only)
+    "/api/v1/admin/users/{user_id}/roles",     # POST: assign role (admin only)
+    "/api/v1/admin/llm/config",               # GET: LLM provider status (authenticated)
+    "/api/v1/admin/llm/config/test",          # POST: test provider connection (authenticated)
+    "/api/v1/admin/config/status",            # GET: env config status (authenticated)
 ]
 ```
 
@@ -334,9 +347,9 @@ def create_app(config: AppConfig) -> FastAPI:
     # Always register common endpoints
     app.include_router(common_auth_router)
 
-    # Development-only endpoints
-    if config.environment == Environment.DEVELOPMENT:
-        app.include_router(admin_auth_router, prefix="/api/v1/auth/admin")
+    # Admin endpoints - always registered, protected by require_admin / get_current_user
+    app.include_router(admin_users_router)   # User management (admin only)
+    app.include_router(admin_config_router)  # LLM config + env status (authenticated)
 
     return app
 ```

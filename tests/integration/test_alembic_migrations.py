@@ -1,6 +1,6 @@
 """Integration tests for Alembic database migration infrastructure.
 
-Tests verify TASK-001 implementation:
+Tests verify:
 - Migration application to clean database
 - Table creation verification
 - Rollback functionality
@@ -21,6 +21,9 @@ import pytest
 # Test database path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
+
+# Current head revision (001_clean_baseline)
+HEAD_REVISION = "424078e5aa04"
 
 
 @pytest.fixture(scope="function")
@@ -79,7 +82,7 @@ def get_tables(db_path: str) -> list[str]:
 def get_current_revision(database_url: str) -> str:
     """Get current alembic revision."""
     result = run_alembic("current", database_url)
-    # Parse output like "da6856719b5f (head)"
+    # Parse output like "424078e5aa04 (head)"
     output = result.stdout.strip()
     for line in output.split("\n"):
         if "INFO" not in line and line.strip():
@@ -87,117 +90,100 @@ def get_current_revision(database_url: str) -> str:
     return ""
 
 
+# Expected tables from the clean baseline migration
+# 19 domain tables + 11 auth/RBAC tables + alembic_version = 31
+EXPECTED_TABLES = [
+    "agent_executions",
+    "agent_tool_calls",
+    "agent_tool_calls_v2",
+    "alembic_version",
+    "case_actions",
+    "case_checkpoints",
+    "case_messages",
+    "case_tags",
+    "cases",
+    "evidence",
+    "evidence_artifacts",
+    "hypotheses",
+    "investigation_sessions",
+    "knowledge_items",
+    "knowledge_suggestions",
+    "llm_config_overrides",
+    "oauth_authorization_codes",
+    "oauth_revoked_tokens",
+    "organization_members",
+    "organizations",
+    "permissions",
+    "role_permissions",
+    "roles",
+    "sessions",
+    "solutions",
+    "standalone_evidence",
+    "team_members",
+    "teams",
+    "uploaded_files",
+    "user_audit_log",
+    "users",
+]
+
+
 class TestAlembicMigrationInfrastructure:
-    """Test suite for TASK-001: Alembic Migration Infrastructure."""
+    """Test suite for Alembic migration infrastructure."""
 
     def test_migration_applies_to_clean_database(self, clean_database, database_url):
-        """Test 1: Migration applies successfully to clean SQLite database."""
-        # Apply migration
+        """Migration applies successfully to clean SQLite database."""
         result = run_alembic("upgrade head", database_url)
 
-        # Verify success
         assert result.returncode == 0, f"Migration failed: {result.stderr}"
         assert (
-            "Running upgrade  -> 0d4e538d666d" in result.stderr
-            or "Running upgrade  -> 0d4e538d666d" in result.stdout
-        ), f"Expected consolidated baseline migration. Output: {result.stderr}"
+            f"Running upgrade  -> {HEAD_REVISION}" in result.stderr
+            or f"Running upgrade  -> {HEAD_REVISION}" in result.stdout
+        ), f"Expected clean baseline migration. Output: {result.stderr}"
 
     def test_tables_created_correctly(self, clean_database, database_url):
-        """Test 2: All expected tables are created after migration."""
-        # Apply migration
+        """All expected tables are created after migration."""
         run_alembic("upgrade head", database_url)
 
-        # Get tables
         tables = get_tables(TEST_DB)
 
-        # Expected core tables (consolidated baseline migration creates all tables at once)
-        expected_tables = [
-            "agent_executions",
-            "agent_tool_calls",
-            "agent_tool_calls_v2",
-            "alembic_version",
-            "case_checkpoints",
-            "case_messages",
-            "case_actions",
-            "case_tags",
-            "cases",
-            "evidence",
-            "evidence_artifacts",
-            "hypotheses",
-            "investigation_sessions",
-            "knowledge_items",
-            "knowledge_suggestions",
-            "oauth_authorization_codes",
-            "oauth_revoked_tokens",
-            "organization_members",
-            "organizations",
-            "permissions",
-            "role_permissions",
-            "roles",
-            "sessions",
-            "solutions",
-            "standalone_evidence",
-            "team_members",
-            "teams",
-            "uploaded_files",
-            "user_audit_log",
-            "users",
-        ]
-
-        # Verify all expected tables exist
         assert len(tables) == len(
-            expected_tables
-        ), f"Expected {len(expected_tables)} tables, got {len(tables)}. Missing: {set(expected_tables) - set(tables)}, Extra: {set(tables) - set(expected_tables)}"
-        for expected_table in expected_tables:
+            EXPECTED_TABLES
+        ), f"Expected {len(EXPECTED_TABLES)} tables, got {len(tables)}. Missing: {set(EXPECTED_TABLES) - set(tables)}, Extra: {set(tables) - set(EXPECTED_TABLES)}"
+        for expected_table in EXPECTED_TABLES:
             assert expected_table in tables, f"Missing table: {expected_table}"
 
     def test_migration_revision_correct(self, clean_database, database_url):
-        """Test 3: Migration revision matches expected head revision."""
-        # Apply migration
+        """Migration revision matches expected head revision."""
         run_alembic("upgrade head", database_url)
 
-        # Get current revision
         revision = get_current_revision(database_url)
 
-        # Verify revision ID matches the latest migration (rename_case_status_transitions_to_case_actions)
         assert (
-            revision == "f1a2b3c4d5e6"
-        ), f"Expected revision f1a2b3c4d5e6 (rename_case_status_transitions_to_case_actions), got {revision}"
+            revision == HEAD_REVISION
+        ), f"Expected revision {HEAD_REVISION} (001_clean_baseline), got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
-        """Test 4: Migration can be rolled back successfully."""
-        # Apply migration
+        """Migration can be rolled back successfully."""
         run_alembic("upgrade head", database_url)
 
-        # Verify tables exist
         tables_before = get_tables(TEST_DB)
-        assert (
-            len(tables_before) == 30
-        ), f"Expected 30 tables initially, got {len(tables_before)}"
+        assert len(tables_before) == len(
+            EXPECTED_TABLES
+        ), f"Expected {len(EXPECTED_TABLES)} tables initially, got {len(tables_before)}"
 
-        # Rollback latest migration (rename_case_status_transitions_to_case_actions)
-        # Should revert to add_solution_type_and_title (e9b4c2d1f7a6)
+        # Rollback to base (single migration, so downgrade -1 goes to empty)
         result = run_alembic("downgrade -1", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # Verify tables still exist (we're back at add_solution_type_and_title)
+        # After rollback of the only migration, only alembic_version should remain
         tables_after = get_tables(TEST_DB)
         assert (
-            len(tables_after) == 30
-        ), f"Expected 30 tables after rollback, got {len(tables_after)}: {tables_after}"
-
-        # Verify revision moved back to add_solution_type_and_title
-        revision = get_current_revision(database_url)
-        assert (
-            revision == "e9b4c2d1f7a6"
-        ), f"Expected revision e9b4c2d1f7a6 (add_solution_type_and_title) after rollback, got {revision}"
+            len(tables_after) <= 1
+        ), f"Expected 0-1 tables after full rollback, got {len(tables_after)}: {tables_after}"
 
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
-        """Test 5: Migration can be re-applied after rollback."""
-        # Apply migration
+        """Migration can be re-applied after rollback."""
         run_alembic("upgrade head", database_url)
-
-        # Rollback one migration
         run_alembic("downgrade -1", database_url)
 
         # Re-apply
@@ -206,117 +192,64 @@ class TestAlembicMigrationInfrastructure:
 
         # Verify tables restored
         tables = get_tables(TEST_DB)
-        assert (
-            len(tables) == 30
-        ), f"Expected 30 tables after re-application, got {len(tables)}"
+        assert len(tables) == len(
+            EXPECTED_TABLES
+        ), f"Expected {len(EXPECTED_TABLES)} tables after re-application, got {len(tables)}"
         assert (
             "knowledge_suggestions" in tables
         ), "knowledge_suggestions table should be restored"
-        assert "organizations" in tables, "organizations table should be restored"
+        assert (
+            "llm_config_overrides" in tables
+        ), "llm_config_overrides table should be restored"
 
-        # Verify revision (should be back at head: rename_case_status_transitions_to_case_actions)
+        # Verify revision (should be back at head)
         revision = get_current_revision(database_url)
         assert (
-            revision == "f1a2b3c4d5e6"
-        ), f"Expected revision f1a2b3c4d5e6 (rename_case_status_transitions_to_case_actions), got {revision}"
+            revision == HEAD_REVISION
+        ), f"Expected revision {HEAD_REVISION} (001_clean_baseline), got {revision}"
 
     def test_migration_history_command(self, database_url):
-        """Test 6: Alembic history command works."""
+        """Alembic history command works."""
         result = run_alembic("history", database_url)
 
         assert result.returncode == 0, f"History command failed: {result.stderr}"
-        # Check for consolidated baseline migration
         output = result.stdout + result.stderr
         assert (
-            "0d4e538d666d" in output
-        ), f"Consolidated baseline revision should be in history. Output: {output}"
+            HEAD_REVISION in output
+        ), f"Clean baseline revision should be in history. Output: {output}"
         assert (
-            "001_consolidated_baseline" in output
-        ), f"Consolidated baseline name should be in history. Output: {output}"
+            "001_clean_baseline" in output
+        ), f"Clean baseline name should be in history. Output: {output}"
 
 
 class TestHelperScript:
     """Test suite for migration helper script."""
 
     def test_helper_script_exists_and_executable(self):
-        """Test 7: Helper script exists and is executable."""
+        """Helper script exists and is executable."""
         script_path = PROJECT_ROOT / "scripts" / "db_migrate.sh"
 
         assert script_path.exists(), "Helper script db_migrate.sh not found"
         assert os.access(script_path, os.X_OK), "Helper script is not executable"
-
-    @pytest.mark.skip(
-        reason="Helper script requires alembic in PATH. "
-        "Script assumes system alembic, not venv. "
-        "Test would need environment setup to add .venv/bin to PATH."
-    )
-    def test_helper_script_status_command(self, clean_database, database_url):
-        """Test 8: Helper script status command works."""
-        # Apply migration first
-        run_alembic("upgrade head", database_url)
-
-        # Run helper script
-        env = os.environ.copy()
-        env["DATABASE_URL"] = database_url
-
-        result = subprocess.run(
-            "./scripts/db_migrate.sh status",
-            shell=True,
-            cwd=PROJECT_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode == 0, f"Helper script failed: {result.stderr}"
-        assert (
-            "011_add_standalone_evidence" in result.stdout
-            or "011_add_standalone_evidence" in result.stderr
-        )
-
-    @pytest.mark.skip(
-        reason="Helper script requires alembic in PATH. "
-        "Script assumes system alembic, not venv. "
-        "Test would need environment setup to add .venv/bin to PATH."
-    )
-    def test_helper_script_history_command(self, database_url):
-        """Test 9: Helper script history command works."""
-        env = os.environ.copy()
-        env["DATABASE_URL"] = database_url
-
-        result = subprocess.run(
-            "./scripts/db_migrate.sh history",
-            shell=True,
-            cwd=PROJECT_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode == 0, f"Helper script history failed: {result.stderr}"
-        assert "da6856719b5f" in result.stdout or "da6856719b5f" in result.stderr
 
 
 class TestDatabaseSchemaIntegrity:
     """Test suite for database schema integrity."""
 
     def test_cases_table_structure(self, clean_database, database_url):
-        """Test 10: Cases table has correct structure."""
-        # Apply migration
+        """Cases table has correct structure."""
         run_alembic("upgrade head", database_url)
 
-        # Query table structure
         conn = sqlite3.connect(TEST_DB)
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(cases);")
         columns = {row[1]: row[2] for row in cursor.fetchall()}
         conn.close()
 
-        # Verify key columns exist (updated to match actual schema)
         expected_columns = [
             "case_id",
             "user_id",
-            "organization_id",  # Migration 012 renamed org_id to organization_id
+            "organization_id",
             "title",
             "status",
             "created_at",
@@ -329,23 +262,34 @@ class TestDatabaseSchemaIntegrity:
             ), f"Missing column in cases table: {col}. Available: {list(columns.keys())}"
 
     def test_foreign_keys_exist(self, clean_database, database_url):
-        """Test 11: Foreign key relationships are created."""
-        # Apply migration
+        """Foreign key relationships are created."""
         run_alembic("upgrade head", database_url)
 
-        # Check foreign keys on evidence table
         conn = sqlite3.connect(TEST_DB)
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_key_list(evidence);")
         fks = cursor.fetchall()
         conn.close()
 
-        # Verify at least one foreign key exists (evidence -> cases)
         assert len(fks) > 0, "No foreign keys found on evidence table"
 
-        # Verify it references cases table
         fk_tables = [fk[2] for fk in fks]
         assert "cases" in fk_tables, "Evidence table should have FK to cases table"
+
+    def test_llm_config_overrides_structure(self, clean_database, database_url):
+        """LLM config overrides table has correct structure."""
+        run_alembic("upgrade head", database_url)
+
+        conn = sqlite3.connect(TEST_DB)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(llm_config_overrides);")
+        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        conn.close()
+
+        for col in ["key", "value", "updated_at", "updated_by"]:
+            assert (
+                col in columns
+            ), f"Missing column in llm_config_overrides: {col}. Available: {list(columns.keys())}"
 
 
 # Test markers for different categories

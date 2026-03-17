@@ -130,9 +130,15 @@ CASES_DB_PASSWORD=your_password
 
 ## Creating Migrations
 
-### Auto-generate (Not Supported)
+### Auto-generate
 
-FaultMaven uses the repository pattern with raw SQL, so auto-generation is not available. All migrations must be created manually.
+All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. Auto-generation works for schema changes:
+
+```bash
+alembic revision --autogenerate -m "description"
+```
+
+Review the generated migration before applying — auto-generation may miss seed data or complex constraints.
 
 ### Manual Migration
 
@@ -476,9 +482,9 @@ alembic upgrade head
 
 ## Migration History
 
-| Version | Date | Description |
-|---------|------|-------------|
-| `001_baseline_schema` | 2025-12-29 | Initial baseline schema (cases, evidence, hypotheses, etc.) |
+| Version              | Revision       | Date       | Description                                                                     |
+|----------------------|----------------|------------|---------------------------------------------------------------------------------|
+| `001_clean_baseline` | `424078e5aa04` | 2026-03-17 | Clean baseline: all 30 tables (auth, case, knowledge, config) + RBAC seed data  |
 
 ## Related Documentation
 

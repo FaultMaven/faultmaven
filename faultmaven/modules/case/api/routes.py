@@ -469,6 +469,15 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
     return case_service
 
 
+def check_case_not_closed(case) -> None:
+    """Reject write operations on closed/archived cases."""
+    if case.status == CaseStatus.CLOSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Case is archived and read-only. Unarchive the case to make changes.",
+        )
+
+
 @router.delete(
     "/{case_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -925,6 +934,11 @@ async def update_case(
     response.headers["x-correlation-id"] = correlation_id
 
     try:
+        # Reject writes on archived (closed) cases
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if case:
+            check_case_not_closed(case)
+
         # Build updates dict from request (milestone-based model)
         updates = {}
         if request.title is not None:
@@ -2023,6 +2037,9 @@ async def submit_turn(
                 detail="Case not found or access denied",
                 headers={"x-correlation-id": correlation_id},
             )
+
+        # Reject new turns on archived (closed) cases
+        check_case_not_closed(case)
 
         # Build attachments list
         # Every attachment carries source_metadata so the classifier knows the

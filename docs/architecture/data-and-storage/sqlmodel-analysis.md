@@ -8,9 +8,9 @@
 
 ## Executive Summary
 
-**Short Answer**: SQLModel is **not recommended** for this codebase at this time. The current raw SQL approach provides better performance, flexibility, and aligns with existing architecture patterns. However, SQLModel could be valuable for **new, simpler modules** or **greenfield features**.
+**Short Answer**: SQLModel is **not recommended** for this codebase at this time. The current mixed approach (SQLAlchemy ORM for auth/config tables, raw SQL for complex case repositories) provides better performance and flexibility. However, SQLModel could be valuable for **new, simpler modules** or **greenfield features**.
 
-**Recommendation**: **Keep current approach** (Pydantic models + raw SQL) for complex repositories. Consider SQLModel for new simple CRUD modules only.
+**Recommendation**: **Keep current approach** for complex repositories. All 30 tables now have SQLAlchemy ORM models (`infrastructure/persistence/models.py`). Auth repositories still use raw SQL for query flexibility but the tables are ORM-defined. Consider SQLModel for new simple CRUD modules only.
 
 ---
 
@@ -18,7 +18,7 @@
 
 ### What You Have Now
 
-**Pattern**: Pydantic models + Raw SQL queries with manual mapping
+**Pattern**: SQLAlchemy ORM models for schema definition + raw SQL queries in some repositories for complex queries
 
 ```python
 # Domain Model (Pydantic)

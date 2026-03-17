@@ -5672,6 +5672,493 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/users:
+    get:
+      tags:
+      - Admin - User Management
+      summary: List Users
+      description: "List all users in organization (admin only).\n\nReturns paginated\
+        \ list of users with filtering options.\nAdmin can only see users in their\
+        \ own organization.\n\nQuery Parameters:\n    is_active: Filter by active/inactive\
+        \ status\n    role: Filter by role (admin, member, viewer)\n    search: Search\
+        \ email or full_name (case-insensitive, partial match)\n    limit: Max results\
+        \ per page (default 50, max 100)\n    offset: Pagination offset\n\nReturns:\n\
+        \    AdminUserListResponse with users, total, limit, offset\n\nRaises:\n \
+        \   401 Unauthorized: No valid JWT token\n    403 Forbidden: User lacks admin\
+        \ role\n    422 Unprocessable Entity: Invalid query parameters"
+      operationId: list_users_api_v1_admin_users_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: is_active
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: Filter by active/inactive status
+          title: Is Active
+        description: Filter by active/inactive status
+      - name: role
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by role (admin, member, viewer)
+          title: Role
+        description: Filter by role (admin, member, viewer)
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Search email or full_name (case-insensitive)
+          title: Search
+        description: Search email or full_name (case-insensitive)
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Max results per page
+          default: 50
+          title: Limit
+        description: Max results per page
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Pagination offset
+          default: 0
+          title: Offset
+        description: Pagination offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/users/{user_id}:
+    get:
+      tags:
+      - Admin - User Management
+      summary: Get User Details
+      description: "Get detailed user information (admin only).\n\nReturns complete\
+        \ user information including derived permissions.\nAdmin can only view users\
+        \ in their own organization.\n\nPath Parameters:\n    user_id: User ID to\
+        \ retrieve\n\nReturns:\n    UserDetailResponse with full user details\n\n\
+        Raises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: User\
+        \ lacks admin role OR user belongs to different organization\n    404 Not\
+        \ Found: User does not exist"
+      operationId: get_user_details_api_v1_admin_users__user_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: User ID to retrieve
+          title: User Id
+        description: User ID to retrieve
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/users/{user_id}/deactivate:
+    post:
+      tags:
+      - Admin - User Management
+      summary: Deactivate User
+      description: "Deactivate user account (admin only).\n\nSets user is_active=False\
+        \ and revokes all JWT tokens.\nAdmin cannot deactivate themselves.\n\nPath\
+        \ Parameters:\n    user_id: User ID to deactivate\n\nReturns:\n    UserStatusResponse\
+        \ confirming deactivation\n\nRaises:\n    401 Unauthorized: No valid JWT token\n\
+        \    403 Forbidden: User lacks admin role OR trying to deactivate self\n \
+        \   404 Not Found: User does not exist\n    409 Conflict: User already deactivated"
+      operationId: deactivate_user_api_v1_admin_users__user_id__deactivate_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: User ID to deactivate
+          title: User Id
+        description: User ID to deactivate
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/users/{user_id}/activate:
+    post:
+      tags:
+      - Admin - User Management
+      summary: Activate User
+      description: "Activate user account (admin only).\n\nSets user is_active=True.\
+        \ User can log in after activation.\n\nPath Parameters:\n    user_id: User\
+        \ ID to activate\n\nReturns:\n    UserStatusResponse confirming activation\n\
+        \nRaises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: User\
+        \ lacks admin role\n    404 Not Found: User does not exist\n    409 Conflict:\
+        \ User already active"
+      operationId: activate_user_api_v1_admin_users__user_id__activate_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: User ID to activate
+          title: User Id
+        description: User ID to activate
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/users/{user_id}/roles:
+    post:
+      tags:
+      - Admin - User Management
+      summary: Assign Role
+      description: "Assign role to user (admin only).\n\nReplaces existing roles with\
+        \ the new role. Revokes all JWT tokens.\nAdmin cannot modify their own roles.\n\
+        \nPath Parameters:\n    user_id: User ID to assign role to\n\nRequest Body:\n\
+        \    role: Role to assign (admin, member, viewer)\n\nReturns:\n    RoleAssignmentResponse\
+        \ confirming role assignment\n\nRaises:\n    401 Unauthorized: No valid JWT\
+        \ token\n    403 Forbidden: User lacks admin role OR trying to modify own\
+        \ roles\n    404 Not Found: User does not exist\n    409 Conflict: User already\
+        \ has this role\n    422 Unprocessable Entity: Invalid role"
+      operationId: assign_role_api_v1_admin_users__user_id__roles_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: User ID to assign role to
+          title: User Id
+        description: User ID to assign role to
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleAssignmentRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAssignmentResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/users/{user_id}/roles/{role}:
+    delete:
+      tags:
+      - Admin - User Management
+      summary: Remove Role
+      description: "Remove role from user (admin only).\n\nDowngrades user to viewer\
+        \ (minimum privilege). Revokes all JWT tokens.\nAdmin cannot remove their\
+        \ own admin role.\n\nPath Parameters:\n    user_id: User ID to remove role\
+        \ from\n    role: Role to remove (admin, member)\n\nReturns:\n    RoleAssignmentResponse\
+        \ confirming role removal\n\nRaises:\n    401 Unauthorized: No valid JWT token\n\
+        \    403 Forbidden: User lacks admin role OR trying to remove own admin role\n\
+        \    404 Not Found: User does not exist OR user doesn't have this role\n \
+        \   422 Unprocessable Entity: Invalid role or attempting to remove viewer\
+        \ role"
+      operationId: remove_role_api_v1_admin_users__user_id__roles__role__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: User ID to remove role from
+          title: User Id
+        description: User ID to remove role from
+      - name: role
+        in: path
+        required: true
+        schema:
+          type: string
+          description: Role to remove (admin, member)
+          title: Role
+        description: Role to remove (admin, member)
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAssignmentResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/debug/llm-routing:
+    get:
+      tags:
+      - Admin - User Management
+      summary: Get Llm Routing Health
+      description: "Get LLM provider health and routing status (admin only).\n\nReturns\
+        \ detailed health metrics for all LLM providers including:\n- Current health\
+        \ status (HEALTHY, DEGRADED, UNHEALTHY, UNKNOWN)\n- Consecutive failure counts\n\
+        - Average latency\n- Sticky routing status\n- Last success/failure timestamps\n\
+        \nReturns:\n    Dict with provider health summary and routing configuration\n\
+        \nRaises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: User\
+        \ lacks admin role\n    503 Service Unavailable: LLM provider not configured"
+      operationId: get_llm_routing_health_api_v1_admin_debug_llm_routing_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Get Llm Routing Health Api V1 Admin Debug Llm Routing
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/llm/config:
+    get:
+      tags:
+      - Admin - Configuration
+      summary: Get Llm Config
+      description: "Get LLM provider configuration and status.\n\nReturns the current\
+        \ primary provider, fallback chain, and per-provider\nstatus including health,\
+        \ connectivity, and available models. API keys\nare never exposed \u2014 only\
+        \ a boolean indicating whether one is configured.\n\nAvailable to any authenticated\
+        \ user (local deployment) or admin (cloud).\nRoute-level access control is\
+        \ handled by the dashboard's LLMConfigRoute guard.\n\nReturns:\n    LLMConfigResponse\
+        \ with provider details and fallback chain\n\nRaises:\n    401 Unauthorized:\
+        \ No valid JWT token\n    503 Service Unavailable: LLM provider not initialized"
+      operationId: get_llm_config_api_v1_admin_llm_config_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/llm/config/test:
+    post:
+      tags:
+      - Admin - Configuration
+      summary: Check Llm Connection
+      description: "Test connectivity to a specific LLM provider.\n\nSends a minimal\
+        \ prompt to the specified provider to verify that:\n1. The API key is valid\n\
+        2. The provider endpoint is reachable\n3. The configured model responds\n\n\
+        This does NOT use the fallback chain \u2014 it tests the specific provider\
+        \ directly.\n\nReturns:\n    LLMConnectionTestResponse with connectivity result\
+        \ and latency\n\nRaises:\n    401 Unauthorized: No valid JWT token\n    422\
+        \ Unprocessable Entity: Unknown provider name\n    503 Service Unavailable:\
+        \ LLM provider not initialized"
+      operationId: check_llm_connection_api_v1_admin_llm_config_test_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LLMConnectionTestRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMConnectionTestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/config/status:
+    get:
+      tags:
+      - Admin - Configuration
+      summary: Get Env Config Status
+      description: "Get environment configuration status (read-only).\n\nReturns the\
+        \ current deployment configuration including auth mode,\nstorage backends,\
+        \ and security settings. This is informational only \u2014\nconfiguration\
+        \ changes require editing environment variables and restarting.\n\nReturns:\n\
+        \    EnvConfigStatusResponse with current environment configuration\n\nRaises:\n\
+        \    401 Unauthorized: No valid JWT token"
+      operationId: get_env_config_status_api_v1_admin_config_status_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvConfigStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /debug/routes:
     get:
       summary: Debug Routes
@@ -5966,6 +6453,82 @@ components:
         a proposed action, an ActionAttempt is created. Compliance detection
 
         analyzes the attempt to determine if stage-gate milestones should be set.'
+    AdminUserListItem:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        organization_id:
+          type: string
+          title: Organization Id
+        email:
+          type: string
+          title: Email
+        full_name:
+          type: string
+          title: Full Name
+        roles:
+          items:
+            type: string
+          type: array
+          title: Roles
+        is_active:
+          type: boolean
+          title: Is Active
+        is_verified:
+          type: boolean
+          title: Is Verified
+        last_login_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Login At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - user_id
+      - organization_id
+      - email
+      - full_name
+      - roles
+      - is_active
+      - is_verified
+      - created_at
+      - updated_at
+      title: AdminUserListItem
+      description: User list item for admin endpoints (with full info).
+    AdminUserListResponse:
+      properties:
+        users:
+          items:
+            $ref: '#/components/schemas/AdminUserListItem'
+          type: array
+          title: Users
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - users
+      - total
+      - limit
+      - offset
+      title: AdminUserListResponse
+      description: Admin user list response with pagination.
     AgentExecutionRequest:
       properties:
         user_message:
@@ -6058,6 +6621,16 @@ components:
         processing_status:
           type: string
           title: Processing Status
+        uploaded_at:
+          type: string
+          title: Uploaded At
+          description: ISO 8601 timestamp of when the attachment was processed
+          default: ''
+        source_type:
+          type: string
+          title: Source Type
+          description: 'Input origin: file_upload | text_paste | page_capture'
+          default: file_upload
       type: object
       required:
       - evidence_id
@@ -6265,6 +6838,16 @@ components:
           - type: string
           - type: 'null'
           title: Intent Data
+        input_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Input Type
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
       type: object
       title: Body_submit_turn_api_v1_cases__case_id__turns_post
     Body_upload_document_api_v1_knowledge_documents_post:
@@ -7687,6 +8270,55 @@ components:
       description: 'Documentation generated when case closes.
 
         Captures lessons learned and artifacts.'
+    EnvConfigStatusResponse:
+      properties:
+        auth_mode:
+          type: string
+          title: Auth Mode
+          description: '''local'' or ''oauth'''
+        environment:
+          type: string
+          title: Environment
+          description: '''development'', ''staging'', or ''production'''
+        db_backend:
+          type: string
+          title: Db Backend
+          description: '''sqlite'' or ''postgresql'''
+        session_storage:
+          type: string
+          title: Session Storage
+          description: '''inmemory'' or ''redis'''
+        vector_storage:
+          type: string
+          title: Vector Storage
+          description: '''inmemory'' or ''chromadb'''
+        llm_provider:
+          type: string
+          title: Llm Provider
+          description: Primary LLM provider name
+        pii_redaction_enabled:
+          type: boolean
+          title: Pii Redaction Enabled
+        rate_limit_enabled:
+          type: boolean
+          title: Rate Limit Enabled
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+      type: object
+      required:
+      - auth_mode
+      - environment
+      - db_backend
+      - session_storage
+      - vector_storage
+      - llm_provider
+      - pii_redaction_enabled
+      - rate_limit_enabled
+      - timestamp
+      title: EnvConfigStatusResponse
+      description: Read-only environment configuration status for dashboard display.
     EscalationState:
       properties:
         escalation_type:
@@ -8228,6 +8860,14 @@ components:
           description: 'Evidence purpose: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE
             | OTHER'
           default: OTHER
+        source_filename:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Source Filename
+          description: Original filename of the source file, if evidence originated
+            from an attachment.
       type: object
       required:
       - evidence_id
@@ -9031,6 +9671,129 @@ components:
       - resolution_turn
       title: KnowledgeResolution
       description: Records instant resolution via KB match during INQUIRY phase.
+    LLMConfigResponse:
+      properties:
+        primary_provider:
+          type: string
+          title: Primary Provider
+        strict_mode:
+          type: boolean
+          title: Strict Mode
+        fallback_chain:
+          items:
+            type: string
+          type: array
+          title: Fallback Chain
+        providers:
+          additionalProperties:
+            $ref: '#/components/schemas/LLMProviderDetail'
+          type: object
+          title: Providers
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+      type: object
+      required:
+      - primary_provider
+      - strict_mode
+      - fallback_chain
+      - providers
+      - timestamp
+      title: LLMConfigResponse
+      description: LLM configuration and provider status response.
+    LLMConnectionTestRequest:
+      properties:
+        provider:
+          type: string
+          title: Provider
+          description: Provider name to test (e.g. 'anthropic', 'openai')
+      type: object
+      required:
+      - provider
+      title: LLMConnectionTestRequest
+      description: Request to test an LLM provider connection.
+    LLMConnectionTestResponse:
+      properties:
+        provider:
+          type: string
+          title: Provider
+        connected:
+          type: boolean
+          title: Connected
+        response_time_ms:
+          type: integer
+          title: Response Time Ms
+          default: 0
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        model_used:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Used
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+      type: object
+      required:
+      - provider
+      - connected
+      - timestamp
+      title: LLMConnectionTestResponse
+      description: Result of an LLM provider connection test.
+    LLMProviderDetail:
+      properties:
+        name:
+          type: string
+          title: Name
+        display_name:
+          type: string
+          title: Display Name
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Provider is initialized and in the fallback chain
+        connected:
+          type: boolean
+          title: Connected
+          description: Provider responded to last health check
+        has_api_key:
+          type: boolean
+          title: Has Api Key
+          description: API key is configured (value never exposed)
+        models:
+          items:
+            type: string
+          type: array
+          title: Models
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        health:
+          type: string
+          title: Health
+          description: HEALTHY, DEGRADED, UNHEALTHY, or UNKNOWN
+          default: unknown
+        avg_latency_ms:
+          type: number
+          title: Avg Latency Ms
+          default: 0.0
+      type: object
+      required:
+      - name
+      - display_name
+      - enabled
+      - connected
+      - has_api_key
+      title: LLMProviderDetail
+      description: Individual LLM provider status for dashboard display.
     LinkCaseRequest:
       properties:
         closure_note:
@@ -10176,6 +10939,43 @@ components:
       - evidence_collected
       title: ResolutionSummary
       description: Overall resolution metrics for RESOLVED phase.
+    RoleAssignmentRequest:
+      properties:
+        role:
+          type: string
+          pattern: ^(admin|member|viewer)$
+          title: Role
+          description: Role to assign (admin, member, or viewer)
+      type: object
+      required:
+      - role
+      title: RoleAssignmentRequest
+      description: Role assignment request.
+    RoleAssignmentResponse:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        roles:
+          items:
+            type: string
+          type: array
+          title: Roles
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - user_id
+      - roles
+      - updated_at
+      - message
+      title: RoleAssignmentResponse
+      description: Role assignment response.
     RootCauseConclusion:
       properties:
         root_cause:
@@ -10777,13 +11577,30 @@ components:
         payload:
           type: string
           title: Payload
+        body:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Body
+        cooperative_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cooperative Action
+        hints:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Hints
       type: object
       required:
       - label
       - type
       - payload
       title: SuggestedActionResponse
-      description: A clickable follow-up action returned with agent responses.
+      description: A follow-up suggestion returned with agent responses.
     TeamCreateRequest:
       properties:
         org_id:
@@ -11421,6 +12238,67 @@ components:
         - HISTORICAL + LOW/MEDIUM -> ROOT_CAUSE
 
         - Other combinations -> USER_CHOICE'
+    UserDetailResponse:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        organization_id:
+          type: string
+          title: Organization Id
+        email:
+          type: string
+          title: Email
+        full_name:
+          type: string
+          title: Full Name
+        roles:
+          items:
+            type: string
+          type: array
+          title: Roles
+        permissions:
+          items:
+            type: string
+          type: array
+          title: Permissions
+        is_active:
+          type: boolean
+          title: Is Active
+        is_verified:
+          type: boolean
+          title: Is Verified
+        last_login_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Login At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        metadata:
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - user_id
+      - organization_id
+      - email
+      - full_name
+      - roles
+      - permissions
+      - is_active
+      - is_verified
+      - created_at
+      - updated_at
+      title: UserDetailResponse
+      description: Detailed user information (admin only).
     UserInfoResponse:
       properties:
         user_id:
@@ -11550,6 +12428,29 @@ components:
         - admin
         user_id: 550e8400-e29b-41d4-a716-446655440000
         username: john.doe
+    UserStatusResponse:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        is_active:
+          type: boolean
+          title: Is Active
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - user_id
+      - is_active
+      - updated_at
+      - message
+      title: UserStatusResponse
+      description: User activation/deactivation response.
     ValidationError:
       properties:
         loc:

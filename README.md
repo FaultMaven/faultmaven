@@ -75,7 +75,7 @@ If you need more accounts, you can create them via CLI:
 ./faultmaven.sh create-user
 ```
 
-### Step 2: Install the Copilot Extension
+### Step 3: Install the Copilot Extension
 
 1. Download `faultmaven-copilot.zip` from [Releases](https://github.com/FaultMaven/faultmaven-copilot/releases)
 2. Extract the archive
@@ -83,7 +83,17 @@ If you need more accounts, you can create them via CLI:
 4. **Firefox:** Open `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → Select any file in `.output/firefox-mv3/`
 5. Click the extension icon → Settings → Set API URL to `http://localhost:8090`
 
-### Step 4: Start Troubleshooting
+### Step 4: Configure LLM Provider
+
+Once logged in, go to **LLM Settings** in the Dashboard sidebar to verify your provider is connected:
+
+1. Check that your configured provider shows a **Connected** status
+2. Click **Test Connection** to verify the API key works
+3. You can change your primary provider or update API keys directly from the Dashboard — changes take effect immediately without restarting
+
+> **Note:** LLM settings configured through the Dashboard are persisted in the database and take precedence over `.env` values. The `.env` file provides the initial configuration on first startup.
+
+### Step 5: Start Troubleshooting
 
 1. Open the **Dashboard** at http://localhost:3333 to upload runbooks to your Knowledge Base
 2. Navigate to any observability tool (AWS Console, Datadog, Grafana)
@@ -110,7 +120,7 @@ Convenient scripts for managing the Docker-based stack:
 
 | Component | URL | Description |
 |-----------|-----|-------------|
-| Dashboard | http://localhost:3333 | Web UI for KB management, case history |
+| Dashboard | http://localhost:3333 | Web UI for KB management, case history, LLM settings |
 | API | http://localhost:8090 | REST API |
 | API Docs | http://localhost:8090/docs | Interactive OpenAPI documentation |
 
@@ -259,10 +269,13 @@ The SaaS edition runs the Core in a distributed, production-grade configuration.
 ### Comparison
 
 | Feature | Open Source (Local) | Cloud (SaaS) |
-|---------|---------------------|--------------|
+| ------- | ------------------- | ------------ |
 | **Configuration** | Single-User / Docker | Multi-User / Managed K8s |
 | **Knowledge Base Start State** | **Empty** (User builds it) | **Pre-Loaded** (Global KB included) |
 | **Knowledge Tiers** | Personal Only | **Global + Team + Personal** |
+| **LLM Configuration** | Dashboard-managed (hot-reload) | Dashboard-managed (hot-reload) |
+| **Case Management** | Full (with archive) | Full (with archive + org-wide view) |
+| **User Management** | Not applicable (single user) | Full CRUD, invite, roles |
 | **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
 | **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
 | **Session Persistence** | **Ephemeral** (In-Memory, resets on restart) | **Persistent** (Redis, saved across sessions) |
@@ -282,7 +295,7 @@ FaultMaven is a monolithic application with clean **Vertical Slice Architecture*
                             HTTPS
                               v
 +------------------------------------------------------------------+
-|                      FaultMaven API (8000)                       |
+|                      FaultMaven API (8090)                       |
 |                                                                  |
 |  +------------------------------------------------------------+  |
 |  |                       API Layer                            |  |
@@ -361,11 +374,19 @@ Create a `.env` file from the template:
 cp .env.example .env
 ```
 
-Key configuration areas:
+FaultMaven has two configuration layers:
+
+| Layer | What it configures | How to change |
+| ----- | ------------------- | ------------- |
+| **Environment (`.env`)** | Infrastructure: database, auth mode, Redis, CORS, ports | Edit `.env` file, restart the server |
+| **Dashboard (DB-backed)** | LLM settings: provider, API keys, fallback chain | Change via Dashboard UI, takes effect immediately |
+
+On first startup, LLM settings are loaded from `.env`. Once you modify them through the Dashboard, the database becomes the source of truth for LLM configuration. Infrastructure settings always come from `.env`.
+
+### Infrastructure Settings (`.env`)
 
 | Category | Variables | Description |
 |----------|-----------|-------------|
-| LLM | `CHAT_PROVIDER`, `OPENAI_API_KEY`, etc. | Primary LLM provider and API keys |
 | Database | `DATABASE_URL` | SQLite (default) or PostgreSQL |
 | Sessions | `SESSION_STORAGE_TYPE` | `inmemory` (default) or `redis` |
 | Vectors | `VECTOR_STORAGE_TYPE` | `inmemory` (default) or `chromadb` |
@@ -374,6 +395,8 @@ Key configuration areas:
 See [.env.example](.env.example) for all options with detailed comments.
 
 ### LLM Provider Setup
+
+Set your initial LLM provider in `.env`:
 
 ```env
 # Select primary provider
@@ -392,6 +415,8 @@ OPENROUTER_API_KEY=sk-or-...
 MULTIMODAL_PROVIDER=gemini       # Visual evidence processing
 SYNTHESIS_PROVIDER=openai        # RAG document queries
 ```
+
+After the first startup, you can manage all LLM settings (provider, API keys, fallback chain) through the **Dashboard > LLM Settings** page. Changes are hot-reloaded — no server restart required.
 
 **Fallback Chain:** Primary provider -> Fireworks -> OpenAI -> Local
 
@@ -462,9 +487,9 @@ FaultMaven provides two frontend interfaces. For setup instructions, see [Quick 
 
 **[FaultMaven Dashboard](https://github.com/FaultMaven/faultmaven-dashboard)** - Web application for proactive knowledge management:
 
-- **Knowledge Base Management**: Upload runbooks, edit indexed documents, manage vectors
-- **Case History**: View, search, and export past troubleshooting sessions
-- **Configuration**: Manage LLM providers and system settings
+- **Knowledge Base Management**: Upload runbooks, search indexed documents, archive and restore items
+- **Case Management**: View, search, filter, and annotate past investigations. Archive resolved cases for long-term reference
+- **LLM Settings**: View provider status, test connections, change primary provider, and update API keys — all changes take effect immediately without restarting
 
 ### Browser Extension (Copilot)
 

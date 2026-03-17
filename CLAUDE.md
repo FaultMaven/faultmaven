@@ -590,31 +590,19 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-### Key Tables
+### Key Tables (30 total, 3 domains)
 
-| Table | Description |
-|-------|-------------|
-| `users` | User accounts with RBAC |
-| `sessions` | User session management |
-| `cases` | Investigation cases |
-| `case_messages` | Conversation history |
-| `investigation_sessions` | Agent interaction records |
-| `evidence_artifacts` | Uploaded files |
-| `knowledge_documents` | Knowledge base items |
+**User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`
 
-### Migration History (11 versions)
+**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `evidence_artifacts`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `agent_tool_calls_v2`, `standalone_evidence`, `knowledge_items`, `knowledge_suggestions`, `sessions`
 
-1. `001_baseline_schema` - Initial schema
-2. `002_add_session_management` - Session tables
-3. `003_add_evidence_artifacts` - Evidence storage
-4. `004_add_agent_executions` - Agent execution tracking
-5. `005_add_investigation_sessions` - Investigation sessions
-6. `006_add_knowledge_items` - Knowledge base
-7. `007_add_users_table` - User management
-8. `008_add_hypothesis_solution_multitenancy` - Multi-tenant support
-9. `008_add_email_uniqueness_constraint` - Email uniqueness (note: duplicate numbering)
-10. `009_add_standalone_evidence` - Standalone evidence
-11. `012_fix_schema_inconsistencies` - Schema alignment fixes (org_id→organization_id, missing columns)
+**Config domain:** `llm_config_overrides` (dashboard-managed LLM settings, hot-reloaded at runtime)
+
+All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (regenerate with `python scripts/generate_er_diagram.py --update`).
+
+### Migration
+
+Single clean baseline: `001_clean_baseline` (revision `424078e5aa04`). Creates all 30 tables + RBAC seed data.
 
 ## Key Patterns
 
@@ -677,6 +665,12 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Organizations | `GET/POST /organizations` | Organization management |
 | Teams | `GET/POST /teams` | Team management |
 | Sessions | `GET /sessions` | Session management |
+| Admin | `GET /admin/users` | List users (admin only) |
+| Admin | `GET /admin/users/{id}` | User details (admin only) |
+| Admin | `POST /admin/users/{id}/roles` | Assign role (admin only) |
+| Admin | `GET /admin/llm/config` | LLM provider status and fallback chain |
+| Admin | `POST /admin/llm/config/test` | Test provider connection |
+| Admin | `GET /admin/config/status` | Environment configuration status |
 
 **Health & Metrics Endpoints:**
 
@@ -719,10 +713,14 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/contracts.py` | Knowledge DTOs and interfaces |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
+| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 30 tables) |
+| `faultmaven/config/llm_config_overrides.py` | LLM config override application + hot-reload |
+| `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |
 | `pytest.ini` | Test configuration |
-| `alembic/` | Database migrations (11 versions) |
+| `alembic/` | Database migration (single clean baseline) |
 | `faultmaven/_container_impl.py` | Centralized DI container implementation |
+| `scripts/generate_er_diagram.py` | Generate ER diagram from SQLAlchemy models |
 
 ## Common Tasks
 

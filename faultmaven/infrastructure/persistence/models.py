@@ -47,6 +47,294 @@ Base = declarative_base()
 
 
 # ============================================================
+# Auth & RBAC Models (User Domain)
+# ============================================================
+
+
+class UserModel(Base):
+    """User account."""
+
+    __tablename__ = "users"
+
+    user_id = Column(String(36), primary_key=True)
+    username = Column(String(100), nullable=False, unique=True)
+    email = Column(String(255), nullable=False, unique=True)
+    display_name = Column(String(200), nullable=False)
+    avatar_url = Column(String(500), nullable=True)
+    timezone = Column(String(50), nullable=False, server_default="UTC")
+    locale = Column(String(10), nullable=False, server_default="en-US")
+    hashed_password = Column(String(255), nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default="1")
+    is_email_verified = Column(Boolean, nullable=False, server_default="0")
+    email_verified_at = Column(DateTime(timezone=True), nullable=True)
+    sso_provider = Column(String(50), nullable=True)
+    sso_provider_id = Column(String(255), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+    last_password_change_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    roles = Column(String(500), nullable=True)
+
+    __table_args__ = (
+        Index("ix_users_email", "email", unique=True),
+        Index("ix_users_username", "username", unique=True),
+        Index("ix_users_is_active", "is_active"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<User(user_id={self.user_id}, username={self.username})>"
+
+
+class OrganizationModel(Base):
+    """Organization (multi-tenancy)."""
+
+    __tablename__ = "organizations"
+
+    organization_id = Column(String(64), primary_key=True)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(100), nullable=False, unique=True)
+    owner_id = Column(String(36), nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default="1")
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    metadata_ = Column("metadata", Text, nullable=True)
+    description = Column(Text, nullable=True)
+    plan_tier = Column(String(20), nullable=False, server_default="free")
+    max_members = Column(Integer, nullable=False, server_default="5")
+    max_cases = Column(Integer, nullable=True)
+    settings = Column(Text, nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_organizations_owner_id", "owner_id"),
+        Index("ix_organizations_slug", "slug", unique=True),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Organization(organization_id={self.organization_id}, name={self.name})>"
+        )
+
+
+class RoleModel(Base):
+    """RBAC role definition."""
+
+    __tablename__ = "roles"
+
+    role_id = Column(String(20), primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    scope = Column(String(20), nullable=False, server_default="organization")
+    is_system_role = Column(Boolean, nullable=False, server_default="0")
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<Role(role_id={self.role_id}, name={self.name})>"
+
+
+class PermissionModel(Base):
+    """RBAC permission definition."""
+
+    __tablename__ = "permissions"
+
+    permission_id = Column(String(30), primary_key=True)
+    resource = Column(String(50), nullable=False)
+    action = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "resource", "action", name="permissions_resource_action_unique"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Permission(permission_id={self.permission_id})>"
+
+
+class RolePermissionModel(Base):
+    """RBAC role-to-permission mapping."""
+
+    __tablename__ = "role_permissions"
+
+    role_id = Column(
+        String(20),
+        ForeignKey("roles.role_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    permission_id = Column(
+        String(30),
+        ForeignKey("permissions.permission_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+
+class OrganizationMemberModel(Base):
+    """Organization membership."""
+
+    __tablename__ = "organization_members"
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role_id = Column(String(20), ForeignKey("roles.role_id"), nullable=False)
+    invited_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    invited_at = Column(DateTime(timezone=True), nullable=True)
+    invitation_accepted_at = Column(DateTime(timezone=True), nullable=True)
+    joined_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_active_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_org_members_organization_id", "organization_id"),
+        Index("ix_org_members_role_id", "role_id"),
+    )
+
+
+class TeamModel(Base):
+    """Team within an organization."""
+
+    __tablename__ = "teams"
+
+    team_id = Column(String(36), primary_key=True)
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "name", name="teams_organization_name_unique"
+        ),
+        Index("ix_teams_organization_id", "organization_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Team(team_id={self.team_id}, name={self.name})>"
+
+
+class TeamMemberModel(Base):
+    """Team membership."""
+
+    __tablename__ = "team_members"
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    team_id = Column(
+        String(36),
+        ForeignKey("teams.team_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    team_role = Column(String(50), nullable=True)
+    joined_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_team_members_team_id", "team_id"),)
+
+
+class UserAuditLogModel(Base):
+    """Audit trail for user actions."""
+
+    __tablename__ = "user_audit_log"
+
+    audit_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        String(36), ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True
+    )
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.organization_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type = Column(String(100), nullable=False, index=True)
+    event_category = Column(String(50), nullable=False)
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(String(50), nullable=True)
+    details = Column(Text, nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_user_audit_log_user_id", "user_id", "created_at"),
+        Index("ix_user_audit_log_organization_id", "organization_id", "created_at"),
+    )
+
+
+class OAuthRevokedTokenModel(Base):
+    """Revoked JWT tokens for token invalidation."""
+
+    __tablename__ = "oauth_revoked_tokens"
+
+    jti = Column(String(64), primary_key=True)
+    revoked_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("idx_revoked_tokens_expires_at", "expires_at"),)
+
+
+class OAuthAuthorizationCodeModel(Base):
+    """OAuth 2.0 authorization codes for PKCE flow."""
+
+    __tablename__ = "oauth_authorization_codes"
+
+    code = Column(String(64), primary_key=True)
+    user_id = Column(String(255), nullable=False)
+    redirect_uri = Column(Text, nullable=False)
+    code_challenge = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, server_default="0", nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=True, server_default=func.now()
+    )
+
+    __table_args__ = (Index("idx_auth_codes_expires_at", "expires_at"),)
+
+
+# ============================================================
 # Session Model
 # ============================================================
 
@@ -1600,3 +1888,40 @@ class KnowledgeSuggestionModel(Base):
             f"status={self.status}, "
             f"pii_scan_status={self.pii_scan_status})>"
         )
+
+
+# ============================================================
+# LLM Configuration Overrides (Dashboard Phase 1a)
+# ============================================================
+
+
+class LLMConfigOverrideModel(Base):
+    """Key-value overrides for LLM configuration.
+
+    Stores dashboard-applied configuration changes that take precedence
+    over environment variables. This allows users to configure LLM
+    providers through the dashboard without editing .env files.
+
+    Keys follow the settings field naming convention:
+    - "primary_provider"   → overrides CHAT_PROVIDER
+    - "strict_provider_mode" → overrides STRICT_PROVIDER_MODE
+    - "anthropic_api_key"  → overrides ANTHROPIC_API_KEY
+    - "openai_api_key"     → overrides OPENAI_API_KEY
+    - etc.
+    """
+
+    __tablename__ = "llm_config_overrides"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    updated_by = Column(String(255), nullable=True)
+
+    def __repr__(self) -> str:
+        # Never log the value — it may contain API keys
+        return f"<LLMConfigOverride(key={self.key}, updated_at={self.updated_at})>"

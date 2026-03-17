@@ -889,7 +889,11 @@ class KnowledgeService:
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """
-        Delete document using interface dependencies
+        Archive (soft-delete) a document.
+
+        Sets archived_at on the document and removes it from vector search.
+        The document data is retained for referential integrity — past case
+        transcripts that cite this document remain valid.
 
         Args:
             document_id: Document identifier
@@ -902,40 +906,55 @@ class KnowledgeService:
             FileNotFoundError: If document not found
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            logger.info(f"Deleting document {document_id}")
+            logger.info(f"Archiving document {document_id}")
 
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
 
             try:
-                # If Redis is available, remove from Redis and index sets
+                from datetime import datetime, timezone
+
+                archived_at = datetime.now(timezone.utc).isoformat()
+
                 if self._redis:
                     try:
                         import json as _json
 
                         doc_key = self._kb_doc_key.format(document_id=document_id)
                         raw = await self._redis.hget(doc_key, "data")
-                        old = _json.loads(raw) if raw else {}
+                        if not raw:
+                            return {
+                                "success": False,
+                                "error": f"Document {document_id} not found",
+                            }
+
+                        doc = _json.loads(raw)
+                        doc["archived_at"] = archived_at
+
+                        # Update the document in Redis with archived_at flag
+                        await self._redis.hset(doc_key, "data", _json.dumps(doc))
+
+                        # Remove from index sets so it no longer appears in listings
                         pipe = self._redis.pipeline()
-                        pipe.delete(doc_key)
                         pipe.srem(self._kb_docs_set, document_id)
-                        if old.get("document_type"):
+                        if doc.get("document_type"):
                             pipe.srem(
                                 self._kb_index_type.format(
-                                    document_type=old["document_type"]
+                                    document_type=doc["document_type"]
                                 ),
                                 document_id,
                             )
-                        for tag in old.get("tags", []) or []:
+                        for tag in doc.get("tags", []) or []:
                             pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
                         await pipe.execute()
                     except Exception as e:
                         logger.warning(
-                            f"Failed to delete KB metadata in Redis for {document_id}: {e}"
+                            f"Failed to archive KB metadata in Redis for {document_id}: {e}"
                         )
-                    # Also remove from memory if cached
+
+                    # Update in-memory cache too
                     if document_id in self._documents_store:
-                        del self._documents_store[document_id]
+                        self._documents_store[document_id]["archived_at"] = archived_at
                 else:
                     # No Redis; operate on in-memory store
                     if document_id not in self._documents_store:
@@ -944,29 +963,27 @@ class KnowledgeService:
                             "success": False,
                             "error": f"Document {document_id} not found",
                         }
-                    del self._documents_store[document_id]
+                    self._documents_store[document_id]["archived_at"] = archived_at
 
                 # Remove associated job if exists
                 job_id = f"job_{document_id}"
                 if job_id in self._jobs_store:
                     del self._jobs_store[job_id]
 
-                # Remove from vector store if available
+                # Remove from vector store so archived docs don't appear in searches
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 
-                logger.info(f"Successfully deleted document {document_id} from store")
+                logger.info(f"Successfully archived document {document_id}")
                 return {"success": True, "document_id": document_id}
 
             except ValidationException:
-                # Re-raise validation exceptions without wrapping
                 raise
             except FileNotFoundError:
-                # Re-raise file not found exceptions without wrapping
                 raise
             except Exception as e:
-                logger.error(f"Failed to delete document {document_id}: {e}")
-                raise RuntimeError(f"Document deletion failed: {str(e)}") from e
+                logger.error(f"Failed to archive document {document_id}: {e}")
+                raise RuntimeError(f"Document archive failed: {str(e)}") from e
 
     async def get_document_statistics(self) -> Dict[str, Any]:
         """
@@ -1296,6 +1313,10 @@ class KnowledgeService:
             # Apply filters
             filtered_docs = []
             for doc in all_documents:
+                # Exclude archived documents
+                if doc.get("archived_at"):
+                    continue
+
                 # Filter by document type
                 if document_type and doc.get("document_type") != document_type:
                     continue

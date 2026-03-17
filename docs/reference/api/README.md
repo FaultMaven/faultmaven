@@ -4150,22 +4150,77 @@ Check if user is member of team.
 
 ---
 
+### `/api/v1/admin/llm/config`
+
+#### GET
+
+**Get LLM Configuration**
+
+Returns the current primary provider, fallback chain, and per-provider status including health, connectivity, and available models. API keys are never exposed — only a boolean indicating whether one is configured.
+
+Available to any authenticated user. Dashboard-side route guard handles deployment-aware access control.
+
+**Auth:** Bearer token (any authenticated user)
+
+**Responses:**
+
+**200** - `LLMConfigResponse` with `primary_provider`, `strict_mode`, `fallback_chain`, and `providers` (map of provider name → `LLMProviderDetail`)
+
+**401** - Unauthorized
+
+**503** - LLM provider not initialized
+
+---
+
+### `/api/v1/admin/llm/config/test`
+
+#### POST
+
+**Test LLM Provider Connection**
+
+Sends a minimal prompt to the specified provider to verify API key validity, endpoint reachability, and model response. Does NOT use the fallback chain — tests the specific provider directly.
+
+**Auth:** Bearer token (any authenticated user)
+
+**Request Body:** `LLMConnectionTestRequest` — `{ "provider": "anthropic" }`
+
+**Responses:**
+
+**200** - `LLMConnectionTestResponse` with `connected`, `response_time_ms`, `model_used`, `error_message`
+
+**401** - Unauthorized
+
+**422** - Unknown provider name
+
+**503** - LLM provider not initialized
+
+---
+
+### `/api/v1/admin/config/status`
+
+#### GET
+
+**Get Environment Configuration Status**
+
+Returns the current deployment configuration including auth mode, storage backends, and security settings. Read-only — configuration changes require editing environment variables and restarting.
+
+**Auth:** Bearer token (any authenticated user)
+
+**Responses:**
+
+**200** - `EnvConfigStatusResponse` with `auth_mode`, `environment`, `db_backend`, `session_storage`, `vector_storage`, `llm_provider`, `pii_redaction_enabled`, `rate_limit_enabled`
+
+**401** - Unauthorized
+
+---
+
 ### `/debug/config`
 
 #### GET
 
-**Debug Config**
+**Debug Config** *(development only)*
 
-Get current configuration summary including active preset.
-
-Returns information about:
-- Active configuration preset (if any)
-- Environment settings
-- Storage backend types
-- LLM provider configuration
-- Protection settings
-
-Useful for debugging configuration issues and verifying preset application.
+Get current configuration summary including active preset. Not available in production — use `GET /api/v1/admin/config/status` instead.
 
 **Responses:**
 
@@ -4177,7 +4232,7 @@ Useful for debugging configuration issues and verifying preset application.
 
 #### GET
 
-**Debug Health**
+**Debug Health** *(development only)*
 
 Minimal debug health endpoint.
 
@@ -4191,9 +4246,9 @@ Minimal debug health endpoint.
 
 #### GET
 
-**Debug Llm Providers**
+**Debug LLM Providers** *(development only)*
 
-Get current LLM provider status and fallback chain.
+Get current LLM provider status and fallback chain. Not available in production — use `GET /api/v1/admin/llm/config` instead.
 
 **Responses:**
 
@@ -4205,7 +4260,7 @@ Get current LLM provider status and fallback chain.
 
 #### GET
 
-**Debug Routes**
+**Debug Routes** *(development only)*
 
 List all registered routes (path + methods).
 

@@ -242,6 +242,10 @@ from .modules.evidence.api.routes import router as evidence_router
 from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
 
+# Admin routes
+from .api.routes.admin import router as admin_users_router
+from .api.routes.admin_config import router as admin_config_router
+
 # SessionManager now handled via DI container - services.session.SessionService
 
 # Optional Opik middleware import
@@ -375,6 +379,15 @@ async def lifespan(app: FastAPI):
 
             await bootstrap_application(container)
             logger.debug("✅ Application bootstrap complete")
+
+            # Apply LLM config overrides from database (if any)
+            try:
+                from .config.llm_config_overrides import apply_overrides_to_settings
+
+                await apply_overrides_to_settings(settings)
+                logger.debug("✅ LLM config overrides applied")
+            except Exception as e:
+                logger.debug(f"LLM config overrides skipped: {e}")
         except Exception as e:
             logger.critical(
                 f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}"
@@ -1071,6 +1084,13 @@ logger.info("✅ Session endpoints added")
 
 app.include_router(teams_router, prefix="/api/v1")
 logger.info("✅ Team endpoints added")
+
+# Admin routes (user management + configuration)
+app.include_router(admin_users_router)  # prefix already set on router: /api/v1/admin
+logger.info("✅ Admin user management endpoints added")
+
+app.include_router(admin_config_router)  # prefix already set on router: /api/v1/admin
+logger.info("✅ Admin configuration endpoints added")
 
 # OAuth router (only if enabled)
 try:
