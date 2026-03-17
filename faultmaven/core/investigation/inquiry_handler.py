@@ -80,16 +80,15 @@ Is this what you want me to investigate?
 
 def user_confirms(user_message: str) -> bool:
     """
-    Check if user is confirming the problem statement.
+    Mechanical fallback: detect explicit confirmation phrases.
+
+    This covers the easy cases (short, unambiguous replies). The LLM handles
+    nuanced implicit confirmation — diagnostic questions, evidence submission,
+    urgency signals — because those require conversational context.
 
     Uses word-boundary matching to avoid false positives (e.g., "started" ≠ "start").
     Only triggers on short messages (< 100 chars) — long messages are providing
     information, not confirming.
-
-    Confirmation phrases:
-    - "Yes", "Yes, investigate", "That's right"
-    - "Correct", "Looks good", "Proceed"
-    - "Let's go", "Do it", "Start"
     """
     message_lower = user_message.lower().strip()
 
@@ -97,9 +96,9 @@ def user_confirms(user_message: str) -> bool:
     if len(message_lower) > 100:
         return False
 
-    # Only unambiguous confirmation phrases. Removed "start", "do it",
-    # "go ahead", "investigate" — these appear in normal conversation
-    # (e.g., "where do I start", "let me investigate this").
+    # Unambiguous confirmation phrases only. Broad terms like "start",
+    # "do it", "go ahead", "investigate" are excluded — they appear in
+    # normal conversation (e.g., "where do I start").
     confirmation_phrases = [
         "yes",
         "correct",
@@ -109,6 +108,7 @@ def user_confirms(user_message: str) -> bool:
         "yes, investigate",
         "looks good",
         "sounds good",
+        "go ahead",
     ]
 
     return any(
