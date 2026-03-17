@@ -1188,10 +1188,10 @@ def build_investigation_context(
             if not inq.problem_statement_confirmed:
                 inquiry_state_str += (
                     "AWAITING_CONFIRMATION: You proposed this problem statement in a previous turn. "
-                    "If the user confirms (explicitly or by engaging with the problem), set "
-                    "user_confirmed_investigation=True. But if the user's current message is about "
-                    "something else (new data, a different question), answer THAT first — Rule 1 "
-                    "(Answer First) takes priority over confirmation.\n"
+                    "First, address the user's current message (answer their question, acknowledge "
+                    "new data). Then evaluate: does the user's response relate to the proposed "
+                    "problem? If yes, set user_confirmed_investigation=True. If the user submitted "
+                    "something unrelated, do not confirm — they may be changing direction.\n"
                 )
             inquiry_state_str += "</inquiry_state>"
 
