@@ -81,9 +81,10 @@ TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
 
 TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
 - The user chose the positive suggestion, said yes, or engaged with the problem
-  (provided evidence, asked diagnostic questions, expressed urgency).
-- Err toward True when ambiguous — only set False when the user explicitly disagrees
-  or the message is clearly unrelated to the problem.
+  (asked diagnostic questions, expressed urgency).
+- Always address what the user actually submitted FIRST (answer their question,
+  acknowledge their data) before evaluating confirmation. Do not skip the user's
+  input to transition.
 - Never set True on the same turn you first present the problem statement.
 - Do NOT repeat the problem statement or anything from the previous turn.
 - CRITICAL: Check <evidence_collected> BEFORE asking for data.
