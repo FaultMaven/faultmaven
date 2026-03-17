@@ -11,7 +11,12 @@ from typing import Any, Dict, List, Optional
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
-from faultmaven.modules.case.contracts import Case, CaseStatus, InvestigationStage
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    InvestigationProgress,
+    InvestigationStage,
+)
 
 # =============================================================================
 # INQUIRY TEMPLATE

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseCheckpoint,
     CaseStatus,
     Evidence,
     Hypothesis,

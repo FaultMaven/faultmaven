@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
+from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     EvidenceCategory,
