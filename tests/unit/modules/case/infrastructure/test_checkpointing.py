@@ -1,18 +1,19 @@
 """Unit tests for State Checkpointing."""
 
-import pytest
 from datetime import datetime
+from typing import Any, Dict
 from zoneinfo import ZoneInfo
-from typing import Dict, Any
 
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
-from faultmaven.modules.case.infrastructure.case_repository import (
-    InMemoryCaseRepository,
-)
+import pytest
+
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,
+)
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
 )
 
 

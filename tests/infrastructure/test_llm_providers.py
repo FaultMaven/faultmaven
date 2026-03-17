@@ -8,8 +8,8 @@ minimal mocking patterns that achieved 80%+ improvements in Phases 1-3.
 
 import asyncio
 import json
-import time
 import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

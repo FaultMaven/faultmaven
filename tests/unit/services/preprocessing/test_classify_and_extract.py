@@ -1,16 +1,12 @@
 """Tests for PreprocessingService.classify_and_extract() — v4.0 pasted text processing."""
 
-import pytest
 from unittest.mock import MagicMock
 
-from faultmaven.core.preprocessing.models import (
-    PreprocessingResult,
-    UnifiedDataType,
-)
+import pytest
+
+from faultmaven.core.preprocessing.models import PreprocessingResult, UnifiedDataType
 from faultmaven.models.api import DataType
-from faultmaven.services.preprocessing.preprocessing_service import (
-    PreprocessingService,
-)
+from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
 
 
 @pytest.fixture

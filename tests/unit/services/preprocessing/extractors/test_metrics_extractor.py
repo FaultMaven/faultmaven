@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.services.preprocessing.extractors.metrics_extractor import (
-    MetricsAndPerformanceExtractor,
     PROMETHEUS_CLIENT_AVAILABLE,
+    MetricsAndPerformanceExtractor,
 )
 
 

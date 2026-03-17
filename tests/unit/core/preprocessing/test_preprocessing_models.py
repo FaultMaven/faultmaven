@@ -4,6 +4,7 @@ import pytest
 
 from faultmaven.core.preprocessing.models import (
     AnalysisContext,
+    AnomalySummary,
     Chunk,
     ConfigSummary,
     DataExcerpt,
@@ -16,7 +17,6 @@ from faultmaven.core.preprocessing.models import (
     PreprocessingResult,
     SanitizationResult,
     UnifiedDataType,
-    AnomalySummary,
     compute_content_hash,
     generate_concise_summary,
     to_unified_data_type,

@@ -12,9 +12,9 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     QueryClassification,
     _extract_entities,
     _has_case_reference,
+    _has_interrogative_structure,
     _is_generic_request,
     _is_knowledge_question,
-    _has_interrogative_structure,
     classify_query,
 )
 

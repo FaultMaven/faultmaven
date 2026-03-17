@@ -15,7 +15,6 @@ from faultmaven.modules.case.domain.models import (
     InvestigationProgress,
     ProblemVerification,
 )
-
 from tests.utils import generate_evidence_id
 
 

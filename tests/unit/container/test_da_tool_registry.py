@@ -11,11 +11,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from faultmaven.container.providers.infrastructure import create_da_provider
 from faultmaven.container.providers.services import (
     _create_investigation_tools,
     create_milestone_engine,
 )
-from faultmaven.container.providers.infrastructure import create_da_provider
 
 # =========================================================================
 # Mock tools and container

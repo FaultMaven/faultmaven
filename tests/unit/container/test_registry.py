@@ -12,10 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.container.errors import (
-    CircularDependencyError,
-    ServiceUnavailableError,
-)
+from faultmaven.container.errors import CircularDependencyError, ServiceUnavailableError
 from faultmaven.container.registry import (
     DependencyError,
     DependencyRegistry,

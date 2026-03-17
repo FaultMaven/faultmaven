@@ -46,7 +46,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-
 from starlette.formparsers import MultiPartParser
 
 from faultmaven.utils.serialization import to_json_compatible
@@ -226,6 +225,10 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
 
 
 from .api.middleware.logging import LoggingMiddleware
+
+# Admin routes
+from .api.routes.admin import router as admin_users_router
+from .api.routes.admin_config import router as admin_config_router
 from .api.routes.sessions import router as investigation_sessions_router
 from .infrastructure.observability.tracing import init_opik_tracing
 
@@ -241,10 +244,6 @@ from .modules.case.api.routes import router as case_router
 from .modules.evidence.api.routes import router as evidence_router
 from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
-
-# Admin routes
-from .api.routes.admin import router as admin_users_router
-from .api.routes.admin_config import router as admin_config_router
 
 # SessionManager now handled via DI container - services.session.SessionService
 

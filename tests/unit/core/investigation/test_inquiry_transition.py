@@ -30,11 +30,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseStatus,
-    InquiryData,
-)
+from faultmaven.modules.case.contracts import Case, CaseStatus, InquiryData
 
 
 class MockLLMProvider(ILLMProvider):

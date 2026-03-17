@@ -18,10 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from faultmaven.exceptions import (
-    VectorStoreConnectionError,
-    VectorStoreOperationError,
-)
+from faultmaven.exceptions import VectorStoreConnectionError, VectorStoreOperationError
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
 )

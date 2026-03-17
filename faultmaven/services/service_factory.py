@@ -37,14 +37,13 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
+from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
-
-from faultmaven.providers.tenancy.base import TenantProvider
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:

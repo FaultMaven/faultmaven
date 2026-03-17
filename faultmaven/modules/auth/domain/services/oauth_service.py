@@ -11,10 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from faultmaven.models.exceptions import (
-    InvalidGrantError,
-    InvalidRequestError,
-)
+from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.contracts import (
     IOAuthCodeRepository,
     IOAuthService,

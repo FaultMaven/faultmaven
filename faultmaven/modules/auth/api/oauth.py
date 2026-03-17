@@ -32,10 +32,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.models.exceptions import (
-    InvalidGrantError,
-    InvalidRequestError,
-)
+from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.api.rate_limiting import (
     require_oauth_rate_limit_authorize,
     require_oauth_rate_limit_revoke,

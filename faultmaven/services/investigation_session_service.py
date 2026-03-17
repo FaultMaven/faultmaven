@@ -37,10 +37,7 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.models.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
+from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.case.contracts import ICaseRepository
 
 

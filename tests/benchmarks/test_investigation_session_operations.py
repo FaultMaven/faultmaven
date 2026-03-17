@@ -26,10 +26,7 @@ from faultmaven.infrastructure.persistence.database_case_repository import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
-from faultmaven.models.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
+from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,

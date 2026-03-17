@@ -233,9 +233,7 @@ def create_evidence_service(
         return None
 
     try:
-        from faultmaven.modules.evidence.domain.adapters import (
-            EvidenceStorageAdapter,
-        )
+        from faultmaven.modules.evidence.domain.adapters import EvidenceStorageAdapter
         from faultmaven.modules.evidence.domain.services import EvidenceService
         from faultmaven.services.file_storage_service import FileStorageService
 

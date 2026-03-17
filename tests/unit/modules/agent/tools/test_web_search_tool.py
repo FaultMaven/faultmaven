@@ -1,7 +1,8 @@
 """Tests for WebSearchTool — provider abstraction and DA loop integration."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext

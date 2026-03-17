@@ -12,19 +12,15 @@ Verifies that:
 - No manual parameter on _transition_to_investigating
 """
 
-import pytest
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 from uuid import uuid4
+
+import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
     validate_reasoning_first,
-)
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseStatus,
-    InquiryData,
 )
 from faultmaven.modules.case.contracts import (
     Evidence,
@@ -33,6 +29,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     UploadedFile,
 )
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InquiryData
 
 
 def _ev_id() -> str:
@@ -276,9 +273,9 @@ class TestContextualEvidenceNotActionable:
     def test_contextual_evidence_not_counted_as_actionable(self):
         """Only contextual evidence in case → milestones rejected."""
         from faultmaven.core.investigation.schemas import (
+            InternalReasoning,
             InvestigationResponse_Diagnosis,
             MilestoneUpdates,
-            InternalReasoning,
         )
 
         case = _make_case(
@@ -317,9 +314,9 @@ class TestContextualEvidenceNotActionable:
     def test_non_contextual_evidence_is_actionable(self):
         """Non-contextual evidence in case → milestones allowed."""
         from faultmaven.core.investigation.schemas import (
+            InternalReasoning,
             InvestigationResponse_Diagnosis,
             MilestoneUpdates,
-            InternalReasoning,
         )
 
         case = _make_case(
@@ -357,9 +354,9 @@ class TestContextualEvidenceNotActionable:
     def test_no_evidence_at_all_rejects_milestones(self):
         """Zero evidence in case → milestones rejected."""
         from faultmaven.core.investigation.schemas import (
+            InternalReasoning,
             InvestigationResponse_Diagnosis,
             MilestoneUpdates,
-            InternalReasoning,
         )
 
         case = _make_case(

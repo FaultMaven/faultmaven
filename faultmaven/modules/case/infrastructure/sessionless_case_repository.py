@@ -36,10 +36,7 @@ from faultmaven.modules.case.contracts import (
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import (
-        CaseReport,
-        ReportType,
-    )
+    from faultmaven.modules.case.contracts import CaseReport, ReportType
 
 logger = logging.getLogger(__name__)
 

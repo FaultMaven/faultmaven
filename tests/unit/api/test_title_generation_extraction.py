@@ -1,6 +1,7 @@
 """Tests for _extract_user_signals_from_context in title generation"""
 
 import pytest
+
 from faultmaven.modules.case.api.routes import _extract_user_signals_from_context
 
 

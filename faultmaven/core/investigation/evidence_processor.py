@@ -21,10 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from faultmaven.modules.case.contracts import (
-    Case,
-    EvidenceCategory,
-)
+from faultmaven.modules.case.contracts import Case, EvidenceCategory
 
 logger = logging.getLogger(__name__)
 

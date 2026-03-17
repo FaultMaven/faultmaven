@@ -60,6 +60,7 @@ from faultmaven.api.v1.dependencies import (
     get_session_id,
     get_session_service,
 )
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
     AuthorizationError,
     NotFoundError,
@@ -111,16 +112,13 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     UploadedFilesList,
     UploadedFilesListResponse,
 )
-from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models import Case as CaseEntity
-from faultmaven.modules.case.domain.models import (
-    CaseStatus,
-)
+from faultmaven.modules.case.domain.models import CaseStatus
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
 from faultmaven.services.case_service import APICaseService

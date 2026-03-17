@@ -1,12 +1,10 @@
 """Tests for BasicTier2Service (keyword search, no LLM)."""
 
-import pytest
 from unittest.mock import AsyncMock
 
-from faultmaven.core.preprocessing.models import (
-    AnalysisContext,
-    UnifiedDataType,
-)
+import pytest
+
+from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
 from faultmaven.core.preprocessing.tier2.basic import BasicTier2Service
 from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
 

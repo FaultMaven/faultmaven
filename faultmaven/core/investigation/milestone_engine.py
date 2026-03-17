@@ -36,19 +36,13 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-from faultmaven.core.investigation.llm_error_handler import (
-    ErrorAction,
-    LLMErrorHandler,
-)
+from faultmaven.core.investigation.llm_error_handler import ErrorAction, LLMErrorHandler
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
     TerminalResponse,
     get_schema_for_stage,
-)
-from faultmaven.infrastructure.llm.structured_output_capability import (
-    StructuredOutputMode,
 )
 from faultmaven.core.investigation.stagnation_detector import (
     StagnationBreaker,
@@ -64,12 +58,15 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
 )
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputMode,
+)
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
     Case,
-    CaseStatus,
     CaseAction,
+    CaseStatus,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
@@ -1168,10 +1165,10 @@ class MilestoneEngine:
             # load() provides cross-turn numbering consistency (same IP
             # keeps the same placeholder across turns) but is not required
             # for correctness.
+            from faultmaven.config.settings import get_settings
             from faultmaven.infrastructure.security.case_redaction import (
                 CaseRedactionContext,
             )
-            from faultmaven.config.settings import get_settings
 
             redaction_settings = get_settings()
             redaction_ctx = CaseRedactionContext(
@@ -2940,8 +2937,8 @@ class MilestoneEngine:
         if updates.preliminary_urgency:
             from faultmaven.modules.case.domain.models import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
-                UrgencyLevel,
             )
+            from faultmaven.modules.case.domain.models import UrgencyLevel
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(
@@ -3659,8 +3656,8 @@ class MilestoneEngine:
                 )
             else:
                 from faultmaven.core.investigation.terminal_transitions import (
-                    confirm_pending_transition,
                     cancel_pending_transition,
+                    confirm_pending_transition,
                 )
 
                 # Use the user_message parameter directly, not from metadata

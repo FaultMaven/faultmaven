@@ -1370,6 +1370,9 @@ class DatabaseCaseRepository(CaseRepository):
             RepositoryException: If retrieval fails
         """
         try:
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+
             from faultmaven.infrastructure.persistence.models import (
                 AgentExecutionModel,
                 AgentToolCallV2Model,
@@ -1380,8 +1383,6 @@ class DatabaseCaseRepository(CaseRepository):
                 AgentType,
                 ExecutionStatus,
             )
-            from sqlalchemy import select
-            from sqlalchemy.orm import selectinload
 
             # Query with eager loading of tool_calls relationship
             stmt = (
@@ -1470,8 +1471,9 @@ class DatabaseCaseRepository(CaseRepository):
         try:
             from datetime import datetime, timezone
 
-            from faultmaven.infrastructure.persistence.models import AgentExecutionModel
             from sqlalchemy import update
+
+            from faultmaven.infrastructure.persistence.models import AgentExecutionModel
 
             # Update timestamp
             execution.updated_at = datetime.now(timezone.utc)

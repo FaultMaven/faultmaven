@@ -17,14 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.exceptions import (
-    ConflictError,
-    NotFoundError,
-    ValidationException,
-)
-from faultmaven.infrastructure.persistence.user_repository import (
-    InMemoryUserRepository,
-)
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
+from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.services.auth_service import AuthenticationError, AuthService
 from faultmaven.services.user_service import UserService

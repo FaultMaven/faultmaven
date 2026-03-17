@@ -1,7 +1,8 @@
 """Tests for vector DB chunking and background storage."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
 from faultmaven.core.preprocessing.vector_storage import (

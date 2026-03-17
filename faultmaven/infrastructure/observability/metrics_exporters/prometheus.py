@@ -66,11 +66,7 @@ def get_prometheus_response() -> Response:
         if prometheus_client is not installed.
     """
     try:
-        from prometheus_client import (
-            CONTENT_TYPE_LATEST,
-            REGISTRY,
-            generate_latest,
-        )
+        from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 
         # Generate metrics in Prometheus text exposition format
         metrics_output = generate_latest(REGISTRY)

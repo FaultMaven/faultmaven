@@ -17,6 +17,7 @@ This complements the APICaseService (TASK-011) by providing session-specific
 workflow management for investigation activities.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -39,8 +40,6 @@ from faultmaven.modules.case.infrastructure.case_repository import CaseRepositor
 from faultmaven.modules.case.infrastructure.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-
-import logging
 
 logger = logging.getLogger(__name__)
 

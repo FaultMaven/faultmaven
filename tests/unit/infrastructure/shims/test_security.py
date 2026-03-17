@@ -341,9 +341,7 @@ class TestIntegrationWithPresidio:
 
     def test_get_status_with_presidio(self):
         """Test status when Presidio is actually available."""
-        from faultmaven.infrastructure.shims.security import (
-            PRESIDIO_AVAILABLE,
-        )
+        from faultmaven.infrastructure.shims.security import PRESIDIO_AVAILABLE
 
         if not PRESIDIO_AVAILABLE:
             pytest.skip("Presidio not installed - skipping integration test")

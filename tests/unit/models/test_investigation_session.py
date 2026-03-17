@@ -8,10 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from faultmaven.models.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
+from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 
 
 class TestSessionStatus:

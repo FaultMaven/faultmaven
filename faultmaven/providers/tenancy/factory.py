@@ -9,9 +9,7 @@ Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 import logging
 
 from faultmaven.config.settings import TenantProvider as TenantProviderEnum
-from faultmaven.config.settings import (
-    get_settings,
-)
+from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import IOrganizationRepository
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider

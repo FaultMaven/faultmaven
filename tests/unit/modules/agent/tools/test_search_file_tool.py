@@ -1,9 +1,9 @@
 """Tests for SearchFileTool — Tier 2 mechanical search (v4.0)."""
 
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext

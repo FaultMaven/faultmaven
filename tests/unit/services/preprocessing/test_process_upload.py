@@ -2,9 +2,9 @@
 
 import asyncio
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from faultmaven.core.preprocessing.models import (
     DuplicateFileError,

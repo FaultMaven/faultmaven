@@ -45,6 +45,9 @@ from faultmaven.modules.case.domain.owned_models.agent_execution import (
     ExecutionStatus,
 )
 
+# Case-owned Checkpoint models (Case module owns checkpoints table)
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
+
 # Case-owned Evidence models (Case module owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
     EvidenceArtifact,
@@ -71,9 +74,6 @@ from faultmaven.modules.case.domain.owned_models.report import (
     RunbookSource,
     SimilarRunbook,
 )
-
-# Case-owned Checkpoint models (Case module owns checkpoints table)
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 # ============================================================
 # Repository Contract
@@ -496,12 +496,15 @@ class CaseDTO:
 # Re-export domain models for backward compatibility
 # These can be used directly until full DTO migration is complete
 # Services should import from contracts.py (not domain.models) per Principle 2
+from faultmaven.modules.case.domain.models import (
+    CaseStatusTransition,  # Backward compat alias for CaseAction
+)
 from faultmaven.modules.case.domain.models import (  # noqa: E402
+    ActionAttempt,
     Case,
     CaseAction,
     CaseSeverity,
     CaseStatus,
-    CaseStatusTransition,  # Backward compat alias for CaseAction
     ConfidenceLevel,
     DocumentationData,
     DocumentType,
@@ -519,6 +522,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     HypothesisGenerationMode,
     HypothesisStatus,
     InquiryData,
+    InvestigationActionType,
     InvestigationMomentum,
     InvestigationPath,
     InvestigationProgress,
@@ -529,10 +533,8 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     PathSelection,
     PreliminaryUrgency,
     ProblemVerification,
-    RootCauseConclusion,
-    ActionAttempt,
-    InvestigationActionType,
     ProposedAction,
+    RootCauseConclusion,
     Solution,
     SolutionType,
     TemporalState,

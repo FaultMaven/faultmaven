@@ -158,7 +158,7 @@ test = [
 
     # Code quality (for CI checks)
     "black==24.10.0",  # Pinned for consistent formatting across environments
-    "isort>=5.12.0",
+    "isort==5.13.2",   # Pinned for consistent import sorting across environments
     "flake8>=7.0.0",
 ]
 
@@ -170,7 +170,7 @@ dev = [
     # Code quality and formatting
     "ruff>=0.2.0",              # Fast Python linter and formatter
     "black==24.10.0",           # Code formatter (pinned to match CI)
-    "isort>=5.12.0",            # Import sorting
+    "isort==5.13.2",            # Import sorting (pinned to match CI)
     "mypy>=1.8.0",              # Type checking
 
     # Pre-commit hooks

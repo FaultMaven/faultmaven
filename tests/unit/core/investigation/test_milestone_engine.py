@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
     StructuredOutputStrategy,
 )
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
@@ -97,8 +97,8 @@ class TestMilestoneEngine:
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
-            EvidenceSourceType,
             EvidenceForm,
+            EvidenceSourceType,
         )
 
         engine = MilestoneEngine(
@@ -252,8 +252,8 @@ class TestMilestoneEngine:
         from faultmaven.modules.case.contracts import (
             Evidence,
             EvidenceCategory,
-            EvidenceSourceType,
             EvidenceForm,
+            EvidenceSourceType,
         )
 
         # Add evidence to case

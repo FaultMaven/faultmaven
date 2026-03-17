@@ -5,13 +5,14 @@ Tests validation of:
 2. diff_turns (recursive diff logic)
 """
 
-import pytest
-from unittest.mock import AsyncMock, Mock
 from typing import List
+from unittest.mock import AsyncMock, Mock
 
-from faultmaven.modules.case.domain.services.replayer import CaseReplayer
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
+import pytest
+
 from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
+from faultmaven.modules.case.domain.services.replayer import CaseReplayer
 
 
 @pytest.fixture

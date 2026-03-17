@@ -19,15 +19,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, EmailStr, Field
 
-from faultmaven.api.middleware.auth import (
-    get_current_user,
-    require_admin,
-)
-from faultmaven.api.routes.auth import (
-    UserResponse,
-    _user_to_response,
-    get_user_service,
-)
+from faultmaven.api.middleware.auth import get_current_user, require_admin
+from faultmaven.api.routes.auth import UserResponse, _user_to_response, get_user_service
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser
 

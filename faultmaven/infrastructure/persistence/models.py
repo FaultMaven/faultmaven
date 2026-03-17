@@ -35,13 +35,12 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.types import JSON
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
+from sqlalchemy.types import JSON
 
 Base = declarative_base()
 

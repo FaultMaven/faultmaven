@@ -24,6 +24,7 @@ Key Improvements over Original:
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -43,8 +44,6 @@ from faultmaven.models.interfaces import (
 )
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.utils.serialization import to_json_compatible
-
-import logging
 
 logger = logging.getLogger(__name__)
 

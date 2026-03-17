@@ -1,12 +1,14 @@
 """Tests for turn-based threshold in title generation endpoint"""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from fastapi import HTTPException
+
+from faultmaven.infrastructure.llm.providers.base import LLMResponse
+from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes import generate_case_title
 from faultmaven.modules.case.contracts import CaseDTO
-from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.infrastructure.llm.providers.base import LLMResponse
 
 
 class TestTurnThreshold:

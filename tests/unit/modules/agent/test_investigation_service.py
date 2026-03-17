@@ -9,12 +9,12 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
 )
-from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import (
     AttachmentResult,
     IntentType,

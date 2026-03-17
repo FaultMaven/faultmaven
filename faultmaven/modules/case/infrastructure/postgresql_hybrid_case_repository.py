@@ -48,10 +48,10 @@ from faultmaven.modules.case.domain.models import (
     UploadedFile,
     WorkingConclusion,
 )
+from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 # Case-owned models (per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import CaseReport, ReportType
-from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 # TYPE_CHECKING imports not needed - models imported directly above

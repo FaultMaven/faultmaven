@@ -32,11 +32,7 @@ from faultmaven.api.v1.dependencies import (
     get_report_recommendation_service,
     get_tenant_provider,
 )
-from faultmaven.exceptions import (
-    NotFoundError,
-    ServiceException,
-    ValidationException,
-)
+from faultmaven.exceptions import NotFoundError, ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_case import ICaseService
 

@@ -10,10 +10,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Generic, TypeVar
 
-from faultmaven.container.errors import (
-    CircularDependencyError,
-    ServiceUnavailableError,
-)
+from faultmaven.container.errors import CircularDependencyError, ServiceUnavailableError
 
 
 class ServiceStatus(Enum):

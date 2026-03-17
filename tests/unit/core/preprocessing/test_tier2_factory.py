@@ -1,7 +1,8 @@
 """Tests for Tier 2 service factory."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from faultmaven.core.preprocessing.tier2.basic import BasicTier2Service
 from faultmaven.core.preprocessing.tier2.external import ExternalTier2Client

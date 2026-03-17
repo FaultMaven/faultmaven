@@ -46,8 +46,8 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 )
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
     CaseAction,
+    CaseStatus,
     Evidence,
     EvidenceCategory,
     EvidenceForm,

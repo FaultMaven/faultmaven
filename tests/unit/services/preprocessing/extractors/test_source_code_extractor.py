@@ -12,8 +12,8 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.services.preprocessing.extractors.source_code_extractor import (
-    SourceCodeExtractor,
     TREE_SITTER_AVAILABLE,
+    SourceCodeExtractor,
 )
 
 

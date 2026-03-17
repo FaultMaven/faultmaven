@@ -38,10 +38,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.modules.case.contracts import (
-    IHypothesisRepository,
-    ISolutionRepository,
-)
+from faultmaven.modules.case.contracts import IHypothesisRepository, ISolutionRepository
 
 logger = logging.getLogger(__name__)
 

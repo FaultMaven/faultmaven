@@ -7,8 +7,9 @@ Verifies that:
 - All kwargs (tools, tool_choice, response_format, messages) pass through correctly
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from faultmaven.infrastructure.llm.providers import LLMResponse
 

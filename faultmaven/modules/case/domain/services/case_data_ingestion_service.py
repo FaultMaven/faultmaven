@@ -17,17 +17,14 @@ Part of the Case module - handles evidence processing for case investigations.
 """
 
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ServiceException, ValidationException
-from faultmaven.models import (
-    DataInsightsResponse,
-    DataType,
-    UploadedData,
-)
+from faultmaven.models import DataInsightsResponse, DataType, UploadedData
 from faultmaven.models.interfaces import (
     IDataClassifier,
     ILogProcessor,
@@ -37,8 +34,6 @@ from faultmaven.models.interfaces import (
     ITracer,
 )
 from faultmaven.utils.serialization import to_json_compatible
-
-import logging
 
 logger = logging.getLogger(__name__)
 

@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from faultmaven.config.settings import get_settings
 from faultmaven.domain.events import (
     AgentContext,
     ExecutionEvent,
@@ -37,10 +38,6 @@ from faultmaven.domain.events import (
     LLMEventType,
     Message,
     ToolCall,
-)
-from faultmaven.modules.agent.domain.services.query_classifier import (
-    ProcessingMode,
-    classify_query,
 )
 from faultmaven.domain.events import ToolResult as DomainToolResult
 from faultmaven.exceptions import (
@@ -59,18 +56,17 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.agent.tools.base import (
-    AgentToolRegistry,
-    ToolContext,
+from faultmaven.modules.agent.domain.services.query_classifier import (
+    ProcessingMode,
+    classify_query,
 )
+from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
 from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
-from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.services.preprocessing.extractors.utils import COVERAGE_SEPARATOR
-
-from faultmaven.config.settings import get_settings
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
 )
+from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.services.preprocessing.extractors.utils import COVERAGE_SEPARATOR
 
 logger = logging.getLogger(__name__)
 

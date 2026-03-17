@@ -1,13 +1,14 @@
 """Tests for VectorizeFileTool — on-demand vectorization for semantic search."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
-    VectorizeFileTool,
     VECTORIZATION_MAX_SIZE_BYTES,
+    VectorizeFileTool,
 )
 
 

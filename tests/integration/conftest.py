@@ -249,6 +249,7 @@ def mock_data_service():
 def mock_investigation_service(mock_case_service):
     """Create a mock investigation service for tests."""
     from unittest.mock import AsyncMock
+
     from faultmaven.modules.case.contracts import CaseStatus
 
     service = AsyncMock()
@@ -412,6 +413,9 @@ def mock_services_for_integration_tests(
     To use this fixture, tests should explicitly request it as a parameter.
     Tests that need to test authentication failures should NOT use this fixture.
     """
+    from starlette.testclient import TestClient
+
+    from faultmaven.api.dependencies import get_api_case_service
     from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.api.v1.dependencies import (
         get_case_vector_store,
@@ -425,9 +429,6 @@ def mock_services_for_integration_tests(
         get_case_repository,
         get_case_service,
     )
-    from starlette.testclient import TestClient
-
-    from faultmaven.api.dependencies import get_api_case_service
 
     # Mock authentication
     async def get_mock_user():

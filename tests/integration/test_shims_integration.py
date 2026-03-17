@@ -43,10 +43,7 @@ class TestShimPackageImports:
         with patch.dict(
             os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "false"}
         ):
-            from faultmaven.infrastructure.shims import (
-                PIIRedactor,
-                get_tracing_status,
-            )
+            from faultmaven.infrastructure.shims import PIIRedactor, get_tracing_status
 
             tracing = get_tracing_status()
             redactor = PIIRedactor()
@@ -93,10 +90,7 @@ class TestEnvironmentVariableToggling:
         with patch.dict(
             os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "true"}
         ):
-            from faultmaven.infrastructure.shims import (
-                PIIRedactor,
-                get_tracing_status,
-            )
+            from faultmaven.infrastructure.shims import PIIRedactor, get_tracing_status
 
             tracing = get_tracing_status()
             redactor = PIIRedactor()
@@ -109,10 +103,7 @@ class TestEnvironmentVariableToggling:
         with patch.dict(
             os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
         ):
-            from faultmaven.infrastructure.shims import (
-                PIIRedactor,
-                get_tracing_status,
-            )
+            from faultmaven.infrastructure.shims import PIIRedactor, get_tracing_status
 
             tracing = get_tracing_status()
             redactor = PIIRedactor()
@@ -359,10 +350,7 @@ class TestShimGracefulDegradation:
         # This test verifies the import-time behavior is safe
         # The actual import happens at module load, but we can verify
         # the constants are set correctly
-        from faultmaven.infrastructure.shims import (
-            OPIK_AVAILABLE,
-            PRESIDIO_AVAILABLE,
-        )
+        from faultmaven.infrastructure.shims import OPIK_AVAILABLE, PRESIDIO_AVAILABLE
 
         # These should be booleans, not raise errors
         assert isinstance(OPIK_AVAILABLE, bool)

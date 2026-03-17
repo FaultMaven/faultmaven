@@ -35,10 +35,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
+    CaseCheckpoint,
     CaseReport,
     CaseStatus,
     DocumentationData,
-    CaseCheckpoint,
     EscalationState,
     Evidence,
     EvidenceCategory,

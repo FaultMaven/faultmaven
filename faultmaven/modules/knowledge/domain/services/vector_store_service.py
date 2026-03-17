@@ -24,10 +24,7 @@ from typing import Any, Dict, List, Optional
 import chromadb
 from chromadb.config import Settings
 
-from faultmaven.exceptions import (
-    VectorStoreConnectionError,
-    VectorStoreOperationError,
-)
+from faultmaven.exceptions import VectorStoreConnectionError, VectorStoreOperationError
 
 logger = logging.getLogger(__name__)
 

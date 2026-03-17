@@ -108,8 +108,9 @@ if "sentence_transformers" not in sys.modules:
 
         def encode(self, sentences, *args, **kwargs):
             # Return deterministic fake embeddings based on text hash
-            import numpy as np
             import hashlib
+
+            import numpy as np
 
             def get_deterministic_vector(text):
                 # Use a simple hash to seed random for deterministic output
@@ -636,8 +637,6 @@ try:
 except Exception:
     # If import fails (torch issues, etc.), create a mock
     LLMRouter = Mock
-from faultmaven.models import DataType, SessionContext
-from faultmaven.models.common import AgentStateEnum as AgentState
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
 from faultmaven.models.common import AgentStateEnum as AgentState

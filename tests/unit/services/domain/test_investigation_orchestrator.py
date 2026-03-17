@@ -22,11 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.exceptions import (
-    ConflictError,
-    NotFoundError,
-    ValidationException,
-)
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.modules.agent.domain.services.investigation_orchestrator import (
     InvestigationOrchestrator,
 )

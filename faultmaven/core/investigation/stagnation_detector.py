@@ -24,11 +24,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
-from faultmaven.modules.case.contracts import (
-    Case,
-    HypothesisCategory,
-    HypothesisStatus,
-)
+from faultmaven.modules.case.contracts import Case, HypothesisCategory, HypothesisStatus
 
 logger = logging.getLogger(__name__)
 

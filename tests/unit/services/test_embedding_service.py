@@ -13,8 +13,6 @@ Tests cover:
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-from faultmaven.exceptions import EmbeddingInvalidInputError
-
 import pytest
 
 from faultmaven.exceptions import (

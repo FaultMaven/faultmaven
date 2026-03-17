@@ -1,12 +1,10 @@
 """Tests for LocalTier2Service (local LLM-based analysis)."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from faultmaven.core.preprocessing.models import (
-    AnalysisContext,
-    UnifiedDataType,
-)
+import pytest
+
+from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
 from faultmaven.core.preprocessing.tier2.interface import ITier2AnalysisService
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 

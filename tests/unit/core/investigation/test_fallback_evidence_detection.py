@@ -10,12 +10,11 @@ already sees every user message and can create evidence via evidence_to_add,
 ask for clarification, or treat non-data as conversation.
 """
 
-import pytest
 from unittest.mock import MagicMock
 
-from faultmaven.core.investigation.milestone_engine import (
-    _post_process_llm_response,
-)
+import pytest
+
+from faultmaven.core.investigation.milestone_engine import _post_process_llm_response
 from faultmaven.modules.case.domain.models import EvidenceCategory, EvidenceSourceType
 
 

@@ -32,11 +32,11 @@ from faultmaven.modules.case.domain.models import (
 
 if TYPE_CHECKING:
     # Report models now owned by Case module - import from case domain models
+    from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
     from faultmaven.modules.case.domain.owned_models.report import (
         CaseReport,
         ReportType,
     )
-    from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
 
 # ============================================================

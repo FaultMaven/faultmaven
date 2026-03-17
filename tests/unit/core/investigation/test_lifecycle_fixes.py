@@ -1,26 +1,27 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseStatus,
-    ProblemVerification,
-    Evidence,
-    EvidenceCategory,
-    InquiryData,
-    EvidenceSourceType,
-    EvidenceForm,
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
+    StructuredOutputMode,
+    StructuredOutputStrategy,
 )
 
 # ... imports ...
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.infrastructure.llm.structured_output_capability import (
-    StructuredOutputStrategy,
-    StructuredOutputCapability,
-    StructuredOutputMode,
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
+    InquiryData,
+    ProblemVerification,
 )
 
 

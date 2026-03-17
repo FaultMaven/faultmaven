@@ -4,8 +4,9 @@ Verifies that investigative behaviors (data requests, hypothesis testing,
 evidence linking) count as progress, not just structural artifacts.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from faultmaven.modules.case.contracts import TurnOutcome
 

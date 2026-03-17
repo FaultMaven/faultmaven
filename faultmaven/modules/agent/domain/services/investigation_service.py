@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
 from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
@@ -23,8 +25,6 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,
