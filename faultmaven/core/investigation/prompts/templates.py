@@ -76,8 +76,7 @@ TURN WHERE YOU FIRST DETECT A PROBLEM (user_confirmed_investigation=False):
 - Set user_confirmed_investigation=False. Do NOT suggest actions or next steps yet.
 - ONLY ask for confirmation and signal the investigation phase. Keep it focused.
 - Offer two COOPERATIVE suggestions: one positive ("Yes, let's investigate") and one
-  mild negative ("Not yet, I have more context to share"). If the user ignores both
-  and responds in their own words, treat it as confirmation unless they explicitly disagree.
+  mild negative ("Not yet, I have more context to share").
 
 TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
 - The user chose the positive suggestion, said yes, or engaged with the problem
