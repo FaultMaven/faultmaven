@@ -5,7 +5,7 @@ It abstracts database operations and provides clean interfaces for the service l
 
 Adapters:
 - InMemoryUserRepository: Development/testing (RAM storage)
-- PostgreSQLUserRepository: Production (PostgreSQL auth_db database)
+- PostgreSQLUserRepository: Production (SQLAlchemy ORM)
 """
 
 from abc import ABC, abstractmethod
@@ -90,9 +90,6 @@ class User(BaseModel):
     # ============================================================
     # Authorization (Simplified for InMemory/Redis)
     # ============================================================
-    # NOTE: In production PostgreSQL with user-storage-design.md,
-    # roles will be in separate tables (organization_members → roles).
-    # For InMemory/Redis development, store as simple string list.
     roles: List[str] = Field(
         default_factory=list, description="User roles (development only)"
     )
@@ -104,78 +101,31 @@ class User(BaseModel):
 
 
 class UserRepository(ABC):
-    """
-    Abstract repository interface for User persistence.
-
-    Implementations:
-    - InMemoryUserRepository: Development and testing
-    - PostgreSQLUserRepository: Production database
-    """
+    """Abstract repository interface for User persistence."""
 
     @abstractmethod
     async def save(self, user: User) -> User:
-        """
-        Save user to persistence layer.
-
-        Args:
-            user: User domain object
-
-        Returns:
-            Saved user (may have updated timestamps)
-        """
+        """Save user to persistence layer (upsert)."""
         pass
 
     @abstractmethod
     async def get(self, user_id: str) -> Optional[User]:
-        """
-        Retrieve user by ID.
-
-        Args:
-            user_id: User identifier
-
-        Returns:
-            User if found, None otherwise
-        """
+        """Retrieve user by ID."""
         pass
 
     @abstractmethod
     async def get_by_username(self, username: str) -> Optional[User]:
-        """
-        Retrieve user by username.
-
-        Args:
-            username: Username to search for
-
-        Returns:
-            User if found, None otherwise
-        """
+        """Retrieve user by username."""
         pass
 
     @abstractmethod
     async def get_by_email(self, email: str) -> Optional[User]:
-        """
-        Retrieve user by email.
-
-        Args:
-            email: Email address to search for
-
-        Returns:
-            User if found, None otherwise
-        """
+        """Retrieve user by email."""
         pass
 
     @abstractmethod
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
-        """
-        List users with pagination.
-
-        Args:
-            limit: Maximum results
-            offset: Pagination offset
-
-        Returns:
-            Tuple of (users, total_count)
-        """
+        """List users with pagination."""
         pass
 
     @abstractmethod
@@ -185,62 +135,22 @@ class UserRepository(ABC):
         offset: int = 0,
         is_active: Optional[bool] = None,
     ) -> tuple[List[User], int]:
-        """
-        List users with pagination and optional active filter.
-
-        This is the TASK-018 required interface for listing users with
-        additional filtering capabilities.
-
-        Args:
-            limit: Maximum results
-            offset: Pagination offset
-            is_active: Filter by active status (None = no filter)
-
-        Returns:
-            Tuple of (users, total_count)
-        """
+        """List users with pagination and optional active filter."""
         pass
 
     @abstractmethod
     async def update(self, user: User) -> User:
-        """
-        Update existing user.
-
-        Args:
-            user: User with updated fields
-
-        Returns:
-            Updated user object
-        """
+        """Update existing user."""
         pass
 
     @abstractmethod
     async def create(self, user: User) -> User:
-        """
-        Create a new user.
-
-        Args:
-            user: User to create
-
-        Returns:
-            Created user object
-
-        Raises:
-            ConflictError: If user with same email/username already exists
-        """
+        """Create a new user."""
         pass
 
     @abstractmethod
     async def delete(self, user_id: str) -> bool:
-        """
-        Delete user by ID.
-
-        Args:
-            user_id: User identifier
-
-        Returns:
-            True if deleted, False if not found
-        """
+        """Delete user by ID."""
         pass
 
 
@@ -250,31 +160,20 @@ class UserRepository(ABC):
 
 
 class InMemoryUserRepository(UserRepository):
-    """
-    In-memory user repository for testing and development.
-
-    Data stored in dictionary, not persistent across restarts.
-    """
+    """In-memory user repository for testing and development."""
 
     def __init__(self):
         """Initialize empty in-memory store."""
         self._users: Dict[str, User] = {}
-        self._username_index: Dict[str, str] = {}  # username -> user_id
-        self._email_index: Dict[str, str] = {}  # email -> user_id
+        self._username_index: Dict[str, str] = {}
+        self._email_index: Dict[str, str] = {}
 
     async def save(self, user: User) -> User:
         """Save user to memory."""
-        # Auto-populate updated_at timestamp
         user.updated_at = datetime.now(timezone.utc)
-
-        # Store a copy to prevent external modifications from affecting stored data
-        # This is important for update() to detect changes correctly
         self._users[user.user_id] = user.model_copy(deep=True)
-
-        # Update indexes
         self._username_index[user.username.lower()] = user.user_id
         self._email_index[user.email.lower()] = user.user_id
-
         return user
 
     async def get(self, user_id: str) -> Optional[User]:
@@ -298,13 +197,9 @@ class InMemoryUserRepository(UserRepository):
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         all_users = list(self._users.values())
-
-        # Sort by created_at descending
         all_users.sort(key=lambda u: u.created_at, reverse=True)
-
         total_count = len(all_users)
         paginated = all_users[offset : offset + limit]
-
         return paginated, total_count
 
     async def list_users(
@@ -315,63 +210,48 @@ class InMemoryUserRepository(UserRepository):
     ) -> tuple[List[User], int]:
         """List users with pagination and optional active filter."""
         all_users = list(self._users.values())
-
-        # Apply is_active filter if specified
         if is_active is not None:
             all_users = [u for u in all_users if u.is_active == is_active]
-
-        # Sort by created_at descending
         all_users.sort(key=lambda u: u.created_at, reverse=True)
-
         total_count = len(all_users)
         paginated = all_users[offset : offset + limit]
-
         return paginated, total_count
 
     async def create(self, user: User) -> User:
         """Create a new user."""
         from faultmaven.exceptions import ConflictError
 
-        # Check for existing email or username
         if user.email.lower() in self._email_index:
             raise ConflictError("Email already registered")
         if user.username.lower() in self._username_index:
             raise ConflictError("Username already taken")
-
         return await self.save(user)
 
     async def update(self, user: User) -> User:
         """Update existing user."""
-        # Check user exists
         existing = self._users.get(user.user_id)
         if not existing:
             from faultmaven.exceptions import NotFoundError
 
             raise NotFoundError("User", user.user_id)
 
-        # Store original values before they potentially get overwritten
-        # (user and existing might be the same object reference)
         original_email = existing.email
         original_username = existing.username
 
-        # If email changed, check for conflicts
         if original_email.lower() != user.email.lower():
             existing_with_email = self._email_index.get(user.email.lower())
             if existing_with_email and existing_with_email != user.user_id:
                 from faultmaven.exceptions import ConflictError
 
                 raise ConflictError("Email already in use")
-            # Remove old email from index
             self._email_index.pop(original_email.lower(), None)
 
-        # If username changed, check for conflicts
         if original_username.lower() != user.username.lower():
             existing_with_username = self._username_index.get(user.username.lower())
             if existing_with_username and existing_with_username != user.user_id:
                 from faultmaven.exceptions import ConflictError
 
                 raise ConflictError("Username already taken")
-            # Remove old username from index
             self._username_index.pop(original_username.lower(), None)
 
         return await self.save(user)
@@ -381,51 +261,54 @@ class InMemoryUserRepository(UserRepository):
         user = self._users.get(user_id)
         if not user:
             return False
-
-        # Remove from indexes
         self._username_index.pop(user.username.lower(), None)
         self._email_index.pop(user.email.lower(), None)
-
-        # Remove user
         del self._users[user_id]
         return True
 
 
 # ============================================================
-# PostgreSQL Implementation (Production)
+# SQLAlchemy ORM Implementation (Production)
 # ============================================================
 
 
 class PostgreSQLUserRepository(UserRepository):
-    """
-    PostgreSQL user repository for production use.
+    """SQLAlchemy ORM user repository for production use.
 
-    Uses SQLAlchemy for database operations.
-    Targets auth_db database in PostgreSQL.
+    Works with both SQLite and PostgreSQL via SQLAlchemy abstraction.
     """
 
     def __init__(self, db_session):
-        """
-        Initialize repository with database session.
-
-        Args:
-            db_session: SQLAlchemy async session
-        """
+        """Initialize repository with database session."""
         self.db = db_session
 
-    async def save(self, user: User) -> User:
-        """
-        Save user to PostgreSQL.
+    def _model_to_domain(self, model) -> User:
+        """Convert UserModel ORM instance to User domain object."""
+        return User(
+            user_id=model.user_id,
+            username=model.username,
+            email=model.email,
+            display_name=model.display_name,
+            avatar_url=model.avatar_url,
+            timezone=model.timezone,
+            locale=model.locale,
+            hashed_password=model.hashed_password,
+            is_active=model.is_active,
+            is_email_verified=model.is_email_verified,
+            email_verified_at=model.email_verified_at,
+            sso_provider=model.sso_provider,
+            sso_provider_id=model.sso_provider_id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            last_login_at=model.last_login_at,
+            last_password_change_at=model.last_password_change_at,
+            deleted_at=model.deleted_at,
+            roles=model.roles.split(",") if model.roles else [],
+        )
 
-        Uses INSERT ON CONFLICT UPDATE (upsert) for atomic save.
-        Auto-populates updated_at timestamp.
-        """
-        from sqlalchemy import text
-
-        # Auto-populate updated_at timestamp
-        user.updated_at = datetime.now(timezone.utc)
-
-        user_data = {
+    def _domain_to_dict(self, user: User) -> dict:
+        """Convert User domain object to dict for ORM model assignment."""
+        return {
             "user_id": user.user_id,
             "username": user.username,
             "email": user.email,
@@ -447,191 +330,82 @@ class PostgreSQLUserRepository(UserRepository):
             "roles": ",".join(user.roles) if user.roles else "",
         }
 
-        # Upsert query
-        query = text(
-            """
-            INSERT INTO users (
-                user_id, username, email, display_name, avatar_url, timezone, locale,
-                hashed_password, is_active, is_email_verified, email_verified_at,
-                sso_provider, sso_provider_id, created_at, updated_at, last_login_at,
-                last_password_change_at, deleted_at, roles
-            ) VALUES (
-                :user_id, :username, :email, :display_name, :avatar_url, :timezone, :locale,
-                :hashed_password, :is_active, :is_email_verified, :email_verified_at,
-                :sso_provider, :sso_provider_id, :created_at, :updated_at, :last_login_at,
-                :last_password_change_at, :deleted_at, :roles
-            )
-            ON CONFLICT (user_id) DO UPDATE SET
-                username = EXCLUDED.username,
-                email = EXCLUDED.email,
-                display_name = EXCLUDED.display_name,
-                avatar_url = EXCLUDED.avatar_url,
-                timezone = EXCLUDED.timezone,
-                locale = EXCLUDED.locale,
-                hashed_password = EXCLUDED.hashed_password,
-                is_active = EXCLUDED.is_active,
-                is_email_verified = EXCLUDED.is_email_verified,
-                email_verified_at = EXCLUDED.email_verified_at,
-                sso_provider = EXCLUDED.sso_provider,
-                sso_provider_id = EXCLUDED.sso_provider_id,
-                updated_at = EXCLUDED.updated_at,
-                last_login_at = EXCLUDED.last_login_at,
-                last_password_change_at = EXCLUDED.last_password_change_at,
-                deleted_at = EXCLUDED.deleted_at,
-                roles = EXCLUDED.roles
-        """
+    async def save(self, user: User) -> User:
+        """Save user via ORM merge (upsert)."""
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        user.updated_at = datetime.now(timezone.utc)
+        values = self._domain_to_dict(user)
+
+        # Use SQLAlchemy insert with on_conflict_do_update for upsert
+        stmt = sqlite_insert(UserModel).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={
+                k: v for k, v in values.items() if k not in ("user_id", "created_at")
+            },
         )
-
-        await self.db.execute(query, user_data)
+        await self.db.execute(stmt)
         await self.db.commit()
-
         return user
 
     async def get(self, user_id: str) -> Optional[User]:
-        """Retrieve user from PostgreSQL."""
-        from sqlalchemy import text
+        """Retrieve user by ID."""
+        from sqlalchemy import select
 
-        query = text("SELECT * FROM users WHERE user_id = :user_id")
-        result = await self.db.execute(query, {"user_id": user_id})
-        row = result.first()
+        from faultmaven.infrastructure.persistence.models import UserModel
 
-        if not row:
-            return None
-
-        return User(
-            user_id=row.user_id,
-            username=row.username,
-            email=row.email,
-            display_name=row.display_name,
-            avatar_url=row.avatar_url,
-            timezone=row.timezone,
-            locale=row.locale,
-            hashed_password=row.hashed_password,
-            is_active=row.is_active,
-            is_email_verified=row.is_email_verified,
-            email_verified_at=row.email_verified_at,
-            sso_provider=row.sso_provider,
-            sso_provider_id=row.sso_provider_id,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_login_at=row.last_login_at,
-            last_password_change_at=row.last_password_change_at,
-            deleted_at=row.deleted_at,
-            roles=row.roles.split(",") if row.roles else [],
-        )
+        stmt = select(UserModel).where(UserModel.user_id == user_id)
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._model_to_domain(model) if model else None
 
     async def get_by_username(self, username: str) -> Optional[User]:
-        """Retrieve user by username."""
-        from sqlalchemy import text
+        """Retrieve user by username (case-insensitive)."""
+        from sqlalchemy import func, select
 
-        query = text("SELECT * FROM users WHERE LOWER(username) = LOWER(:username)")
-        result = await self.db.execute(query, {"username": username})
-        row = result.first()
+        from faultmaven.infrastructure.persistence.models import UserModel
 
-        if not row:
-            return None
-
-        return User(
-            user_id=row.user_id,
-            username=row.username,
-            email=row.email,
-            display_name=row.display_name,
-            avatar_url=row.avatar_url,
-            timezone=row.timezone,
-            locale=row.locale,
-            hashed_password=row.hashed_password,
-            is_active=row.is_active,
-            is_email_verified=row.is_email_verified,
-            email_verified_at=row.email_verified_at,
-            sso_provider=row.sso_provider,
-            sso_provider_id=row.sso_provider_id,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_login_at=row.last_login_at,
-            last_password_change_at=row.last_password_change_at,
-            deleted_at=row.deleted_at,
-            roles=row.roles.split(",") if row.roles else [],
+        stmt = select(UserModel).where(
+            func.lower(UserModel.username) == func.lower(username)
         )
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._model_to_domain(model) if model else None
 
     async def get_by_email(self, email: str) -> Optional[User]:
-        """Retrieve user by email."""
-        from sqlalchemy import text
+        """Retrieve user by email (case-insensitive)."""
+        from sqlalchemy import func, select
 
-        query = text("SELECT * FROM users WHERE LOWER(email) = LOWER(:email)")
-        result = await self.db.execute(query, {"email": email})
-        row = result.first()
+        from faultmaven.infrastructure.persistence.models import UserModel
 
-        if not row:
-            return None
-
-        return User(
-            user_id=row.user_id,
-            username=row.username,
-            email=row.email,
-            display_name=row.display_name,
-            avatar_url=row.avatar_url,
-            timezone=row.timezone,
-            locale=row.locale,
-            hashed_password=row.hashed_password,
-            is_active=row.is_active,
-            is_email_verified=row.is_email_verified,
-            email_verified_at=row.email_verified_at,
-            sso_provider=row.sso_provider,
-            sso_provider_id=row.sso_provider_id,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_login_at=row.last_login_at,
-            last_password_change_at=row.last_password_change_at,
-            deleted_at=row.deleted_at,
-            roles=row.roles.split(",") if row.roles else [],
-        )
+        stmt = select(UserModel).where(func.lower(UserModel.email) == func.lower(email))
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._model_to_domain(model) if model else None
 
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
-        from sqlalchemy import text
+        from sqlalchemy import func, select
 
-        # Get total count
-        count_query = text("SELECT COUNT(*) FROM users")
-        count_result = await self.db.execute(count_query)
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        count_stmt = select(func.count()).select_from(UserModel)
+        count_result = await self.db.execute(count_stmt)
         total_count = count_result.scalar()
 
-        # Get paginated results
-        query = text(
-            """
-            SELECT * FROM users
-            ORDER BY created_at DESC
-            LIMIT :limit OFFSET :offset
-        """
+        stmt = (
+            select(UserModel)
+            .order_by(UserModel.created_at.desc())
+            .limit(limit)
+            .offset(offset)
         )
-        result = await self.db.execute(query, {"limit": limit, "offset": offset})
-        rows = result.fetchall()
+        result = await self.db.execute(stmt)
+        models = result.scalars().all()
 
-        users = [
-            User(
-                user_id=row.user_id,
-                username=row.username,
-                email=row.email,
-                display_name=row.display_name,
-                avatar_url=row.avatar_url,
-                timezone=row.timezone,
-                locale=row.locale,
-                hashed_password=row.hashed_password,
-                is_active=row.is_active,
-                is_email_verified=row.is_email_verified,
-                email_verified_at=row.email_verified_at,
-                sso_provider=row.sso_provider,
-                sso_provider_id=row.sso_provider_id,
-                created_at=row.created_at,
-                updated_at=row.updated_at,
-                last_login_at=row.last_login_at,
-                last_password_change_at=row.last_password_change_at,
-                deleted_at=row.deleted_at,
-                roles=row.roles.split(",") if row.roles else [],
-            )
-            for row in rows
-        ]
-
-        return users, total_count
+        return [self._model_to_domain(m) for m in models], total_count
 
     async def list_users(
         self,
@@ -640,131 +414,78 @@ class PostgreSQLUserRepository(UserRepository):
         is_active: Optional[bool] = None,
     ) -> tuple[List[User], int]:
         """List users with pagination and optional active filter."""
-        from sqlalchemy import text
+        from sqlalchemy import func, select
 
-        # Build query with optional filter
-        where_clause = ""
-        params = {"limit": limit, "offset": offset}
+        from faultmaven.infrastructure.persistence.models import UserModel
 
+        base_filter = []
         if is_active is not None:
-            where_clause = "WHERE is_active = :is_active"
-            params["is_active"] = is_active
+            base_filter.append(UserModel.is_active == is_active)
 
-        # Get total count
-        count_query = text(f"SELECT COUNT(*) FROM users {where_clause}")
-        count_result = await self.db.execute(count_query, params)
+        count_stmt = select(func.count()).select_from(UserModel).where(*base_filter)
+        count_result = await self.db.execute(count_stmt)
         total_count = count_result.scalar()
 
-        # Get paginated results
-        query = text(
-            f"""
-            SELECT * FROM users
-            {where_clause}
-            ORDER BY created_at DESC
-            LIMIT :limit OFFSET :offset
-        """
+        stmt = (
+            select(UserModel)
+            .where(*base_filter)
+            .order_by(UserModel.created_at.desc())
+            .limit(limit)
+            .offset(offset)
         )
-        result = await self.db.execute(query, params)
-        rows = result.fetchall()
+        result = await self.db.execute(stmt)
+        models = result.scalars().all()
 
-        users = [
-            User(
-                user_id=row.user_id,
-                username=row.username,
-                email=row.email,
-                display_name=row.display_name,
-                avatar_url=row.avatar_url,
-                timezone=row.timezone,
-                locale=row.locale,
-                hashed_password=row.hashed_password,
-                is_active=row.is_active,
-                is_email_verified=row.is_email_verified,
-                email_verified_at=row.email_verified_at,
-                sso_provider=row.sso_provider,
-                sso_provider_id=row.sso_provider_id,
-                created_at=row.created_at,
-                updated_at=row.updated_at,
-                last_login_at=row.last_login_at,
-                last_password_change_at=row.last_password_change_at,
-                deleted_at=row.deleted_at,
-                roles=row.roles.split(",") if row.roles else [],
-            )
-            for row in rows
-        ]
-
-        return users, total_count
+        return [self._model_to_domain(m) for m in models], total_count
 
     async def create(self, user: User) -> User:
-        """Create a new user.
-
-        Checks for email/username uniqueness before inserting.
-        """
-        from sqlalchemy import text
-
+        """Create a new user with uniqueness checks."""
         from faultmaven.exceptions import ConflictError
 
-        # Check for existing email
-        email_check = text(
-            "SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email)"
-        )
-        result = await self.db.execute(email_check, {"email": user.email})
-        if result.first():
+        if await self.get_by_email(user.email):
             raise ConflictError("Email already registered")
-
-        # Check for existing username
-        username_check = text(
-            "SELECT user_id FROM users WHERE LOWER(username) = LOWER(:username)"
-        )
-        result = await self.db.execute(username_check, {"username": user.username})
-        if result.first():
+        if await self.get_by_username(user.username):
             raise ConflictError("Username already taken")
-
         return await self.save(user)
 
     async def update(self, user: User) -> User:
-        """Update existing user.
-
-        Checks for email/username uniqueness if changed.
-        """
-        from sqlalchemy import text
+        """Update existing user with uniqueness checks."""
+        from sqlalchemy import func, select
 
         from faultmaven.exceptions import ConflictError, NotFoundError
+        from faultmaven.infrastructure.persistence.models import UserModel
 
-        # Check user exists
         existing = await self.get(user.user_id)
         if not existing:
             raise NotFoundError("User", user.user_id)
 
-        # If email changed, check for conflicts
         if existing.email.lower() != user.email.lower():
-            email_check = text(
-                "SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email) AND user_id != :user_id"
+            stmt = select(UserModel.user_id).where(
+                func.lower(UserModel.email) == func.lower(user.email),
+                UserModel.user_id != user.user_id,
             )
-            result = await self.db.execute(
-                email_check, {"email": user.email, "user_id": user.user_id}
-            )
+            result = await self.db.execute(stmt)
             if result.first():
                 raise ConflictError("Email already in use")
 
-        # If username changed, check for conflicts
         if existing.username.lower() != user.username.lower():
-            username_check = text(
-                "SELECT user_id FROM users WHERE LOWER(username) = LOWER(:username) AND user_id != :user_id"
+            stmt = select(UserModel.user_id).where(
+                func.lower(UserModel.username) == func.lower(user.username),
+                UserModel.user_id != user.user_id,
             )
-            result = await self.db.execute(
-                username_check, {"username": user.username, "user_id": user.user_id}
-            )
+            result = await self.db.execute(stmt)
             if result.first():
                 raise ConflictError("Username already taken")
 
         return await self.save(user)
 
     async def delete(self, user_id: str) -> bool:
-        """Delete user from PostgreSQL."""
-        from sqlalchemy import text
+        """Delete user."""
+        from sqlalchemy import delete
 
-        query = text("DELETE FROM users WHERE user_id = :user_id")
-        result = await self.db.execute(query, {"user_id": user_id})
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        stmt = delete(UserModel).where(UserModel.user_id == user_id)
+        result = await self.db.execute(stmt)
         await self.db.commit()
-
         return result.rowcount > 0

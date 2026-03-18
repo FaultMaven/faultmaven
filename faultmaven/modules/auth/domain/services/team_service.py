@@ -131,7 +131,6 @@ class TeamService:
         user_id: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        settings: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Update team details.
@@ -166,8 +165,6 @@ class TeamService:
             team.name = name
         if description is not None:
             team.description = description
-        if settings is not None:
-            team.settings = settings
 
         return await self.repository.update_team(team)
 

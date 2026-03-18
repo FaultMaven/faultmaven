@@ -1,15 +1,22 @@
-"""Organization Repository - PostgreSQL Implementation.
+"""Organization Repository - SQLAlchemy ORM Implementation.
 
 Implements IOrganizationRepository for organization and member management.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.infrastructure.persistence.models import (
+    OrganizationMemberModel,
+    OrganizationModel,
+    RolePermissionModel,
+)
 from faultmaven.models.interfaces_user import (
     IOrganizationRepository,
     Organization,
@@ -20,53 +27,53 @@ from faultmaven.models.interfaces_user import (
 logger = logging.getLogger(__name__)
 
 
-class PostgreSQLOrganizationRepository(IOrganizationRepository):
-    """PostgreSQL implementation of organization repository.
+def _parse_settings(raw) -> dict:
+    """Parse settings from DB (TEXT in SQLite, JSONB in PostgreSQL)."""
+    if isinstance(raw, str):
+        return json.loads(raw) if raw else {}
+    if raw is None:
+        return {}
+    return raw
 
-    Manages organizations, members, and RBAC permissions.
-    """
+
+def _model_to_domain(model: OrganizationModel) -> Organization:
+    """Convert ORM model to domain object."""
+    return Organization(
+        org_id=model.organization_id,
+        name=model.name,
+        slug=model.slug,
+        description=model.description,
+        plan_tier=OrgPlanTier(model.plan_tier),
+        max_members=model.max_members,
+        max_cases=model.max_cases,
+        settings=_parse_settings(model.settings),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        deleted_at=model.deleted_at,
+    )
+
+
+class PostgreSQLOrganizationRepository(IOrganizationRepository):
+    """SQLAlchemy ORM implementation of organization repository."""
 
     def __init__(self, db_session: AsyncSession):
-        """Initialize repository with database session.
-
-        Args:
-            db_session: SQLAlchemy async session
-        """
         self.db = db_session
 
     async def create_organization(self, org: Organization) -> Organization:
         """Create a new organization."""
-        import json
-
-        query = text(
-            """
-            INSERT INTO organizations (
-                organization_id, name, slug, description, plan_tier, max_members, max_cases,
-                settings, created_at, updated_at
-            ) VALUES (
-                :org_id, :name, :slug, :description, :plan_tier, :max_members, :max_cases,
-                :settings, :created_at, :updated_at
-            )
-            RETURNING organization_id
-        """
+        model = OrganizationModel(
+            organization_id=org.org_id,
+            name=org.name,
+            slug=org.slug,
+            description=org.description,
+            plan_tier=org.plan_tier.value,
+            max_members=org.max_members,
+            max_cases=org.max_cases,
+            settings=json.dumps(org.settings or {}),
+            created_at=org.created_at,
+            updated_at=org.updated_at,
         )
-
-        await self.db.execute(
-            query,
-            {
-                "org_id": org.org_id,
-                "name": org.name,
-                "slug": org.slug,
-                "description": org.description,
-                "plan_tier": org.plan_tier.value,
-                "max_members": org.max_members,
-                "max_cases": org.max_cases,
-                "max_cases": org.max_cases,
-                "settings": json.dumps(org.settings or {}),
-                "created_at": org.created_at,
-                "updated_at": org.updated_at,
-            },
-        )
+        self.db.add(model)
         await self.db.commit()
 
         logger.info(f"Created organization: {org.org_id} ({org.name})")
@@ -74,207 +81,97 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
     async def get_organization(self, org_id: str) -> Optional[Organization]:
         """Get organization by ID."""
-        import json
-
-        query = text(
-            """
-            SELECT organization_id, name, slug, description, plan_tier, max_members, max_cases,
-                   settings, created_at, updated_at, deleted_at
-            FROM organizations
-            WHERE organization_id = :org_id AND deleted_at IS NULL
-        """
+        stmt = select(OrganizationModel).where(
+            OrganizationModel.organization_id == org_id,
+            OrganizationModel.deleted_at.is_(None),
         )
-
-        result = await self.db.execute(query, {"org_id": org_id})
-        row = result.fetchone()
-
-        if not row:
-            return None
-
-        # Parse settings JSON (SQLite stores as TEXT, PostgreSQL as JSONB)
-        settings = row.settings
-        if isinstance(settings, str):
-            settings = json.loads(settings) if settings else {}
-        elif settings is None:
-            settings = {}
-
-        return Organization(
-            org_id=row.organization_id,
-            name=row.name,
-            slug=row.slug,
-            description=row.description,
-            plan_tier=OrgPlanTier(row.plan_tier),
-            max_members=row.max_members,
-            max_cases=row.max_cases,
-            settings=settings,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            deleted_at=row.deleted_at,
-        )
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _model_to_domain(model) if model else None
 
     async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug."""
-        import json
-
-        query = text(
-            """
-            SELECT organization_id, name, slug, description, plan_tier, max_members, max_cases,
-                   settings, created_at, updated_at, deleted_at
-            FROM organizations
-            WHERE slug = :slug AND deleted_at IS NULL
-        """
+        stmt = select(OrganizationModel).where(
+            OrganizationModel.slug == slug,
+            OrganizationModel.deleted_at.is_(None),
         )
-
-        result = await self.db.execute(query, {"slug": slug})
-        row = result.fetchone()
-
-        if not row:
-            return None
-
-        # Parse settings JSON (SQLite stores as TEXT, PostgreSQL as JSONB)
-        settings = row.settings
-        if isinstance(settings, str):
-            settings = json.loads(settings) if settings else {}
-        elif settings is None:
-            settings = {}
-
-        return Organization(
-            org_id=row.organization_id,
-            name=row.name,
-            slug=row.slug,
-            description=row.description,
-            plan_tier=OrgPlanTier(row.plan_tier),
-            max_members=row.max_members,
-            max_cases=row.max_cases,
-            settings=settings,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            deleted_at=row.deleted_at,
-        )
+        result = await self.db.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _model_to_domain(model) if model else None
 
     async def update_organization(self, org: Organization) -> bool:
         """Update organization."""
-        import json
-
         org.updated_at = datetime.now(timezone.utc)
 
-        query = text(
-            """
-            UPDATE organizations
-            SET name = :name,
-                slug = :slug,
-                description = :description,
-                plan_tier = :plan_tier,
-                max_members = :max_members,
-                max_cases = :max_cases,
-                max_cases = :max_cases,
-                settings = :settings,
-                updated_at = :updated_at
-            WHERE organization_id = :org_id AND deleted_at IS NULL
-        """
+        stmt = (
+            update(OrganizationModel)
+            .where(
+                OrganizationModel.organization_id == org.org_id,
+                OrganizationModel.deleted_at.is_(None),
+            )
+            .values(
+                name=org.name,
+                slug=org.slug,
+                description=org.description,
+                plan_tier=org.plan_tier.value,
+                max_members=org.max_members,
+                max_cases=org.max_cases,
+                settings=json.dumps(org.settings or {}),
+                updated_at=org.updated_at,
+            )
         )
-
-        result = await self.db.execute(
-            query,
-            {
-                "org_id": org.org_id,
-                "name": org.name,
-                "slug": org.slug,
-                "description": org.description,
-                "plan_tier": org.plan_tier.value,
-                "max_members": org.max_members,
-                "max_cases": org.max_cases,
-                "max_cases": org.max_cases,
-                "settings": json.dumps(org.settings or {}),
-                "updated_at": org.updated_at,
-            },
-        )
+        result = await self.db.execute(stmt)
         await self.db.commit()
-
         return result.rowcount > 0
 
     async def delete_organization(self, org_id: str) -> bool:
         """Soft delete organization."""
-        query = text(
-            """
-            UPDATE organizations
-            SET deleted_at = :deleted_at
-            WHERE organization_id = :org_id AND deleted_at IS NULL
-        """
+        stmt = (
+            update(OrganizationModel)
+            .where(
+                OrganizationModel.organization_id == org_id,
+                OrganizationModel.deleted_at.is_(None),
+            )
+            .values(deleted_at=datetime.now(timezone.utc))
         )
-
-        result = await self.db.execute(
-            query, {"org_id": org_id, "deleted_at": datetime.now(timezone.utc)}
-        )
+        result = await self.db.execute(stmt)
         await self.db.commit()
-
         return result.rowcount > 0
 
     async def list_user_organizations(self, user_id: str) -> List[Organization]:
         """List all organizations a user belongs to."""
-        import json
-
-        query = text(
-            """
-            SELECT o.organization_id, o.name, o.slug, o.description, o.plan_tier, o.max_members,
-                   o.max_cases, o.settings, o.created_at, o.updated_at, o.deleted_at
-            FROM organizations o
-            JOIN organization_members om ON o.organization_id = om.organization_id
-            WHERE om.user_id = :user_id AND o.deleted_at IS NULL
-            ORDER BY om.joined_at DESC
-        """
-        )
-
-        result = await self.db.execute(query, {"user_id": user_id})
-        rows = result.fetchall()
-
-        organizations = []
-        for row in rows:
-            # Parse settings JSON (SQLite stores as TEXT, PostgreSQL as JSONB)
-            settings = row.settings
-            if isinstance(settings, str):
-                settings = json.loads(settings) if settings else {}
-            elif settings is None:
-                settings = {}
-
-            organizations.append(
-                Organization(
-                    org_id=row.organization_id,
-                    name=row.name,
-                    slug=row.slug,
-                    description=row.description,
-                    plan_tier=OrgPlanTier(row.plan_tier),
-                    max_members=row.max_members,
-                    max_cases=row.max_cases,
-                    settings=settings,
-                    created_at=row.created_at,
-                    updated_at=row.updated_at,
-                    deleted_at=row.deleted_at,
-                )
+        stmt = (
+            select(OrganizationModel)
+            .join(
+                OrganizationMemberModel,
+                OrganizationModel.organization_id
+                == OrganizationMemberModel.organization_id,
             )
-
-        return organizations
+            .where(
+                OrganizationMemberModel.user_id == user_id,
+                OrganizationModel.deleted_at.is_(None),
+            )
+            .order_by(OrganizationMemberModel.joined_at.desc())
+        )
+        result = await self.db.execute(stmt)
+        models = result.scalars().all()
+        return [_model_to_domain(m) for m in models]
 
     async def add_member(self, org_id: str, user_id: str, role_id: str) -> bool:
-        """Add user to organization with role."""
-        query = text(
-            """
-            INSERT INTO organization_members (user_id, organization_id, role_id, joined_at)
-            VALUES (:user_id, :org_id, :role_id, :joined_at)
-            ON CONFLICT (user_id, organization_id) DO UPDATE
-            SET role_id = EXCLUDED.role_id
-        """
+        """Add user to organization with role (upsert)."""
+        now = datetime.now(timezone.utc)
+        stmt = sqlite_insert(OrganizationMemberModel).values(
+            user_id=user_id,
+            organization_id=org_id,
+            role_id=role_id,
+            joined_at=now,
+            updated_at=now,
         )
-
-        await self.db.execute(
-            query,
-            {
-                "user_id": user_id,
-                "org_id": org_id,
-                "role_id": role_id,
-                "joined_at": datetime.now(timezone.utc),
-            },
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "organization_id"],
+            set_={"role_id": role_id, "updated_at": now},
         )
+        await self.db.execute(stmt)
         await self.db.commit()
 
         logger.info(
@@ -284,48 +181,37 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
     async def remove_member(self, org_id: str, user_id: str) -> bool:
         """Remove user from organization."""
-        query = text(
-            """
-            DELETE FROM organization_members
-            WHERE organization_id = :org_id AND user_id = :user_id
-        """
+        stmt = delete(OrganizationMemberModel).where(
+            OrganizationMemberModel.organization_id == org_id,
+            OrganizationMemberModel.user_id == user_id,
         )
-
-        result = await self.db.execute(query, {"org_id": org_id, "user_id": user_id})
+        result = await self.db.execute(stmt)
         await self.db.commit()
-
         return result.rowcount > 0
 
     async def update_member_role(self, org_id: str, user_id: str, role_id: str) -> bool:
         """Update user's role in organization."""
-        query = text(
-            """
-            UPDATE organization_members
-            SET role_id = :role_id
-            WHERE organization_id = :org_id AND user_id = :user_id
-        """
+        stmt = (
+            update(OrganizationMemberModel)
+            .where(
+                OrganizationMemberModel.organization_id == org_id,
+                OrganizationMemberModel.user_id == user_id,
+            )
+            .values(role_id=role_id)
         )
-
-        result = await self.db.execute(
-            query, {"org_id": org_id, "user_id": user_id, "role_id": role_id}
-        )
+        result = await self.db.execute(stmt)
         await self.db.commit()
-
         return result.rowcount > 0
 
     async def list_organization_members(self, org_id: str) -> List[OrganizationMember]:
         """List all members of an organization."""
-        query = text(
-            """
-            SELECT user_id, organization_id, role_id, joined_at, last_active_at
-            FROM organization_members
-            WHERE organization_id = :org_id
-            ORDER BY joined_at DESC
-        """
+        stmt = (
+            select(OrganizationMemberModel)
+            .where(OrganizationMemberModel.organization_id == org_id)
+            .order_by(OrganizationMemberModel.joined_at.desc())
         )
-
-        result = await self.db.execute(query, {"org_id": org_id})
-        rows = result.fetchall()
+        result = await self.db.execute(stmt)
+        rows = result.scalars().all()
 
         return [
             OrganizationMember(
@@ -340,36 +226,47 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
     async def get_member_role(self, org_id: str, user_id: str) -> Optional[str]:
         """Get user's role in organization."""
-        query = text(
-            """
-            SELECT role_id
-            FROM organization_members
-            WHERE organization_id = :org_id AND user_id = :user_id
-        """
+        stmt = select(OrganizationMemberModel.role_id).where(
+            OrganizationMemberModel.organization_id == org_id,
+            OrganizationMemberModel.user_id == user_id,
         )
-
-        result = await self.db.execute(query, {"org_id": org_id, "user_id": user_id})
-        row = result.fetchone()
-
-        return row.role_id if row else None
+        result = await self.db.execute(stmt)
+        row = result.scalar_one_or_none()
+        return row if row else None
 
     async def user_has_permission(
         self, user_id: str, org_id: str, permission: str
     ) -> bool:
         """Check if user has permission in organization.
 
-        Uses the SQL function created in migration 003.
+        Replaces the old SQL function user_has_org_permission() with an ORM join.
         Permission format: 'resource.action' (e.g., 'cases.write')
         """
-        query = text(
-            """
-            SELECT user_has_org_permission(:user_id, :org_id, :permission)
-        """
-        )
+        parts = permission.split(".")
+        if len(parts) != 2:
+            return False
+        resource, action = parts
 
-        result = await self.db.execute(
-            query, {"user_id": user_id, "org_id": org_id, "permission": permission}
-        )
-        row = result.fetchone()
+        from faultmaven.infrastructure.persistence.models import PermissionModel
 
-        return bool(row[0]) if row else False
+        stmt = (
+            select(func.count())
+            .select_from(OrganizationMemberModel)
+            .join(
+                RolePermissionModel,
+                OrganizationMemberModel.role_id == RolePermissionModel.role_id,
+            )
+            .join(
+                PermissionModel,
+                RolePermissionModel.permission_id == PermissionModel.permission_id,
+            )
+            .where(
+                OrganizationMemberModel.user_id == user_id,
+                OrganizationMemberModel.organization_id == org_id,
+                PermissionModel.resource == resource,
+                PermissionModel.action == action,
+            )
+        )
+        result = await self.db.execute(stmt)
+        count = result.scalar()
+        return count > 0

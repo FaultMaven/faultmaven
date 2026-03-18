@@ -1180,7 +1180,7 @@ async def generate_case_title(
                 ),
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id},
             )
@@ -1239,7 +1239,7 @@ async def generate_case_title(
                 ),
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id},
             )

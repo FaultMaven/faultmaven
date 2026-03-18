@@ -93,18 +93,21 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             case.updated_at = datetime.now(UTC)
 
+            org_id = case.organization_id
             async with self.db.begin():
                 await self._upsert_case_record(case)
-                await self._upsert_evidence(case.case_id, case.evidence)
-                await self._upsert_hypotheses(case.case_id, case.hypotheses)
-                await self._upsert_solutions(case.case_id, case.solutions)
-                await self._upsert_uploaded_files(case.case_id, case.uploaded_files)
-                await self._upsert_messages(
-                    case.case_id, case.messages
-                )  # Save messages!
+                await self._upsert_evidence(case.case_id, case.evidence, org_id)
+                await self._upsert_hypotheses(case.case_id, case.hypotheses, org_id)
+                await self._upsert_solutions(case.case_id, case.solutions, org_id)
+                await self._upsert_uploaded_files(
+                    case.case_id, case.uploaded_files, org_id
+                )
+                await self._upsert_messages(case.case_id, case.messages, org_id)
 
                 if case.action_history:
-                    await self._append_case_actions(case.case_id, case.action_history)
+                    await self._append_case_actions(
+                        case.case_id, case.action_history, org_id
+                    )
 
                 await self.db.commit()
 
@@ -561,10 +564,11 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
             # SQLite-compatible: no ::jsonb type cast
+            # organization_id is NOT NULL — derive from parent case
             query = text(
                 """
-                INSERT INTO case_messages (message_id, case_id, turn_number, role, content, created_at, token_count, metadata)
-                VALUES (:message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata)
+                INSERT INTO case_messages (message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata)
+                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id), :turn_number, :role, :content, :created_at, :token_count, :metadata)
             """
             )
 
@@ -831,10 +835,12 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO case_checkpoints (
-                    checkpoint_id, case_id, turn_number, case_snapshot,
+                    checkpoint_id, case_id, organization_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
-                    :checkpoint_id, :case_id, :turn_number, :case_snapshot,
+                    :checkpoint_id, :case_id,
+                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id),
+                    :turn_number, :case_snapshot,
                     :snapshot_hash, :trigger, :created_at, :metadata
                 )
             """
@@ -1252,7 +1258,7 @@ class SQLiteCaseRepository(CaseRepository):
         )
 
     async def _upsert_evidence(
-        self, case_id: str, evidence_list: builtins.list[Evidence]
+        self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
     ) -> None:
         """Upsert evidence records (SQLite-compatible)."""
         # Delete existing evidence not in current list using IN clause
@@ -1277,11 +1283,11 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO evidence (
-                    evidence_id, case_id, category, summary, preprocessed_content,
+                    evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata,
                     source_type_new, content_hash, collected_at_turn, source_file_id
                 ) VALUES (
-                    :evidence_id, :case_id, :category, :summary, :preprocessed_content,
+                    :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata,
                     :source_type_new, :content_hash, :collected_at_turn, :source_file_id
                 )
@@ -1310,6 +1316,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "category": evidence.category.value,
                     "summary": evidence.summary,
                     "preprocessed_content": evidence.preprocessed_content or "",
@@ -1326,7 +1333,7 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _upsert_hypotheses(
-        self, case_id: str, hypotheses_dict: dict[str, Hypothesis]
+        self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str
     ) -> None:
         """Upsert hypotheses records (SQLite-compatible)."""
         current_ids = list(hypotheses_dict.keys())
@@ -1348,13 +1355,13 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
+                    hypothesis_id, case_id, organization_id, statement, status, likelihood, initial_likelihood,
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason, evidence_links,
                     tested_at, concluded_at, proposed_at, updated_at, metadata
                 ) VALUES (
-                    :hypothesis_id, :case_id, :statement, :status, :likelihood, :initial_likelihood,
+                    :hypothesis_id, :case_id, :organization_id, :statement, :status, :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason, :evidence_links,
@@ -1381,6 +1388,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "statement": hypothesis.statement,
                     "status": hypothesis.status.value,
                     "likelihood": hypothesis.likelihood,
@@ -1409,7 +1417,10 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _upsert_solutions(
-        self, case_id: str, solutions_list: builtins.list[Solution]
+        self,
+        case_id: str,
+        solutions_list: builtins.list[Solution],
+        organization_id: str,
     ) -> None:
         """Upsert solutions records (SQLite-compatible)."""
         current_ids = [
@@ -1439,12 +1450,12 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO solutions (
-                    solution_id, case_id, solution_type, title, immediate_action,
+                    solution_id, case_id, organization_id, solution_type, title, immediate_action,
                     longterm_fix, implementation_steps, commands, risks,
                     description, status,
                     proposed_at, updated_at, metadata
                 ) VALUES (
-                    :solution_id, :case_id, :solution_type, :title, :immediate_action,
+                    :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
                     :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :status,
                     :proposed_at, :updated_at, :metadata
@@ -1469,6 +1480,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "solution_id": solution_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "solution_type": (
                         solution.solution_type.value
                         if hasattr(solution, "solution_type") and solution.solution_type
@@ -1511,7 +1523,10 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _upsert_uploaded_files(
-        self, case_id: str, files_list: builtins.list[UploadedFile]
+        self,
+        case_id: str,
+        files_list: builtins.list[UploadedFile],
+        organization_id: str,
     ) -> None:
         """Upsert uploaded_files records (SQLite-compatible)."""
         current_ids = [f.file_id for f in files_list]
@@ -1533,11 +1548,11 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO uploaded_files (
-                    file_id, case_id, filename, size_bytes, data_type,
+                    file_id, case_id, organization_id, filename, size_bytes, data_type,
                     uploaded_at_turn, uploaded_at, source_type,
                     content_ref, preprocessing_summary, metadata
                 ) VALUES (
-                    :file_id, :case_id, :filename, :size_bytes, :data_type,
+                    :file_id, :case_id, :organization_id, :filename, :size_bytes, :data_type,
                     :uploaded_at_turn, :uploaded_at, :source_type,
                     :content_ref, :preprocessing_summary, :metadata
                 )
@@ -1558,6 +1573,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "file_id": file.file_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "filename": file.filename,
                     "size_bytes": file.size_bytes,
                     "data_type": file.data_type,
@@ -1571,7 +1587,7 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _upsert_messages(
-        self, case_id: str, messages_list: builtins.list[dict]
+        self, case_id: str, messages_list: builtins.list[dict], organization_id: str
     ) -> None:
         """Upsert case messages (SQLite-compatible).
 
@@ -1607,9 +1623,9 @@ class SQLiteCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO case_messages (
-                    message_id, case_id, turn_number, role, content, created_at, token_count, metadata
+                    message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata
+                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, :metadata
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -1626,6 +1642,7 @@ class SQLiteCaseRepository(CaseRepository):
                 {
                     "message_id": msg.get("message_id"),
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
@@ -1636,16 +1653,16 @@ class SQLiteCaseRepository(CaseRepository):
             )
 
     async def _append_case_actions(
-        self, case_id: str, transitions: builtins.list[CaseAction]
+        self, case_id: str, transitions: builtins.list[CaseAction], organization_id: str
     ) -> None:
         """Append case actions (SQLite-compatible)."""
         for transition in transitions:
             query = text(
                 """
                 INSERT INTO case_actions (
-                    case_id, from_status, to_status, reason, transitioned_at, metadata
+                    case_id, organization_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata
+                    :case_id, :organization_id, :from_status, :to_status, :reason, :transitioned_at, :metadata
                 )
                 ON CONFLICT DO NOTHING
             """
@@ -1655,6 +1672,7 @@ class SQLiteCaseRepository(CaseRepository):
                 query,
                 {
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "from_status": (
                         transition.from_status.value if transition.from_status else None
                     ),

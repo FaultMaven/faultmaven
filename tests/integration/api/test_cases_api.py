@@ -498,14 +498,14 @@ class TestListCases:
             "/api/v1/cases?limit=200",
             headers=headers,
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
         # Limit too low
         response = await client.get(
             "/api/v1/cases?limit=0",
             headers=headers,
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 # ============================================================

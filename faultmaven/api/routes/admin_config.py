@@ -186,7 +186,7 @@ async def update_llm_config(
         if request.primary_provider is not None:
             if request.primary_provider not in valid_names:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Unknown provider: '{request.primary_provider}'. "
                     f"Valid providers: {', '.join(valid_names)}",
                 )
@@ -195,7 +195,7 @@ async def update_llm_config(
         if request.api_key is not None and request.provider_name is not None:
             if request.provider_name not in valid_names:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Unknown provider: '{request.provider_name}'",
                 )
             key_field = f"{request.provider_name}_api_key"
@@ -204,7 +204,7 @@ async def update_llm_config(
         if request.model is not None and request.provider_name is not None:
             if request.provider_name not in valid_names:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Unknown provider: '{request.provider_name}'",
                 )
             model_field = f"{request.provider_name}_model"
@@ -283,7 +283,7 @@ async def check_llm_connection(
 
         if provider_name not in valid_names:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Unknown provider: '{provider_name}'. "
                 f"Valid providers: {', '.join(valid_names)}",
             )

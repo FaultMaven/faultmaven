@@ -278,7 +278,7 @@ class TestExecuteAgentNonStreaming:
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     def test_execute_agent_message_too_long(self, client, headers):
         """Test execution with message exceeding max length."""
@@ -291,7 +291,7 @@ class TestExecuteAgentNonStreaming:
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     def test_execute_agent_default_agent_type(
         self, client, mock_agent_service, mock_execution, headers
@@ -338,7 +338,7 @@ class TestExecuteAgentNonStreaming:
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         # Verify error message mentions valid agent types
         data = response.json()
         assert "invalid_type" in str(data).lower() or "agent_type" in str(data).lower()

@@ -71,7 +71,6 @@ class TeamUpdateRequest(BaseModel):
     description: Optional[str] = Field(
         None, description="Updated description", max_length=1000
     )
-    settings: Optional[Dict[str, Any]] = Field(None, description="Team settings")
 
 
 class TeamResponse(BaseModel):
@@ -81,7 +80,6 @@ class TeamResponse(BaseModel):
     org_id: str
     name: str
     description: Optional[str]
-    settings: Dict[str, Any]
     created_at: datetime
     updated_at: datetime
 
@@ -158,7 +156,6 @@ async def create_team(
             org_id=team.org_id,
             name=team.name,
             description=team.description,
-            settings=team.settings or {},
             created_at=team.created_at,
             updated_at=team.updated_at,
         )
@@ -198,7 +195,6 @@ async def get_team(
             org_id=team.org_id,
             name=team.name,
             description=team.description,
-            settings=team.settings or {},
             created_at=team.created_at,
             updated_at=team.updated_at,
         )
@@ -231,7 +227,6 @@ async def update_team(
             user_id=user_id,
             name=request.name,
             description=request.description,
-            settings=request.settings,
         )
 
         if not success:
@@ -250,7 +245,6 @@ async def update_team(
             org_id=team.org_id,
             name=team.name,
             description=team.description,
-            settings=team.settings or {},
             created_at=team.created_at,
             updated_at=team.updated_at,
         )
@@ -321,7 +315,6 @@ async def list_organization_teams(
                 org_id=team.org_id,
                 name=team.name,
                 description=team.description,
-                settings=team.settings or {},
                 created_at=team.created_at,
                 updated_at=team.updated_at,
             )
@@ -357,7 +350,6 @@ async def list_user_teams(
                 org_id=team.org_id,
                 name=team.name,
                 description=team.description,
-                settings=team.settings or {},
                 created_at=team.created_at,
                 updated_at=team.updated_at,
             )

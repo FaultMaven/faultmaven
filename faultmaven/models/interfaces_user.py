@@ -91,7 +91,6 @@ class Team(BaseModel):
     org_id: str
     name: str
     description: Optional[str] = None
-    settings: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
     deleted_at: Optional[datetime] = None

@@ -742,9 +742,15 @@ class SolutionModel(Base):
         nullable=False,
         index=True,
     )
+    solution_type = Column(String(30), default="other")
+    title = Column(String(500), default="Untitled solution")
     description = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, default="proposed", index=True)
+    immediate_action = Column(Text)
+    longterm_fix = Column(Text)
     implementation_steps = Column(Text)  # JSON array as TEXT
+    commands = Column(Text)  # JSON array as TEXT
+    risks = Column(Text)  # JSON array as TEXT
     risk_level = Column(String(20))
     estimated_effort = Column(String(50))
     verification_result = Column(Text)

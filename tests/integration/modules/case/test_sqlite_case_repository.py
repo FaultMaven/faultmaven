@@ -105,6 +105,7 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS evidence (
             evidence_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             category TEXT,
             summary TEXT,
             preprocessed_content TEXT,
@@ -113,6 +114,10 @@ async def create_test_schema(session: AsyncSession):
             filename TEXT,
             upload_timestamp TIMESTAMP,
             metadata TEXT,
+            source_type_new TEXT,
+            content_hash TEXT,
+            collected_at_turn INTEGER,
+            source_file_id TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """
@@ -126,6 +131,7 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS hypotheses (
             hypothesis_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             statement TEXT,
             status TEXT DEFAULT 'captured',
             likelihood REAL,
@@ -144,6 +150,8 @@ async def create_test_schema(session: AsyncSession):
             proposed_at TIMESTAMP,
             updated_at TIMESTAMP,
             metadata TEXT,
+            created_by TEXT NOT NULL DEFAULT 'system',
+            updated_by TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """
@@ -157,9 +165,10 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS solutions (
             solution_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             solution_type TEXT DEFAULT 'other',
             title TEXT DEFAULT '',
-            description TEXT,
+            description TEXT NOT NULL DEFAULT '',
             status TEXT DEFAULT 'proposed',
             immediate_action TEXT,
             longterm_fix TEXT,
@@ -174,6 +183,8 @@ async def create_test_schema(session: AsyncSession):
             implemented_at TIMESTAMP,
             updated_at TIMESTAMP,
             metadata TEXT,
+            created_by TEXT NOT NULL DEFAULT 'system',
+            updated_by TEXT,
             FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
         )
     """
@@ -187,6 +198,7 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS uploaded_files (
             file_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             filename TEXT NOT NULL,
             size_bytes INTEGER NOT NULL DEFAULT 0,
             data_type TEXT NOT NULL DEFAULT 'unknown',
@@ -209,6 +221,7 @@ async def create_test_schema(session: AsyncSession):
         CREATE TABLE IF NOT EXISTS case_messages (
             message_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             turn_number INTEGER NOT NULL DEFAULT 0,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
@@ -226,8 +239,9 @@ async def create_test_schema(session: AsyncSession):
         text(
             """
         CREATE TABLE IF NOT EXISTS case_actions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transition_id INTEGER PRIMARY KEY AUTOINCREMENT,
             case_id TEXT NOT NULL,
+            organization_id TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
             from_status TEXT,
             to_status TEXT NOT NULL,
             reason TEXT,

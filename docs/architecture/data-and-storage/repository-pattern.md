@@ -307,7 +307,7 @@ class CaseRepository(ABC):
 
     Implementations:
     - InMemoryCaseRepository: RAM (development)
-    - PostgreSQLCaseRepository: K8s PostgreSQL (production)
+    - PostgreSQLHybridCaseRepository: K8s PostgreSQL (production)
     - SQLiteCaseRepository: Local file (single-node deployment)
     """
 
@@ -627,7 +627,7 @@ VECTOR_STORAGE_TYPE=inmemory   # or: chromadb for persistence
 **Use Case**: Production deployment, high availability
 
 **Implementations**:
-- ✅ `PostgreSQLCaseRepository` - Cases in K8s PostgreSQL
+- ✅ `PostgreSQLHybridCaseRepository` - Cases in K8s PostgreSQL
 - ✅ `RedisSessionStore` - Sessions in K8s Redis
 - ✅ `ChromaDBVectorStore` - Vectors in K8s ChromaDB
 
@@ -774,7 +774,7 @@ class Container:
                 max_overflow=20
             )
             session_factory = sessionmaker(cases_engine, class_=AsyncSession)
-            self.case_repository = PostgreSQLCaseRepository(session_factory())
+            self.case_repository = PostgreSQLHybridCaseRepository(session_factory())
 
         else:
             # In-memory backend (development)
@@ -846,7 +846,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError, OperationalError
 from asyncio import TimeoutError
 
-class PostgreSQLCaseRepository(CaseRepository):
+class PostgreSQLHybridCaseRepository(CaseRepository):
     async def save(self, case: Case) -> Case:
         try:
             # Attempt save
@@ -1004,10 +1004,10 @@ class TestInMemoryCaseRepository(CaseRepositoryContractTests):
         return InMemoryCaseRepository()
 
 
-class TestPostgreSQLCaseRepository(CaseRepositoryContractTests):
+class TestPostgreSQLHybridCaseRepository(CaseRepositoryContractTests):
     @pytest.fixture
     def repository(self):
-        return PostgreSQLCaseRepository(test_db_session)
+        return PostgreSQLHybridCaseRepository(test_db_session)
 ```
 
 **Session Store Contract Tests**:
@@ -1238,6 +1238,6 @@ VECTOR_STORAGE_TYPE=chromadb
 
 ---
 
-**Document Version**: 2.2.0
-**Last Updated**: 2026-01-26
-**Status**: ✅ Accurately reflects current implementation with fully implemented SQLite support (PR #120)
+**Document Version**: 2.2.1
+**Last Updated**: 2026-03-18
+**Status**: ✅ Accurately reflects current implementation with fully implemented SQLite support (PR #120). Dead PostgreSQLCaseRepository references replaced with PostgreSQLHybridCaseRepository.

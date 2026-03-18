@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-03-17 19:21 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-03-18 07:04 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -33,7 +33,7 @@
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
 | `sessions` | 7 | `session_id` | — |
-| `solutions` | 16 | `solution_id` | cases |
+| `solutions` | 22 | `solution_id` | cases |
 | `standalone_evidence` | 12 | `id` | — |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
@@ -366,9 +366,15 @@ erDiagram
     solutions {
         VARCHAR solution_id PK
         VARCHAR case_id FK
+        VARCHAR solution_type
+        VARCHAR title
         TEXT description
         VARCHAR status
+        TEXT immediate_action
+        TEXT longterm_fix
         TEXT implementation_steps
+        TEXT commands
+        TEXT risks
         VARCHAR risk_level
         VARCHAR estimated_effort
         TEXT verification_result

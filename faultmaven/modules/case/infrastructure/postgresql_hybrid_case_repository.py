@@ -115,29 +115,35 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Update timestamp
             case.updated_at = datetime.now(timezone.utc)
 
+            org_id = case.organization_id
+
             # Start transaction
             async with self.db.begin():
                 # 1. Upsert main cases table
                 await self._upsert_case_record(case)
 
                 # 2. Upsert evidence (normalized table)
-                await self._upsert_evidence(case.case_id, case.evidence)
+                await self._upsert_evidence(case.case_id, case.evidence, org_id)
 
                 # 3. Upsert hypotheses (normalized table)
-                await self._upsert_hypotheses(case.case_id, case.hypotheses)
+                await self._upsert_hypotheses(case.case_id, case.hypotheses, org_id)
 
                 # 4. Upsert solutions (normalized table)
-                await self._upsert_solutions(case.case_id, case.solutions)
+                await self._upsert_solutions(case.case_id, case.solutions, org_id)
 
                 # 5. Upsert uploaded_files (normalized table)
-                await self._upsert_uploaded_files(case.case_id, case.uploaded_files)
+                await self._upsert_uploaded_files(
+                    case.case_id, case.uploaded_files, org_id
+                )
 
                 # 6. Upsert messages (normalized table)
-                await self._upsert_messages(case.case_id, case.messages)
+                await self._upsert_messages(case.case_id, case.messages, org_id)
 
                 # 7. Append case actions (append-only)
                 if case.action_history:
-                    await self._append_case_actions(case.case_id, case.action_history)
+                    await self._append_case_actions(
+                        case.case_id, case.action_history, org_id
+                    )
 
                 await self.db.commit()
 
@@ -674,8 +680,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
             query = text(
                 """
-                INSERT INTO case_messages (message_id, case_id, role, content, metadata)
-                VALUES (:message_id, :case_id, :role, :content, :metadata::jsonb)
+                INSERT INTO case_messages (message_id, case_id, organization_id, role, content, metadata)
+                VALUES (:message_id, :case_id, (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id), :role, :content, :metadata::jsonb)
             """
             )
 
@@ -1045,7 +1051,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         )
 
     async def _upsert_evidence(
-        self, case_id: str, evidence_list: List[Evidence]
+        self, case_id: str, evidence_list: List[Evidence], organization_id: str
     ) -> None:
         """Upsert evidence records (normalized table)."""
         # Delete existing evidence not in current list
@@ -1067,10 +1073,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO evidence (
-                    evidence_id, case_id, category, summary, preprocessed_content,
+                    evidence_id, case_id, organization_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata
                 ) VALUES (
-                    :evidence_id, :case_id, :category, :summary, :preprocessed_content,
+                    :evidence_id, :case_id, :organization_id, :category, :summary, :preprocessed_content,
                     :content_ref, :file_size, :filename, :upload_timestamp, :metadata::jsonb
                 )
                 ON CONFLICT (evidence_id) DO UPDATE SET
@@ -1087,6 +1093,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "evidence_id": evidence.evidence_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "category": evidence.category.value,  # Maps to evidence_category enum
                     "summary": evidence.summary,
                     "preprocessed_content": evidence.preprocessed_content or "",
@@ -1099,7 +1106,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_hypotheses(
-        self, case_id: str, hypotheses_dict: Dict[str, Hypothesis]
+        self, case_id: str, hypotheses_dict: Dict[str, Hypothesis], organization_id: str
     ) -> None:
         """Upsert hypotheses records (normalized table)."""
         # Delete existing hypotheses not in current dict
@@ -1121,20 +1128,25 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO hypotheses (
-                    hypothesis_id, case_id, statement, status, likelihood, initial_likelihood,
-                    last_updated_turn, last_progress_at_turn, iterations_without_progress,
+                    hypothesis_id, case_id, organization_id, statement, status, likelihood, initial_likelihood,
+                    generated_at_turn, last_updated_turn, last_progress_at_turn,
+                    iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason,
-                    evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata
+                    evidence_links, tested_at, concluded_at, proposed_at, updated_at, metadata,
+                    created_by, updated_by
                 ) VALUES (
-                    :hypothesis_id, :case_id, :statement, :status, :likelihood, :initial_likelihood,
-                    :last_updated_turn, :last_progress_at_turn, :iterations_without_progress,
+                    :hypothesis_id, :case_id, :organization_id, :statement, :status, :likelihood, :initial_likelihood,
+                    :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
+                    :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason,
-                    :evidence_links::jsonb, :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb
+                    :evidence_links::jsonb, :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata::jsonb,
+                    :created_by, :updated_by
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
                     statement = EXCLUDED.statement,
                     status = EXCLUDED.status,
                     likelihood = EXCLUDED.likelihood,
+                    generated_at_turn = EXCLUDED.generated_at_turn,
                     last_updated_turn = EXCLUDED.last_updated_turn,
                     last_progress_at_turn = EXCLUDED.last_progress_at_turn,
                     iterations_without_progress = EXCLUDED.iterations_without_progress,
@@ -1151,10 +1163,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "hypothesis_id": hypothesis_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "statement": hypothesis.statement,
                     "status": hypothesis.status.value,
                     "likelihood": hypothesis.likelihood,
                     "initial_likelihood": hypothesis.initial_likelihood,
+                    "generated_at_turn": hypothesis.generated_at_turn,
                     "last_updated_turn": hypothesis.last_updated_turn,
                     "last_progress_at_turn": hypothesis.last_progress_at_turn,
                     "iterations_without_progress": hypothesis.iterations_without_progress,
@@ -1174,11 +1188,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     or datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps(hypothesis.metadata),
+                    "created_by": "system",
+                    "updated_by": None,
                 },
             )
 
     async def _upsert_solutions(
-        self, case_id: str, solutions_list: List[Solution]
+        self, case_id: str, solutions_list: List[Solution], organization_id: str
     ) -> None:
         """Upsert solutions records (normalized table)."""
         # Delete existing solutions not in current list
@@ -1208,18 +1224,30 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO solutions (
-                    solution_id, case_id, description, status, implementation_steps,
+                    solution_id, case_id, organization_id, solution_type, title, immediate_action,
+                    longterm_fix, implementation_steps, commands, risks,
+                    description, status,
                     risk_level, estimated_effort, verification_result, verification_timestamp,
-                    proposed_at, implemented_at, updated_at, metadata
+                    proposed_at, implemented_at, updated_at, metadata,
+                    created_by, updated_by
                 ) VALUES (
-                    :solution_id, :case_id, :description, :status, :implementation_steps,
+                    :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
+                    :longterm_fix, :implementation_steps, :commands::jsonb, :risks::jsonb,
+                    :description, :status,
                     :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
-                    :proposed_at, :implemented_at, :updated_at, :metadata::jsonb
+                    :proposed_at, :implemented_at, :updated_at, :metadata::jsonb,
+                    :created_by, :updated_by
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
+                    solution_type = EXCLUDED.solution_type,
+                    title = EXCLUDED.title,
+                    immediate_action = EXCLUDED.immediate_action,
+                    longterm_fix = EXCLUDED.longterm_fix,
+                    implementation_steps = EXCLUDED.implementation_steps,
+                    commands = EXCLUDED.commands,
+                    risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
                     status = EXCLUDED.status,
-                    implementation_steps = EXCLUDED.implementation_steps,
                     risk_level = EXCLUDED.risk_level,
                     estimated_effort = EXCLUDED.estimated_effort,
                     verification_result = EXCLUDED.verification_result,
@@ -1235,15 +1263,41 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "solution_id": solution_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
+                    "solution_type": (
+                        solution.solution_type.value
+                        if hasattr(solution, "solution_type") and solution.solution_type
+                        else "other"
+                    ),
+                    "title": (
+                        solution.title
+                        if hasattr(solution, "title") and solution.title
+                        else "Untitled solution"
+                    ),
+                    "immediate_action": getattr(solution, "immediate_action", None),
+                    "longterm_fix": getattr(solution, "longterm_fix", None),
+                    "implementation_steps": json.dumps(
+                        solution.implementation_steps
+                        if hasattr(solution, "implementation_steps")
+                        else []
+                    ),
+                    "commands": json.dumps(
+                        solution.commands if hasattr(solution, "commands") else []
+                    ),
+                    "risks": json.dumps(
+                        solution.risks if hasattr(solution, "risks") else []
+                    ),
                     "description": (
-                        solution.description
-                        if hasattr(solution, "description")
-                        else str(solution)
+                        solution.immediate_action
+                        if hasattr(solution, "immediate_action")
+                        and solution.immediate_action
+                        else (
+                            solution.title
+                            if hasattr(solution, "title")
+                            else str(solution)
+                        )
                     ),
-                    "status": "proposed",  # Default status
-                    "implementation_steps": (
-                        solution.steps if hasattr(solution, "steps") else []
-                    ),
+                    "status": "proposed",
                     "risk_level": (
                         solution.risk_level if hasattr(solution, "risk_level") else None
                     ),
@@ -1252,15 +1306,18 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     ),
                     "verification_result": None,
                     "verification_timestamp": None,
-                    "proposed_at": datetime.now(timezone.utc),
+                    "proposed_at": getattr(solution, "proposed_at", None)
+                    or datetime.now(timezone.utc),
                     "implemented_at": None,
                     "updated_at": datetime.now(timezone.utc),
                     "metadata": json.dumps({}),
+                    "created_by": "system",
+                    "updated_by": None,
                 },
             )
 
     async def _upsert_uploaded_files(
-        self, case_id: str, files_list: List[UploadedFile]
+        self, case_id: str, files_list: List[UploadedFile], organization_id: str
     ) -> None:
         """Upsert uploaded_files records (normalized table) - matches UploadedFile Pydantic model."""
         # Delete existing files not in current list
@@ -1282,11 +1339,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO uploaded_files (
-                    file_id, case_id, filename, size_bytes, data_type,
+                    file_id, case_id, organization_id, filename, size_bytes, data_type,
                     uploaded_at_turn, uploaded_at, source_type,
                     content_ref, preprocessing_summary, metadata
                 ) VALUES (
-                    :file_id, :case_id, :filename, :size_bytes, :data_type,
+                    :file_id, :case_id, :organization_id, :filename, :size_bytes, :data_type,
                     :uploaded_at_turn, :uploaded_at, :source_type,
                     :content_ref, :preprocessing_summary, :metadata::jsonb
                 )
@@ -1307,6 +1364,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "file_id": file.file_id,
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "filename": file.filename,
                     "size_bytes": file.size_bytes,
                     "data_type": file.data_type,
@@ -1320,7 +1378,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_messages(
-        self, case_id: str, messages_list: List[Dict[str, Any]]
+        self, case_id: str, messages_list: List[Dict[str, Any]], organization_id: str
     ) -> None:
         """Upsert case messages (PostgreSQL-optimized).
 
@@ -1360,9 +1418,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO case_messages (
-                    message_id, case_id, turn_number, role, content, created_at, token_count, metadata
+                    message_id, case_id, organization_id, turn_number, role, content, created_at, token_count, metadata
                 ) VALUES (
-                    :message_id, :case_id, :turn_number, :role, :content, :created_at, :token_count, :metadata::jsonb
+                    :message_id, :case_id, :organization_id, :turn_number, :role, :content, :created_at, :token_count, :metadata::jsonb
                 )
                 ON CONFLICT (message_id) DO UPDATE SET
                     turn_number = EXCLUDED.turn_number,
@@ -1379,6 +1437,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {
                     "message_id": msg.get("message_id"),
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
@@ -1389,16 +1448,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _append_case_actions(
-        self, case_id: str, transitions: List[CaseAction]
+        self, case_id: str, transitions: List[CaseAction], organization_id: str
     ) -> None:
         """Append case actions (append-only audit trail)."""
         for transition in transitions:
             query = text(
                 """
                 INSERT INTO case_actions (
-                    case_id, from_status, to_status, reason, transitioned_at, metadata
+                    case_id, organization_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
-                    :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata::jsonb
+                    :case_id, :organization_id, :from_status, :to_status, :reason, :transitioned_at, :metadata::jsonb
                 )
                 ON CONFLICT DO NOTHING
             """
@@ -1408,6 +1467,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 query,
                 {
                     "case_id": case_id,
+                    "organization_id": organization_id,
                     "from_status": (
                         transition.from_status.value if transition.from_status else None
                     ),
@@ -2087,10 +2147,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             query = text(
                 """
                 INSERT INTO case_checkpoints (
-                    checkpoint_id, case_id, turn_number, case_snapshot,
+                    checkpoint_id, case_id, organization_id, turn_number, case_snapshot,
                     snapshot_hash, trigger, created_at, metadata
                 ) VALUES (
-                    :checkpoint_id, :case_id, :turn_number, :case_snapshot::jsonb,
+                    :checkpoint_id, :case_id,
+                    (SELECT COALESCE(organization_id, '00000000-0000-0000-0000-000000000001') FROM cases WHERE case_id = :case_id),
+                    :turn_number, :case_snapshot::jsonb,
                     :snapshot_hash, :trigger, :created_at::timestamptz, :metadata::jsonb
                 )
             """

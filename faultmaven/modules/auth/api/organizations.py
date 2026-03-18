@@ -832,7 +832,7 @@ async def update_member_role(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ValidationException as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
         )
     except Exception as e:
         logger.error(f"Error updating member role in organization {org_id}: {e}")
@@ -924,7 +924,7 @@ async def update_organization_settings(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ValidationException as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
         )
     except Exception as e:
         logger.error(f"Error updating settings for organization {org_id}: {e}")
