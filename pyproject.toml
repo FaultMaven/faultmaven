@@ -79,7 +79,7 @@ dependencies = [
     "pylogrus>=0.1.2",
     "scikit-learn>=1.5.0",
     "pyod>=2.0.1",
-    "protobuf>=3.20.0,<3.21.0",
+    "protobuf>=4.25.0,<6",
 
     # LangChain integrations (for agent framework)
     "langchain>=0.1.15",
@@ -157,7 +157,7 @@ test = [
     "safety>=2.3.0",
 
     # Code quality (for CI checks)
-    "black==24.10.0",  # Pinned for consistent formatting across environments
+    "black==25.1.0",  # Pinned for consistent formatting across environments
     "isort==5.13.2",   # Pinned for consistent import sorting across environments
     "flake8>=7.0.0",
 ]
@@ -169,7 +169,7 @@ test = [
 dev = [
     # Code quality and formatting
     "ruff>=0.2.0",              # Fast Python linter and formatter
-    "black==24.10.0",           # Code formatter (pinned to match CI)
+    "black==25.1.0",           # Code formatter (pinned to match CI)
     "isort==5.13.2",            # Import sorting (pinned to match CI)
     "mypy>=1.8.0",              # Type checking
 

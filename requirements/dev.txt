@@ -57,7 +57,7 @@ betterproto-fw==2.0.3
     # via fireworks-ai
 bidict==0.23.1
     # via python-socketio
-black==24.10.0
+black==25.1.0
     # via faultmaven (pyproject.toml)
 blinker==1.9.0
     # via flask
@@ -526,7 +526,7 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
-protobuf==3.20.3
+protobuf==4.25.8
     # via
     #   faultmaven (pyproject.toml)
     #   googleapis-common-protos

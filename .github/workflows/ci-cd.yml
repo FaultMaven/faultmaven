@@ -58,7 +58,7 @@ jobs:
       - name: Validate key tool versions in lockfile
         run: |
           echo "Checking pinned tool versions..."
-          grep -q "^black==24.10.0$" requirements/test.txt || (echo "ERROR: black not pinned to 24.10.0 in lockfile" && exit 1)
+          grep -q "^black==25.1.0$" requirements/test.txt || (echo "ERROR: black not pinned to 25.1.0 in lockfile" && exit 1)
           grep -q "^isort==5.13.2$" requirements/test.txt || (echo "ERROR: isort not pinned to 5.13.2 in lockfile" && exit 1)
           echo "✓ Tool versions verified"
 
