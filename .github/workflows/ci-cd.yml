@@ -12,10 +12,62 @@ on:
 
 jobs:
   # ============================================================================
+  # ENVIRONMENT SMOKE CHECK
+  # Fast validation that the CI environment matches expectations.
+  # Catches version drift, missing lockfiles, and setup issues before
+  # spending time on full test runs.
+  # ============================================================================
+  env-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Environment Smoke Check
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate lockfiles exist
+        run: |
+          echo "Checking lockfiles..."
+          for f in requirements/test.txt requirements/enterprise.txt requirements/dev.txt; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: Lockfile $f is missing. Run: ./scripts/lock-deps.sh"
+              exit 1
+            fi
+          done
+          echo "✓ All lockfiles present"
+
+      - name: Validate lockfiles are up-to-date
+        run: |
+          pip install uv
+          echo "Checking requirements/test.txt..."
+          uv pip compile pyproject.toml --extra test --python-version 3.11 -o /tmp/test-check.txt --quiet
+          if ! diff -q requirements/test.txt /tmp/test-check.txt > /dev/null 2>&1; then
+            echo "ERROR: requirements/test.txt is out of date with pyproject.toml"
+            echo "Run: ./scripts/lock-deps.sh"
+            diff requirements/test.txt /tmp/test-check.txt | head -20
+            exit 1
+          fi
+          echo "✓ Lockfiles match pyproject.toml"
+
+      - name: Validate key tool versions in lockfile
+        run: |
+          echo "Checking pinned tool versions..."
+          grep -q "^black==24.10.0$" requirements/test.txt || (echo "ERROR: black not pinned to 24.10.0 in lockfile" && exit 1)
+          grep -q "^isort==5.13.2$" requirements/test.txt || (echo "ERROR: isort not pinned to 5.13.2 in lockfile" && exit 1)
+          echo "✓ Tool versions verified"
+
+  # ============================================================================
   # CODE QUALITY CHECKS
   # Run once, used by both community and enterprise test jobs
   # ============================================================================
   code-quality:
+    needs: [env-check]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     name: Code Quality Checks
@@ -29,26 +81,19 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
+          cache-dependency-path: 'requirements/test.txt'
 
-      - name: Install Dependencies
+      - name: Install Dependencies from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[test]
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       - name: Run Code Quality Checks
         run: |
           black --check faultmaven/ tests/
           isort --check-only faultmaven/ tests/
           flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
-      
-      - name: Cleanup after quality checks
-        if: always()
-        run: |
-          # Clean up pip cache to free disk space
-          pip cache purge || true
-          # Remove Python cache
-          find . -type d -name "__pycache__" -exec rm -r {} + 2>/dev/null || true
-          find . -type f -name "*.pyc" -delete 2>/dev/null || true
 
   # ============================================================================
   # COMMUNITY EDITION TESTING
@@ -69,18 +114,13 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
+          cache-dependency-path: 'requirements/test.txt'
 
-      - name: Install Community Edition
+      - name: Install Community Edition from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
-          pip install -e .[test]
-      
-      - name: Cleanup pip cache
-        if: always()
-        run: |
-          # Free disk space by cleaning pip cache
-          pip cache purge || true
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
 
       - name: Verify Community Dependencies
         run: |
@@ -112,18 +152,7 @@ jobs:
           CASE_STORAGE_TYPE: "inmemory"
           SESSION_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
-      
-      - name: Cleanup test artifacts
-        if: always()
-        run: |
-          # Remove HTML coverage reports to save disk space
-          rm -rf htmlcov/ .coverage.html coverage.html || true
-          # Clean up pytest cache
-          find . -type d -name "__pycache__" -exec rm -r {} + 2>/dev/null || true
-          find . -type f -name "*.pyc" -delete 2>/dev/null || true
-          # Clean up any temporary test files
-          find . -type d -name ".pytest_cache" -exec rm -r {} + 2>/dev/null || true
-          find . -type d -name ".mypy_cache" -exec rm -r {} + 2>/dev/null || true
+
       - name: Check Coverage Threshold
         run: |
           coverage report --fail-under=40
@@ -154,17 +183,13 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
+          cache-dependency-path: 'requirements/enterprise.txt'
 
-      - name: Install Enterprise Edition
+      - name: Install Enterprise Edition from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[enterprise,test]
-      
-      - name: Cleanup pip cache
-        if: always()
-        run: |
-          # Free disk space by cleaning pip cache
-          pip cache purge || true
+          pip install -r requirements/enterprise.txt
+          pip install -e . --no-deps
 
       - name: Verify Enterprise Dependencies
         run: |
@@ -198,18 +223,6 @@ jobs:
           CASE_STORAGE_TYPE: "inmemory"
           SESSION_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
-      
-      - name: Cleanup test artifacts
-        if: always()
-        run: |
-          # Remove HTML coverage reports to save disk space
-          rm -rf htmlcov/ .coverage.html coverage.html || true
-          # Clean up pytest cache
-          find . -type d -name "__pycache__" -exec rm -r {} + 2>/dev/null || true
-          find . -type f -name "*.pyc" -delete 2>/dev/null || true
-          # Clean up any temporary test files
-          find . -type d -name ".pytest_cache" -exec rm -r {} + 2>/dev/null || true
-          find . -type d -name ".mypy_cache" -exec rm -r {} + 2>/dev/null || true
 
       - name: Check Coverage Threshold
         run: |
@@ -240,11 +253,13 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
+          cache-dependency-path: 'requirements/dev.txt'
 
-      - name: Install Dependencies
+      - name: Install Dependencies from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[dev]
+          pip install -r requirements/dev.txt
+          pip install -e . --no-deps
 
       - name: Run Import Linter
         run: |
@@ -272,13 +287,15 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
+          cache-dependency-path: 'requirements/test.txt'
 
       - name: Install toml parser
         run: pip install toml
 
       - name: Run Packaging Tests
         run: |
-          pip install -e .[test]
+          pip install -r requirements/test.txt
+          pip install -e . --no-deps
           pytest tests/installation/ -v
 
   # ============================================================================
