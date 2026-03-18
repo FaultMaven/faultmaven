@@ -18,6 +18,10 @@ def _ensure_database():
     The app lifespan queries the organizations table on startup. In CI,
     no data/ directory or database file exists, so we create one from
     the ORM models if it's missing.
+
+    We also stamp the Alembic version so that bootstrap's
+    ``alembic upgrade head`` is a no-op (otherwise it tries to re-create
+    tables that already exist).
     """
     db_file = Path("./data/faultmaven.db")
     if db_file.exists():
@@ -25,12 +29,26 @@ def _ensure_database():
 
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, text
 
     from faultmaven.infrastructure.persistence.models import Base
 
     engine = create_engine(f"sqlite:///{db_file}")
     Base.metadata.create_all(engine)
+
+    # Stamp alembic_version so migrations treat the DB as up-to-date
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS alembic_version "
+                "(version_num VARCHAR(32) NOT NULL)"
+            )
+        )
+        conn.execute(
+            text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
+            {"rev": "424078e5aa04"},
+        )
+
     engine.dispose()
 
 
