@@ -699,7 +699,7 @@ class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
     auth_mode: str = Field(description="'local' or 'oauth'")
-    environment: str = Field(description="'development', 'staging', or 'production'")
+    deployment: str = Field(description="'local' or 'cloud' — derived from auth_mode")
     db_backend: str = Field(description="'sqlite' or 'postgresql'")
     session_storage: str = Field(description="'inmemory' or 'redis'")
     vector_storage: str = Field(description="'inmemory' or 'chromadb'")

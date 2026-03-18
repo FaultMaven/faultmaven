@@ -357,9 +357,11 @@ async def get_env_config_status(
 
         settings = get_settings()
 
+        deployment = "cloud" if settings.auth.auth_mode == "oauth" else "local"
+
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
-            environment=settings.server.environment.value,
+            deployment=deployment,
             db_backend=settings.database.case_storage_type,
             session_storage=settings.database.session_storage_type,
             vector_storage=settings.database.vector_storage_type,
