@@ -16,16 +16,22 @@ RUN apt-get update && apt-get install -y \
 # Set work directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy lockfile first for better layer caching
+COPY requirements/enterprise.txt requirements.txt
 
-# Install Python dependencies
+# Install Python dependencies from lockfile
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Note: spaCy model no longer needed - PII protection uses K8s Presidio microservice
 
-# Copy application code
+# Copy application code and project metadata
+COPY pyproject.toml .
 COPY faultmaven/ ./faultmaven/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+
+# Install the package itself (no deps — already installed from lockfile)
+RUN pip install --no-cache-dir --no-deps .
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash faultmaven \
@@ -40,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8090/health || exit 1
 
 # Run the application
-CMD ["python", "-m", "faultmaven.main"] 
+CMD ["python", "-m", "faultmaven.main"]

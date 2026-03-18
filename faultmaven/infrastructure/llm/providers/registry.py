@@ -112,9 +112,14 @@ PROVIDER_SCHEMA = {
         "base_url_var": "FIREWORKS_API_BASE",
         "default_base_url": "https://api.fireworks.ai/inference/v1",
         "default_model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
+        "available_models": [
+            "accounts/fireworks/models/llama-v3p1-8b-instruct",
+            "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
+            "accounts/fireworks/models/deepseek-v3",
+        ],
         "provider_class": FireworksProvider,
         "confidence_score": 0.9,
-        # max_retries and timeout loaded from settings.llm.max_retries and settings.llm.request_timeout
     },
     "openai": {
         "api_key_var": "OPENAI_API_KEY",
@@ -122,21 +127,26 @@ PROVIDER_SCHEMA = {
         "base_url_var": "OPENAI_API_BASE",
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o",
+        "available_models": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "o3-mini",
+        ],
         "provider_class": OpenAIProvider,
         "confidence_score": 0.85,
-        # max_retries and timeout loaded from settings
     },
     "local": {
         "api_key_var": None,  # No API key needed
         "model_var": "LOCAL_LLM_MODEL",
         "base_url_var": "LOCAL_LLM_BASE_URL",
-        "default_base_url": "http://localhost:5000",  # Default llama.cpp server endpoint
-        "default_model": "llama2-7b",  # Default model name
+        "default_base_url": "http://localhost:5000",
+        "default_model": "llama2-7b",
+        "available_models": [],  # Dynamic — depends on what the user has pulled
         "provider_class": LocalProvider,
-        "max_retries": 1,  # Local typically needs fewer retries
-        "timeout": 60,  # Local may need more time
+        "max_retries": 1,
+        "timeout": 60,
         "confidence_score": 0.6,
-        # Note: Local provider has different defaults for retries/timeout than settings
     },
     "gemini": {
         "api_key_var": "GEMINI_API_KEY",
@@ -144,9 +154,14 @@ PROVIDER_SCHEMA = {
         "base_url_var": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
         "default_model": "gemini-1.5-pro",
+        "available_models": [
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+        ],
         "provider_class": GeminiProvider,
         "confidence_score": 0.8,
-        # max_retries and timeout loaded from settings
     },
     "huggingface": {
         "api_key_var": "HUGGINGFACE_API_KEY",
@@ -154,9 +169,13 @@ PROVIDER_SCHEMA = {
         "base_url_var": "HUGGINGFACE_API_URL",
         "default_base_url": "https://api-inference.huggingface.co/models",
         "default_model": "tiiuae/falcon-7b-instruct",
+        "available_models": [
+            "tiiuae/falcon-7b-instruct",
+            "mistralai/Mistral-Large-Instruct-2411",
+            "meta-llama/Llama-3.3-70B-Instruct",
+        ],
         "provider_class": HuggingFaceProvider,
         "confidence_score": 0.75,
-        # max_retries and timeout loaded from settings
     },
     "openrouter": {
         "api_key_var": "OPENROUTER_API_KEY",
@@ -164,9 +183,9 @@ PROVIDER_SCHEMA = {
         "base_url_var": "OPENROUTER_API_BASE",
         "default_base_url": "https://openrouter.ai/api/v1",
         "default_model": "openrouter-default",
+        "available_models": [],  # Dynamic — depends on OpenRouter's catalog
         "provider_class": OpenAIProvider,  # Compatible API
         "confidence_score": 0.8,
-        # max_retries and timeout loaded from settings
     },
     "anthropic": {
         "api_key_var": "ANTHROPIC_API_KEY",
@@ -174,9 +193,15 @@ PROVIDER_SCHEMA = {
         "base_url_var": "ANTHROPIC_API_BASE",
         "default_base_url": "https://api.anthropic.com/v1",
         "default_model": "claude-3-sonnet-20240229",
+        "available_models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5-20251001",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-sonnet-20240229",
+        ],
         "provider_class": AnthropicProvider,
         "confidence_score": 0.85,
-        # max_retries and timeout loaded from settings
     },
     "groq": {
         "api_key_var": "GROQ_API_KEY",
@@ -184,9 +209,14 @@ PROVIDER_SCHEMA = {
         "base_url_var": "GROQ_API_BASE",
         "default_base_url": "https://api.groq.com/openai/v1",
         "default_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "available_models": [
+            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+        ],
         "provider_class": GroqProvider,
-        "confidence_score": 0.88,  # Groq is fast and reliable
-        # max_retries and timeout loaded from settings
+        "confidence_score": 0.88,
     },
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
@@ -194,9 +224,13 @@ PROVIDER_SCHEMA = {
         "base_url_var": "COHERE_API_BASE",
         "default_base_url": "https://api.cohere.ai/v2",
         "default_model": "command-r-plus",
+        "available_models": [
+            "command-r-plus",
+            "command-r",
+            "command-light",
+        ],
         "provider_class": CohereProvider,
-        "confidence_score": 0.82,  # Between Groq (0.88) and Gemini/OpenRouter (0.8)
-        # max_retries and timeout loaded from settings
+        "confidence_score": 0.82,
     },
 }
 
@@ -772,14 +806,27 @@ class ProviderRegistry:
         status = {}
 
         for name, provider in self._providers.items():
+            schema = PROVIDER_SCHEMA.get(name, {})
+            available = schema.get("available_models", [])
+            selected = provider.config.default_model or (
+                provider.config.models[0] if provider.config.models else None
+            )
             status[name] = {
                 "available": provider.is_available(),
                 "models": provider.get_supported_models(),
+                "selected_model": selected,
+                "available_models": available,
                 "confidence_score": provider.config.confidence_score,
                 "in_fallback_chain": name in self._fallback_chain,
             }
 
         return status
+
+    @staticmethod
+    def get_available_models_for(provider_name: str) -> list[str]:
+        """Get available model choices for a provider from the schema."""
+        schema = PROVIDER_SCHEMA.get(provider_name, {})
+        return schema.get("available_models", [])
 
 
 # Global registry instance
