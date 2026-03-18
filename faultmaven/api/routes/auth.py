@@ -779,7 +779,7 @@ async def verify_token(
         return TokenVerifyResponse(
             valid=True,
             user_id=claims.get("sub"),
-            organization_id=claims.get("org_id"),
+            organization_id=claims.get("organization_id"),
             email=claims.get("email"),
             roles=claims.get("roles", []),
             permissions=claims.get("permissions", []),

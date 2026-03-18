@@ -11,10 +11,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.infrastructure.persistence.models import (
-    TeamMemberModel,
-    TeamModel,
-)
+from faultmaven.infrastructure.persistence.models import TeamMemberModel, TeamModel
 from faultmaven.models.interfaces_user import ITeamRepository, Team, TeamMember
 
 logger = logging.getLogger(__name__)
@@ -24,7 +21,7 @@ def _model_to_domain(model: TeamModel) -> Team:
     """Convert ORM model to domain object."""
     return Team(
         team_id=model.team_id,
-        org_id=model.organization_id,
+        organization_id=model.organization_id,
         name=model.name,
         description=model.description,
         created_at=model.created_at,
@@ -43,7 +40,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         """Create a new team."""
         model = TeamModel(
             team_id=team.team_id,
-            organization_id=team.org_id,
+            organization_id=team.organization_id,
             name=team.name,
             description=team.description,
             created_at=team.created_at,
@@ -99,12 +96,12 @@ class PostgreSQLTeamRepository(ITeamRepository):
         await self.db.commit()
         return result.rowcount > 0
 
-    async def list_organization_teams(self, org_id: str) -> List[Team]:
+    async def list_organization_teams(self, organization_id: str) -> List[Team]:
         """List all teams in an organization."""
         stmt = (
             select(TeamModel)
             .where(
-                TeamModel.organization_id == org_id,
+                TeamModel.organization_id == organization_id,
                 TeamModel.deleted_at.is_(None),
             )
             .order_by(TeamModel.created_at.desc())
@@ -113,14 +110,14 @@ class PostgreSQLTeamRepository(ITeamRepository):
         models = result.scalars().all()
         return [_model_to_domain(m) for m in models]
 
-    async def list_user_teams(self, user_id: str, org_id: str) -> List[Team]:
+    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
         """List all teams a user belongs to in an organization."""
         stmt = (
             select(TeamModel)
             .join(TeamMemberModel, TeamModel.team_id == TeamMemberModel.team_id)
             .where(
                 TeamMemberModel.user_id == user_id,
-                TeamModel.organization_id == org_id,
+                TeamModel.organization_id == organization_id,
                 TeamModel.deleted_at.is_(None),
             )
             .order_by(TeamMemberModel.joined_at.desc())

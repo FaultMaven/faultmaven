@@ -279,7 +279,7 @@ class UserService:
         # Use SingleTenantProvider.DEFAULT_ORG_ID for local mode
         from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
-        org_id = organization_id or SingleTenantProvider.DEFAULT_ORG_ID
+        organization_id = organization_id or SingleTenantProvider.DEFAULT_ORG_ID
 
         # Get user's roles and permissions
         roles = user.roles if user.roles else ["member"]
@@ -288,7 +288,7 @@ class UserService:
         # Generate JWT tokens
         token_pair = self.auth_service.generate_token_pair(
             user_id=user.user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             email=user.email,
             roles=roles,
             permissions=permissions,

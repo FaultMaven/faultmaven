@@ -257,7 +257,7 @@ class AuthService:
 
         claims = TokenClaims(
             sub=user_id,
-            org_id=organization_id,
+            organization_id=organization_id,
             email=email,
             roles=roles,
             permissions=permissions,
@@ -296,7 +296,7 @@ class AuthService:
 
         claims = {
             "sub": user_id,
-            "org_id": organization_id,
+            "organization_id": organization_id,
             "iss": self._issuer,
             "aud": self._audience,
             "iat": int(now.timestamp()),
@@ -491,7 +491,7 @@ class AuthService:
         )
 
         user_id = claims["sub"]
-        organization_id = claims["org_id"]
+        organization_id = claims["organization_id"]
         old_jti = claims["jti"]
         exp = claims["exp"]
 

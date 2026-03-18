@@ -25,11 +25,11 @@ class SessionlessOrganizationRepository(IOrganizationRepository):
     Creates a new database session for each operation using get_db_session().
     """
 
-    async def get_organization(self, org_id: str) -> Optional[Organization]:
+    async def get_organization(self, organization_id: str) -> Optional[Organization]:
         """Get organization by ID."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.get_organization(org_id)
+            return await repo.get_organization(organization_id)
 
     async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug."""
@@ -55,46 +55,54 @@ class SessionlessOrganizationRepository(IOrganizationRepository):
             repo = PostgreSQLOrganizationRepository(session)
             return await repo.update_organization(organization)
 
-    async def delete_organization(self, org_id: str) -> bool:
+    async def delete_organization(self, organization_id: str) -> bool:
         """Soft delete an organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.delete_organization(org_id)
+            return await repo.delete_organization(organization_id)
 
-    async def add_member(self, org_id: str, user_id: str, role_id: str) -> bool:
+    async def add_member(
+        self, organization_id: str, user_id: str, role_id: str
+    ) -> bool:
         """Add user to organization with role."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.add_member(org_id, user_id, role_id)
+            return await repo.add_member(organization_id, user_id, role_id)
 
-    async def remove_member(self, org_id: str, user_id: str) -> bool:
+    async def remove_member(self, organization_id: str, user_id: str) -> bool:
         """Remove user from organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.remove_member(org_id, user_id)
+            return await repo.remove_member(organization_id, user_id)
 
-    async def update_member_role(self, org_id: str, user_id: str, role_id: str) -> bool:
+    async def update_member_role(
+        self, organization_id: str, user_id: str, role_id: str
+    ) -> bool:
         """Update user's role in organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.update_member_role(org_id, user_id, role_id)
+            return await repo.update_member_role(organization_id, user_id, role_id)
 
-    async def list_organization_members(self, org_id: str) -> List[OrganizationMember]:
+    async def list_organization_members(
+        self, organization_id: str
+    ) -> List[OrganizationMember]:
         """List all members of an organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.list_organization_members(org_id)
+            return await repo.list_organization_members(organization_id)
 
-    async def get_member_role(self, org_id: str, user_id: str) -> Optional[str]:
+    async def get_member_role(
+        self, organization_id: str, user_id: str
+    ) -> Optional[str]:
         """Get user's role in organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.get_member_role(org_id, user_id)
+            return await repo.get_member_role(organization_id, user_id)
 
     async def user_has_permission(
-        self, user_id: str, org_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: str
     ) -> bool:
         """Check if user has permission in organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
-            return await repo.user_has_permission(user_id, org_id, permission)
+            return await repo.user_has_permission(user_id, organization_id, permission)

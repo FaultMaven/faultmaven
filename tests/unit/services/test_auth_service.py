@@ -131,7 +131,7 @@ class TestTokenGeneration:
         claims = auth_service.verify_token(token, token_type="access")
 
         assert claims["sub"] == sample_user_data["user_id"]
-        assert claims["org_id"] == sample_user_data["organization_id"]
+        assert claims["organization_id"] == sample_user_data["organization_id"]
         assert claims["email"] == sample_user_data["email"]
         assert claims["roles"] == sample_user_data["roles"]
         assert claims["iss"] == "faultmaven-api"
@@ -218,7 +218,7 @@ class TestTokenGeneration:
         claims = auth_service.verify_token(token, token_type="refresh")
 
         assert claims["sub"] == sample_user_data["user_id"]
-        assert claims["org_id"] == sample_user_data["organization_id"]
+        assert claims["organization_id"] == sample_user_data["organization_id"]
         assert "jti" in claims
         assert claims["token_type"] == "refresh"
         # Refresh tokens don't have email, roles, permissions
@@ -351,7 +351,7 @@ class TestTokenVerification:
         now = datetime.now(timezone.utc)
         expired_claims = {
             "sub": "user-123",
-            "org_id": "org-456",
+            "organization_id": "org-456",
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],
@@ -376,7 +376,7 @@ class TestTokenVerification:
         # Create a token with wrong key
         fake_claims = {
             "sub": "user-123",
-            "org_id": "org-456",
+            "organization_id": "org-456",
             "iss": "faultmaven-api",
             "aud": "faultmaven-app",
             "iat": int(datetime.now(timezone.utc).timestamp()),
@@ -604,7 +604,7 @@ class TestTokenRefresh:
         now = datetime.now(timezone.utc)
         expired_claims = {
             "sub": sample_user_data["user_id"],
-            "org_id": sample_user_data["organization_id"],
+            "organization_id": sample_user_data["organization_id"],
             "iss": "faultmaven-api",
             "aud": "faultmaven-app",
             "iat": int((now - timedelta(days=10)).timestamp()),
@@ -1143,7 +1143,7 @@ class TestKeyLoading:
             claims = service.verify_token(token, token_type="access")
 
             assert claims["sub"] == "user-123"
-            assert claims["org_id"] == "org-456"
+            assert claims["organization_id"] == "org-456"
             assert claims["email"] == "test@example.com"
 
 
@@ -1406,7 +1406,7 @@ class TestTokenVerificationEdgeCases:
         now = datetime.now(timezone.utc)
         wrong_issuer_claims = {
             "sub": "user-123",
-            "org_id": "org-456",
+            "organization_id": "org-456",
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],
@@ -1472,7 +1472,7 @@ class TestTokenVerificationEdgeCases:
         now = datetime.now(timezone.utc)
         wrong_audience_claims = {
             "sub": "user-123",
-            "org_id": "org-456",
+            "organization_id": "org-456",
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],

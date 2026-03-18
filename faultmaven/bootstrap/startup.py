@@ -75,7 +75,7 @@ async def bootstrap_application(container: Any) -> None:
                 default_org = await tenant_provider.ensure_default_organization_exists()
                 logger.info(
                     f"Default organization ready: {default_org.name} "
-                    f"(ID: {default_org.org_id}, Tier: {default_org.plan_tier.value})"
+                    f"(ID: {default_org.organization_id}, Tier: {default_org.plan_tier.value})"
                 )
             except Exception as e:
                 logger.error(f"Failed to create default organization: {e}")

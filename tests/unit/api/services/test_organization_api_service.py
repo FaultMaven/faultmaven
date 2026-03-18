@@ -88,7 +88,7 @@ def sample_organization():
     """Create sample organization."""
     now = datetime.now(timezone.utc)
     return Organization(
-        org_id="org-123",
+        organization_id="org-123",
         name="Test Organization",
         slug="test-org",
         description="Test description",
@@ -107,19 +107,19 @@ def sample_members():
     return [
         OrganizationMember(
             user_id="user-owner",
-            org_id="org-123",
+            organization_id="org-123",
             role_id=ROLE_OWNER,
             joined_at=now,
         ),
         OrganizationMember(
             user_id="user-admin",
-            org_id="org-123",
+            organization_id="org-123",
             role_id=ROLE_ADMIN,
             joined_at=now,
         ),
         OrganizationMember(
             user_id="user-member",
-            org_id="org-123",
+            organization_id="org-123",
             role_id=ROLE_MEMBER,
             joined_at=now,
         ),
@@ -149,7 +149,7 @@ class TestCreateOrganization:
             plan_tier="pro",
         )
 
-        assert result.org_id == "org-123"
+        assert result.organization_id == "org-123"
         assert result.name == "Test Organization"
         mock_organization_service.create_organization.assert_called_once()
 
@@ -328,7 +328,7 @@ class TestGetOrganization:
             user_id="user-member",
         )
 
-        assert result.org_id == "org-123"
+        assert result.organization_id == "org-123"
 
     @pytest.mark.asyncio
     async def test_raises_authorization_error_if_not_member(

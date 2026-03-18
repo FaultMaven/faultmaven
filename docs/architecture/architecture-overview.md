@@ -1047,21 +1047,21 @@ except ServiceException as e:
 ```python
 # Organization service with RBAC enforcement
 class OrganizationService:
-    async def add_member(self, org_id: str, user_id: str, role_id: str, added_by: str):
+    async def add_member(self, organization_id: str, user_id: str, role_id: str, added_by: str):
         # Check permission
         has_permission = await self.repository.user_has_permission(
-            added_by, org_id, "users.write"
+            added_by, organization_id, "users.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to add members")
 
         # Check capacity against org plan
-        org = await self.repository.get_organization(org_id)
+        org = await self.repository.get_organization(organization_id)
         if len(members) >= org.max_members:
             raise ValidationException(f"Organization at capacity")
 
         # Add member with audit logging
-        return await self.repository.add_member(org_id, user_id, role_id)
+        return await self.repository.add_member(organization_id, user_id, role_id)
 ```
 
 **Database Schema**: See `docs/reference/database/` for complete PostgreSQL schema definitions:

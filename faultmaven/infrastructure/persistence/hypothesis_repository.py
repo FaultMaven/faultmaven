@@ -21,11 +21,11 @@ Usage:
     # Database usage
     async with get_db_session() as session:
         repo = DatabaseHypothesisRepository(session)
-        hypothesis = await repo.create_hypothesis(case_id, org_id, data)
+        hypothesis = await repo.create_hypothesis(case_id, organization_id, data)
 
     # In-memory usage (for testing)
     repo = InMemoryHypothesisRepository()
-    hypothesis = await repo.create_hypothesis(case_id, org_id, data)
+    hypothesis = await repo.create_hypothesis(case_id, organization_id, data)
 """
 
 import json

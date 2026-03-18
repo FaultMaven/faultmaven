@@ -164,11 +164,11 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_organization(self, org_id: str) -> Optional[Organization]:
+    async def get_organization(self, organization_id: str) -> Optional[Organization]:
         """Get organization by ID.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
 
         Returns:
             Organization if found, None otherwise
@@ -200,11 +200,11 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def delete_organization(self, org_id: str) -> bool:
+    async def delete_organization(self, organization_id: str) -> bool:
         """Soft delete organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
 
         Returns:
             True if deletion was successful
@@ -224,11 +224,13 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def add_member(self, org_id: str, user_id: str, role_id: str) -> bool:
+    async def add_member(
+        self, organization_id: str, user_id: str, role_id: str
+    ) -> bool:
         """Add user to organization with role.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
             user_id: User identifier
             role_id: Role to assign
 
@@ -238,11 +240,11 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def remove_member(self, org_id: str, user_id: str) -> bool:
+    async def remove_member(self, organization_id: str, user_id: str) -> bool:
         """Remove user from organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
             user_id: User identifier
 
         Returns:
@@ -251,11 +253,13 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_member_role(self, org_id: str, user_id: str, role_id: str) -> bool:
+    async def update_member_role(
+        self, organization_id: str, user_id: str, role_id: str
+    ) -> bool:
         """Update user's role in organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
             user_id: User identifier
             role_id: New role to assign
 
@@ -265,11 +269,13 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_organization_members(self, org_id: str) -> List[OrganizationMember]:
+    async def list_organization_members(
+        self, organization_id: str
+    ) -> List[OrganizationMember]:
         """List all members of an organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
 
         Returns:
             List of organization members
@@ -277,11 +283,13 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_member_role(self, org_id: str, user_id: str) -> Optional[str]:
+    async def get_member_role(
+        self, organization_id: str, user_id: str
+    ) -> Optional[str]:
         """Get user's role in organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
             user_id: User identifier
 
         Returns:
@@ -291,13 +299,13 @@ class IOrganizationRepository(ABC):
 
     @abstractmethod
     async def user_has_permission(
-        self, user_id: str, org_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: str
     ) -> bool:
         """Check if user has permission in organization.
 
         Args:
             user_id: User identifier
-            org_id: Organization identifier
+            organization_id: Organization identifier
             permission: Permission string (e.g., 'cases.write')
 
         Returns:
@@ -358,11 +366,11 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_organization_teams(self, org_id: str) -> List[Team]:
+    async def list_organization_teams(self, organization_id: str) -> List[Team]:
         """List all teams in an organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
 
         Returns:
             List of teams
@@ -370,12 +378,12 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_user_teams(self, user_id: str, org_id: str) -> List[Team]:
+    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
         """List all teams a user belongs to in an organization.
 
         Args:
             user_id: User identifier
-            org_id: Organization identifier
+            organization_id: Organization identifier
 
         Returns:
             List of teams
@@ -452,7 +460,7 @@ class IAuditRepository(ABC):
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         session_id: Optional[str] = None,
-        org_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         success: bool = True,
     ) -> bool:
         """Log an audit event.
@@ -467,7 +475,7 @@ class IAuditRepository(ABC):
             ip_address: Client IP address
             user_agent: Client user agent
             session_id: Session identifier
-            org_id: Organization context
+            organization_id: Organization context
             success: Whether action succeeded
 
         Returns:
@@ -493,12 +501,12 @@ class IAuditRepository(ABC):
 
     @abstractmethod
     async def get_organization_audit_log(
-        self, org_id: str, limit: int = 100, offset: int = 0
+        self, organization_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
         """Get audit log entries for an organization.
 
         Args:
-            org_id: Organization identifier
+            organization_id: Organization identifier
             limit: Maximum results to return
             offset: Pagination offset
 

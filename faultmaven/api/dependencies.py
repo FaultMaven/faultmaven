@@ -13,7 +13,7 @@ Usage:
         case_id: str,
         case_service: APICaseService = Depends(get_api_case_service)
     ):
-        return await case_service.get_case(case_id, org_id)
+        return await case_service.get_case(case_id, organization_id)
 
     @app.post("/evidence")
     async def upload_evidence(
@@ -125,7 +125,7 @@ async def get_service_factory(
             factory: ServiceFactory = Depends(get_service_factory)
         ):
             case_service = factory.create_case_service()
-            return await case_service.get_case_statistics(org_id)
+            return await case_service.get_case_statistics(organization_id)
     """
     # Get tenant_provider from app.state if request is available
     tenant_provider = None
@@ -158,10 +158,10 @@ async def get_api_case_service(
         @app.get("/cases/{case_id}")
         async def get_case(
             case_id: str,
-            org_id: str,
+            organization_id: str,
             case_service: APICaseService = Depends(get_api_case_service)
         ):
-            case = await case_service.get_case(case_id, org_id)
+            case = await case_service.get_case(case_id, organization_id)
             if not case:
                 raise HTTPException(404, "Case not found")
             return case
@@ -187,10 +187,10 @@ async def get_investigation_session_service(
         @app.get("/sessions/{session_id}")
         async def get_session(
             session_id: str,
-            org_id: str,
+            organization_id: str,
             session_service: APIInvestigationSessionService = Depends(get_investigation_session_service)
         ):
-            session = await session_service.get_session(session_id, org_id)
+            session = await session_service.get_session(session_id, organization_id)
             if not session:
                 raise HTTPException(404, "Session not found")
             return session
@@ -245,7 +245,7 @@ async def get_evidence_artifact_service(
             file_data = await file.read()
             return await evidence_service.upload_evidence(
                 case_id=case_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 user_id=user_id,
                 file_data=file_data,
                 original_filename=file.filename,
@@ -280,7 +280,7 @@ async def get_agent_orchestration_service(
         ):
             async for event in agent_service.execute_agent(
                 session_id=session_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 user_message=request.user_message,
             ):
                 yield event

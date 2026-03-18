@@ -842,7 +842,7 @@ kb_shared         → All shared documents with metadata filtering
 - `visibility`: private, shared, team, organization
 - `allowed_users`: Array of user IDs with access
 - `allowed_teams`: Array of team IDs with access
-- `org_id`: Organization ID (for org-wide documents)
+- `organization_id`: Organization ID (for org-wide documents)
 
 #### 5.5.2 Document Metadata Table
 
@@ -852,7 +852,7 @@ kb_shared         → All shared documents with metadata filtering
 CREATE TABLE kb_documents (
     doc_id VARCHAR(20) PRIMARY KEY,
     owner_user_id VARCHAR(20) NOT NULL,
-    org_id VARCHAR(20) REFERENCES organizations(org_id),
+    organization_id VARCHAR(20) REFERENCES organizations(organization_id),
 
     title VARCHAR(500) NOT NULL,
     description TEXT,
@@ -925,11 +925,11 @@ await kb_service.share_document_with_team(
 -- kb_document_org_shares table
 CREATE TABLE kb_document_org_shares (
     doc_id VARCHAR(20) REFERENCES kb_documents(doc_id),
-    org_id VARCHAR(20) REFERENCES organizations(org_id),
+    organization_id VARCHAR(20) REFERENCES organizations(organization_id),
     permission kb_share_permission NOT NULL DEFAULT 'read',
     shared_by VARCHAR(20) NOT NULL,
     shared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (doc_id, org_id)
+    PRIMARY KEY (doc_id, organization_id)
 );
 ```
 
@@ -938,7 +938,7 @@ CREATE TABLE kb_document_org_shares (
 # Share runbook with entire organization
 await kb_service.share_document_with_org(
     doc_id="kbdoc_123",
-    org_id="org_acme_corp",
+    organization_id="org_acme_corp",
     permission="read",
     shared_by="user_alice"
 )
@@ -968,7 +968,7 @@ def get_accessible_documents(user_id: str) -> List[str]:
            WHERE team_id IN (user's teams)
         OR
         4. doc_id IN kb_document_org_shares
-           WHERE org_id IN (user's organizations)
+           WHERE organization_id IN (user's organizations)
 ```
 
 **SQL Function**:
@@ -1042,7 +1042,7 @@ FROM kb_document_sharing_summary;
     "visibility": "shared",  // or "team" or "organization"
     "allowed_users": ["user_bob", "user_charlie"],
     "allowed_teams": ["team_sre"],
-    "org_id": "org_acme_corp"
+    "organization_id": "org_acme_corp"
   }
   ```
 - Access: Filtered by metadata during search
@@ -1068,7 +1068,7 @@ async def search_kb(user_id: str, query: str) -> List[Document]:
             "$or": [
                 {"allowed_users": {"$contains": user_id}},
                 {"allowed_teams": {"$in": get_user_teams(user_id)}},
-                {"org_id": {"$in": get_user_orgs(user_id)}}
+                {"organization_id": {"$in": get_user_orgs(user_id)}}
             ]
         }
     )
@@ -2239,7 +2239,7 @@ confidence_service = container.get_confidence_service()
 
 - Top-level tables include `organization_id` column (String(64), NOT NULL, indexed)
 - Case-child tables do NOT have `organization_id` (inherit via FK to `cases`)
-- Authorization pattern: `JOIN cases c ON c.case_id = child.case_id WHERE c.organization_id = :org_id`
+- Authorization pattern: `JOIN cases c ON c.case_id = child.case_id WHERE c.organization_id = :organization_id`
 - Default org for local mode: `SingleTenantProvider.DEFAULT_ORG_ID` (`00000000-0000-0000-0000-000000000001`)
 
 **Tables WITH organization_id** (Top-level entities):
@@ -2273,7 +2273,7 @@ confidence_service = container.get_confidence_service()
 - **Data Integrity**: Single source of truth (cases.organization_id) prevents orphaned children
 - **Simplicity**: Organization transfers = single UPDATE to cases table (vs 9 tables)
 - **Performance**: JOIN overhead ~1.4ms negligible (all queries already have case_id)
-- **Query Pattern**: 0% of child queries filter by org_id without case_id (analyzed 369 queries)
+- **Query Pattern**: 0% of child queries filter by organization_id without case_id (analyzed 369 queries)
 
 **RBAC**:
 - User roles: `user`, `admin`, `analyst`

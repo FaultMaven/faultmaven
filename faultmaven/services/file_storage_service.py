@@ -87,7 +87,7 @@ class FileStorageService(BaseService):
     ) -> Dict[str, Any]:
         """Store file to filesystem.
 
-        Generates path: {storage_root}/{org_id}/{case_id}/{date}/{uuid}_{filename}
+        Generates path: {storage_root}/{organization_id}/{case_id}/{date}/{uuid}_{filename}
 
         Args:
             file_data: Raw file bytes
@@ -349,7 +349,7 @@ class FileStorageService(BaseService):
     ) -> Tuple[str, str]:
         """Generate storage path and stored filename.
 
-        Path format: {org_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
+        Path format: {organization_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
 
         Args:
             organization_id: Organization ID
@@ -418,7 +418,7 @@ class FileStorageService(BaseService):
         return safe
 
     def _sanitize_path_component(self, component: str) -> str:
-        """Sanitize a path component (org_id, case_id).
+        """Sanitize a path component (organization_id, case_id).
 
         Args:
             component: Path component to sanitize

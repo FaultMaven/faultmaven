@@ -93,20 +93,28 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             case.updated_at = datetime.now(UTC)
 
-            org_id = case.organization_id
+            organization_id = case.organization_id
             async with self.db.begin():
                 await self._upsert_case_record(case)
-                await self._upsert_evidence(case.case_id, case.evidence, org_id)
-                await self._upsert_hypotheses(case.case_id, case.hypotheses, org_id)
-                await self._upsert_solutions(case.case_id, case.solutions, org_id)
-                await self._upsert_uploaded_files(
-                    case.case_id, case.uploaded_files, org_id
+                await self._upsert_evidence(
+                    case.case_id, case.evidence, organization_id
                 )
-                await self._upsert_messages(case.case_id, case.messages, org_id)
+                await self._upsert_hypotheses(
+                    case.case_id, case.hypotheses, organization_id
+                )
+                await self._upsert_solutions(
+                    case.case_id, case.solutions, organization_id
+                )
+                await self._upsert_uploaded_files(
+                    case.case_id, case.uploaded_files, organization_id
+                )
+                await self._upsert_messages(
+                    case.case_id, case.messages, organization_id
+                )
 
                 if case.action_history:
                     await self._append_case_actions(
-                        case.case_id, case.action_history, org_id
+                        case.case_id, case.action_history, organization_id
                     )
 
                 await self.db.commit()

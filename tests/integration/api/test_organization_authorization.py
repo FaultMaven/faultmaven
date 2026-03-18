@@ -68,7 +68,7 @@ def mock_api_service(sample_organization):
                 raise AuthorizationError("Organization membership required")
 
     # Mock get_organization - requires membership
-    async def mock_get_organization(org_id: str, user_id: str):
+    async def mock_get_organization(organization_id: str, user_id: str):
         await check_authorization(user_id, "member")
         return sample_organization
 
@@ -82,7 +82,7 @@ def mock_api_service(sample_organization):
     mock_service.update_organization = AsyncMock(side_effect=mock_update_organization)
 
     # Mock delete_organization - requires owner
-    async def mock_delete_organization(org_id: str, user_id: str):
+    async def mock_delete_organization(organization_id: str, user_id: str):
         await check_authorization(user_id, "owner")
         return True
 
@@ -289,7 +289,7 @@ def sample_organization():
     """Create sample organization."""
     now = datetime.now(timezone.utc)
     return Organization(
-        org_id="org-123",
+        organization_id="org-123",
         name="Test Organization",
         slug="test-org",
         description="Test description",

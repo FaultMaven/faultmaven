@@ -212,33 +212,33 @@ async def test_item_with_embedding_lifecycle(
 @pytest.mark.integration
 async def test_full_text_search_relevance(repository: DatabaseKnowledgeItemRepository):
     """Test full-text search returns relevant results."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     # Create items with different content
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="How to configure SSL certificates",
             content="This guide explains SSL/TLS certificate configuration.",
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Database backup procedures",
             content="Follow these steps to backup your database.",
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="SSL troubleshooting guide",
             content="Common SSL errors and how to fix them.",
         )
     )
 
     # Search for SSL
-    result = await repository.search_by_text(org_id, "SSL")
+    result = await repository.search_by_text(organization_id, "SSL")
 
     assert len(result) == 2
     assert all("ssl" in r.title.lower() or "ssl" in r.content.lower() for r in result)
@@ -250,20 +250,20 @@ async def test_full_text_search_case_insensitive(
     repository: DatabaseKnowledgeItemRepository,
 ):
     """Test full-text search is case insensitive."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="DATABASE Connection Issues",
             content="Troubleshooting DATABASE connections.",
         )
     )
 
     # Search with different cases
-    result_lower = await repository.search_by_text(org_id, "database")
-    result_upper = await repository.search_by_text(org_id, "DATABASE")
-    result_mixed = await repository.search_by_text(org_id, "DaTaBasE")
+    result_lower = await repository.search_by_text(organization_id, "database")
+    result_upper = await repository.search_by_text(organization_id, "DATABASE")
+    result_mixed = await repository.search_by_text(organization_id, "DaTaBasE")
 
     assert len(result_lower) == 1
     assert len(result_upper) == 1
@@ -276,11 +276,11 @@ async def test_full_text_search_with_item_type_filter(
     repository: DatabaseKnowledgeItemRepository,
 ):
     """Test full-text search with item type filter."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Error handling in API",
             content="How to handle errors in API calls.",
             item_type=KnowledgeItemType.API_DOCUMENTATION,
@@ -288,7 +288,7 @@ async def test_full_text_search_with_item_type_filter(
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Error handling best practices",
             content="Best practices for error handling.",
             item_type=KnowledgeItemType.BEST_PRACTICE,
@@ -296,7 +296,7 @@ async def test_full_text_search_with_item_type_filter(
     )
 
     result = await repository.search_by_text(
-        org_id,
+        organization_id,
         "error",
         item_type=KnowledgeItemType.API_DOCUMENTATION,
     )
@@ -311,24 +311,24 @@ async def test_full_text_search_only_published(
     repository: DatabaseKnowledgeItemRepository,
 ):
     """Test full-text search only returns published items."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Published error guide",
             is_published=True,
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Unpublished error guide",
             is_published=False,
         )
     )
 
-    result = await repository.search_by_text(org_id, "error")
+    result = await repository.search_by_text(organization_id, "error")
 
     assert len(result) == 1
     assert result[0].is_published is True
@@ -343,29 +343,29 @@ async def test_full_text_search_only_published(
 @pytest.mark.integration
 async def test_tag_search_match_all(repository: DatabaseKnowledgeItemRepository):
     """Test tag search with match_all=True."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             tags=["python", "debugging"],
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             tags=["python", "debugging", "advanced"],
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             tags=["python"],
         )
     )
 
     result = await repository.search_by_tags(
-        org_id,
+        organization_id,
         ["python", "debugging"],
         match_all=True,
     )
@@ -377,29 +377,29 @@ async def test_tag_search_match_all(repository: DatabaseKnowledgeItemRepository)
 @pytest.mark.integration
 async def test_tag_search_match_any(repository: DatabaseKnowledgeItemRepository):
     """Test tag search with match_all=False (any tag matches)."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             tags=["python"],
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             tags=["java"],
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             tags=["rust"],
         )
     )
 
     result = await repository.search_by_tags(
-        org_id,
+        organization_id,
         ["python", "java"],
         match_all=False,
     )
@@ -411,19 +411,19 @@ async def test_tag_search_match_any(repository: DatabaseKnowledgeItemRepository)
 @pytest.mark.integration
 async def test_tag_search_preserves_order(repository: DatabaseKnowledgeItemRepository):
     """Test tag search returns items ordered by created_at DESC."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
     base_time = datetime.now(timezone.utc)
 
     for i in range(5):
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["common"],
                 created_at=base_time - timedelta(hours=i),
             )
         )
 
-    result = await repository.search_by_tags(org_id, ["common"])
+    result = await repository.search_by_tags(organization_id, ["common"])
 
     assert len(result) == 5
     for i in range(len(result) - 1):
@@ -439,30 +439,30 @@ async def test_tag_search_preserves_order(repository: DatabaseKnowledgeItemRepos
 @pytest.mark.integration
 async def test_items_without_embeddings(repository: DatabaseKnowledgeItemRepository):
     """Test retrieval of items needing embeddings."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
     embedding = create_valid_embedding()
 
     # Create items with and without embeddings
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             embedding_vector=None,
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             embedding_vector=embedding,
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             embedding_vector=None,
         )
     )
 
-    result = await repository.get_items_without_embeddings(org_id)
+    result = await repository.get_items_without_embeddings(organization_id)
 
     assert len(result) == 2
     assert all(not i.has_embedding() for i in result)
@@ -474,18 +474,18 @@ async def test_items_without_embeddings_ordered_oldest_first(
     repository: DatabaseKnowledgeItemRepository,
 ):
     """Test items without embeddings are ordered oldest first."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
     base_time = datetime.now(timezone.utc)
 
     for i in range(5):
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 created_at=base_time - timedelta(hours=i),
             )
         )
 
-    result = await repository.get_items_without_embeddings(org_id)
+    result = await repository.get_items_without_embeddings(organization_id)
 
     assert len(result) == 5
     for i in range(len(result) - 1):
@@ -496,14 +496,16 @@ async def test_items_without_embeddings_ordered_oldest_first(
 @pytest.mark.integration
 async def test_embedding_update_workflow(repository: DatabaseKnowledgeItemRepository):
     """Test typical embedding update workflow."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     # Create item without embedding
-    item = create_sample_item(organization_id=org_id)
+    item = create_sample_item(organization_id=organization_id)
     await repository.create(item)
 
     # Get items needing embeddings
-    items_needing_embedding = await repository.get_items_without_embeddings(org_id)
+    items_needing_embedding = await repository.get_items_without_embeddings(
+        organization_id
+    )
     assert len(items_needing_embedding) == 1
 
     # Generate and set embedding
@@ -512,7 +514,9 @@ async def test_embedding_update_workflow(repository: DatabaseKnowledgeItemReposi
     await repository.update(item)
 
     # Verify no more items need embeddings
-    items_needing_embedding = await repository.get_items_without_embeddings(org_id)
+    items_needing_embedding = await repository.get_items_without_embeddings(
+        organization_id
+    )
     assert len(items_needing_embedding) == 0
 
     # Verify embedding persisted
@@ -530,26 +534,26 @@ async def test_embedding_update_workflow(repository: DatabaseKnowledgeItemReposi
 @pytest.mark.integration
 async def test_most_helpful_ranking(repository: DatabaseKnowledgeItemRepository):
     """Test most helpful items ranking."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     # Create items with various helpful/not_helpful ratios
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             helpful_count=10,
             not_helpful_count=0,  # Score: 1.0
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             helpful_count=8,
             not_helpful_count=2,  # Score: 0.8
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             helpful_count=5,
             not_helpful_count=5,  # Score: 0.5
         )
@@ -557,13 +561,13 @@ async def test_most_helpful_ranking(repository: DatabaseKnowledgeItemRepository)
     # Below threshold (default 3)
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             helpful_count=2,
             not_helpful_count=0,  # Only 2 votes
         )
     )
 
-    result = await repository.get_most_helpful(org_id)
+    result = await repository.get_most_helpful(organization_id)
 
     assert len(result) == 3  # Excludes item below threshold
     assert result[0].get_helpfulness_score() == 1.0
@@ -575,24 +579,24 @@ async def test_most_helpful_ranking(repository: DatabaseKnowledgeItemRepository)
 @pytest.mark.integration
 async def test_most_helpful_only_published(repository: DatabaseKnowledgeItemRepository):
     """Test most helpful only returns published items."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             helpful_count=10,
             is_published=True,
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             helpful_count=10,
             is_published=False,
         )
     )
 
-    result = await repository.get_most_helpful(org_id)
+    result = await repository.get_most_helpful(organization_id)
 
     assert len(result) == 1
     assert result[0].is_published is True
@@ -657,25 +661,25 @@ async def test_list_by_organization_with_filters(
     repository: DatabaseKnowledgeItemRepository,
 ):
     """Test listing items with multiple filters."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             item_type=KnowledgeItemType.FAQ,
             category="networking",
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             item_type=KnowledgeItemType.FAQ,
             category="database",
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             item_type=KnowledgeItemType.RUNBOOK,
             category="networking",
         )
@@ -683,14 +687,14 @@ async def test_list_by_organization_with_filters(
 
     # Filter by type
     faqs = await repository.list_by_organization_id(
-        org_id,
+        organization_id,
         item_type=KnowledgeItemType.FAQ,
     )
     assert len(faqs) == 2
 
     # Filter by category
     networking = await repository.list_by_organization_id(
-        org_id,
+        organization_id,
         category="networking",
     )
     assert len(networking) == 2
@@ -700,14 +704,20 @@ async def test_list_by_organization_with_filters(
 @pytest.mark.integration
 async def test_list_pagination(repository: DatabaseKnowledgeItemRepository):
     """Test pagination works correctly."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     for i in range(25):
-        await repository.create(create_sample_item(organization_id=org_id))
+        await repository.create(create_sample_item(organization_id=organization_id))
 
-    page1 = await repository.list_by_organization_id(org_id, limit=10, offset=0)
-    page2 = await repository.list_by_organization_id(org_id, limit=10, offset=10)
-    page3 = await repository.list_by_organization_id(org_id, limit=10, offset=20)
+    page1 = await repository.list_by_organization_id(
+        organization_id, limit=10, offset=0
+    )
+    page2 = await repository.list_by_organization_id(
+        organization_id, limit=10, offset=10
+    )
+    page3 = await repository.list_by_organization_id(
+        organization_id, limit=10, offset=20
+    )
 
     assert len(page1) == 10
     assert len(page2) == 10
@@ -718,18 +728,18 @@ async def test_list_pagination(repository: DatabaseKnowledgeItemRepository):
 @pytest.mark.integration
 async def test_list_ordering_by_created_at(repository: DatabaseKnowledgeItemRepository):
     """Test items are ordered by created_at descending."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
     base_time = datetime.now(timezone.utc)
 
     for i in range(10):
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 created_at=base_time - timedelta(hours=i),
             )
         )
 
-    items = await repository.list_by_organization_id(org_id)
+    items = await repository.list_by_organization_id(organization_id)
 
     for i in range(len(items) - 1):
         assert items[i].created_at >= items[i + 1].created_at
@@ -744,32 +754,32 @@ async def test_list_ordering_by_created_at(repository: DatabaseKnowledgeItemRepo
 @pytest.mark.integration
 async def test_count_with_type_filter(repository: DatabaseKnowledgeItemRepository):
     """Test count with item type filter."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             item_type=KnowledgeItemType.FAQ,
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             item_type=KnowledgeItemType.FAQ,
         )
     )
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             item_type=KnowledgeItemType.RUNBOOK,
         )
     )
 
     faq_count = await repository.count_by_organization_id(
-        org_id,
+        organization_id,
         item_type=KnowledgeItemType.FAQ,
     )
-    total_count = await repository.count_by_organization_id(org_id)
+    total_count = await repository.count_by_organization_id(organization_id)
 
     assert faq_count == 2
     assert total_count == 3
@@ -876,12 +886,14 @@ async def test_null_metadata(repository: DatabaseKnowledgeItemRepository):
 @pytest.mark.integration
 async def test_publish_unpublish_workflow(repository: DatabaseKnowledgeItemRepository):
     """Test publish and unpublish workflow."""
-    org_id = generate_org_id()
-    item = create_sample_item(organization_id=org_id, is_published=True)
+    organization_id = generate_org_id()
+    item = create_sample_item(organization_id=organization_id, is_published=True)
     await repository.create(item)
 
     # Item is visible in published list
-    published = await repository.list_by_organization_id(org_id, is_published=True)
+    published = await repository.list_by_organization_id(
+        organization_id, is_published=True
+    )
     assert len(published) == 1
 
     # Unpublish
@@ -889,18 +901,24 @@ async def test_publish_unpublish_workflow(repository: DatabaseKnowledgeItemRepos
     await repository.update(item)
 
     # Item no longer in published list
-    published = await repository.list_by_organization_id(org_id, is_published=True)
+    published = await repository.list_by_organization_id(
+        organization_id, is_published=True
+    )
     assert len(published) == 0
 
     # Item visible in unpublished list
-    unpublished = await repository.list_by_organization_id(org_id, is_published=False)
+    unpublished = await repository.list_by_organization_id(
+        organization_id, is_published=False
+    )
     assert len(unpublished) == 1
 
     # Republish
     item.publish()
     await repository.update(item)
 
-    published = await repository.list_by_organization_id(org_id, is_published=True)
+    published = await repository.list_by_organization_id(
+        organization_id, is_published=True
+    )
     assert len(published) == 1
 
 
@@ -996,15 +1014,17 @@ async def test_inmemory_full_lifecycle(inmemory_repository):
 @pytest.mark.integration
 async def test_inmemory_organization_delete(inmemory_repository):
     """Test in-memory delete all items for organization."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     for _ in range(5):
-        await inmemory_repository.create(create_sample_item(organization_id=org_id))
+        await inmemory_repository.create(
+            create_sample_item(organization_id=organization_id)
+        )
 
-    count = inmemory_repository.delete_items_for_organization(org_id)
+    count = inmemory_repository.delete_items_for_organization(organization_id)
     assert count == 5
 
-    remaining = await inmemory_repository.count_by_organization_id(org_id)
+    remaining = await inmemory_repository.count_by_organization_id(organization_id)
     assert remaining == 0
 
 
@@ -1047,17 +1067,17 @@ async def test_special_characters_in_search(
     repository: DatabaseKnowledgeItemRepository,
 ):
     """Test search with special characters."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     await repository.create(
         create_sample_item(
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Error: 'NoneType' has no attribute",
             content="Common Python error when accessing None.",
         )
     )
 
-    result = await repository.search_by_text(org_id, "NoneType")
+    result = await repository.search_by_text(organization_id, "NoneType")
     assert len(result) == 1
 
 
@@ -1065,17 +1085,17 @@ async def test_special_characters_in_search(
 @pytest.mark.integration
 async def test_all_item_types(repository: DatabaseKnowledgeItemRepository):
     """Test creating items with all possible types."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
 
     for item_type in KnowledgeItemType:
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=item_type,
             )
         )
 
-    count = await repository.count_by_organization_id(org_id)
+    count = await repository.count_by_organization_id(organization_id)
     assert count == len(KnowledgeItemType)
 
 
@@ -1083,10 +1103,10 @@ async def test_all_item_types(repository: DatabaseKnowledgeItemRepository):
 @pytest.mark.integration
 async def test_many_tags(repository: DatabaseKnowledgeItemRepository):
     """Test item with many tags."""
-    org_id = generate_org_id()
+    organization_id = generate_org_id()
     tags = [f"tag_{i}" for i in range(50)]
 
-    item = create_sample_item(organization_id=org_id, tags=tags)
+    item = create_sample_item(organization_id=organization_id, tags=tags)
     await repository.create(item)
 
     retrieved = await repository.get_by_id(item.item_id)

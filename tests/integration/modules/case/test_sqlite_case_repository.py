@@ -478,12 +478,12 @@ class TestSQLiteCaseRepository:
 
         # Create test cases
         user_id = f"user_{uuid4().hex[:8]}"
-        org_id = f"org_{uuid4().hex[:8]}"
+        organization_id = f"org_{uuid4().hex[:8]}"
         for i in range(3):
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"List Test Case {i}",
                 status=CaseStatus.INQUIRY,
                 inquiry=InquiryData(),

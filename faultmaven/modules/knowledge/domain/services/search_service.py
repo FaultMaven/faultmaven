@@ -14,8 +14,8 @@ Usage:
     from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
 
     service = KnowledgeSearchService(knowledge_repo, embedding_service, vector_store)
-    results = await service.semantic_search("error handling", org_id, n_results=10)
-    results = await service.hybrid_search("database timeout", org_id)
+    results = await service.semantic_search("error handling", organization_id, n_results=10)
+    results = await service.hybrid_search("database timeout", organization_id)
 """
 
 import logging

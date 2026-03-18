@@ -182,13 +182,13 @@ class TestCaseLifecycle:
     @pytest.mark.asyncio
     async def test_case_lifecycle_create_to_resolve(self, case_service):
         """Test complete case lifecycle from creation to resolution."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Step 1: Create case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Production database slow",
             description="Database queries are taking 10x longer than normal",
             severity=CaseSeverity.HIGH,
@@ -198,7 +198,7 @@ class TestCaseLifecycle:
         assert case.status == CaseStatus.INQUIRY
 
         # Step 2: Retrieve case
-        retrieved = await case_service.get_case(case.case_id, org_id)
+        retrieved = await case_service.get_case(case.case_id, organization_id)
         assert retrieved is not None
         assert retrieved.case_id == case.case_id
 
@@ -206,7 +206,7 @@ class TestCaseLifecycle:
         # First update title and description
         updated = await case_service.update_case(
             case.case_id,
-            org_id,
+            organization_id,
             {
                 "title": "DB performance issue",
                 "description": "Database queries are taking 10x longer than normal - investigating",
@@ -226,7 +226,7 @@ class TestCaseLifecycle:
         # Finally transition to INVESTIGATING status
         updated = await case_service.update_case(
             case.case_id,
-            org_id,
+            organization_id,
             {"status": CaseStatus.INVESTIGATING},
         )
 
@@ -236,7 +236,7 @@ class TestCaseLifecycle:
         # Step 4: Close case
         closed = await case_service.close_case(
             case.case_id,
-            org_id,
+            organization_id,
             "Root cause: Missing index on users table. Added index, performance restored.",
         )
 
@@ -247,34 +247,36 @@ class TestCaseLifecycle:
     @pytest.mark.asyncio
     async def test_case_lifecycle_with_assignment(self, case_service):
         """Test case lifecycle with assignment."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
         assignee_id = create_test_user_id()
 
         # Create case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="API timeout issue",
             description="API calls timing out",
             severity=CaseSeverity.CRITICAL,
         )
 
         # Assign to specialist
-        assigned = await case_service.assign_case(case.case_id, org_id, assignee_id)
+        assigned = await case_service.assign_case(
+            case.case_id, organization_id, assignee_id
+        )
 
         assert assigned is not None
 
     @pytest.mark.asyncio
     async def test_case_lifecycle_multiple_updates(self, case_service):
         """Test multiple case updates."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Initial Title",
             description="Initial description",
             severity=CaseSeverity.LOW,
@@ -284,7 +286,7 @@ class TestCaseLifecycle:
         for i in range(5):
             case = await case_service.update_case(
                 case.case_id,
-                org_id,
+                organization_id,
                 {"title": f"Updated Title {i + 1}", "description": f"Update {i + 1}"},
             )
 
@@ -388,24 +390,24 @@ class TestAuthorizationEnforcement:
     @pytest.mark.asyncio
     async def test_authorization_allows_same_org_access(self, case_service):
         """Test that same organization can access case."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Org Case",
             description="",
             severity=CaseSeverity.LOW,
         )
 
         # All operations should succeed with same org
-        retrieved = await case_service.get_case(case.case_id, org_id)
+        retrieved = await case_service.get_case(case.case_id, organization_id)
         assert retrieved is not None
 
         updated = await case_service.update_case(
-            case.case_id, org_id, {"title": "Updated"}
+            case.case_id, organization_id, {"title": "Updated"}
         )
         assert updated.title == "Updated"
 
@@ -503,12 +505,12 @@ class TestCaseStateTransitions:
     @pytest.mark.asyncio
     async def test_transition_inquiry_to_investigating(self, case_service):
         """Test transition from INQUIRY to INVESTIGATING."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Test",
             description="Test problem description",
             severity=CaseSeverity.LOW,
@@ -525,7 +527,7 @@ class TestCaseStateTransitions:
 
         updated = await case_service.update_case(
             case.case_id,
-            org_id,
+            organization_id,
             {"status": CaseStatus.INVESTIGATING},
         )
 
@@ -534,12 +536,12 @@ class TestCaseStateTransitions:
     @pytest.mark.asyncio
     async def test_transition_investigating_to_resolved(self, case_service):
         """Test transition from INVESTIGATING to RESOLVED via close."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Test",
             description="Test problem description",
             severity=CaseSeverity.LOW,
@@ -553,31 +555,33 @@ class TestCaseStateTransitions:
         await case_service.case_repo.save(case_from_repo)
 
         await case_service.update_case(
-            case.case_id, org_id, {"status": CaseStatus.INVESTIGATING}
+            case.case_id, organization_id, {"status": CaseStatus.INVESTIGATING}
         )
 
-        closed = await case_service.close_case(case.case_id, org_id, "Issue resolved")
+        closed = await case_service.close_case(
+            case.case_id, organization_id, "Issue resolved"
+        )
 
         assert closed.status == CaseStatus.RESOLVED
 
     @pytest.mark.asyncio
     async def test_cannot_close_already_closed_case(self, case_service):
         """Test that closing already-closed case raises error."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Test",
             description="",
             severity=CaseSeverity.LOW,
         )
 
-        await case_service.close_case(case.case_id, org_id, "resolved")
+        await case_service.close_case(case.case_id, organization_id, "resolved")
 
         with pytest.raises(ConflictError):
-            await case_service.close_case(case.case_id, org_id, "resolved")
+            await case_service.close_case(case.case_id, organization_id, "resolved")
 
 
 # ============================================================
@@ -593,13 +597,13 @@ class TestCaseDetails:
         self, case_service, session_repo
     ):
         """Test that details include investigation sessions."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Test",
             description="",
             severity=CaseSeverity.LOW,
@@ -610,14 +614,14 @@ class TestCaseDetails:
             session_id=f"sess_{uuid4().hex[:12]}",
             case_id=case.case_id,
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             status=SessionStatus.ACTIVE,
         )
         await session_repo.create(session)
 
         # Get details
         details = await case_service.get_case_with_details(
-            case.case_id, org_id, include_sessions=True
+            case.case_id, organization_id, include_sessions=True
         )
 
         assert details is not None
@@ -629,13 +633,13 @@ class TestCaseDetails:
         self, case_service, evidence_repo
     ):
         """Test that details include evidence artifacts."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Test",
             description="",
             severity=CaseSeverity.LOW,
@@ -643,7 +647,7 @@ class TestCaseDetails:
 
         # Get details
         details = await case_service.get_case_with_details(
-            case.case_id, org_id, include_evidence=True
+            case.case_id, organization_id, include_evidence=True
         )
 
         assert details is not None
@@ -661,38 +665,38 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_create_case_trims_whitespace(self, case_service):
         """Test that create_case trims whitespace from inputs."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         case = await case_service.create_case(
             user_id=f"  {user_id}  ",
-            organization_id=f"  {org_id}  ",
+            organization_id=f"  {organization_id}  ",
             title="  Trimmed Title  ",
             description="  Trimmed Description  ",
             severity=CaseSeverity.LOW,
         )
 
         assert case.user_id == user_id
-        assert case.organization_id == org_id
+        assert case.organization_id == organization_id
         assert case.title == "Trimmed Title"
         assert case.description == "Trimmed Description"
 
     @pytest.mark.asyncio
     async def test_update_case_with_empty_description(self, case_service):
         """Test updating case with empty description."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Test",
             description="Original description",
             severity=CaseSeverity.LOW,
         )
 
         updated = await case_service.update_case(
-            case.case_id, org_id, {"description": ""}
+            case.case_id, organization_id, {"description": ""}
         )
 
         assert updated.description == ""
@@ -700,30 +704,30 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_list_cases_with_zero_limit(self, case_service):
         """Test list_cases with zero limit."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create some cases
         for i in range(3):
             await case_service.create_case(
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"Case {i}",
                 description="",
                 severity=CaseSeverity.LOW,
             )
 
         # List with zero limit
-        cases = await case_service.list_cases(org_id, limit=0)
+        cases = await case_service.list_cases(organization_id, limit=0)
 
         assert isinstance(cases, list)
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_case(self, case_service):
         """Test deleting nonexistent case returns False."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
 
-        result = await case_service.delete_case("nonexistent_case_id", org_id)
+        result = await case_service.delete_case("nonexistent_case_id", organization_id)
 
         assert result is False
 
@@ -778,13 +782,13 @@ class TestConcurrentOperations:
         SKIPPED: Exposes SQLAlchemy session sharing issue in concurrent operations.
         See TestConcurrentOperations class docstring for full details.
         """
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         async def create_case(i: int) -> Case:
             return await case_service.create_case(
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"Concurrent Case {i}",
                 description="",
                 severity=CaseSeverity.LOW,
@@ -808,12 +812,12 @@ class TestConcurrentOperations:
         SKIPPED: Exposes SQLAlchemy session sharing issue in concurrent operations.
         See TestConcurrentOperations class docstring for full details.
         """
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Concurrent Update Target",
             description="",
             severity=CaseSeverity.LOW,
@@ -822,7 +826,7 @@ class TestConcurrentOperations:
         async def update_case(i: int) -> Case:
             return await case_service.update_case(
                 case.case_id,
-                org_id,
+                organization_id,
                 {"title": f"Update {i}"},
             )
 

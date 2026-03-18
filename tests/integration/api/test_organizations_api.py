@@ -3,15 +3,15 @@
 Tests all 11 organization API endpoints:
 1. POST   /api/v1/organizations           (create org)
 2. GET    /api/v1/organizations           (list user's orgs)
-3. GET    /api/v1/organizations/{org_id}  (get org details)
-4. PATCH  /api/v1/organizations/{org_id}  (update org)
-5. DELETE /api/v1/organizations/{org_id}  (delete org)
-6. GET    /api/v1/organizations/{org_id}/members      (list members)
-7. POST   /api/v1/organizations/{org_id}/members      (add member)
-8. DELETE /api/v1/organizations/{org_id}/members/{id} (remove member)
-9. PATCH  /api/v1/organizations/{org_id}/members/{id} (update role)
-10. GET   /api/v1/organizations/{org_id}/settings     (get settings)
-11. PATCH /api/v1/organizations/{org_id}/settings     (update settings)
+3. GET    /api/v1/organizations/{organization_id}  (get org details)
+4. PATCH  /api/v1/organizations/{organization_id}  (update org)
+5. DELETE /api/v1/organizations/{organization_id}  (delete org)
+6. GET    /api/v1/organizations/{organization_id}/members      (list members)
+7. POST   /api/v1/organizations/{organization_id}/members      (add member)
+8. DELETE /api/v1/organizations/{organization_id}/members/{id} (remove member)
+9. PATCH  /api/v1/organizations/{organization_id}/members/{id} (update role)
+10. GET   /api/v1/organizations/{organization_id}/settings     (get settings)
+11. PATCH /api/v1/organizations/{organization_id}/settings     (update settings)
 
 Coverage Target: 50-60 tests
 """
@@ -290,7 +290,7 @@ def sample_organization():
     """Create sample organization."""
     now = datetime.now(timezone.utc)
     return Organization(
-        org_id="org-123",
+        organization_id="org-123",
         name="Test Organization",
         slug="test-org",
         description="Test description",
@@ -309,19 +309,19 @@ def sample_members():
     return [
         OrganizationMember(
             user_id="user-owner",
-            org_id="org-123",
+            organization_id="org-123",
             role_id="role_org_owner",
             joined_at=now,
         ),
         OrganizationMember(
             user_id="user-admin",
-            org_id="org-123",
+            organization_id="org-123",
             role_id="role_org_admin",
             joined_at=now,
         ),
         OrganizationMember(
             user_id="user-member",
-            org_id="org-123",
+            organization_id="org-123",
             role_id="role_org_member",
             joined_at=now,
         ),
@@ -482,12 +482,12 @@ class TestListUserOrganizationsEndpoint:
 
 
 # ============================================================
-# GET /api/v1/organizations/{org_id} Tests
+# GET /api/v1/organizations/{organization_id} Tests
 # ============================================================
 
 
 class TestGetOrganizationEndpoint:
-    """Tests for GET /api/v1/organizations/{org_id}."""
+    """Tests for GET /api/v1/organizations/{organization_id}."""
 
     def test_200_ok_member_can_view_organization_details(self, client):
         """200 OK - member can view organization details."""
@@ -550,12 +550,12 @@ class TestGetOrganizationEndpoint:
 
 
 # ============================================================
-# PATCH /api/v1/organizations/{org_id} Tests
+# PATCH /api/v1/organizations/{organization_id} Tests
 # ============================================================
 
 
 class TestUpdateOrganizationEndpoint:
-    """Tests for PATCH /api/v1/organizations/{org_id}."""
+    """Tests for PATCH /api/v1/organizations/{organization_id}."""
 
     def test_200_ok_owner_can_update_name_description(self, client):
         """200 OK - owner can update name/description."""
@@ -627,12 +627,12 @@ class TestUpdateOrganizationEndpoint:
 
 
 # ============================================================
-# DELETE /api/v1/organizations/{org_id} Tests
+# DELETE /api/v1/organizations/{organization_id} Tests
 # ============================================================
 
 
 class TestDeleteOrganizationEndpoint:
-    """Tests for DELETE /api/v1/organizations/{org_id}."""
+    """Tests for DELETE /api/v1/organizations/{organization_id}."""
 
     def test_200_ok_owner_can_delete_organization(self, client, mock_services):
         """200 OK - owner can delete organization."""
@@ -699,12 +699,12 @@ class TestDeleteOrganizationEndpoint:
 
 
 # ============================================================
-# GET /api/v1/organizations/{org_id}/members Tests
+# GET /api/v1/organizations/{organization_id}/members Tests
 # ============================================================
 
 
 class TestListOrganizationMembersEndpoint:
-    """Tests for GET /api/v1/organizations/{org_id}/members."""
+    """Tests for GET /api/v1/organizations/{organization_id}/members."""
 
     def test_200_ok_member_can_list_all_members(self, client, mock_services):
         """200 OK - member can list all members."""
@@ -762,12 +762,12 @@ class TestListOrganizationMembersEndpoint:
 
 
 # ============================================================
-# POST /api/v1/organizations/{org_id}/members Tests
+# POST /api/v1/organizations/{organization_id}/members Tests
 # ============================================================
 
 
 class TestAddMemberEndpoint:
-    """Tests for POST /api/v1/organizations/{org_id}/members."""
+    """Tests for POST /api/v1/organizations/{organization_id}/members."""
 
     def test_201_created_owner_adds_member(self, client, mock_services):
         """201 Created - owner adds member."""
@@ -883,12 +883,12 @@ class TestAddMemberEndpoint:
 
 
 # ============================================================
-# DELETE /api/v1/organizations/{org_id}/members/{user_id} Tests
+# DELETE /api/v1/organizations/{organization_id}/members/{user_id} Tests
 # ============================================================
 
 
 class TestRemoveMemberEndpoint:
-    """Tests for DELETE /api/v1/organizations/{org_id}/members/{user_id}."""
+    """Tests for DELETE /api/v1/organizations/{organization_id}/members/{user_id}."""
 
     def test_200_ok_owner_removes_member(self, client, mock_services):
         """200 OK - owner removes member."""
@@ -980,12 +980,12 @@ class TestRemoveMemberEndpoint:
 
 
 # ============================================================
-# PATCH /api/v1/organizations/{org_id}/members/{user_id} Tests
+# PATCH /api/v1/organizations/{organization_id}/members/{user_id} Tests
 # ============================================================
 
 
 class TestUpdateMemberRoleEndpoint:
-    """Tests for PATCH /api/v1/organizations/{org_id}/members/{user_id}."""
+    """Tests for PATCH /api/v1/organizations/{organization_id}/members/{user_id}."""
 
     def test_200_ok_owner_updates_member_role(self, client, mock_services):
         """200 OK - owner updates member role."""
@@ -1067,12 +1067,12 @@ class TestUpdateMemberRoleEndpoint:
 
 
 # ============================================================
-# GET /api/v1/organizations/{org_id}/settings Tests
+# GET /api/v1/organizations/{organization_id}/settings Tests
 # ============================================================
 
 
 class TestGetOrganizationSettingsEndpoint:
-    """Tests for GET /api/v1/organizations/{org_id}/settings."""
+    """Tests for GET /api/v1/organizations/{organization_id}/settings."""
 
     def test_200_ok_member_can_view_settings(self, client, mock_services):
         """200 OK - member can view settings."""
@@ -1123,12 +1123,12 @@ class TestGetOrganizationSettingsEndpoint:
 
 
 # ============================================================
-# PATCH /api/v1/organizations/{org_id}/settings Tests
+# PATCH /api/v1/organizations/{organization_id}/settings Tests
 # ============================================================
 
 
 class TestUpdateOrganizationSettingsEndpoint:
-    """Tests for PATCH /api/v1/organizations/{org_id}/settings."""
+    """Tests for PATCH /api/v1/organizations/{organization_id}/settings."""
 
     def test_200_ok_owner_updates_settings(self, client, mock_services):
         """200 OK - owner updates settings."""

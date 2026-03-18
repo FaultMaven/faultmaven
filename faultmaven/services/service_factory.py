@@ -71,7 +71,7 @@ class ServiceFactory:
         async with get_db_session() as session:
             factory = ServiceFactory(session)
             case_service = factory.create_case_service()
-            case = await case_service.get_case(case_id, org_id)
+            case = await case_service.get_case(case_id, organization_id)
     """
 
     def __init__(

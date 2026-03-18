@@ -2969,7 +2969,7 @@ Get organization details by slug. Requires organization membership.
 
 ---
 
-### `/api/v1/organizations/{org_id}`
+### `/api/v1/organizations/{organization_id}`
 
 #### GET
 
@@ -2981,7 +2981,7 @@ Get organization details by ID. Requires organization membership.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -3002,7 +3002,7 @@ Update organization details. Requires owner permission.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Request Body:**
@@ -3027,7 +3027,7 @@ Soft delete an organization. Requires owner permission.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -3038,7 +3038,7 @@ Soft delete an organization. Requires owner permission.
 
 ---
 
-### `/api/v1/organizations/{org_id}/members`
+### `/api/v1/organizations/{organization_id}/members`
 
 #### GET
 
@@ -3050,7 +3050,7 @@ List all members of an organization. Requires organization membership.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `role` (query) ❌ - Filter by role: owner, admin, member
 - `limit` (query) ❌ - Maximum results
 - `offset` (query) ❌ - Pagination offset
@@ -3074,7 +3074,7 @@ Add user to organization by email. Requires owner or admin permission.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Request Body:**
@@ -3089,7 +3089,7 @@ Content-Type: `application/json`
 
 ---
 
-### `/api/v1/organizations/{org_id}/members/{user_id}`
+### `/api/v1/organizations/{organization_id}/members/{user_id}`
 
 #### PATCH
 
@@ -3101,7 +3101,7 @@ Update user's role in organization. Requires owner permission.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `user_id` (path) ✅ - User ID
 - `Authorization` (header) ❌ - No description
 
@@ -3127,7 +3127,7 @@ Remove user from organization. Owner can remove anyone except self, admin can re
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `user_id` (path) ✅ - User ID to remove
 - `Authorization` (header) ❌ - No description
 
@@ -3139,7 +3139,7 @@ Remove user from organization. Owner can remove anyone except self, admin can re
 
 ---
 
-### `/api/v1/organizations/{org_id}/permissions/check`
+### `/api/v1/organizations/{organization_id}/permissions/check`
 
 #### POST
 
@@ -3151,7 +3151,7 @@ Check if user has specific permission in organization.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Request Body:**
@@ -3166,7 +3166,7 @@ Content-Type: `application/json`
 
 ---
 
-### `/api/v1/organizations/{org_id}/settings`
+### `/api/v1/organizations/{organization_id}/settings`
 
 #### GET
 
@@ -3178,7 +3178,7 @@ Get organization settings and plan limits. Requires organization membership.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -3199,7 +3199,7 @@ Update organization settings. Requires owner permission.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Request Body:**
@@ -3938,7 +3938,7 @@ Content-Type: `application/json`
 
 ---
 
-### `/api/v1/teams/organization/{org_id}`
+### `/api/v1/teams/organization/{organization_id}`
 
 #### GET
 
@@ -3950,7 +3950,7 @@ List all teams in an organization.
 
 **Parameters:**
 
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -3961,7 +3961,7 @@ List all teams in an organization.
 
 ---
 
-### `/api/v1/teams/user/{target_user_id}/organization/{org_id}`
+### `/api/v1/teams/user/{target_user_id}/organization/{organization_id}`
 
 #### GET
 
@@ -3974,7 +3974,7 @@ List all teams a user belongs to in an organization.
 **Parameters:**
 
 - `target_user_id` (path) ✅ - User ID
-- `org_id` (path) ✅ - Organization ID
+- `organization_id` (path) ✅ - Organization ID
 - `Authorization` (header) ❌ - No description
 
 **Responses:**
@@ -6040,7 +6040,7 @@ Permission check result
 - `has_permission` (boolean) ✅ - No description
 - `permission` (string) ✅ - No description
 - `user_id` (string) ✅ - No description
-- `org_id` (string) ✅ - No description
+- `organization_id` (string) ✅ - No description
 
 ---
 
@@ -6586,7 +6586,7 @@ Request to create a new team
 
 **Properties:**
 
-- `org_id` (string) ✅ - Organization ID
+- `organization_id` (string) ✅ - Organization ID
 - `name` (string) ✅ - Team name
 - `description` (unknown) ❌ - Team description
 
@@ -6623,7 +6623,7 @@ Team details response
 **Properties:**
 
 - `team_id` (string) ✅ - No description
-- `org_id` (string) ✅ - No description
+- `organization_id` (string) ✅ - No description
 - `name` (string) ✅ - No description
 - `description` (unknown) ✅ - No description
 - `settings` (object) ✅ - No description

@@ -700,7 +700,7 @@ class TestEdgeCases:
             mime_type="text/plain",
         )
 
-        # Should sanitize the org_id in path
+        # Should sanitize the organization_id in path
         assert "/" not in result["file_path"].split(os.sep)[0]
 
     @pytest.mark.asyncio

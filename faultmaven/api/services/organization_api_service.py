@@ -131,7 +131,7 @@ class APIOrganizationService(BaseService):
         )
 
         self.logger.info(
-            f"Organization created: {org.org_id} by user {creator_user_id}"
+            f"Organization created: {org.organization_id} by user {creator_user_id}"
         )
         return org
 
@@ -188,20 +188,20 @@ class APIOrganizationService(BaseService):
         org_list = []
         for org in orgs:
             role_id = await self.organization_service.get_member_role(
-                org.org_id, user_id
+                org.organization_id, user_id
             )
             role = self._role_id_to_name(role_id) if role_id else "member"
 
             # Get member record for joined_at
             members = await self.organization_service.list_organization_members(
-                org.org_id
+                org.organization_id
             )
             member = next((m for m in members if m.user_id == user_id), None)
             member_since = member.joined_at if member else org.created_at
 
             org_list.append(
                 {
-                    "organization_id": org.org_id,
+                    "organization_id": org.organization_id,
                     "name": org.name,
                     "slug": org.slug,
                     "plan_tier": (
@@ -251,7 +251,7 @@ class APIOrganizationService(BaseService):
 
         # Update via domain service
         success = await self.organization_service.update_organization(
-            org_id=organization_id,
+            organization_id=organization_id,
             user_id=user_id,
             name=name,
             description=description,
@@ -296,7 +296,7 @@ class APIOrganizationService(BaseService):
 
         # Delete via domain service (soft delete)
         success = await self.organization_service.delete_organization(
-            org_id=organization_id,
+            organization_id=organization_id,
             user_id=user_id,
         )
 
@@ -440,7 +440,7 @@ class APIOrganizationService(BaseService):
         # Add member via domain service
         role_id = self._role_name_to_id(role)
         success = await self.organization_service.add_member(
-            org_id=organization_id,
+            organization_id=organization_id,
             user_id=target_user_id,
             role_id=role_id,
             added_by=requesting_user_id,
@@ -510,7 +510,7 @@ class APIOrganizationService(BaseService):
 
         # Remove member via domain service
         success = await self.organization_service.remove_member(
-            org_id=organization_id,
+            organization_id=organization_id,
             user_id=target_user_id,
             removed_by=requesting_user_id,
         )
@@ -580,7 +580,7 @@ class APIOrganizationService(BaseService):
         # Update role via domain service
         new_role_id = self._role_name_to_id(role)
         success = await self.organization_service.update_member_role(
-            org_id=organization_id,
+            organization_id=organization_id,
             user_id=target_user_id,
             role_id=new_role_id,
             updated_by=requesting_user_id,
@@ -675,7 +675,7 @@ class APIOrganizationService(BaseService):
         )
 
         return {
-            "organization_id": org.org_id,
+            "organization_id": org.organization_id,
             "plan_tier": plan_tier.value,
             "max_members": org.max_members,
             "current_member_count": len(members),
@@ -728,7 +728,7 @@ class APIOrganizationService(BaseService):
 
         # Update via domain service
         success = await self.organization_service.update_organization(
-            org_id=organization_id,
+            organization_id=organization_id,
             user_id=user_id,
             settings=updated_settings,
         )

@@ -185,9 +185,9 @@ class CaseService(ICaseService):
                     # For single-tenant: get_default_organization() is simpler
                     # For multi-tenant: would need User object, but single-tenant is primary use case
                     organization = await self.tenant_provider.get_default_organization()
-                    resolved_org_id = organization.org_id
+                    resolved_org_id = organization.organization_id
                 except Exception as e:
-                    # If get_default_organization fails, use default org_id
+                    # If get_default_organization fails, use default organization_id
                     logger.debug(
                         f"TenantProvider.get_default_organization() failed: {e}. "
                         f"Using default organization_id: {resolved_org_id}"
@@ -1624,7 +1624,7 @@ class CaseService(ICaseService):
         1. User is the case owner
         2. User is a participant
         3. User is a team member (if case has team_id)
-        4. User has org-level access (if case has org_id)
+        4. User has org-level access (if case has organization_id)
 
         Args:
             case_id: Case identifier

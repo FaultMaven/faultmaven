@@ -122,8 +122,8 @@ auth:email:{email} → user_id
 ┌──────────────┐        ┌─────────────────┐        ┌──────────┐
 │ users        │────────│ org_members     │────────│   orgs   │
 │              │  N:M   │                 │   N:1  │          │
-│ • user_id    │        │ • user_id       │        │ • org_id │
-│ • email      │        │ • org_id        │        │ • name   │
+│ • user_id    │        │ • user_id       │        │ • organization_id │
+│ • email      │        │ • organization_id        │        │ • name   │
 │ • username   │        │ • role          │        │ • plan   │
 └──────────────┘        │ • joined_at     │        └──────────┘
                         └─────────────────┘
@@ -573,13 +573,13 @@ Team Scope:
 ### 4.3 Permission Check Example
 
 ```python
-async def check_permission(user_id: str, org_id: str, permission: str) -> bool:
+async def check_permission(user_id: str, organization_id: str, permission: str) -> bool:
     """
     Check if user has permission in organization.
 
     Args:
         user_id: User identifier
-        org_id: Organization identifier
+        organization_id: Organization identifier
         permission: Permission string (e.g., 'cases.write')
 
     Returns:
@@ -592,7 +592,7 @@ async def check_permission(user_id: str, org_id: str, permission: str) -> bool:
             JOIN role_permissions rp ON rp.role_id = om.role_id
             JOIN permissions p ON p.permission_id = rp.permission_id
             WHERE om.user_id = :user_id
-            AND om.org_id = :org_id
+            AND om.organization_id = :organization_id
             AND (
                 p.resource || '.' || p.action = :permission
                 OR p.action = 'manage' AND p.resource = split_part(:permission, '.', 1)
@@ -602,7 +602,7 @@ async def check_permission(user_id: str, org_id: str, permission: str) -> bool:
 
     result = await db.execute(query, {
         "user_id": user_id,
-        "org_id": org_id,
+        "organization_id": organization_id,
         "permission": permission
     })
 

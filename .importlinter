@@ -130,8 +130,6 @@ layers =
     faultmaven.modules.auth.domain
     faultmaven.modules.auth.infrastructure
 ignore_imports =
-    faultmaven.modules.auth.infrastructure.repositories.organization_repository -> faultmaven.modules.auth.domain.models.organization
-    faultmaven.modules.auth.infrastructure.repositories.team_repository -> faultmaven.modules.auth.domain.models.organization
     faultmaven.modules.auth.infrastructure.repositories.session_repository -> faultmaven.modules.auth.domain.models.session
     faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository -> faultmaven.modules.auth.contracts
     faultmaven.modules.auth.infrastructure.stores.user_store -> faultmaven.modules.auth.domain.models.auth

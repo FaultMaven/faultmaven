@@ -128,7 +128,7 @@ class APICaseService(BaseService):
                 organization = await self.tenant_provider.get_current_organization(
                     current_user=current_user, organization_id=organization_id
                 )
-                resolved_org_id = organization.org_id
+                resolved_org_id = organization.organization_id
             except Exception as e:
                 self.log_error("tenant_provider_resolution", e, user_id=user_id)
                 # Fall back to provided organization_id if TenantProvider fails
@@ -457,7 +457,7 @@ class APICaseService(BaseService):
                 organization = await self.tenant_provider.get_current_organization(
                     current_user=current_user, organization_id=organization_id
                 )
-                resolved_org_id = organization.org_id
+                resolved_org_id = organization.organization_id
             except Exception as e:
                 self.log_error("tenant_provider_resolution", e)
                 # Fall back to provided organization_id if TenantProvider fails

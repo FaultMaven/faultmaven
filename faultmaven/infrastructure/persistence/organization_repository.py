@@ -39,7 +39,7 @@ def _parse_settings(raw) -> dict:
 def _model_to_domain(model: OrganizationModel) -> Organization:
     """Convert ORM model to domain object."""
     return Organization(
-        org_id=model.organization_id,
+        organization_id=model.organization_id,
         name=model.name,
         slug=model.slug,
         description=model.description,
@@ -62,7 +62,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
     async def create_organization(self, org: Organization) -> Organization:
         """Create a new organization."""
         model = OrganizationModel(
-            organization_id=org.org_id,
+            organization_id=org.organization_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
@@ -76,13 +76,13 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         self.db.add(model)
         await self.db.commit()
 
-        logger.info(f"Created organization: {org.org_id} ({org.name})")
+        logger.info(f"Created organization: {org.organization_id} ({org.name})")
         return org
 
-    async def get_organization(self, org_id: str) -> Optional[Organization]:
+    async def get_organization(self, organization_id: str) -> Optional[Organization]:
         """Get organization by ID."""
         stmt = select(OrganizationModel).where(
-            OrganizationModel.organization_id == org_id,
+            OrganizationModel.organization_id == organization_id,
             OrganizationModel.deleted_at.is_(None),
         )
         result = await self.db.execute(stmt)
@@ -106,7 +106,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         stmt = (
             update(OrganizationModel)
             .where(
-                OrganizationModel.organization_id == org.org_id,
+                OrganizationModel.organization_id == org.organization_id,
                 OrganizationModel.deleted_at.is_(None),
             )
             .values(
@@ -124,12 +124,12 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         await self.db.commit()
         return result.rowcount > 0
 
-    async def delete_organization(self, org_id: str) -> bool:
+    async def delete_organization(self, organization_id: str) -> bool:
         """Soft delete organization."""
         stmt = (
             update(OrganizationModel)
             .where(
-                OrganizationModel.organization_id == org_id,
+                OrganizationModel.organization_id == organization_id,
                 OrganizationModel.deleted_at.is_(None),
             )
             .values(deleted_at=datetime.now(timezone.utc))
@@ -157,12 +157,14 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         models = result.scalars().all()
         return [_model_to_domain(m) for m in models]
 
-    async def add_member(self, org_id: str, user_id: str, role_id: str) -> bool:
+    async def add_member(
+        self, organization_id: str, user_id: str, role_id: str
+    ) -> bool:
         """Add user to organization with role (upsert)."""
         now = datetime.now(timezone.utc)
         stmt = sqlite_insert(OrganizationMemberModel).values(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             role_id=role_id,
             joined_at=now,
             updated_at=now,
@@ -175,26 +177,28 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         await self.db.commit()
 
         logger.info(
-            f"Added user {user_id} to organization {org_id} with role {role_id}"
+            f"Added user {user_id} to organization {organization_id} with role {role_id}"
         )
         return True
 
-    async def remove_member(self, org_id: str, user_id: str) -> bool:
+    async def remove_member(self, organization_id: str, user_id: str) -> bool:
         """Remove user from organization."""
         stmt = delete(OrganizationMemberModel).where(
-            OrganizationMemberModel.organization_id == org_id,
+            OrganizationMemberModel.organization_id == organization_id,
             OrganizationMemberModel.user_id == user_id,
         )
         result = await self.db.execute(stmt)
         await self.db.commit()
         return result.rowcount > 0
 
-    async def update_member_role(self, org_id: str, user_id: str, role_id: str) -> bool:
+    async def update_member_role(
+        self, organization_id: str, user_id: str, role_id: str
+    ) -> bool:
         """Update user's role in organization."""
         stmt = (
             update(OrganizationMemberModel)
             .where(
-                OrganizationMemberModel.organization_id == org_id,
+                OrganizationMemberModel.organization_id == organization_id,
                 OrganizationMemberModel.user_id == user_id,
             )
             .values(role_id=role_id)
@@ -203,11 +207,13 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         await self.db.commit()
         return result.rowcount > 0
 
-    async def list_organization_members(self, org_id: str) -> List[OrganizationMember]:
+    async def list_organization_members(
+        self, organization_id: str
+    ) -> List[OrganizationMember]:
         """List all members of an organization."""
         stmt = (
             select(OrganizationMemberModel)
-            .where(OrganizationMemberModel.organization_id == org_id)
+            .where(OrganizationMemberModel.organization_id == organization_id)
             .order_by(OrganizationMemberModel.joined_at.desc())
         )
         result = await self.db.execute(stmt)
@@ -216,7 +222,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         return [
             OrganizationMember(
                 user_id=row.user_id,
-                org_id=row.organization_id,
+                organization_id=row.organization_id,
                 role_id=row.role_id,
                 joined_at=row.joined_at,
                 last_active_at=row.last_active_at,
@@ -224,10 +230,12 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
             for row in rows
         ]
 
-    async def get_member_role(self, org_id: str, user_id: str) -> Optional[str]:
+    async def get_member_role(
+        self, organization_id: str, user_id: str
+    ) -> Optional[str]:
         """Get user's role in organization."""
         stmt = select(OrganizationMemberModel.role_id).where(
-            OrganizationMemberModel.organization_id == org_id,
+            OrganizationMemberModel.organization_id == organization_id,
             OrganizationMemberModel.user_id == user_id,
         )
         result = await self.db.execute(stmt)
@@ -235,7 +243,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         return row if row else None
 
     async def user_has_permission(
-        self, user_id: str, org_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: str
     ) -> bool:
         """Check if user has permission in organization.
 
@@ -262,7 +270,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
             )
             .where(
                 OrganizationMemberModel.user_id == user_id,
-                OrganizationMemberModel.organization_id == org_id,
+                OrganizationMemberModel.organization_id == organization_id,
                 PermissionModel.resource == resource,
                 PermissionModel.action == action,
             )

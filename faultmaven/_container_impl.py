@@ -1115,7 +1115,7 @@ class DIContainer(BaseDIContainer):
                 final_user_id = user_id or owner_id
                 final_org_id = (
                     organization_id or owner_id
-                )  # Use owner_id as org_id if not provided
+                )  # Use owner_id as organization_id if not provided
 
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)

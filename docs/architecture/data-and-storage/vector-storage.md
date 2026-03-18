@@ -329,7 +329,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
             "$or": [
                 {"allowed_users": {"$contains": user_id}},
                 {"allowed_teams": {"$in": user_teams}},
-                {"org_id": {"$in": user_orgs}}
+                {"organization_id": {"$in": user_orgs}}
             ]
         },
         n_results=k

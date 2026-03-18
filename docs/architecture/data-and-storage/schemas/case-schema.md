@@ -992,7 +992,7 @@ SELECT * FROM cases WHERE case_id = 'case_123';
 SELECT e.* FROM evidence e
 JOIN cases c ON c.case_id = e.case_id
 WHERE e.case_id = :case_id
-  AND c.organization_id = :org_id;  -- Security check via JOIN
+  AND c.organization_id = :organization_id;  -- Security check via JOIN
 
 -- ❌ INCORRECT: Don't add organization_id to child tables
 -- ALTER TABLE evidence ADD COLUMN organization_id VARCHAR(20);  -- NO!
@@ -1023,7 +1023,7 @@ WHERE e.case_id = :case_id
 CREATE INDEX idx_cases_org_id_case_id ON cases(organization_id, case_id);
 CREATE INDEX idx_cases_org_status ON cases(organization_id, status);
 
--- Child table indexes remain focused on case_id (no org_id needed):
+-- Child table indexes remain focused on case_id (no organization_id needed):
 CREATE INDEX idx_evidence_case ON evidence(case_id);
 CREATE INDEX idx_hypotheses_case ON hypotheses(case_id);
 ```
@@ -1352,7 +1352,7 @@ WHERE case_id = :case_id
 
 -- Query active cases only (exclude deleted)
 SELECT * FROM cases
-WHERE organization_id = :org_id
+WHERE organization_id = :organization_id
   AND deleted_at IS NULL;
 
 -- Restore deleted case (within retention period)
@@ -1418,7 +1418,7 @@ class CaseRepository:
         ...
     ) -> tuple[List[Case], int]:
         """List cases, excluding deleted by default."""
-        query = "SELECT * FROM cases WHERE organization_id = :org_id"
+        query = "SELECT * FROM cases WHERE organization_id = :organization_id"
 
         if not include_deleted:
             query += " AND deleted_at IS NULL"

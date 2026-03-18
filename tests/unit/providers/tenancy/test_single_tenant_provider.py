@@ -33,7 +33,7 @@ def single_tenant_provider(mock_organization_repository):
 def default_organization():
     """Default organization fixture."""
     return Organization(
-        org_id=SingleTenantProvider.DEFAULT_ORG_ID,
+        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
         slug=SingleTenantProvider.DEFAULT_ORG_SLUG,
         name=SingleTenantProvider.DEFAULT_ORG_NAME,
         description="Default organization for local deployment",
@@ -77,7 +77,7 @@ async def test_get_current_organization_returns_default_org(
     )
 
     assert result == default_organization
-    assert result.org_id == SingleTenantProvider.DEFAULT_ORG_ID
+    assert result.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
     mock_organization_repository.get_organization.assert_called_once_with(
         SingleTenantProvider.DEFAULT_ORG_ID
     )
@@ -103,8 +103,8 @@ async def test_get_current_organization_ignores_organization_id_parameter(
         current_user=mock_user, organization_id="other_org_id"
     )
 
-    assert result.org_id == SingleTenantProvider.DEFAULT_ORG_ID
-    # Should still call with DEFAULT_ORG_ID, not the provided org_id
+    assert result.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+    # Should still call with DEFAULT_ORG_ID, not the provided organization_id
     mock_organization_repository.get_organization.assert_called_once_with(
         SingleTenantProvider.DEFAULT_ORG_ID
     )
@@ -193,7 +193,7 @@ async def test_ensure_default_organization_creates_if_missing(
 
     # Mock create_organization to return a new org
     created_org = Organization(
-        org_id=SingleTenantProvider.DEFAULT_ORG_ID,
+        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
         slug=SingleTenantProvider.DEFAULT_ORG_SLUG,
         name=SingleTenantProvider.DEFAULT_ORG_NAME,
         description="Default organization for local/community deployment",
@@ -208,7 +208,7 @@ async def test_ensure_default_organization_creates_if_missing(
 
     result = await single_tenant_provider.ensure_default_organization_exists()
 
-    assert result.org_id == SingleTenantProvider.DEFAULT_ORG_ID
+    assert result.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
     assert result.plan_tier == OrgPlanTier.PRO
     assert result.max_members == 100
     assert result.max_cases is None
@@ -281,7 +281,7 @@ async def test_default_org_has_pro_plan_tier(
     mock_organization_repository.get_organization.return_value = None
 
     created_org = Organization(
-        org_id=SingleTenantProvider.DEFAULT_ORG_ID,
+        organization_id=SingleTenantProvider.DEFAULT_ORG_ID,
         slug=SingleTenantProvider.DEFAULT_ORG_SLUG,
         name=SingleTenantProvider.DEFAULT_ORG_NAME,
         description="Default organization for local/community deployment",
@@ -367,5 +367,5 @@ async def test_multiple_users_get_same_default_organization(
     org1 = await single_tenant_provider.get_current_organization(current_user=user1)
     org2 = await single_tenant_provider.get_current_organization(current_user=user2)
 
-    assert org1.org_id == org2.org_id
-    assert org1.org_id == SingleTenantProvider.DEFAULT_ORG_ID
+    assert org1.organization_id == org2.organization_id
+    assert org1.organization_id == SingleTenantProvider.DEFAULT_ORG_ID

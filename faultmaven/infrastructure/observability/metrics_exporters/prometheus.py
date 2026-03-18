@@ -33,7 +33,6 @@ FORBIDDEN_LABELS: Set[str] = {
     "session_id",
     "user_id",
     "organization_id",
-    "org_id",
     "request_id",
     "trace_id",
     "span_id",

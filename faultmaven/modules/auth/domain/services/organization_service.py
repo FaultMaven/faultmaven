@@ -90,7 +90,7 @@ class OrganizationService:
             raise ValidationException(f"Organization with slug '{slug}' already exists")
 
         # Create organization
-        org_id = f"org_{uuid.uuid4().hex[:17]}"
+        organization_id = f"org_{uuid.uuid4().hex[:17]}"
         now = datetime.now(timezone.utc)
 
         # Set max members based on plan
@@ -101,7 +101,7 @@ class OrganizationService:
         }.get(plan_tier, 5)
 
         org = Organization(
-            org_id=org_id,
+            organization_id=organization_id,
             name=name,
             slug=slug,
             description=description,
@@ -116,7 +116,9 @@ class OrganizationService:
         created_org = await self.repository.create_organization(org)
 
         # Add creator as owner
-        await self.repository.add_member(org_id, creator_user_id, "role_org_owner")
+        await self.repository.add_member(
+            organization_id, creator_user_id, "role_org_owner"
+        )
 
         # Audit log
         if self.audit_repository:
@@ -125,18 +127,20 @@ class OrganizationService:
                 event_type=AuditEventType.ORG_CREATED,
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="organization",
-                resource_id=org_id,
-                org_id=org_id,
+                resource_id=organization_id,
+                organization_id=organization_id,
                 details={"name": name, "slug": slug, "plan_tier": plan_tier.value},
             )
 
-        logger.info(f"Created organization {org_id} ({name}) by user {creator_user_id}")
+        logger.info(
+            f"Created organization {organization_id} ({name}) by user {creator_user_id}"
+        )
         return created_org
 
     @trace("org_service_get_organization")
-    async def get_organization(self, org_id: str) -> Optional[Organization]:
+    async def get_organization(self, organization_id: str) -> Optional[Organization]:
         """Get organization by ID."""
-        return await self.repository.get_organization(org_id)
+        return await self.repository.get_organization(organization_id)
 
     @trace("org_service_get_organization_by_slug")
     async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
@@ -146,7 +150,7 @@ class OrganizationService:
     @trace("org_service_update_organization")
     async def update_organization(
         self,
-        org_id: str,
+        organization_id: str,
         user_id: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
@@ -156,7 +160,7 @@ class OrganizationService:
         Update organization details.
 
         Args:
-            org_id: Organization ID
+            organization_id: Organization ID
             user_id: User performing the update
             name: Optional new name
             description: Optional new description
@@ -170,15 +174,15 @@ class OrganizationService:
         """
         # Check permission
         has_permission = await self.repository.user_has_permission(
-            user_id, org_id, "organization.write"
+            user_id, organization_id, "organization.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to update organization")
 
         # Get current org
-        org = await self.repository.get_organization(org_id)
+        org = await self.repository.get_organization(organization_id)
         if not org:
-            raise ValidationException(f"Organization {org_id} not found")
+            raise ValidationException(f"Organization {organization_id} not found")
 
         # Update fields
         if name:
@@ -197,20 +201,20 @@ class OrganizationService:
                 event_type=AuditEventType.ORG_SETTINGS_CHANGED,
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="organization",
-                resource_id=org_id,
-                org_id=org_id,
+                resource_id=organization_id,
+                organization_id=organization_id,
                 details={"name": name, "description": description},
             )
 
         return success
 
     @trace("org_service_delete_organization")
-    async def delete_organization(self, org_id: str, user_id: str) -> bool:
+    async def delete_organization(self, organization_id: str, user_id: str) -> bool:
         """
         Soft delete an organization.
 
         Args:
-            org_id: Organization ID
+            organization_id: Organization ID
             user_id: User performing the deletion
 
         Returns:
@@ -221,12 +225,12 @@ class OrganizationService:
         """
         # Check permission (only owners can delete)
         has_permission = await self.repository.user_has_permission(
-            user_id, org_id, "organization.manage"
+            user_id, organization_id, "organization.manage"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to delete organization")
 
-        success = await self.repository.delete_organization(org_id)
+        success = await self.repository.delete_organization(organization_id)
 
         # Audit log
         if self.audit_repository and success:
@@ -235,21 +239,21 @@ class OrganizationService:
                 event_type=AuditEventType.ACCOUNT_DELETED,
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="organization",
-                resource_id=org_id,
-                org_id=org_id,
+                resource_id=organization_id,
+                organization_id=organization_id,
             )
 
         return success
 
     @trace("org_service_add_member")
     async def add_member(
-        self, org_id: str, user_id: str, role_id: str, added_by: str
+        self, organization_id: str, user_id: str, role_id: str, added_by: str
     ) -> bool:
         """
         Add user to organization with role.
 
         Args:
-            org_id: Organization ID
+            organization_id: Organization ID
             user_id: User to add
             role_id: Role to assign (e.g., 'role_org_member')
             added_by: User performing the action
@@ -262,23 +266,23 @@ class OrganizationService:
         """
         # Check permission
         has_permission = await self.repository.user_has_permission(
-            added_by, org_id, "users.write"
+            added_by, organization_id, "users.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to add members")
 
         # Check capacity
-        org = await self.repository.get_organization(org_id)
+        org = await self.repository.get_organization(organization_id)
         if not org:
-            raise ValidationException(f"Organization {org_id} not found")
+            raise ValidationException(f"Organization {organization_id} not found")
 
-        members = await self.repository.list_organization_members(org_id)
+        members = await self.repository.list_organization_members(organization_id)
         if len(members) >= org.max_members:
             raise ValidationException(
                 f"Organization at capacity ({org.max_members} members)"
             )
 
-        success = await self.repository.add_member(org_id, user_id, role_id)
+        success = await self.repository.add_member(organization_id, user_id, role_id)
 
         # Audit log
         if self.audit_repository and success:
@@ -288,19 +292,21 @@ class OrganizationService:
                 event_category=AuditCategory.AUTHORIZATION,
                 resource_type="organization_member",
                 resource_id=user_id,
-                org_id=org_id,
+                organization_id=organization_id,
                 details={"target_user_id": user_id, "role_id": role_id},
             )
 
         return success
 
     @trace("org_service_remove_member")
-    async def remove_member(self, org_id: str, user_id: str, removed_by: str) -> bool:
+    async def remove_member(
+        self, organization_id: str, user_id: str, removed_by: str
+    ) -> bool:
         """
         Remove user from organization.
 
         Args:
-            org_id: Organization ID
+            organization_id: Organization ID
             user_id: User to remove
             removed_by: User performing the action
 
@@ -312,18 +318,18 @@ class OrganizationService:
         """
         # Check permission
         has_permission = await self.repository.user_has_permission(
-            removed_by, org_id, "users.manage"
+            removed_by, organization_id, "users.manage"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to remove members")
 
         # Prevent removing the last owner
-        members = await self.repository.list_organization_members(org_id)
+        members = await self.repository.list_organization_members(organization_id)
         owners = [m for m in members if m.role_id == "role_org_owner"]
         if len(owners) == 1 and owners[0].user_id == user_id:
             raise ValidationException("Cannot remove the last owner from organization")
 
-        success = await self.repository.remove_member(org_id, user_id)
+        success = await self.repository.remove_member(organization_id, user_id)
 
         # Audit log
         if self.audit_repository and success:
@@ -333,7 +339,7 @@ class OrganizationService:
                 event_category=AuditCategory.AUTHORIZATION,
                 resource_type="organization_member",
                 resource_id=user_id,
-                org_id=org_id,
+                organization_id=organization_id,
                 details={"target_user_id": user_id},
             )
 
@@ -341,13 +347,13 @@ class OrganizationService:
 
     @trace("org_service_update_member_role")
     async def update_member_role(
-        self, org_id: str, user_id: str, role_id: str, updated_by: str
+        self, organization_id: str, user_id: str, role_id: str, updated_by: str
     ) -> bool:
         """
         Update user's role in organization.
 
         Args:
-            org_id: Organization ID
+            organization_id: Organization ID
             user_id: User whose role to update
             role_id: New role to assign
             updated_by: User performing the action
@@ -357,12 +363,14 @@ class OrganizationService:
         """
         # Check permission
         has_permission = await self.repository.user_has_permission(
-            updated_by, org_id, "users.manage"
+            updated_by, organization_id, "users.manage"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to update member roles")
 
-        success = await self.repository.update_member_role(org_id, user_id, role_id)
+        success = await self.repository.update_member_role(
+            organization_id, user_id, role_id
+        )
 
         # Audit log
         if self.audit_repository and success:
@@ -372,7 +380,7 @@ class OrganizationService:
                 event_category=AuditCategory.AUTHORIZATION,
                 resource_type="organization_member",
                 resource_id=user_id,
-                org_id=org_id,
+                organization_id=organization_id,
                 details={"target_user_id": user_id, "role_id": role_id},
             )
 
@@ -384,28 +392,34 @@ class OrganizationService:
         return await self.repository.list_user_organizations(user_id)
 
     @trace("org_service_list_organization_members")
-    async def list_organization_members(self, org_id: str) -> List[OrganizationMember]:
+    async def list_organization_members(
+        self, organization_id: str
+    ) -> List[OrganizationMember]:
         """List all members of an organization."""
-        return await self.repository.list_organization_members(org_id)
+        return await self.repository.list_organization_members(organization_id)
 
     @trace("org_service_get_member_role")
-    async def get_member_role(self, org_id: str, user_id: str) -> Optional[str]:
+    async def get_member_role(
+        self, organization_id: str, user_id: str
+    ) -> Optional[str]:
         """Get user's role in organization."""
-        return await self.repository.get_member_role(org_id, user_id)
+        return await self.repository.get_member_role(organization_id, user_id)
 
     @trace("org_service_user_has_permission")
     async def user_has_permission(
-        self, user_id: str, org_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: str
     ) -> bool:
         """
         Check if user has permission in organization.
 
         Args:
             user_id: User ID
-            org_id: Organization ID
+            organization_id: Organization ID
             permission: Permission string (e.g., 'cases.write')
 
         Returns:
             True if user has permission
         """
-        return await self.repository.user_has_permission(user_id, org_id, permission)
+        return await self.repository.user_has_permission(
+            user_id, organization_id, permission
+        )

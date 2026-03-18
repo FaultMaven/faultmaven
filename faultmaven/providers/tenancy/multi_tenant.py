@@ -85,7 +85,7 @@ class MultiTenantProvider(TenantProvider):
 
         # Verify user membership using repository method
         user_role = await self.organization_repository.get_member_role(
-            org_id=organization_id, user_id=current_user.user_id
+            organization_id=organization_id, user_id=current_user.user_id
         )
 
         if user_role is None:

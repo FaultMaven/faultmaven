@@ -32,7 +32,7 @@ def multi_tenant_provider(mock_organization_repository):
 def test_organization():
     """Test organization fixture."""
     return Organization(
-        org_id="org_123",
+        organization_id="org_123",
         slug="acme-corp",
         name="Acme Corporation",
         description="Test organization",
@@ -75,12 +75,12 @@ async def test_get_current_organization_validates_membership(
 
     assert result == test_organization
     mock_organization_repository.get_member_role.assert_called_once_with(
-        org_id="org_123", user_id=mock_user.user_id
+        organization_id="org_123", user_id=mock_user.user_id
     )
 
 
 # ============================================================================
-# Test: get_current_organization() raises if org_id not provided
+# Test: get_current_organization() raises if organization_id not provided
 # ============================================================================
 
 
@@ -88,7 +88,7 @@ async def test_get_current_organization_validates_membership(
 async def test_get_current_organization_raises_if_org_id_not_provided(
     multi_tenant_provider, mock_user
 ):
-    """Test get_current_organization raises ValidationException if no org_id."""
+    """Test get_current_organization raises ValidationException if no organization_id."""
     with pytest.raises(ValidationException) as exc_info:
         await multi_tenant_provider.get_current_organization(
             current_user=mock_user, organization_id=None
@@ -99,7 +99,7 @@ async def test_get_current_organization_raises_if_org_id_not_provided(
 
 
 # ============================================================================
-# Test: get_current_organization() raises if org_id is empty string
+# Test: get_current_organization() raises if organization_id is empty string
 # ============================================================================
 
 
@@ -107,7 +107,7 @@ async def test_get_current_organization_raises_if_org_id_not_provided(
 async def test_get_current_organization_raises_if_org_id_empty(
     multi_tenant_provider, mock_user
 ):
-    """Test get_current_organization raises ValidationException if org_id is empty."""
+    """Test get_current_organization raises ValidationException if organization_id is empty."""
     with pytest.raises(ValidationException) as exc_info:
         await multi_tenant_provider.get_current_organization(
             current_user=mock_user, organization_id=""
@@ -176,7 +176,7 @@ async def test_get_current_organization_succeeds_if_user_is_member(
     )
 
     assert result == test_organization
-    assert result.org_id == "org_123"
+    assert result.organization_id == "org_123"
 
 
 # ============================================================================
@@ -226,7 +226,7 @@ async def test_membership_check_uses_member_repository(
 
     # Verify get_member_role was called with correct parameters
     mock_organization_repository.get_member_role.assert_called_once_with(
-        org_id="org_123", user_id="user_123"
+        organization_id="org_123", user_id="user_123"
     )
 
 
@@ -241,7 +241,7 @@ async def test_different_users_can_access_different_organizations(
 ):
     """Test multi-tenant isolation allows different users in different orgs."""
     org1 = Organization(
-        org_id="org_1",
+        organization_id="org_1",
         slug="org-1",
         name="Organization 1",
         plan_tier=OrgPlanTier.PRO,
@@ -253,7 +253,7 @@ async def test_different_users_can_access_different_organizations(
     )
 
     org2 = Organization(
-        org_id="org_2",
+        organization_id="org_2",
         slug="org-2",
         name="Organization 2",
         plan_tier=OrgPlanTier.ENTERPRISE,
@@ -278,13 +278,13 @@ async def test_different_users_can_access_different_organizations(
     )
 
     # Configure mock to return different orgs for different org_ids
-    async def get_org_side_effect(org_id):
-        return org1 if org_id == "org_1" else org2
+    async def get_org_side_effect(organization_id):
+        return org1 if organization_id == "org_1" else org2
 
-    async def get_role_side_effect(org_id, user_id):
-        if org_id == "org_1" and user_id == "user_1":
+    async def get_role_side_effect(organization_id, user_id):
+        if organization_id == "org_1" and user_id == "user_1":
             return "member"
-        elif org_id == "org_2" and user_id == "user_2":
+        elif organization_id == "org_2" and user_id == "user_2":
             return "member"
         return None
 
@@ -299,9 +299,9 @@ async def test_different_users_can_access_different_organizations(
         current_user=user2, organization_id="org_2"
     )
 
-    assert result1.org_id == "org_1"
-    assert result2.org_id == "org_2"
-    assert result1.org_id != result2.org_id
+    assert result1.organization_id == "org_1"
+    assert result2.organization_id == "org_2"
+    assert result1.organization_id != result2.organization_id
 
 
 # ============================================================================
@@ -349,7 +349,7 @@ async def test_users_with_different_roles_can_access_same_org(
 
     mock_organization_repository.get_organization.return_value = test_organization
 
-    async def get_role_side_effect(org_id, user_id):
+    async def get_role_side_effect(organization_id, user_id):
         if user_id == "admin_1":
             return "admin"
         elif user_id == "member_1":
@@ -366,8 +366,8 @@ async def test_users_with_different_roles_can_access_same_org(
         current_user=member_user, organization_id="org_123"
     )
 
-    assert admin_result.org_id == "org_123"
-    assert member_result.org_id == "org_123"
+    assert admin_result.organization_id == "org_123"
+    assert member_result.organization_id == "org_123"
     assert admin_result == member_result
 
 
@@ -402,7 +402,7 @@ async def test_authorization_error_includes_details(
 
 @pytest.mark.asyncio
 async def test_validation_error_includes_hint(multi_tenant_provider, mock_user):
-    """Test ValidationException includes helpful hint when org_id missing."""
+    """Test ValidationException includes helpful hint when organization_id missing."""
     with pytest.raises(ValidationException) as exc_info:
         await multi_tenant_provider.get_current_organization(
             current_user=mock_user, organization_id=None
@@ -450,7 +450,7 @@ async def test_concurrent_access_different_organizations(
     import asyncio
 
     org_a = Organization(
-        org_id="org_a",
+        organization_id="org_a",
         slug="org-a",
         name="Org A",
         plan_tier=OrgPlanTier.PRO,
@@ -462,7 +462,7 @@ async def test_concurrent_access_different_organizations(
     )
 
     org_b = Organization(
-        org_id="org_b",
+        organization_id="org_b",
         slug="org-b",
         name="Org B",
         plan_tier=OrgPlanTier.ENTERPRISE,
@@ -486,14 +486,14 @@ async def test_concurrent_access_different_organizations(
         full_name="User B",
     )
 
-    async def get_org_side_effect(org_id):
+    async def get_org_side_effect(organization_id):
         await asyncio.sleep(0.01)  # Simulate async delay
-        return org_a if org_id == "org_a" else org_b
+        return org_a if organization_id == "org_a" else org_b
 
-    async def get_role_side_effect(org_id, user_id):
+    async def get_role_side_effect(organization_id, user_id):
         await asyncio.sleep(0.01)  # Simulate async delay
-        if (org_id == "org_a" and user_id == "user_a") or (
-            org_id == "org_b" and user_id == "user_b"
+        if (organization_id == "org_a" and user_id == "user_a") or (
+            organization_id == "org_b" and user_id == "user_b"
         ):
             return "member"
         return None
@@ -507,5 +507,5 @@ async def test_concurrent_access_different_organizations(
         multi_tenant_provider.get_current_organization(user_b, "org_b"),
     )
 
-    assert results[0].org_id == "org_a"
-    assert results[1].org_id == "org_b"
+    assert results[0].organization_id == "org_a"
+    assert results[1].organization_id == "org_b"

@@ -120,7 +120,7 @@ class SingleTenantProvider(TenantProvider):
         # Create default organization with generous limits for local use
         now = datetime.now(timezone.utc)
         default_org = Organization(
-            org_id=self.DEFAULT_ORG_ID,
+            organization_id=self.DEFAULT_ORG_ID,
             slug=self.DEFAULT_ORG_SLUG,
             name=self.DEFAULT_ORG_NAME,
             description="Default organization for local/community deployment",

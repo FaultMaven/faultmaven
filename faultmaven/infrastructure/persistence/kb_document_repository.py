@@ -49,7 +49,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 file_size, original_filename, content_type, storage_path,
                 metadata, created_at, updated_at
             ) VALUES (
-                :doc_id, :owner_user_id, :org_id, :title, :description, :document_type,
+                :doc_id, :owner_user_id, :organization_id, :title, :description, :document_type,
                 :chromadb_collection, :chromadb_doc_count, :visibility, :tags,
                 :file_size, :original_filename, :content_type, :storage_path,
                 :metadata, :created_at, :updated_at
@@ -63,7 +63,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
             {
                 "doc_id": doc.doc_id,
                 "owner_user_id": doc.owner_user_id,
-                "org_id": doc.org_id,
+                "organization_id": doc.organization_id,
                 "title": doc.title,
                 "description": doc.description,
                 "document_type": doc.document_type.value,
@@ -339,13 +339,17 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         return result.rowcount > 0
 
     async def share_with_organization(
-        self, doc_id: str, org_id: str, permission: KBSharePermission, shared_by: str
+        self,
+        doc_id: str,
+        organization_id: str,
+        permission: KBSharePermission,
+        shared_by: str,
     ) -> bool:
         """Share document with entire organization."""
         query = text(
             """
             INSERT INTO kb_document_org_shares (doc_id, organization_id, permission, shared_by, shared_at)
-            VALUES (:doc_id, :org_id, :permission::kb_share_permission, :shared_by, :shared_at)
+            VALUES (:doc_id, :organization_id, :permission::kb_share_permission, :shared_by, :shared_at)
             ON CONFLICT (doc_id, organization_id) DO UPDATE
             SET permission = EXCLUDED.permission
         """
@@ -355,7 +359,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
             query,
             {
                 "doc_id": doc_id,
-                "org_id": org_id,
+                "organization_id": organization_id,
                 "permission": permission.value,
                 "shared_by": shared_by,
                 "shared_at": datetime.now(timezone.utc),
@@ -363,21 +367,23 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         )
         await self.db.commit()
 
-        logger.info(f"Shared KB document {doc_id} with organization {org_id}")
+        logger.info(f"Shared KB document {doc_id} with organization {organization_id}")
         return True
 
     async def unshare_with_organization(
-        self, doc_id: str, org_id: str, unshared_by: str
+        self, doc_id: str, organization_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from organization."""
         query = text(
             """
             DELETE FROM kb_document_org_shares
-            WHERE doc_id = :doc_id AND organization_id = :org_id
+            WHERE doc_id = :doc_id AND organization_id = :organization_id
         """
         )
 
-        result = await self.db.execute(query, {"doc_id": doc_id, "org_id": org_id})
+        result = await self.db.execute(
+            query, {"doc_id": doc_id, "organization_id": organization_id}
+        )
         await self.db.commit()
 
         return result.rowcount > 0
@@ -458,7 +464,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         return KBDocument(
             doc_id=row.doc_id,
             owner_user_id=row.owner_user_id,
-            org_id=row.organization_id,
+            organization_id=row.organization_id,
             title=row.title,
             description=row.description,
             document_type=KBDocumentType(row.document_type),

@@ -115,7 +115,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Update timestamp
             case.updated_at = datetime.now(timezone.utc)
 
-            org_id = case.organization_id
+            organization_id = case.organization_id
 
             # Start transaction
             async with self.db.begin():
@@ -123,26 +123,34 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 await self._upsert_case_record(case)
 
                 # 2. Upsert evidence (normalized table)
-                await self._upsert_evidence(case.case_id, case.evidence, org_id)
+                await self._upsert_evidence(
+                    case.case_id, case.evidence, organization_id
+                )
 
                 # 3. Upsert hypotheses (normalized table)
-                await self._upsert_hypotheses(case.case_id, case.hypotheses, org_id)
+                await self._upsert_hypotheses(
+                    case.case_id, case.hypotheses, organization_id
+                )
 
                 # 4. Upsert solutions (normalized table)
-                await self._upsert_solutions(case.case_id, case.solutions, org_id)
+                await self._upsert_solutions(
+                    case.case_id, case.solutions, organization_id
+                )
 
                 # 5. Upsert uploaded_files (normalized table)
                 await self._upsert_uploaded_files(
-                    case.case_id, case.uploaded_files, org_id
+                    case.case_id, case.uploaded_files, organization_id
                 )
 
                 # 6. Upsert messages (normalized table)
-                await self._upsert_messages(case.case_id, case.messages, org_id)
+                await self._upsert_messages(
+                    case.case_id, case.messages, organization_id
+                )
 
                 # 7. Append case actions (append-only)
                 if case.action_history:
                     await self._append_case_actions(
-                        case.case_id, case.action_history, org_id
+                        case.case_id, case.action_history, organization_id
                     )
 
                 await self.db.commit()

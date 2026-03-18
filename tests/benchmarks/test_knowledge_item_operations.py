@@ -167,8 +167,10 @@ class TestItemCreationPerformance:
 
         Target: 100 items in < 1000ms
         """
-        org_id = generate_org_id()
-        items = [create_sample_item(organization_id=org_id) for _ in range(100)]
+        organization_id = generate_org_id()
+        items = [
+            create_sample_item(organization_id=organization_id) for _ in range(100)
+        ]
 
         start = time.perf_counter()
         for item in items:
@@ -222,17 +224,17 @@ class TestItemRetrievalPerformance:
 
         Target: < 300ms for 1000 items
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create 1000 items
         for i in range(1000):
-            item = create_sample_item(organization_id=org_id)
+            item = create_sample_item(organization_id=organization_id)
             await knowledge_item_repository.create(item)
 
         # Benchmark list operation
         start = time.perf_counter()
         result = await knowledge_item_repository.list_by_organization_id(
-            org_id, limit=1000
+            organization_id, limit=1000
         )
         latency = time.perf_counter() - start
 
@@ -254,12 +256,12 @@ class TestItemRetrievalPerformance:
 
         Target: < 200ms for filtered query
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create mixed items
         for i in range(500):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.FAQ,
                 category="networking",
             )
@@ -267,7 +269,7 @@ class TestItemRetrievalPerformance:
 
         for i in range(500):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.RUNBOOK,
                 category="database",
             )
@@ -276,7 +278,7 @@ class TestItemRetrievalPerformance:
         # Benchmark filtered list
         start = time.perf_counter()
         result = await knowledge_item_repository.list_by_organization_id(
-            org_id,
+            organization_id,
             item_type=KnowledgeItemType.FAQ,
             category="networking",
             limit=500,
@@ -304,14 +306,14 @@ class TestItemSearchPerformance:
 
         Target: < 200ms for 1000 items
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
         keywords = ["connection", "timeout", "database", "error", "network"]
 
         # Create 1000 items with varied content
         for i in range(1000):
             keyword = keywords[i % len(keywords)]
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"{keyword} troubleshooting guide {i}",
                 content=f"This guide explains how to fix {keyword} issues.",
             )
@@ -320,7 +322,7 @@ class TestItemSearchPerformance:
         # Benchmark search
         start = time.perf_counter()
         result = await knowledge_item_repository.search_by_text(
-            org_id, "connection", limit=100
+            organization_id, "connection", limit=100
         )
         latency = time.perf_counter() - start
 
@@ -342,7 +344,7 @@ class TestItemSearchPerformance:
 
         Target: < 200ms for 1000 items
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
         tag_sets = [
             ["python", "debugging"],
             ["java", "networking"],
@@ -354,13 +356,13 @@ class TestItemSearchPerformance:
         # Create 1000 items with varied tags
         for i in range(1000):
             tags = tag_sets[i % len(tag_sets)]
-            item = create_sample_item(organization_id=org_id, tags=tags)
+            item = create_sample_item(organization_id=organization_id, tags=tags)
             await knowledge_item_repository.create(item)
 
         # Benchmark tag search
         start = time.perf_counter()
         result = await knowledge_item_repository.search_by_tags(
-            org_id,
+            organization_id,
             ["python", "java"],
             match_all=False,
             limit=500,
@@ -385,19 +387,19 @@ class TestItemSearchPerformance:
 
         Target: < 200ms for 1000 items
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create items with overlapping tags
         for i in range(500):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python", "debugging", "troubleshooting"],
             )
             await knowledge_item_repository.create(item)
 
         for i in range(500):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python", "api"],
             )
             await knowledge_item_repository.create(item)
@@ -405,7 +407,7 @@ class TestItemSearchPerformance:
         # Benchmark tag search with match_all
         start = time.perf_counter()
         result = await knowledge_item_repository.search_by_tags(
-            org_id,
+            organization_id,
             ["python", "debugging"],
             match_all=True,
             limit=500,
@@ -496,19 +498,21 @@ class TestItemEmbeddingOperationsPerformance:
 
         Target: < 150ms
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
         embedding = create_valid_embedding()
 
         # Create mixed items
         for i in range(100):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 embedding_vector=embedding if i % 2 == 0 else None,
             )
             await knowledge_item_repository.create(item)
 
         start = time.perf_counter()
-        result = await knowledge_item_repository.get_items_without_embeddings(org_id)
+        result = await knowledge_item_repository.get_items_without_embeddings(
+            organization_id
+        )
         latency = time.perf_counter() - start
 
         assert len(result) == 50
@@ -534,19 +538,21 @@ class TestItemHelpfulnessPerformance:
 
         Target: < 200ms
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create items with varying helpfulness scores
         for i in range(100):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=i + 5,  # Ensure above threshold
                 not_helpful_count=max(0, 10 - i),
             )
             await knowledge_item_repository.create(item)
 
         start = time.perf_counter()
-        result = await knowledge_item_repository.get_most_helpful(org_id, limit=20)
+        result = await knowledge_item_repository.get_most_helpful(
+            organization_id, limit=20
+        )
         latency = time.perf_counter() - start
 
         assert len(result) > 0
@@ -572,15 +578,17 @@ class TestItemCountPerformance:
 
         Target: < 100ms
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create items
         for i in range(500):
-            item = create_sample_item(organization_id=org_id)
+            item = create_sample_item(organization_id=organization_id)
             await knowledge_item_repository.create(item)
 
         start = time.perf_counter()
-        count = await knowledge_item_repository.count_by_organization_id(org_id)
+        count = await knowledge_item_repository.count_by_organization_id(
+            organization_id
+        )
         latency = time.perf_counter() - start
 
         assert count == 500
@@ -599,26 +607,26 @@ class TestItemCountPerformance:
 
         Target: < 100ms
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create mixed items
         for i in range(250):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.FAQ,
             )
             await knowledge_item_repository.create(item)
 
         for i in range(250):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.RUNBOOK,
             )
             await knowledge_item_repository.create(item)
 
         start = time.perf_counter()
         count = await knowledge_item_repository.count_by_organization_id(
-            org_id,
+            organization_id,
             item_type=KnowledgeItemType.FAQ,
         )
         latency = time.perf_counter() - start
@@ -645,8 +653,8 @@ class TestItemMixedWorkloadPerformance:
         Simulates: create → retrieve → update (add feedback) → search
         Target: < 500ms total
         """
-        org_id = generate_org_id()
-        item = create_sample_item(organization_id=org_id)
+        organization_id = generate_org_id()
+        item = create_sample_item(organization_id=organization_id)
 
         start = time.perf_counter()
 
@@ -662,7 +670,7 @@ class TestItemMixedWorkloadPerformance:
         await knowledge_item_repository.update(item)
 
         # Search
-        await knowledge_item_repository.search_by_text(org_id, "sample")
+        await knowledge_item_repository.search_by_text(organization_id, "sample")
 
         total_latency = time.perf_counter() - start
 
@@ -682,12 +690,12 @@ class TestItemMixedWorkloadPerformance:
         Simulates: list → filter by type → search → get most helpful
         Target: < 800ms total
         """
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Setup: Create items
         for i in range(100):
             item = create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=(
                     KnowledgeItemType.FAQ if i % 2 == 0 else KnowledgeItemType.RUNBOOK
                 ),
@@ -699,23 +707,29 @@ class TestItemMixedWorkloadPerformance:
         start = time.perf_counter()
 
         # List all
-        await knowledge_item_repository.list_by_organization_id(org_id, limit=50)
+        await knowledge_item_repository.list_by_organization_id(
+            organization_id, limit=50
+        )
 
         # Filter by type
         await knowledge_item_repository.list_by_organization_id(
-            org_id,
+            organization_id,
             item_type=KnowledgeItemType.FAQ,
             limit=25,
         )
 
         # Search by text
-        await knowledge_item_repository.search_by_text(org_id, "sample", limit=10)
+        await knowledge_item_repository.search_by_text(
+            organization_id, "sample", limit=10
+        )
 
         # Search by tags
-        await knowledge_item_repository.search_by_tags(org_id, ["common"], limit=20)
+        await knowledge_item_repository.search_by_tags(
+            organization_id, ["common"], limit=20
+        )
 
         # Get most helpful
-        await knowledge_item_repository.get_most_helpful(org_id, limit=10)
+        await knowledge_item_repository.get_most_helpful(organization_id, limit=10)
 
         total_latency = time.perf_counter() - start
 

@@ -268,12 +268,12 @@ Even in Local Mode, security best practices apply:
 
 ### Organization Context
 
-FaultMaven JWT tokens include an `org_id` claim that determines the user's organization context:
+FaultMaven JWT tokens include an `organization_id` claim that determines the user's organization context:
 
 | Mode | Organization Strategy |
 |------|----------------------|
 | **Local Mode** | All users belong to default organization `00000000-0000-0000-0000-000000000001` (managed by `SingleTenantProvider`) |
-| **Cloud Mode** | Users can belong to multiple organizations; `org_id` represents active context |
+| **Cloud Mode** | Users can belong to multiple organizations; `organization_id` represents active context |
 
 **JWT Payload Structure (all modes):**
 
@@ -281,7 +281,7 @@ FaultMaven JWT tokens include an `org_id` claim that determines the user's organ
 {
   "sub": "user_abc123",
   "username": "alice",
-  "org_id": "00000000-0000-0000-0000-000000000001",
+  "organization_id": "00000000-0000-0000-0000-000000000001",
   "email": "alice@example.com",
   "roles": ["user"],
   "scopes": ["cases:read", "cases:write"],
@@ -293,7 +293,7 @@ FaultMaven JWT tokens include an `org_id` claim that determines the user's organ
 ```
 
 > [!IMPORTANT]
-> The `org_id` claim is **always present** in both Local and Cloud mode tokens. Services can safely assume `AuthenticatedUser.organization_id` is never empty.
+> The `organization_id` claim is **always present** in both Local and Cloud mode tokens. Services can safely assume `AuthenticatedUser.organization_id` is never empty.
 
 ### Environment-Based Endpoint Exposure
 

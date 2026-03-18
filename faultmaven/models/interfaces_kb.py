@@ -59,7 +59,7 @@ class KBDocument(BaseModel):
 
     doc_id: str
     owner_user_id: str
-    org_id: Optional[str] = None
+    organization_id: Optional[str] = None
 
     title: str
     description: Optional[str] = None
@@ -110,7 +110,7 @@ class KBDocumentOrgShare(BaseModel):
     """Organization-wide sharing for KB document."""
 
     doc_id: str
-    org_id: str
+    organization_id: str
     permission: KBSharePermission = KBSharePermission.READ
     shared_at: datetime
     shared_by: str
@@ -297,13 +297,17 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def share_with_organization(
-        self, doc_id: str, org_id: str, permission: KBSharePermission, shared_by: str
+        self,
+        doc_id: str,
+        organization_id: str,
+        permission: KBSharePermission,
+        shared_by: str,
     ) -> bool:
         """Share document with entire organization.
 
         Args:
             doc_id: Document identifier
-            org_id: Organization to share with
+            organization_id: Organization to share with
             permission: Permission level (read/write)
             shared_by: User performing the share
 
@@ -314,13 +318,13 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def unshare_with_organization(
-        self, doc_id: str, org_id: str, unshared_by: str
+        self, doc_id: str, organization_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from organization.
 
         Args:
             doc_id: Document identifier
-            org_id: Organization to unshare from
+            organization_id: Organization to unshare from
             unshared_by: User performing the unshare
 
         Returns:

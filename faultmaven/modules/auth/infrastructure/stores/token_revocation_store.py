@@ -90,9 +90,7 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        from faultmaven.infrastructure.persistence.models import (
-            OAuthRevokedTokenModel,
-        )
+        from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
@@ -108,9 +106,7 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
     async def is_revoked(self, jti: str) -> bool:
         from sqlalchemy import select
 
-        from faultmaven.infrastructure.persistence.models import (
-            OAuthRevokedTokenModel,
-        )
+        from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
         async with self.session_factory() as session:
             now = datetime.now(timezone.utc)
@@ -124,9 +120,7 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
     async def cleanup_expired(self) -> int:
         from sqlalchemy import delete
 
-        from faultmaven.infrastructure.persistence.models import (
-            OAuthRevokedTokenModel,
-        )
+        from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
         async with self.session_factory() as session:
             now = datetime.now(timezone.utc)

@@ -141,7 +141,7 @@ class TestCreateCaseBenchmark:
     @pytest.mark.asyncio
     async def test_create_case_performance(self, case_service):
         """Benchmark create_case performance. Target: <200ms p95."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
         counter = 0
 
@@ -150,7 +150,7 @@ class TestCreateCaseBenchmark:
             counter += 1
             await case_service.create_case(
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"Benchmark Case {counter}",
                 description="Benchmark case description",
                 severity=CaseSeverity.MEDIUM,
@@ -181,20 +181,20 @@ class TestGetCaseBenchmark:
     @pytest.mark.asyncio
     async def test_get_case_performance(self, case_service):
         """Benchmark get_case performance. Target: <100ms p95."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create a case to retrieve
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Benchmark Case",
             description="Case for get benchmarking",
             severity=CaseSeverity.LOW,
         )
 
         async def get_case():
-            await case_service.get_case(case.case_id, org_id)
+            await case_service.get_case(case.case_id, organization_id)
 
         stats = await measure_operation(get_case, iterations=100)
 
@@ -220,13 +220,13 @@ class TestUpdateCaseBenchmark:
     @pytest.mark.asyncio
     async def test_update_case_performance(self, case_service):
         """Benchmark update_case performance. Target: <150ms p95."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create a case to update
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Benchmark Case",
             description="Case for update benchmarking",
             severity=CaseSeverity.LOW,
@@ -239,7 +239,7 @@ class TestUpdateCaseBenchmark:
             counter += 1
             await case_service.update_case(
                 case.case_id,
-                org_id,
+                organization_id,
                 {"title": f"Updated Title {counter}"},
             )
 
@@ -267,21 +267,21 @@ class TestListCasesBenchmark:
     @pytest.mark.asyncio
     async def test_list_cases_performance(self, case_service):
         """Benchmark list_cases with 100 cases. Target: <300ms p95."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create 100 cases
         for i in range(100):
             await case_service.create_case(
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"Benchmark Case {i}",
                 description=f"Case {i} for list benchmarking",
                 severity=CaseSeverity.LOW,
             )
 
         async def list_cases():
-            await case_service.list_cases(org_id, limit=100)
+            await case_service.list_cases(organization_id, limit=100)
 
         stats = await measure_operation(list_cases, iterations=30)
 
@@ -307,13 +307,13 @@ class TestGetCaseWithDetailsBenchmark:
     @pytest.mark.asyncio
     async def test_get_case_with_details_performance(self, case_service):
         """Benchmark get_case_with_details. Target: <250ms p95."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create a case
         case = await case_service.create_case(
             user_id=user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             title="Benchmark Case",
             description="Case for details benchmarking",
             severity=CaseSeverity.LOW,
@@ -322,7 +322,7 @@ class TestGetCaseWithDetailsBenchmark:
         async def get_details():
             await case_service.get_case_with_details(
                 case.case_id,
-                org_id,
+                organization_id,
                 include_sessions=True,
                 include_evidence=True,
                 include_executions=True,
@@ -356,7 +356,7 @@ class TestGetStatisticsBenchmark:
         Note: Threshold increased from 500ms to 1000ms to account for
         slower CI environments where resource availability varies.
         """
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create 100 cases (reduced from 1000 for faster test execution)
@@ -369,14 +369,14 @@ class TestGetStatisticsBenchmark:
         for i in range(100):
             await case_service.create_case(
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"Benchmark Case {i}",
                 description=f"Case {i} for statistics benchmarking",
                 severity=severities[i % 4],
             )
 
         async def get_stats():
-            await case_service.get_case_statistics(org_id)
+            await case_service.get_case_statistics(organization_id)
 
         stats = await measure_operation(get_stats, iterations=20)
 
@@ -402,7 +402,7 @@ class TestCloseBenchmark:
     @pytest.mark.asyncio
     async def test_close_case_performance(self, case_service):
         """Benchmark close_case performance. Target: <200ms p95."""
-        org_id = create_test_org_id()
+        organization_id = create_test_org_id()
         user_id = create_test_user_id()
 
         # Create cases to close
@@ -410,7 +410,7 @@ class TestCloseBenchmark:
         for i in range(30):
             case = await case_service.create_case(
                 user_id=user_id,
-                organization_id=org_id,
+                organization_id=organization_id,
                 title=f"Benchmark Case {i}",
                 description="Case for close benchmarking",
                 severity=CaseSeverity.LOW,
@@ -421,7 +421,7 @@ class TestCloseBenchmark:
         for case in cases:
             start = time.perf_counter()
             await case_service.close_case(
-                case.case_id, org_id, f"Resolution for {case.case_id}"
+                case.case_id, organization_id, f"Resolution for {case.case_id}"
             )
             elapsed = (time.perf_counter() - start) * 1000
             times.append(elapsed)

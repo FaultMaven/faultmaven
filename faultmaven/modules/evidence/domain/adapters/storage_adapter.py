@@ -24,7 +24,7 @@ class EvidenceStorageAdapter:
     - get_download_url(storage_path) -> url
 
     FileStorageService provides:
-    - store_file(bytes, filename, org_id, case_id, mime_type) -> dict
+    - store_file(bytes, filename, organization_id, case_id, mime_type) -> dict
     - delete_file(path) -> bool
     - retrieve_file(path) -> bytes
     """

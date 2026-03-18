@@ -53,7 +53,7 @@ def org_a():
     """Create organization A."""
     now = datetime.now(timezone.utc)
     return Organization(
-        org_id="org-a",
+        organization_id="org-a",
         name="Organization A",
         slug="org-a",
         description="Organization A description",
@@ -70,7 +70,7 @@ def org_b():
     """Create organization B."""
     now = datetime.now(timezone.utc)
     return Organization(
-        org_id="org-b",
+        organization_id="org-b",
         name="Organization B",
         slug="org-b",
         description="Organization B description",
@@ -145,7 +145,7 @@ class TestOrganizationDataIsolation:
         now = datetime.now(timezone.utc)
         member_a = OrganizationMember(
             user_id="user-a",
-            org_id="org-a",
+            organization_id="org-a",
             role_id=ROLE_OWNER,
             joined_at=now,
         )

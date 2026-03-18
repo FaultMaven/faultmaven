@@ -581,7 +581,7 @@ class TestAuthenticatedUserModel:
         """from_jwt_claims creates AuthenticatedUser correctly."""
         claims = {
             "sub": "user-abc",
-            "org_id": "org-def",
+            "organization_id": "org-def",
             "email": "jwt@example.com",
             "roles": ["member"],
             "permissions": ["cases:read"],

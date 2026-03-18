@@ -192,13 +192,13 @@ class TestSessionLifecycle:
     async def test_session_full_lifecycle(self, session_service, sample_case):
         """Test complete session lifecycle."""
         case_id = sample_case.case_id
-        org_id = sample_case.organization_id
+        organization_id = sample_case.organization_id
         user_id = sample_case.user_id
 
         # Step 1: Create session
         session = await session_service.create_session(
             case_id=case_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             user_id=user_id,
             session_goal="Debug authentication issue",
             token_budget_limit=10000,
@@ -210,22 +210,28 @@ class TestSessionLifecycle:
         assert session.token_budget_limit == 10000
 
         # Step 2: Retrieve session
-        retrieved = await session_service.get_session(session.session_id, org_id)
+        retrieved = await session_service.get_session(
+            session.session_id, organization_id
+        )
         assert retrieved is not None
         assert retrieved.session_id == session.session_id
 
         # Step 3: Pause session
-        paused = await session_service.pause_session(session.session_id, org_id)
+        paused = await session_service.pause_session(
+            session.session_id, organization_id
+        )
         assert paused.status == SessionStatus.PAUSED
 
         # Step 4: Resume session
-        resumed = await session_service.resume_session(session.session_id, org_id)
+        resumed = await session_service.resume_session(
+            session.session_id, organization_id
+        )
         assert resumed.status == SessionStatus.ACTIVE
 
         # Step 5: Complete session with findings
         completed = await session_service.complete_session(
             session.session_id,
-            org_id,
+            organization_id,
             "Root cause identified: JWT token expiry issue",
         )
 

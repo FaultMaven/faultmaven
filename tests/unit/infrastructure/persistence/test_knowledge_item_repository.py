@@ -326,17 +326,17 @@ class TestInMemoryRepositoryListByOrganization:
     @pytest.mark.asyncio
     async def test_list_by_organization_multiple(self, repository):
         """Test listing multiple items for an organization."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         items = [
-            create_sample_item(organization_id=org_id),
-            create_sample_item(organization_id=org_id),
-            create_sample_item(organization_id=org_id),
+            create_sample_item(organization_id=organization_id),
+            create_sample_item(organization_id=organization_id),
+            create_sample_item(organization_id=organization_id),
         ]
         for item in items:
             await repository.create(item)
 
-        result = await repository.list_by_organization_id(org_id)
+        result = await repository.list_by_organization_id(organization_id)
 
         assert len(result) == 3
 
@@ -358,22 +358,22 @@ class TestInMemoryRepositoryListByOrganization:
     @pytest.mark.asyncio
     async def test_list_by_organization_ordered_by_created_at_desc(self, repository):
         """Test items are ordered by created_at descending."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
         base_time = datetime.now(timezone.utc)
 
         i1 = create_sample_item(
-            organization_id=org_id, created_at=base_time - timedelta(hours=2)
+            organization_id=organization_id, created_at=base_time - timedelta(hours=2)
         )
         i2 = create_sample_item(
-            organization_id=org_id, created_at=base_time - timedelta(hours=1)
+            organization_id=organization_id, created_at=base_time - timedelta(hours=1)
         )
-        i3 = create_sample_item(organization_id=org_id, created_at=base_time)
+        i3 = create_sample_item(organization_id=organization_id, created_at=base_time)
 
         await repository.create(i1)
         await repository.create(i2)
         await repository.create(i3)
 
-        result = await repository.list_by_organization_id(org_id)
+        result = await repository.list_by_organization_id(organization_id)
 
         assert result[0].item_id == i3.item_id
         assert result[1].item_id == i2.item_id
@@ -382,29 +382,29 @@ class TestInMemoryRepositoryListByOrganization:
     @pytest.mark.asyncio
     async def test_list_by_organization_with_item_type_filter(self, repository):
         """Test filtering by item_type."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.FAQ,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.RUNBOOK,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.FAQ,
             )
         )
 
         result = await repository.list_by_organization_id(
-            org_id,
+            organization_id,
             item_type=KnowledgeItemType.FAQ,
         )
 
@@ -414,19 +414,21 @@ class TestInMemoryRepositoryListByOrganization:
     @pytest.mark.asyncio
     async def test_list_by_organization_with_category_filter(self, repository):
         """Test filtering by category."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
-            create_sample_item(organization_id=org_id, category="networking")
+            create_sample_item(organization_id=organization_id, category="networking")
         )
         await repository.create(
-            create_sample_item(organization_id=org_id, category="database")
+            create_sample_item(organization_id=organization_id, category="database")
         )
         await repository.create(
-            create_sample_item(organization_id=org_id, category="networking")
+            create_sample_item(organization_id=organization_id, category="networking")
         )
 
-        result = await repository.list_by_organization_id(org_id, category="networking")
+        result = await repository.list_by_organization_id(
+            organization_id, category="networking"
+        )
 
         assert len(result) == 2
         assert all(i.category == "networking" for i in result)
@@ -434,40 +436,48 @@ class TestInMemoryRepositoryListByOrganization:
     @pytest.mark.asyncio
     async def test_list_by_organization_respects_is_published(self, repository):
         """Test that is_published filter is respected."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
-            create_sample_item(organization_id=org_id, is_published=True)
+            create_sample_item(organization_id=organization_id, is_published=True)
         )
         await repository.create(
-            create_sample_item(organization_id=org_id, is_published=False)
+            create_sample_item(organization_id=organization_id, is_published=False)
         )
         await repository.create(
-            create_sample_item(organization_id=org_id, is_published=True)
+            create_sample_item(organization_id=organization_id, is_published=True)
         )
 
         # Default is is_published=True
-        result = await repository.list_by_organization_id(org_id)
+        result = await repository.list_by_organization_id(organization_id)
         assert len(result) == 2
 
         # Explicitly query unpublished
         result_unpublished = await repository.list_by_organization_id(
-            org_id, is_published=False
+            organization_id, is_published=False
         )
         assert len(result_unpublished) == 1
 
     @pytest.mark.asyncio
     async def test_list_by_organization_pagination(self, repository):
         """Test pagination with limit and offset."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for i in range(10):
-            await repository.create(create_sample_item(organization_id=org_id))
+            await repository.create(create_sample_item(organization_id=organization_id))
 
-        page1 = await repository.list_by_organization_id(org_id, limit=3, offset=0)
-        page2 = await repository.list_by_organization_id(org_id, limit=3, offset=3)
-        page3 = await repository.list_by_organization_id(org_id, limit=3, offset=6)
-        page4 = await repository.list_by_organization_id(org_id, limit=3, offset=9)
+        page1 = await repository.list_by_organization_id(
+            organization_id, limit=3, offset=0
+        )
+        page2 = await repository.list_by_organization_id(
+            organization_id, limit=3, offset=3
+        )
+        page3 = await repository.list_by_organization_id(
+            organization_id, limit=3, offset=6
+        )
+        page4 = await repository.list_by_organization_id(
+            organization_id, limit=3, offset=9
+        )
 
         assert len(page1) == 3
         assert len(page2) == 3
@@ -491,22 +501,22 @@ class TestInMemoryRepositoryTextSearch:
     @pytest.mark.asyncio
     async def test_search_by_text_in_title(self, repository):
         """Test searching finds matches in title."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="How to fix connection timeout",
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Database optimization guide",
             )
         )
 
-        result = await repository.search_by_text(org_id, "connection")
+        result = await repository.search_by_text(organization_id, "connection")
 
         assert len(result) == 1
         assert "connection" in result[0].title.lower()
@@ -514,24 +524,24 @@ class TestInMemoryRepositoryTextSearch:
     @pytest.mark.asyncio
     async def test_search_by_text_in_content(self, repository):
         """Test searching finds matches in content."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Network Guide",
                 content="Check the firewall settings first.",
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Another Guide",
                 content="Restart the server.",
             )
         )
 
-        result = await repository.search_by_text(org_id, "firewall")
+        result = await repository.search_by_text(organization_id, "firewall")
 
         assert len(result) == 1
         assert "firewall" in result[0].content.lower()
@@ -539,52 +549,52 @@ class TestInMemoryRepositoryTextSearch:
     @pytest.mark.asyncio
     async def test_search_by_text_case_insensitive(self, repository):
         """Test search is case insensitive."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="NETWORK Troubleshooting",
             )
         )
 
-        result = await repository.search_by_text(org_id, "network")
+        result = await repository.search_by_text(organization_id, "network")
 
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_search_by_text_no_matches(self, repository):
         """Test search returns empty list when no matches."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
-        await repository.create(create_sample_item(organization_id=org_id))
+        await repository.create(create_sample_item(organization_id=organization_id))
 
-        result = await repository.search_by_text(org_id, "zzzznonexistent")
+        result = await repository.search_by_text(organization_id, "zzzznonexistent")
 
         assert result == []
 
     @pytest.mark.asyncio
     async def test_search_by_text_with_item_type_filter(self, repository):
         """Test search with item_type filter."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Error handling in API",
                 item_type=KnowledgeItemType.API_DOCUMENTATION,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Error handling best practice",
                 item_type=KnowledgeItemType.BEST_PRACTICE,
             )
         )
 
         result = await repository.search_by_text(
-            org_id,
+            organization_id,
             "error",
             item_type=KnowledgeItemType.API_DOCUMENTATION,
         )
@@ -595,24 +605,24 @@ class TestInMemoryRepositoryTextSearch:
     @pytest.mark.asyncio
     async def test_search_by_text_only_published(self, repository):
         """Test search only returns published items."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Published error guide",
                 is_published=True,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 title="Unpublished error guide",
                 is_published=False,
             )
         )
 
-        result = await repository.search_by_text(org_id, "error")
+        result = await repository.search_by_text(organization_id, "error")
 
         assert len(result) == 1
         assert result[0].is_published is True
@@ -620,17 +630,17 @@ class TestInMemoryRepositoryTextSearch:
     @pytest.mark.asyncio
     async def test_search_by_text_respects_limit(self, repository):
         """Test search respects limit parameter."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for i in range(10):
             await repository.create(
                 create_sample_item(
-                    organization_id=org_id,
+                    organization_id=organization_id,
                     title=f"Error guide number {i}",
                 )
             )
 
-        result = await repository.search_by_text(org_id, "error", limit=5)
+        result = await repository.search_by_text(organization_id, "error", limit=5)
 
         assert len(result) == 5
 
@@ -651,57 +661,59 @@ class TestInMemoryRepositoryTagSearch:
     @pytest.mark.asyncio
     async def test_search_by_tags_match_any(self, repository):
         """Test tag search with match_any (default)."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python", "debugging"],
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["java", "networking"],
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python", "api"],
             )
         )
 
-        result = await repository.search_by_tags(org_id, ["python", "networking"])
+        result = await repository.search_by_tags(
+            organization_id, ["python", "networking"]
+        )
 
         assert len(result) == 3  # All items match at least one tag
 
     @pytest.mark.asyncio
     async def test_search_by_tags_match_all(self, repository):
         """Test tag search with match_all=True."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python", "debugging"],
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python", "debugging", "advanced"],
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python"],
             )
         )
 
         result = await repository.search_by_tags(
-            org_id,
+            organization_id,
             ["python", "debugging"],
             match_all=True,
         )
@@ -711,50 +723,50 @@ class TestInMemoryRepositoryTagSearch:
     @pytest.mark.asyncio
     async def test_search_by_tags_empty_list(self, repository):
         """Test search with empty tags list returns empty."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
-            create_sample_item(organization_id=org_id, tags=["test"])
+            create_sample_item(organization_id=organization_id, tags=["test"])
         )
 
-        result = await repository.search_by_tags(org_id, [])
+        result = await repository.search_by_tags(organization_id, [])
 
         assert result == []
 
     @pytest.mark.asyncio
     async def test_search_by_tags_no_matches(self, repository):
         """Test search returns empty when no tags match."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
-            create_sample_item(organization_id=org_id, tags=["python"])
+            create_sample_item(organization_id=organization_id, tags=["python"])
         )
 
-        result = await repository.search_by_tags(org_id, ["java", "rust"])
+        result = await repository.search_by_tags(organization_id, ["java", "rust"])
 
         assert result == []
 
     @pytest.mark.asyncio
     async def test_search_by_tags_only_published(self, repository):
         """Test tag search only returns published items."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python"],
                 is_published=True,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 tags=["python"],
                 is_published=False,
             )
         )
 
-        result = await repository.search_by_tags(org_id, ["python"])
+        result = await repository.search_by_tags(organization_id, ["python"])
 
         assert len(result) == 1
         assert result[0].is_published is True
@@ -762,17 +774,17 @@ class TestInMemoryRepositoryTagSearch:
     @pytest.mark.asyncio
     async def test_search_by_tags_respects_limit(self, repository):
         """Test tag search respects limit parameter."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for i in range(10):
             await repository.create(
                 create_sample_item(
-                    organization_id=org_id,
+                    organization_id=organization_id,
                     tags=["common"],
                 )
             )
 
-        result = await repository.search_by_tags(org_id, ["common"], limit=5)
+        result = await repository.search_by_tags(organization_id, ["common"], limit=5)
 
         assert len(result) == 5
 
@@ -793,29 +805,29 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
     @pytest.mark.asyncio
     async def test_get_items_without_embeddings(self, repository):
         """Test getting items without embeddings."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         embedding = create_valid_embedding()
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 embedding_vector=None,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 embedding_vector=embedding,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 embedding_vector=None,
             )
         )
 
-        result = await repository.get_items_without_embeddings(org_id)
+        result = await repository.get_items_without_embeddings(organization_id)
 
         assert len(result) == 2
         assert all(not i.has_embedding() for i in result)
@@ -823,24 +835,24 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
     @pytest.mark.asyncio
     async def test_get_items_without_embeddings_only_published(self, repository):
         """Test only published items without embeddings are returned."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 embedding_vector=None,
                 is_published=True,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 embedding_vector=None,
                 is_published=False,
             )
         )
 
-        result = await repository.get_items_without_embeddings(org_id)
+        result = await repository.get_items_without_embeddings(organization_id)
 
         assert len(result) == 1
         assert result[0].is_published is True
@@ -848,22 +860,22 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
     @pytest.mark.asyncio
     async def test_get_items_without_embeddings_ordered_oldest_first(self, repository):
         """Test items are ordered by created_at ascending (oldest first)."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
         base_time = datetime.now(timezone.utc)
 
-        i1 = create_sample_item(organization_id=org_id, created_at=base_time)
+        i1 = create_sample_item(organization_id=organization_id, created_at=base_time)
         i2 = create_sample_item(
-            organization_id=org_id, created_at=base_time - timedelta(hours=2)
+            organization_id=organization_id, created_at=base_time - timedelta(hours=2)
         )
         i3 = create_sample_item(
-            organization_id=org_id, created_at=base_time - timedelta(hours=1)
+            organization_id=organization_id, created_at=base_time - timedelta(hours=1)
         )
 
         await repository.create(i1)
         await repository.create(i2)
         await repository.create(i3)
 
-        result = await repository.get_items_without_embeddings(org_id)
+        result = await repository.get_items_without_embeddings(organization_id)
 
         assert result[0].item_id == i2.item_id  # Oldest
         assert result[1].item_id == i3.item_id
@@ -872,12 +884,12 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
     @pytest.mark.asyncio
     async def test_get_items_without_embeddings_respects_limit(self, repository):
         """Test get_items_without_embeddings respects limit."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for i in range(10):
-            await repository.create(create_sample_item(organization_id=org_id))
+            await repository.create(create_sample_item(organization_id=organization_id))
 
-        result = await repository.get_items_without_embeddings(org_id, limit=5)
+        result = await repository.get_items_without_embeddings(organization_id, limit=5)
 
         assert len(result) == 5
 
@@ -905,12 +917,12 @@ class TestInMemoryRepositoryCount:
     @pytest.mark.asyncio
     async def test_count_by_organization_multiple(self, repository):
         """Test counting multiple items."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for _ in range(5):
-            await repository.create(create_sample_item(organization_id=org_id))
+            await repository.create(create_sample_item(organization_id=organization_id))
 
-        result = await repository.count_by_organization_id(org_id)
+        result = await repository.count_by_organization_id(organization_id)
 
         assert result == 5
 
@@ -931,29 +943,29 @@ class TestInMemoryRepositoryCount:
     @pytest.mark.asyncio
     async def test_count_by_organization_with_type_filter(self, repository):
         """Test counting with item_type filter."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.FAQ,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.FAQ,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 item_type=KnowledgeItemType.RUNBOOK,
             )
         )
 
         result = await repository.count_by_organization_id(
-            org_id,
+            organization_id,
             item_type=KnowledgeItemType.FAQ,
         )
 
@@ -962,16 +974,16 @@ class TestInMemoryRepositoryCount:
     @pytest.mark.asyncio
     async def test_count_includes_unpublished(self, repository):
         """Test count includes unpublished items."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
-            create_sample_item(organization_id=org_id, is_published=True)
+            create_sample_item(organization_id=organization_id, is_published=True)
         )
         await repository.create(
-            create_sample_item(organization_id=org_id, is_published=False)
+            create_sample_item(organization_id=organization_id, is_published=False)
         )
 
-        result = await repository.count_by_organization_id(org_id)
+        result = await repository.count_by_organization_id(organization_id)
 
         assert result == 2
 
@@ -992,32 +1004,32 @@ class TestInMemoryRepositoryMostHelpful:
     @pytest.mark.asyncio
     async def test_get_most_helpful_ordered_by_score(self, repository):
         """Test items are ordered by helpfulness score."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Create items with different helpfulness scores
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=10,
                 not_helpful_count=0,  # Score: 1.0
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=5,
                 not_helpful_count=5,  # Score: 0.5
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=8,
                 not_helpful_count=2,  # Score: 0.8
             )
         )
 
-        result = await repository.get_most_helpful(org_id)
+        result = await repository.get_most_helpful(organization_id)
 
         assert len(result) == 3
         assert result[0].get_helpfulness_score() == 1.0
@@ -1027,12 +1039,12 @@ class TestInMemoryRepositoryMostHelpful:
     @pytest.mark.asyncio
     async def test_get_most_helpful_respects_minimum_threshold(self, repository):
         """Test items below feedback threshold are excluded."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         # Below threshold (default is 3)
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=2,
                 not_helpful_count=0,
             )
@@ -1040,7 +1052,7 @@ class TestInMemoryRepositoryMostHelpful:
         # At threshold
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=3,
                 not_helpful_count=0,
             )
@@ -1048,37 +1060,37 @@ class TestInMemoryRepositoryMostHelpful:
         # Above threshold
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=10,
                 not_helpful_count=0,
             )
         )
 
-        result = await repository.get_most_helpful(org_id)
+        result = await repository.get_most_helpful(organization_id)
 
         assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_get_most_helpful_only_published(self, repository):
         """Test only published items are returned."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=10,
                 is_published=True,
             )
         )
         await repository.create(
             create_sample_item(
-                organization_id=org_id,
+                organization_id=organization_id,
                 helpful_count=10,
                 is_published=False,
             )
         )
 
-        result = await repository.get_most_helpful(org_id)
+        result = await repository.get_most_helpful(organization_id)
 
         assert len(result) == 1
         assert result[0].is_published is True
@@ -1086,17 +1098,17 @@ class TestInMemoryRepositoryMostHelpful:
     @pytest.mark.asyncio
     async def test_get_most_helpful_respects_limit(self, repository):
         """Test get_most_helpful respects limit."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for i in range(10):
             await repository.create(
                 create_sample_item(
-                    organization_id=org_id,
+                    organization_id=organization_id,
                     helpful_count=10,
                 )
             )
 
-        result = await repository.get_most_helpful(org_id, limit=5)
+        result = await repository.get_most_helpful(organization_id, limit=5)
 
         assert len(result) == 5
 
@@ -1117,14 +1129,14 @@ class TestInMemoryRepositoryClear:
     @pytest.mark.asyncio
     async def test_clear_removes_all(self, repository):
         """Test that clear removes all items."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for _ in range(5):
-            await repository.create(create_sample_item(organization_id=org_id))
+            await repository.create(create_sample_item(organization_id=organization_id))
 
         repository.clear()
 
-        result = await repository.count_by_organization_id(org_id)
+        result = await repository.count_by_organization_id(organization_id)
         assert result == 0
 
 
@@ -1139,15 +1151,15 @@ class TestInMemoryRepositoryDeleteItemsForOrganization:
     @pytest.mark.asyncio
     async def test_delete_items_for_organization(self, repository):
         """Test deleting all items for an organization."""
-        org_id = generate_org_id()
+        organization_id = generate_org_id()
 
         for _ in range(3):
-            await repository.create(create_sample_item(organization_id=org_id))
+            await repository.create(create_sample_item(organization_id=organization_id))
 
-        count = repository.delete_items_for_organization(org_id)
+        count = repository.delete_items_for_organization(organization_id)
 
         assert count == 3
-        assert await repository.count_by_organization_id(org_id) == 0
+        assert await repository.count_by_organization_id(organization_id) == 0
 
     @pytest.mark.asyncio
     async def test_delete_items_for_organization_preserves_others(self, repository):

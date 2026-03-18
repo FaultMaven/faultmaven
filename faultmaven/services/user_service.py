@@ -273,7 +273,7 @@ class UserService(BaseService):
         await self.user_repo.save(user)
 
         # Use default organization if not specified
-        org_id = organization_id or "org-default"
+        organization_id = organization_id or "org-default"
 
         # Get user's roles and permissions
         roles = user.roles if user.roles else ["member"]
@@ -282,7 +282,7 @@ class UserService(BaseService):
         # Generate JWT tokens
         token_pair = self.auth_service.generate_token_pair(
             user_id=user.user_id,
-            organization_id=org_id,
+            organization_id=organization_id,
             email=user.email,
             roles=roles,
             permissions=permissions,

@@ -21,11 +21,11 @@ Usage:
     # Database usage
     async with get_db_session() as session:
         repo = DatabaseSolutionRepository(session)
-        solution = await repo.create_solution(case_id, org_id, data)
+        solution = await repo.create_solution(case_id, organization_id, data)
 
     # In-memory usage (for testing)
     repo = InMemorySolutionRepository()
-    solution = await repo.create_solution(case_id, org_id, data)
+    solution = await repo.create_solution(case_id, organization_id, data)
 """
 
 import json

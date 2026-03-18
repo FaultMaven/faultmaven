@@ -58,7 +58,7 @@ class TeamService:
     @trace("team_service_create_team")
     async def create_team(
         self,
-        org_id: str,
+        organization_id: str,
         name: str,
         creator_user_id: str,
         description: Optional[str] = None,
@@ -67,7 +67,7 @@ class TeamService:
         Create a new team within an organization.
 
         Args:
-            org_id: Organization ID
+            organization_id: Organization ID
             name: Team name
             creator_user_id: User creating the team (becomes team lead)
             description: Optional description
@@ -80,7 +80,7 @@ class TeamService:
         """
         # Check permission
         has_permission = await self.org_repository.user_has_permission(
-            creator_user_id, org_id, "teams.write"
+            creator_user_id, organization_id, "teams.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to create teams")
@@ -91,7 +91,7 @@ class TeamService:
 
         team = Team(
             team_id=team_id,
-            org_id=org_id,
+            organization_id=organization_id,
             name=name,
             description=description,
             settings={},
@@ -112,11 +112,11 @@ class TeamService:
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="team",
                 resource_id=team_id,
-                org_id=org_id,
+                organization_id=organization_id,
                 details={"name": name},
             )
 
-        logger.info(f"Created team {team_id} ({name}) in org {org_id}")
+        logger.info(f"Created team {team_id} ({name}) in org {organization_id}")
         return created_team
 
     @trace("team_service_get_team")
@@ -155,7 +155,7 @@ class TeamService:
 
         # Check permission
         has_permission = await self.org_repository.user_has_permission(
-            user_id, team.org_id, "teams.write"
+            user_id, team.organization_id, "teams.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to update team")
@@ -190,7 +190,7 @@ class TeamService:
 
         # Check permission
         has_permission = await self.org_repository.user_has_permission(
-            user_id, team.org_id, "teams.manage"
+            user_id, team.organization_id, "teams.manage"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to delete team")
@@ -227,7 +227,7 @@ class TeamService:
 
         # Check permission
         has_permission = await self.org_repository.user_has_permission(
-            added_by, team.org_id, "teams.write"
+            added_by, team.organization_id, "teams.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to add team members")
@@ -242,7 +242,7 @@ class TeamService:
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="team_member",
                 resource_id=user_id,
-                org_id=team.org_id,
+                organization_id=team.organization_id,
                 details={
                     "team_id": team_id,
                     "target_user_id": user_id,
@@ -275,7 +275,7 @@ class TeamService:
 
         # Check permission
         has_permission = await self.org_repository.user_has_permission(
-            removed_by, team.org_id, "teams.write"
+            removed_by, team.organization_id, "teams.write"
         )
         if not has_permission:
             raise ValidationException("User lacks permission to remove team members")
@@ -290,21 +290,21 @@ class TeamService:
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="team_member",
                 resource_id=user_id,
-                org_id=team.org_id,
+                organization_id=team.organization_id,
                 details={"team_id": team_id, "target_user_id": user_id},
             )
 
         return success
 
     @trace("team_service_list_organization_teams")
-    async def list_organization_teams(self, org_id: str) -> List[Team]:
+    async def list_organization_teams(self, organization_id: str) -> List[Team]:
         """List all teams in an organization."""
-        return await self.repository.list_organization_teams(org_id)
+        return await self.repository.list_organization_teams(organization_id)
 
     @trace("team_service_list_user_teams")
-    async def list_user_teams(self, user_id: str, org_id: str) -> List[Team]:
+    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
         """List all teams a user belongs to in an organization."""
-        return await self.repository.list_user_teams(user_id, org_id)
+        return await self.repository.list_user_teams(user_id, organization_id)
 
     @trace("team_service_list_team_members")
     async def list_team_members(self, team_id: str) -> List[TeamMember]:

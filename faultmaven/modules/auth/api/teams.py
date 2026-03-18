@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 class TeamCreateRequest(BaseModel):
     """Request to create a new team"""
 
-    org_id: str = Field(..., description="Organization ID")
+    organization_id: str = Field(..., description="Organization ID")
     name: str = Field(..., description="Team name", min_length=1, max_length=200)
     description: Optional[str] = Field(
         None, description="Team description", max_length=1000
@@ -77,7 +77,7 @@ class TeamResponse(BaseModel):
     """Team details response"""
 
     team_id: str
-    org_id: str
+    organization_id: str
     name: str
     description: Optional[str]
     created_at: datetime
@@ -141,19 +141,19 @@ async def create_team(
     """Create a new team with the authenticated user as team lead."""
     try:
         team = await service.create_team(
-            org_id=request.org_id,
+            organization_id=request.organization_id,
             name=request.name,
             creator_user_id=user_id,
             description=request.description,
         )
 
         logger.info(
-            f"Team created: {team.team_id} ({team.name}) in org {request.org_id}"
+            f"Team created: {team.team_id} ({team.name}) in org {request.organization_id}"
         )
 
         return TeamResponse(
             team_id=team.team_id,
-            org_id=team.org_id,
+            organization_id=team.organization_id,
             name=team.name,
             description=team.description,
             created_at=team.created_at,
@@ -192,7 +192,7 @@ async def get_team(
 
         return TeamResponse(
             team_id=team.team_id,
-            org_id=team.org_id,
+            organization_id=team.organization_id,
             name=team.name,
             description=team.description,
             created_at=team.created_at,
@@ -242,7 +242,7 @@ async def update_team(
 
         return TeamResponse(
             team_id=team.team_id,
-            org_id=team.org_id,
+            organization_id=team.organization_id,
             name=team.name,
             description=team.description,
             created_at=team.created_at,
@@ -295,24 +295,24 @@ async def delete_team(
 
 
 @router.get(
-    "/organization/{org_id}",
+    "/organization/{organization_id}",
     response_model=List[TeamResponse],
     summary="List Organization Teams",
     description="List all teams in an organization.",
 )
 async def list_organization_teams(
-    org_id: str = Path(..., description="Organization ID"),
+    organization_id: str = Path(..., description="Organization ID"),
     user_id: str = Depends(get_current_user_id),
     service: TeamService = Depends(get_team_service),
 ) -> List[TeamResponse]:
     """List all teams in an organization."""
     try:
-        teams = await service.list_organization_teams(org_id)
+        teams = await service.list_organization_teams(organization_id)
 
         return [
             TeamResponse(
                 team_id=team.team_id,
-                org_id=team.org_id,
+                organization_id=team.organization_id,
                 name=team.name,
                 description=team.description,
                 created_at=team.created_at,
@@ -322,32 +322,32 @@ async def list_organization_teams(
         ]
 
     except Exception as e:
-        logger.error(f"Error listing teams for organization {org_id}: {e}")
+        logger.error(f"Error listing teams for organization {organization_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
 
 
 @router.get(
-    "/user/{target_user_id}/organization/{org_id}",
+    "/user/{target_user_id}/organization/{organization_id}",
     response_model=List[TeamResponse],
     summary="List User Teams",
     description="List all teams a user belongs to in an organization.",
 )
 async def list_user_teams(
     target_user_id: str = Path(..., description="User ID"),
-    org_id: str = Path(..., description="Organization ID"),
+    organization_id: str = Path(..., description="Organization ID"),
     user_id: str = Depends(get_current_user_id),
     service: TeamService = Depends(get_team_service),
 ) -> List[TeamResponse]:
     """List all teams a user belongs to in an organization."""
     try:
-        teams = await service.list_user_teams(target_user_id, org_id)
+        teams = await service.list_user_teams(target_user_id, organization_id)
 
         return [
             TeamResponse(
                 team_id=team.team_id,
-                org_id=team.org_id,
+                organization_id=team.organization_id,
                 name=team.name,
                 description=team.description,
                 created_at=team.created_at,
@@ -358,7 +358,7 @@ async def list_user_teams(
 
     except Exception as e:
         logger.error(
-            f"Error listing teams for user {target_user_id} in org {org_id}: {e}"
+            f"Error listing teams for user {target_user_id} in org {organization_id}: {e}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)

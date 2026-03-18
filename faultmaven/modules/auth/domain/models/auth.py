@@ -208,7 +208,7 @@ class AuthenticatedUser:
 
     Attributes:
         user_id: User UUID (from 'sub' claim)
-        organization_id: Organization UUID (from 'org_id' claim)
+        organization_id: Organization UUID (from 'organization_id' claim)
         email: User email address
         roles: List of organization-level roles (admin, member, viewer)
         permissions: List of granular permissions (cases:read, sessions:execute, etc.)
@@ -297,7 +297,7 @@ class AuthenticatedUser:
         """
         return cls(
             user_id=claims.get("sub", ""),
-            organization_id=claims.get("org_id", ""),
+            organization_id=claims.get("organization_id", ""),
             email=claims.get("email", ""),
             roles=claims.get("roles", []),
             permissions=claims.get("permissions", []),
@@ -348,7 +348,7 @@ class TokenClaims:
         jti: JWT ID (unique token identifier for revocation)
 
     Custom Claims:
-        org_id: Organization ID
+        organization_id: Organization ID
         email: User email
         roles: User roles in organization
         permissions: Granular permissions
@@ -356,7 +356,7 @@ class TokenClaims:
     """
 
     sub: str  # user_id
-    org_id: str
+    organization_id: str
     email: str
     roles: list[str]
     permissions: list[str]
@@ -371,7 +371,7 @@ class TokenClaims:
         """Convert to dictionary for JWT encoding."""
         return {
             "sub": self.sub,
-            "org_id": self.org_id,
+            "organization_id": self.organization_id,
             "email": self.email,
             "roles": self.roles,
             "permissions": self.permissions,

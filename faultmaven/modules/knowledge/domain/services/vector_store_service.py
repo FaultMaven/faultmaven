@@ -15,7 +15,7 @@ Usage:
 
     service = VectorStoreService(persist_directory="./chroma_data")
     await service.add_item(item_id, embedding, metadata, document)
-    results = await service.search_similar(query_embedding, org_id, n_results=10)
+    results = await service.search_similar(query_embedding, organization_id, n_results=10)
 """
 
 import logging
