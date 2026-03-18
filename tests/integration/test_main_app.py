@@ -4,11 +4,37 @@ Purpose: Tests for the main FastAPI application lifecycle
 """
 
 import os
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+def _ensure_database():
+    """Ensure the SQLite database and tables exist for app bootstrap.
+
+    The app lifespan queries the organizations table on startup. In CI,
+    no data/ directory or database file exists, so we create one from
+    the ORM models if it's missing.
+    """
+    db_file = Path("./data/faultmaven.db")
+    if db_file.exists():
+        return
+
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    from sqlalchemy import create_engine
+
+    from faultmaven.infrastructure.persistence.models import Base
+
+    engine = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+
+
+_ensure_database()
 
 from faultmaven.main import app
 

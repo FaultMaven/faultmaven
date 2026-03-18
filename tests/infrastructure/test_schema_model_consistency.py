@@ -6,9 +6,10 @@ P0 production blocker where migration 002 removed columns but models.py
 was not updated.
 
 Test Strategy:
-1. Inspect database schema (actual columns in each table)
-2. Inspect SQLAlchemy model definitions (expected columns)
-3. Compare and ensure they match
+1. Create a fresh SQLite database from Base.metadata.create_all
+2. Inspect database schema (actual columns in each table)
+3. Inspect SQLAlchemy model definitions (expected columns)
+4. Compare and ensure they match
 
 This catches:
 - Missing columns in database (models expect them but DB doesn't have them)
@@ -28,11 +29,13 @@ Reference:
 - Prevention: These tests catch future mismatches
 """
 
+import os
 import sqlite3
+import tempfile
 from typing import Dict, Set
 
 import pytest
-from sqlalchemy import Column, inspect
+from sqlalchemy import Column, create_engine, inspect
 
 from faultmaven.infrastructure.persistence.models import (
     AgentExecutionModel,
@@ -55,6 +58,21 @@ from faultmaven.infrastructure.persistence.models import (
     StandaloneEvidenceModel,
     UploadedFileModel,
 )
+
+
+@pytest.fixture(scope="module")
+def db_path():
+    """Create a temporary SQLite database with all tables from ORM models."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        tmp_path = f.name
+
+    engine = create_engine(f"sqlite:///{tmp_path}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+
+    yield tmp_path
+
+    os.unlink(tmp_path)
 
 
 def get_database_columns(db_path: str, table_name: str) -> Dict[str, Dict]:
@@ -155,7 +173,7 @@ def compare_schemas(
 class TestSchemaModelConsistency:
     """Test database schema matches SQLAlchemy models."""
 
-    def test_solutions_table_consistency(self, db_path="data/faultmaven.db"):
+    def test_solutions_table_consistency(self, db_path):
         """Verify solutions table schema matches SolutionModel."""
         db_columns = get_database_columns(db_path, "solutions")
         model_columns = get_model_columns(SolutionModel)
@@ -196,7 +214,7 @@ class TestSchemaModelConsistency:
                 f"solutions table has schema mismatches:\n" + "\n".join(mismatches)
             )
 
-    def test_hypotheses_table_consistency(self, db_path="data/faultmaven.db"):
+    def test_hypotheses_table_consistency(self, db_path):
         """Verify hypotheses table schema matches HypothesisModel."""
         db_columns = get_database_columns(db_path, "hypotheses")
         model_columns = get_model_columns(HypothesisModel)
@@ -232,7 +250,7 @@ class TestSchemaModelConsistency:
                 f"hypotheses table has schema mismatches:\n" + "\n".join(mismatches)
             )
 
-    def test_case_messages_table_consistency(self, db_path="data/faultmaven.db"):
+    def test_case_messages_table_consistency(self, db_path):
         """Verify case_messages table schema matches CaseMessageModel."""
         db_columns = get_database_columns(db_path, "case_messages")
         model_columns = get_model_columns(CaseMessageModel)
@@ -265,7 +283,7 @@ class TestSchemaModelConsistency:
                 f"case_messages table has schema mismatches:\n" + "\n".join(mismatches)
             )
 
-    def test_all_critical_tables_exist(self, db_path="data/faultmaven.db"):
+    def test_all_critical_tables_exist(self, db_path):
         """Verify all critical tables exist in database."""
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -315,9 +333,7 @@ class TestSchemaModelConsistency:
             ("standalone_evidence", StandaloneEvidenceModel),
         ],
     )
-    def test_table_model_consistency(
-        self, table_name: str, model_class, db_path="data/faultmaven.db"
-    ):
+    def test_table_model_consistency(self, table_name: str, model_class, db_path):
         """Parameterized test for all table-model consistency checks."""
         db_columns = get_database_columns(db_path, table_name)
         model_columns = get_model_columns(model_class)
@@ -342,7 +358,7 @@ class TestSchemaValidationIntegration:
     """Integration tests that validate schema against live database."""
 
     @pytest.mark.asyncio
-    async def test_query_succeeds_after_migration(self, db_path="data/faultmaven.db"):
+    async def test_query_succeeds_after_migration(self, db_path):
         """Test that SQLAlchemy queries succeed after schema fix.
 
         This is the actual query that was failing in the P0 bug.
@@ -361,7 +377,7 @@ class TestSchemaValidationIntegration:
             assert isinstance(results, list)
 
     @pytest.mark.asyncio
-    async def test_hypothesis_query_succeeds(self, db_path="data/faultmaven.db"):
+    async def test_hypothesis_query_succeeds(self, db_path):
         """Test hypothesis queries work after schema fix."""
         from sqlalchemy import create_engine, select
         from sqlalchemy.orm import Session
@@ -374,7 +390,7 @@ class TestSchemaValidationIntegration:
             assert isinstance(results, list)
 
     @pytest.mark.asyncio
-    async def test_case_message_query_succeeds(self, db_path="data/faultmaven.db"):
+    async def test_case_message_query_succeeds(self, db_path):
         """Test case message queries work after schema fix."""
         from sqlalchemy import create_engine, select
         from sqlalchemy.orm import Session
