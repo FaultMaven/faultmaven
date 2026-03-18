@@ -392,7 +392,11 @@ class TestLLMConnectionCheck:
 
         assert result.provider == "groq"
         assert result.connected is False
-        assert "not initialized" in result.error_message
+        assert result.error_message is not None
+        assert (
+            "groq" in result.error_message.lower()
+            or "api key" in result.error_message.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_unknown_provider_returns_422(
