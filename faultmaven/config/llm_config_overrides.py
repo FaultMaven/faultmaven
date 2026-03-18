@@ -32,6 +32,16 @@ _ALLOWED_OVERRIDES = {
     "huggingface_api_key": "huggingface_api_key",
     "cohere_api_key": "cohere_api_key",
     "openrouter_api_key": "openrouter_api_key",
+    # Model overrides per provider
+    "anthropic_model": "anthropic_model",
+    "openai_model": "openai_model",
+    "fireworks_model": "fireworks_model",
+    "groq_model": "groq_model",
+    "gemini_model": "gemini_model",
+    "huggingface_model": "huggingface_model",
+    "cohere_model": "cohere_chat_model",
+    "openrouter_model": "openrouter_model",
+    "local_model": "local_model",
 }
 
 _API_KEY_FIELDS = {

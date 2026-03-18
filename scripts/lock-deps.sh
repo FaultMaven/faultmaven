@@ -22,6 +22,7 @@ echo "  requirements/test.txt (community + test)"
 uv pip compile pyproject.toml \
     --extra test \
     --python-version "$PYTHON_VERSION" \
+    --python-platform linux \
     -o requirements/test.txt \
     --quiet
 
@@ -30,6 +31,7 @@ uv pip compile pyproject.toml \
     --extra enterprise \
     --extra test \
     --python-version "$PYTHON_VERSION" \
+    --python-platform linux \
     -o requirements/enterprise.txt \
     --quiet
 
@@ -38,6 +40,7 @@ uv pip compile pyproject.toml \
     --extra dev \
     --extra test \
     --python-version "$PYTHON_VERSION" \
+    --python-platform linux \
     -o requirements/dev.txt \
     --quiet
 

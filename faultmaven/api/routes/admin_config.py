@@ -107,11 +107,13 @@ async def get_llm_config(
                     connected=hs.get("health", "unknown") in ("healthy", "HEALTHY"),
                     has_api_key=has_api_key,
                     models=ps.get("models", []),
+                    selected_model=ps.get("selected_model"),
+                    available_models=ps.get("available_models", []),
                     health=hs.get("health", "unknown"),
                     avg_latency_ms=hs.get("avg_latency_ms", 0.0),
                 )
             else:
-                # Provider exists in schema but not initialized
+                # Provider exists in schema but not initialized — still show available models
                 providers[name] = LLMProviderDetail(
                     name=name,
                     display_name=PROVIDER_DISPLAY_NAMES.get(name, name.title()),
@@ -119,6 +121,8 @@ async def get_llm_config(
                     connected=False,
                     has_api_key=has_api_key,
                     models=[],
+                    selected_model=None,
+                    available_models=registry.get_available_models_for(name),
                     health="not_initialized",
                 )
 
@@ -196,6 +200,15 @@ async def update_llm_config(
                 )
             key_field = f"{request.provider_name}_api_key"
             overrides[key_field] = request.api_key
+
+        if request.model is not None and request.provider_name is not None:
+            if request.provider_name not in valid_names:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Unknown provider: '{request.provider_name}'",
+                )
+            model_field = f"{request.provider_name}_model"
+            overrides[model_field] = request.model
 
         if not overrides:
             return LLMConfigUpdateResponse(
@@ -279,12 +292,13 @@ async def check_llm_connection(
         provider = registry.get_provider(provider_name)
 
         if provider is None:
+            display = PROVIDER_DISPLAY_NAMES.get(provider_name, provider_name)
             return LLMConnectionTestResponse(
                 provider=provider_name,
                 connected=False,
                 error_message=(
-                    f"Provider '{provider_name}' is not initialized. "
-                    "Check that the API key is configured."
+                    f"No API key configured for {display}. "
+                    "Add an API key first, then test the connection."
                 ),
                 timestamp=datetime.now(timezone.utc),
             )

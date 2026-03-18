@@ -616,6 +616,13 @@ class LLMProviderDetail(BaseModel):
     connected: bool = Field(description="Provider responded to last health check")
     has_api_key: bool = Field(description="API key is configured (value never exposed)")
     models: List[str] = Field(default_factory=list)
+    selected_model: Optional[str] = Field(
+        None, description="Currently active model for this provider"
+    )
+    available_models: List[str] = Field(
+        default_factory=list,
+        description="Models the user can choose from for this provider",
+    )
     error_message: Optional[str] = None
     health: str = Field(
         default="unknown", description="HEALTHY, DEGRADED, UNHEALTHY, or UNKNOWN"
@@ -664,10 +671,14 @@ class LLMConfigUpdateRequest(BaseModel):
         None, description="New fallback chain order"
     )
     provider_name: Optional[str] = Field(
-        None, description="Provider to update API key for"
+        None, description="Provider to update API key or model for"
     )
     api_key: Optional[str] = Field(
         None, description="New API key value for the specified provider"
+    )
+    model: Optional[str] = Field(
+        None,
+        description="Model to use for the specified provider (requires provider_name)",
     )
 
 
