@@ -442,7 +442,7 @@ class TestGetEnvConfigStatus:
             result = await get_env_config_status(current_user=mock_admin_user)
 
         assert result.auth_mode == "local"
-        assert result.environment == "development"
+        assert result.deployment == "local"
         assert result.db_backend == "sqlite"
         assert result.session_storage == "inmemory"
         assert result.vector_storage == "inmemory"
@@ -465,7 +465,7 @@ class TestGetEnvConfigStatus:
             result = await get_env_config_status(current_user=mock_admin_user)
 
         assert result.auth_mode == "oauth"
-        assert result.environment == "production"
+        assert result.deployment == "cloud"
         assert result.db_backend == "postgresql"
         assert result.session_storage == "redis"
         assert result.vector_storage == "chromadb"
