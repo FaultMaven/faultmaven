@@ -379,14 +379,21 @@ async def lifespan(app: FastAPI):
             await bootstrap_application(container)
             logger.debug("✅ Application bootstrap complete")
 
-            # Apply LLM config overrides from database (if any)
-            try:
-                from .config.llm_config_overrides import apply_overrides_to_settings
+            # Apply config overrides from database (cloud mode only).
+            # Local mode uses .env as the sole source of truth.
+            is_cloud = getattr(settings.auth, "auth_mode", "local") == "oauth"
+            if is_cloud:
+                try:
+                    from .config.llm_config_overrides import apply_overrides_to_settings
 
-                await apply_overrides_to_settings(settings)
-                logger.debug("✅ LLM config overrides applied")
-            except Exception as e:
-                logger.debug(f"LLM config overrides skipped: {e}")
+                    await apply_overrides_to_settings(settings)
+                    logger.debug("✅ Config overrides applied (cloud mode)")
+                except Exception as e:
+                    logger.debug(f"Config overrides skipped: {e}")
+            else:
+                logger.debug(
+                    "Config overrides skipped (local mode — .env is source of truth)"
+                )
         except Exception as e:
             logger.critical(
                 f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}"

@@ -17,7 +17,7 @@
 | `case_checkpoints` | 9 | `checkpoint_id` | cases |
 | `case_messages` | 9 | `message_id` | cases |
 | `case_tags` | 5 | `tag_id` | cases |
-| `cases` | 19 | `case_id` | sessions |
+| `cases` | 21 | `case_id` | sessions |
 | `evidence` | 15 | `evidence_id` | cases |
 | `evidence_artifacts` | 16 | `evidence_id` | cases |
 | `hypotheses` | 23 | `hypothesis_id` | cases |
@@ -151,6 +151,8 @@ erDiagram
         TEXT metadata
         VARCHAR organization_id
         VARCHAR team_id
+        BOOLEAN is_archived
+        DATETIME archived_at
         VARCHAR session_id FK
     }
     evidence {

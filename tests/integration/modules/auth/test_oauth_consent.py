@@ -307,4 +307,4 @@ class TestAuthorizationValidation:
         )
 
         # Verify validation error
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422

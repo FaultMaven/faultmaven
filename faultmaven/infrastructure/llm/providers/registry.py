@@ -312,21 +312,12 @@ class ProviderRegistry:
 
         primary_provider = primary_provider_key
 
-        # Check if strict mode is enabled
-        strict_mode = self.settings.llm.strict_provider_mode
+        # Always initialize all providers that have valid API keys.
+        # Strict mode only affects routing (fallback chain), not initialization.
+        # This ensures admins can configure and test any provider via the dashboard.
+        providers_to_init = PROVIDER_SCHEMA
 
-        # Determine which providers to initialize
-        if strict_mode:
-            # In strict mode, only initialize the primary provider
-            providers_to_init = {primary_provider: PROVIDER_SCHEMA[primary_provider]}
-            self.logger.info(
-                f"🔒 Strict mode enabled - initializing only '{primary_provider}'"
-            )
-        else:
-            # In normal mode, initialize all providers
-            providers_to_init = PROVIDER_SCHEMA
-
-        # Initialize selected providers
+        # Initialize all providers with valid keys
         for provider_name, schema in providers_to_init.items():
             try:
                 self.logger.info(
@@ -538,6 +529,28 @@ class ProviderRegistry:
         """Get a specific provider by name"""
         self._ensure_initialized()
         return self._providers.get(name)
+
+    def create_provider_for_test(self, name: str) -> Optional[BaseLLMProvider]:
+        """Create a temporary provider instance for connection testing.
+
+        Unlike get_provider(), this works even in strict mode by initializing
+        the provider on-the-fly from current settings without adding it to the
+        active registry. Returns None if the API key is missing.
+        """
+        self._ensure_initialized()
+        if name not in PROVIDER_SCHEMA:
+            return None
+        schema = PROVIDER_SCHEMA[name]
+        config = self._create_provider_config(name, schema)
+        if not config:
+            return None
+        provider_class = schema["provider_class"]
+        try:
+            provider = provider_class(config)
+            return provider if provider.is_available() else None
+        except Exception as e:
+            self.logger.warning(f"Failed to create test provider '{name}': {e}")
+            return None
 
     def get_available_providers(self) -> List[str]:
         """Get list of available provider names"""

@@ -69,7 +69,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.sanitizer = DataSanitizer()
         self.cache = SemanticCache()
         self.confidence_threshold = confidence_threshold
-        self.registry = get_registry()
         self._router_initialized = False  # Track router initialization separately
 
         # Get timeout from settings with environment variable override
@@ -83,6 +82,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             f"🔍 LLMRouter created, request timeout: {self.request_timeout}s"
         )
         self.logger.info("🔍 LLMRouter registry will be initialized on first use")
+
+    @property
+    def registry(self):
+        """Always fetch the current global registry so hot-reloads take effect."""
+        return get_registry()
 
     @_opik_track_llm("llm_router_route")
     async def route(

@@ -1180,7 +1180,7 @@ async def generate_case_title(
                 ),
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=422,
                 detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id},
             )
@@ -1239,7 +1239,7 @@ async def generate_case_title(
                 ),
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=422,
                 detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id},
             )
@@ -2837,6 +2837,99 @@ async def close_case(
         raise
     except Exception as e:
         logger.error(f"Case closure failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{case_id}/archive")
+@trace("api_archive_case")
+async def archive_case(
+    case_id: str,
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    current_user: UserDTO = Depends(require_authentication),
+):
+    """Archive a case — hide it from the default list view.
+
+    Only terminal cases (RESOLVED or CLOSED) can be archived.
+    Archived cases remain fully accessible and can be unarchived.
+
+    Returns:
+        {"case_id": str, "is_archived": true}
+    """
+    case_service = check_case_service_available(case_service)
+
+    try:
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        if not case.status.is_terminal:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only terminal cases (resolved/closed) can be archived. Current status: {case.status.value}",
+            )
+
+        if case.is_archived:
+            return {
+                "case_id": case_id,
+                "is_archived": True,
+                "message": "Already archived",
+            }
+
+        # Set archive flag
+        now = datetime.now(timezone.utc)
+        object.__setattr__(case, "is_archived", True)
+        object.__setattr__(case, "archived_at", now)
+
+        if case_repository:
+            await case_repository.save(case)
+
+        logger.info(f"Case archived", extra={"case_id": case_id})
+        return {"case_id": case_id, "is_archived": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Archive failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{case_id}/unarchive")
+@trace("api_unarchive_case")
+async def unarchive_case(
+    case_id: str,
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
+    current_user: UserDTO = Depends(require_authentication),
+):
+    """Unarchive a case — restore it to the default list view.
+
+    Returns:
+        {"case_id": str, "is_archived": false}
+    """
+    case_service = check_case_service_available(case_service)
+
+    try:
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        if not case.is_archived:
+            return {"case_id": case_id, "is_archived": False, "message": "Not archived"}
+
+        object.__setattr__(case, "is_archived", False)
+        object.__setattr__(case, "archived_at", None)
+
+        if case_repository:
+            await case_repository.save(case)
+
+        logger.info(f"Case unarchived", extra={"case_id": case_id})
+        return {"case_id": case_id, "is_archived": False}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unarchive failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

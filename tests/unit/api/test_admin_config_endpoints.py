@@ -244,6 +244,29 @@ class TestGetLLMConfig:
 class TestUpdateLLMConfig:
     """Tests for update_llm_config endpoint."""
 
+    @pytest.fixture(autouse=True)
+    def _cloud_mode(self, mock_settings):
+        """PUT tests require cloud mode (oauth) since local mode is read-only."""
+        mock_settings.auth.auth_mode = "oauth"
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_local_mode_returns_403(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """Local deployment rejects config writes with 403."""
+        mock_settings.auth.auth_mode = "local"
+        request = LLMConfigUpdateRequest(primary_provider="fireworks")
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            with pytest.raises(HTTPException) as exc_info:
+                await update_llm_config(
+                    request=request,
+                    current_user=mock_admin_user,
+                    llm_provider=mock_llm_provider,
+                )
+            assert exc_info.value.status_code == 403
+
     @pytest.mark.asyncio
     async def test_update_primary_provider(self, mock_admin_user, mock_llm_provider):
         """Updating primary provider persists override and reloads."""
@@ -381,6 +404,7 @@ class TestLLMConnectionCheck:
     async def test_uninitialized_provider(self, mock_admin_user, mock_llm_provider):
         """Testing an uninitialized provider returns connected=False."""
         mock_llm_provider.registry.get_provider.return_value = None
+        mock_llm_provider.registry.create_provider_for_test.return_value = None
 
         request = LLMConnectionTestRequest(provider="groq")
 

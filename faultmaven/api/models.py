@@ -615,6 +615,10 @@ class LLMProviderDetail(BaseModel):
     )
     connected: bool = Field(description="Provider responded to last health check")
     has_api_key: bool = Field(description="API key is configured (value never exposed)")
+    state: str = Field(
+        default="not_configured",
+        description="Provider lifecycle state: not_configured, configured, or active",
+    )
     models: List[str] = Field(default_factory=list)
     selected_model: Optional[str] = Field(
         None, description="Currently active model for this provider"
@@ -633,6 +637,10 @@ class LLMProviderDetail(BaseModel):
 class LLMConfigResponse(BaseModel):
     """LLM configuration and provider status response."""
 
+    deployment: str = Field(description="Deployment mode: 'local' or 'cloud'")
+    config_readonly: bool = Field(
+        description="True in local mode (config managed via .env file)"
+    )
     primary_provider: str
     strict_mode: bool
     fallback_chain: List[str]
@@ -695,6 +703,20 @@ class LLMConfigUpdateResponse(BaseModel):
 # ============================================================
 
 
+class FeatureStatus(BaseModel):
+    """Status of an optional feature that depends on configuration."""
+
+    enabled: bool = Field(description="Feature is active and usable")
+    has_api_key: bool = Field(
+        default=False, description="Required API key is configured"
+    )
+    description: str = Field(default="", description="Brief explanation of the feature")
+    config_hint: str = Field(
+        default="",
+        description="What the user needs to set to enable this feature",
+    )
+
+
 class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
@@ -706,4 +728,8 @@ class EnvConfigStatusResponse(BaseModel):
     llm_provider: str = Field(description="Primary LLM provider name")
     pii_redaction_enabled: bool
     rate_limit_enabled: bool
+    features: Dict[str, FeatureStatus] = Field(
+        default_factory=dict,
+        description="Optional features and their configuration status",
+    )
     timestamp: datetime

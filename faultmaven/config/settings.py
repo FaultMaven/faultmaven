@@ -1647,17 +1647,22 @@ class PreprocessingSettings(BaseSettings):
 
 
 class DeepAnalysisSettings(BaseSettings):
-    """Deep analysis (Tier 3) configuration.
+    """Interpreted search configuration.
 
-    Controls on-demand deep LLM analysis of raw evidence files.
-    Deep analysis runs when the agent needs interpreted analysis beyond
-    what Tier 0+1 structural indexes and Tier 2 mechanical search provide.
+    Controls LLM-assisted file interpretation during investigation.
+    When the agent needs to reason over raw file sections (beyond keyword
+    search), a dedicated LLM call interprets the relevant sections in
+    isolation with the investigation context.
+
+    The 'local' backend uses the already-configured CHAT_PROVIDER — no
+    additional API keys or infrastructure needed. The 'external' backend
+    calls a separate microservice (enterprise only).
     """
 
     backend: str = Field(
-        default="disabled",
+        default="local",
         validation_alias="DEEP_ANALYSIS_BACKEND",
-        description="Deep analysis backend: external | local | basic | disabled",
+        description="Interpreted search backend: external | local | disabled",
     )
 
     url: str = Field(

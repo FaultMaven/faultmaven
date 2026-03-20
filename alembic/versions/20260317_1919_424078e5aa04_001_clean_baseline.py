@@ -251,6 +251,8 @@ def upgrade() -> None:
     sa.Column('metadata', sa.Text(), nullable=True),
     sa.Column('organization_id', sa.String(length=20), nullable=True),
     sa.Column('team_id', sa.String(length=20), nullable=True),
+    sa.Column('is_archived', sa.Boolean(), nullable=False, server_default='0'),
+    sa.Column('archived_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('session_id', sa.String(length=36), nullable=True),
     sa.CheckConstraint('LENGTH(TRIM(title)) > 0', name='cases_title_not_empty'),
     sa.CheckConstraint('LENGTH(TRIM(user_id)) > 0', name='cases_user_id_not_empty'),
@@ -258,6 +260,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('case_id')
     )
     op.create_index(op.f('ix_cases_created_at'), 'cases', ['created_at'], unique=False)
+    op.create_index(op.f('ix_cases_is_archived'), 'cases', ['is_archived'], unique=False)
     op.create_index(op.f('ix_cases_organization_id'), 'cases', ['organization_id'], unique=False)
     op.create_index(op.f('ix_cases_session_id'), 'cases', ['session_id'], unique=False)
     op.create_index(op.f('ix_cases_status'), 'cases', ['status'], unique=False)

@@ -166,8 +166,8 @@ modules/agent/tools/
 ├── case_evidence_qa.py     # Case evidence queries
 ├── list_evidence_tool.py   # List available evidence
 ├── read_file_tool.py       # File reading tool
-├── search_file_tool.py     # Tier 2: keyword/regex/extractor search on raw files
-├── deep_analysis_tool.py   # Tier 3: LLM-powered deep analysis
+├── search_file_tool.py     # Query strategy: keyword/regex/extractor search on raw files
+├── deep_analysis_tool.py   # Query strategy: interpreted search (dedicated LLM call on file sections)
 ├── web_search.py           # Web search integration (Tavily)
 └── kb_configs/             # KB tool configurations
     ├── global_kb_config.py
@@ -594,9 +594,9 @@ alembic downgrade -1
 
 **User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_revoked_tokens`, `oauth_authorization_codes`
 
-**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `evidence_artifacts`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `agent_tool_calls_v2`, `standalone_evidence`, `knowledge_items`, `knowledge_suggestions`, `sessions`
+**Case domain:** `cases` (includes `is_archived` bool + `archived_at` for data lifecycle), `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `evidence`, `evidence_artifacts`, `hypotheses`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `agent_tool_calls_v2`, `standalone_evidence`, `knowledge_items`, `knowledge_suggestions`, `sessions`
 
-**Config domain:** `llm_config_overrides` (dashboard-managed LLM settings, hot-reloaded at runtime)
+**Config domain:** `llm_config_overrides` (dashboard-managed settings, hot-reloaded at runtime — cloud mode only; local mode uses .env as sole source of truth)
 
 All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/models.py`. ER diagram: `docs/architecture/data-and-storage/er-diagram.md` (regenerate with `python scripts/generate_er_diagram.py --update`).
 
@@ -714,8 +714,8 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
 | `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 30 tables) |
-| `faultmaven/config/llm_config_overrides.py` | LLM config override application + hot-reload |
-| `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, connection test |
+| `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
+| `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |
 | `pytest.ini` | Test configuration |
 | `alembic/` | Database migration (single clean baseline) |

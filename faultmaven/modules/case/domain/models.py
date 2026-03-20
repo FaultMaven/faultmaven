@@ -3294,6 +3294,21 @@ class Case(BaseModel):
     )
 
     # ============================================================
+    # Archival
+    # ============================================================
+    is_archived: bool = Field(
+        default=False,
+        description="Whether the case has been archived by the user. "
+        "Archived cases are hidden from the default list view but remain "
+        "fully accessible. Independent of case status.",
+    )
+
+    archived_at: Optional[datetime] = Field(
+        default=None,
+        description="When the case was archived",
+    )
+
+    # ============================================================
     # Computed Properties
     # ============================================================
     @property

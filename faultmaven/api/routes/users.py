@@ -173,7 +173,7 @@ async def update_current_user_profile(
 
     except ValidationException as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=422,
             detail=str(e),
         )
 

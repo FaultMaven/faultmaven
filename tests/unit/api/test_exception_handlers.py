@@ -142,7 +142,7 @@ class TestValidationExceptionHandler:
         exc = ValidationException("Invalid input")
         response = await validation_exception_handler(mock_request, exc)
         assert isinstance(response, JSONResponse)
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_response_format(self, mock_request):

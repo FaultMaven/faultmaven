@@ -204,7 +204,7 @@ class TestCreateSession:
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422
 
     # Note: test_create_session_missing_headers deleted - obsolete for v2.0 JWT auth
     # v2.0 uses JWT authentication which is mocked in fixtures, so "missing headers"
@@ -454,7 +454,7 @@ class TestPauseSession:
         )
 
         # v2.0: ValidationException returns 422 Unprocessable Entity (state validation error)
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422
 
     def test_pause_session_not_found(self, client, mock_session_service, headers):
         """Test pausing non-existent session."""
@@ -510,7 +510,7 @@ class TestResumeSession:
         )
 
         # v2.0: ValidationException returns 422 Unprocessable Entity (state validation error)
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422
 
 
 # ============================================================
@@ -548,7 +548,7 @@ class TestCompleteSession:
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422
 
     def test_complete_session_already_completed(
         self, client, mock_session_service, headers
@@ -567,7 +567,7 @@ class TestCompleteSession:
         )
 
         # v2.0: ValidationException returns 422 Unprocessable Entity (state validation error)
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert response.status_code == 422
 
 
 # ============================================================

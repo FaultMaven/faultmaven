@@ -82,6 +82,11 @@ async def get_llm_config(
 
         settings = get_settings()
 
+        # Deployment mode determines dashboard behavior
+        is_cloud = getattr(settings.auth, "auth_mode", "local") == "oauth"
+        deployment = "cloud" if is_cloud else "local"
+        config_readonly = not is_cloud
+
         # Get runtime state from the registry
         registry = llm_provider.registry
         provider_status = registry.get_provider_status()
@@ -95,6 +100,15 @@ async def get_llm_config(
         for name in all_provider_names:
             # Check if API key is configured (without exposing the value)
             has_api_key = _check_has_api_key(settings, name)
+            is_in_chain = name in fallback_chain
+
+            # Derive provider lifecycle state
+            if not has_api_key:
+                state = "not_configured"
+            elif is_in_chain:
+                state = "active"
+            else:
+                state = "configured"
 
             # Get runtime info if provider is initialized
             if name in provider_status:
@@ -103,9 +117,10 @@ async def get_llm_config(
                 providers[name] = LLMProviderDetail(
                     name=name,
                     display_name=PROVIDER_DISPLAY_NAMES.get(name, name.title()),
-                    enabled=ps.get("in_fallback_chain", False),
+                    enabled=is_in_chain,
                     connected=hs.get("health", "unknown") in ("healthy", "HEALTHY"),
                     has_api_key=has_api_key,
+                    state=state,
                     models=ps.get("models", []),
                     selected_model=ps.get("selected_model"),
                     available_models=ps.get("available_models", []),
@@ -120,6 +135,7 @@ async def get_llm_config(
                     enabled=False,
                     connected=False,
                     has_api_key=has_api_key,
+                    state=state,
                     models=[],
                     selected_model=None,
                     available_models=registry.get_available_models_for(name),
@@ -129,6 +145,8 @@ async def get_llm_config(
         primary = fallback_chain[0] if fallback_chain else "none"
 
         return LLMConfigResponse(
+            deployment=deployment,
+            config_readonly=config_readonly,
             primary_provider=primary,
             strict_mode=strict_mode,
             fallback_chain=fallback_chain,
@@ -166,6 +184,7 @@ async def update_llm_config(
 
     Raises:
         401 Unauthorized: No valid JWT token
+        403 Forbidden: Local deployment (config is read-only)
         422 Unprocessable Entity: Invalid provider name
         503 Service Unavailable: LLM provider not initialized
     """
@@ -173,6 +192,16 @@ async def update_llm_config(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LLM provider not initialized",
+        )
+
+    # Local mode: config is read-only (managed via .env file)
+    from faultmaven.config.settings import get_settings as _get_settings
+
+    _settings = _get_settings()
+    if getattr(_settings.auth, "auth_mode", "local") != "oauth":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Configuration is read-only in local deployment. Edit the .env file and restart the server.",
         )
 
     try:
@@ -186,7 +215,7 @@ async def update_llm_config(
         if request.primary_provider is not None:
             if request.primary_provider not in valid_names:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    status_code=422,
                     detail=f"Unknown provider: '{request.primary_provider}'. "
                     f"Valid providers: {', '.join(valid_names)}",
                 )
@@ -195,7 +224,7 @@ async def update_llm_config(
         if request.api_key is not None and request.provider_name is not None:
             if request.provider_name not in valid_names:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    status_code=422,
                     detail=f"Unknown provider: '{request.provider_name}'",
                 )
             key_field = f"{request.provider_name}_api_key"
@@ -204,7 +233,7 @@ async def update_llm_config(
         if request.model is not None and request.provider_name is not None:
             if request.provider_name not in valid_names:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    status_code=422,
                     detail=f"Unknown provider: '{request.provider_name}'",
                 )
             model_field = f"{request.provider_name}_model"
@@ -283,13 +312,18 @@ async def check_llm_connection(
 
         if provider_name not in valid_names:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=422,
                 detail=f"Unknown provider: '{provider_name}'. "
                 f"Valid providers: {', '.join(valid_names)}",
             )
 
         registry = llm_provider.registry
         provider = registry.get_provider(provider_name)
+
+        # In strict mode the provider may not be in the active set even though
+        # an API key exists.  Fall back to creating a temporary instance.
+        if provider is None:
+            provider = registry.create_provider_for_test(provider_name)
 
         if provider is None:
             display = PROVIDER_DISPLAY_NAMES.get(provider_name, provider_name)
@@ -306,8 +340,8 @@ async def check_llm_connection(
         # Send a minimal test prompt directly to the provider
         start_time = time.monotonic()
         response = await provider.generate(
-            prompt="Respond with exactly: OK",
-            max_tokens=10,
+            prompt="Say hello",
+            max_tokens=50,
             temperature=0.0,
         )
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
@@ -359,6 +393,44 @@ async def get_env_config_status(
 
         deployment = "cloud" if settings.auth.auth_mode == "oauth" else "local"
 
+        # Build feature status
+        from faultmaven.api.models import FeatureStatus
+
+        # Web search: needs TAVILY_API_KEY (or Google CSE keys)
+        tavily_key = getattr(settings.knowledge, "tavily_api_key", None)
+        has_tavily = bool(
+            tavily_key
+            and hasattr(tavily_key, "get_secret_value")
+            and tavily_key.get_secret_value()
+        )
+        web_search_enabled = (
+            getattr(settings.knowledge, "enable_web_search", False) and has_tavily
+        )
+
+        # Opik tracing
+        opik_enabled = getattr(settings.observability, "opik_enabled", False)
+
+        # Only surface features that require user-provided configuration.
+        # Core capabilities (interpreted search, semantic search) that work
+        # automatically with the existing LLM are not shown.
+        features = {
+            "web_search": FeatureStatus(
+                enabled=web_search_enabled,
+                has_api_key=has_tavily,
+                description="Search technical websites during investigations",
+                config_hint="Set TAVILY_API_KEY and ENABLE_WEB_SEARCH=true",
+            ),
+            "llm_tracing": FeatureStatus(
+                enabled=opik_enabled,
+                has_api_key=bool(
+                    getattr(settings.observability, "opik_api_key", None)
+                    or getattr(settings.observability, "opik_use_local", False)
+                ),
+                description="Trace LLM calls for observability and debugging",
+                config_hint="Set OPIK_ENABLED=true with Opik cloud key or OPIK_USE_LOCAL=true",
+            ),
+        }
+
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
@@ -370,6 +442,7 @@ async def get_env_config_status(
             ),
             pii_redaction_enabled=settings.protection.protection_enabled,
             rate_limit_enabled=settings.security.rate_limit_enabled,
+            features=features,
             timestamp=datetime.now(timezone.utc),
         )
 

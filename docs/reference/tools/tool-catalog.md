@@ -278,29 +278,34 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 ---
 
-### Deep Analyze File Tool (Tier 3)
-**Status**: 🟡 Partial (pluggable backend interface defined, limited backends)
+### Interpreted Search Tool (deep_analysis)
+**Status**: 🟢 Implemented (enabled by default)
 **File**: `faultmaven/modules/agent/tools/deep_analysis_tool.py`
 **Type**: LLM-Powered Analysis
 
-**Purpose**: Tier 3 deep LLM analysis of specific data windows in evidence files. Uses LLM to interpret data, not just search it.
+**Purpose**: Interpreted search — keyword search + a dedicated LLM call to reason over the matched sections in isolation with investigation context. Uses the configured CHAT_PROVIDER, no additional setup needed.
 
 **When Used**:
-- Agent needs interpreted analysis (root cause, correlation detection)
-- Tier 2 keyword/regex search found matches but agent needs synthesis
-- Hypothesis validation requires raw data analysis
+- Agent needs interpreted analysis ("What caused the error spike at 14:23?")
+- Raw keyword matches need cross-line reasoning (pattern recognition, correlation)
+- Hypothesis validation requires interpretation beyond exact matching
 
-**Pluggable Backends**:
-- `ExternalTier2Client`: HTTP call to cloud microservice
-- `LocalTier2Service`: In-process with local LLM (Ollama/vLLM)
-- `BasicTier2Service`: In-process keyword search, no LLM (fallback)
+**How it differs from `search_file`**:
+- `search_file`: returns raw matched lines to the main conversation context
+- `deep_analysis`: makes a separate, focused LLM call with only the relevant file sections + case context, returns a pre-interpreted answer
+
+**Future**: Will be merged into `search_file` as an `interpret: true` option.
+
+**Backends**:
+- `local` (default): Uses configured CHAT_PROVIDER — no extra config needed
+- `external`: HTTP call to cloud microservice (enterprise only)
 
 **Configuration**:
 ```env
-DEEP_ANALYSIS_BACKEND=disabled    # external | local | basic | disabled
-DEEP_ANALYSIS_URL=                # URL for external backend
-DEEP_ANALYSIS_API_KEY=            # API key for external backend
-DEEP_ANALYSIS_TIMEOUT_SECONDS=30
+# Enabled by default (local). No config needed for standard use.
+# DEEP_ANALYSIS_BACKEND=local       # local | external | disabled
+# DEEP_ANALYSIS_URL=                # URL for external backend (enterprise only)
+# DEEP_ANALYSIS_API_KEY=            # API key for external backend (enterprise only)
 ```
 
 ---
@@ -495,7 +500,7 @@ class CustomAPITool(BaseTool):
 | Log Analyzer | 800ms/MB | 99% | N/A |
 | Data Classifier | 50-200ms | 99.5% | N/A |
 | Search File (Tier 2) | 0.5-2s | 99% | N/A |
-| Deep Analyze File (Tier 3) | 3-15s | 95% | N/A |
+| Interpreted Search (deep_analysis) | 3-15s | 95% | N/A |
 
 ---
 

@@ -511,6 +511,12 @@ class CaseModel(Base):
     organization_id = Column(String(20), index=True)
     team_id = Column(String(20), index=True)
 
+    # Archival (independent of case status)
+    is_archived = Column(
+        Boolean, nullable=False, default=False, server_default="0", index=True
+    )
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+
     # Session link (optional - cases can exist without sessions)
     session_id = Column(
         String(36),

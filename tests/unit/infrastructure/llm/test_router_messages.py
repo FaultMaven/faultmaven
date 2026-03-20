@@ -42,7 +42,9 @@ def router(mock_registry):
         from faultmaven.infrastructure.llm.router import LLMRouter
 
         r = LLMRouter()
-        return r
+        # registry is now a @property calling get_registry() each time,
+        # so the patch must stay active for the test's lifetime.
+        yield r
 
 
 class TestRoutePassesMessages:
