@@ -290,15 +290,15 @@ When a `proposed_problem_statement` exists and is not yet confirmed, the context
 
 **3. Follow-Up Suggestions**
 
-Generate 2-4 follow-up suggestions classified by user action type:
+Generate 2-4 suggestions to guide the user's next action. The type follows from the agent's intent:
 
-• **COOPERATIVE** (only clickable type): Pre-composed user request sent as a message when clicked.
-  Labels must be phrased as user requests to the agent (e.g., "Find similar incidents in KB").
+• **COOPERATIVE**: Agent wants user to engage with analysis or steer the investigation.
+  Payload is a pre-composed user request submitted as a message (e.g., "Find similar incidents in KB").
   Sub-types: `query_submit` (sends message) or `command_copy` (copies shell command).
-• **EVIDENCE** (informational, not clickable): Tells the user what data to provide.
-  The user decides how to submit (file upload, paste text, or page capture) via the input bar.
-• **FREE_SPEECH** (informational, not clickable): Asks the user a question with short hint tags
-  as a framework for composing their response (e.g., hints: ["symptoms", "timeline", "affected services"]).
+• **EVIDENCE**: Agent needs specific data from the user's environment to make progress.
+  Tells the user what data to provide. User decides how to submit (upload, paste, capture).
+• **FREE_SPEECH**: Agent needs the user's own knowledge, judgment, or observations.
+  Asks a question with short hint tags to guide their thinking (e.g., hints: ["symptoms", "timeline"]).
 
 ═══════════════════════════════════════════════════════════
 KEY PRINCIPLES
