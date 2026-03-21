@@ -1704,7 +1704,82 @@ determine mitigation involvement, not the boolean flags.
 
 ---
 
-### 4.5 Abandoned / Escalated Investigation
+### 4.5 Post-Terminal Operations
+
+After a case reaches RESOLVED or CLOSED, several operations become available. These are **user-initiated** (not automatic) and span both frontends.
+
+#### 4.5.1 Report Generation
+
+**Trigger points:**
+
+- **Copilot**: `ResolutionActionsCard` appears in chat when case reaches terminal state. Offers one-click report generation (Incident Report, Post-Mortem for resolved; Investigation Notes for closed).
+- **Dashboard**: `ReportTab` on CaseDetailPage shows report type cards with generate/view/download actions.
+
+**Report types by case status:**
+
+| Case Status | Available Report Types                |
+|-------------|---------------------------------------|
+| RESOLVED    | incident_report, post_mortem, runbook |
+| CLOSED      | incident_report only                  |
+
+**Runbook recommendation**: `ReportRecommendationService` checks for similar existing runbooks (70%/85% similarity thresholds). Dashboard shows "Update Existing" vs "Create New" options. Copilot does not offer runbook generation (requires the richer dashboard UI for similarity decisions).
+
+**API endpoints:**
+
+- `POST /api/v1/cases/{case_id}/reports` — Generate report(s)
+- `GET /api/v1/cases/{case_id}/reports` — List generated reports
+- `GET /api/v1/cases/{case_id}/report-recommendations` — Get recommended report types
+- `GET /api/v1/cases/{case_id}/reports/{report_id}/download` — Download report
+
+**Versioning**: Up to 5 regenerations per report type (enforced by `MAX_REGENERATIONS`).
+
+#### 4.5.2 Knowledge Extraction
+
+**Trigger point**: Dashboard only (`KnowledgeTab` on CaseDetailPage).
+
+**Eligibility:**
+
+- RESOLVED cases: always eligible
+- CLOSED with `closure_reason="mitigation_sufficient"`: eligible (mitigation steps are valuable)
+- Other CLOSED cases: not eligible
+
+**Workflow:**
+
+1. User clicks "Extract Knowledge" → `POST /api/v1/knowledge/suggestions/extract`
+2. LLM extracts structured article (Problem, Root Cause, Solution, Prevention) with automatic PII removal
+3. Suggestion created in `PENDING_REVIEW` status with PII scan
+4. Admin reviews: edit title/content, verify PII scan, approve or reject
+5. On approval: creates `KnowledgeItem` in the knowledge base
+
+**PII scan pipeline**: `NOT_SCANNED` → `SCANNING` → `CLEAN` | `PII_DETECTED` → `REMEDIATED`
+
+**API endpoints:**
+
+- `POST /api/v1/knowledge/suggestions/extract` — Extract from case
+- `GET /api/v1/knowledge/suggestions?case_id={id}` — Get suggestion for case
+- `PUT /api/v1/knowledge/suggestions/{id}` — Update title/content
+- `POST /api/v1/knowledge/suggestions/{id}/approve` — Approve → create KnowledgeItem
+- `POST /api/v1/knowledge/suggestions/{id}/reject` — Reject with reason
+- `POST /api/v1/knowledge/suggestions/{id}/remediate-pii` — Auto-remediate PII
+
+#### 4.5.3 Cross-Frontend Linking
+
+The copilot links to dashboard for operations that require richer UI:
+
+| Copilot Action                                | Dashboard URL                                      |
+|-----------------------------------------------|----------------------------------------------------|
+| "View in Dashboard" (after report generated)  | `{DASHBOARD_URL}/cases/{caseId}?tab=report`        |
+| "Extract as knowledge article" nudge          | `{DASHBOARD_URL}/cases/{caseId}?tab=knowledge`     |
+
+Dashboard `CaseTabs` reads the `tab` query parameter to auto-select the correct tab on load.
+
+#### 4.5.4 Archival
+
+Independent of post-terminal operations. User can archive any terminal case via the Dashboard case detail page. Archived cases are hidden from the default list but remain accessible via "Include archived" filter.
+
+---
+
+### 4.6 Abandoned / Escalated Investigation
 **User Goal**: Investigation stalled or handed off to human expert.
 **Flow**: `INQUIRY` → `INVESTIGATING` → `CLOSED`
 
