@@ -55,10 +55,9 @@ class RunbookValidator:
     REQUIRED_METADATA_FIELDS = [
         "id",
         "title",
-        "technology",
-        "severity",
-        "tags",
-        "difficulty",
+        "domain",
+        "service",
+        "symptom_class",
         "version",
         "last_updated",
         "verified_by",
@@ -66,11 +65,11 @@ class RunbookValidator:
     ]
 
     REQUIRED_SECTIONS = [
-        "Quick Reference Card",
+        "Problem Definition",
         "Diagnostic Steps",
-        "Solutions",
-        "Prevention",
-        "Related Issues",
+        "Mitigation",
+        "Root Cause Resolution",
+        "Verification",
     ]
 
     def __init__(self):
@@ -242,12 +241,18 @@ class RunbookIngestionPipeline:
             # Ingest into knowledge base
             document_id = metadata.get("id", f"runbook_{file_path.stem}")
             title = metadata.get("title", file_path.stem)
-            technology = metadata.get("technology", "general")
+            domain = metadata.get("domain", "general")
+            service = metadata.get("service", "general")
             tags = metadata.get("tags", [])
 
-            # Add technology and difficulty as tags
-            if technology and technology not in tags:
-                tags.append(technology)
+            # Add domain, service, difficulty, and symptom_class as tags
+            if domain and domain not in tags:
+                tags.append(domain)
+            if service and service not in tags:
+                tags.append(service)
+            symptom_class = metadata.get("symptom_class", [])
+            if isinstance(symptom_class, list):
+                tags.extend([s for s in symptom_class if s not in tags])
             difficulty = metadata.get("difficulty")
             if difficulty and difficulty not in tags:
                 tags.append(difficulty)
@@ -286,7 +291,8 @@ class RunbookIngestionPipeline:
                 ),
                 "document_id": document_id,
                 "title": title,
-                "technology": technology,
+                "domain": domain,
+                "service": service,
                 "status": metadata.get("status", "unknown"),
             }
 
