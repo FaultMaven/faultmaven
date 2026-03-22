@@ -272,12 +272,15 @@ flowchart TB
 
 **Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for complete methodology.
 
-**Knowledge Base Architecture**: FaultMaven implements **three completely separate vector storage systems** with distinct purposes, lifecycles, and ownership models:
-- **User Knowledge Base** (per-user permanent storage) - Personal runbooks and procedures
-- **Global Knowledge Base** (system-wide permanent storage) - Admin-managed troubleshooting reference
-- **Case Evidence Store** (ephemeral case-specific storage) - Temporary evidence uploaded during active investigations
+**Knowledge Base Architecture**: FaultMaven implements a **3-tier knowledge base** system for curated remediation knowledge (runbooks, procedures, best practices):
 
-The knowledge base uses a **KB-neutral Strategy Pattern** where one core DocumentQATool class works with all three KB types through injected KBConfig strategies. This enables adding new KB types without modifying core code. See [Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md) for storage layer details (ChromaDB collections, Strategy Pattern, lifecycle management), [Q&A Tools Design](knowledge-and-ai/qa-tools-design.md) for access layer details (KB-neutral RAG retrieval, tool wrappers, DocumentQATool implementation), and [Vector Database Operations](knowledge-and-ai/vector-database-operations.md) for operational procedures (ingestion pipelines, query flows, admin workflows).
+- **Global** (cloud only) - Pre-built system-wide troubleshooting guides
+- **Team** (cloud only) - Shared runbooks and institutional memory
+- **Personal** (both local and cloud) - Private notes, personal runbooks
+
+The knowledge base uses a **KB-neutral Strategy Pattern** where one core DocumentQATool class works with all KB tiers through injected KBConfig strategies. This enables adding new tiers without modifying core code. See [Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md) for storage and retrieval details, and [Runbook Content Architecture](knowledge-and-ai/runbook-content-architecture.md) for content taxonomy, quality gates, and lifecycle governance.
+
+Note: Case evidence (logs, configs, metrics uploaded during investigation) is a separate concern from the knowledge base. See [Case Evidence Store](case-and-session/case-evidence-store.md) and [Data Preprocessing Design](data-processing/data-preprocessing-design-specification.md).
 
 ### Infrastructure Layer
 **Purpose**: External service integrations and cross-cutting concerns
@@ -1557,8 +1560,8 @@ Core business services implementing case, data, knowledge, investigation, and se
 - [`Redis Usage Design`](./redis-usage-design.md) - ✅ **IMPLEMENTED** - Hybrid storage strategy: PostgreSQL (persistent) vs Redis (ephemeral), usage guidelines
 - [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, user-owned cases, Redis storage
 - [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, platform-specific extractors, LLM integration
-- [`Knowledge Base Architecture v4.0`](knowledge-and-ai/knowledge-base-architecture.md) - 🟢 **PRODUCTION READY** - Storage layer (knowledge_service.py): Three distinct vector stores (User KB, Global KB, Case Evidence), KB-neutral Strategy Pattern with KBConfig, ChromaDB collections, lifecycle management
-- [`Q&A Tools Design v3.1`](knowledge-and-ai/qa-tools-design.md) - 🟢 **PRODUCTION READY** - Access layer (core/tools/): KB-neutral RAG retrieval, three tool wrappers (AnswerFromCaseEvidence, AnswerFromUserKB, AnswerFromGlobalKB), DocumentQATool implementation
+- [`Knowledge Base Architecture v7.0`](knowledge-and-ai/knowledge-base-architecture.md) - 3-tier KB system (Global, Team, Personal), storage and retrieval architecture, KB-neutral Strategy Pattern
+- [`Runbook Content Architecture v2.0`](knowledge-and-ai/runbook-content-architecture.md) - Content taxonomy, quality gates, lifecycle governance for KB runbooks
 - [`Prompt Engineering Guide`](investigation-engine/prompt-engineering-guide.md) - ✅ **IMPLEMENTED** - Current prompting system: Investigation prompts, engagement modes, OODA guidance, loopback detection
 
 #### Core Investigation (`core/investigation/`)
@@ -1609,8 +1612,8 @@ Milestone-based investigation engine:
 
 #### Knowledge Management
 
-- [`Knowledge Base Architecture v4.0`](knowledge-and-ai/knowledge-base-architecture.md) - Storage layer (core/knowledge/): Three distinct vector stores, Strategy Pattern, ChromaDB collections
-- [`Q&A Tools Design v3.1`](knowledge-and-ai/qa-tools-design.md) - Access layer (core/tools/): KB-neutral RAG retrieval, three tool wrappers, DocumentQATool implementation
+- [`Knowledge Base Architecture v7.0`](knowledge-and-ai/knowledge-base-architecture.md) - 3-tier KB system (Global, Team, Personal), storage and retrieval architecture
+- [`Runbook Content Architecture v2.0`](knowledge-and-ai/runbook-content-architecture.md) - Content taxonomy, quality gates, lifecycle governance
 
 ---
 

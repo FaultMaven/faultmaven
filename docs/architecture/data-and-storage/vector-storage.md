@@ -621,8 +621,8 @@ await store.rebuild_index()
 ## Related Documentation
 
 - **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Complete schema for User KB, Case Working Memory, Global KB
-- **[../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md)** - RAG pipeline and conceptual architecture
-- **[../knowledge-and-ai/qa-tools-design.md](../knowledge-and-ai/qa-tools-design.md)** - Q&A tool design and prompt engineering
+- **[../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md)** - 3-tier KB system, storage and retrieval architecture
+- **[../knowledge-and-ai/runbook-content-architecture.md](../knowledge-and-ai/runbook-content-architecture.md)** - Runbook taxonomy, quality gates, lifecycle
 - **[overview.md](./overview.md)** - Complete storage architecture overview
 
 ---

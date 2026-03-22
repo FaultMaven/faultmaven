@@ -38,11 +38,11 @@ Master index for all architecture documentation.
 | Document | Purpose |
 |----------|---------|
 | **[Case and Session Concepts](case-and-session/case-and-session-concepts.md)** | Case vs Session distinction, multi-device support |
-| **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** | Vector database, RAG, knowledge retrieval |
+| **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** | 3-tier KB system, storage and retrieval architecture |
+| **[Runbook Content Architecture](knowledge-and-ai/runbook-content-architecture.md)** | Runbook taxonomy, quality gates, lifecycle |
 | **[Structured Output Capability System](core-architecture/structured-output-capability-system.md)** | Provider-agnostic LLM structured output handling |
 | **[Evidence Classification Design](data-processing/evidence-classification-design.md)** | Evidence classification and submission types |
 | **[Data Preprocessing Design](data-processing/data-preprocessing-design-specification.md)** | Data preprocessing pipeline |
-| **[QA Tools Design](knowledge-and-ai/qa-tools-design.md)** | Question answering tools and sub-agents |
 
 ### Infrastructure
 

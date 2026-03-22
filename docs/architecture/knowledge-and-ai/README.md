@@ -4,9 +4,8 @@ Documentation for FaultMaven's knowledge management, vector search, and AI agent
 
 ## Documents
 
-- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** - Vector database, RAG, and knowledge retrieval architecture
-- **[QA Tools Design](./qa-tools-design.md)** - Question-answering tools and sub-agents
-- **[Vector Database Operations](./vector-database-operations.md)** - ChromaDB integration and vector search operations
+- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** - 3-tier KB system (Global, Team, Personal), storage and retrieval architecture, KB-neutral tool design
+- **[Runbook Content Architecture](./runbook-content-architecture.md)** - Runbook template, taxonomy, quality gates, lifecycle governance
 
 ## Purpose
 
