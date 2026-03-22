@@ -1,0 +1,300 @@
+"""API routes for document-to-runbook conversion.
+
+Endpoints:
+- POST   /knowledge/convert                                    Upload and convert
+- GET    /knowledge/conversions                                List user's conversions
+- GET    /knowledge/conversions/{id}                           Get conversion details
+- PUT    /knowledge/conversions/{id}/drafts/{draft_id}         Edit draft
+- POST   /knowledge/conversions/{id}/drafts/{draft_id}/verify  Verify and ingest
+- DELETE /knowledge/conversions/{id}/drafts/{draft_id}         Delete draft
+"""
+
+import logging
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+
+from faultmaven.api.v1.role_dependencies import require_admin
+from faultmaven.models.auth import DevUser
+from faultmaven.modules.knowledge.domain.models.conversion import (
+    ConversionResponse,
+    DraftUpdateRequest,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    ConversionRejectedError,
+    ConversionService,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/knowledge", tags=["knowledge-conversion"])
+
+# Allowed MIME types for conversion
+CONVERSION_ALLOWED_TYPES = {
+    "text/plain",
+    "text/markdown",
+    "text/html",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+# Also accept by extension for ambiguous MIME types
+CONVERSION_ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".txt",
+    ".md",
+    ".html",
+    ".htm",
+}
+
+
+def _get_conversion_service(request: Request) -> ConversionService:
+    """Dependency: get ConversionService from app state."""
+    service = getattr(request.app.state, "conversion_service", None)
+    if not service:
+        raise HTTPException(
+            status_code=503,
+            detail="Document conversion service is not available",
+        )
+    return service
+
+
+def _require_auth(request: Request) -> "DevUser":
+    """Dependency: require authentication (any user for personal scope)."""
+    from faultmaven.api.v1.auth_dependencies import require_authentication
+
+    return require_authentication(request)
+
+
+# =============================================================================
+# POST /knowledge/convert
+# =============================================================================
+
+
+@router.post("/convert", status_code=201)
+async def convert_document(
+    file: UploadFile = File(...),
+    scope: str = Form(...),
+    team_id: Optional[str] = Form(None),
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Upload a document and convert it to one or more runbook drafts."""
+    # Validate scope
+    if scope not in ("global", "team", "personal"):
+        raise HTTPException(
+            status_code=400, detail="scope must be 'global', 'team', or 'personal'"
+        )
+
+    if scope == "team" and not team_id:
+        raise HTTPException(
+            status_code=400, detail="team_id is required when scope is 'team'"
+        )
+
+    # Access control
+    if scope == "global" and "admin" not in (current_user.roles or []):
+        raise HTTPException(
+            status_code=403,
+            detail="Global KB conversion requires platform admin role",
+        )
+
+    # Validate file type
+    content_type = file.content_type or ""
+    filename = file.filename or "document"
+    ext = Path(filename).suffix.lower()
+
+    if (
+        content_type not in CONVERSION_ALLOWED_TYPES
+        and ext not in CONVERSION_ALLOWED_EXTENSIONS
+    ):
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"Unsupported file type: {content_type or ext}. "
+                f"Allowed: PDF, DOCX, TXT, Markdown, HTML"
+            ),
+        )
+
+    # Save upload to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        tmp_path = Path(tmp.name)
+
+    try:
+        # Check file size (use existing MAX_UPLOAD_SIZE_MB setting)
+        file_size = tmp_path.stat().st_size
+        max_size = 10 * 1024 * 1024  # 10 MB default
+        if file_size > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds maximum size of {max_size // (1024*1024)}MB",
+            )
+
+        result = await service.convert_document(
+            file_path=tmp_path,
+            content_type=content_type,
+            original_filename=filename,
+            scope=scope,
+            user_id=current_user.user_id,
+            organization_id=getattr(current_user, "organization_id", None),
+            team_id=team_id,
+        )
+
+        return result.model_dump()
+
+    except ConversionRejectedError as e:
+        # Determine appropriate status code
+        msg = str(e)
+        if "tokens" in msg and "limit" in msg:
+            raise HTTPException(status_code=413, detail=msg)
+        elif "not appear to contain" in msg or "does not contain" in msg:
+            raise HTTPException(status_code=422, detail=msg)
+        else:
+            raise HTTPException(status_code=422, detail=msg)
+
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    except Exception as e:
+        logger.error(f"Conversion failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Document conversion failed. Please try again.",
+        )
+
+    finally:
+        # Clean up temp file
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+# =============================================================================
+# GET /knowledge/conversions
+# =============================================================================
+
+
+@router.get("/conversions")
+async def list_conversions(
+    limit: int = Query(default=20, le=100),
+    offset: int = Query(default=0, ge=0),
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """List the current user's conversion jobs."""
+    return await service.list_conversions(
+        user_id=current_user.user_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# =============================================================================
+# GET /knowledge/conversions/{conversion_id}
+# =============================================================================
+
+
+@router.get("/conversions/{conversion_id}")
+async def get_conversion(
+    conversion_id: str,
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Get conversion job details with all drafts."""
+    result = await service.get_conversion(
+        conversion_id=conversion_id,
+        user_id=current_user.user_id,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Conversion not found")
+    return result.model_dump()
+
+
+# =============================================================================
+# PUT /knowledge/conversions/{id}/drafts/{draft_id}
+# =============================================================================
+
+
+@router.put("/conversions/{conversion_id}/drafts/{draft_id}")
+async def update_draft(
+    conversion_id: str,
+    draft_id: str,
+    body: DraftUpdateRequest,
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Update draft content. Re-runs validation and quality scoring."""
+    result = await service.update_draft(
+        conversion_id=conversion_id,
+        draft_id=draft_id,
+        user_id=current_user.user_id,
+        content=body.content,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return result.model_dump()
+
+
+# =============================================================================
+# POST /knowledge/conversions/{id}/drafts/{draft_id}/verify
+# =============================================================================
+
+
+@router.post("/conversions/{conversion_id}/drafts/{draft_id}/verify")
+async def verify_draft(
+    conversion_id: str,
+    draft_id: str,
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Promote draft to verified status and trigger ingestion into ChromaDB."""
+    result = await service.verify_draft(
+        conversion_id=conversion_id,
+        draft_id=draft_id,
+        user_id=current_user.user_id,
+        username=current_user.username,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=400,
+            detail="Draft not found, already verified, or validation not passed",
+        )
+    return result.model_dump()
+
+
+# =============================================================================
+# DELETE /knowledge/conversions/{id}/drafts/{draft_id}
+# =============================================================================
+
+
+@router.delete("/conversions/{conversion_id}/drafts/{draft_id}", status_code=204)
+async def delete_draft(
+    conversion_id: str,
+    draft_id: str,
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Delete a conversion draft."""
+    success = await service.delete_draft(
+        conversion_id=conversion_id,
+        draft_id=draft_id,
+        user_id=current_user.user_id,
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Draft not found")

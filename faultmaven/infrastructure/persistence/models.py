@@ -1936,3 +1936,80 @@ class LLMConfigOverrideModel(Base):
     def __repr__(self) -> str:
         # Never log the value — it may contain API keys
         return f"<LLMConfigOverride(key={self.key}, updated_at={self.updated_at})>"
+
+
+# ============================================================
+# Document-to-Runbook Conversion Models
+# ============================================================
+
+
+class ConversionJobModel(Base):
+    """Tracks a document-to-runbook conversion job."""
+
+    __tablename__ = "conversion_jobs"
+
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), nullable=False, index=True)
+    organization_id = Column(String(36), nullable=True)
+    scope = Column(String(20), nullable=False)
+    team_id = Column(String(36), nullable=True)
+    status = Column(String(20), nullable=False, server_default="processing")
+    source_filename = Column(String(255), nullable=False)
+    source_content_type = Column(String(100), nullable=False)
+    source_size_bytes = Column(Integer, nullable=False)
+    source_path = Column(String(500), nullable=False)
+    failure_modes_detected = Column(Integer, nullable=False, server_default="0")
+    analysis_result = Column(JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    drafts = relationship(
+        "ConversionDraftModel",
+        back_populates="conversion_job",
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ConversionJob(id={self.id}, status={self.status}, "
+            f"source={self.source_filename})>"
+        )
+
+
+class ConversionDraftModel(Base):
+    """Individual runbook draft generated from a conversion job."""
+
+    __tablename__ = "conversion_drafts"
+
+    id = Column(String(36), primary_key=True)
+    conversion_id = Column(
+        String(36),
+        ForeignKey("conversion_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    runbook_id = Column(String(100), nullable=False)
+    title = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    status = Column(String(20), nullable=False, server_default="draft")
+    validation_passed = Column(Boolean, nullable=False, server_default="1")
+    validation_errors = Column(JSON, nullable=True)
+    validation_warnings = Column(JSON, nullable=True)
+    quality_score = Column(Numeric(5, 1), nullable=True)
+    quality_details = Column(JSON, nullable=True)
+    knowledge_item_id = Column(String(36), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by = Column(String(36), nullable=True)
+
+    conversion_job = relationship("ConversionJobModel", back_populates="drafts")
+
+    def __repr__(self) -> str:
+        return (
+            f"<ConversionDraft(id={self.id}, runbook_id={self.runbook_id}, "
+            f"status={self.status})>"
+        )

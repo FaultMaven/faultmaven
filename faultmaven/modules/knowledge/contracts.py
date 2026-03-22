@@ -57,6 +57,33 @@ class IKnowledgeQuery(Protocol):
         ...
 
 
+class IConversionService(Protocol):
+    """Service interface for document-to-runbook conversion."""
+
+    async def convert_document(
+        self,
+        file_path: Any,
+        content_type: str,
+        original_filename: str,
+        scope: str,
+        user_id: str,
+        organization_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> Any:
+        """Convert a document to one or more runbook drafts."""
+        ...
+
+    async def get_conversion(self, conversion_id: str, user_id: str) -> Optional[Any]:
+        """Get conversion job details."""
+        ...
+
+    async def verify_draft(
+        self, conversion_id: str, draft_id: str, user_id: str, username: str
+    ) -> Optional[Any]:
+        """Promote draft to verified status."""
+        ...
+
+
 class ISuggestionService(Protocol):
     """Service interface for Knowledge Suggestion management."""
 

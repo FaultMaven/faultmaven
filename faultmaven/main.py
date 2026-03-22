@@ -243,6 +243,7 @@ from .modules.auth.api.teams import router as teams_router
 from .modules.case.api.routes import router as case_router
 from .modules.evidence.api.routes import router as evidence_router
 from .modules.knowledge.api.routes import router as knowledge_router
+from .modules.knowledge.api.conversion_routes import router as conversion_router
 from .modules.report.api.routes import router as report_router
 
 # SessionManager now handled via DI container - services.session.SessionService
@@ -430,6 +431,32 @@ async def lifespan(app: FastAPI):
                 container.get_investigation_orchestrator()
             )
             app.state.knowledge_service = container.get_knowledge_service()
+
+            # Document-to-runbook conversion service (feature-flagged)
+            try:
+                from .config.settings import get_settings as _get_settings
+
+                _settings = _get_settings()
+                if _settings.features.enable_document_conversion:
+                    from .modules.knowledge.domain.services.conversion_service import (
+                        ConversionService,
+                    )
+
+                    app.state.conversion_service = ConversionService(
+                        llm_router=app.state.llm_provider,
+                        settings=_settings,
+                        db_session_factory=getattr(
+                            container, "get_async_session", None
+                        ),
+                        knowledge_service=app.state.knowledge_service,
+                    )
+                    logger.info("✅ Document conversion service initialized")
+                else:
+                    app.state.conversion_service = None
+            except Exception as conv_err:
+                logger.warning(f"Document conversion service not available: {conv_err}")
+                app.state.conversion_service = None
+
             app.state.evidence_service = container.get_evidence_service()
             app.state.preprocessing_service = container.get_preprocessing_service()
             app.state.enhanced_agent_service = container.get_enhanced_agent_service()
@@ -1078,6 +1105,17 @@ logger.info("✅ Evidence endpoints added")
 
 app.include_router(knowledge_router, prefix="/api/v1")
 logger.info("✅ Knowledge endpoints added")
+
+# Conversion routes (feature-flagged)
+try:
+    from faultmaven.config.settings import get_settings as _get_flag_settings
+
+    _flag_settings = _get_flag_settings()
+    if _flag_settings.features.enable_document_conversion:
+        app.include_router(conversion_router, prefix="/api/v1")
+        logger.info("✅ Document conversion endpoints added")
+except Exception:
+    pass
 
 app.include_router(organizations_router, prefix="/api/v1")
 logger.info("✅ Organization endpoints added")
