@@ -549,8 +549,9 @@ Key configuration in `.env`:
 | Category | Variables | Description |
 |----------|-----------|-------------|
 | LLM | `CHAT_PROVIDER`, `*_API_KEY` | Primary LLM provider |
-| Capability Overrides | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER` | Override specific agents |
+| Capability Overrides | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER` | Override specific agents |
 | External Tools | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | Web search capability |
+| Features | `ENABLE_DOCUMENT_CONVERSION` | Document-to-runbook conversion (default: false) |
 | Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
 | Sessions | `CACHE_BACKEND`, `REDIS_URL` | `inmemory` or `redis` |
 | Vectors | `VECTOR_BACKEND`, `CHROMADB_URL` | `inmemory` or `chromadb` |
@@ -655,6 +656,9 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Agent | `POST /cases/{id}/sessions/{sid}/execute` | Start AI investigation |
 | Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
 | Knowledge | `POST /knowledge/search` | Semantic search |
+| Knowledge | `POST /knowledge/convert` | Convert document to runbook drafts (feature-flagged) |
+| Knowledge | `GET /knowledge/conversions` | List conversion jobs |
+| Knowledge | `PUT/POST/DELETE .../drafts/{id}` | Draft management (edit, verify, delete) |
 | Auth | `POST /auth/register` | User registration |
 | Auth | `POST /auth/login` | User login |
 | Auth | `POST /auth/refresh` | Token refresh |
@@ -711,6 +715,8 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/auth/contracts.py` | Auth DTOs and interfaces |
 | `faultmaven/modules/case/contracts.py` | Case DTOs and interfaces |
 | `faultmaven/modules/knowledge/contracts.py` | Knowledge DTOs and interfaces |
+| `faultmaven/modules/knowledge/domain/services/conversion_service.py` | Document-to-runbook conversion pipeline |
+| `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies and tool config |
 | `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 30 tables) |
