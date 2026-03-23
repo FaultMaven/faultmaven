@@ -441,8 +441,9 @@ async def lifespan(app: FastAPI):
                 )
 
                 _settings = _get_settings()
+                _llm_provider = container.get_llm_provider()
                 app.state.conversion_service = ConversionService(
-                    llm_router=app.state.llm_provider,
+                    llm_router=_llm_provider,
                     settings=_settings,
                     db_session_factory=get_db_session,
                     knowledge_service=app.state.knowledge_service,
