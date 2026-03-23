@@ -435,10 +435,29 @@ async def lifespan(app: FastAPI):
             # Document-to-runbook conversion service
             try:
                 from .config.settings import get_settings as _get_settings
-                from .infrastructure.persistence.database import get_db_session
+                from .infrastructure.persistence.database import (
+                    get_db_session,
+                    get_engine,
+                )
+                from .infrastructure.persistence.models import (
+                    ConversionDraftModel,
+                    ConversionJobModel,
+                )
                 from .modules.knowledge.domain.services.conversion_service import (
                     ConversionService,
                 )
+
+                # Ensure conversion tables exist (safe no-op if already present)
+                _conv_engine = get_engine()
+                async with _conv_engine.begin() as _conn:
+                    await _conn.run_sync(
+                        ConversionJobModel.__table__.create,
+                        checkfirst=True,
+                    )
+                    await _conn.run_sync(
+                        ConversionDraftModel.__table__.create,
+                        checkfirst=True,
+                    )
 
                 _settings = _get_settings()
                 _llm_provider = container.get_llm_provider()
