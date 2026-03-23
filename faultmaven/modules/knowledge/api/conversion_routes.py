@@ -78,11 +78,7 @@ def _get_conversion_service(request: Request) -> ConversionService:
     return service
 
 
-def _require_auth(request: Request) -> "DevUser":
-    """Dependency: require authentication (any user for personal scope)."""
-    from faultmaven.api.v1.auth_dependencies import require_authentication
-
-    return require_authentication(request)
+from faultmaven.api.v1.auth_dependencies import require_authentication as _require_auth
 
 
 # =============================================================================
