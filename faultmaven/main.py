@@ -435,6 +435,7 @@ async def lifespan(app: FastAPI):
             # Document-to-runbook conversion service
             try:
                 from .config.settings import get_settings as _get_settings
+                from .infrastructure.persistence.database import get_db_session
                 from .modules.knowledge.domain.services.conversion_service import (
                     ConversionService,
                 )
@@ -443,12 +444,15 @@ async def lifespan(app: FastAPI):
                 app.state.conversion_service = ConversionService(
                     llm_router=app.state.llm_provider,
                     settings=_settings,
-                    db_session_factory=getattr(container, "get_async_session", None),
+                    db_session_factory=get_db_session,
                     knowledge_service=app.state.knowledge_service,
                 )
                 logger.info("✅ Document conversion service initialized")
             except Exception as conv_err:
-                logger.warning(f"Document conversion service not available: {conv_err}")
+                logger.warning(
+                    f"Document conversion service not available: {conv_err}",
+                    exc_info=True,
+                )
                 app.state.conversion_service = None
 
             app.state.evidence_service = container.get_evidence_service()
