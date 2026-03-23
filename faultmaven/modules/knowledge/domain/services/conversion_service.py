@@ -762,6 +762,49 @@ class ConversionService:
                 for job in jobs
             ]
 
+    async def list_all_drafts(self, user_id: str) -> List[dict]:
+        """List all non-deleted drafts across all jobs for this user."""
+        if not self._db_session_factory:
+            return []
+
+        async with self._db_session_factory() as session:
+            result = await session.execute(
+                select(ConversionDraftModel, ConversionJobModel)
+                .join(
+                    ConversionJobModel,
+                    ConversionDraftModel.conversion_id == ConversionJobModel.id,
+                )
+                .where(
+                    ConversionJobModel.user_id == user_id,
+                    ConversionDraftModel.status != DraftStatus.DELETED.value,
+                )
+                .order_by(ConversionDraftModel.created_at.desc())
+            )
+            rows = result.all()
+
+            return [
+                {
+                    "conversion_id": job.id,
+                    "draft_id": dm.id,
+                    "runbook_id": dm.runbook_id,
+                    "title": dm.title,
+                    "scope": job.scope,
+                    "status": dm.status,
+                    "validation_passed": dm.validation_passed,
+                    "quality_score": (
+                        float(dm.quality_score) if dm.quality_score else None
+                    ),
+                    "quality_details": dm.quality_details,
+                    "created_at": (
+                        dm.created_at.isoformat() if dm.created_at else None
+                    ),
+                    "verified_at": (
+                        dm.verified_at.isoformat() if dm.verified_at else None
+                    ),
+                }
+                for dm, job in rows
+            ]
+
     async def update_draft(
         self,
         conversion_id: str,
@@ -1060,7 +1103,7 @@ status: draft
             team_id=team_id,
             status=ConversionStatus.COMPLETED,
             source_file=SourceFileInfo(
-                filename="manual-creation",
+                filename=title,
                 size_bytes=len(content.encode()),
                 content_type="text/markdown",
                 retained_path="",

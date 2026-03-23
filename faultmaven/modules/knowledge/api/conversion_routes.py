@@ -228,6 +228,20 @@ async def list_conversions(
 
 
 # =============================================================================
+# GET /knowledge/drafts — flat list of all user's drafts
+# =============================================================================
+
+
+@router.get("/drafts")
+async def list_all_drafts(
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """List all non-deleted drafts across all conversion jobs."""
+    return await service.list_all_drafts(user_id=current_user.user_id)
+
+
+# =============================================================================
 # GET /knowledge/conversions/{conversion_id}
 # =============================================================================
 
