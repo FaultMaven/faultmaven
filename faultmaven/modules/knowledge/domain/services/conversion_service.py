@@ -1078,7 +1078,7 @@ status: draft
             created_at=datetime.now(timezone.utc),
         )
 
-        return draft
+        return {"conversion_id": conversion_id, "draft": draft}
 
     async def delete_draft(
         self,

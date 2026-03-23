@@ -383,7 +383,10 @@ async def create_runbook_manually(
             organization_id=getattr(current_user, "organization_id", None),
             team_id=body.team_id,
         )
-        return result.model_dump()
+        return {
+            "conversion_id": result["conversion_id"],
+            "draft": result["draft"].model_dump(),
+        }
     except Exception as e:
         logger.error(f"Manual runbook creation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Runbook creation failed")
