@@ -27,7 +27,12 @@ from fastapi import (
 
 from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.models.auth import DevUser
+from fastapi.responses import JSONResponse
+
+from pydantic import BaseModel, Field
+
 from faultmaven.modules.knowledge.domain.models.conversion import (
+    ConversionErrorCode,
     ConversionResponse,
     DraftUpdateRequest,
 )
@@ -158,23 +163,44 @@ async def convert_document(
         return result.model_dump()
 
     except ConversionRejectedError as e:
-        # Determine appropriate status code
-        msg = str(e)
-        if "tokens" in msg and "limit" in msg:
-            raise HTTPException(status_code=413, detail=msg)
-        elif "not appear to contain" in msg or "does not contain" in msg:
-            raise HTTPException(status_code=422, detail=msg)
-        else:
-            raise HTTPException(status_code=422, detail=msg)
+        error_code = getattr(e, "error_code", "UNKNOWN")
+        status_map = {
+            ConversionErrorCode.FILE_TOO_LARGE: 413,
+            ConversionErrorCode.DOCUMENT_TOO_LONG: 413,
+            ConversionErrorCode.UNSUPPORTED_FORMAT: 415,
+            ConversionErrorCode.LLM_UNAVAILABLE: 503,
+            ConversionErrorCode.FILE_EMPTY: 422,
+            ConversionErrorCode.FILE_CORRUPT: 422,
+            ConversionErrorCode.ENCODING_ERROR: 422,
+            ConversionErrorCode.DOCUMENT_TOO_SHORT: 422,
+            ConversionErrorCode.NOT_ACTIONABLE: 422,
+            ConversionErrorCode.NO_FAILURE_MODES: 422,
+            ConversionErrorCode.NO_TECHNICAL_CONTENT: 422,
+            ConversionErrorCode.ALREADY_A_RUNBOOK: 422,
+        }
+        status = status_map.get(error_code, 422)
+        return JSONResponse(
+            status_code=status,
+            content={"detail": str(e), "error_code": error_code},
+        )
 
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": str(e),
+                "error_code": ConversionErrorCode.LLM_PARSE_ERROR,
+            },
+        )
 
     except Exception as e:
         logger.error(f"Conversion failed: {e}", exc_info=True)
-        raise HTTPException(
+        return JSONResponse(
             status_code=500,
-            detail="Document conversion failed. Please try again.",
+            content={
+                "detail": "Document conversion failed. Please try again.",
+                "error_code": ConversionErrorCode.LLM_GENERATION_FAILED,
+            },
         )
 
     finally:
@@ -298,3 +324,70 @@ async def delete_draft(
     )
     if not success:
         raise HTTPException(status_code=404, detail="Draft not found")
+
+
+# =============================================================================
+# POST /knowledge/runbooks/create — Manual runbook creation
+# =============================================================================
+
+
+class RunbookCreateRequest(BaseModel):
+    title: str = Field(min_length=10, max_length=100)
+    domain: str
+    service: str
+    symptom_class: list[str] = Field(min_length=1)
+    severity: str
+    scope: str
+    tags: list[str] = Field(default_factory=list)
+    difficulty: str = "intermediate"
+    problem_definition: str = Field(min_length=10)
+    diagnostic_steps: str = Field(min_length=10)
+    mitigation: str = Field(min_length=10)
+    root_cause_resolution: str = Field(min_length=10)
+    verification: str = Field(min_length=10)
+    prevention: str = Field(min_length=10)
+    team_id: Optional[str] = None
+
+
+@router.post("/runbooks/create", status_code=201)
+async def create_runbook_manually(
+    body: RunbookCreateRequest,
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Create a runbook manually from template fields. Returns a draft for review."""
+    # Access control
+    if body.scope == "global" and "admin" not in (current_user.roles or []):
+        raise HTTPException(
+            status_code=403,
+            detail="Global KB runbook creation requires platform admin role",
+        )
+    if body.scope == "team" and not body.team_id:
+        raise HTTPException(
+            status_code=400, detail="team_id is required for team scope"
+        )
+
+    try:
+        result = await service.create_runbook_from_template(
+            title=body.title,
+            domain=body.domain,
+            service_name=body.service,
+            symptom_class=body.symptom_class,
+            severity=body.severity,
+            scope=body.scope,
+            tags=body.tags,
+            difficulty=body.difficulty,
+            problem_definition=body.problem_definition,
+            diagnostic_steps=body.diagnostic_steps,
+            mitigation=body.mitigation,
+            root_cause_resolution=body.root_cause_resolution,
+            verification=body.verification,
+            prevention=body.prevention,
+            user_id=current_user.user_id,
+            organization_id=getattr(current_user, "organization_id", None),
+            team_id=body.team_id,
+        )
+        return result.model_dump()
+    except Exception as e:
+        logger.error(f"Manual runbook creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Runbook creation failed")

@@ -551,7 +551,6 @@ Key configuration in `.env`:
 | LLM | `CHAT_PROVIDER`, `*_API_KEY` | Primary LLM provider |
 | Capability Overrides | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER` | Override specific agents |
 | External Tools | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | Web search capability |
-| Features | `ENABLE_DOCUMENT_CONVERSION` | Document-to-runbook conversion (default: false) |
 | Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
 | Sessions | `CACHE_BACKEND`, `REDIS_URL` | `inmemory` or `redis` |
 | Vectors | `VECTOR_BACKEND`, `CHROMADB_URL` | `inmemory` or `chromadb` |

@@ -1554,10 +1554,6 @@ class FeatureSettings(BaseSettings):
     enable_advanced_reasoning: bool = Field(default=False)
     enable_multi_agent: bool = Field(default=False)
     enable_workflow_optimization: bool = Field(default=False)
-    enable_document_conversion: bool = Field(
-        default=False,
-        description="Enable document-to-runbook conversion feature",
-    )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

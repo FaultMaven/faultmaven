@@ -35,6 +35,38 @@ class DraftStatus(str, Enum):
     DELETED = "deleted"
 
 
+class ConversionErrorCode(str, Enum):
+    """Structured error codes for frontend translation."""
+
+    # File-level errors
+    FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
+    FILE_CORRUPT = "FILE_CORRUPT"
+    FILE_EMPTY = "FILE_EMPTY"
+    ENCODING_ERROR = "ENCODING_ERROR"
+
+    # Content-level errors
+    DOCUMENT_TOO_LONG = "DOCUMENT_TOO_LONG"
+    DOCUMENT_TOO_SHORT = "DOCUMENT_TOO_SHORT"
+    NOT_ACTIONABLE = "NOT_ACTIONABLE"
+    NO_FAILURE_MODES = "NO_FAILURE_MODES"
+    ALREADY_A_RUNBOOK = "ALREADY_A_RUNBOOK"
+    NO_TECHNICAL_CONTENT = "NO_TECHNICAL_CONTENT"
+
+    # LLM errors
+    LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
+    LLM_PARSE_ERROR = "LLM_PARSE_ERROR"
+    LLM_GENERATION_FAILED = "LLM_GENERATION_FAILED"
+
+    # Auth errors
+    INSUFFICIENT_PERMISSIONS = "INSUFFICIENT_PERMISSIONS"
+
+    # Validation errors
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    DRAFT_NOT_FOUND = "DRAFT_NOT_FOUND"
+    DRAFT_ALREADY_VERIFIED = "DRAFT_ALREADY_VERIFIED"
+
+
 # =============================================================================
 # LLM Analysis Models (structured output from analysis call)
 # =============================================================================
@@ -99,7 +131,9 @@ class PreprocessingResult(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     is_rejected: bool = False
     rejection_reason: Optional[str] = None
+    error_code: Optional[str] = None
     token_count: int = 0
+    is_existing_runbook: bool = False
 
 
 # =============================================================================

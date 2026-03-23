@@ -161,13 +161,27 @@ class DocumentParser:
         separator = "| " + " | ".join(["---"] * len(table.rows[0].cells)) + " |"
         return "\n".join([header, separator] + rows[1:])
 
+    def _read_text_with_fallback(self, file_path: Path) -> str:
+        """Read text file with encoding fallback: UTF-8 → Latin-1."""
+        try:
+            return file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            pass
+        try:
+            return file_path.read_text(encoding="latin-1")
+        except UnicodeDecodeError:
+            raise ValueError(
+                "Cannot decode file — it is not valid UTF-8 or Latin-1 text. "
+                "Please re-save the file as UTF-8 and try again."
+            )
+
     def _extract_txt(self, file_path: Path) -> str:
         """Read plain text file."""
-        return file_path.read_text(encoding="utf-8")
+        return self._read_text_with_fallback(file_path)
 
     def _extract_markdown(self, file_path: Path) -> str:
         """Read markdown file, stripping embedded HTML comments."""
-        text = file_path.read_text(encoding="utf-8")
+        text = self._read_text_with_fallback(file_path)
         # Strip HTML comments
         text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
         return text
@@ -179,7 +193,7 @@ class DocumentParser:
         except ImportError:
             raise ValueError("beautifulsoup4 is required for HTML parsing")
 
-        raw_html = file_path.read_text(encoding="utf-8")
+        raw_html = self._read_text_with_fallback(file_path)
         soup = BeautifulSoup(raw_html, "html.parser")
 
         # Remove non-content elements

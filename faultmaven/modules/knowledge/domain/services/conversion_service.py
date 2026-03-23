@@ -27,6 +27,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionDraft,
     ConversionError,
+    ConversionErrorCode,
     ConversionResponse,
     ConversionStatus,
     DraftStatus,
@@ -239,6 +240,22 @@ class ConversionService:
         team_id: str = None,
     ) -> ConversionResponse:
         """Full conversion pipeline: preprocess → analyze → convert → validate → persist."""
+        # Step 0: Verify LLM provider is available
+        try:
+            knowledge_model = self._settings.llm.get_knowledge_model()
+            if not knowledge_model:
+                raise ConversionRejectedError(
+                    "No LLM provider is configured. Set CHAT_PROVIDER in your .env file "
+                    "or configure a provider in Dashboard > LLM Settings.",
+                    error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+                )
+        except AttributeError:
+            raise ConversionRejectedError(
+                "No LLM provider is configured. Set CHAT_PROVIDER in your .env file "
+                "or configure a provider in Dashboard > LLM Settings.",
+                error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+            )
+
         conversion_id = generate_conversion_id()
         created_at = datetime.now(timezone.utc)
         warnings: List[str] = []
@@ -258,7 +275,9 @@ class ConversionService:
 
         if preprocessing.is_rejected:
             raise ConversionRejectedError(
-                preprocessing.rejection_reason or "Document rejected"
+                preprocessing.rejection_reason or "Document rejected",
+                error_code=preprocessing.error_code
+                or ConversionErrorCode.NOT_ACTIONABLE,
             )
 
         warnings.extend(preprocessing.warnings)
@@ -284,7 +303,8 @@ class ConversionService:
         if not analysis.is_actionable or len(analysis.failure_modes) == 0:
             raise ConversionRejectedError(
                 "Source document does not contain actionable failure modes. "
-                "Runbooks require specific symptoms, diagnostics, and resolution steps."
+                "Runbooks require specific symptoms, diagnostics, and resolution steps.",
+                error_code=ConversionErrorCode.NO_FAILURE_MODES,
             )
 
         # Step 4: Convert each failure mode to a runbook
@@ -491,6 +511,33 @@ class ConversionService:
             )
 
             runbook_content = response.content.strip()
+
+            # Validate LLM output before writing to disk
+            if not runbook_content or len(runbook_content) < 100:
+                return ConversionError(
+                    failure_mode_id=failure_mode.id,
+                    error="LLM returned empty or too-short response",
+                    retryable=True,
+                )
+            if "---" not in runbook_content:
+                return ConversionError(
+                    failure_mode_id=failure_mode.id,
+                    error="LLM response missing frontmatter delimiters",
+                    retryable=True,
+                )
+            if not any(
+                h in runbook_content
+                for h in [
+                    "## Problem Definition",
+                    "## Diagnostic Steps",
+                    "## Mitigation",
+                ]
+            ):
+                return ConversionError(
+                    failure_mode_id=failure_mode.id,
+                    error="LLM response missing required runbook sections",
+                    retryable=True,
+                )
 
             # Generate IDs
             draft_id = generate_draft_id()
@@ -886,6 +933,153 @@ class ConversionService:
                 chunks_created=chunks_created,
             )
 
+    # =========================================================================
+    # Manual Runbook Creation
+    # =========================================================================
+
+    async def create_runbook_from_template(
+        self,
+        title: str,
+        domain: str,
+        service_name: str,
+        symptom_class: List[str],
+        severity: str,
+        scope: str,
+        tags: List[str],
+        difficulty: str,
+        problem_definition: str,
+        diagnostic_steps: str,
+        mitigation: str,
+        root_cause_resolution: str,
+        verification: str,
+        prevention: str,
+        user_id: str,
+        organization_id: str = None,
+        team_id: str = None,
+    ) -> ConversionDraft:
+        """Create a runbook from user-provided template fields (no LLM)."""
+        import re as _re
+
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Generate kebab-case ID
+        base = f"{service_name}-{title}"
+        runbook_id = _re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+        if len(runbook_id) > 60:
+            import hashlib as _hashlib
+
+            runbook_id = (
+                runbook_id[:55]
+                + "-"
+                + _hashlib.md5(runbook_id.encode()).hexdigest()[:4]
+            )
+
+        symptom_str = ", ".join(symptom_class)
+        tags_str = ", ".join(tags) if tags else ""
+
+        content = f"""---
+id: {runbook_id}
+title: "{title}"
+domain: {domain}
+service: {service_name}
+symptom_class: [{symptom_str}]
+scope: {scope}
+tags: [{tags_str}]
+difficulty: {difficulty}
+severity: {severity}
+version: "1.0.0"
+last_updated: "{today_iso}"
+verified_by: ""
+status: draft
+---
+
+# Runbook: {title}
+
+## Problem Definition
+{problem_definition}
+
+## Diagnostic Steps
+{diagnostic_steps}
+
+## Mitigation
+{mitigation}
+
+## Root Cause Resolution
+{root_cause_resolution}
+
+## Verification
+{verification}
+
+## Prevention
+{prevention}
+
+## Sources
+- Manually authored runbook
+"""
+
+        # Write to disk
+        scope_dir = self._scope_dir(scope, team_id, user_id)
+        scope_dir.mkdir(parents=True, exist_ok=True)
+        draft_path = scope_dir / f"{runbook_id}.md"
+        draft_path.write_text(content, encoding="utf-8")
+
+        # Validate and score
+        validation_result = self._validator.validate_content(content)
+        quality = self._scorer.score_content(content)
+
+        draft_id = generate_draft_id()
+
+        quality_warning = None
+        if quality.overall < QUALITY_WARNING_THRESHOLD:
+            quality_warning = (
+                "Quality score is below 50. Consider adding more detailed "
+                "diagnostic commands, resolution steps, or verification procedures."
+            )
+
+        draft = ConversionDraft(
+            draft_id=draft_id,
+            runbook_id=runbook_id,
+            title=title,
+            scope=scope,
+            status=DraftStatus.DRAFT,
+            validation=validation_result,
+            quality_score=quality,
+            file_path=str(draft_path),
+            content_preview=content[:500],
+            content=content,
+            quality_warning=quality_warning,
+        )
+
+        # Persist to database using a synthetic conversion job
+        conversion_id = generate_conversion_id()
+        await self._persist_job(
+            conversion_id=conversion_id,
+            user_id=user_id,
+            organization_id=organization_id,
+            scope=scope,
+            team_id=team_id,
+            status=ConversionStatus.COMPLETED,
+            source_file=SourceFileInfo(
+                filename="manual-creation",
+                size_bytes=len(content.encode()),
+                content_type="text/markdown",
+                retained_path="",
+            ),
+            analysis=AnalysisResult(
+                is_actionable=True,
+                failure_modes=[],
+                source_assessment=SourceAssessment(
+                    content_type="manual",
+                    actionability_rating="high",
+                    missing_information=[],
+                ),
+            ),
+            drafts=[draft],
+            created_at=datetime.now(timezone.utc),
+        )
+
+        return draft
+
     async def delete_draft(
         self,
         conversion_id: str,
@@ -937,4 +1131,6 @@ class ConversionService:
 class ConversionRejectedError(Exception):
     """Raised when a document is rejected during preprocessing or analysis."""
 
-    pass
+    def __init__(self, message: str, error_code: str = "UNKNOWN"):
+        super().__init__(message)
+        self.error_code = error_code

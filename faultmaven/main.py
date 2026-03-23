@@ -432,27 +432,21 @@ async def lifespan(app: FastAPI):
             )
             app.state.knowledge_service = container.get_knowledge_service()
 
-            # Document-to-runbook conversion service (feature-flagged)
+            # Document-to-runbook conversion service
             try:
                 from .config.settings import get_settings as _get_settings
+                from .modules.knowledge.domain.services.conversion_service import (
+                    ConversionService,
+                )
 
                 _settings = _get_settings()
-                if _settings.features.enable_document_conversion:
-                    from .modules.knowledge.domain.services.conversion_service import (
-                        ConversionService,
-                    )
-
-                    app.state.conversion_service = ConversionService(
-                        llm_router=app.state.llm_provider,
-                        settings=_settings,
-                        db_session_factory=getattr(
-                            container, "get_async_session", None
-                        ),
-                        knowledge_service=app.state.knowledge_service,
-                    )
-                    logger.info("✅ Document conversion service initialized")
-                else:
-                    app.state.conversion_service = None
+                app.state.conversion_service = ConversionService(
+                    llm_router=app.state.llm_provider,
+                    settings=_settings,
+                    db_session_factory=getattr(container, "get_async_session", None),
+                    knowledge_service=app.state.knowledge_service,
+                )
+                logger.info("✅ Document conversion service initialized")
             except Exception as conv_err:
                 logger.warning(f"Document conversion service not available: {conv_err}")
                 app.state.conversion_service = None
@@ -1106,16 +1100,8 @@ logger.info("✅ Evidence endpoints added")
 app.include_router(knowledge_router, prefix="/api/v1")
 logger.info("✅ Knowledge endpoints added")
 
-# Conversion routes (feature-flagged)
-try:
-    from faultmaven.config.settings import get_settings as _get_flag_settings
-
-    _flag_settings = _get_flag_settings()
-    if _flag_settings.features.enable_document_conversion:
-        app.include_router(conversion_router, prefix="/api/v1")
-        logger.info("✅ Document conversion endpoints added")
-except Exception:
-    pass
+app.include_router(conversion_router, prefix="/api/v1")
+logger.info("✅ Document conversion endpoints added")
 
 app.include_router(organizations_router, prefix="/api/v1")
 logger.info("✅ Organization endpoints added")

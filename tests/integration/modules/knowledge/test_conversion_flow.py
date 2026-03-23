@@ -43,6 +43,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     SourceAssessment,
     SourceFileInfo,
+    ConversionErrorCode,
     ValidationResult,
     VerifyResponse,
 )
@@ -469,7 +470,8 @@ class TestTextFileUpload:
     ):
         """When the service rejects a document, the API returns 422."""
         mock_conversion_service.convert_document.side_effect = ConversionRejectedError(
-            "Source document does not contain actionable failure modes."
+            "Source document does not contain actionable failure modes.",
+            error_code=ConversionErrorCode.NO_FAILURE_MODES,
         )
         async with await _client(app_with_user) as client:
             response = await client.post(
@@ -486,7 +488,8 @@ class TestTextFileUpload:
     ):
         """When the document exceeds the token limit, the API returns 413."""
         mock_conversion_service.convert_document.side_effect = ConversionRejectedError(
-            "Document has 150000 tokens which exceeds the limit of 100000"
+            "Document has 150000 tokens which exceeds the limit of 100000",
+            error_code=ConversionErrorCode.DOCUMENT_TOO_LONG,
         )
         async with await _client(app_with_user) as client:
             response = await client.post(
