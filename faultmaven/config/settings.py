@@ -188,95 +188,81 @@ class LLMSettings(BaseSettings):
     )
 
     # Flexible model configuration per provider and task
-    # OpenAI models
-    openai_chat_model: str = Field(default="gpt-4o")
-    openai_multimodal_model: str = Field(default="gpt-4o-vision")
-    openai_synthesis_model: str = Field(default="gpt-4o-mini")
-    openai_classifier_model: str = Field(default="gpt-4o-mini")
-    openai_code_model: str = Field(default="gpt-4o")
+    # Per-task model overrides (all Optional — fall back to {provider}_model)
+    # Only set these in .env if you want a DIFFERENT model for a specific task.
+    # e.g., OPENAI_CODE_MODEL=gpt-4o for code, while OPENAI_MODEL=gpt-4o-mini for everything else.
+
+    # OpenAI
+    openai_chat_model: Optional[str] = Field(default=None)
+    openai_multimodal_model: Optional[str] = Field(default=None)
+    openai_synthesis_model: Optional[str] = Field(default=None)
+    openai_classifier_model: Optional[str] = Field(default=None)
+    openai_code_model: Optional[str] = Field(default=None)
     openai_da_model: Optional[str] = Field(default=None)
-    openai_knowledge_model: str = Field(default="gpt-4o")
+    openai_knowledge_model: Optional[str] = Field(default=None)
 
-    # Anthropic models
-    anthropic_chat_model: str = Field(default="claude-3-5-sonnet-20241022")
-    anthropic_multimodal_model: str = Field(default="claude-3-5-sonnet-20241022")
-    anthropic_synthesis_model: str = Field(default="claude-3-haiku")
-    anthropic_classifier_model: str = Field(default="claude-3-haiku")
-    anthropic_code_model: str = Field(default="claude-3-5-sonnet-20241022")
+    # Anthropic
+    anthropic_chat_model: Optional[str] = Field(default=None)
+    anthropic_multimodal_model: Optional[str] = Field(default=None)
+    anthropic_synthesis_model: Optional[str] = Field(default=None)
+    anthropic_classifier_model: Optional[str] = Field(default=None)
+    anthropic_code_model: Optional[str] = Field(default=None)
     anthropic_da_model: Optional[str] = Field(default=None)
-    anthropic_knowledge_model: str = Field(default="claude-3-5-sonnet-20241022")
+    anthropic_knowledge_model: Optional[str] = Field(default=None)
 
-    # Fireworks models
-    fireworks_chat_model: str = Field(
-        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-    )
-    fireworks_multimodal_model: str = Field(
-        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-    )
-    fireworks_synthesis_model: str = Field(
-        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-    )
-    fireworks_classifier_model: str = Field(
-        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
-    )
-    fireworks_code_model: str = Field(
-        default="accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
-    )
+    # Fireworks
+    fireworks_chat_model: Optional[str] = Field(default=None)
+    fireworks_multimodal_model: Optional[str] = Field(default=None)
+    fireworks_synthesis_model: Optional[str] = Field(default=None)
+    fireworks_classifier_model: Optional[str] = Field(default=None)
+    fireworks_code_model: Optional[str] = Field(default=None)
     fireworks_da_model: Optional[str] = Field(default=None)
-    fireworks_knowledge_model: str = Field(
-        default="accounts/fireworks/models/qwen2.5-72b-instruct",
-    )
+    fireworks_knowledge_model: Optional[str] = Field(default=None)
 
-    # Google Gemini models
-    gemini_chat_model: str = Field(default="gemini-2.0-flash")
-    gemini_multimodal_model: str = Field(default="gemini-2.0-flash")
-    gemini_synthesis_model: str = Field(default="gemini-2.0-flash")
-    gemini_classifier_model: str = Field(default="gemini-2.0-flash")
-    gemini_code_model: str = Field(default="gemini-2.0-flash")
+    # Google Gemini
+    gemini_chat_model: Optional[str] = Field(default=None)
+    gemini_multimodal_model: Optional[str] = Field(default=None)
+    gemini_synthesis_model: Optional[str] = Field(default=None)
+    gemini_classifier_model: Optional[str] = Field(default=None)
+    gemini_code_model: Optional[str] = Field(default=None)
     gemini_da_model: Optional[str] = Field(default=None)
-    gemini_knowledge_model: str = Field(default="gemini-2.0-flash")
+    gemini_knowledge_model: Optional[str] = Field(default=None)
 
-    # Cohere models
-    cohere_chat_model: str = Field(default="command-r-plus")
-    cohere_multimodal_model: str = Field(default="command-r-plus")
-    cohere_synthesis_model: str = Field(default="command-r-plus")
-    cohere_classifier_model: str = Field(default="command-r-plus")
-    cohere_code_model: str = Field(default="command-r-plus")
+    # Cohere
+    cohere_chat_model: Optional[str] = Field(default=None)
+    cohere_multimodal_model: Optional[str] = Field(default=None)
+    cohere_synthesis_model: Optional[str] = Field(default=None)
+    cohere_classifier_model: Optional[str] = Field(default=None)
+    cohere_code_model: Optional[str] = Field(default=None)
     cohere_da_model: Optional[str] = Field(default=None)
-    cohere_knowledge_model: str = Field(default="command-r-plus")
+    cohere_knowledge_model: Optional[str] = Field(default=None)
 
-    # HuggingFace models
-    huggingface_chat_model: str = Field(default="tiiuae/falcon-7b-instruct")
-    huggingface_multimodal_model: str = Field(default="tiiuae/falcon-7b-instruct")
-    huggingface_synthesis_model: str = Field(default="tiiuae/falcon-7b-instruct")
-    huggingface_classifier_model: str = Field(default="tiiuae/falcon-7b-instruct")
-    huggingface_code_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    # HuggingFace
+    huggingface_chat_model: Optional[str] = Field(default=None)
+    huggingface_multimodal_model: Optional[str] = Field(default=None)
+    huggingface_synthesis_model: Optional[str] = Field(default=None)
+    huggingface_classifier_model: Optional[str] = Field(default=None)
+    huggingface_code_model: Optional[str] = Field(default=None)
     huggingface_da_model: Optional[str] = Field(default=None)
-    huggingface_knowledge_model: str = Field(default="tiiuae/falcon-7b-instruct")
+    huggingface_knowledge_model: Optional[str] = Field(default=None)
 
-    # OpenRouter models
-    openrouter_chat_model: str = Field(default="openrouter-default")
-    openrouter_multimodal_model: str = Field(default="openrouter-default")
-    openrouter_synthesis_model: str = Field(default="openrouter-default")
-    openrouter_classifier_model: str = Field(default="openrouter-default")
-    openrouter_code_model: str = Field(default="openrouter-default")
+    # OpenRouter
+    openrouter_chat_model: Optional[str] = Field(default=None)
+    openrouter_multimodal_model: Optional[str] = Field(default=None)
+    openrouter_synthesis_model: Optional[str] = Field(default=None)
+    openrouter_classifier_model: Optional[str] = Field(default=None)
+    openrouter_code_model: Optional[str] = Field(default=None)
     openrouter_da_model: Optional[str] = Field(default=None)
-    openrouter_knowledge_model: str = Field(default="openrouter-default")
+    openrouter_knowledge_model: Optional[str] = Field(default=None)
 
-    # Groq models
-    groq_chat_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct")
-    groq_multimodal_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct"
-    )
-    groq_synthesis_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct"
-    )
-    groq_classifier_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct"
-    )
-    groq_code_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct")
+    # Groq
+    groq_chat_model: Optional[str] = Field(default=None)
+    groq_multimodal_model: Optional[str] = Field(default=None)
+    groq_synthesis_model: Optional[str] = Field(default=None)
+    groq_classifier_model: Optional[str] = Field(default=None)
+    groq_code_model: Optional[str] = Field(default=None)
     groq_da_model: Optional[str] = Field(default=None)
-    groq_knowledge_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_knowledge_model: Optional[str] = Field(default=None)
 
     # Model configuration
     openai_model: str = Field(default="gpt-4o")
@@ -380,66 +366,7 @@ class LLMSettings(BaseSettings):
         Args:
             task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code', 'da', 'knowledge')
         """
-        provider = self.provider
-        model_map = {
-            LLMProvider.OPENAI: {
-                "chat": self.openai_chat_model,
-                "multimodal": self.openai_multimodal_model,
-                "synthesis": self.openai_synthesis_model,
-                "classifier": self.openai_classifier_model,
-                "code": self.openai_code_model,
-                "da": self.openai_da_model or self.openai_model,
-                "knowledge": self.openai_knowledge_model,
-            },
-            LLMProvider.ANTHROPIC: {
-                "chat": self.anthropic_chat_model,
-                "multimodal": self.anthropic_multimodal_model,
-                "synthesis": self.anthropic_synthesis_model,
-                "classifier": self.anthropic_classifier_model,
-                "code": self.anthropic_code_model,
-                "da": self.anthropic_da_model or self.anthropic_model,
-                "knowledge": self.anthropic_knowledge_model,
-            },
-            LLMProvider.FIREWORKS: {
-                "chat": self.fireworks_chat_model,
-                "multimodal": self.fireworks_multimodal_model,
-                "synthesis": self.fireworks_synthesis_model,
-                "classifier": self.fireworks_classifier_model,
-                "code": self.fireworks_code_model,
-                "da": self.fireworks_da_model or self.fireworks_model,
-                "knowledge": self.fireworks_knowledge_model,
-            },
-            LLMProvider.COHERE: {
-                "chat": self.cohere_chat_model,
-                "multimodal": self.cohere_multimodal_model,
-                "synthesis": self.cohere_synthesis_model,
-                "classifier": self.cohere_classifier_model,
-                "code": self.cohere_code_model,
-                "da": self.cohere_da_model or self.cohere_model,
-                "knowledge": self.cohere_knowledge_model,
-            },
-            LLMProvider.GROQ: {
-                "chat": self.groq_chat_model,
-                "multimodal": self.groq_multimodal_model,
-                "synthesis": self.groq_synthesis_model,
-                "classifier": self.groq_classifier_model,
-                "code": self.groq_code_model,
-                "da": self.groq_da_model or self.groq_chat_model,
-                "knowledge": self.groq_knowledge_model,
-            },
-            LLMProvider.LOCAL: {
-                "chat": self.local_model,
-                "multimodal": self.local_model,
-                "synthesis": self.local_model,
-                "classifier": self.local_model,
-                "da": self.local_model,
-                "code": self.local_model,
-                "knowledge": self.local_model,
-            },
-        }
-
-        provider_models = model_map.get(provider, {})
-        return provider_models.get(task, "")
+        return self._get_model_for_provider_and_task(self.provider, task)
 
     def get_multimodal_provider(self) -> LLMProvider:
         """Get multimodal provider (falls back to chat provider if not set)"""
@@ -509,93 +436,39 @@ class LLMSettings(BaseSettings):
         return self._get_model_for_provider_and_task(provider, "knowledge")
 
     def _get_model_for_provider_and_task(self, provider: LLMProvider, task: str) -> str:
-        """Helper method to get model for any provider and task combination"""
-        model_map = {
-            LLMProvider.OPENAI: {
-                "chat": self.openai_chat_model,
-                "multimodal": self.openai_multimodal_model,
-                "synthesis": self.openai_synthesis_model,
-                "classifier": self.openai_classifier_model,
-                "code": self.openai_code_model,
-                "da": self.openai_da_model or self.openai_model,
-                "knowledge": self.openai_knowledge_model,
-            },
-            LLMProvider.ANTHROPIC: {
-                "chat": self.anthropic_chat_model,
-                "multimodal": self.anthropic_multimodal_model,
-                "synthesis": self.anthropic_synthesis_model,
-                "classifier": self.anthropic_classifier_model,
-                "code": self.anthropic_code_model,
-                "da": self.anthropic_da_model or self.anthropic_model,
-                "knowledge": self.anthropic_knowledge_model,
-            },
-            LLMProvider.FIREWORKS: {
-                "chat": self.fireworks_chat_model,
-                "multimodal": self.fireworks_multimodal_model,
-                "synthesis": self.fireworks_synthesis_model,
-                "classifier": self.fireworks_classifier_model,
-                "code": self.fireworks_code_model,
-                "da": self.fireworks_da_model or self.fireworks_model,
-                "knowledge": self.fireworks_knowledge_model,
-            },
-            LLMProvider.COHERE: {
-                "chat": self.cohere_chat_model,
-                "multimodal": self.cohere_multimodal_model,
-                "synthesis": self.cohere_synthesis_model,
-                "classifier": self.cohere_classifier_model,
-                "code": self.cohere_code_model,
-                "da": self.cohere_da_model or self.cohere_model,
-                "knowledge": self.cohere_knowledge_model,
-            },
-            LLMProvider.GEMINI: {
-                "chat": self.gemini_chat_model,
-                "multimodal": self.gemini_multimodal_model,
-                "synthesis": self.gemini_synthesis_model,
-                "classifier": self.gemini_classifier_model,
-                "code": self.gemini_code_model,
-                "da": self.gemini_da_model or self.gemini_model,
-                "knowledge": self.gemini_knowledge_model,
-            },
-            LLMProvider.HUGGINGFACE: {
-                LLMProvider.GROQ: {
-                    "chat": self.groq_chat_model,
-                    "multimodal": self.groq_multimodal_model,
-                    "synthesis": self.groq_synthesis_model,
-                    "classifier": self.groq_classifier_model,
-                    "code": self.groq_code_model,
-                    "da": self.groq_da_model or self.groq_chat_model,
-                    "knowledge": self.groq_knowledge_model,
-                },
-                "chat": self.huggingface_chat_model,
-                "multimodal": self.huggingface_multimodal_model,
-                "synthesis": self.huggingface_synthesis_model,
-                "classifier": self.huggingface_classifier_model,
-                "code": self.huggingface_code_model,
-                "da": self.huggingface_da_model or self.huggingface_chat_model,
-                "knowledge": self.huggingface_knowledge_model,
-            },
-            LLMProvider.OPENROUTER: {
-                "chat": self.openrouter_chat_model,
-                "multimodal": self.openrouter_multimodal_model,
-                "synthesis": self.openrouter_synthesis_model,
-                "classifier": self.openrouter_classifier_model,
-                "code": self.openrouter_code_model,
-                "da": self.openrouter_da_model or self.openrouter_model,
-                "knowledge": self.openrouter_knowledge_model,
-            },
-            LLMProvider.LOCAL: {
-                "chat": self.local_model,
-                "multimodal": self.local_model,
-                "synthesis": self.local_model,
-                "classifier": self.local_model,
-                "code": self.local_model,
-                "da": self.local_model,
-                "knowledge": self.local_model,
-            },
+        """Get model for a provider and task.
+
+        Resolution order:
+        1. Per-task override: {PROVIDER}_{TASK}_MODEL (e.g., GEMINI_CLASSIFIER_MODEL)
+        2. Base provider model: {PROVIDER}_MODEL (e.g., GEMINI_MODEL)
+        3. Empty string (no model configured)
+
+        Per-task overrides are Optional[str] = None. When not set in .env,
+        the base model is used for all tasks. Set a per-task override only
+        when you need a different model for that specific capability.
+        """
+        if provider == LLMProvider.LOCAL:
+            return self.local_model or ""
+
+        # Base model per provider (the single source of truth from .env)
+        base_models: Dict[LLMProvider, str] = {
+            LLMProvider.OPENAI: self.openai_model,
+            LLMProvider.ANTHROPIC: self.anthropic_model,
+            LLMProvider.FIREWORKS: self.fireworks_model,
+            LLMProvider.COHERE: self.cohere_model,
+            LLMProvider.GEMINI: self.gemini_model,
+            LLMProvider.HUGGINGFACE: self.huggingface_model,
+            LLMProvider.OPENROUTER: self.openrouter_model,
+            LLMProvider.GROQ: self.groq_chat_model or "",
         }
 
-        provider_models = model_map.get(provider, {})
-        return provider_models.get(task, "")
+        base = base_models.get(provider, "")
+
+        # Per-task override: {provider_name}_{task}_model attribute
+        task_field = f"{provider.value}_{task}_model"
+        per_task = getattr(self, task_field, None)
+
+        return per_task or base or ""
 
     def get_multimodal_base_url(self) -> str:
         """Get base URL for multimodal provider"""
