@@ -1944,6 +1944,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/archive:
+    post:
+      tags:
+      - cases
+      summary: Archive Case
+      description: "Archive a case \u2014 hide it from the default list view.\n\n\
+        Only terminal cases (RESOLVED or CLOSED) can be archived.\nArchived cases\
+        \ remain fully accessible and can be unarchived.\n\nReturns:\n    {\"case_id\"\
+        : str, \"is_archived\": true}"
+      operationId: archive_case_api_v1_cases__case_id__archive_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/unarchive:
+    post:
+      tags:
+      - cases
+      summary: Unarchive Case
+      description: "Unarchive a case \u2014 restore it to the default list view.\n\
+        \nReturns:\n    {\"case_id\": str, \"is_archived\": false}"
+      operationId: unarchive_case_api_v1_cases__case_id__unarchive_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cases/{case_id}/uploaded-files:
     get:
       tags:
@@ -3064,6 +3136,14 @@ paths:
           type: integer
           default: 0
           title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -3295,12 +3375,21 @@ paths:
       description: "Search knowledge base documents\n\nArgs:\n    request: Search\
         \ request with query and filters\n\nReturns:\n    Search results"
       operationId: search_documents_api_v1_knowledge_search_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/SearchRequest'
-        required: true
       responses:
         '200':
           description: Successful Response
@@ -3341,12 +3430,21 @@ paths:
         : \"...\"\n            },\n            \"similarity_score\": 0.85\n      \
         \  }\n    ]\n}\n```"
       operationId: fulltext_search_documents_api_v1_knowledge_documents_search_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/SearchRequest'
-        required: true
       responses:
         '200':
           description: Successful Response
@@ -3764,6 +3862,336 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/convert:
+    post:
+      tags:
+      - knowledge-conversion
+      summary: Convert Document
+      description: Upload a document and convert it to one or more runbook drafts.
+      operationId: convert_document_api_v1_knowledge_convert_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_convert_document_api_v1_knowledge_convert_post'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/conversions:
+    get:
+      tags:
+      - knowledge-conversion
+      summary: List Conversions
+      description: List the current user's conversion jobs.
+      operationId: list_conversions_api_v1_knowledge_conversions_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/drafts:
+    get:
+      tags:
+      - knowledge-conversion
+      summary: List All Drafts
+      description: List all non-deleted drafts across all conversion jobs.
+      operationId: list_all_drafts_api_v1_knowledge_drafts_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/scan:
+    post:
+      tags:
+      - knowledge-conversion
+      summary: Scan For Runbooks
+      description: 'Scan data/knowledge/ for .md files not tracked in the database.
+
+
+        Discovers runbooks created by the KB Toolkit or placed on disk manually.
+
+        Creates draft records so they appear in the Drafts tab for review.'
+      operationId: scan_for_runbooks_api_v1_knowledge_scan_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/conversions/{conversion_id}:
+    get:
+      tags:
+      - knowledge-conversion
+      summary: Get Conversion
+      description: Get conversion job details with all drafts.
+      operationId: get_conversion_api_v1_knowledge_conversions__conversion_id__get
+      parameters:
+      - name: conversion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Conversion Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}:
+    put:
+      tags:
+      - knowledge-conversion
+      summary: Update Draft
+      description: Update draft content. Re-runs validation and quality scoring.
+      operationId: update_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__put
+      parameters:
+      - name: conversion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Conversion Id
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Draft Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - knowledge-conversion
+      summary: Delete Draft
+      description: Delete a conversion draft.
+      operationId: delete_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__delete
+      parameters:
+      - name: conversion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Conversion Id
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Draft Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify:
+    post:
+      tags:
+      - knowledge-conversion
+      summary: Verify Draft
+      description: Promote draft to verified status and trigger ingestion into ChromaDB.
+      operationId: verify_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__verify_post
+      parameters:
+      - name: conversion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Conversion Id
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Draft Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/runbooks/create:
+    post:
+      tags:
+      - knowledge-conversion
+      summary: Create Runbook Manually
+      description: Create a runbook manually from template fields. Returns a draft
+        for review.
+      operationId: create_runbook_manually_api_v1_knowledge_runbooks_create_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunbookCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/organizations:
     post:
       tags:
@@ -3853,23 +4281,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/organizations/{org_id}:
+  /api/v1/organizations/{organization_id}:
     get:
       tags:
       - organizations
       summary: Get Organization
       description: Get organization details by ID. Requires organization membership.
-      operationId: get_organization_api_v1_organizations__org_id__get
+      operationId: get_organization_api_v1_organizations__organization_id__get
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -3897,17 +4325,17 @@ paths:
       - organizations
       summary: Update Organization
       description: Update organization details. Requires owner permission.
-      operationId: update_organization_api_v1_organizations__org_id__patch
+      operationId: update_organization_api_v1_organizations__organization_id__patch
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -3941,17 +4369,17 @@ paths:
       - organizations
       summary: Delete Organization
       description: Soft delete an organization. Requires owner permission.
-      operationId: delete_organization_api_v1_organizations__org_id__delete
+      operationId: delete_organization_api_v1_organizations__organization_id__delete
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -4013,23 +4441,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/organizations/{org_id}/members:
+  /api/v1/organizations/{organization_id}/members:
     get:
       tags:
       - organizations
       summary: List Organization Members
       description: List all members of an organization. Requires organization membership.
-      operationId: list_organization_members_api_v1_organizations__org_id__members_get
+      operationId: list_organization_members_api_v1_organizations__organization_id__members_get
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: role
         in: query
@@ -4088,17 +4516,17 @@ paths:
       - organizations
       summary: Add Member
       description: Add user to organization by email. Requires owner or admin permission.
-      operationId: add_member_api_v1_organizations__org_id__members_post
+      operationId: add_member_api_v1_organizations__organization_id__members_post
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -4127,24 +4555,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/organizations/{org_id}/members/{user_id}:
+  /api/v1/organizations/{organization_id}/members/{user_id}:
     delete:
       tags:
       - organizations
       summary: Remove Member
       description: Remove user from organization. Owner can remove anyone except self,
         admin can remove members only.
-      operationId: remove_member_api_v1_organizations__org_id__members__user_id__delete
+      operationId: remove_member_api_v1_organizations__organization_id__members__user_id__delete
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: user_id
         in: path
@@ -4180,17 +4608,17 @@ paths:
       - organizations
       summary: Update Member Role
       description: Update user's role in organization. Requires owner permission.
-      operationId: update_member_role_api_v1_organizations__org_id__members__user_id__patch
+      operationId: update_member_role_api_v1_organizations__organization_id__members__user_id__patch
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: user_id
         in: path
@@ -4227,24 +4655,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/organizations/{org_id}/settings:
+  /api/v1/organizations/{organization_id}/settings:
     get:
       tags:
       - organizations
       summary: Get Organization Settings
       description: Get organization settings and plan limits. Requires organization
         membership.
-      operationId: get_organization_settings_api_v1_organizations__org_id__settings_get
+      operationId: get_organization_settings_api_v1_organizations__organization_id__settings_get
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -4272,17 +4700,17 @@ paths:
       - organizations
       summary: Update Organization Settings
       description: Update organization settings. Requires owner permission.
-      operationId: update_organization_settings_api_v1_organizations__org_id__settings_patch
+      operationId: update_organization_settings_api_v1_organizations__organization_id__settings_patch
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -4311,23 +4739,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/organizations/{org_id}/permissions/check:
+  /api/v1/organizations/{organization_id}/permissions/check:
     post:
       tags:
       - organizations
       summary: Check Permission
       description: Check if user has specific permission in organization.
-      operationId: check_permission_api_v1_organizations__org_id__permissions_check_post
+      operationId: check_permission_api_v1_organizations__organization_id__permissions_check_post
       security:
       - HTTPBearer: []
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -4868,7 +5296,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SessionResponse'
+                $ref: '#/components/schemas/faultmaven__models__api__SessionResponse'
         '422':
           description: Validation Error
           content:
@@ -5410,21 +5838,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/teams/organization/{org_id}:
+  /api/v1/teams/organization/{organization_id}:
     get:
       tags:
       - teams
       summary: List Organization Teams
       description: List all teams in an organization.
-      operationId: list_organization_teams_api_v1_teams_organization__org_id__get
+      operationId: list_organization_teams_api_v1_teams_organization__organization_id__get
       parameters:
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -5443,7 +5871,7 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TeamResponse'
-                title: Response List Organization Teams Api V1 Teams Organization  Org
+                title: Response List Organization Teams Api V1 Teams Organization  Organization
                   Id  Get
         '422':
           description: Validation Error
@@ -5451,13 +5879,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/teams/user/{target_user_id}/organization/{org_id}:
+  /api/v1/teams/user/{target_user_id}/organization/{organization_id}:
     get:
       tags:
       - teams
       summary: List User Teams
       description: List all teams a user belongs to in an organization.
-      operationId: list_user_teams_api_v1_teams_user__target_user_id__organization__org_id__get
+      operationId: list_user_teams_api_v1_teams_user__target_user_id__organization__organization_id__get
       parameters:
       - name: target_user_id
         in: path
@@ -5467,13 +5895,13 @@ paths:
           description: User ID
           title: Target User Id
         description: User ID
-      - name: org_id
+      - name: organization_id
         in: path
         required: true
         schema:
           type: string
           description: Organization ID
-          title: Org Id
+          title: Organization Id
         description: Organization ID
       - name: Authorization
         in: header
@@ -5492,7 +5920,7 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TeamResponse'
-                title: Response List User Teams Api V1 Teams User  Target User Id  Organization  Org
+                title: Response List User Teams Api V1 Teams User  Target User Id  Organization  Organization
                   Id  Get
         '422':
           description: Validation Error
@@ -6073,6 +6501,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LLMConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Admin - Configuration
+      summary: Update Llm Config
+      description: "Update LLM provider configuration.\n\nPersists configuration changes\
+        \ to the database as overrides that take\nprecedence over environment variables.\
+        \ After saving, the settings\nsingleton and provider registry are reset so\
+        \ changes take effect\nimmediately without a restart.\n\nAccepts partial updates\
+        \ \u2014 only provided fields are changed.\n\nReturns:\n    LLMConfigUpdateResponse\
+        \ with list of updated keys\n\nRaises:\n    401 Unauthorized: No valid JWT\
+        \ token\n    403 Forbidden: Local deployment (config is read-only)\n    422\
+        \ Unprocessable Entity: Invalid provider name\n    503 Service Unavailable:\
+        \ LLM provider not initialized"
+      operationId: update_llm_config_api_v1_admin_llm_config_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LLMConfigUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMConfigUpdateResponse'
         '422':
           description: Validation Error
           content:
@@ -6794,6 +7266,25 @@ components:
       required:
       - findings_summary
       title: Body_complete_session_api_v1_cases__case_id__sessions__session_id__complete_post
+    Body_convert_document_api_v1_knowledge_convert_post:
+      properties:
+        file:
+          type: string
+          format: binary
+          title: File
+        scope:
+          type: string
+          title: Scope
+        team_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Id
+      type: object
+      required:
+      - file
+      - scope
+      title: Body_convert_document_api_v1_knowledge_convert_post
     Body_share_case_api_v1_cases__case_id__share_post:
       properties:
         target_user_id:
@@ -7143,6 +7634,20 @@ components:
           - type: 'null'
           title: Closed At
           description: When case reached terminal state (RESOLVED or CLOSED)
+        is_archived:
+          type: boolean
+          title: Is Archived
+          description: Whether the case has been archived by the user. Archived cases
+            are hidden from the default list view but remain fully accessible. Independent
+            of case status.
+          default: false
+        archived_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Archived At
+          description: When the case was archived
       type: object
       required:
       - user_id
@@ -7615,6 +8120,10 @@ components:
           type: integer
           title: Total Milestones
           default: 8
+        is_archived:
+          type: boolean
+          title: Is Archived
+          default: false
         is_stuck:
           type: boolean
           title: Is Stuck
@@ -8270,16 +8779,27 @@ components:
       description: 'Documentation generated when case closes.
 
         Captures lessons learned and artifacts.'
+    DraftUpdateRequest:
+      properties:
+        content:
+          type: string
+          minLength: 100
+          title: Content
+          description: Full runbook markdown content including frontmatter
+      type: object
+      required:
+      - content
+      title: DraftUpdateRequest
     EnvConfigStatusResponse:
       properties:
         auth_mode:
           type: string
           title: Auth Mode
           description: '''local'' or ''oauth'''
-        environment:
+        deployment:
           type: string
-          title: Environment
-          description: '''development'', ''staging'', or ''production'''
+          title: Deployment
+          description: "'local' or 'cloud' \u2014 derived from auth_mode"
         db_backend:
           type: string
           title: Db Backend
@@ -8302,6 +8822,12 @@ components:
         rate_limit_enabled:
           type: boolean
           title: Rate Limit Enabled
+        features:
+          additionalProperties:
+            $ref: '#/components/schemas/FeatureStatus'
+          type: object
+          title: Features
+          description: Optional features and their configuration status
         timestamp:
           type: string
           format: date-time
@@ -8309,7 +8835,7 @@ components:
       type: object
       required:
       - auth_mode
-      - environment
+      - deployment
       - db_backend
       - session_storage
       - vector_storage
@@ -8877,6 +9403,32 @@ components:
       - relevance_score
       title: EvidenceSummary
       description: Summary of evidence for INVESTIGATING phase UI.
+    FeatureStatus:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Feature is active and usable
+        has_api_key:
+          type: boolean
+          title: Has Api Key
+          description: Required API key is configured
+          default: false
+        description:
+          type: string
+          title: Description
+          description: Brief explanation of the feature
+          default: ''
+        config_hint:
+          type: string
+          title: Config Hint
+          description: What the user needs to set to enable this feature
+          default: ''
+      type: object
+      required:
+      - enabled
+      title: FeatureStatus
+      description: Status of an optional feature that depends on configuration.
     GeneratedDocument:
       properties:
         document_id:
@@ -9573,6 +10125,20 @@ components:
           - type: string
           - type: 'null'
           title: Source Url
+        scope:
+          type: string
+          title: Scope
+          default: global
+        owner_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Id
+        team_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Id
         created_at:
           type: string
           title: Created At
@@ -9673,6 +10239,14 @@ components:
       description: Records instant resolution via KB match during INQUIRY phase.
     LLMConfigResponse:
       properties:
+        deployment:
+          type: string
+          title: Deployment
+          description: 'Deployment mode: ''local'' or ''cloud'''
+        config_readonly:
+          type: boolean
+          title: Config Readonly
+          description: True in local mode (config managed via .env file)
         primary_provider:
           type: string
           title: Primary Provider
@@ -9695,6 +10269,8 @@ components:
           title: Timestamp
       type: object
       required:
+      - deployment
+      - config_readonly
       - primary_provider
       - strict_mode
       - fallback_chain
@@ -9702,6 +10278,65 @@ components:
       - timestamp
       title: LLMConfigResponse
       description: LLM configuration and provider status response.
+    LLMConfigUpdateRequest:
+      properties:
+        primary_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Primary Provider
+          description: New primary provider name
+        fallback_chain:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Fallback Chain
+          description: New fallback chain order
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider to update API key or model for
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Key
+          description: New API key value for the specified provider
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+          description: Model to use for the specified provider (requires provider_name)
+      type: object
+      title: LLMConfigUpdateRequest
+      description: Request to update LLM configuration.
+    LLMConfigUpdateResponse:
+      properties:
+        updated_keys:
+          items:
+            type: string
+          type: array
+          title: Updated Keys
+          description: Config keys that were updated
+        message:
+          type: string
+          title: Message
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+      type: object
+      required:
+      - updated_keys
+      - message
+      - timestamp
+      title: LLMConfigUpdateResponse
+      description: Response after updating LLM configuration.
     LLMConnectionTestRequest:
       properties:
         provider:
@@ -9766,11 +10401,28 @@ components:
           type: boolean
           title: Has Api Key
           description: API key is configured (value never exposed)
+        state:
+          type: string
+          title: State
+          description: 'Provider lifecycle state: not_configured, configured, or active'
+          default: not_configured
         models:
           items:
             type: string
           type: array
           title: Models
+        selected_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Selected Model
+          description: Currently active model for this provider
+        available_models:
+          items:
+            type: string
+          type: array
+          title: Available Models
+          description: Models the user can choose from for this provider
         error_message:
           anyOf:
           - type: string
@@ -10339,15 +10991,15 @@ components:
         user_id:
           type: string
           title: User Id
-        org_id:
+        organization_id:
           type: string
-          title: Org Id
+          title: Organization Id
       type: object
       required:
       - has_permission
       - permission
       - user_id
-      - org_id
+      - organization_id
       title: PermissionCheckResponse
       description: Permission check result
     PreliminaryUrgency:
@@ -11066,6 +11718,84 @@ components:
       - severity
       title: RootCauseSummary
       description: Root cause information for RESOLVED phase.
+    RunbookCreateRequest:
+      properties:
+        title:
+          type: string
+          maxLength: 100
+          minLength: 10
+          title: Title
+        domain:
+          type: string
+          title: Domain
+        service:
+          type: string
+          title: Service
+        symptom_class:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Symptom Class
+        severity:
+          type: string
+          title: Severity
+        scope:
+          type: string
+          title: Scope
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+        difficulty:
+          type: string
+          title: Difficulty
+          default: intermediate
+        problem_definition:
+          type: string
+          minLength: 10
+          title: Problem Definition
+        diagnostic_steps:
+          type: string
+          minLength: 10
+          title: Diagnostic Steps
+        mitigation:
+          type: string
+          minLength: 10
+          title: Mitigation
+        root_cause_resolution:
+          type: string
+          minLength: 10
+          title: Root Cause Resolution
+        verification:
+          type: string
+          minLength: 10
+          title: Verification
+        prevention:
+          type: string
+          minLength: 10
+          title: Prevention
+        team_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Id
+      type: object
+      required:
+      - title
+      - domain
+      - service
+      - symptom_class
+      - severity
+      - scope
+      - problem_definition
+      - diagnostic_steps
+      - mitigation
+      - root_cause_resolution
+      - verification
+      - prevention
+      title: RunbookCreateRequest
     RunbookMetadata:
       properties:
         source:
@@ -11204,55 +11934,6 @@ components:
       type: object
       title: SessionCreateRequest
       description: Request model for creating investigation session.
-    SessionResponse:
-      properties:
-        schema_version:
-          type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
-          title: Schema Version
-          default: 3.1.0
-        session_id:
-          type: string
-          title: Session Id
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
-        client_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Client Id
-        status:
-          $ref: '#/components/schemas/AuthSessionStatus'
-          default: active
-        created_at:
-          type: string
-          title: Created At
-        expires_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Expires At
-        metadata:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Metadata
-        session_resumed:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Session Resumed
-      type: object
-      required:
-      - session_id
-      - created_at
-      title: SessionResponse
-      description: Response payload for auth session operations - API spec compliance.
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -11603,9 +12284,9 @@ components:
       description: A follow-up suggestion returned with agent responses.
     TeamCreateRequest:
       properties:
-        org_id:
+        organization_id:
           type: string
-          title: Org Id
+          title: Organization Id
           description: Organization ID
         name:
           type: string
@@ -11622,7 +12303,7 @@ components:
           description: Team description
       type: object
       required:
-      - org_id
+      - organization_id
       - name
       title: TeamCreateRequest
       description: Request to create a new team
@@ -11674,9 +12355,9 @@ components:
         team_id:
           type: string
           title: Team Id
-        org_id:
+        organization_id:
           type: string
-          title: Org Id
+          title: Organization Id
         name:
           type: string
           title: Name
@@ -11685,9 +12366,6 @@ components:
           - type: string
           - type: 'null'
           title: Description
-        settings:
-          type: object
-          title: Settings
         created_at:
           type: string
           format: date-time
@@ -11699,10 +12377,9 @@ components:
       type: object
       required:
       - team_id
-      - org_id
+      - organization_id
       - name
       - description
-      - settings
       - created_at
       - updated_at
       title: TeamResponse
@@ -11723,12 +12400,6 @@ components:
           - type: 'null'
           title: Description
           description: Updated description
-        settings:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Settings
-          description: Team settings
       type: object
       title: TeamUpdateRequest
       description: Request to update team details
@@ -12654,6 +13325,55 @@ components:
       - updated_at
       title: SessionResponse
       description: Response model for investigation session.
+    faultmaven__models__api__SessionResponse:
+      properties:
+        schema_version:
+          type: string
+          enum:
+          - 3.1.0
+          const: 3.1.0
+          title: Schema Version
+          default: 3.1.0
+        session_id:
+          type: string
+          title: Session Id
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        client_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Id
+        status:
+          $ref: '#/components/schemas/AuthSessionStatus'
+          default: active
+        created_at:
+          type: string
+          title: Created At
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+        session_resumed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Session Resumed
+      type: object
+      required:
+      - session_id
+      - created_at
+      title: SessionResponse
+      description: Response payload for auth session operations - API spec compliance.
   securitySchemes:
     HTTPBearer:
       type: http
