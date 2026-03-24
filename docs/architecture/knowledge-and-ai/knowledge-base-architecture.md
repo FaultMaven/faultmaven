@@ -89,6 +89,57 @@ All tiers are **permanent** — knowledge persists until explicitly deleted by t
 
 ---
 
+## Document Storage
+
+Runbook source files are stored on disk alongside the vector database. The source files are the authoritative record of what's in ChromaDB — they enable re-ingestion, auditing, and editing.
+
+### Runtime Storage Layout
+
+```text
+data/
+├── knowledge/                          # Runbook source files (by scope)
+│   ├── global/                         # Global KB — platform admin content
+│   │   ├── k8s-crashloopbackoff.md
+│   │   ├── pg-connection-pool-exhaustion.md
+│   │   └── ...
+│   ├── team_{team_id}/                 # Team KB — team-specific runbooks
+│   │   └── our-payment-failover.md
+│   └── user_{user_id}/                 # Personal KB — private runbooks
+│       └── my-redis-notes.md
+├── chroma/                             # ChromaDB vector database (derived from knowledge/)
+├── evidence/                           # Uploaded evidence files (per-case)
+└── faultmaven.db                       # SQLite database
+```
+
+**Design decisions:**
+
+- **Flat by scope.** Each scope folder (`global/`, `team_{id}/`, `user_{id}/`) contains runbook files directly — no subdirectories by domain. Domain is captured in frontmatter metadata and ChromaDB, not in folder structure.
+- **Source files are retained.** Vectors are derived artifacts. If the embedding model changes, chunking parameters are tuned, or ChromaDB is rebuilt, the source files are re-ingested. Without source files, vectors cannot be regenerated.
+- **Scope determines the folder, not the ingestion path.** Whether a runbook was created by the KB Toolkit, the Dashboard upload, or the document-to-runbook conversion feature, it ends up in the same `data/knowledge/{scope}/` directory.
+
+### Authoring vs Runtime
+
+The KB Toolkit and FaultMaven runtime use different directories:
+
+| Path | Purpose | Who writes | Who reads |
+|------|---------|-----------|-----------|
+| `faultmaven-kb-toolkit/docs/runbooks/` | Authoring workspace — draft, validate, score | KB Toolkit (`kb-init`, `kb-researcher`) | Toolkit CLI (`kb-validate`, `kb-quality`) |
+| `faultmaven/data/knowledge/{scope}/` | Runtime storage — ingested into ChromaDB | Ingestion pipeline, Dashboard upload, conversion feature | `ingest_runbooks.py`, FaultMaven API |
+| `faultmaven/docs/operations/runbooks/` | Community contributions — shared with the open-source community | Community members | Human readers (not ingested) |
+
+To move toolkit-generated runbooks into FaultMaven for ingestion:
+
+```bash
+# Copy validated runbooks from toolkit to FaultMaven's global KB storage
+cp faultmaven-kb-toolkit/docs/runbooks/**/*.md faultmaven/data/knowledge/global/
+
+# Ingest into ChromaDB
+cd faultmaven
+python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global
+```
+
+---
+
 ## Offline Ingestion, Live Retrieval
 
 A critical temporal separation governs the architecture:
@@ -298,14 +349,14 @@ Adding a new KB tier requires:
 ### Ingestion Pipeline
 
 ```bash
-# Batch ingestion with validation
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir docs/runbooks --validate
+# Batch ingestion with validation (Global KB)
+python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --validate
 
-# Filter by technology or status
-python -m faultmaven.scripts.ingest_runbooks --technology kubernetes --status verified
+# Filter by domain or status
+python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --domain database --status verified
 
 # Dry run (validate without ingesting)
-python -m faultmaven.scripts.ingest_runbooks --dry-run
+python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --dry-run
 ```
 
 The pipeline includes YAML frontmatter parsing, structural validation, MD5-based change detection, and progress tracking. For content standards enforced by this pipeline, see [runbook-content-architecture.md](./runbook-content-architecture.md).

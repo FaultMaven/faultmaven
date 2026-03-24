@@ -60,6 +60,7 @@ def ensure_data_directories() -> None:
         - data/              (root data directory)
         - data/chroma/       (ChromaDB vector storage)
         - data/evidence/     (uploaded evidence files)
+        - data/knowledge/    (runbook source files by scope)
 
     These directories are gitignored and store runtime data.
     Uses absolute paths based on project root for deployment flexibility.
@@ -70,6 +71,8 @@ def ensure_data_directories() -> None:
         project_root / "data",
         project_root / "data" / "chroma",
         project_root / "data" / "evidence",
+        project_root / "data" / "knowledge",
+        project_root / "data" / "knowledge" / "global",
     ]
 
     for path in directories:

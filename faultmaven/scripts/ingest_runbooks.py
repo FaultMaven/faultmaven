@@ -12,8 +12,8 @@ Features:
 
 Usage:
     python -m faultmaven.scripts.ingest_runbooks
-    python -m faultmaven.scripts.ingest_runbooks --runbook-dir docs/runbooks --verify
-    python -m faultmaven.scripts.ingest_runbooks --technology kubernetes --force-reingest
+    python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --verify
+    python -m faultmaven.scripts.ingest_runbooks --domain database --force-reingest
 """
 
 import argparse
@@ -107,7 +107,7 @@ class RunbookValidator:
 class RunbookIngestionPipeline:
     """Automated pipeline for runbook ingestion"""
 
-    def __init__(self, runbook_dir: str = "docs/runbooks"):
+    def __init__(self, runbook_dir: str = "data/knowledge/global"):
         self.runbook_dir = Path(runbook_dir)
         self.ingester: Optional[KnowledgeIngester] = None
         self.validator = RunbookValidator()
@@ -439,7 +439,9 @@ async def main():
         description="FaultMaven Runbook Ingestion Pipeline"
     )
     parser.add_argument(
-        "--runbook-dir", default="docs/runbooks", help="Directory containing runbooks"
+        "--runbook-dir",
+        default="data/knowledge/global",
+        help="Directory containing runbooks",
     )
     parser.add_argument(
         "--technology", help="Filter by technology (e.g., kubernetes, redis)"

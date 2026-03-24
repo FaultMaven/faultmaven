@@ -1037,7 +1037,7 @@ data/knowledge/
         pg-replication-lag.md               # status: draft (not in ChromaDB)
     team_{team_id}/                  # Team KB runbooks
         ...
-    personal_{user_id}/              # Personal KB runbooks
+    user_{user_id}/                  # Personal KB runbooks
         ...
 ```
 
@@ -1452,7 +1452,7 @@ Add Prometheus counters:
 
 - Conversion jobs are scoped to the user who created them.
 - Users can only access their own conversion jobs and drafts.
-- Personal KB drafts are stored in `data/knowledge/personal_{user_id}/` -- not accessible to other users.
+- Personal KB drafts are stored in `data/knowledge/user_{user_id}/` -- not accessible to other users.
 - The existing knowledge repository layer enforces user isolation.
 
 ---
