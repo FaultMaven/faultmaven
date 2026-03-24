@@ -950,7 +950,7 @@ class ConversionService:
                     result = await self._knowledge_service.upload_document(
                         content=content,
                         title=dm.title,
-                        document_type="runbook",
+                        document_type="troubleshooting_guide",
                         source_url=f"conversion:{conversion_id}",
                         scope=job.scope,
                         owner_id=user_id,
