@@ -463,6 +463,54 @@ Managed through the Knowledge module (`/api/v1/knowledge/`):
 
 ---
 
+## Runbook Catalog API
+
+The Dashboard displays a catalog of all ingested runbooks — coverage overview, quality scores, staleness, and gap identification. This is served by a dedicated API endpoint.
+
+### `GET /api/v1/knowledge/catalog`
+
+Returns metadata for all runbooks the user has access to (filtered by scope/authorization).
+
+**Response:**
+
+```json
+{
+  "generated_at": "2026-03-24T10:00:00Z",
+  "total": 12,
+  "by_domain": { "compute": 5, "database": 3, "networking": 2, "messaging": 1, "security": 1 },
+  "runbooks": [
+    {
+      "id": "k8s-crashloopbackoff",
+      "title": "Kubernetes CrashLoopBackOff",
+      "domain": "compute",
+      "service": "kubernetes",
+      "severity": "high",
+      "status": "draft",
+      "symptom_class": "crash_loop",
+      "last_updated": "2026-03-23",
+      "quality_score": 96.0,
+      "version": "1.0.0",
+      "verified_by": "kb-researcher"
+    }
+  ]
+}
+```
+
+**Query parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `domain` | string | Filter by domain |
+| `service` | string | Filter by service |
+| `status` | string | Filter by lifecycle status |
+| `scope` | string | Filter by KB tier (global, team, personal) |
+
+**Dashboard UI:** The KB page shows a sortable, filterable table with domain grouping, color-coded severity and status, and gap indicators for domains with no runbooks. Clicking a runbook opens it for review/editing.
+
+**Implementation:** The endpoint reads `KnowledgeItem` records from the database (not from disk). The quality score and research metadata are stored on the `KnowledgeItem` model. The KB Toolkit's `kb-catalog` CLI produces the same output format (JSON mode) for offline/admin use.
+
+---
+
 ## Agent Tool Usage
 
 During investigation, the agent has two retrieval tools — one for knowledge, one for evidence:
