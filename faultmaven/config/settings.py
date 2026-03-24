@@ -228,11 +228,11 @@ class LLMSettings(BaseSettings):
     )
 
     # Google Gemini models
-    gemini_chat_model: str = Field(default="gemini-1.5-pro")
-    gemini_multimodal_model: str = Field(default="gemini-1.5-pro")
-    gemini_synthesis_model: str = Field(default="gemini-1.5-flash")
-    gemini_classifier_model: str = Field(default="gemini-1.5-flash")
-    gemini_code_model: str = Field(default="gemini-1.5-pro")
+    gemini_chat_model: str = Field(default="gemini-2.0-flash")
+    gemini_multimodal_model: str = Field(default="gemini-2.0-flash")
+    gemini_synthesis_model: str = Field(default="gemini-2.0-flash")
+    gemini_classifier_model: str = Field(default="gemini-2.0-flash")
+    gemini_code_model: str = Field(default="gemini-2.0-flash")
     gemini_da_model: Optional[str] = Field(default=None)
     gemini_knowledge_model: str = Field(default="gemini-2.0-flash")
 
@@ -285,7 +285,7 @@ class LLMSettings(BaseSettings):
         default="accounts/fireworks/models/llama-v3p1-405b-instruct",
     )
     cohere_model: str = Field(default="command-r-plus")
-    gemini_model: str = Field(default="gemini-1.5-pro")
+    gemini_model: str = Field(default="gemini-2.0-flash")
     huggingface_model: str = Field(default="tiiuae/falcon-7b-instruct")
     openrouter_model: str = Field(default="openrouter-default")
 
