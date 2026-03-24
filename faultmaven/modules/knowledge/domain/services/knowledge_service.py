@@ -1249,8 +1249,8 @@ class KnowledgeService:
                         scope=scope,
                         owner_id=owner_id,
                         team_id=team_id,
-                        created_at=created_at,
-                        updated_at=created_at,
+                        created_at=to_json_compatible(created_at),
+                        updated_at=to_json_compatible(created_at),
                     )
                     await self._index_document_in_vector_store(doc_model)
             except Exception as e:
