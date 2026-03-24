@@ -1148,12 +1148,6 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         """Upload document - API-compatible wrapper that stores documents"""
         try:
-            # Enforce canonical document types at the service layer as well
-            allowed_types = {"playbook", "troubleshooting_guide", "reference", "how_to"}
-            if document_type not in allowed_types:
-                raise ValidationException(
-                    f"Invalid document_type: {document_type}. Allowed: {sorted(list(allowed_types))}"
-                )
             # Generate unique document ID
             self._document_counter += 1
             document_id = f"kb_{str(self._document_counter).zfill(8)}"
@@ -1833,19 +1827,6 @@ class KnowledgeService:
 
             # Get current document
             document = self._documents_store[document_id]
-
-            # Enforce canonical document types if provided
-            if "document_type" in kwargs and kwargs["document_type"] is not None:
-                allowed_types = {
-                    "playbook",
-                    "troubleshooting_guide",
-                    "reference",
-                    "how_to",
-                }
-                if kwargs["document_type"] not in allowed_types:
-                    raise ValidationException(
-                        f"Invalid document_type: {kwargs['document_type']}. Allowed: {sorted(list(allowed_types))}"
-                    )
 
             # Update fields
             if "title" in kwargs and kwargs["title"]:

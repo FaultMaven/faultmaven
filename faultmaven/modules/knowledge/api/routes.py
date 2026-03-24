@@ -65,8 +65,14 @@ async def get_knowledge_service(request: Request) -> KnowledgeService:
     return request.app.state.knowledge_service
 
 
-# Canonical document types (authoritative)
-ALLOWED_DOCUMENT_TYPES = {"playbook", "troubleshooting_guide", "reference", "how_to"}
+# Suggested document types (not enforced — free-text with UI suggestions)
+SUGGESTED_DOCUMENT_TYPES = {
+    "runbook",
+    "playbook",
+    "troubleshooting_guide",
+    "reference",
+    "how_to",
+}
 
 
 # (No legacy router paths)
@@ -117,16 +123,6 @@ async def upload_document(
                     "Upload Runbook accepts Markdown (.md) and text (.txt) files. "
                     "For PDF, DOCX, or HTML files, use Convert to Runbook instead."
                 ),
-            )
-
-        # Validate document type
-        if document_type not in ALLOWED_DOCUMENT_TYPES:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": "Invalid document_type",
-                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES)),
-                },
             )
 
         # Read file content
@@ -225,16 +221,6 @@ async def list_documents(
     logger = logging.getLogger(__name__)
 
     try:
-        # Validate filters
-        if document_type is not None and document_type not in ALLOWED_DOCUMENT_TYPES:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": "Invalid document_type filter",
-                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES)),
-                },
-            )
-
         # Parse tags filter
         tag_list = parse_comma_separated_tags(tags) or None
 
@@ -646,17 +632,6 @@ async def update_document(
     logger = logging.getLogger(__name__)
 
     try:
-        # Validate document_type if provided
-        if "document_type" in update_data and update_data["document_type"] is not None:
-            if update_data["document_type"] not in ALLOWED_DOCUMENT_TYPES:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Invalid document_type",
-                        "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES)),
-                    },
-                )
-
         # Parse tags if provided using standardized utility
         if "tags" in update_data:
             update_data["tags"] = parse_comma_separated_tags(update_data["tags"])
