@@ -123,7 +123,7 @@ The KB Toolkit and FaultMaven runtime use different directories:
 
 | Path | Purpose | Who writes | Who reads |
 |------|---------|-----------|-----------|
-| `faultmaven-kb-toolkit/docs/runbooks/` | Authoring workspace — draft, validate, score | KB Toolkit (`kb-init`, `kb-researcher`) | Toolkit CLI (`kb-validate`, `kb-quality`) |
+| `faultmaven-kb-toolkit/data/runbooks/` | Authoring workspace — draft, validate, score | KB Toolkit (`kb-init`, `kb-researcher`) | Toolkit CLI (`kb-validate`, `kb-quality`) |
 | `faultmaven/data/knowledge/{scope}/` | Runtime storage — ingested into ChromaDB | Ingestion pipeline, Dashboard upload, conversion feature | `ingest_runbooks.py`, FaultMaven API |
 | `faultmaven/docs/operations/runbooks/` | Community contributions — shared with the open-source community | Community members | Human readers (not ingested) |
 
@@ -131,7 +131,7 @@ To move toolkit-generated runbooks into FaultMaven for ingestion:
 
 ```bash
 # Copy validated runbooks from toolkit to FaultMaven's global KB storage
-cp faultmaven-kb-toolkit/docs/runbooks/**/*.md faultmaven/data/knowledge/global/
+cp faultmaven-kb-toolkit/data/runbooks/**/*.md faultmaven/data/knowledge/global/
 
 # Ingest into ChromaDB
 cd faultmaven
