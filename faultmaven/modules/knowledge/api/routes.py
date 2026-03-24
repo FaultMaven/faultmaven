@@ -101,22 +101,22 @@ async def upload_document(
     logger.info(f"Uploading document: {file.filename}")
 
     try:
-        # Validate file type
+        # Validate file type — runbook upload accepts text formats only
+        # Binary formats (PDF, DOCX) should go through "Convert to Runbook"
         allowed_types = {
             "text/plain",
             "text/markdown",
-            "text/csv",
-            "application/json",
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         }
 
         if file.content_type not in allowed_types:
-            logger.warning(f"Invalid file type: {file.content_type}")
+            logger.warning(f"Invalid file type for runbook upload: {file.content_type}")
             raise HTTPException(
                 status_code=415,
-                detail=f"Unsupported file type: {file.content_type}. Allowed types: {', '.join(allowed_types)}",
+                detail=(
+                    f"Unsupported file type: {file.content_type}. "
+                    "Upload Runbook accepts Markdown (.md) and text (.txt) files. "
+                    "For PDF, DOCX, or HTML files, use Convert to Runbook instead."
+                ),
             )
 
         # Validate document type
@@ -132,25 +132,44 @@ async def upload_document(
         # Read file content
         content = await file.read()
 
-        # Additional validation for binary files that might not be text-processable
-        if file.content_type in [
-            "image/png",
-            "image/jpeg",
-            "image/gif",
-            "application/octet-stream",
-        ]:
-            logger.warning(f"Binary file type detected: {file.content_type}")
-            raise HTTPException(
-                status_code=422,
-                detail=f"Cannot process binary file type: {file.content_type}",
-            )
-
         try:
             content_str = content.decode("utf-8", errors="strict")
         except UnicodeDecodeError:
-            logger.warning(f"File contains non-UTF-8 content")
+            # Try latin-1 fallback
+            try:
+                content_str = content.decode("latin-1")
+            except UnicodeDecodeError:
+                logger.warning("File contains unreadable encoding")
+                raise HTTPException(
+                    status_code=422,
+                    detail="File encoding not supported. Re-save as UTF-8 and try again.",
+                )
+
+        # Validate runbook content against standards
+        from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+            RunbookValidator,
+        )
+
+        validator = RunbookValidator()
+        validation = validator.validate_content(content_str)
+
+        if not validation.passed:
             raise HTTPException(
-                status_code=422, detail="File must contain valid UTF-8 text content"
+                status_code=422,
+                detail={
+                    "message": "Runbook does not meet quality standards",
+                    "errors": validation.errors,
+                    "warnings": validation.warnings,
+                    "help": (
+                        "The uploaded file must be a valid runbook with YAML frontmatter "
+                        "(id, title, domain, service, symptom_class, severity, scope, "
+                        "version, last_updated, verified_by, status) and required sections "
+                        "(Problem Definition, Diagnostic Steps, Mitigation, Root Cause "
+                        "Resolution, Verification, Prevention, Sources). "
+                        "Use Write Runbook to create one from the template, or "
+                        "Convert to Runbook to generate from a source document."
+                    ),
+                },
             )
 
         # Parse tags

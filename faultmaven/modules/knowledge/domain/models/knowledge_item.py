@@ -81,12 +81,12 @@ class KnowledgeItem:
 
     item_id: str
     organization_id: str
-    scope: str = "global"
-    owner_id: Optional[str] = None
-    team_id: Optional[str] = None
     title: str
     content: str
     item_type: KnowledgeItemType
+    scope: str = "global"
+    owner_id: Optional[str] = None
+    team_id: Optional[str] = None
 
     # Categorization
     category: Optional[str] = None
