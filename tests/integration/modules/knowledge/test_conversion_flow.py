@@ -698,17 +698,14 @@ class TestConversionEdgeCases:
         self, app_with_user, mock_conversion_service
     ):
         """Verify returns 400 when draft is not found or validation not passed."""
-        mock_conversion_service.verify_draft.return_value = None
+        mock_conversion_service.verify_draft.side_effect = ValueError("Draft not found")
         async with await _client(app_with_user) as client:
             response = await client.post(
                 f"{API_PREFIX}/conversions/conv_abc123/drafts/draft_fail/verify",
             )
 
         assert response.status_code == 400
-        assert (
-            "not found" in response.json()["detail"].lower()
-            or "validation" in response.json()["detail"].lower()
-        )
+        assert "not found" in response.json()["detail"].lower()
 
     async def test_service_internal_error_returns_500(
         self, app_with_user, mock_conversion_service

@@ -318,18 +318,21 @@ async def verify_draft(
     current_user: DevUser = Depends(_require_auth),
 ):
     """Promote draft to verified status and trigger ingestion into ChromaDB."""
-    result = await service.verify_draft(
-        conversion_id=conversion_id,
-        draft_id=draft_id,
-        user_id=current_user.user_id,
-        username=current_user.username,
-    )
-    if not result:
-        raise HTTPException(
-            status_code=400,
-            detail="Draft not found, already verified, or validation not passed",
+    try:
+        result = await service.verify_draft(
+            conversion_id=conversion_id,
+            draft_id=draft_id,
+            user_id=current_user.user_id,
+            username=current_user.username,
         )
-    return result.model_dump()
+        if not result:
+            raise HTTPException(
+                status_code=500,
+                detail="Verification completed but no response returned",
+            )
+        return result.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =============================================================================

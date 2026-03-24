@@ -891,7 +891,7 @@ class ConversionService:
             )
             job = job_result.scalar_one_or_none()
             if not job:
-                return None
+                raise ValueError("Conversion job not found")
 
             draft_result = await session.execute(
                 select(ConversionDraftModel).where(
@@ -900,12 +900,19 @@ class ConversionService:
                 )
             )
             dm = draft_result.scalar_one_or_none()
-            if not dm or dm.status != DraftStatus.DRAFT.value:
-                return None
+            if not dm:
+                raise ValueError("Draft not found")
+            if dm.status == DraftStatus.VERIFIED.value:
+                raise ValueError("This runbook has already been verified and ingested")
+            if dm.status == DraftStatus.DELETED.value:
+                raise ValueError("This draft has been deleted")
+            if dm.status != DraftStatus.DRAFT.value:
+                raise ValueError(f"Draft is in unexpected state: {dm.status}")
 
-            # Check validation passes
             if not dm.validation_passed:
-                return None
+                raise ValueError(
+                    "Draft has validation errors that must be fixed before verification"
+                )
 
             # Update frontmatter on disk using python-frontmatter
             file_path = Path(dm.file_path)
