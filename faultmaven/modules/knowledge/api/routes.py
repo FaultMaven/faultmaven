@@ -43,6 +43,7 @@ from fastapi import (
     UploadFile,
 )
 
+from faultmaven.api.v1.auth_dependencies import get_current_user_optional
 from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.infrastructure.observability.tracing import trace
@@ -188,6 +189,7 @@ async def list_documents(
     limit: int = 50,
     offset: int = 0,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> dict:
     """
     List knowledge base documents with optional filtering
@@ -219,7 +221,11 @@ async def list_documents(
 
         # Delegate to service layer
         return await knowledge_service.list_documents(
-            document_type=document_type, tags=tag_list, limit=limit, offset=offset
+            document_type=document_type,
+            tags=tag_list,
+            limit=limit,
+            offset=offset,
+            user=current_user,
         )
 
     except Exception as e:
@@ -450,6 +456,7 @@ async def get_job_status(
 async def search_documents(
     request: SearchRequest,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> dict:
     """
     Search knowledge base documents
@@ -492,6 +499,7 @@ async def search_documents(
             limit=request.limit,
             similarity_threshold=request.similarity_threshold,
             rank_by=request.rank_by,
+            user=current_user,
         )
 
     except HTTPException:
@@ -506,6 +514,7 @@ async def search_documents(
 async def fulltext_search_documents(
     request: SearchRequest,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> dict:
     """
     Full-text search for knowledge base documents (Microservices Parity)
@@ -589,6 +598,7 @@ async def fulltext_search_documents(
             limit=request.limit,
             similarity_threshold=request.similarity_threshold,
             rank_by=request.rank_by,
+            user=current_user,
         )
 
         logger.info(

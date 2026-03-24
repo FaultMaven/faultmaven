@@ -505,3 +505,19 @@ async def require_dev_user(user: DevUser = Depends(require_authentication)) -> D
         raise HTTPException(status_code=403, detail="Development user access required")
 
     return user
+
+
+def resolve_accessible_scopes(user: Optional[DevUser] = None) -> dict:
+    """Resolve accessible knowledge base scopes for a user to use in ChromaDB queries"""
+    conditions = [{"scope": "global"}]
+
+    if user:
+        conditions.append({"$and": [{"scope": "personal"}, {"owner_id": user.user_id}]})
+
+        team_id = getattr(user, "organization_id", None) or getattr(
+            user, "team_id", None
+        )
+        if team_id:
+            conditions.append({"$and": [{"scope": "team"}, {"team_id": team_id}]})
+
+    return {"$or": conditions}

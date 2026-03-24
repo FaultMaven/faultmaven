@@ -447,6 +447,9 @@ class KnowledgeBaseDocument(BaseModel):
     status: str = "processed"
     tags: List[str] = Field(default_factory=list)
     source_url: Optional[str] = None
+    scope: str = "global"
+    owner_id: Optional[str] = None
+    team_id: Optional[str] = None
     created_at: str
     updated_at: str
     metadata: Optional[Dict[str, Any]] = None

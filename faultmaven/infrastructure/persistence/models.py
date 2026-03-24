@@ -1698,6 +1698,9 @@ class KnowledgeItemModel(Base):
         index=True,
         default="00000000-0000-0000-0000-000000000001",
     )
+    scope = Column(String(20), nullable=False, default="global", index=True)
+    owner_id = Column(String(36), nullable=True, index=True)
+    team_id = Column(String(36), nullable=True, index=True)
 
     # Content
     title = Column(String(512), nullable=False)
@@ -1758,6 +1761,10 @@ class KnowledgeItemModel(Base):
     knowledge_metadata = Column("metadata", Text, default="{}")
 
     __table_args__ = (
+        CheckConstraint(
+            "scope IN ('personal', 'team', 'global')",
+            name="knowledge_items_scope_check",
+        ),
         CheckConstraint(
             "item_type IN ('troubleshooting_guide', 'error_pattern', 'solution_template', "
             "'api_documentation', 'configuration_guide', 'best_practice', 'faq', 'runbook')",

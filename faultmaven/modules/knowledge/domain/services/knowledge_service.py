@@ -261,7 +261,7 @@ class KnowledgeService:
                 if self._vector_store:
                     with self._tracer.trace("knowledge_vector_search"):
                         results = await self._vector_store.search(
-                            sanitized_query, k=limit
+                            sanitized_query, k=limit, filters=filters
                         )
 
                     # Convert to SearchResult models
@@ -1080,6 +1080,9 @@ class KnowledgeService:
                 document_type=document.document_type,
                 tags=document.tags or [],
                 source_url=document.source_url,
+                scope=getattr(document, "scope", "global"),
+                owner_id=getattr(document, "owner_id", None),
+                team_id=getattr(document, "team_id", None),
                 created_at=document.created_at,
                 updated_at=document.updated_at,
             )
@@ -1139,6 +1142,9 @@ class KnowledgeService:
         source_url: Optional[str] = None,
         category: Optional[str] = None,
         description: Optional[str] = None,
+        scope: str = "global",
+        owner_id: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Upload document - API-compatible wrapper that stores documents"""
         try:
@@ -1246,6 +1252,9 @@ class KnowledgeService:
                         document_type=document_type,
                         tags=tags or [],
                         source_url=source_url,
+                        scope=scope,
+                        owner_id=owner_id,
+                        team_id=team_id,
                         created_at=created_at,
                         updated_at=created_at,
                     )
@@ -1281,6 +1290,7 @@ class KnowledgeService:
         tags: Optional[List[str]] = None,
         limit: int = 50,
         offset: int = 0,
+        user: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """List documents with filtering"""
         try:
@@ -1309,12 +1319,29 @@ class KnowledgeService:
             else:
                 all_documents = list(self._documents_store.values())
 
+            # Extract user context for RBAC
+            user_id = getattr(user, "user_id", None) if user else None
+            team_id = getattr(user, "organization_id", None) if user else None
+
             # Apply filters
             filtered_docs = []
             for doc in all_documents:
                 # Exclude archived documents
                 if doc.get("archived_at"):
                     continue
+
+                # Apply RBAC Scope
+                metadata = doc.get("metadata", {})
+                scope = metadata.get("scope", doc.get("scope", "global"))
+
+                if scope == "personal":
+                    owner_id = metadata.get("owner_id", doc.get("owner_id"))
+                    if not user_id or owner_id != user_id:
+                        continue
+                elif scope == "team":
+                    doc_team_id = metadata.get("team_id", doc.get("team_id"))
+                    if not team_id or doc_team_id != team_id:
+                        continue
 
                 # Filter by document type
                 if document_type and doc.get("document_type") != document_type:
@@ -1585,6 +1612,7 @@ class KnowledgeService:
         limit: int = 10,
         similarity_threshold: Optional[float] = None,
         rank_by: Optional[str] = None,
+        user: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Search documents with filtering by category, document_type, and tags"""
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
@@ -1677,9 +1705,26 @@ class KnowledgeService:
             else:
                 all_documents = list(self._documents_store.values())
 
+            # Extract user context for RBAC
+            user_id = getattr(user, "user_id", None) if user else None
+            team_id = getattr(user, "organization_id", None) if user else None
+
             # Apply filters
             filtered_docs = []
             for doc in all_documents:
+                # Apply RBAC Scope
+                metadata = doc.get("metadata", {})
+                scope = metadata.get("scope", doc.get("scope", "global"))
+
+                if scope == "personal":
+                    owner_id = metadata.get("owner_id", doc.get("owner_id"))
+                    if not user_id or owner_id != user_id:
+                        continue
+                elif scope == "team":
+                    doc_team_id = metadata.get("team_id", doc.get("team_id"))
+                    if not team_id or doc_team_id != team_id:
+                        continue
+
                 # Filter by document type
                 if document_type and doc.get("document_type") != document_type:
                     continue

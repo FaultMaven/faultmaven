@@ -70,5 +70,6 @@ Use answer_from_case_evidence for case files or answer_from_user_kb for personal
         Returns:
             General best practices with KB article citations
         """
-        # No access control needed - global read access for all users
-        return await super()._arun(question, scope_id=None, k=k)
+        # Global read access for all users
+        filters = {"scope": "global"}
+        return await super()._arun(question, scope_id=None, k=k, filters=filters)

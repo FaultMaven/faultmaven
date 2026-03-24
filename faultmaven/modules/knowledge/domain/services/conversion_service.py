@@ -282,17 +282,12 @@ class ConversionService:
 
         warnings.extend(preprocessing.warnings)
 
-        # Step 2: Retain source file
-        source_dir = self._data_dir / "sources" / conversion_id
-        source_dir.mkdir(parents=True, exist_ok=True)
-        retained_path = source_dir / original_filename
-        shutil.copy2(file_path, retained_path)
-
+        # Step 2: Source file information (files are NOT retained on disk, per architectural design)
         source_file = SourceFileInfo(
             filename=original_filename,
             size_bytes=file_path.stat().st_size,
             content_type=content_type,
-            retained_path=str(retained_path),
+            retained_path=None,
         )
 
         # Step 3: Analyze for failure modes

@@ -19,6 +19,9 @@ class VectorMetadata(BaseModel):
     document_type: Optional[str] = None
     tags: List[str] = []
     source_url: Optional[str] = None
+    scope: Optional[str] = None
+    owner_id: Optional[str] = None
+    team_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -33,7 +36,15 @@ class VectorMetadata(BaseModel):
             return [str(t) for t in v]
         return [str(v)]
 
-    @field_validator("title", "document_type", "source_url", mode="before")
+    @field_validator(
+        "title",
+        "document_type",
+        "source_url",
+        "scope",
+        "owner_id",
+        "team_id",
+        mode="before",
+    )
     @classmethod
     def _coerce_str(cls, v: Any) -> Optional[str]:
         if v is None:
@@ -50,6 +61,12 @@ class VectorMetadata(BaseModel):
             data["tags"] = self.tags
         if self.source_url:
             data["source_url"] = self.source_url
+        if self.scope:
+            data["scope"] = self.scope
+        if self.owner_id:
+            data["owner_id"] = self.owner_id
+        if self.team_id:
+            data["team_id"] = self.team_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

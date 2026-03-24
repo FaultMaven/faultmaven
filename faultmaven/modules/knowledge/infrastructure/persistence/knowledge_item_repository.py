@@ -296,6 +296,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             item_model = KnowledgeItemModel(
                 item_id=item.item_id,
                 organization_id=item.organization_id,
+                scope=item.scope,
+                owner_id=item.owner_id,
+                team_id=item.team_id,
                 title=item.title,
                 content=item.content,
                 item_type=item.item_type.value,
@@ -367,6 +370,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 update(KnowledgeItemModel)
                 .where(KnowledgeItemModel.item_id == item.item_id)
                 .values(
+                    scope=item.scope,
+                    owner_id=item.owner_id,
+                    team_id=item.team_id,
                     title=item.title,
                     content=item.content,
                     item_type=item.item_type.value,
@@ -704,6 +710,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         return KnowledgeItem(
             item_id=model.item_id,
             organization_id=model.organization_id,
+            scope=model.scope,
+            owner_id=model.owner_id,
+            team_id=model.team_id,
             title=model.title,
             content=model.content,
             item_type=KnowledgeItemType(model.item_type),

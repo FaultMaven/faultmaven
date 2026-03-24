@@ -72,7 +72,11 @@ class DocumentQATool(LangChainBaseTool):
         raise NotImplementedError("Use async _arun instead")
 
     async def _arun(
-        self, question: str, scope_id: Optional[str] = None, k: int = 5
+        self,
+        question: str,
+        scope_id: Optional[str] = None,
+        k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -81,13 +85,14 @@ class DocumentQATool(LangChainBaseTool):
             question: User's question
             scope_id: Scoping identifier (case_id, user_id, etc.) or None
             k: Number of chunks to retrieve
+            filters: Optional ChromaDB metadata filters
 
         Returns:
             Formatted answer with citations
         """
         logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
 
-        result = await self.answer_question(question, scope_id, k)
+        result = await self.answer_question(question, scope_id, k, filters)
 
         # Delegate response formatting to KB config
         return self._kb_config.format_response(
@@ -98,7 +103,11 @@ class DocumentQATool(LangChainBaseTool):
         )
 
     async def answer_question(
-        self, question: str, scope_id: Optional[str], k: int
+        self,
+        question: str,
+        scope_id: Optional[str],
+        k: int,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -114,7 +123,7 @@ class DocumentQATool(LangChainBaseTool):
         # Step 2: Retrieve chunks from vector store (same for all KBs)
         try:
             chunks = await self._vector_store.search(
-                collection_name=collection, query=question, k=k
+                case_id=collection, query=question, k=k, where=filters
             )
         except Exception as e:
             logger.error(f"Vector store search failed: {e}")

@@ -70,9 +70,7 @@ Use answer_from_global_kb for general guidance."""
         Returns:
             User's documented procedures with runbook citations
         """
-        # TODO: Add access control
-        # Verify requesting user matches owner
-        # if current_user.id != user_id:
-        #     raise PermissionError("Cannot access other user's knowledge base")
+        # Inject scope isolation
+        filters = {"$and": [{"scope": "personal"}, {"owner_id": user_id}]}
 
-        return await super()._arun(question, scope_id=user_id, k=k)
+        return await super()._arun(question, scope_id=user_id, k=k, filters=filters)

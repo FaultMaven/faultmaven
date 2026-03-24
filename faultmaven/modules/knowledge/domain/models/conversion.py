@@ -165,7 +165,7 @@ class SourceFileInfo(BaseModel):
     filename: str
     size_bytes: int
     content_type: str
-    retained_path: str
+    retained_path: Optional[str] = None
 
 
 # =============================================================================

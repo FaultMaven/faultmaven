@@ -447,7 +447,9 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def search(self, query: str, k: int = 5) -> List[Dict]:
+    async def search(
+        self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict]:
         """Search for semantically similar documents using vector similarity.
 
         This method generates an embedding for the query text and performs

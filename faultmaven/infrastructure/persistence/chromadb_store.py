@@ -160,24 +160,31 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             retry_delay=2.0,
         )
 
-    async def search(self, query: str, k: int = 5) -> List[Dict]:
+    async def search(
+        self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict]:
         """
         Search for similar documents in the vector store.
 
         Args:
             query: Search query text
             k: Number of results to return
+            filters: Optional metadata filters
 
         Returns:
             List of similar documents with scores
         """
 
         async def _search_wrapper():
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=k,
-                include=["documents", "metadatas", "distances"],
-            )
+            query_params = {
+                "query_texts": [query],
+                "n_results": k,
+                "include": ["documents", "metadatas", "distances"],
+            }
+            if filters is not None:
+                query_params["where"] = filters
+
+            results = self.collection.query(**query_params)
 
             # Format results according to interface contract
             formatted_results = []

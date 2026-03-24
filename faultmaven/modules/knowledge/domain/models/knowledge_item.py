@@ -81,6 +81,9 @@ class KnowledgeItem:
 
     item_id: str
     organization_id: str
+    scope: str = "global"
+    owner_id: Optional[str] = None
+    team_id: Optional[str] = None
     title: str
     content: str
     item_type: KnowledgeItemType
@@ -138,6 +141,15 @@ class KnowledgeItem:
             raise ValueError(
                 f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"
             )
+
+        if self.scope not in ("personal", "team", "global"):
+            raise ValueError(
+                f"scope must be personal, team, or global, got {self.scope}"
+            )
+        if self.scope == "personal" and not self.owner_id:
+            raise ValueError("owner_id is required for personal scope")
+        if self.scope == "team" and not self.team_id:
+            raise ValueError("team_id is required for team scope")
 
         # Validate verification level (0=experimental, 1=community, 2=admin_verified)
         if self.verification_level < 0 or self.verification_level > 2:
