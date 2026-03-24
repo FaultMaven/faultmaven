@@ -1118,6 +1118,157 @@ status: draft
 
         return {"conversion_id": conversion_id, "draft": draft}
 
+    # =========================================================================
+    # File Discovery Scan
+    # =========================================================================
+
+    async def scan_for_runbooks(self, user_id: str) -> dict:
+        """Scan data/knowledge/ for .md files not tracked in the database.
+
+        Discovers runbooks created by the KB Toolkit or dropped on disk manually.
+        Creates draft records so they appear in the Dashboard Drafts tab.
+
+        Returns:
+            {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
+        """
+        import re as _re
+
+        import yaml
+
+        discovered = []
+        skipped = 0
+        errors = []
+
+        # Collect all tracked file paths from DB
+        tracked_paths: set[str] = set()
+        if self._db_session_factory:
+            async with self._db_session_factory() as session:
+                result = await session.execute(select(ConversionDraftModel.file_path))
+                tracked_paths = {row[0] for row in result.all()}
+
+        # Walk all scope directories
+        knowledge_dir = self._data_dir
+        if not knowledge_dir.exists():
+            return {"discovered": 0, "skipped": 0, "errors": [], "drafts": []}
+
+        for md_file in sorted(knowledge_dir.rglob("*.md")):
+            # Skip sources directory (retained original uploads)
+            if "sources" in md_file.parts:
+                continue
+
+            file_path_str = str(md_file)
+
+            # Skip if already tracked
+            if file_path_str in tracked_paths:
+                skipped += 1
+                continue
+
+            # Read and validate
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except Exception as e:
+                errors.append(f"{md_file.name}: cannot read ({e})")
+                continue
+
+            if len(content.strip()) < 100:
+                errors.append(f"{md_file.name}: too short ({len(content)} chars)")
+                continue
+
+            # Extract metadata from frontmatter
+            fm_match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", content, _re.DOTALL)
+            metadata = {}
+            if fm_match:
+                try:
+                    metadata = yaml.safe_load(fm_match.group(1)) or {}
+                except Exception:
+                    pass
+
+            title = metadata.get("title", md_file.stem.replace("-", " ").title())
+            runbook_id = metadata.get("id", md_file.stem)
+
+            # Infer scope from directory path
+            scope = "global"
+            relative = md_file.relative_to(knowledge_dir)
+            scope_dir_name = relative.parts[0] if len(relative.parts) > 1 else ""
+            if scope_dir_name.startswith("personal_") or scope_dir_name.startswith(
+                "user_"
+            ):
+                scope = "personal"
+            elif scope_dir_name.startswith("team_"):
+                scope = "team"
+
+            # Validate
+            validation = self._validator.validate_content(content)
+            quality = self._scorer.score_content(content)
+
+            draft_id = generate_draft_id()
+            quality_warning = None
+            if quality.overall < QUALITY_WARNING_THRESHOLD:
+                quality_warning = (
+                    "Quality score is below 50. Review and edit before verifying."
+                )
+
+            draft = ConversionDraft(
+                draft_id=draft_id,
+                runbook_id=runbook_id,
+                title=title if isinstance(title, str) else str(title),
+                scope=scope,
+                status=DraftStatus.DRAFT,
+                validation=validation,
+                quality_score=quality,
+                file_path=file_path_str,
+                content_preview=content[:500],
+                content=content,
+                quality_warning=quality_warning,
+            )
+
+            # Persist as a synthetic conversion job
+            conversion_id = generate_conversion_id()
+            await self._persist_job(
+                conversion_id=conversion_id,
+                user_id=user_id,
+                organization_id=None,
+                scope=scope,
+                team_id=None,
+                status=ConversionStatus.COMPLETED,
+                source_file=SourceFileInfo(
+                    filename=md_file.name,
+                    size_bytes=md_file.stat().st_size,
+                    content_type="text/markdown",
+                    retained_path="",
+                ),
+                analysis=AnalysisResult(
+                    is_actionable=True,
+                    failure_modes=[],
+                    source_assessment=SourceAssessment(
+                        content_type="file_scan",
+                        actionability_rating="unknown",
+                        missing_information=[],
+                    ),
+                ),
+                drafts=[draft],
+                created_at=datetime.now(timezone.utc),
+            )
+
+            discovered.append(
+                {
+                    "draft_id": draft_id,
+                    "title": draft.title,
+                    "runbook_id": runbook_id,
+                    "scope": scope,
+                    "validation_passed": validation.passed,
+                    "quality_score": quality.overall,
+                    "file_path": file_path_str,
+                }
+            )
+
+        return {
+            "discovered": len(discovered),
+            "skipped": skipped,
+            "errors": errors,
+            "drafts": discovered,
+        }
+
     async def delete_draft(
         self,
         conversion_id: str,

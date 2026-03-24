@@ -242,6 +242,24 @@ async def list_all_drafts(
 
 
 # =============================================================================
+# POST /knowledge/scan — discover runbooks on disk not tracked in DB
+# =============================================================================
+
+
+@router.post("/scan")
+async def scan_for_runbooks(
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Scan data/knowledge/ for .md files not tracked in the database.
+
+    Discovers runbooks created by the KB Toolkit or placed on disk manually.
+    Creates draft records so they appear in the Drafts tab for review.
+    """
+    return await service.scan_for_runbooks(user_id=current_user.user_id)
+
+
+# =============================================================================
 # GET /knowledge/conversions/{conversion_id}
 # =============================================================================
 
