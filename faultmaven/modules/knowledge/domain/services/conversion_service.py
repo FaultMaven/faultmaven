@@ -265,7 +265,7 @@ class ConversionService:
             "document_conversion_started",
             extra={
                 "conversion_id": conversion_id,
-                "filename": original_filename,
+                "source_filename": original_filename,
                 "content_type": content_type,
                 "scope": scope,
             },
