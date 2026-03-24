@@ -947,13 +947,14 @@ class ConversionService:
             if self._knowledge_service:
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                    result = await self._knowledge_service.add_document(
-                        {
-                            "title": dm.title,
-                            "content": content,
-                            "document_type": "runbook",
-                            "source": f"conversion:{conversion_id}",
-                        }
+                    result = await self._knowledge_service.upload_document(
+                        content=content,
+                        title=dm.title,
+                        document_type="runbook",
+                        source_url=f"conversion:{conversion_id}",
+                        scope=job.scope,
+                        owner_id=user_id,
+                        team_id=job.team_id,
                     )
                     if isinstance(result, str):
                         knowledge_item_id = result
