@@ -22,8 +22,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
-# Current head revision (001_clean_baseline)
-HEAD_REVISION = "424078e5aa04"
+# Current head revision (scope isolation migration)
+HEAD_REVISION = "0a6eafc2e4cf"
 
 
 @pytest.fixture(scope="function")
@@ -135,10 +135,10 @@ class TestAlembicMigrationInfrastructure:
         result = run_alembic("upgrade head", database_url)
 
         assert result.returncode == 0, f"Migration failed: {result.stderr}"
+        output = result.stderr + result.stdout
         assert (
-            f"Running upgrade  -> {HEAD_REVISION}" in result.stderr
-            or f"Running upgrade  -> {HEAD_REVISION}" in result.stdout
-        ), f"Expected clean baseline migration. Output: {result.stderr}"
+            HEAD_REVISION in output
+        ), f"Expected head revision {HEAD_REVISION} in migration output. Output: {output}"
 
     def test_tables_created_correctly(self, clean_database, database_url):
         """All expected tables are created after migration."""
@@ -160,7 +160,7 @@ class TestAlembicMigrationInfrastructure:
 
         assert (
             revision == HEAD_REVISION
-        ), f"Expected revision {HEAD_REVISION} (001_clean_baseline), got {revision}"
+        ), f"Expected revision {HEAD_REVISION}, got {revision}"
 
     def test_migration_rollback(self, clean_database, database_url):
         """Migration can be rolled back successfully."""
@@ -171,11 +171,11 @@ class TestAlembicMigrationInfrastructure:
             EXPECTED_TABLES
         ), f"Expected {len(EXPECTED_TABLES)} tables initially, got {len(tables_before)}"
 
-        # Rollback to base (single migration, so downgrade -1 goes to empty)
-        result = run_alembic("downgrade -1", database_url)
+        # Rollback to base (multiple migrations, downgrade base goes to empty)
+        result = run_alembic("downgrade base", database_url)
         assert result.returncode == 0, f"Rollback failed: {result.stderr}"
 
-        # After rollback of the only migration, only alembic_version should remain
+        # After full rollback, only alembic_version should remain
         tables_after = get_tables(TEST_DB)
         assert (
             len(tables_after) <= 1
@@ -184,7 +184,7 @@ class TestAlembicMigrationInfrastructure:
     def test_migration_reapply_after_rollback(self, clean_database, database_url):
         """Migration can be re-applied after rollback."""
         run_alembic("upgrade head", database_url)
-        run_alembic("downgrade -1", database_url)
+        run_alembic("downgrade base", database_url)
 
         # Re-apply
         result = run_alembic("upgrade head", database_url)
@@ -206,7 +206,7 @@ class TestAlembicMigrationInfrastructure:
         revision = get_current_revision(database_url)
         assert (
             revision == HEAD_REVISION
-        ), f"Expected revision {HEAD_REVISION} (001_clean_baseline), got {revision}"
+        ), f"Expected revision {HEAD_REVISION}, got {revision}"
 
     def test_migration_history_command(self, database_url):
         """Alembic history command works."""
@@ -216,10 +216,10 @@ class TestAlembicMigrationInfrastructure:
         output = result.stdout + result.stderr
         assert (
             HEAD_REVISION in output
-        ), f"Clean baseline revision should be in history. Output: {output}"
+        ), f"Head revision should be in history. Output: {output}"
         assert (
-            "001_clean_baseline" in output
-        ), f"Clean baseline name should be in history. Output: {output}"
+            "scope isolation" in output.lower()
+        ), f"Scope isolation migration should be in history. Output: {output}"
 
 
 class TestHelperScript:

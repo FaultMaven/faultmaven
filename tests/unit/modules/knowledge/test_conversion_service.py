@@ -1115,8 +1115,7 @@ class TestSourceFileRetention:
                     user_id="user-123",
                 )
 
-        # Source should be retained
+        # Source metadata should be captured (files not retained on disk per architecture)
         assert result.source_file.filename == "test_document.md"
-        retained = Path(result.source_file.retained_path)
-        assert retained.exists()
-        assert retained.read_text() == source_document_text
+        assert result.source_file.content_type == "text/markdown"
+        assert result.source_file.size_bytes > 0
