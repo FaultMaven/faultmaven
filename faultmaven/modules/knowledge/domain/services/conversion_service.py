@@ -612,7 +612,7 @@ class ConversionService:
                 source_filename=source_file.filename,
                 source_content_type=source_file.content_type,
                 source_size_bytes=source_file.size_bytes,
-                source_path=source_file.retained_path,
+                source_path=source_file.retained_path or "",
                 failure_modes_detected=len(analysis.failure_modes),
                 analysis_result=analysis.model_dump(),
                 created_at=created_at,
