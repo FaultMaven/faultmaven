@@ -67,10 +67,11 @@ FaultMaven's storage architecture supports **12 data categories** across primary
              │    ├──> Redis (primary, TTL-based)
              │    └──> PostgreSQL (archive, optional)
              │
-             ├──> IVectorStore Interface (3 implementations)
-             │    ├──> UserKBVectorStore: ChromaDB (user_kb_{user_id})
-             │    ├──> CaseVectorStore: ChromaDB (case_{case_id})
-             │    └──> GlobalKBVectorStore: ChromaDB (global_kb)
+             ├──> IVectorStore Interface (global KB)
+             │    └──> ChromaDBVectorStore: ChromaDB (faultmaven_kb)
+             │
+             ├──> CaseVectorStore (per-case evidence)
+             │    └──> ChromaDB (case_{case_id}, dynamic collections)
              │
              ├──> ICaseRepository Interface (Report methods)
              │    └──> PostgreSQL (reports table, FK to cases)

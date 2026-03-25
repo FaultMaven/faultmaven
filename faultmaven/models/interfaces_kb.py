@@ -5,7 +5,7 @@ following FaultMaven's interface-based dependency injection pattern.
 
 Implemented by:
 - PostgreSQLKBDocumentRepository
-- UserKBVectorStore (enhanced with sharing support)
+- ChromaDBVectorStore (global KB with sharing support)
 """
 
 from abc import ABC, abstractmethod

@@ -76,7 +76,6 @@ def create_registry_tools(
 
 def create_document_qa_tools(
     case_vector_store: Any | None,
-    user_kb_vector_store: Any | None,
     llm_provider: Any,
     settings: FaultMavenSettings,
 ) -> dict[str, Any | None]:
@@ -84,12 +83,13 @@ def create_document_qa_tools(
 
     Three tool instances from one base class, configured differently:
     - Case Evidence: case-scoped forensic analysis
-    - User KB: user-scoped personal runbooks
-    - Global KB: system-wide best practices
+    - User KB: user-scoped personal runbooks (via case_vector_store with metadata filters)
+    - Global KB: system-wide best practices (via case_vector_store with metadata filters)
+
+    All tools share the same ChromaDB-backed vector store; scoping is via metadata.
 
     Args:
-        case_vector_store: Vector store for case evidence
-        user_kb_vector_store: Vector store for user knowledge base
+        case_vector_store: Vector store for all document Q&A
         llm_provider: LLM provider for Q&A
         settings: Application settings
 
@@ -121,18 +121,13 @@ def create_document_qa_tools(
             llm_router=llm_provider,
         )
 
-        # Tool 2: User KB (user-scoped personal runbooks)
-        if user_kb_vector_store:
-            result["user_kb_qa_tool"] = AnswerFromUserKB(
-                vector_store=user_kb_vector_store,
-                llm_router=llm_provider,
-            )
-        else:
-            logger.warning(
-                "User KB QA tool skipped (user_kb_vector_store not available)"
-            )
+        # Tool 2: User KB (user-scoped personal runbooks via metadata filters)
+        result["user_kb_qa_tool"] = AnswerFromUserKB(
+            vector_store=case_vector_store,
+            llm_router=llm_provider,
+        )
 
-        # Tool 3: Global KB (system-wide best practices)
+        # Tool 3: Global KB (system-wide best practices via metadata filters)
         result["global_kb_qa_tool"] = AnswerFromGlobalKB(
             vector_store=case_vector_store,
             llm_router=llm_provider,
@@ -176,11 +171,9 @@ def register_tools(container: BaseDIContainer) -> None:
     # Create document Q&A tools
     llm_provider = container.get_service("llm_provider")
     case_vector_store = getattr(container, "case_vector_store", None)
-    user_kb_vector_store = getattr(container, "user_kb_vector_store", None)
 
     qa_tools = create_document_qa_tools(
         case_vector_store,
-        user_kb_vector_store,
         llm_provider,
         settings,
     )

@@ -261,14 +261,15 @@ REDIS_PORT=6379
 
 | Backend | Implementation | Status | Use Case |
 |---------|----------------|--------|----------|
-| In-Memory | `InMemoryVectorStore` | ✅ Implemented | Development, testing |
-| Local Files | `ChromaDB (persistent)` | ✅ Implemented | Development, single-node |
-| Microservices | `ChromaDB (client-server)` | ✅ Implemented | Production K8s |
+| PersistentClient (in-process) | `ChromaDBVectorStore` | ✅ Implemented | Local deployment |
+| HttpClient (external server) | `ChromaDBVectorStore` | ✅ Implemented | Cloud/K8s deployment |
+
+> **Note**: `InMemoryVectorStore` has been removed. ChromaDB `PersistentClient` is always
+> available (chromadb is a base dependency), so no fallback is needed — same principle as FakeRedis.
 
 **Configuration**:
 ```bash
 # Vector storage type selection
-VECTOR_STORAGE_TYPE=inmemory   # Development/testing (simple word-based)
 VECTOR_STORAGE_TYPE=chromadb   # Production (true semantic embeddings)
 
 # ChromaDB configuration (when TYPE=chromadb)
@@ -549,7 +550,7 @@ class VectorStore(ABC):
 
 - ✅ `InMemoryCaseRepository` - Cases in Python dict (database dimension)
 - ✅ `RedisSessionStore` + FakeRedis - Sessions via in-process Redis (cache dimension)
-- ✅ `InMemoryVectorStore` - Simple word-based similarity (vector dimension, fallback only)
+- ✅ ChromaDB `PersistentClient` - Vector storage (always available, no fallback needed)
 
 > **Note**: Session/cache storage no longer uses a separate `InMemorySessionStore`.
 > All deployments use `RedisSessionStore` backed by either real Redis (cloud) or
@@ -809,9 +810,9 @@ class Container:
             self.vector_store = ChromaDBVectorStore()
 
         else:
-            # In-memory backend (development)
-            from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
-            self.vector_store = InMemoryVectorStore()
+            # ChromaDB always available (PersistentClient for local, HttpClient for cloud)
+            # Client created by DI container via create_chromadb_client()
+            self.vector_store = ChromaDBVectorStore(client=chromadb_client)
 ```
 
 **Key Points**:

@@ -1,7 +1,7 @@
 """KB Document Repository - PostgreSQL Implementation.
 
 Implements IKBDocumentRepository for KB document metadata and sharing.
-Works in conjunction with UserKBVectorStore for vector embeddings.
+Works in conjunction with ChromaDBVectorStore for vector embeddings.
 """
 
 import logging
@@ -26,7 +26,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
     """PostgreSQL implementation of KB document repository.
 
     Manages KB document metadata and sharing permissions.
-    Vector embeddings stored separately in ChromaDB via UserKBVectorStore.
+    Vector embeddings stored separately in ChromaDB via ChromaDBVectorStore.
     """
 
     def __init__(self, db_session: AsyncSession):

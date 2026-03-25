@@ -79,6 +79,11 @@ The system defines **13 primary interfaces** in `faultmaven/models/interfaces.py
 - **Purpose**: Session management and user state with memory preservation
 - **Methods**: `get(key) -> Dict`, `set(key, value, ttl)`, `preserve_memory(session_id) -> bool`
 - **Implementations**: RedisSessionStore (real Redis for cloud, FakeRedis for local)
+
+**`IVectorStore`**
+- **Purpose**: Vector database operations for knowledge base and semantic search
+- **Methods**: `add_documents(docs)`, `search(query, k, filters)`, `delete_documents(ids)`, `query_by_embedding(...)`
+- **Implementations**: ChromaDBVectorStore (shared ChromaDB client, PersistentClient local / HttpClient cloud)
 - **Features**: TTL support, authentication integration, intelligent cleanup
 
 **`IStorageBackend`**

@@ -1,37 +1,33 @@
 """
 ChromaDB implementation of IVectorStore interface.
 
-This module provides a ChromaDB-based vector store that implements
-the IVectorStore interface for consistent vector database operations.
+Global KB vector store — operates on a single named collection.
+Receives a shared ChromaDB client via constructor injection (Principle 5).
 """
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
-import chromadb
-from chromadb.config import Settings
-
-from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import IVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     """ChromaDB implementation of the IVectorStore interface.
 
-    Supports two modes:
-    - persist_directory: In-process PersistentClient (local deployment)
-    - No persist_directory: HttpClient to external server (production)
+    Operates on a single named collection (global KB).
+    The ChromaDB client is injected — works with both PersistentClient (local)
+    and HttpClient (cloud) transparently.
     """
 
-    def __init__(self, persist_directory: Optional[str] = None):
-        """Initialize ChromaDB client.
+    def __init__(self, client, collection_name: str = "faultmaven_kb"):
+        """Initialize ChromaDB vector store.
 
         Args:
-            persist_directory: If provided, use PersistentClient with local
-                file storage. If None, connect to external ChromaDB server.
+            client: ChromaDB client instance (PersistentClient or HttpClient).
+            collection_name: Collection name for global KB.
         """
         super().__init__(
             client_name="chromadb_vector_store",
@@ -41,93 +37,24 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             circuit_breaker_timeout=60,
         )
 
-        settings = get_settings()
+        self.client = client
+        self.collection_name = collection_name
 
-        if persist_directory:
-            # Local deployment: in-process persistent ChromaDB
-            import os
-
-            os.makedirs(persist_directory, exist_ok=True)
-            try:
-                self.client = chromadb.PersistentClient(path=persist_directory)
-            except Exception as e:
-                if hasattr(self, "logger"):
-                    self.logger.error(
-                        f"Failed to create ChromaDB PersistentClient: {e}"
-                    )
-                raise
-        else:
-            # Production: external ChromaDB server via HTTP
-            chromadb_url = settings.database.chromadb_url
-            chromadb_token = (
-                settings.database.chromadb_api_key.get_secret_value()
-                if settings.database.chromadb_api_key
-                else None
-            )
-
-            parsed = urlparse(chromadb_url)
-            host = parsed.hostname or "localhost"
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-
-            settings_kwargs = {}
-            if chromadb_token:
-                try:
-                    from importlib import import_module
-
-                    import_module("chromadb.auth.token")
-                    settings_kwargs.update(
-                        {
-                            "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
-                            "chroma_client_auth_credentials": chromadb_token,
-                        }
-                    )
-                except Exception:
-                    # Proceed without explicit auth configuration
-                    pass
-
-            try:
-                self.client = chromadb.HttpClient(
-                    host=host,
-                    port=port,
-                    settings=(
-                        Settings(**settings_kwargs) if settings_kwargs else Settings()
-                    ),
-                )
-            except Exception as e:
-                if hasattr(self, "logger"):
-                    self.logger.error(f"Failed to initialize ChromaDB HTTP client: {e}")
-                raise
-
-        # Get or create collection
-        # Use collection name from settings via dependency injection
-        self.collection_name = (
-            settings.database.chromadb_collection
-            if settings
-            else "faultmaven_knowledge"  # Default collection name
-        )
         try:
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"description": "FaultMaven knowledge base"},
             )
-            if hasattr(self, "logger"):
-                # INFO: collection creation/connect events
-                self.logger.info(
-                    f"ChromaDB collection ready",
-                    extra={"collection": self.collection_name},
-                )
+            self.logger.info(
+                f"ChromaDB collection ready",
+                extra={"collection": self.collection_name},
+            )
         except Exception as e:
-            if hasattr(self, "logger"):
-                self.logger.error(f"❌ Failed to connect to ChromaDB: {e}")
+            self.logger.error(f"Failed to connect to ChromaDB: {e}")
             raise
 
     async def add_documents(self, documents: List[Dict]) -> None:
-        """
-        Add documents to the vector store.
-
-        Args:
-            documents: List of documents with 'id', 'content', and 'metadata' keys
-        """
+        """Add documents to the vector store."""
 
         async def _add_wrapper():
             ids = [doc["id"] for doc in documents]
@@ -150,7 +77,6 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                     )
                     metadatas.append(vm.to_chroma_metadata())
                 except Exception:
-                    # Fallback sanitizer
                     sanitized: Dict = {}
                     for k, v in (md or {}).items():
                         if v is None:
@@ -166,15 +92,10 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
 
             self.collection.add(ids=ids, documents=contents, metadatas=metadatas)
 
-            # INFO: embedding counts
-            if hasattr(self, "logger"):
-                self.logger.info(
-                    f"Added documents to vector store",
-                    extra={"count": len(documents), "collection": self.collection_name},
-                )
-            # DEBUG: semantic indexing details
-            if hasattr(self, "logger"):
-                self.logger.debug(f"Semantic indexing completed for ids={ids}")
+            self.logger.info(
+                f"Added documents to vector store",
+                extra={"count": len(documents), "collection": self.collection_name},
+            )
 
         await self.call_external(
             operation_name="add_documents",
@@ -187,17 +108,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def search(
         self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict]:
-        """
-        Search for similar documents in the vector store.
-
-        Args:
-            query: Search query text
-            k: Number of results to return
-            filters: Optional metadata filters
-
-        Returns:
-            List of similar documents with scores
-        """
+        """Search for similar documents in the vector store."""
 
         async def _search_wrapper():
             query_params = {
@@ -210,7 +121,6 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
 
             results = self.collection.query(**query_params)
 
-            # Format results according to interface contract
             formatted_results = []
             for i in range(len(results["ids"][0])):
                 formatted_results.append(
@@ -218,8 +128,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                         "id": results["ids"][0][i],
                         "content": results["documents"][0][i],
                         "metadata": results["metadatas"][0][i],
-                        "score": 1.0
-                        - results["distances"][0][i],  # Convert distance to similarity
+                        "score": 1.0 - results["distances"][0][i],
                     }
                 )
 
@@ -240,19 +149,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         where: Optional[Dict[str, Any]] = None,
         top_k: int = 5,
     ) -> Dict[str, Any]:
-        """
-        Query vector store using pre-computed embedding.
-
-        Used for runbook similarity search where embeddings are computed externally.
-
-        Args:
-            query_embedding: Pre-computed query embedding vector
-            where: Optional metadata filters (e.g., {"domain": "database"})
-            top_k: Number of results to return
-
-        Returns:
-            Dict with 'ids', 'distances', 'metadatas', 'documents' keys
-        """
+        """Query vector store using pre-computed embedding."""
 
         async def _query_wrapper():
             query_params = {
@@ -282,7 +179,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         )
 
     async def delete_documents(self, ids: List[str]) -> None:
-        """Delete documents by IDs"""
+        """Delete documents by IDs."""
 
         async def _delete_wrapper():
             self.collection.delete(ids=ids)

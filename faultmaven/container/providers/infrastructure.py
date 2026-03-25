@@ -180,24 +180,19 @@ def create_preprocessing_service(
     )
 
 
-def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
-    """Create vector store based on configuration.
+def create_chromadb_client(settings: FaultMavenSettings):
+    """Create a shared ChromaDB client for all vector stores.
 
-    Storage strategy:
-    - VECTOR_BACKEND=chroma: External ChromaDB server (HTTP client)
-    - No VECTOR_BACKEND (local deployment): Persistent in-process ChromaDB
-      using PersistentClient at data/chroma/ (file-based, survives restarts)
-    - SKIP_SERVICE_CHECKS=True: Disabled (returns None)
+    Cloud deployment: HttpClient to external ChromaDB server.
+    Local deployment: PersistentClient at data/chroma/ (in-process, file-based).
 
-    Returns:
-        Tuple of (vector_store, is_disabled)
+    Never returns None — PersistentClient is always available (chromadb is a base dependency).
+    Same pattern as Redis: one client, deployment-time selection, injected everywhere.
     """
-    if settings.server.skip_service_checks:
-        logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
-        return None, True
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
 
     vector_storage_type = (settings.database.vector_storage_type or "").lower()
-    # Accept common synonyms for ChromaDB
     is_external_chroma = vector_storage_type in {
         "chromadb",
         "chroma",
@@ -206,70 +201,109 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
     }
 
     if is_external_chroma:
-        # External ChromaDB server (production/enterprise)
-        try:
-            from faultmaven.infrastructure.persistence.chromadb_store import (
-                ChromaDBVectorStore,
-            )
+        # Cloud: external ChromaDB server via HTTP
+        from urllib.parse import urlparse
 
-            store = ChromaDBVectorStore()
-            logger.info(
-                f"✅ Vector store: ChromaDB server @ {settings.database.chromadb_url}"
+        chromadb_url = settings.database.chromadb_url
+        chromadb_token = (
+            settings.database.chromadb_api_key.get_secret_value()
+            if settings.database.chromadb_api_key
+            else None
+        )
+
+        parsed = urlparse(chromadb_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        settings_kwargs = {}
+        if chromadb_token:
+            try:
+                from importlib import import_module
+
+                import_module("chromadb.auth.token")
+                settings_kwargs.update(
+                    {
+                        "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
+                        "chroma_client_auth_credentials": chromadb_token,
+                    }
+                )
+            except Exception:
+                pass
+
+        try:
+            client = chromadb.HttpClient(
+                host=host,
+                port=port,
+                settings=(
+                    ChromaSettings(**settings_kwargs)
+                    if settings_kwargs
+                    else ChromaSettings()
+                ),
             )
-            return store, False
+            logger.info(f"✅ ChromaDB client: HttpClient @ {host}:{port}")
+            return client
         except Exception as e:
             logger.warning(
                 f"ChromaDB server unavailable ({type(e).__name__}: {e}), "
                 f"falling back to persistent local ChromaDB"
             )
-            # Fall through to persistent local below
 
-    # Default for local deployment: persistent in-process ChromaDB
-    # Uses PersistentClient with file-based storage at data/chroma/
-    try:
-        from faultmaven.infrastructure.persistence.chromadb_store import (
-            ChromaDBVectorStore,
-        )
+    # Local: in-process persistent ChromaDB (always available)
+    import os
 
-        persist_dir = getattr(
-            settings.database, "chromadb_persist_dir", "./data/chroma"
-        )
-        store = ChromaDBVectorStore(persist_directory=persist_dir)
-        logger.info(f"✅ Vector store: ChromaDB persistent @ {persist_dir}")
-        return store, False
-    except Exception as e:
-        logger.warning(
-            f"Persistent ChromaDB failed ({type(e).__name__}: {e}), "
-            f"falling back to InMemoryVectorStore"
-        )
+    persist_dir = getattr(settings.database, "chromadb_persist_dir", "./data/chroma")
+    os.makedirs(persist_dir, exist_ok=True)
+    client = chromadb.PersistentClient(path=persist_dir)
+    logger.info(f"✅ ChromaDB client: PersistentClient @ {persist_dir}")
+    return client
 
-    # Last resort fallback: in-memory (RAM only, lost on restart)
-    from faultmaven.infrastructure.persistence.inmemory_vector_store import (
-        InMemoryVectorStore,
+
+def create_vector_store(
+    settings: FaultMavenSettings, chromadb_client=None
+) -> tuple[Any, bool]:
+    """Create global KB vector store.
+
+    Args:
+        settings: Application settings
+        chromadb_client: Shared ChromaDB client (from create_chromadb_client)
+
+    Returns:
+        Tuple of (vector_store, is_disabled)
+    """
+    if settings.server.skip_service_checks:
+        logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
+        return None, True
+
+    from faultmaven.infrastructure.persistence.chromadb_store import (
+        ChromaDBVectorStore,
     )
 
-    store = InMemoryVectorStore()
-    logger.warning("Vector store: InMemory (RAM only — data lost on restart)")
+    collection_name = getattr(settings.database, "chromadb_collection", "faultmaven_kb")
+    store = ChromaDBVectorStore(client=chromadb_client, collection_name=collection_name)
+    logger.info(f"✅ Vector store: ChromaDB (collection: {collection_name})")
     return store, False
 
 
-def create_case_vector_store(settings: FaultMavenSettings) -> Any | None:
-    """Create case vector store for session-specific RAG."""
+def create_case_vector_store(
+    settings: FaultMavenSettings, chromadb_client=None
+) -> Any | None:
+    """Create case vector store for session-specific RAG.
+
+    Args:
+        settings: Application settings
+        chromadb_client: Shared ChromaDB client (from create_chromadb_client)
+    """
     if settings.server.skip_service_checks:
         logger.info("Skipping case vector store (SKIP_SERVICE_CHECKS=True)")
         return None
 
-    try:
-        from faultmaven.infrastructure.persistence.case_vector_store import (
-            CaseVectorStore,
-        )
+    from faultmaven.infrastructure.persistence.case_vector_store import (
+        CaseVectorStore,
+    )
 
-        store = CaseVectorStore()
-        logger.debug("Case vector store initialized")
-        return store
-    except Exception as e:
-        logger.warning(f"Case vector store initialization failed: {e}")
-        return None
+    store = CaseVectorStore(client=chromadb_client)
+    logger.info("✅ Case vector store: ChromaDB (dynamic per-case collections)")
+    return store
 
 
 async def create_redis_client(settings: FaultMavenSettings) -> Any:
@@ -531,21 +565,26 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             "deep_analysis_service", "DEEP_ANALYSIS_BACKEND=disabled"
         )
 
-    # Vector store
+    # ChromaDB client (shared by all vector stores)
+    if not settings.server.skip_service_checks:
+        chromadb_client = create_chromadb_client(settings)
+        container._register_service("chromadb_client", chromadb_client)
+    else:
+        chromadb_client = None
+
+    # Vector store (global KB)
     try:
-        vector_store, is_disabled = create_vector_store(settings)
+        vector_store, is_disabled = create_vector_store(settings, chromadb_client)
         if is_disabled:
             container._register_disabled("vector_store", "SKIP_SERVICE_CHECKS=True")
         else:
             container._register_service("vector_store", vector_store)
     except Exception as e:
-        # Vector store is optional; if it fails to initialize, keep it unavailable
-        # rather than masking the failure with an in-memory fallback.
         logger.warning(f"Vector store initialization failed: {e}")
         container._register_failed("vector_store", str(e))
 
-    # Case vector store
-    case_vector_store = create_case_vector_store(settings)
+    # Case vector store (dynamic per-case collections)
+    case_vector_store = create_case_vector_store(settings, chromadb_client)
     if case_vector_store:
         container._register_service("case_vector_store", case_vector_store)
         container.case_vector_store = case_vector_store

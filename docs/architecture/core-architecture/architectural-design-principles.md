@@ -379,7 +379,7 @@ async def generate_bulk_report(case_ids: list[str]):
 | Component | Multiple Implementations? | Use Protocol? |
 |-----------|---------------------------|---------------|
 | LLM providers | Yes (7 providers) | ✅ Yes |
-| Vector stores | Yes (ChromaDB, InMemory) | ✅ Yes |
+| Vector stores | Yes (ChromaDB PersistentClient, HttpClient) | ✅ Yes |
 | Storage backends | Yes (S3, filesystem) | ✅ Yes |
 | Module contracts | Yes (for cross-module calls) | ✅ Yes |
 | CaseService | No (one implementation) | ❌ No |
@@ -394,8 +394,8 @@ If "Go to Definition" takes you to a Protocol instead of real code, ask: **"Will
 | Interface | Purpose | Implementations |
 |-----------|---------|-----------------|
 | `ILLMProvider` | LLM integration | OpenAI, Anthropic, Fireworks, Gemini, Local |
-| `IVectorStore` | Vector search | ChromaDB, InMemory |
-| `ISessionStore` | Session management | Redis, InMemory |
+| `IVectorStore` | Vector search | ChromaDB (PersistentClient local, HttpClient cloud) |
+| `ISessionStore` | Session management | Redis (real cloud, FakeRedis local) |
 | `IStorageBackend` | File storage | S3, Azure Blob, Filesystem |
 | `ICaseQuery` | Cross-module case access | CaseQueryService |
 
