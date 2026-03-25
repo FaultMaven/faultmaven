@@ -19,10 +19,20 @@ from faultmaven.models.interfaces import IVectorStore
 
 
 class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
-    """ChromaDB implementation of the IVectorStore interface"""
+    """ChromaDB implementation of the IVectorStore interface.
 
-    def __init__(self):
-        """Initialize ChromaDB client with K8s service configuration"""
+    Supports two modes:
+    - persist_directory: In-process PersistentClient (local deployment)
+    - No persist_directory: HttpClient to external server (production)
+    """
+
+    def __init__(self, persist_directory: Optional[str] = None):
+        """Initialize ChromaDB client.
+
+        Args:
+            persist_directory: If provided, use PersistentClient with local
+                file storage. If None, connect to external ChromaDB server.
+        """
         super().__init__(
             client_name="chromadb_vector_store",
             service_name="ChromaDB",
@@ -31,48 +41,62 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             circuit_breaker_timeout=60,
         )
 
-        # Get ChromaDB configuration from unified settings
         settings = get_settings()
-        chromadb_url = settings.database.chromadb_url
-        chromadb_token = (
-            settings.database.chromadb_api_key.get_secret_value()
-            if settings.database.chromadb_api_key
-            else None
-        )
 
-        # Parse host/port from URL
-        parsed = urlparse(chromadb_url)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if persist_directory:
+            # Local deployment: in-process persistent ChromaDB
+            import os
 
-        # Initialize ChromaDB client with optional auth settings
-        settings_kwargs = {}
-        if chromadb_token:
-            # Attempt to set auth provider only if available, without binding local 'chromadb'
+            os.makedirs(persist_directory, exist_ok=True)
             try:
-                from importlib import import_module
-
-                import_module("chromadb.auth.token")
-                settings_kwargs.update(
-                    {
-                        "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
-                        "chroma_client_auth_credentials": chromadb_token,
-                    }
-                )
-            except Exception:
-                # Proceed without explicit auth configuration
-                pass
-
-        try:
-            self.client = chromadb.HttpClient(
-                host=host,
-                port=port,
-                settings=Settings(**settings_kwargs) if settings_kwargs else Settings(),
+                self.client = chromadb.PersistentClient(path=persist_directory)
+            except Exception as e:
+                if hasattr(self, "logger"):
+                    self.logger.error(
+                        f"Failed to create ChromaDB PersistentClient: {e}"
+                    )
+                raise
+        else:
+            # Production: external ChromaDB server via HTTP
+            chromadb_url = settings.database.chromadb_url
+            chromadb_token = (
+                settings.database.chromadb_api_key.get_secret_value()
+                if settings.database.chromadb_api_key
+                else None
             )
-        except Exception as e:
-            if hasattr(self, "logger"):
-                self.logger.error(f"Failed to initialize ChromaDB HTTP client: {e}")
-            raise
+
+            parsed = urlparse(chromadb_url)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+            settings_kwargs = {}
+            if chromadb_token:
+                try:
+                    from importlib import import_module
+
+                    import_module("chromadb.auth.token")
+                    settings_kwargs.update(
+                        {
+                            "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
+                            "chroma_client_auth_credentials": chromadb_token,
+                        }
+                    )
+                except Exception:
+                    # Proceed without explicit auth configuration
+                    pass
+
+            try:
+                self.client = chromadb.HttpClient(
+                    host=host,
+                    port=port,
+                    settings=(
+                        Settings(**settings_kwargs) if settings_kwargs else Settings()
+                    ),
+                )
+            except Exception as e:
+                if hasattr(self, "logger"):
+                    self.logger.error(f"Failed to initialize ChromaDB HTTP client: {e}")
+                raise
 
         # Get or create collection
         # Use collection name from settings via dependency injection

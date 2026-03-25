@@ -183,48 +183,73 @@ def create_preprocessing_service(
 def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
     """Create vector store based on configuration.
 
-    Implements graceful degradation: if ChromaDB fails to initialize,
-    falls back to InMemoryVectorStore to maintain system availability.
+    Storage strategy:
+    - VECTOR_BACKEND=chroma: External ChromaDB server (HTTP client)
+    - No VECTOR_BACKEND (local deployment): Persistent in-process ChromaDB
+      using PersistentClient at data/chroma/ (file-based, survives restarts)
+    - SKIP_SERVICE_CHECKS=True: Disabled (returns None)
 
     Returns:
         Tuple of (vector_store, is_disabled)
     """
+    if settings.server.skip_service_checks:
+        logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
+        return None, True
+
     vector_storage_type = (settings.database.vector_storage_type or "").lower()
-    # Accept common synonyms for ChromaDB to avoid config drift (e.g. "chroma")
-    is_chroma = vector_storage_type in {"chromadb", "chroma", "chroma_db", "chroma-db"}
+    # Accept common synonyms for ChromaDB
+    is_external_chroma = vector_storage_type in {
+        "chromadb",
+        "chroma",
+        "chroma_db",
+        "chroma-db",
+    }
 
-    if is_chroma:
-        if not settings.server.skip_service_checks:
-            try:
-                from faultmaven.infrastructure.persistence.chromadb_store import (
-                    ChromaDBVectorStore,
-                )
+    if is_external_chroma:
+        # External ChromaDB server (production/enterprise)
+        try:
+            from faultmaven.infrastructure.persistence.chromadb_store import (
+                ChromaDBVectorStore,
+            )
 
-                store = ChromaDBVectorStore()
-                logger.info(
-                    f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}"
-                )
-                return store, False
-            except Exception as e:
-                logger.warning(
-                    f"ChromaDB unavailable ({type(e).__name__}: {e}), "
-                    f"falling back to InMemoryVectorStore"
-                )
-                # Fall through to InMemory fallback below
-        else:
-            logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
-            return None, True
+            store = ChromaDBVectorStore()
+            logger.info(
+                f"✅ Vector store: ChromaDB server @ {settings.database.chromadb_url}"
+            )
+            return store, False
+        except Exception as e:
+            logger.warning(
+                f"ChromaDB server unavailable ({type(e).__name__}: {e}), "
+                f"falling back to persistent local ChromaDB"
+            )
+            # Fall through to persistent local below
 
-    # Default/fallback: InMemoryVectorStore
+    # Default for local deployment: persistent in-process ChromaDB
+    # Uses PersistentClient with file-based storage at data/chroma/
+    try:
+        from faultmaven.infrastructure.persistence.chromadb_store import (
+            ChromaDBVectorStore,
+        )
+
+        persist_dir = getattr(
+            settings.database, "chromadb_persist_dir", "./data/chroma"
+        )
+        store = ChromaDBVectorStore(persist_directory=persist_dir)
+        logger.info(f"✅ Vector store: ChromaDB persistent @ {persist_dir}")
+        return store, False
+    except Exception as e:
+        logger.warning(
+            f"Persistent ChromaDB failed ({type(e).__name__}: {e}), "
+            f"falling back to InMemoryVectorStore"
+        )
+
+    # Last resort fallback: in-memory (RAM only, lost on restart)
     from faultmaven.infrastructure.persistence.inmemory_vector_store import (
         InMemoryVectorStore,
     )
 
     store = InMemoryVectorStore()
-    if is_chroma:
-        logger.info("Vector store: InMemory (ChromaDB fallback)")
-    else:
-        logger.debug("Vector store: InMemory (RAM)")
+    logger.warning("Vector store: InMemory (RAM only — data lost on restart)")
     return store, False
 
 
