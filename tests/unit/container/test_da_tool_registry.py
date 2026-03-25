@@ -33,8 +33,7 @@ def _make_mock_container(
     has_search_file: bool = False,
     has_deep_analysis: bool = False,
     has_web_search: bool = False,
-    has_global_kb: bool = False,
-    has_user_kb: bool = False,
+    has_kb: bool = False,
 ) -> MagicMock:
     """Create a mock DI container with optional tool attributes."""
     container = MagicMock()
@@ -54,15 +53,10 @@ def _make_mock_container(
     else:
         container.web_search_tool = None
 
-    if has_global_kb:
-        container.global_kb_adapter = _make_mock_tool("global_kb_qa")
+    if has_kb:
+        container.kb_adapter = _make_mock_tool("kb_qa")
     else:
-        container.global_kb_adapter = None
-
-    if has_user_kb:
-        container.user_kb_adapter = _make_mock_tool("user_kb_qa")
-    else:
-        container.user_kb_adapter = None
+        container.kb_adapter = None
 
     # Ensure remaining tool attributes are explicitly None to avoid MagicMock auto-attributes
     container.vectorize_file_tool = None

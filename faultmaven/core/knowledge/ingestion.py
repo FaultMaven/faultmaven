@@ -116,7 +116,7 @@ class KnowledgeIngester:
             )
 
         # Get or create collection
-        # Collection name must match GlobalKBConfig.get_collection_name() = "global_kb"
+        # Collection name: faultmaven_kb (unified KB collection)
         # so that ingestion writes and retrieval reads use the same collection.
         self.collection = self.chroma_client.get_or_create_collection(
             name="global_kb",

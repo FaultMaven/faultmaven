@@ -107,8 +107,7 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     - search_file: keyword/regex search on raw evidence files
     - deep_analysis: LLM-interpreted analysis of evidence files
     - web_search: trusted domain web search (Google CSE or Tavily)
-    - global_kb_qa: system-wide knowledge base Q&A
-    - user_kb_qa: user's personal runbook/procedure Q&A
+    - kb_qa: unified knowledge base Q&A (all accessible scopes)
 
     Returns:
         AgentToolRegistry with investigation tools, or None if no tools available.
@@ -133,14 +132,9 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
         registry.register(web_search_tool)
         tool_count += 1
 
-    global_kb_adapter = getattr(container, "global_kb_adapter", None)
-    if global_kb_adapter:
-        registry.register(global_kb_adapter)
-        tool_count += 1
-
-    user_kb_adapter = getattr(container, "user_kb_adapter", None)
-    if user_kb_adapter:
-        registry.register(user_kb_adapter)
+    kb_adapter = getattr(container, "kb_adapter", None)
+    if kb_adapter:
+        registry.register(kb_adapter)
         tool_count += 1
 
     vectorize_file_tool = getattr(container, "vectorize_file_tool", None)

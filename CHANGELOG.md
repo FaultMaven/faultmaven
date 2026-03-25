@@ -7,36 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### BREAKING: Knowledge Base Collection Rename
-
-**Action required after upgrade.** The Global KB ChromaDB collection has been renamed from `faultmaven_kb` to `global_kb` to align ingestion and retrieval paths. Existing deployments must re-ingest runbooks or KB retrieval will return empty results.
-
-**Re-ingest (required):**
-
-```bash
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --force-reingest
-```
-
-**Cleanup orphaned collection (optional):**
-
-```bash
-# Local deployment (PersistentClient)
-python -c "import chromadb; c = chromadb.PersistentClient('data/chroma'); c.delete_collection('faultmaven_kb'); print('Deleted faultmaven_kb')"
-
-# Cloud deployment (HttpClient)
-python -c "import chromadb; c = chromadb.HttpClient(host='CHROMADB_HOST', port=8000); c.delete_collection('faultmaven_kb'); print('Deleted faultmaven_kb')"
-```
-
-**Background:** The previous implementation had a collection name mismatch — ingestion wrote to `faultmaven_kb` via `KnowledgeIngester`, but retrieval searched `case_global_kb` via `CaseVectorStore` (which prepends `case_` to all collection names). KB Q&A tools were silently returning empty results. The fix introduces `KnowledgeVectorStore` (no prefix manipulation) and aligns the ingestion collection name to `global_kb` to match `GlobalKBConfig`.
-
 ### Changed
+
+- **KB Vector Store**: Introduced `KnowledgeVectorStore` for KB retrieval — uses collection names as-is from `KBConfig`. Replaces `CaseVectorStore` (which prepends `case_`) for all Q&A tools. Global KB collection standardized to `global_kb`.
 
 - Removed `IP_ADDRESS` from Presidio default `entities_to_protect` — public IPs are investigation evidence, not PII. Private IPs (RFC1918) remain redacted by the regex layer.
 
 ### Fixed
 
-- **KB Collection Mismatch**: Created `KnowledgeVectorStore` for KB retrieval — uses collection names as-is from `KBConfig` instead of `CaseVectorStore` which prepends `case_`. Fixes silent empty results from `global_kb_qa`, `user_kb_qa`, and `case_evidence_qa` tools.
-- **Case Evidence Double Prefix**: `CaseEvidenceConfig` returns `case_{id}` which `CaseVectorStore` turned into `case_case_{id}`. Now passes through `KnowledgeVectorStore` correctly.
+- **KB Collection Mismatch**: Fixed silent empty results from KB Q&A tools caused by ingestion writing to `faultmaven_kb` while retrieval searched `case_global_kb` (CaseVectorStore prefix). Also fixes case evidence double-prefix bug (`case_case_{id}`).
 - **Opik Ghost Spans**: Removed duplicate `@opik.track` decorator from `LLMRouter.generate()` — it created an empty outer span on every LLM call since `generate()` is a thin delegate to `route()` which already has the decorator
 - **Router Timeout Enforcement**: Changed `timeout=None` to `timeout=self.request_timeout` in `LLMRouter.route()` — the configured timeout (default 30s) was never enforced at the router level, allowing unbounded latency when the fallback chain tried multiple slow providers
 - **Test Mock Setup**: Fixed 3 tests in `test_router.py` where `aiohttp` response mocks were missing `response.text` setup, causing `AsyncMock` objects to leak into error messages recorded by Opik tracing

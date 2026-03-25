@@ -39,6 +39,7 @@ class ToolContext:
     case_id: str
     organization_id: str
     user_id: str
+    team_ids: List[str] = field(default_factory=list)
     evidence_service: Optional[Any] = (
         None  # APIEvidenceArtifactService (avoid import violation)
     )
@@ -52,6 +53,7 @@ class ToolContext:
             case_id=self.case_id,
             organization_id=self.organization_id,
             user_id=self.user_id,
+            team_ids=self.team_ids,
             evidence_service=self.evidence_service,
             execution_id=execution_id,
             metadata=self.metadata,

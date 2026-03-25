@@ -25,10 +25,8 @@ class KnowledgeVectorStore(BaseExternalClient):
     this store uses collection names as-is from KBConfig. This ensures that
     ingestion and retrieval use the same collection names.
 
-    Collection names are determined by KBConfig implementations:
-    - GlobalKBConfig: "global_kb"
-    - TeamKBConfig: "team_{team_id}_kb"
-    - UserKBConfig: "user_{user_id}_kb"
+    KB uses a single collection (faultmaven_kb) with metadata-based scope filtering.
+    Case evidence uses dynamic per-case collections (case_{case_id}).
     """
 
     def __init__(self, client):

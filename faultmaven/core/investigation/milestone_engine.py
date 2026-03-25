@@ -2203,8 +2203,7 @@ class MilestoneEngine:
         has_search = "search_file" in tool_names
         has_da = "deep_analysis" in tool_names
         has_web = "web_search" in tool_names
-        has_global_kb = "global_kb_qa" in tool_names
-        has_user_kb = "user_kb_qa" in tool_names
+        has_kb = "kb_qa" in tool_names
 
         # Build tool guidance based on what's actually available
         search_mode_guidance = (
@@ -2231,15 +2230,11 @@ class MilestoneEngine:
                 "Use for analytical questions keyword search cannot answer. "
                 "Limited to 1 call per turn."
             )
-        if has_global_kb:
+        if has_kb:
             tool_lines.append(
-                "- global_kb_qa: Query the system-wide knowledge base for documented "
-                "solutions, best practices, and troubleshooting guidance."
-            )
-        if has_user_kb:
-            tool_lines.append(
-                "- user_kb_qa: Query the user's personal runbooks and procedures "
-                "for their documented approach to similar issues."
+                "- kb_qa: Search the knowledge base for runbooks, best practices, "
+                "and documented solutions. Returns results from all accessible "
+                "sources (global, personal, team) automatically."
             )
         if has_web:
             tool_lines.append(
@@ -2258,15 +2253,10 @@ class MilestoneEngine:
                     f"1. Start with case evidence ({evidence_tools}) — "
                     "ground your analysis in THIS case's data first."
                 )
-            if has_global_kb or has_user_kb:
-                kb_names = []
-                if has_global_kb:
-                    kb_names.append("global_kb_qa")
-                if has_user_kb:
-                    kb_names.append("user_kb_qa")
+            if has_kb:
                 priority_parts.append(
-                    f"2. Check knowledge bases ({', '.join(kb_names)}) for "
-                    "documented solutions when evidence alone doesn't explain the issue."
+                    "2. Check knowledge base (kb_qa) for documented solutions "
+                    "when evidence alone doesn't explain the issue."
                 )
             if has_web:
                 priority_parts.append(
@@ -2309,7 +2299,7 @@ class MilestoneEngine:
             "'What is Opik?', 'How to set up Redis clustering?', "
             "'Common causes of OOM kills?'\n"
             "→ Answer from your own knowledge. Optionally use web_search or "
-            "global_kb_qa for supplementary detail. Connect your answer to the "
+            "kb_qa for supplementary detail. Connect your answer to the "
             f"case context when relevant, then call {schema_tool_name}.\n\n"
             "TYPE C — HYBRID (needs both evidence AND knowledge):\n"
             "Questions that bridge case data and external knowledge. Examples: "

@@ -75,24 +75,21 @@ def create_registry_tools(
 
 
 def create_document_qa_tools(
+    case_vector_store: Any | None,
     knowledge_vector_store: Any | None,
     llm_provider: Any,
     settings: FaultMavenSettings,
 ) -> dict[str, Any | None]:
-    """Create document Q&A tools using strategy pattern.
+    """Create document Q&A tools.
 
-    Three tool instances from one base class, configured differently:
-    - Case Evidence: case-scoped forensic analysis (collection = "case_{case_id}")
-    - User KB: user-scoped personal runbooks (collection = "user_{user_id}_kb")
-    - Global KB: system-wide best practices (collection = "global_kb")
-
-    All tools use KnowledgeVectorStore which passes collection names through
-    as-is from KBConfig (no prefix manipulation). Collection naming is the
-    responsibility of each KBConfig implementation.
+    Two tools:
+    - KB Q&A: unified search across all KB scopes (global + personal + team)
+    - Case Evidence Q&A: case-scoped forensic analysis
 
     Args:
-        knowledge_vector_store: Vector store for all document Q&A (KnowledgeVectorStore)
-        llm_provider: LLM provider for Q&A
+        case_vector_store: CaseVectorStore for case evidence (case_{case_id} collections)
+        knowledge_vector_store: KnowledgeVectorStore for KB (faultmaven_kb collection)
+        llm_provider: LLM provider for Q&A synthesis
         settings: Application settings
 
     Returns:
@@ -100,8 +97,7 @@ def create_document_qa_tools(
     """
     result = {
         "case_evidence_qa_tool": None,
-        "user_kb_qa_tool": None,
-        "global_kb_qa_tool": None,
+        "kb_qa_tool": None,
     }
 
     if settings.server.skip_service_checks:
@@ -109,37 +105,27 @@ def create_document_qa_tools(
         return result
 
     try:
-        from faultmaven.modules.agent.tools.case_evidence_qa import (
-            AnswerFromCaseEvidence,
-        )
-        from faultmaven.modules.agent.tools.global_kb_qa import AnswerFromGlobalKB
-        from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
+        # Case Evidence Q&A (case-scoped, separate collections)
+        if case_vector_store:
+            from faultmaven.modules.agent.tools.case_evidence_qa import (
+                AnswerFromCaseEvidence,
+            )
 
-        # All tools use KnowledgeVectorStore (no prefix manipulation).
-        # Collection names come from KBConfig:
-        #   CaseEvidenceConfig: "case_{case_id}"
-        #   GlobalKBConfig: "global_kb"
-        #   UserKBConfig: "user_{user_id}_kb"
-        if knowledge_vector_store:
-            # Tool 1: Case Evidence (case-scoped forensic analysis)
             result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(
+                vector_store=case_vector_store,
+                llm_router=llm_provider,
+            )
+
+        # Unified KB Q&A (all scopes, metadata-filtered on faultmaven_kb)
+        if knowledge_vector_store:
+            from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
+
+            result["kb_qa_tool"] = AnswerFromKB(
                 vector_store=knowledge_vector_store,
                 llm_router=llm_provider,
             )
 
-            # Tool 2: User KB (user-scoped personal runbooks)
-            result["user_kb_qa_tool"] = AnswerFromUserKB(
-                vector_store=knowledge_vector_store,
-                llm_router=llm_provider,
-            )
-
-            # Tool 3: Global KB (system-wide best practices)
-            result["global_kb_qa_tool"] = AnswerFromGlobalKB(
-                vector_store=knowledge_vector_store,
-                llm_router=llm_provider,
-            )
-
-        logger.info("✅ Created document Q&A tools (case evidence, user KB, global KB)")
+        logger.info("✅ Created document Q&A tools (case evidence, unified KB)")
 
     except Exception as e:
         logger.warning(f"Document Q&A tools creation failed: {e}")
@@ -176,8 +162,9 @@ def register_tools(container: BaseDIContainer) -> None:
 
     # Create document Q&A tools
     llm_provider = container.get_service("llm_provider")
+    case_vector_store = getattr(container, "case_vector_store", None)
 
-    # Create knowledge vector store (uses collection names as-is, no prefix)
+    # Create knowledge vector store for KB collections
     from faultmaven.container.providers.infrastructure import (
         create_knowledge_vector_store,
     )
@@ -187,6 +174,7 @@ def register_tools(container: BaseDIContainer) -> None:
     container.knowledge_vector_store = knowledge_vector_store
 
     qa_tools = create_document_qa_tools(
+        case_vector_store,
         knowledge_vector_store,
         llm_provider,
         settings,
@@ -194,34 +182,20 @@ def register_tools(container: BaseDIContainer) -> None:
 
     # Set tool instances on container
     container.case_evidence_qa_tool = qa_tools["case_evidence_qa_tool"]
-    container.user_kb_qa_tool = qa_tools["user_kb_qa_tool"]
-    container.global_kb_qa_tool = qa_tools["global_kb_qa_tool"]
+    container.kb_qa_tool = qa_tools["kb_qa_tool"]
 
     # Add Q&A tools to tools list
-    tools_to_add = [
-        qa_tools["case_evidence_qa_tool"],
-        qa_tools["global_kb_qa_tool"],
-    ]
-    if qa_tools["user_kb_qa_tool"]:
-        tools_to_add.insert(1, qa_tools["user_kb_qa_tool"])
-
-    container.tools.extend([t for t in tools_to_add if t is not None])
+    container.tools.extend([t for t in qa_tools.values() if t is not None])
 
     # Create KB adapters (AgentTool wrappers for the DA loop)
     from faultmaven.modules.agent.tools.kb_tool_adapter import (
         CaseEvidenceQAAdapter,
-        GlobalKBToolAdapter,
-        UserKBToolAdapter,
+        KBToolAdapter,
     )
 
-    container.global_kb_adapter = (
-        GlobalKBToolAdapter(wrapped_tool=qa_tools["global_kb_qa_tool"])
-        if qa_tools["global_kb_qa_tool"]
-        else None
-    )
-    container.user_kb_adapter = (
-        UserKBToolAdapter(wrapped_tool=qa_tools["user_kb_qa_tool"])
-        if qa_tools["user_kb_qa_tool"]
+    container.kb_adapter = (
+        KBToolAdapter(wrapped_tool=qa_tools["kb_qa_tool"])
+        if qa_tools["kb_qa_tool"]
         else None
     )
     container.case_evidence_qa_adapter = (
