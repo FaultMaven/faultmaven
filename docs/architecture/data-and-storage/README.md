@@ -6,90 +6,65 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 **New to FaultMaven storage?** Start here:
 
-1. **[overview.md](./overview.md)** - High-level storage architecture and technology matrix
+1. **[overview.md](./overview.md)** - High-level storage architecture, technology matrix, and collection layout
 2. **[schemas/](./schemas/)** - Detailed schema specifications for each data domain
 
-## Master Index
+## Documents
 
 ### Core Architecture
 
 - **[overview.md](./overview.md)** - Complete storage architecture overview
-  - 12 data categories (User, Case, Observability, Knowledge Base, etc.)
-  - Storage technology matrix (PostgreSQL, Redis, ChromaDB, S3)
-  - Architecture diagrams and access patterns
-  - Security, compliance, scalability, and performance
+  - Three storage technologies: SQLite/PostgreSQL, ChromaDB, Redis/FakeRedis
+  - ChromaDB collection layout (faultmaven_kb, faultmaven_runbooks, knowledge_items, case_{id})
+  - Shared client injection pattern (Principle 5)
+  - Access patterns, interfaces, and DI wiring
+  - Data retention, security, and performance targets
 
 ### Schema Specifications
 
-**[schemas/](./schemas/)** - Detailed schema documentation organized by domain
+- **[schemas/case-schema.md](./schemas/case-schema.md)** - Case data model (hybrid normalized + JSONB)
+  - Investigation lifecycle (INQUIRY → INVESTIGATING → RESOLVED → CLOSED)
+  - Evidence, hypotheses, solutions, messages (normalized tables)
+  - Multi-dialect support (SQLite + PostgreSQL)
 
 - **[schemas/user-schema.md](./schemas/user-schema.md)** - User accounts, roles, and SSO integration
-  - Authentication (password, SSO providers)
-  - Profile and preferences
-  - Email verification
-  - Audit trail
+  - Enterprise SaaS schema (organizations, teams, RBAC)
+  - 8 PostgreSQL tables with Row-Level Security
 
-- **[schemas/case-schema.md](./schemas/case-schema.md)** - Complete case data model (10 PostgreSQL tables)
-  - Investigation lifecycle (INQUIRY → INVESTIGATING → RESOLVED → CLOSED)
-  - Conversation history and context
-  - Evidence and hypotheses tracking
-  - Status transitions and audit trail
-
-- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Vector storage for KB and working memory
-  - User Knowledge Base (permanent, shareable runbooks)
-  - Case Working Memory (ephemeral per-case storage)
-  - Global Knowledge Base (system-wide documentation)
-  - ChromaDB collection architecture and sharing mechanisms
+- **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Knowledge base storage
+  - Unified KB collection (faultmaven_kb) with metadata-based scope filtering
+  - Case working memory (ephemeral per-case collections)
+  - Scope fields: scope, owner_id, team_id
 
 ### Implementation Guides
 
 - **[vector-storage.md](./vector-storage.md)** - ChromaDB implementation and operations
-  - Physical architecture (deployment, embedding models)
-  - Three vector storage systems (User KB, Case Working Memory, Global KB)
-  - Document ingestion pipeline
-  - Query execution flow and performance
-  - Collection lifecycle management
-  - API endpoints and operational procedures
+  - Shared client pattern (PersistentClient local, HttpClient cloud)
+  - Unified KB search with combined scope filter
+  - Embedding model (BGE-M3), ingestion pipeline, query execution
 
-- **[repository-pattern.md](./repository-pattern.md)** - Storage abstraction layer specification
-  - Repository interfaces and dependency injection
-  - Data access patterns
-  - Testing and mocking strategies
+- **[repository-pattern.md](./repository-pattern.md)** - Database abstraction layer
+  - Two-dimensional architecture (data type × storage backend)
+  - Repository interfaces and DI wiring
+  - FakeRedis for sessions, ChromaDB PersistentClient for vectors
 
-- **[sqlmodel-analysis.md](./sqlmodel-analysis.md)** - SQLModel ORM usage and patterns
-  - ORM patterns and best practices
-  - Async SQLAlchemy integration
-  - Performance considerations
+- **[er-diagram.md](./er-diagram.md)** - Entity-relationship diagram for all 30 tables
 
-### Legacy Reference
+## Storage Technologies
 
-- **[data-storage-design.md](./data-storage-design.md)** - Comprehensive reference (2400 lines)
-  - Complete implementation details for all 12 data categories
-  - Migration history and technical decisions
-  - **Note**: For new development, use the focused docs above
-
-- **[async-vector-storage-implementation.md](./async-vector-storage-implementation.md)** - Implementation notes
-  - Background processing with FastAPI BackgroundTasks
-  - Map-reduce for large documents
-  - **Note**: Consolidated into [vector-storage.md](./vector-storage.md)
-
-## Purpose
-
-This section covers how FaultMaven stores and retrieves data across:
-
-- **Transactional Data**: PostgreSQL for user accounts, cases, evidence, reports
-- **Session State**: Redis for ephemeral session and job tracking
-- **Semantic Search**: ChromaDB for knowledge base and vector similarity
-- **Blob Storage**: S3 for raw artifacts and large files
-- **Caching**: Multi-tier intelligent caching (L1 in-memory, L2 Redis/FakeRedis, L3 PostgreSQL)
+| Layer | Local Deployment | Cloud Deployment |
+|-------|-----------------|------------------|
+| **Relational** | SQLite (`data/faultmaven.db`) | PostgreSQL |
+| **Vector** | ChromaDB PersistentClient (`data/chroma/`) | ChromaDB HttpClient |
+| **Cache/Sessions** | FakeRedis (in-process) | Redis |
+| **Blob Storage** | Local filesystem (`data/evidence/`) | S3 |
 
 **Key Design Principles**:
 
-- **Storage Polyglot**: Right technology for each data type
+- **Deployment Agnostic**: Same code, deployment-time selection via DI
+- **No Dual Code Paths**: FakeRedis and PersistentClient are full-API replacements, not fallbacks
 - **Interface-Based**: Repository pattern for testability
-- **Privacy-First**: PII redaction and encryption
-- **Performance-Optimized**: Hybrid schemas and caching
-- **Cloud-Native**: Kubernetes-ready with horizontal scaling
+- **Shared Clients**: One ChromaDB client and one Redis client, injected everywhere
 
 ## Related Documentation
 
@@ -97,19 +72,17 @@ This section covers how FaultMaven stores and retrieves data across:
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
 - **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
 
-## Documentation Organization
+## Directory Structure
 
 ```text
 data-and-storage/
-├── README.md (this file)           # Master index
-├── overview.md                     # High-level architecture
-├── schemas/                        # Domain-specific schemas
-│   ├── case-schema.md             # Case data model
-│   ├── user-schema.md             # User data model
-│   └── knowledge-schema.md        # Vector storage schemas
-├── vector-storage.md              # ChromaDB implementation
-├── repository-pattern.md          # Abstraction layer
-├── sqlmodel-analysis.md           # ORM patterns
-├── data-storage-design.md         # Legacy comprehensive reference
-└── async-vector-storage-implementation.md  # Legacy implementation notes
+├── README.md               # This file — master index
+├── overview.md              # High-level architecture + collection layout
+├── vector-storage.md        # ChromaDB implementation guide
+├── repository-pattern.md    # Database abstraction layer spec
+├── er-diagram.md            # ER diagram (all 30 tables)
+└── schemas/
+    ├── case-schema.md       # Case data model (hybrid normalized)
+    ├── user-schema.md       # User/org/team/RBAC schema
+    └── knowledge-schema.md  # KB + case vector storage schemas
 ```
