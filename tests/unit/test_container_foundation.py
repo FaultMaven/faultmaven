@@ -554,14 +554,13 @@ class TestDIContainerErrorHandling:
 
     @pytest.mark.asyncio
     async def test_optional_component_failure_handling(self):
-        """Test handling of optional component initialization failures"""
+        """Test that vector store failure doesn't prevent container initialization.
+
+        When ChromaDB vector store creation fails, the container registers it
+        as failed but continues — no InMemory fallback (Principle: no dual paths).
+        """
         container = DIContainer()
 
-        # Mock vector store failure
-        # Ensure the container is configured to use ChromaDB so the patch is exercised.
-        # Also set CHROMADB_URL to prevent zero-config preset auto-detection from forcing
-        # the "local" preset (which sets VECTOR_STORAGE_TYPE=inmemory).
-        # Set SKIP_SERVICE_CHECKS=False to ensure ChromaDB initialization is attempted.
         with patch.dict(
             "os.environ",
             {
@@ -577,22 +576,8 @@ class TestDIContainerErrorHandling:
 
                 await container.initialize()
 
-                # Should still be initialized
+                # Container should still be initialized (vector store is optional)
                 assert container._initialized
-
-                # Vector store should gracefully degrade to InMemoryVectorStore when ChromaDB fails
-                vector_store = container.get_vector_store()
-                assert (
-                    vector_store is not None
-                ), "Container should provide fallback vector store"
-                # Verify it's the fallback in-memory implementation
-                from faultmaven.infrastructure.persistence.inmemory_vector_store import (
-                    InMemoryVectorStore,
-                )
-
-                assert isinstance(
-                    vector_store, InMemoryVectorStore
-                ), f"Expected InMemoryVectorStore fallback, got {type(vector_store).__name__}"
 
                 # Health check should show degraded but functional
                 health = container.health_check()

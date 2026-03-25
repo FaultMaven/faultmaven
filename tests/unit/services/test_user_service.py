@@ -48,14 +48,19 @@ def user_repo():
 @pytest.fixture
 def user_service(user_repo, mock_auth_service):
     """Create UserService with mocked dependencies."""
+    import fakeredis.aioredis as fakeredis_aio
+
     with patch("faultmaven.services.user_service.get_settings") as mock_settings:
         mock_settings.return_value.security.jwt_issuer = "faultmaven"
         mock_settings.return_value.security.jwt_audience = "faultmaven-api"
         mock_settings.return_value.security.jwt_algorithm = "HS256"
-        return UserService(
+        service = UserService(
             user_repo=user_repo,
             auth_service=mock_auth_service,
         )
+        # Redis is always available (FakeRedis for tests)
+        service.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+        return service
 
 
 @pytest.fixture
@@ -441,6 +446,11 @@ class TestResetPassword:
         )
         old_hash = user.hashed_password
 
+        # Seed the reset token in Redis (normally done by request_password_reset)
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, user.user_id
+        )
+
         # Mock token verification
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
@@ -465,6 +475,9 @@ class TestResetPassword:
             full_name="Reset User",
         )
 
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, user.user_id
+        )
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
@@ -489,6 +502,9 @@ class TestResetPassword:
             full_name="Reset User",
         )
 
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, user.user_id
+        )
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
@@ -519,14 +535,15 @@ class TestResetPassword:
     @pytest.mark.asyncio
     async def test_reset_password_user_can_login_after(self, user_service, user_repo):
         """After reset, user should be able to login with new password."""
-        # Register user
         user = await user_service.register_user(
             email="resetlogin@example.com",
             password="OldP@ssw0rd!",
             full_name="Reset Login User",
         )
 
-        # Mock token verification
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, user.user_id
+        )
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
@@ -549,14 +566,15 @@ class TestResetPassword:
     @pytest.mark.asyncio
     async def test_reset_password_old_password_fails(self, user_service, user_repo):
         """After reset, old password should fail authentication."""
-        # Register user
         user = await user_service.register_user(
             email="resetoldfail@example.com",
             password="OldP@ssw0rd!",
             full_name="Reset Old Fail User",
         )
 
-        # Mock token verification
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, user.user_id
+        )
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
@@ -587,12 +605,13 @@ class TestResetPassword:
         )
         original_updated = user.updated_at
 
-        # Small delay to ensure timestamp difference
         import asyncio
 
         await asyncio.sleep(0.01)
 
-        # Mock token verification
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, user.user_id
+        )
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
@@ -610,6 +629,9 @@ class TestResetPassword:
     @pytest.mark.asyncio
     async def test_reset_password_nonexistent_user(self, user_service):
         """Password reset should fail for non-existent user."""
+        await user_service.redis_client.setex(
+            "password_reset:test-jti", 3600, "nonexistent-user-id"
+        )
         with patch.object(user_service, "_verify_reset_token") as mock_verify:
             mock_verify.return_value = {
                 "sub": "nonexistent-user-id",

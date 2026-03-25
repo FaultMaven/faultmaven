@@ -16,6 +16,7 @@ import tempfile
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
+import chromadb
 import pytest
 
 from faultmaven.exceptions import VectorStoreConnectionError, VectorStoreOperationError
@@ -37,11 +38,17 @@ def temp_chroma_dir():
 
 
 @pytest.fixture
-def vector_store(temp_chroma_dir):
-    """Create vector store service with temporary storage."""
+def chroma_client(temp_chroma_dir):
+    """Create a ChromaDB PersistentClient for testing."""
+    return chromadb.PersistentClient(path=temp_chroma_dir)
+
+
+@pytest.fixture
+def vector_store(chroma_client):
+    """Create vector store service with injected client."""
     return VectorStoreService(
+        client=chroma_client,
         collection_name="test_collection",
-        persist_directory=temp_chroma_dir,
     )
 
 
@@ -80,38 +87,29 @@ def create_item_data(
 class TestVectorStoreInitialization:
     """Tests for vector store initialization."""
 
-    def test_initialization_creates_collection(self, temp_chroma_dir):
+    def test_initialization_creates_collection(self, chroma_client):
         """Test that initialization creates a collection."""
         store = VectorStoreService(
+            client=chroma_client,
             collection_name="init_test",
-            persist_directory=temp_chroma_dir,
         )
 
         assert store.collection is not None
         assert store.collection_name == "init_test"
 
-    def test_initialization_with_invalid_path(self):
+    def test_initialization_with_failing_client(self):
         """Test initialization with ChromaDB failure raises error."""
-        with patch(
-            "faultmaven.modules.knowledge.domain.services.vector_store_service.chromadb.PersistentClient"
-        ) as mock_client:
-            mock_client.side_effect = Exception("Failed to initialize ChromaDB")
-            with pytest.raises(VectorStoreConnectionError):
-                VectorStoreService(
-                    collection_name="test",
-                    persist_directory="/invalid/path",
-                )
+        mock_client = MagicMock()
+        mock_client.get_or_create_collection.side_effect = Exception(
+            "Connection failed"
+        )
+        with pytest.raises(VectorStoreConnectionError):
+            VectorStoreService(client=mock_client, collection_name="test")
 
-    def test_multiple_initializations_same_collection(self, temp_chroma_dir):
+    def test_multiple_initializations_same_collection(self, chroma_client):
         """Test multiple initializations access same collection."""
-        store1 = VectorStoreService(
-            collection_name="shared",
-            persist_directory=temp_chroma_dir,
-        )
-        store2 = VectorStoreService(
-            collection_name="shared",
-            persist_directory=temp_chroma_dir,
-        )
+        store1 = VectorStoreService(client=chroma_client, collection_name="shared")
+        store2 = VectorStoreService(client=chroma_client, collection_name="shared")
 
         assert store1.collection_name == store2.collection_name
 

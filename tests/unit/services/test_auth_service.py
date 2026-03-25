@@ -864,16 +864,6 @@ class TestEdgeCases:
         claims = auth_service.verify_token(token, token_type="access")
         assert claims["email"] == "тест@example.com"
 
-    @pytest.mark.asyncio
-    async def test_revocation_without_redis_logs_warning(
-        self, auth_service, sample_user_data
-    ):
-        """revoke_token without Redis logs a warning."""
-        with patch("faultmaven.services.auth_service.logger") as mock_logger:
-            await auth_service.revoke_token("test-jti", 12345)
-            mock_logger.warning.assert_called_once()
-            assert "Redis not configured" in mock_logger.warning.call_args[0][0]
-
     def test_multiple_roles(self, auth_service, sample_user_data):
         """Token handles multiple roles."""
         token = auth_service.generate_access_token(
