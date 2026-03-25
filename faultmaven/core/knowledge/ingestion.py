@@ -151,6 +151,9 @@ class KnowledgeIngester:
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
         document_id: Optional[str] = None,
+        scope: str = "global",
+        owner_id: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> str:
         """
         Ingest a document into the knowledge base (background task)
@@ -162,6 +165,9 @@ class KnowledgeIngester:
             tags: Optional tags for categorization
             source_url: Optional source URL
             document_id: Optional document ID to use (generates new if not provided)
+            scope: Visibility scope (global, personal, team)
+            owner_id: Owner user ID (required for personal scope)
+            team_id: Team ID (required for team scope)
 
         Returns:
             Document ID of the ingested document
@@ -188,6 +194,9 @@ class KnowledgeIngester:
                 document_type=document_type,
                 tags=tags or [],
                 source_url=source_url,
+                scope=scope,
+                owner_id=owner_id,
+                team_id=team_id,
             )
 
             # Process and store in chunks
@@ -317,6 +326,9 @@ class KnowledgeIngester:
                 "document_type": document.document_type,
                 "tags": ",".join(document.tags) if document.tags else "",
                 "source_url": document.source_url or "",
+                "scope": getattr(document, "scope", None) or "global",
+                "owner_id": getattr(document, "owner_id", None) or "",
+                "team_id": getattr(document, "team_id", None) or "",
                 "chunk_index": i,
                 "total_chunks": len(chunks),
                 "created_at": document.created_at.isoformat(),

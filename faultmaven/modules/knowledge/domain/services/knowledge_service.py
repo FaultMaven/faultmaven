@@ -122,12 +122,11 @@ class KnowledgeService:
         self._user_patterns: Dict[str, Dict[str, Any]] = {}  # User behavior patterns
         self._frequent_query_cache: Dict[str, Any] = {}  # High-frequency query cache
 
-        # In-memory storage for testing/development (used if Redis not available)
-        self._documents_store = {}
+        # In-memory job tracking (process-local, not persisted)
         self._jobs_store = {}
         self._document_counter = 0
 
-        # Redis key patterns for KB metadata (if Redis provided)
+        # Redis key patterns for KB metadata
         self._kb_doc_key = "kb:doc:{document_id}"
         self._kb_docs_set = "kb:docs"
         self._kb_index_type = "kb:index:type:{document_type}"
@@ -979,18 +978,32 @@ class KnowledgeService:
         """
         with self._tracer.trace("knowledge_service_get_statistics"):
             try:
-                # Compute stats from in-memory store
-                documents = list(self._documents_store.values())
-                total_documents = len(documents)
+                import json as _json
+
+                # Compute stats from Redis metadata store
+                ids = await self._redis.smembers(self._kb_docs_set)
                 documents_by_type: Dict[str, int] = {}
                 tag_counts: Dict[str, int] = {}
-                for doc in documents:
+                total_documents = 0
+
+                for did in ids or []:
+                    raw = await self._redis.hget(
+                        self._kb_doc_key.format(document_id=did), "data"
+                    )
+                    if not raw:
+                        continue
+                    try:
+                        doc = _json.loads(raw)
+                    except Exception:
+                        continue
+                    if doc.get("archived_at"):
+                        continue
+                    total_documents += 1
                     dtype = doc.get("document_type", "unknown")
                     documents_by_type[dtype] = documents_by_type.get(dtype, 0) + 1
                     for tag in doc.get("tags", []) or []:
                         tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-                # Sort tags by frequency
                 most_used_tags = sorted(
                     tag_counts.keys(), key=lambda t: tag_counts[t], reverse=True
                 )[:10]
@@ -1349,29 +1362,6 @@ class KnowledgeService:
                     if "tags" in document:
                         document["tags"] = normalize_tags_field(document["tags"])
                     return document
-
-            # For testing, return a mock document if the ID looks valid and not in store
-            if document_id and (
-                document_id.startswith("doc_")
-                or document_id.startswith("kb_")
-                or len(document_id) >= 8
-            ):
-                mock_doc = {
-                    "document_id": document_id,
-                    "title": f"Document {document_id}",
-                    "content": "This is sample document content for testing purposes.",
-                    "document_type": "troubleshooting",
-                    "category": "troubleshooting",
-                    "status": "processed",
-                    "tags": ["test", "sample"],
-                    "source_url": None,
-                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                    "updated_at": to_json_compatible(datetime.now(timezone.utc)),
-                    "metadata": {"author": "test-system", "version": "1.0"},
-                }
-                # Store it for consistency
-                self._documents_store[document_id] = mock_doc
-                return mock_doc
 
             return None
 
@@ -1748,13 +1738,17 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         """Update document metadata - API-compatible method"""
         try:
-            # Check if document exists in store
-            if document_id not in self._documents_store:
-                logger.warning(f"Document {document_id} not found in store for update")
-                return None  # Will cause 404 in the router
+            import json as _json
 
-            # Get current document
-            document = self._documents_store[document_id]
+            # Load current document from Redis
+            raw = await self._redis.hget(
+                self._kb_doc_key.format(document_id=document_id), "data"
+            )
+            if not raw:
+                logger.warning(f"Document {document_id} not found in Redis for update")
+                return None
+
+            document = _json.loads(raw)
 
             # Update fields
             if "title" in kwargs and kwargs["title"]:
