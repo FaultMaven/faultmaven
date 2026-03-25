@@ -54,66 +54,53 @@ In the local deployment, the Personal tier provides all KB functionality. The us
 
 ## Storage Architecture
 
-### Target Collection Layout
+### Single Collection with Metadata Filtering (CURRENT)
 
-Each knowledge tier maps to a separate ChromaDB collection with distinct access patterns:
+All knowledge tiers share **one ChromaDB collection** (`faultmaven_kb`). Scope isolation is enforced via metadata filtering at query time, not via separate collections.
 
-| Tier | Collection Pattern | ChromaDB Isolation | Access Rule |
-|------|-------------------|-------------------|-------------|
-| Global | `global_kb` | Single platform-wide collection | Read: all users. Write: platform admin only. |
-| Team | `team_{team_id}_kb` | Per-team collection (within org) | Read: team members. Write: team admin (or via promotion approval). |
-| Personal | `user_{user_id}_kb` | Per-user collection (within org) | Read/write: owner only. Promote to Team KB via approval. |
+| Tier | Metadata Filter | Access Rule |
+|------|----------------|-------------|
+| Global | `{"scope": "global"}` | Read: all users. Write: platform admin only. |
+| Team | `{"scope": "team", "team_id": "<id>"}` | Read: team members. Write: team admin (or via promotion approval). |
+| Personal | `{"scope": "personal", "owner_id": "<id>"}` | Read/write: owner only. Promote to Team KB via approval. |
 
-**Design principle:** These collections must never be confused in implementation. They use different access patterns, different agent tools, and serve different scopes. User isolation is enforced at the repository layer — no cross-tenant data access.
+**Why one collection, not separate collections per tier:**
+
+1. **No N+1 query problem** — A user in 5 teams would require 7 separate queries (global + personal + 5 teams) with per-tier collections, then manual merge/dedup/sort in Python. One collection = one query.
+2. **ChromaDB is optimized for few large collections** — HNSW graph indexing works best with millions of vectors in few collections, not thousands of tiny collections.
+3. **Roaring Bitmap metadata filtering** — ChromaDB pre-filters metadata before graph traversal. One query, one graph, one sorted top-K result.
+4. **Unified ranking** — All scopes compete in the same similarity search. A highly relevant team runbook surfaces alongside a global best practice without manual merge logic.
 
 ```text
-ChromaDB Instance (target layout)
+ChromaDB Instance
 │
-├── global_kb                        # Global tier (permanent, system-wide)
-│   └── [pre-built troubleshooting guides and best practices]
+├── faultmaven_kb                    # ALL knowledge tiers (permanent)
+│   ├── scope=global                 # Pre-built troubleshooting guides
+│   ├── scope=team, team_id=sre      # SRE team shared runbooks
+│   ├── scope=team, team_id=platform # Platform team procedures
+│   ├── scope=personal, owner_id=alice  # Alice's private runbooks
+│   └── scope=personal, owner_id=bob    # Bob's private procedures
 │
-├── team_sre_team_kb                 # Team tier: SRE Team (permanent, shared)
-│   └── [shared runbooks, incident playbooks]
+├── case_{case_id}                   # Per-case evidence (ephemeral)
+│   └── [uploaded logs, configs, metrics]
 │
-├── team_platform_kb                 # Team tier: Platform Team (permanent, shared)
-│   └── [platform-specific procedures]
-│
-├── user_kb_alice123                 # Personal tier: Alice (permanent, private)
-│   └── [alice's personal runbooks and notes]
-│
-└── user_kb_bob456                   # Personal tier: Bob (permanent, private)
-    └── [bob's personal procedures and drafts]
+└── ...
+```
+
+**Scope safety invariant:** `KnowledgeVectorStore.search()` enforces that queries against `faultmaven_kb` MUST include a scope filter (`scope`, `owner_id`, or `team_id`) in the `where` clause. Unscoped queries raise `ValueError` — converting a fail-open data leak risk into a fail-closed guarantee. This is enforced in `infrastructure/knowledge/knowledge_vector_store.py`.
+
+**A typical scoped query** for a user who belongs to the SRE team:
+
+```python
+where = {"$or": [
+    {"scope": "global"},
+    {"owner_id": user_id},
+    {"team_id": {"$in": user_team_ids}}
+]}
+collection.query(query_texts=[question], where=where, n_results=k)
 ```
 
 All tiers are **permanent** — knowledge persists until explicitly deleted by the owner (user, team admin, or system admin). This is in contrast to case evidence, which is ephemeral and tied to case lifecycle.
-
-### BUG: Collection Name Mismatch (Write/Read Disconnect)
-
-> **Critical finding:** The ingestion pipeline and the retrieval tools write to and read from **different ChromaDB collections**. This means KB Q&A tools are querying empty or wrong collections. This must be fixed before KB retrieval can work correctly.
-
-**The problem in detail:**
-
-The retrieval path (`global_kb_qa` → `DocumentQATool` → `CaseVectorStore`) was designed for case evidence, where `CaseVectorStore` prepends `case_` to every collection name. When repurposed for KB retrieval, the KB config returns `"global_kb"`, but `CaseVectorStore` transforms it to `"case_global_kb"`. Meanwhile, ingestion writes to a completely different collection.
-
-**Current mismatch:**
-
-| Path | Component | Collection Name | Notes |
-|------|-----------|-----------------|-------|
-| Global KB ingestion | `KnowledgeIngester` (`core/knowledge/ingestion.py:120`) | `faultmaven_kb` | Hardcoded |
-| Global KB retrieval | `global_kb_qa` → `CaseVectorStore` | `case_global_kb` | `GlobalKBConfig` returns `"global_kb"`, `CaseVectorStore` prepends `"case_"` |
-| User KB ingestion | `VectorStoreService` (`knowledge/services/vector_store_service.py:33`) | `knowledge_items` | Default parameter |
-| User KB retrieval | `user_kb_qa` → `CaseVectorStore` | `case_user_{id}_kb` | `UserKBConfig` returns `"user_{id}_kb"`, `CaseVectorStore` prepends `"case_"` |
-| Runbook KB (legacy) | `RunbookKB` (`infrastructure/knowledge/runbook_kb.py:45`) | `faultmaven_runbooks` | Appears unused |
-
-**Root cause:** `DocumentQATool` delegates to `CaseVectorStore`, which was built for case evidence (where the `case_` prefix makes sense). KB collections should not go through `CaseVectorStore` — they need their own vector store adapter that uses the collection name as-is from `KBConfig`.
-
-**Fix options:**
-
-1. **Create `KnowledgeVectorStore`** — A new adapter that calls ChromaDB directly without the `case_` prefix. `DocumentQATool` would use this instead of `CaseVectorStore`. This cleanly separates the evidence and knowledge retrieval paths.
-2. **Strip prefix in KBConfig** — Have `GlobalKBConfig.get_collection_name()` return `"faultmaven_kb"` directly (matching what ingestion writes), and have `CaseVectorStore` not prepend `case_` when the input doesn't look like a case ID. Hacky but minimal change.
-3. **Align ingestion to match retrieval** — Change `KnowledgeIngester` to write to `case_global_kb`. This preserves the current retrieval path but conflates the naming convention.
-
-**Recommended fix:** Option 1 — create a dedicated `KnowledgeVectorStore` that uses collection names as-is from `KBConfig`. This also prepares the ground for the federated search, which needs to query multiple KB collections concurrently without the `case_` prefix logic.
 
 ---
 
@@ -246,7 +233,7 @@ This section documents the **current implementation** and **planned improvements
 | Feature | Status | Current Reality | Target Design |
 |---------|--------|-----------------|---------------|
 | Federated search | **PLANNED** | 3 separate tools: `global_kb_qa`, `user_kb_qa`, `answer_from_case_evidence` | Single `answer_from_knowledge_base` tool |
-| Collection naming | **BUG** | Ingestion writes to `faultmaven_kb`/`knowledge_items`; retrieval reads from `case_global_kb`/`case_user_{id}_kb` (mismatched) | Aligned collection names via dedicated `KnowledgeVectorStore` |
+| Collection naming | **CURRENT** | Single unified collection `faultmaven_kb` with metadata-based scope filtering. `KnowledgeVectorStore` enforces scope invariant. | No change needed |
 | Hybrid search (metadata filtering) | **PLANNED** | Pure vector similarity, no metadata filtering | `domain_filter`/`service_filter` from case context |
 | Staleness-aware synthesis | **PLANNED** | No staleness warnings injected | Warning injection via `format_chunk_metadata()` |
 | Fast-track confidence | **CURRENT** | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py:3788` | No change needed |

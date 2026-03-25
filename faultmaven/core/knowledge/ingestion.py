@@ -116,11 +116,12 @@ class KnowledgeIngester:
             )
 
         # Get or create collection
-        # Collection name: faultmaven_kb (unified KB collection)
-        # so that ingestion writes and retrieval reads use the same collection.
+        # Single unified collection for all KB scopes (global, team, personal).
+        # Must match UnifiedKBConfig.get_collection_name() = "faultmaven_kb".
+        # Scope isolation via metadata filtering, not separate collections.
         self.collection = self.chroma_client.get_or_create_collection(
-            name="global_kb",
-            metadata={"description": "FaultMaven Global Knowledge Base"},
+            name="faultmaven_kb",
+            metadata={"description": "FaultMaven Knowledge Base"},
         )
 
         # Initialize sentence transformer for embeddings using cached model

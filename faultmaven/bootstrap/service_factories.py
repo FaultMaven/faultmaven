@@ -110,7 +110,7 @@ def register_services(redis_client=None) -> None:
         return VectorStoreService(
             client=chromadb_client,
             collection_name=getattr(
-                settings, "vector_store_collection", "knowledge_items"
+                settings, "vector_store_collection", "faultmaven_kb"
             ),
         )
 

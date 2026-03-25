@@ -1,12 +1,14 @@
 """
 Knowledge Base Vector Store
 
-ChromaDB adapter for knowledge base collections (Global, Team, Personal).
-Uses collection names exactly as provided by KBConfig — no prefix manipulation.
+ChromaDB adapter for the unified KB collection (faultmaven_kb).
+All scopes (global, team, personal) share one collection with metadata-based
+scope filtering. This is distinct from CaseVectorStore, which prefixes "case_"
+and is designed for ephemeral per-case evidence collections.
 
-This is distinct from CaseVectorStore, which prepends "case_" and is designed
-for ephemeral per-case evidence collections. Knowledge collections are permanent
-and use names like "global_kb", "team_{id}_kb", "user_{id}_kb".
+Scope safety invariant: queries against faultmaven_kb MUST include a scope
+filter in the `where` clause. Unscoped queries are rejected with ValueError
+to prevent cross-tenant data leaks.
 """
 
 import logging
@@ -17,16 +19,39 @@ from faultmaven.infrastructure.base_client import BaseExternalClient
 
 logger = logging.getLogger(__name__)
 
+# Collection name that requires scope filtering
+KB_COLLECTION = "faultmaven_kb"
+
+# Keys that indicate a scope filter is present in a where clause
+SCOPE_FILTER_KEYS = {"scope", "owner_id", "team_id"}
+
+
+def _flatten_filter_keys(where: dict) -> set:
+    """Extract all filter keys from a ChromaDB where clause, including nested $or/$and."""
+    keys = set()
+    for k, v in where.items():
+        if k in ("$or", "$and") and isinstance(v, list):
+            for clause in v:
+                if isinstance(clause, dict):
+                    keys.update(_flatten_filter_keys(clause))
+        else:
+            keys.add(k)
+    return keys
+
 
 class KnowledgeVectorStore(BaseExternalClient):
-    """Vector store for permanent knowledge base collections.
+    """Vector store for the unified KB collection (faultmaven_kb).
 
-    Unlike CaseVectorStore (which prepends "case_" to all collection names),
-    this store uses collection names as-is from KBConfig. This ensures that
-    ingestion and retrieval use the same collection names.
+    All KB scopes (global, team, personal) share one ChromaDB collection.
+    Scope isolation is enforced via metadata filtering at query time.
 
-    KB uses a single collection (faultmaven_kb) with metadata-based scope filtering.
-    Case evidence uses dynamic per-case collections (case_{case_id}).
+    **Scope safety invariant:** Queries against faultmaven_kb MUST include
+    a scope filter (scope, owner_id, or team_id) in the `where` clause.
+    Unscoped queries raise ValueError to prevent cross-tenant data leaks.
+    This converts a fail-open risk into a fail-closed guarantee.
+
+    Case evidence collections (case_{case_id}) are exempt from this check
+    since they are already scoped by case ownership.
     """
 
     def __init__(self, client):
@@ -65,6 +90,37 @@ class KnowledgeVectorStore(BaseExternalClient):
             )
             raise
 
+    def _enforce_scope_invariant(
+        self, collection_name: str, where: Optional[Dict[str, Any]]
+    ) -> None:
+        """Reject unscoped queries against the KB collection.
+
+        The unified KB collection contains documents from all scopes
+        (global, team, personal). Querying it without a scope filter
+        would leak data across tenants. This invariant makes that
+        impossible — unscoped queries crash loudly instead of silently
+        returning cross-tenant data.
+
+        Case evidence collections (case_*) are exempt.
+        """
+        if collection_name != KB_COLLECTION:
+            return  # Not the KB collection — no scope check needed
+
+        if not where:
+            raise ValueError(
+                f"KB queries require scope filter — refusing unscoped search "
+                f"on '{collection_name}'. Pass a where clause containing "
+                f"'scope', 'owner_id', or 'team_id'."
+            )
+
+        filter_keys = _flatten_filter_keys(where)
+        if not filter_keys & SCOPE_FILTER_KEYS:
+            raise ValueError(
+                f"KB queries require scope filter — where clause {where} "
+                f"does not contain any of {SCOPE_FILTER_KEYS}. "
+                f"Refusing unscoped search on '{collection_name}'."
+            )
+
     async def search(
         self,
         collection_name: str,
@@ -78,11 +134,16 @@ class KnowledgeVectorStore(BaseExternalClient):
             collection_name: Exact ChromaDB collection name (no prefix added).
             query: Search query text.
             k: Number of results to return.
-            where: Optional ChromaDB metadata filters.
+            where: ChromaDB metadata filters. **Required** for faultmaven_kb
+                   collection (must include scope/owner_id/team_id filter).
 
         Returns:
             List of matching documents with content, metadata, and scores.
+
+        Raises:
+            ValueError: If querying faultmaven_kb without a scope filter.
         """
+        self._enforce_scope_invariant(collection_name, where)
 
         async def _search_wrapper():
             collection = self._get_or_create_collection(collection_name)

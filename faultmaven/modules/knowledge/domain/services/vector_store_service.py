@@ -30,7 +30,7 @@ class VectorStoreService:
     def __init__(
         self,
         client,
-        collection_name: str = "knowledge_items",
+        collection_name: str = "faultmaven_kb",
     ):
         """Initialize vector store service.
 
