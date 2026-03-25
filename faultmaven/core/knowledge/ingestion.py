@@ -116,8 +116,11 @@ class KnowledgeIngester:
             )
 
         # Get or create collection
+        # Collection name must match GlobalKBConfig.get_collection_name() = "global_kb"
+        # so that ingestion writes and retrieval reads use the same collection.
         self.collection = self.chroma_client.get_or_create_collection(
-            name="faultmaven_kb", metadata={"description": "FaultMaven Knowledge Base"}
+            name="global_kb",
+            metadata={"description": "FaultMaven Global Knowledge Base"},
         )
 
         # Initialize sentence transformer for embeddings using cached model

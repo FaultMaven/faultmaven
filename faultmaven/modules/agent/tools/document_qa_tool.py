@@ -18,7 +18,9 @@ from pydantic import PrivateAttr
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KnowledgeVectorStore,
+)
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -42,13 +44,16 @@ class DocumentQATool(LangChainBaseTool):
     description: str = "Answer factual questions from documents"
 
     # Private attributes (not part of Pydantic schema)
-    _vector_store: CaseVectorStore = PrivateAttr()
+    _vector_store: KnowledgeVectorStore = PrivateAttr()
     _llm_router: LLMRouter = PrivateAttr()
     _settings = PrivateAttr()
     _kb_config: KBConfig = PrivateAttr()  # Strategy pattern
 
     def __init__(
-        self, vector_store: CaseVectorStore, llm_router: LLMRouter, kb_config: KBConfig
+        self,
+        vector_store: KnowledgeVectorStore,
+        llm_router: LLMRouter,
+        kb_config: KBConfig,
     ):
         """
         Initialize KB-neutral document Q&A tool.
@@ -123,7 +128,7 @@ class DocumentQATool(LangChainBaseTool):
         # Step 2: Retrieve chunks from vector store (same for all KBs)
         try:
             chunks = await self._vector_store.search(
-                case_id=collection, query=question, k=k, where=filters
+                collection_name=collection, query=question, k=k, where=filters
             )
         except Exception as e:
             logger.error(f"Vector store search failed: {e}")

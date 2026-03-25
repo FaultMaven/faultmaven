@@ -5,8 +5,10 @@ Wrapper for DocumentQATool configured for User Knowledge Base.
 Provides user-scoped access to personal runbooks and procedures.
 """
 
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KnowledgeVectorStore,
+)
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.user_kb_config import UserKBConfig
 
@@ -44,7 +46,7 @@ Use this tool to retrieve your documented best practices, procedures, and runboo
 **Note**: This is YOUR personal knowledge base, not system-wide documentation.
 Use answer_from_global_kb for general guidance."""
 
-    def __init__(self, vector_store: CaseVectorStore, llm_router: LLMRouter):
+    def __init__(self, vector_store: KnowledgeVectorStore, llm_router: LLMRouter):
         """
         Initialize user KB Q&A tool.
 

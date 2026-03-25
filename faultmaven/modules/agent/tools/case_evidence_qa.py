@@ -5,8 +5,10 @@ Wrapper for DocumentQATool configured for Case Evidence Store.
 Provides case-scoped forensic analysis of uploaded files.
 """
 
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KnowledgeVectorStore,
+)
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
@@ -46,7 +48,7 @@ Use this tool for forensic analysis of uploaded logs, configs, metrics, and code
 **Note**: You receive high-level summaries when files are uploaded (8KB preprocessed).
 Use this tool for detailed forensic questions that require precise citations."""
 
-    def __init__(self, vector_store: CaseVectorStore, llm_router: LLMRouter):
+    def __init__(self, vector_store: KnowledgeVectorStore, llm_router: LLMRouter):
         """
         Initialize case evidence Q&A tool.
 

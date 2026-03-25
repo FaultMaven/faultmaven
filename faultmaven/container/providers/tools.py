@@ -75,21 +75,23 @@ def create_registry_tools(
 
 
 def create_document_qa_tools(
-    case_vector_store: Any | None,
+    knowledge_vector_store: Any | None,
     llm_provider: Any,
     settings: FaultMavenSettings,
 ) -> dict[str, Any | None]:
     """Create document Q&A tools using strategy pattern.
 
     Three tool instances from one base class, configured differently:
-    - Case Evidence: case-scoped forensic analysis
-    - User KB: user-scoped personal runbooks (via case_vector_store with metadata filters)
-    - Global KB: system-wide best practices (via case_vector_store with metadata filters)
+    - Case Evidence: case-scoped forensic analysis (collection = "case_{case_id}")
+    - User KB: user-scoped personal runbooks (collection = "user_{user_id}_kb")
+    - Global KB: system-wide best practices (collection = "global_kb")
 
-    All tools share the same ChromaDB-backed vector store; scoping is via metadata.
+    All tools use KnowledgeVectorStore which passes collection names through
+    as-is from KBConfig (no prefix manipulation). Collection naming is the
+    responsibility of each KBConfig implementation.
 
     Args:
-        case_vector_store: Vector store for all document Q&A
+        knowledge_vector_store: Vector store for all document Q&A (KnowledgeVectorStore)
         llm_provider: LLM provider for Q&A
         settings: Application settings
 
@@ -102,10 +104,8 @@ def create_document_qa_tools(
         "global_kb_qa_tool": None,
     }
 
-    if settings.server.skip_service_checks or not case_vector_store:
-        logger.debug(
-            "Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)"
-        )
+    if settings.server.skip_service_checks:
+        logger.debug("Document Q&A tools skipped (SKIP_SERVICE_CHECKS=True)")
         return result
 
     try:
@@ -115,23 +115,29 @@ def create_document_qa_tools(
         from faultmaven.modules.agent.tools.global_kb_qa import AnswerFromGlobalKB
         from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
 
-        # Tool 1: Case Evidence (case-scoped forensic analysis)
-        result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(
-            vector_store=case_vector_store,
-            llm_router=llm_provider,
-        )
+        # All tools use KnowledgeVectorStore (no prefix manipulation).
+        # Collection names come from KBConfig:
+        #   CaseEvidenceConfig: "case_{case_id}"
+        #   GlobalKBConfig: "global_kb"
+        #   UserKBConfig: "user_{user_id}_kb"
+        if knowledge_vector_store:
+            # Tool 1: Case Evidence (case-scoped forensic analysis)
+            result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(
+                vector_store=knowledge_vector_store,
+                llm_router=llm_provider,
+            )
 
-        # Tool 2: User KB (user-scoped personal runbooks via metadata filters)
-        result["user_kb_qa_tool"] = AnswerFromUserKB(
-            vector_store=case_vector_store,
-            llm_router=llm_provider,
-        )
+            # Tool 2: User KB (user-scoped personal runbooks)
+            result["user_kb_qa_tool"] = AnswerFromUserKB(
+                vector_store=knowledge_vector_store,
+                llm_router=llm_provider,
+            )
 
-        # Tool 3: Global KB (system-wide best practices via metadata filters)
-        result["global_kb_qa_tool"] = AnswerFromGlobalKB(
-            vector_store=case_vector_store,
-            llm_router=llm_provider,
-        )
+            # Tool 3: Global KB (system-wide best practices)
+            result["global_kb_qa_tool"] = AnswerFromGlobalKB(
+                vector_store=knowledge_vector_store,
+                llm_router=llm_provider,
+            )
 
         logger.info("✅ Created document Q&A tools (case evidence, user KB, global KB)")
 
@@ -170,10 +176,18 @@ def register_tools(container: BaseDIContainer) -> None:
 
     # Create document Q&A tools
     llm_provider = container.get_service("llm_provider")
-    case_vector_store = getattr(container, "case_vector_store", None)
+
+    # Create knowledge vector store (uses collection names as-is, no prefix)
+    from faultmaven.container.providers.infrastructure import (
+        create_knowledge_vector_store,
+    )
+
+    chromadb_client = getattr(container, "chromadb_client", None)
+    knowledge_vector_store = create_knowledge_vector_store(settings, chromadb_client)
+    container.knowledge_vector_store = knowledge_vector_store
 
     qa_tools = create_document_qa_tools(
-        case_vector_store,
+        knowledge_vector_store,
         llm_provider,
         settings,
     )

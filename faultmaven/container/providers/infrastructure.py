@@ -306,6 +306,31 @@ def create_case_vector_store(
     return store
 
 
+def create_knowledge_vector_store(
+    settings: FaultMavenSettings, chromadb_client=None
+) -> Any | None:
+    """Create knowledge vector store for permanent KB collections.
+
+    Uses collection names as-is from KBConfig (no prefix manipulation).
+    This ensures ingestion and retrieval use the same collection names.
+
+    Args:
+        settings: Application settings
+        chromadb_client: Shared ChromaDB client (from create_chromadb_client)
+    """
+    if settings.server.skip_service_checks:
+        logger.info("Skipping knowledge vector store (SKIP_SERVICE_CHECKS=True)")
+        return None
+
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+
+    store = KnowledgeVectorStore(client=chromadb_client)
+    logger.info("✅ Knowledge vector store: ChromaDB (permanent KB collections)")
+    return store
+
+
 async def create_redis_client(settings: FaultMavenSettings) -> Any:
     """Create Redis client for session storage.
 
