@@ -78,9 +78,12 @@ def mock_embedding_service():
 @pytest.fixture
 def vector_store(temp_chroma_dir):
     """Create real vector store with temp storage."""
+    import chromadb
+
+    client = chromadb.PersistentClient(path=temp_chroma_dir)
     return VectorStoreService(
+        client=client,
         collection_name="integration_test",
-        persist_directory=temp_chroma_dir,
     )
 
 
