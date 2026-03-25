@@ -315,7 +315,7 @@ graph TB
 | **data.py** | `/api/v1/routes/data.py` | 5 endpoints | ✅ Active | DataService, PreprocessingService |
 | **knowledge.py** | `/api/v1/routes/knowledge.py` | 8 endpoints | ✅ Active | KnowledgeService |
 | **session.py** | `/api/v1/routes/session.py` | 7 endpoints | ✅ Active | SessionService |
-| **user_kb.py** | `/api/v1/routes/user_kb.py` | 12 endpoints | ✅ Active | KnowledgeService, UserKBVectorStore |
+| **user_kb.py** | `/api/v1/routes/user_kb.py` | 12 endpoints | ✅ Active | KnowledgeService, ChromaDBVectorStore |
 | **jobs.py** | `/api/v1/routes/jobs.py` | 6 endpoints | ✅ Active | JobService |
 | **organizations.py** | `/api/v1/routes/organizations.py` | 8 endpoints | ✅ Active | OrganizationService |
 | **teams.py** | `/api/v1/routes/teams.py` | 10 endpoints | ✅ Active | TeamService |
@@ -559,7 +559,7 @@ graph TB
 | **ChromaDBVectorStore** | ChromaDB | ✅ Active | Production vector embeddings |
 | **InMemoryVectorStore** | RAM | ✅ Active | Fallback vector store |
 | **CaseVectorStore** | ChromaDB | ✅ Active | Session-specific RAG (Working Memory) |
-| **UserKBVectorStore** | ChromaDB | ✅ Active | User knowledge bases |
+| **KnowledgeVectorStore** | ChromaDB | ✅ Active | KB collections (shared client) |
 
 **Session & Case Stores:**
 
@@ -756,8 +756,7 @@ graph TB
 |------|---------|--------|-----------|
 | **knowledge_base.py** | Global knowledge base search | ✅ Active | BaseTool |
 | **case_evidence_qa.py** | Case-scoped evidence Q&A | ✅ Active | BaseTool |
-| **user_kb_qa.py** | User knowledge base Q&A | ✅ Active | BaseTool |
-| **global_kb_qa.py** | Global KB Q&A | ✅ Active | BaseTool |
+| **kb_qa.py** | Unified KB Q&A (all scopes) | ✅ Active | DocumentQATool |
 | **web_search.py** | External web search | ✅ Active | BaseTool |
 | **document_qa_tool.py** | Base document Q&A class | ✅ Active | BaseTool |
 | **registry.py** | Tool registration pattern | ✅ Active | - |
@@ -1219,7 +1218,7 @@ Browser → SessionRoutes → SessionService → RedisSessionStore
 | **ITracer** | OpikTracer | ✅ Complete | infrastructure/observability/tracing.py |
 | **ISanitizer** | DataSanitizer | ✅ Complete | infrastructure/security/redaction.py |
 | **BaseTool** | 7 tools | ✅ Complete | tools/*.py |
-| **IVectorStore** | ChromaDBVectorStore, InMemoryVectorStore, CaseVectorStore, UserKBVectorStore | ✅ Complete | infrastructure/persistence/*_vector_store.py |
+| **IVectorStore** | ChromaDBVectorStore (shared client, PersistentClient local / HttpClient cloud) | ✅ Complete | infrastructure/persistence/chromadb_store.py |
 | **ISessionStore** | RedisSessionStore (real Redis or FakeRedis) | ✅ Complete | infrastructure/persistence/*_session_store.py |
 | **ICaseStore** | PostgreSQLHybridCaseRepository, PostgreSQLCaseRepository, InMemoryCaseRepository | ✅ Complete | infrastructure/persistence/*_case_repository.py |
 | **ICaseService** | CaseService | ✅ Complete | services/domain/case_service.py |
@@ -1317,7 +1316,7 @@ graph TB
     subgraph "Storage Adapters"
         Redis_Adapter[RedisSessionStore<br/>RedisReportStore]
         Postgres_Adapter[PostgreSQLCaseRepository<br/>PostgreSQLUserRepository<br/>PostgreSQLOrgRepository]
-        Chroma_Adapter[ChromaDBVectorStore<br/>CaseVectorStore<br/>UserKBVectorStore]
+        Chroma_Adapter[ChromaDBVectorStore<br/>CaseVectorStore<br/>KnowledgeVectorStore]
         InMem_Adapter[InMemoryVectorStore<br/>InMemoryCaseRepository]
     end
 

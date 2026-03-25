@@ -24,26 +24,31 @@
 **Single Instance, Multiple Collections Pattern**:
 
 ```
-ChromaDB Instance
-├── Host: chromadb.faultmaven.local
-├── Port: 30080 (NodePort in K8s)
-├── Auth: Token-based (optional)
-└── Collections:
-    ├── global_kb (Global KB - system-wide)
-    ├── user_kb_{user_id} (User KB - per user)
-    ├── kb_private_{user_id} (User KB - private documents)
-    ├── kb_shared (Shared KB documents with metadata filtering)
-    └── case_{case_id} (Case Working Memory - ephemeral)
+ChromaDB (single PersistentClient at data/chroma/ for local, HttpClient for cloud)
+├── Collections:
+│   ├── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered)
+│   ├── faultmaven_runbooks   (runbook similarity recommendations)
+│   ├── knowledge_items       (knowledge module search service)
+│   ├── case_{case_id}        (per-case evidence, dynamic, ephemeral)
+│   └── ...
 ```
 
-**Design Decision**: Single instance with multiple collections (vs separate instances)
-- **Pros**: Simpler deployment, resource efficiency, easier backup
-- **Cons**: Shared resource pool (mitigated by collection-level isolation)
-- **Scaling**: Collections are independently queryable; ChromaDB handles isolation
+**Architecture**: One shared ChromaDB client created in the DI container, injected into all vector stores. Local deployment uses `PersistentClient` (file-based at `data/chroma/chroma.sqlite3`), cloud uses `HttpClient` to external server. Same pattern as Redis/FakeRedis.
+
+**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Scope fields (`scope`, `owner_id`, `team_id`) are stored at ingestion time. The unified `kb_qa` tool builds a combined filter:
+
+```python
+{"$or": [
+    {"scope": "global"},
+    {"$and": [{"scope": "personal"}, {"owner_id": user_id}]},
+    {"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]},
+]}
+```
 
 ### 1.2 Embedding Model
 
 **Current**: BGE-M3 (BAAI/bge-m3)
+
 - **Dimensions**: 1024
 - **Max Sequence Length**: 8192 tokens
 - **Language Support**: Multilingual (100+ languages)
@@ -51,95 +56,66 @@ ChromaDB Instance
 - **Loading**: Cached in memory via `model_cache.get_bge_m3_model()`
 
 **Location**: Loaded in-process (not external service)
-- `KnowledgeIngester`: For global KB document ingestion
+
+- `KnowledgeIngester`: For KB document ingestion
 - `PreprocessingService`: For case evidence chunking
 - Q&A Tools: Generate query embeddings on the fly
 
 ### 1.3 Connection Management
 
-**Three Client Patterns**:
+**Shared Client Pattern** (Principle 5: Composition Root):
 
-1. **GlobalKBVectorStore** (Global KB):
-```python
-# Singleton pattern, connects to single collection
-client = chromadb.HttpClient(host="chromadb.faultmaven.local", port=30080)
-collection = client.get_or_create_collection("global_kb")
-```
+All vector stores receive the same ChromaDB client via DI injection. No store creates its own client.
 
-2. **CaseVectorStore** (Case Evidence):
 ```python
-# Multi-collection pattern, dynamic collection per case
-client = chromadb.HttpClient(host="chromadb.faultmaven.local", port=30080)
-collection = client.get_or_create_collection(f"case_{case_id}")
-```
+# DI container creates one client (infrastructure.py:create_chromadb_client)
+chromadb_client = create_chromadb_client(settings)  # PersistentClient or HttpClient
 
-3. **UserKBVectorStore** (User KB):
-```python
-# Per-user collections for private documents
+# Injected into all stores
+ChromaDBVectorStore(client=chromadb_client, collection_name="faultmaven_kb")
+CaseVectorStore(client=chromadb_client)   # dynamic case_{id} collections
+VectorStoreService(client=chromadb_client) # knowledge_items collection
 client = chromadb.HttpClient(host="chromadb.faultmaven.local", port=30080)
 private_collection = client.get_or_create_collection(f"kb_private_{user_id}")
-shared_collection = client.get_or_create_collection("kb_shared")
-```
-
 ---
 
-## 2. Three Vector Storage Systems
+## 2. Vector Storage Systems
 
-### 2.1 User Knowledge Base
+### 2.1 Knowledge Base (Unified)
 
-**Purpose**: User-scoped persistent storage for runbooks and procedures
-**Collections**: `kb_private_{user_id}` (private) + `kb_shared` (shared)
-**Lifecycle**: Permanent (user-controlled deletion)
-**Implementation**: `faultmaven/infrastructure/persistence/user_kb_vector_store.py`
+**Purpose**: All runbooks and documentation — global, personal, and team-scoped
+**Collection**: `faultmaven_kb` (single collection, metadata-filtered by scope)
+**Lifecycle**: Permanent (user/admin-controlled deletion)
+**Implementation**: `faultmaven/infrastructure/persistence/chromadb_store.py` (ChromaDBVectorStore)
+
+**Scope Isolation**: Metadata fields `scope`, `owner_id`, `team_id` stored at ingestion. The unified `kb_qa` tool automatically filters by the user's accessible scopes.
 
 **Characteristics**:
+
 - Documents persist indefinitely (no TTL)
 - BGE-M3 embeddings for semantic search
-- Sub-second search for typical queries
-- Supports sharing at user, team, and organization levels
-
-**Use Cases**:
-- Store troubleshooting runbooks
-- Share procedures across teams
-- Build organizational knowledge base
-
-See [schemas/knowledge-schema.md](./schemas/knowledge-schema.md) for complete schema and sharing architecture.
+- Cross-scope relevance ranking (global and personal results compete on relevance)
+- Single tool (`kb_qa`) returns best results regardless of scope
 
 ### 2.2 Case Working Memory
 
 **Purpose**: Ephemeral per-case document storage during active troubleshooting
-**Collections**: `case_{case_id}`
-**Lifecycle**: Case lifetime + 7 days grace period
-**Implementation**: `faultmaven/infrastructure/persistence/case_vector_store.py`
+**Collections**: `case_{case_id}` (dynamic, one per case)
+**Lifecycle**: Case lifetime — deleted when case closes/archives
+**Implementation**: `faultmaven/infrastructure/persistence/case_vector_store.py` (CaseVectorStore)
 
 **Characteristics**:
+
 - Collections created on-demand when first document added
-- Automatically deleted when case closes + 7 days
+- Deleted when case closes via `delete_case_collection()`
 - Case-scoped search (only within current case)
-- Used by `answer_from_case_evidence` tool
+- Used by `case_evidence_search` tool
 
-**Use Cases**:
-- QA sub-agent: "What does this uploaded PDF say?"
-- Semantic search within case evidence
-- Temporary document reference during investigation
+### 2.3 Additional Collections
 
-### 2.3 Global Knowledge Base
+**`faultmaven_runbooks`** — Runbook similarity recommendations (report_type, domain metadata). Used by `RunbookKB` for "this incident looks like runbook X" matching.
 
-**Purpose**: System-wide troubleshooting documentation shared across ALL users
-**Collections**: `global_kb` (single shared collection)
-**Lifecycle**: Permanent (admin-controlled)
-**Implementation**: `faultmaven/tools/global_kb_qa.py`
-
-**Characteristics**:
-- Read-only for all authenticated users
-- Pre-populated by FaultMaven team
-- Curated best practices and methodologies
-- Updated periodically by administrators
-
-**Use Cases**:
-- Industry-standard troubleshooting approaches
-- Common error patterns and solutions
-- Best practices and methodology guides
+**`knowledge_items`** — Knowledge module search service items (organization_id, item_type, category). Used by `KnowledgeSearchService` for hybrid search.
 
 ---
 

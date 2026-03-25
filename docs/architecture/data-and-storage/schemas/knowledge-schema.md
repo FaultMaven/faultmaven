@@ -10,15 +10,17 @@ This document covers FaultMaven's three knowledge storage systems: User Knowledg
 
 ---
 
-## 1. User Knowledge Base Storage
+## 1. Knowledge Base Storage (Unified)
 
 ### 1.1 Architecture Overview
 
-**Purpose**: User-scoped persistent storage for runbooks, procedures, documentation
+**Purpose**: All runbooks, procedures, and documentation — global, personal, and team-scoped
 
-**Storage**: ChromaDB with per-user collections
-**Collection Naming**: `user_kb_{user_id}`
-**Implementation**: `faultmaven/infrastructure/persistence/user_kb_vector_store.py`
+**Storage**: Single ChromaDB collection with metadata-based scope filtering
+**Collection**: `faultmaven_kb`
+**Scope Fields**: `scope` (global/personal/team), `owner_id`, `team_id` — stored at ingestion, filtered at query time
+**Implementation**: `faultmaven/infrastructure/persistence/chromadb_store.py` (ChromaDBVectorStore)
+**Search Tool**: `faultmaven/modules/agent/tools/kb_qa.py` (unified `AnswerFromKB` — single tool for all scopes)
 
 ### 1.2 Storage Characteristics
 

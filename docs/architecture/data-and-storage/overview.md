@@ -174,7 +174,7 @@ class ISessionStore(ABC):
     async def set(self, key: str, value: Dict, ttl: Optional[int]) -> None
     async def exists(self, key: str) -> bool
 
-# Vector storage (3 implementations)
+# Vector storage (ChromaDB — shared client, multiple collections)
 class IVectorStore(ABC):
     async def add_documents(self, documents: List[Dict]) -> None
     async def search(self, query: str, k: int) -> List[Dict]
@@ -202,16 +202,13 @@ class IGlobalConfidenceService(ABC):
 ```python
 from faultmaven.container import container
 
-# Get repository instances
-user_repo = container.get_user_repository()
-case_repo = container.get_case_repository()
-session_store = container.get_session_store()
-user_kb_store = container.get_user_kb_vector_store()
-case_vector_store = container.get_case_vector_store()
-global_kb_store = container.get_global_kb_vector_store()
-case_repository = container.get_case_repository()  # Use for reports (TD-001)
-job_service = container.get_job_service()
-confidence_service = container.get_confidence_service()
+# Get service instances via DI container
+case_repo = container.get_service("case_repository")
+session_store = container.get_service("session_store")
+vector_store = container.get_service("vector_store")        # ChromaDBVectorStore (faultmaven_kb)
+case_vector_store = container.case_vector_store              # CaseVectorStore (case_{id} collections)
+redis_client = container.redis_client                        # Real Redis or FakeRedis
+chromadb_client = container.chromadb_client                  # Shared ChromaDB client
 ```
 
 See [repository-pattern.md](./repository-pattern.md) for detailed abstraction layer specification.
