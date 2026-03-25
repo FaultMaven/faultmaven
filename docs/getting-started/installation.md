@@ -93,7 +93,7 @@ The community edition uses the following defaults:
 database_url = "sqlite:///./data/faultmaven.db"
 user_storage_type = "inmemory"
 case_storage_type = "inmemory"
-session_storage_type = "inmemory"
+# Sessions: FakeRedis (in-process, no external server needed)
 vector_storage_type = "inmemory"
 
 # Enterprise features (disabled)
@@ -191,8 +191,7 @@ REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_PASSWORD=your_redis_password  # Optional
 
-# Session Storage
-SESSION_STORAGE_TYPE=redis  # Use Redis instead of in-memory
+# Sessions: Real Redis auto-selected when REDIS_HOST is set
 
 # Observability
 OPIK_ENABLED=true
@@ -263,7 +262,7 @@ For Kubernetes deployments, see:
 | `DATABASE_URL` | `sqlite:///./data/faultmaven.db` | Database connection URL |
 | `USER_STORAGE_TYPE` | `inmemory` | User storage: `inmemory`, `postgresql` |
 | `CASE_STORAGE_TYPE` | `inmemory` | Case storage: `inmemory`, `postgresql` |
-| `SESSION_STORAGE_TYPE` | `inmemory` | Session storage: `inmemory`, `redis` |
+| `REDIS_HOST` | _(unset)_ | Sessions: FakeRedis when unset, real Redis when set |
 | `VECTOR_STORAGE_TYPE` | `inmemory` | Vector storage: `inmemory`, `chromadb` |
 
 #### Enterprise Features (Enterprise Edition Only)
@@ -346,8 +345,7 @@ METRICS_ENABLED=true
 PROTECTION_ENABLED=true
 SANITIZE_PII=true
 
-# Use Redis for sessions
-SESSION_STORAGE_TYPE=redis
+# Redis for sessions (real Redis auto-selected when host configured)
 REDIS_HOST=localhost
 REDIS_PORT=6379
 

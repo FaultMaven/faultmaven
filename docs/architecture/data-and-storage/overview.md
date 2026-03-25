@@ -101,12 +101,15 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 │   - auth_db: User accounts, roles, SSO                                │
 │   - cases_db: Investigation data (10 tables), evidence, hypotheses    │
 │                                                                        │
-│ Redis Cluster:                                                        │
+│ Redis (real or FakeRedis for local deployment):                        │
 │   - Session state (session:{id}, TTL: 30 min)                         │
 │   - Job queue (job:{id}, TTL: 24 hours)                               │
 │   - Report metadata now in PostgreSQL (reports table)                 │
 │   - Protection state (reputation, rate limits)                        │
 │   - Cache L2 (multi-tier caching)                                     │
+│   - Token revocation (JTI tracking with TTL)                          │
+│   - Request deduplication (content-hash with Lua scripts)             │
+│   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
 │                                                                        │
 │ ChromaDB:                                                             │
 │   - User KB: user_kb_{user_id} (permanent)                           │

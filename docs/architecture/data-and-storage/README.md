@@ -81,7 +81,7 @@ This section covers how FaultMaven stores and retrieves data across:
 - **Session State**: Redis for ephemeral session and job tracking
 - **Semantic Search**: ChromaDB for knowledge base and vector similarity
 - **Blob Storage**: S3 for raw artifacts and large files
-- **Caching**: Multi-tier intelligent caching (in-memory, Redis, PostgreSQL)
+- **Caching**: Multi-tier intelligent caching (L1 in-memory, L2 Redis/FakeRedis, L3 PostgreSQL)
 
 **Key Design Principles**:
 

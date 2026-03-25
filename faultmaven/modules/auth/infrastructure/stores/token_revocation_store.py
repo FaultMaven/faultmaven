@@ -3,57 +3,16 @@
 Storage implementations for JWT token revocation tracking.
 Revoked tokens are stored by their JTI (JWT ID) with TTL matching token expiration.
 
-Three implementations:
-1. InMemoryTokenRevocationStore - For local development (zero dependencies)
-2. RedisTokenRevocationStore - For cloud deployment (ephemeral storage)
-3. PostgresTokenRevocationStore - For enterprise deployment (persistent audit trail, ORM)
+Two implementations:
+1. RedisTokenRevocationStore - For all deployments (real Redis or FakeRedis)
+2. PostgresTokenRevocationStore - For enterprise deployment (persistent audit trail, ORM)
 """
 
-import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Set
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
 )
-
-
-class InMemoryTokenRevocationStore(ITokenRevocationStore):
-    """In-memory implementation of token revocation store."""
-
-    def __init__(self):
-        self._revoked_tokens: Set[str] = set()
-        self._expiry_times: Dict[str, datetime] = {}
-        self._lock = asyncio.Lock()
-
-    async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        async with self._lock:
-            self._revoked_tokens.add(jti)
-            self._expiry_times[jti] = datetime.now(timezone.utc) + timedelta(
-                seconds=ttl
-            )
-
-    async def is_revoked(self, jti: str) -> bool:
-        async with self._lock:
-            if jti not in self._revoked_tokens:
-                return False
-            expiry = self._expiry_times.get(jti)
-            if expiry and datetime.now(timezone.utc) > expiry:
-                self._revoked_tokens.discard(jti)
-                self._expiry_times.pop(jti, None)
-                return False
-            return True
-
-    async def cleanup_expired(self) -> int:
-        async with self._lock:
-            now = datetime.now(timezone.utc)
-            expired_jtis = [
-                jti for jti, expiry in self._expiry_times.items() if now > expiry
-            ]
-            for jti in expired_jtis:
-                self._revoked_tokens.discard(jti)
-                self._expiry_times.pop(jti, None)
-            return len(expired_jtis)
 
 
 class RedisTokenRevocationStore(ITokenRevocationStore):

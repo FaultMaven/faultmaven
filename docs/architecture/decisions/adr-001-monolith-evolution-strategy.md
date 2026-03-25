@@ -312,7 +312,7 @@ FaultMaven-Mono has:
 ### Phase 2 Metrics (Community Adoption) ✅ ACHIEVED
 
 - ✅ Onboarding time: <5 minutes (down from 1-2 weeks)
-- ✅ Zero external dependencies: SQLite, local files, in-memory sessions
+- ✅ Zero external dependencies: SQLite, local files, FakeRedis sessions
 - ✅ Installation guide published: 466 lines
 - ✅ Quick start guide published
 - ✅ Community/enterprise packaging split working

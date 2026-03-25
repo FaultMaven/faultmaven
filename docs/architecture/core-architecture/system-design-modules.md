@@ -565,8 +565,7 @@ graph TB
 
 | Store | Storage Backend | Status | Purpose |
 |-------|----------------|--------|---------|
-| **RedisSessionStore** | Redis | ✅ Active | Session persistence |
-| **InMemorySessionStore** | RAM | ✅ Active | Fallback sessions |
+| **RedisSessionStore** | Redis / FakeRedis | ✅ Active | Session persistence (single impl for all deployments) |
 | **PostgreSQLHybridCaseRepository** | PostgreSQL | ✅ Active | 10-table normalized case storage v2.0 |
 | **PostgreSQLCaseRepository** | PostgreSQL | ⚠️ Legacy | Single-table JSONB (deprecated) |
 | **InMemoryCaseRepository** | RAM | ✅ Active | Fallback case storage |
@@ -1221,7 +1220,7 @@ Browser → SessionRoutes → SessionService → RedisSessionStore
 | **ISanitizer** | DataSanitizer | ✅ Complete | infrastructure/security/redaction.py |
 | **BaseTool** | 7 tools | ✅ Complete | tools/*.py |
 | **IVectorStore** | ChromaDBVectorStore, InMemoryVectorStore, CaseVectorStore, UserKBVectorStore | ✅ Complete | infrastructure/persistence/*_vector_store.py |
-| **ISessionStore** | RedisSessionStore, InMemorySessionStore | ✅ Complete | infrastructure/persistence/*_session_store.py |
+| **ISessionStore** | RedisSessionStore (real Redis or FakeRedis) | ✅ Complete | infrastructure/persistence/*_session_store.py |
 | **ICaseStore** | PostgreSQLHybridCaseRepository, PostgreSQLCaseRepository, InMemoryCaseRepository | ✅ Complete | infrastructure/persistence/*_case_repository.py |
 | **ICaseService** | CaseService | ✅ Complete | services/domain/case_service.py |
 | **IReportStore** | RedisReportStore | ✅ Complete | infrastructure/persistence/redis_report_store.py |
@@ -1319,7 +1318,7 @@ graph TB
         Redis_Adapter[RedisSessionStore<br/>RedisReportStore]
         Postgres_Adapter[PostgreSQLCaseRepository<br/>PostgreSQLUserRepository<br/>PostgreSQLOrgRepository]
         Chroma_Adapter[ChromaDBVectorStore<br/>CaseVectorStore<br/>UserKBVectorStore]
-        InMem_Adapter[InMemoryVectorStore<br/>InMemorySessionStore<br/>InMemoryCaseRepository]
+        InMem_Adapter[InMemoryVectorStore<br/>InMemoryCaseRepository]
     end
 
     subgraph "External Storage"

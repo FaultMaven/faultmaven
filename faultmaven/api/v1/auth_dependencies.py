@@ -103,7 +103,7 @@ async def get_token_manager(request: Request):
     """Get token manager from app.state (Composition Root)
 
     Returns:
-        Token manager instance (RedisTokenManager or InMemoryTokenManager)
+        Token manager instance (RedisTokenManager)
 
     Raises:
         HTTPException: 503 if service unavailable
@@ -134,7 +134,7 @@ async def get_user_store(request: Request):
     """Get user store from app.state (Composition Root)
 
     Returns:
-        User store instance (RedisUserStore or InMemoryUserStore)
+        User store instance (DatabaseUserStore or RedisUserStore)
 
     Raises:
         HTTPException: 503 if service unavailable

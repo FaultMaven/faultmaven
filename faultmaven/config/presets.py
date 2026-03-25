@@ -71,8 +71,7 @@ PRESETS: Dict[str, PresetDefinition] = {
             "PORT": "8000",
             "RELOAD": "true",
             "SKIP_SERVICE_CHECKS": "true",
-            # Storage - all in-memory for zero external deps
-            "SESSION_STORAGE_TYPE": "inmemory",
+            # Storage - minimal external deps (FakeRedis for sessions)
             "VECTOR_STORAGE_TYPE": "inmemory",
             "CASE_STORAGE_TYPE": "inmemory",
             "USER_STORAGE_TYPE": "inmemory",
@@ -120,8 +119,7 @@ PRESETS: Dict[str, PresetDefinition] = {
             "PORT": "8000",
             "RELOAD": "false",
             "SKIP_SERVICE_CHECKS": "false",
-            # Storage - external services
-            "SESSION_STORAGE_TYPE": "redis",
+            # Storage - external services (Redis auto-selected via REDIS_HOST)
             "VECTOR_STORAGE_TYPE": "chromadb",
             "CASE_STORAGE_TYPE": "inmemory",  # In-memory until PostgreSQL configured
             "USER_STORAGE_TYPE": "inmemory",
@@ -175,8 +173,7 @@ PRESETS: Dict[str, PresetDefinition] = {
             "SKIP_SERVICE_CHECKS": "false",
             # Deployment mode
             "DEPLOYMENT_MODE": "multi-tenant",
-            # Storage - full external services
-            "SESSION_STORAGE_TYPE": "redis",
+            # Storage - full external services (Redis via REDIS_HOST)
             "VECTOR_STORAGE_TYPE": "chromadb",
             "CASE_STORAGE_TYPE": "database",
             "USER_STORAGE_TYPE": "database",

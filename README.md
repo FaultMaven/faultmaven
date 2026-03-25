@@ -278,7 +278,7 @@ The SaaS edition runs the Core in a distributed, production-grade configuration.
 | **User Management** | Not applicable (single user) | Full CRUD, invite, roles |
 | **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
 | **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
-| **Session Persistence** | **Ephemeral** (In-Memory, resets on restart) | **Persistent** (Redis, saved across sessions) |
+| **Session Persistence** | **Ephemeral** (FakeRedis, resets on restart) | **Persistent** (Redis, saved across sessions) |
 | **Access** | `http://localhost:3333` (localhost only) | `https://app.faultmaven.ai` |
 
 **Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
@@ -388,7 +388,7 @@ On first startup, LLM settings are loaded from `.env`. Once you modify them thro
 | Category | Variables | Description |
 |----------|-----------|-------------|
 | Database | `DATABASE_URL` | SQLite (default) or PostgreSQL |
-| Sessions | `SESSION_STORAGE_TYPE` | `inmemory` (default) or `redis` |
+| Sessions | `REDIS_HOST`, `REDIS_URL` | FakeRedis (default) or real Redis |
 | Vectors | `VECTOR_STORAGE_TYPE` | `inmemory` (default) or `chromadb` |
 | Security | `JWT_SECRET_KEY`, `CORS_ALLOW_ORIGINS` | Auth and CORS settings |
 
@@ -472,7 +472,7 @@ alembic upgrade head
 | **LLM/AI** | LangGraph, LangChain, OpenAI, Anthropic, Fireworks, Gemini, Groq, Cohere, HuggingFace, OpenRouter |
 | **Database** | SQLAlchemy 2.0, SQLite (local), PostgreSQL (production), Alembic |
 | **Vector DB** | ChromaDB, sentence-transformers |
-| **Cache** | Redis (optional), in-memory fallback |
+| **Cache** | Redis (cloud), FakeRedis (local — full API parity) |
 | **Auth** | JWT (PyJWT), bcrypt, RBAC |
 | **Observability** | Opik tracing, Prometheus metrics, structlog |
 | **Testing** | pytest, pytest-asyncio, pytest-cov |

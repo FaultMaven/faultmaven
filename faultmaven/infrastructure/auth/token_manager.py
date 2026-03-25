@@ -27,15 +27,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-# Conditional Redis import - only available in enterprise edition
-try:
-    from redis import Redis
-
-    REDIS_AVAILABLE = True
-except ImportError:
-    Redis = None
-    REDIS_AVAILABLE = False
-
 from faultmaven.models.auth import (
     AuthToken,
     DevUser,
@@ -58,11 +49,11 @@ class RedisTokenManager:
     - token:meta:{token_id} -> {token_metadata}
     """
 
-    def __init__(self, redis_client: Redis):
+    def __init__(self, redis_client):
         """Initialize token manager
 
         Args:
-            redis_client: Redis connection for token storage
+            redis_client: Async Redis-compatible client (real or FakeRedis)
         """
         self.redis = redis_client
         self.token_expiry_seconds = 24 * 60 * 60  # 24 hours

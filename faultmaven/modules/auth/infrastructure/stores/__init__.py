@@ -7,11 +7,9 @@ Contains store implementations for auth session and user management.
 # Stores will be imported directly when needed
 
 __all__ = [
-    "InMemorySessionStore",
     "RedisSessionManager",
     "RedisSessionStore",
     "UserStore",
-    "InMemoryTokenRevocationStore",
     "RedisTokenRevocationStore",
     "PostgresTokenRevocationStore",
 ]

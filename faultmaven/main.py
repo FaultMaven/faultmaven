@@ -298,11 +298,11 @@ async def lifespan(app: FastAPI):
                 "   1. Set WORKERS=1 in your .env file (recommended for local deployment)"
             )
             logger.error(
-                "   2. Use Redis storage: Set SESSION_STORAGE_TYPE=redis in your .env file"
+                "   2. Use database storage: Set CASE_STORAGE_TYPE=database in your .env file"
             )
             raise ValueError(
                 f"WORKERS={workers} is incompatible with in-memory storage. "
-                "Set WORKERS=1 or use SESSION_STORAGE_TYPE=redis."
+                "Set WORKERS=1 or use CASE_STORAGE_TYPE=database."
             )
         elif workers > 1:
             logger.info(

@@ -28,8 +28,7 @@ services:
       - PORT=8090
       - DEBUG=false
       - LOG_LEVEL=INFO
-      # Local deployment uses in-memory storage (no external services needed)
-      - SESSION_STORAGE_TYPE=inmemory
+      # Local deployment: FakeRedis for sessions, inmemory for vectors
       - VECTOR_STORAGE_TYPE=inmemory
       - CASE_STORAGE_TYPE=database
       - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
@@ -70,7 +69,6 @@ services:
     environment:
       - FAULTMAVEN_DEMO_MODE=true
       - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
-      - SESSION_STORAGE_TYPE=inmemory
       - VECTOR_STORAGE_TYPE=inmemory
     env_file:
       - .env

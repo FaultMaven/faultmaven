@@ -48,8 +48,8 @@ class TestPresetDefinitions:
         local_preset = PRESETS[PresetName.LOCAL]
         defaults = local_preset.defaults
 
-        # Should use in-memory storage
-        assert defaults.get("SESSION_STORAGE_TYPE") == "inmemory"
+        # Should use in-memory storage (sessions use FakeRedis — no config needed)
+        assert "SESSION_STORAGE_TYPE" not in defaults
         assert defaults.get("VECTOR_STORAGE_TYPE") == "inmemory"
         assert defaults.get("CASE_STORAGE_TYPE") == "inmemory"
 
@@ -77,8 +77,8 @@ class TestPresetDefinitions:
         standard_preset = PRESETS[PresetName.STANDARD]
         defaults = standard_preset.defaults
 
-        # Should use Redis for sessions
-        assert defaults.get("SESSION_STORAGE_TYPE") == "redis"
+        # Sessions: Redis auto-selected via REDIS_HOST in preset
+        assert "SESSION_STORAGE_TYPE" not in defaults
         # Should use ChromaDB for vectors
         assert defaults.get("VECTOR_STORAGE_TYPE") == "chromadb"
 
@@ -158,15 +158,14 @@ class TestPresetApplication:
         from faultmaven.config.presets import apply_preset_defaults
 
         with patch.dict(os.environ, {"CONFIG_PRESET": "local"}, clear=True):
-            # Remove any existing values
-            os.environ.pop("SESSION_STORAGE_TYPE", None)
             os.environ.pop("VECTOR_STORAGE_TYPE", None)
 
             apply_preset_defaults()
 
             # Check that preset values were applied
-            assert os.environ.get("SESSION_STORAGE_TYPE") == "inmemory"
             assert os.environ.get("VECTOR_STORAGE_TYPE") == "inmemory"
+            # SESSION_STORAGE_TYPE no longer in presets (FakeRedis auto-selected)
+            assert os.environ.get("SESSION_STORAGE_TYPE") is None
 
     def test_apply_preset_defaults_does_not_override_existing(self):
         """Test that apply_preset_defaults does not override existing env vars."""
@@ -176,14 +175,14 @@ class TestPresetApplication:
             os.environ,
             {
                 "CONFIG_PRESET": "local",
-                "SESSION_STORAGE_TYPE": "redis",  # User override
+                "VECTOR_STORAGE_TYPE": "chromadb",  # User override
             },
             clear=True,
         ):
             apply_preset_defaults()
 
             # User value should be preserved
-            assert os.environ.get("SESSION_STORAGE_TYPE") == "redis"
+            assert os.environ.get("VECTOR_STORAGE_TYPE") == "chromadb"
 
     def test_apply_preset_defaults_no_op_without_preset(self):
         """Test that apply_preset_defaults is a no-op without preset."""
@@ -191,12 +190,12 @@ class TestPresetApplication:
 
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("CONFIG_PRESET", None)
-            os.environ.pop("SESSION_STORAGE_TYPE", None)
+            os.environ.pop("VECTOR_STORAGE_TYPE", None)
 
             apply_preset_defaults()
 
             # No preset means no defaults applied
-            assert os.environ.get("SESSION_STORAGE_TYPE") is None
+            assert os.environ.get("VECTOR_STORAGE_TYPE") is None
 
 
 class TestZeroConfigDetection:

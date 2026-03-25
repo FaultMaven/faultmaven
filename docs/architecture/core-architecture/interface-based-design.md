@@ -78,7 +78,7 @@ The system defines **13 primary interfaces** in `faultmaven/models/interfaces.py
 **`ISessionStore`**
 - **Purpose**: Session management and user state with memory preservation
 - **Methods**: `get(key) -> Dict`, `set(key, value, ttl)`, `preserve_memory(session_id) -> bool`
-- **Implementations**: Redis with in-memory fallback and memory consolidation
+- **Implementations**: RedisSessionStore (real Redis for cloud, FakeRedis for local)
 - **Features**: TTL support, authentication integration, intelligent cleanup
 
 **`IStorageBackend`**

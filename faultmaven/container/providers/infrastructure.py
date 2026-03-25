@@ -272,93 +272,59 @@ def create_case_vector_store(settings: FaultMavenSettings) -> Any | None:
         return None
 
 
-async def create_redis_client(settings: FaultMavenSettings) -> Any | None:
-    """Create Redis client for session storage."""
+async def create_redis_client(settings: FaultMavenSettings) -> Any:
+    """Create Redis client for session storage.
+
+    Always returns a working async Redis-compatible client.
+    Cloud deployment: real Redis. Local deployment: FakeRedis (in-process).
+    """
+    from faultmaven.infrastructure.redis_client import get_async_redis_client
+
     if settings.server.skip_service_checks:
-        logger.info("Skipping Redis client (SKIP_SERVICE_CHECKS=True)")
-        return None
+        # Even with skip_service_checks, return FakeRedis so all subsystems work
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
 
-    try:
-        import redis.asyncio as redis
+        logger.info("✅ Redis client: FakeRedis (SKIP_SERVICE_CHECKS=True)")
+        return get_fakeredis_client()
 
-        client = redis.Redis(
-            host=settings.database.redis_host,
-            port=settings.database.redis_port,
-            db=settings.database.redis_db,
-            decode_responses=True,
-        )
-        await client.ping()
-        logger.info(
-            f"✅ Redis client connected @ {settings.database.redis_host}:{settings.database.redis_port}"
-        )
-        return client
-    except Exception as e:
-        logger.warning(f"Redis client initialization failed: {e}")
-        return None
+    return await get_async_redis_client(
+        redis_url=settings.database.redis_url,
+        host=settings.database.redis_host,
+        port=settings.database.redis_port,
+    )
 
 
-def create_session_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
-    """Create session store (Redis or InMemory)."""
-    if redis_client and not settings.server.skip_service_checks:
-        from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
-            RedisSessionStore,
-        )
+def create_session_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
+    """Create session store backed by Redis (real or FakeRedis)."""
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+        RedisSessionStore,
+    )
 
-        store = RedisSessionStore(redis_client)
-        logger.info("✅ Session store: Redis")
-        return store
-    else:
-        from faultmaven.modules.auth.infrastructure.stores.inmemory_session_store import (
-            InMemorySessionStore,
-        )
-
-        store = InMemorySessionStore()
-        logger.debug("Session store: InMemory (RAM)")
-        return store
+    store = RedisSessionStore(redis_client)
+    logger.info("✅ Session store: Redis")
+    return store
 
 
 def create_token_manager(
-    redis_client: Any | None,
+    redis_client: Any,
     settings: FaultMavenSettings,
     user_store: Any | None = None,
 ) -> Any:
-    """Create token manager (Redis or InMemory) based on configuration.
-
-    Follows the provider pattern: selects implementation based on cache backend
-    setting, not just Redis availability. This ensures deployment-agnostic
-    architecture where local deployment defaults to in-memory.
+    """Create token manager backed by Redis (real or FakeRedis).
 
     Args:
-        redis_client: Redis client if available
+        redis_client: Async Redis-compatible client (always provided)
         settings: Application settings
-        user_store: Optional user store to inject into InMemoryTokenManager
+        user_store: Unused (kept for backward compatibility)
 
     Returns:
-        Token manager instance (RedisTokenManager or InMemoryTokenManager)
+        RedisTokenManager instance
     """
-    # Check cache backend setting (deployment-agnostic selection)
-    cache_backend = (settings.database.session_storage_type or "inmemory").lower()
+    from faultmaven.infrastructure.auth.token_manager import RedisTokenManager
 
-    # Use Redis only if explicitly configured AND Redis is available
-    if (
-        cache_backend == "redis"
-        and redis_client
-        and not settings.server.skip_service_checks
-    ):
-        from faultmaven.infrastructure.auth.token_manager import RedisTokenManager
-
-        manager = RedisTokenManager(redis_client=redis_client)
-        logger.info("✅ Token manager: Redis")
-        return manager
-    else:
-        # Default to in-memory for local deployment
-        from faultmaven.infrastructure.auth.inmemory_token_manager import (
-            InMemoryTokenManager,
-        )
-
-        manager = InMemoryTokenManager(user_store=user_store)
-        logger.debug("Token manager: InMemory (RAM) - data lost on restart")
-        return manager
+    manager = RedisTokenManager(redis_client=redis_client)
+    logger.info("✅ Token manager: Redis")
+    return manager
 
 
 def create_case_repository(settings: FaultMavenSettings) -> Any | None:
@@ -415,20 +381,19 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
         return None
 
 
-def create_user_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
-    """Create user store (Database, Redis, or InMemory) based on configuration.
+def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
+    """Create user store (Database or Redis) based on configuration.
 
-    Follows the provider pattern with deployment-agnostic selection:
+    Provider selection:
     1. Database (SQLite/PostgreSQL) - if database is available (persistent)
-    2. Redis - if explicitly configured (persistent, multi-process)
-    3. InMemory - default fallback (ephemeral, single-process)
+    2. Redis (real or FakeRedis) - fallback when no database configured
 
     Args:
-        redis_client: Redis client if available
+        redis_client: Async Redis-compatible client (always provided)
         settings: Application settings
 
     Returns:
-        User store instance (DatabaseUserStore, RedisUserStore, or InMemoryUserStore)
+        User store instance (DatabaseUserStore or RedisUserStore)
     """
     # Priority 1: Check if database is available (SQLite for local, PostgreSQL for cloud)
     database_url = settings.database.database_url or ""
@@ -480,26 +445,12 @@ def create_user_store(redis_client: Any | None, settings: FaultMavenSettings) ->
             )
             # Fall through to in-memory
 
-    # Priority 2: Check cache backend setting for Redis
-    cache_backend = (settings.database.session_storage_type or "inmemory").lower()
+    # Priority 2: Fall back to Redis-backed user store
+    # redis_client is always available (real or FakeRedis)
+    from faultmaven.infrastructure.auth.user_store import RedisUserStore
 
-    # Use Redis only if explicitly configured AND Redis is available
-    if (
-        cache_backend == "redis"
-        and redis_client
-        and not settings.server.skip_service_checks
-    ):
-        from faultmaven.infrastructure.auth.user_store import RedisUserStore
-
-        store = RedisUserStore(redis_client=redis_client)
-        logger.info("✅ User store: Redis - persistent across restarts")
-        return store
-
-    # Priority 3: Default to in-memory for local deployment without database
-    from faultmaven.infrastructure.auth.inmemory_user_store import InMemoryUserStore
-
-    store = InMemoryUserStore()
-    logger.info("✅ User store: InMemory (RAM) - data lost on restart")
+    store = RedisUserStore(redis_client=redis_client)
+    logger.info("✅ User store: Redis")
     return store
 
 
@@ -601,17 +552,16 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     else:
         container.case_vector_store = None
 
-    # Redis client
+    # Redis client (always available: real Redis or FakeRedis)
     redis_client = await create_redis_client(settings)
-    if redis_client:
-        container._register_service("redis_client", redis_client)
+    container._register_service("redis_client", redis_client)
     container.redis_client = redis_client
 
     # Session store
     session_store = create_session_store(redis_client, settings)
     container._register_service("session_store", session_store)
 
-    # User store (provider pattern: Redis or InMemory)
+    # User store (provider pattern: Database → Redis)
     # Create user_store first so it can be injected into token_manager
     try:
         user_store = create_user_store(redis_client, settings)
@@ -633,8 +583,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         logger.error(f"❌ Failed to create user store: {e}", exc_info=True)
         raise
 
-    # Token manager (provider pattern: Redis or InMemory)
-    # Inject user_store to avoid service locator pattern
+    # Token manager (Redis-backed, real or FakeRedis)
     try:
         token_manager = create_token_manager(
             redis_client, settings, user_store=user_store

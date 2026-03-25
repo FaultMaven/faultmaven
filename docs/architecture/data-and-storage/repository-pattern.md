@@ -90,8 +90,8 @@ Configuration Example:
   CASE_STORAGE_TYPE=inmemory       # or: postgres
   USER_STORAGE_TYPE=inmemory       # or: postgres
 
-  # Cached data storage
-  SESSION_STORAGE_TYPE=inmemory    # or: redis
+  # Cached data storage (Redis or FakeRedis — auto-selected)
+  # REDIS_HOST=redis.local        # set to use real Redis
 
   # Vector data storage
   VECTOR_STORAGE_TYPE=inmemory     # or: chromadb
@@ -218,17 +218,19 @@ CASE_STORAGE_TYPE=postgres   # Production
 
 **Storage Backends**:
 
-| Backend | Implementation | Status | Use Case |
-|---------|----------------|--------|----------|
-| In-Memory | `InMemorySessionStore` | ✅ Implemented | Development, testing |
-| Local Files | `FileSessionStore` | ⚠️ Future | Single-node, offline |
-| Microservices | `RedisSessionStore` | ✅ Implemented | Production K8s |
+| Backend                | Implementation                        | Status         | Use Case             |
+|------------------------|---------------------------------------|----------------|----------------------|
+| FakeRedis (in-process) | `RedisSessionStore` + `fakeredis`     | ✅ Implemented | Local deployment     |
+| Redis (external)       | `RedisSessionStore` + `redis.asyncio` | ✅ Implemented | Cloud/K8s deployment |
+
+**Architecture**: A single `RedisSessionStore` implementation works with both real Redis and FakeRedis. The central client factory (`redis_client.py:get_async_redis_client()`) returns the appropriate client based on whether a real Redis server is available. No dual code paths.
 
 **Configuration**:
 ```bash
-SESSION_STORAGE_TYPE=inmemory  # Development
-SESSION_STORAGE_TYPE=file      # Future: single-node
-SESSION_STORAGE_TYPE=redis     # Production
+# No config needed for local (FakeRedis auto-selected)
+# For cloud: provide Redis connection details
+REDIS_HOST=redis.example.com   # Triggers real Redis client
+REDIS_PORT=6379
 ```
 
 **Data Includes**:
@@ -429,9 +431,8 @@ class SessionStore(ABC):
     Technology: Key-value store (Redis)
 
     Implementations:
-    - InMemorySessionStore: RAM (development)
-    - RedisSessionStore: K8s Redis (production)
-    - FileSessionStore: Local file (future)
+    - RedisSessionStore + FakeRedis: Local deployment
+    - RedisSessionStore + real Redis: Cloud/K8s deployment
     """
 
     @abstractmethod
@@ -545,16 +546,21 @@ class VectorStore(ABC):
 **Use Case**: Development, testing, rapid prototyping
 
 **Implementations**:
-- ✅ `InMemoryCaseRepository` - Cases in Python dict
-- ✅ `InMemorySessionStore` - Sessions in Python dict
-- ✅ `InMemoryVectorStore` - Simple word-based similarity (no embeddings)
+
+- ✅ `InMemoryCaseRepository` - Cases in Python dict (database dimension)
+- ✅ `RedisSessionStore` + FakeRedis - Sessions via in-process Redis (cache dimension)
+- ✅ `InMemoryVectorStore` - Simple word-based similarity (vector dimension, fallback only)
+
+> **Note**: Session/cache storage no longer uses a separate `InMemorySessionStore`.
+> All deployments use `RedisSessionStore` backed by either real Redis (cloud) or
+> FakeRedis (local). This eliminates dual code paths across 9 Redis-dependent subsystems.
 
 **Configuration**:
 ```bash
 # .env.development
 CASE_STORAGE_TYPE=inmemory
 USER_STORAGE_TYPE=inmemory
-SESSION_STORAGE_TYPE=inmemory
+# No SESSION_STORAGE_TYPE needed — FakeRedis auto-selected when no Redis server available
 VECTOR_STORAGE_TYPE=inmemory
 ```
 
@@ -562,6 +568,7 @@ VECTOR_STORAGE_TYPE=inmemory
 - ✅ Zero setup
 - ✅ Microsecond operations
 - ✅ Perfect for tests
+- ✅ 100% Redis API parity (FakeRedis supports Lua scripts, pipelines, sorted sets)
 - ❌ Data lost on restart
 - ❌ Single process only
 
@@ -581,7 +588,8 @@ VECTOR_STORAGE_TYPE=inmemory
 # .env.local (self-hosted deployment)
 DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
 
-SESSION_STORAGE_TYPE=inmemory  # or: redis for persistence
+# Sessions: FakeRedis auto-selected (no config needed)
+# To use external Redis: set REDIS_HOST=redis.local
 
 VECTOR_STORAGE_TYPE=inmemory   # or: chromadb for persistence
 ```
@@ -692,12 +700,10 @@ USERS_DB_PASSWORD=secure_password
 # ===========================================
 # CACHED DATA (Sessions, Temp State)
 # ===========================================
-# Technology: Redis
-# Options: inmemory, file (future), redis
+# Technology: Redis (real or FakeRedis for local)
+# FakeRedis auto-selected when no REDIS_HOST configured
 
-SESSION_STORAGE_TYPE=redis           # or: inmemory
-
-# Redis Configuration (when TYPE=redis)
+# Redis Configuration (set for cloud deployment)
 REDIS_HOST=redis.faultmaven.local
 REDIS_PORT=6379
 REDIS_PASSWORD=secure_password
@@ -725,7 +731,7 @@ CHROMADB_COLLECTION=faultmaven_kb
 # .env.development
 CASE_STORAGE_TYPE=inmemory
 USER_STORAGE_TYPE=inmemory
-SESSION_STORAGE_TYPE=inmemory
+# Sessions: FakeRedis auto-selected (no config needed)
 VECTOR_STORAGE_TYPE=inmemory
 ```
 
@@ -783,20 +789,14 @@ class Container:
         # ==========================================
         # CACHED DATA: Session Store
         # ==========================================
-        session_storage_type = settings.cache.session_storage_type.lower()
-
-        if session_storage_type == "redis":
-            # Redis backend (production)
-            redis_client = aioredis.from_url(
-                settings.cache.redis_url,
-                encoding="utf-8",
-                decode_responses=True
-            )
-            self.session_store = RedisSessionStore(redis_client)
-
-        else:
-            # In-memory backend (development)
-            self.session_store = InMemorySessionStore()
+        # Single code path: get_async_redis_client() returns real Redis
+        # or FakeRedis based on availability. No branching needed.
+        from faultmaven.infrastructure.redis_client import get_async_redis_client
+        redis_client = await get_async_redis_client(
+            host=settings.database.redis_host,
+            port=settings.database.redis_port,
+        )
+        self.session_store = RedisSessionStore(redis_client)
 
         # ==========================================
         # VECTOR DATA: Vector Store (InMemory or ChromaDB)
@@ -1024,13 +1024,14 @@ class SessionStoreContractTests(ABC):
     # ... TTL tests, expiration, pattern matching, etc.
 
 
-class TestInMemorySessionStore(SessionStoreContractTests):
+class TestFakeRedisSessionStore(SessionStoreContractTests):
     @pytest.fixture
     def store(self):
-        return InMemorySessionStore()
+        import fakeredis.aioredis as fakeredis_aio
+        return RedisSessionStore(fakeredis_aio.FakeRedis(decode_responses=True))
 
 
-class TestRedisSessionStore(SessionStoreContractTests):
+class TestRealRedisSessionStore(SessionStoreContractTests):
     @pytest.fixture
     def store(self):
         return RedisSessionStore(test_redis_client)
@@ -1042,9 +1043,9 @@ Test that services work correctly with **any combination** of backends:
 
 ```python
 @pytest.mark.parametrize("case_backend,session_backend", [
-    ("inmemory", "inmemory"),
+    ("inmemory", "fakeredis"),
     ("inmemory", "redis"),
-    ("postgres", "inmemory"),
+    ("postgres", "fakeredis"),
     ("postgres", "redis"),
 ])
 @pytest.mark.asyncio
@@ -1157,22 +1158,13 @@ await vector_store.add_documents(
 ```bash
 # Change configuration only (no code changes)
 
-# FROM (Development):
+# FROM (Development — FakeRedis auto-selected for sessions):
 CASE_STORAGE_TYPE=inmemory
-SESSION_STORAGE_TYPE=inmemory
 VECTOR_STORAGE_TYPE=inmemory
 
-# TO (Production):
+# TO (Production — real Redis for sessions):
 CASE_STORAGE_TYPE=postgres
-SESSION_STORAGE_TYPE=redis
-VECTOR_STORAGE_TYPE=chromadb
-```
-
-**Hybrid Deployment** (possible):
-```bash
-# Cases in production DB, sessions still in-memory for testing
-CASE_STORAGE_TYPE=postgres
-SESSION_STORAGE_TYPE=inmemory
+REDIS_HOST=redis.faultmaven.local
 VECTOR_STORAGE_TYPE=chromadb
 ```
 

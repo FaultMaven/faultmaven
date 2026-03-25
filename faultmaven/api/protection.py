@@ -234,10 +234,11 @@ class ProtectionSystem:
 
             # 2. Request Deduplication (executed second)
             if self.basic_config.deduplication_enabled:
+                redis_client = getattr(self.app.state, "redis_client", None)
                 self.app.add_middleware(
                     DeduplicationMiddleware,
                     settings=self.basic_config,
-                    redis_url=self.basic_config.redis_url,
+                    redis_client=redis_client,
                 )
                 basic_result["middleware_added"].append("deduplication")
                 basic_result["components"].append("request_deduplication")
@@ -515,10 +516,11 @@ def setup_protection_middleware(
         # Add middleware in reverse order (FastAPI adds them as a stack)
         # Last added = first executed
         if settings.deduplication_enabled:
+            redis_client = getattr(app.state, "redis_client", None)
             app.add_middleware(
                 DeduplicationMiddleware,
                 settings=settings,
-                redis_url=settings.redis_url,
+                redis_client=redis_client,
             )
             setup_info["middleware_added"].append("deduplication")
 
@@ -657,7 +659,9 @@ async def setup_protection_middleware_async(
         # 2. Request Deduplication (executed second)
         if settings.deduplication_enabled:
             app.add_middleware(
-                DeduplicationMiddleware, settings=settings, redis_url=settings.redis_url
+                DeduplicationMiddleware,
+                settings=settings,
+                redis_client=getattr(app.state, "redis_client", None),
             )
             setup_info["middleware_added"].append("deduplication")
             logger.info("Added request deduplication middleware")

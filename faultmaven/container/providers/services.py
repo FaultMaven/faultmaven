@@ -604,35 +604,22 @@ def create_token_revocation_store(
     settings: FaultMavenSettings,
     cache_client: Any = None,
 ) -> Any:
-    """Create token revocation store based on deployment.
+    """Create token revocation store backed by Redis (real or FakeRedis).
 
     Revoked tokens are tracked with TTL (matching token expiration).
-    Uses cache layer only for ephemeral tracking.
 
     Args:
         settings: FaultMavenSettings instance
-        cache_client: Redis client for cloud, None for local (uses in-memory)
+        cache_client: Async Redis-compatible client (always provided)
 
     Returns:
-        Token revocation store instance (cache layer only)
+        RedisTokenRevocationStore instance
     """
-    # Determine if we're in cloud or local deployment
-    is_cloud = cache_client is not None
+    from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+        RedisTokenRevocationStore,
+    )
 
-    if is_cloud:
-        # Cloud deployment: Use Redis cache
-        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
-            RedisTokenRevocationStore,
-        )
-
-        return RedisTokenRevocationStore(cache_client)
-    else:
-        # Local deployment: Use in-memory cache
-        from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
-            InMemoryTokenRevocationStore,
-        )
-
-        return InMemoryTokenRevocationStore()
+    return RedisTokenRevocationStore(cache_client)
 
 
 def create_jwt_token_generator(

@@ -143,16 +143,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         try:
             await self.rate_limiter.initialize()
             self._initialized = True
-            # Check if we're running with Redis or fallback
-            if (
-                hasattr(self.rate_limiter, "_redis_healthy")
-                and not self.rate_limiter._redis_healthy
-            ):
-                self.logger.info(
-                    "Rate limiting middleware initialized (in-memory fallback)"
-                )
-            else:
-                self.logger.info("Rate limiting middleware initialized")
+            self.logger.info("Rate limiting middleware initialized")
         except Exception as e:
             # The underlying rate_limiter already logged the issue appropriately
             # Only re-raise if fail_open is disabled

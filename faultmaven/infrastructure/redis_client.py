@@ -1,14 +1,15 @@
 """
-Enhanced Redis client configuration for FaultMaven.
+Redis client configuration for FaultMaven.
 
-Supports both local development and K8s cluster deployments with
-proper authentication, connection pooling, and error handling.
+Provides a single factory function that returns either a real Redis client
+(cloud/enterprise) or FakeRedis (local deployment). All subsystems receive
+the same async Redis interface — no dual code paths needed.
 
 Configuration is read from the unified settings system (faultmaven.config.settings).
 """
 
 import logging
-from typing import Optional, Union
+from typing import Optional
 from urllib.parse import urlparse
 
 # Conditional Redis import - only available in enterprise edition
@@ -22,11 +23,35 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Singleton FakeRedis instance shared across all subsystems
+_fakeredis_instance = None
+
+
+def get_fakeredis_client():
+    """Return a singleton FakeRedis async client for local deployment.
+
+    All subsystems share one instance so data (sessions, tokens, rate limits)
+    is visible across the application, exactly like a real Redis server.
+    """
+    import fakeredis.aioredis as fakeredis_aio
+
+    global _fakeredis_instance
+    if _fakeredis_instance is None:
+        _fakeredis_instance = fakeredis_aio.FakeRedis(decode_responses=True)
+        logger.info("✅ Redis client: FakeRedis (in-process, local deployment)")
+    return _fakeredis_instance
+
+
+def reset_fakeredis_client():
+    """Reset the FakeRedis singleton. For testing only."""
+    global _fakeredis_instance
+    _fakeredis_instance = None
+
 
 class RedisClientFactory:
     """Factory for creating configured Redis clients.
 
-    Requires enterprise edition with redis installed.
+    Returns real Redis for cloud, FakeRedis for local deployment.
     """
 
     @staticmethod
@@ -37,18 +62,12 @@ class RedisClientFactory:
         password: Optional[str] = None,
         **kwargs,
     ):
-        """
-        Create a Redis client with proper configuration.
+        """Create a Redis client with proper configuration.
 
-        Requires enterprise edition with redis installed.
-        Raises ImportError if redis is not available.
-        """
-        if not REDIS_AVAILABLE or redis is None:
-            raise ImportError(
-                "Redis is not available. Install with: pip install faultmaven[enterprise]"
-            )
-        """
-        Create a Redis client with proper configuration.
+        For cloud deployment (redis package installed + config provided):
+            Returns a real redis.asyncio.Redis client.
+        For local deployment (no redis package or no config):
+            Returns a FakeRedis client (full Redis API, in-process).
 
         Args:
             redis_url: Complete Redis URL (takes precedence)
@@ -58,9 +77,11 @@ class RedisClientFactory:
             **kwargs: Additional Redis client parameters
 
         Returns:
-            Configured Redis client
+            Configured async Redis-compatible client
         """
-        # Priority: explicit parameters > environment variables > defaults
+        if not REDIS_AVAILABLE or redis is None:
+            return get_fakeredis_client()
+
         config = RedisClientFactory._build_config(redis_url, host, port, password)
 
         # Add connection pool settings for better performance
@@ -70,12 +91,8 @@ class RedisClientFactory:
             "socket_timeout": kwargs.pop("socket_timeout", 10),
         }
 
-        # Note: retry_on_timeout is deprecated in redis-py 6.0.0+
-        # TimeoutError is included by default in retry behavior
-
         try:
             if config["url"]:
-                # Use URL-based connection (includes auth)
                 client = redis.from_url(
                     config["url"], decode_responses=True, **pool_kwargs, **kwargs
                 )
@@ -83,7 +100,6 @@ class RedisClientFactory:
                     f"Redis client created from URL: {RedisClientFactory._mask_url(config['url'])}"
                 )
             else:
-                # Use parameter-based connection
                 client = redis.Redis(
                     host=config["host"],
                     port=config["port"],
@@ -93,37 +109,15 @@ class RedisClientFactory:
                     **kwargs,
                 )
                 logger.info(
-                    f"Redis client created: {config['host']}:{config['port']} (auth: {'yes' if config['password'] else 'no'})"
+                    f"Redis client created: {config['host']}:{config['port']} "
+                    f"(auth: {'yes' if config['password'] else 'no'})"
                 )
 
-            # Validate connection (fail-fast) - Skip during container initialization
-            # Note: We skip the connection test during initialization because it can
-            # cause event loop conflicts when called from async contexts.
-            # The first actual Redis operation will validate the connection.
-            try:
-                import asyncio
-
-                # Check if we're in an async context
-                try:
-                    asyncio.get_running_loop()
-                    # Event loop is running, skip validation to avoid conflicts
-                    logger.debug(
-                        "Async context detected; skipping Redis ping validation during initialization"
-                    )
-                except RuntimeError:
-                    # No event loop running, safe to test connection
-                    is_ok = asyncio.run(RedisClientFactory.test_connection(client))
-                    if not is_ok:
-                        raise ConnectionError("Redis ping failed")
-                    logger.info("Redis connection validated successfully")
-            except Exception as e:
-                # Don't fail initialization due to connection test issues
-                logger.warning(f"Redis connection test skipped due to: {e}")
             return client
 
         except Exception as e:
-            logger.error(f"Failed to create Redis client: {e}")
-            raise ConnectionError(f"Cannot connect to Redis: {e}")
+            logger.warning(f"Failed to create real Redis client: {e}, using FakeRedis")
+            return get_fakeredis_client()
 
     @staticmethod
     def _build_config(
@@ -137,21 +131,15 @@ class RedisClientFactory:
         Configuration priority:
         1. Explicit parameters passed to create_client()
         2. Unified settings system (faultmaven.config.settings)
-
-        Note: This method no longer falls back to os.getenv() directly.
-        All environment variable access happens through the settings system.
         """
-        # 1. Check for explicit URL parameter
         if redis_url:
             return {"url": redis_url, "host": None, "port": None, "password": None}
 
-        # 2. Use unified settings system
         from faultmaven.config.settings import get_settings
 
         settings = get_settings()
         db_config = settings.database
 
-        # Check if settings has a Redis URL configured
         if db_config.redis_url:
             return {
                 "url": db_config.redis_url,
@@ -160,7 +148,6 @@ class RedisClientFactory:
                 "password": None,
             }
 
-        # Build from individual settings fields
         config = {
             "url": None,
             "host": host or db_config.redis_host,
@@ -192,15 +179,7 @@ class RedisClientFactory:
 
     @staticmethod
     async def test_connection(client) -> bool:
-        """
-        Test Redis connection health.
-
-        Args:
-            client: Redis client to test
-
-        Returns:
-            True if connection is healthy
-        """
+        """Test Redis connection health."""
         try:
             response = await client.ping()
             if response:
@@ -215,32 +194,46 @@ class RedisClientFactory:
 
 
 def create_redis_client(**kwargs):
-    """
-    Convenience function to create a Redis client.
+    """Convenience function to create a Redis client.
 
-    Usage:
-        # Local development (uses settings defaults or .env overrides)
-        client = create_redis_client()
-
-        # Explicit configuration override
-        client = create_redis_client(
-            host='custom-host',
-            port=6379,
-            password='your-password'
-        )
-
-        # URL-based
-        client = create_redis_client(redis_url='redis://:password@host:port/0')
+    Always returns a working async Redis-compatible client.
+    Falls back to FakeRedis if real Redis is unavailable.
     """
     return RedisClientFactory.create_client(**kwargs)
 
 
-async def validate_redis_connection(client) -> None:
-    """
-    Validate Redis connection and log results.
+async def get_async_redis_client(
+    redis_url: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+) -> object:
+    """Create and validate an async Redis client.
 
-    Args:
-        client: Redis client to validate
+    Attempts to connect to real Redis. If unavailable, returns FakeRedis.
+    This is the primary entry point for the DI container.
+
+    Returns:
+        A working async Redis-compatible client (never None).
+    """
+    if REDIS_AVAILABLE and redis is not None and (redis_url or host):
+        try:
+            if redis_url:
+                client = redis.from_url(redis_url, decode_responses=True)
+            else:
+                client = redis.Redis(
+                    host=host, port=port or 6379, decode_responses=True
+                )
+            await client.ping()
+            logger.info(f"✅ Redis client connected @ {redis_url or host}")
+            return client
+        except Exception as e:
+            logger.warning(f"Real Redis unavailable ({e}), using FakeRedis")
+
+    return get_fakeredis_client()
+
+
+async def validate_redis_connection(client) -> None:
+    """Validate Redis connection and log results.
 
     Raises:
         ConnectionError: If Redis is not accessible
@@ -250,15 +243,7 @@ async def validate_redis_connection(client) -> None:
         raise ConnectionError("Redis connection validation failed")
 
 
-# K8s-specific helper
+# K8s-specific helper (kept for backward compatibility)
 def create_k8s_redis_client():
-    """
-    Create Redis client specifically configured for K8s cluster.
-
-    Note: This function is now redundant since create_redis_client()
-    defaults to K8s configuration. Use create_redis_client() instead.
-
-    Reads configuration from settings (defaults to faultmaven-redis-master:6379)
-    or .env file overrides (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD).
-    """
+    """Create Redis client configured for K8s cluster."""
     return create_redis_client()

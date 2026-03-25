@@ -153,7 +153,6 @@ jobs:
           SANITIZE_PII: "false"
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
-          SESSION_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
 
       - name: Check Coverage Threshold
@@ -221,10 +220,9 @@ jobs:
           METRICS_ENABLED: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
-          # Still use in-memory for CI (no external services)
+          # CI: no external services (FakeRedis for sessions)
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
-          SESSION_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
 
       - name: Check Coverage Threshold

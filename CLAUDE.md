@@ -251,7 +251,7 @@ modules/auth/
 │       └── team_service.py         # Team management
 └── infrastructure/
     ├── repositories/               # User, session, OAuth code, team, org repositories
-    ├── stores/                     # Redis/in-memory session stores, token revocation
+    ├── stores/                     # Redis session stores (FakeRedis for local), token revocation
     └── metrics/                    # OAuth metrics tracking
 ```
 
@@ -282,7 +282,7 @@ modules/auth/
 | LLM/AI | LangGraph 0.1.2+, LangChain 0.1.15+, OpenAI, Anthropic, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter |
 | Database | SQLAlchemy 2.0+, SQLite (local), PostgreSQL (prod), Alembic 1.13+ |
 | Vector DB | ChromaDB 0.5.3+, sentence-transformers 3.0.1+ |
-| Cache | Redis 5.0+ (optional), in-memory fallback |
+| Cache | Redis 5.0+ (cloud), FakeRedis (local — full API parity, no external server) |
 | Auth | JWT (PyJWT 2.8+), bcrypt, RBAC, OAuth 2.0 with PKCE |
 | Observability | Opik 0.2.1+ (tracing), Prometheus (metrics), structlog (logging) |
 | Security | Presidio 2.2+ (PII redaction), cryptography 41+ |
@@ -552,7 +552,7 @@ Key configuration in `.env`:
 | Capability Overrides | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `KNOWLEDGE_PROVIDER` | Override specific agents |
 | External Tools | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | Web search capability |
 | Database | `DATABASE_URL`, `DB_BACKEND` | SQLite (default) or PostgreSQL |
-| Sessions | `CACHE_BACKEND`, `REDIS_URL` | `inmemory` or `redis` |
+| Sessions | `REDIS_HOST`, `REDIS_URL` | FakeRedis (default) or real Redis |
 | Vectors | `VECTOR_BACKEND`, `CHROMADB_URL` | `inmemory` or `chromadb` |
 | Auth | `AUTH_MODE`, `JWT_SECRET_KEY` | `local` or `oauth` |
 | OAuth | `OAUTH_ENABLED`, `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` | OAuth 2.0 settings |
@@ -564,7 +564,7 @@ Key configuration in `.env`:
 
 **Local (default - Community Edition):**
 - SQLite database
-- In-memory sessions/vectors
+- FakeRedis sessions/cache (in-process, no external server)
 - Local filesystem storage
 
 **Production (Enterprise Edition):**
