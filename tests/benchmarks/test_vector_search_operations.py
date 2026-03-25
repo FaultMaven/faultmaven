@@ -156,9 +156,12 @@ def mock_embedding_service():
 @pytest.fixture
 def vector_store(temp_chroma_dir):
     """Create vector store for benchmarking."""
+    import chromadb
+
+    client = chromadb.PersistentClient(path=temp_chroma_dir)
     return VectorStoreService(
+        client=client,
         collection_name="benchmark_test",
-        persist_directory=temp_chroma_dir,
     )
 
 
