@@ -73,7 +73,7 @@ class CaseRedactionContext:
         If Redis is unavailable or the key doesn't exist, starts with
         an empty registry (in-memory only for this turn).
         """
-        if not self.redis_client or not self.enabled:
+        if not self.enabled:
             self._loaded = True
             return
 
@@ -100,7 +100,7 @@ class CaseRedactionContext:
 
         Only writes if the registry was modified since last load/save.
         """
-        if not self.redis_client or not self.enabled or not self._dirty:
+        if not self.enabled or not self._dirty:
             return
 
         try:
@@ -183,9 +183,6 @@ class CaseRedactionContext:
 
         Call when a case is closed/resolved to free Redis memory.
         """
-        if not self.redis_client:
-            return
-
         try:
             await self.redis_client.delete(self._redis_key)
             logger.debug(f"Cleaned up redaction registry for case {self.case_id}")

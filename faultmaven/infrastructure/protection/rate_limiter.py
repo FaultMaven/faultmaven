@@ -195,14 +195,9 @@ class RedisRateLimiter:
         base_retry = base_window
 
         try:
-            if self._redis:
-                violation_count = asyncio.create_task(self._redis.incr(violation_key))
-                asyncio.create_task(self._redis.expire(violation_key, base_window * 4))
-                violation_count = (
-                    violation_count.result() if violation_count.done() else 1
-                )
-            else:
-                violation_count = 1
+            violation_count = asyncio.create_task(self._redis.incr(violation_key))
+            asyncio.create_task(self._redis.expire(violation_key, base_window * 4))
+            violation_count = violation_count.result() if violation_count.done() else 1
         except Exception:
             violation_count = 1
 
@@ -282,9 +277,8 @@ class RedisRateLimiter:
         }
 
         try:
-            if self._redis:
-                ping_result = await self._redis.ping()
-                status["redis_ping"] = ping_result
+            ping_result = await self._redis.ping()
+            status["redis_ping"] = ping_result
         except Exception as e:
             status["redis_error"] = str(e)
 

@@ -75,18 +75,12 @@ class JobService(IJobService):
         }
 
         try:
-            if self.redis_client:
-                await self.redis_client.setex(
-                    f"{self.job_prefix}{job_id}",
-                    ttl_seconds or self.default_ttl,
-                    json.dumps(job_data),
-                )
-                logger.info(f"Created job {job_id} of type {job_type}")
-            else:
-                logger.warning(
-                    f"Redis not available - job {job_id} created without persistence"
-                )
-
+            await self.redis_client.setex(
+                f"{self.job_prefix}{job_id}",
+                ttl_seconds or self.default_ttl,
+                json.dumps(job_data),
+            )
+            logger.info(f"Created job {job_id} of type {job_type}")
         except Exception as e:
             logger.error(f"Failed to create job {job_id}: {e}")
             raise ServiceException(f"Job creation failed: {e}")
@@ -96,10 +90,6 @@ class JobService(IJobService):
     async def get_job(self, job_id: str) -> Optional[JobStatus]:
         """Retrieve job status by ID."""
         try:
-            if not self.redis_client:
-                logger.warning("Redis not available for job retrieval")
-                return None
-
             job_data_str = await self.redis_client.get(f"{self.job_prefix}{job_id}")
             if not job_data_str:
                 return None
@@ -130,10 +120,6 @@ class JobService(IJobService):
     ) -> bool:
         """Update job status and metadata."""
         try:
-            if not self.redis_client:
-                logger.warning(f"Redis not available - cannot update job {job_id}")
-                return False
-
             # Get existing job data
             job_data_str = await self.redis_client.get(f"{self.job_prefix}{job_id}")
             if not job_data_str:
@@ -191,9 +177,6 @@ class JobService(IJobService):
     async def cleanup_expired_jobs(self, batch_size: int = 100) -> int:
         """Garbage collect expired jobs (Redis handles TTL automatically)."""
         try:
-            if not self.redis_client:
-                return 0
-
             # Find all job keys
             job_keys = await self.redis_client.keys(f"{self.job_prefix}*")
 
@@ -237,9 +220,6 @@ class JobService(IJobService):
     ) -> List[JobStatus]:
         """List jobs with optional filtering."""
         try:
-            if not self.redis_client:
-                return []
-
             job_keys = await self.redis_client.keys(f"{self.job_prefix}*")
             jobs = []
 

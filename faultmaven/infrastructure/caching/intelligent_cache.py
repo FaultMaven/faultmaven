@@ -443,27 +443,21 @@ class IntelligentCache(BaseExternalClient):
                 return value, True
 
             # Try L2 cache (Redis)
-            if self._redis_client:
-                value, hit = await self._get_from_l2(cache_key)
-                if hit:
-                    # Promote to L1 for faster future access
-                    await self._set_to_l1(
-                        cache_key, value, self._l1_ttl_seconds, context
-                    )
-                    access_time = (time.time() - start_time) * 1000
-                    self._record_cache_access(
-                        "L2", cache_key, True, access_time, user_id, context
-                    )
-                    return value, True
+            value, hit = await self._get_from_l2(cache_key)
+            if hit:
+                # Promote to L1 for faster future access
+                await self._set_to_l1(cache_key, value, self._l1_ttl_seconds, context)
+                access_time = (time.time() - start_time) * 1000
+                self._record_cache_access(
+                    "L2", cache_key, True, access_time, user_id, context
+                )
+                return value, True
 
             # Try L3 cache (persistent storage)
             value, hit = await self._get_from_l3(cache_key)
             if hit:
                 # Promote to L2 and L1
-                if self._redis_client:
-                    await self._set_to_l2(
-                        cache_key, value, self._l2_ttl_seconds, context
-                    )
+                await self._set_to_l2(cache_key, value, self._l2_ttl_seconds, context)
                 await self._set_to_l1(cache_key, value, self._l1_ttl_seconds, context)
                 access_time = (time.time() - start_time) * 1000
                 self._record_cache_access(
@@ -545,10 +539,7 @@ class IntelligentCache(BaseExternalClient):
 
             success = True
             success &= await self._delete_from_l1(cache_key)
-
-            if self._redis_client:
-                success &= await self._delete_from_l2(cache_key)
-
+            success &= await self._delete_from_l2(cache_key)
             success &= await self._delete_from_l3(cache_key)
 
             return success
@@ -569,10 +560,8 @@ class IntelligentCache(BaseExternalClient):
                     del self._l1_cache[key]
                     cleared_count += 1
 
-            # Clear from L2 (Redis pattern matching would be implemented here)
-            if self._redis_client:
-                # Redis SCAN with pattern would be used here
-                pass
+            # Clear from L2 (Redis)
+            # TODO: Implement Redis SCAN with pattern for L2 cache clearing
 
             # Clear from L3 (persistent storage pattern matching)
             # Implementation would depend on storage backend
@@ -807,9 +796,6 @@ class IntelligentCache(BaseExternalClient):
 
     async def _get_from_l2(self, cache_key: str) -> Tuple[Any, bool]:
         """Get value from L2 cache (Redis)"""
-        if not self._redis_client:
-            return None, False
-
         try:
             # This would be implemented with actual Redis operations
             value = await self.call_external_async(
@@ -841,9 +827,6 @@ class IntelligentCache(BaseExternalClient):
         tags: Optional[Set[str]] = None,
     ) -> bool:
         """Set value in L2 cache (Redis)"""
-        if not self._redis_client:
-            return False
-
         try:
             serialized_value = pickle.dumps(value)
 
@@ -890,9 +873,6 @@ class IntelligentCache(BaseExternalClient):
 
     async def _delete_from_l2(self, cache_key: str) -> bool:
         """Delete key from L2 cache"""
-        if not self._redis_client:
-            return False
-
         try:
             return await self.call_external_async(
                 "redis_delete",
@@ -1154,8 +1134,8 @@ class IntelligentCache(BaseExternalClient):
                 "size_utilization": len(self._l1_cache) / self._l1_max_size,
             },
             "l2_cache": {
-                "status": "healthy" if self._redis_client else "unavailable",
-                "available": self._redis_client is not None,
+                "status": "healthy",
+                "available": True,
                 "hit_rate": self._l2_stats.hit_rate,
             },
             "l3_cache": {

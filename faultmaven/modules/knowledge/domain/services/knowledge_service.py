@@ -915,54 +915,40 @@ class KnowledgeService:
 
                 archived_at = datetime.now(timezone.utc).isoformat()
 
-                if self._redis:
-                    try:
-                        import json as _json
+                try:
+                    import json as _json
 
-                        doc_key = self._kb_doc_key.format(document_id=document_id)
-                        raw = await self._redis.hget(doc_key, "data")
-                        if not raw:
-                            return {
-                                "success": False,
-                                "error": f"Document {document_id} not found",
-                            }
-
-                        doc = _json.loads(raw)
-                        doc["archived_at"] = archived_at
-
-                        # Update the document in Redis with archived_at flag
-                        await self._redis.hset(doc_key, "data", _json.dumps(doc))
-
-                        # Remove from index sets so it no longer appears in listings
-                        pipe = self._redis.pipeline()
-                        pipe.srem(self._kb_docs_set, document_id)
-                        if doc.get("document_type"):
-                            pipe.srem(
-                                self._kb_index_type.format(
-                                    document_type=doc["document_type"]
-                                ),
-                                document_id,
-                            )
-                        for tag in doc.get("tags", []) or []:
-                            pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
-                        await pipe.execute()
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to archive KB metadata in Redis for {document_id}: {e}"
-                        )
-
-                    # Update in-memory cache too
-                    if document_id in self._documents_store:
-                        self._documents_store[document_id]["archived_at"] = archived_at
-                else:
-                    # No Redis; operate on in-memory store
-                    if document_id not in self._documents_store:
-                        logger.warning(f"Document {document_id} not found in store")
+                    doc_key = self._kb_doc_key.format(document_id=document_id)
+                    raw = await self._redis.hget(doc_key, "data")
+                    if not raw:
                         return {
                             "success": False,
                             "error": f"Document {document_id} not found",
                         }
-                    self._documents_store[document_id]["archived_at"] = archived_at
+
+                    doc = _json.loads(raw)
+                    doc["archived_at"] = archived_at
+
+                    # Update the document in Redis with archived_at flag
+                    await self._redis.hset(doc_key, "data", _json.dumps(doc))
+
+                    # Remove from index sets so it no longer appears in listings
+                    pipe = self._redis.pipeline()
+                    pipe.srem(self._kb_docs_set, document_id)
+                    if doc.get("document_type"):
+                        pipe.srem(
+                            self._kb_index_type.format(
+                                document_type=doc["document_type"]
+                            ),
+                            document_id,
+                        )
+                    for tag in doc.get("tags", []) or []:
+                        pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
+                    await pipe.execute()
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to archive KB metadata in Redis for {document_id}: {e}"
+                    )
 
                 # Remove associated job if exists
                 job_id = f"job_{document_id}"
@@ -1175,47 +1161,26 @@ class KnowledgeService:
             }
 
             # Persist metadata
-            if self._redis:
-                try:
-                    pipe = self._redis.pipeline()
-                    doc_key = self._kb_doc_key.format(document_id=document_id)
-                    # Store as a JSON blob in a hash field 'data' for future extensibility
-                    import json as _json
+            try:
+                pipe = self._redis.pipeline()
+                doc_key = self._kb_doc_key.format(document_id=document_id)
+                import json as _json
 
-                    pipe.hset(doc_key, mapping={"data": _json.dumps(document_data)})
-                    pipe.sadd(self._kb_docs_set, document_id)
-                    # Indexes
-                    pipe.sadd(
-                        self._kb_index_type.format(document_type=document_type),
-                        document_id,
-                    )
-                    for tag in tags or []:
-                        pipe.sadd(self._kb_index_tag.format(tag=tag), document_id)
-                    await pipe.execute()
-                    # Observability: confirm persistence
-                    try:
-                        raw_ids = await self._redis.smembers(self._kb_docs_set)
-                        ids_count = len(raw_ids or [])
-                        logger.info(
-                            f"KB metadata persisted to Redis",
-                            extra={
-                                "document_id": document_id,
-                                "kb_docs_count": ids_count,
-                                "document_type": document_type,
-                                "tags_count": len(tags or []),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    logger.info(f"Persisted KB metadata in Redis for {document_id}")
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to persist KB metadata in Redis, falling back to memory: {e}"
-                    )
-                    self._documents_store[document_id] = document_data
-            else:
-                # Fallback to in-memory
-                self._documents_store[document_id] = document_data
+                pipe.hset(doc_key, mapping={"data": _json.dumps(document_data)})
+                pipe.sadd(self._kb_docs_set, document_id)
+                pipe.sadd(
+                    self._kb_index_type.format(document_type=document_type),
+                    document_id,
+                )
+                for tag in tags or []:
+                    pipe.sadd(self._kb_index_tag.format(tag=tag), document_id)
+                await pipe.execute()
+                logger.info(f"Persisted KB metadata in Redis for {document_id}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to persist KB metadata in Redis for {document_id}: {e}"
+                )
+                raise
 
             # Create job record
             job_data = {
@@ -1257,9 +1222,7 @@ class KnowledgeService:
                 # Do not fail the upload if indexing fails; it will be retried later
                 logger.error(f"Failed to index uploaded document {document_id}: {e}")
 
-            logger.info(
-                f"Successfully stored document {document_id} in {'Redis' if self._redis else 'memory'} store"
-            )
+            logger.info(f"Successfully stored document {document_id} in Redis store")
 
             return {
                 "document_id": document_id,
@@ -1288,30 +1251,20 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         """List documents with filtering"""
         try:
-            # Get all documents from Redis if available; otherwise from memory
+            # Get all documents from Redis
             all_documents: List[Dict[str, Any]] = []
-            if self._redis:
-                try:
-                    import json as _json
+            import json as _json
 
-                    ids = await self._redis.smembers(self._kb_docs_set)
-                    if ids:
-                        # Simple pagination in-memory after fetch; for large sets, switch to SSCAN later
-                        for did in ids:
-                            doc_key = self._kb_doc_key.format(document_id=did)
-                            raw = await self._redis.hget(doc_key, "data")
-                            if raw:
-                                try:
-                                    all_documents.append(_json.loads(raw))
-                                except Exception:
-                                    continue
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to read KB metadata from Redis, using memory store: {e}"
-                    )
-                    all_documents = list(self._documents_store.values())
-            else:
-                all_documents = list(self._documents_store.values())
+            ids = await self._redis.smembers(self._kb_docs_set)
+            if ids:
+                for did in ids:
+                    doc_key = self._kb_doc_key.format(document_id=did)
+                    raw = await self._redis.hget(doc_key, "data")
+                    if raw:
+                        try:
+                            all_documents.append(_json.loads(raw))
+                        except Exception:
+                            continue
 
             # Extract user context for RBAC
             user_id = getattr(user, "user_id", None) if user else None
@@ -1383,38 +1336,19 @@ class KnowledgeService:
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific document by ID"""
         try:
-            # Prefer Redis if available
-            if self._redis and document_id:
-                try:
-                    import json as _json
+            if document_id:
+                import json as _json
 
-                    raw = await self._redis.hget(
-                        self._kb_doc_key.format(document_id=document_id), "data"
-                    )
-                    if raw:
-                        document = _json.loads(raw)
-                        # Normalize tags to ensure API contract compliance
-                        from faultmaven.api.v1.utils.parsing import normalize_tags_field
+                raw = await self._redis.hget(
+                    self._kb_doc_key.format(document_id=document_id), "data"
+                )
+                if raw:
+                    document = _json.loads(raw)
+                    from faultmaven.api.v1.utils.parsing import normalize_tags_field
 
-                        if "tags" in document:
-                            document["tags"] = normalize_tags_field(document["tags"])
-                        return document
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to read KB document {document_id} from Redis: {e}"
-                    )
-            # Fallback to in-memory store
-            if document_id in self._documents_store:
-                document = self._documents_store[
-                    document_id
-                ].copy()  # Copy to avoid mutating original
-                # Normalize tags to ensure API contract compliance
-                from faultmaven.api.v1.utils.parsing import normalize_tags_field
-
-                if "tags" in document:
-                    document["tags"] = normalize_tags_field(document["tags"])
-                logger.info(f"Retrieved document {document_id} from store")
-                return document
+                    if "tags" in document:
+                        document["tags"] = normalize_tags_field(document["tags"])
+                    return document
 
             # For testing, return a mock document if the ID looks valid and not in store
             if document_id and (
@@ -1612,92 +1546,86 @@ class KnowledgeService:
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
 
         try:
-            # Get all documents from Redis if available; otherwise from memory
+            # Get all documents from Redis
             all_documents: List[Dict[str, Any]] = []
-            if self._redis:
-                try:
-                    import json as _json
+            try:
+                import json as _json
 
-                    # Normalize IDs to strings
-                    raw_ids = await self._redis.smembers(self._kb_docs_set)
-                    candidate_ids = set(
+                # Normalize IDs to strings
+                raw_ids = await self._redis.smembers(self._kb_docs_set)
+                candidate_ids = set(
+                    [
+                        (
+                            rid.decode("utf-8")
+                            if isinstance(rid, (bytes, bytearray))
+                            else str(rid)
+                        )
+                        for rid in (raw_ids or set())
+                    ]
+                )
+                logger.info(
+                    f"KB list: base candidate count",
+                    extra={"count": len(candidate_ids)},
+                )
+                if document_type:
+                    raw_type_ids = await self._redis.smembers(
+                        self._kb_index_type.format(document_type=document_type)
+                    )
+                    type_ids = set(
                         [
                             (
-                                rid.decode("utf-8")
-                                if isinstance(rid, (bytes, bytearray))
-                                else str(rid)
+                                tid.decode("utf-8")
+                                if isinstance(tid, (bytes, bytearray))
+                                else str(tid)
                             )
-                            for rid in (raw_ids or set())
+                            for tid in (raw_type_ids or set())
                         ]
                     )
-                    logger.info(
-                        f"KB list: base candidate count",
-                        extra={"count": len(candidate_ids)},
+                    candidate_ids = (
+                        set(candidate_ids).intersection(type_ids)
+                        if candidate_ids
+                        else type_ids
                     )
-                    if document_type:
-                        raw_type_ids = await self._redis.smembers(
-                            self._kb_index_type.format(document_type=document_type)
+                if tags:
+                    for tag in tags:
+                        raw_tag_ids = await self._redis.smembers(
+                            self._kb_index_tag.format(tag=tag)
                         )
-                        type_ids = set(
+                        tag_ids = set(
                             [
                                 (
                                     tid.decode("utf-8")
                                     if isinstance(tid, (bytes, bytearray))
                                     else str(tid)
                                 )
-                                for tid in (raw_type_ids or set())
+                                for tid in (raw_tag_ids or set())
                             ]
                         )
                         candidate_ids = (
-                            set(candidate_ids).intersection(type_ids)
+                            set(candidate_ids).intersection(tag_ids)
                             if candidate_ids
-                            else type_ids
+                            else tag_ids
                         )
-                    if tags:
-                        for tag in tags:
-                            raw_tag_ids = await self._redis.smembers(
-                                self._kb_index_tag.format(tag=tag)
-                            )
-                            tag_ids = set(
-                                [
-                                    (
-                                        tid.decode("utf-8")
-                                        if isinstance(tid, (bytes, bytearray))
-                                        else str(tid)
-                                    )
-                                    for tid in (raw_tag_ids or set())
-                                ]
-                            )
-                            candidate_ids = (
-                                set(candidate_ids).intersection(tag_ids)
-                                if candidate_ids
-                                else tag_ids
-                            )
-                    logger.info(
-                        f"KB list: filtered candidate count",
-                        extra={"count": len(candidate_ids)},
+                logger.info(
+                    f"KB list: filtered candidate count",
+                    extra={"count": len(candidate_ids)},
+                )
+                for did in list(candidate_ids):
+                    raw = await self._redis.hget(
+                        self._kb_doc_key.format(document_id=did), "data"
                     )
-                    for did in list(candidate_ids):
-                        # did is normalized to str
-                        raw = await self._redis.hget(
-                            self._kb_doc_key.format(document_id=did), "data"
-                        )
-                        if raw:
-                            try:
-                                all_documents.append(_json.loads(raw))
-                            except Exception:
-                                continue
-                    logger.info(
-                        f"KB list: loaded documents",
-                        extra={"count": len(all_documents)},
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to read KB metadata from Redis, using memory store: {e}"
-                    )
-                    all_documents = list(self._documents_store.values())
-            else:
-                all_documents = list(self._documents_store.values())
+                    if raw:
+                        try:
+                            all_documents.append(_json.loads(raw))
+                        except Exception:
+                            continue
+                logger.info(
+                    f"KB list: loaded documents",
+                    extra={"count": len(all_documents)},
+                )
+            except Exception as e:
+                logger.error(f"Failed to read KB metadata from Redis: {e}")
+                raise
 
             # Extract user context for RBAC
             user_id = getattr(user, "user_id", None) if user else None
@@ -1848,63 +1776,58 @@ class KnowledgeService:
             document["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
 
             # Persist updated document and maintain indexes
-            if self._redis:
-                try:
-                    import json as _json
+            try:
+                import json as _json
 
-                    raw_existing = await self._redis.hget(
-                        self._kb_doc_key.format(document_id=document_id), "data"
+                raw_existing = await self._redis.hget(
+                    self._kb_doc_key.format(document_id=document_id), "data"
+                )
+                existing = {}
+                if raw_existing:
+                    try:
+                        existing = _json.loads(raw_existing)
+                    except Exception:
+                        existing = {}
+                await self._redis.hset(
+                    self._kb_doc_key.format(document_id=document_id),
+                    "data",
+                    _json.dumps(document),
+                )
+                # Update type index if changed
+                old_type = (
+                    existing.get("document_type")
+                    if isinstance(existing, dict)
+                    else None
+                )
+                new_type = document.get("document_type")
+                if old_type and old_type != new_type:
+                    await self._redis.srem(
+                        self._kb_index_type.format(document_type=old_type),
+                        document_id,
                     )
-                    existing = {}
-                    if raw_existing:
-                        try:
-                            existing = _json.loads(raw_existing)
-                        except Exception:
-                            existing = {}
-                    await self._redis.hset(
-                        self._kb_doc_key.format(document_id=document_id),
-                        "data",
-                        _json.dumps(document),
+                if new_type:
+                    await self._redis.sadd(
+                        self._kb_index_type.format(document_type=new_type),
+                        document_id,
                     )
-                    # Update type index if changed
-                    old_type = (
-                        existing.get("document_type")
-                        if isinstance(existing, dict)
-                        else None
+                # Update tag indexes
+                old_tags = set(
+                    existing.get("tags", []) if isinstance(existing, dict) else []
+                )
+                new_tags = set(document.get("tags", []) or [])
+                for removed in old_tags - new_tags:
+                    await self._redis.srem(
+                        self._kb_index_tag.format(tag=removed), document_id
                     )
-                    new_type = document.get("document_type")
-                    if old_type and old_type != new_type:
-                        await self._redis.srem(
-                            self._kb_index_type.format(document_type=old_type),
-                            document_id,
-                        )
-                    if new_type:
-                        await self._redis.sadd(
-                            self._kb_index_type.format(document_type=new_type),
-                            document_id,
-                        )
-                    # Update tag indexes
-                    old_tags = set(
-                        existing.get("tags", []) if isinstance(existing, dict) else []
+                for added in new_tags - old_tags:
+                    await self._redis.sadd(
+                        self._kb_index_tag.format(tag=added), document_id
                     )
-                    new_tags = set(document.get("tags", []) or [])
-                    for removed in old_tags - new_tags:
-                        await self._redis.srem(
-                            self._kb_index_tag.format(tag=removed), document_id
-                        )
-                    for added in new_tags - old_tags:
-                        await self._redis.sadd(
-                            self._kb_index_tag.format(tag=added), document_id
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to persist updated KB metadata in Redis for {document_id}: {e}"
-                    )
-                    # Fallback to memory
-                    self._documents_store[document_id] = document
-            else:
-                # Fallback to in-memory
-                self._documents_store[document_id] = document
+            except Exception as e:
+                logger.error(
+                    f"Failed to persist updated KB metadata in Redis for {document_id}: {e}"
+                )
+                raise
 
             logger.info(f"Successfully updated document {document_id} in store")
 
@@ -2280,15 +2203,12 @@ class KnowledgeService:
             except Exception as e:
                 logger.warning(f"Failed to get document from vector store: {e}")
 
-        # Fallback to metadata storage
+        # Fallback to metadata storage (Redis)
         try:
-            if self._redis:
-                doc_key = self._kb_doc_key.format(document_id=document_id)
-                doc_data = await self._redis.get(doc_key)
-                if doc_data:
-                    return json.loads(doc_data)
-            else:
-                return self._documents_store.get(document_id)
+            doc_key = self._kb_doc_key.format(document_id=document_id)
+            doc_data = await self._redis.get(doc_key)
+            if doc_data:
+                return json.loads(doc_data)
         except Exception as e:
             logger.warning(f"Failed to get document from metadata storage: {e}")
 

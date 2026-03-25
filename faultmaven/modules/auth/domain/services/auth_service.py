@@ -20,14 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import jwt
 
-# Conditional Redis import - only available in enterprise edition
-try:
-    from redis.asyncio import Redis
-
-    REDIS_AVAILABLE = True
-except ImportError:
-    Redis = None
-    REDIS_AVAILABLE = False
+# Redis is always available (real Redis or FakeRedis via DI)
+from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
@@ -456,10 +450,9 @@ class AuthService:
         claims = self.verify_token(token, token_type)
 
         # Check revocation status
-        if self._redis:
-            jti = claims.get("jti")
-            if jti and await self._is_token_revoked(jti):
-                raise TokenRevocationError()
+        jti = claims.get("jti")
+        if jti and await self._is_token_revoked(jti):
+            raise TokenRevocationError()
 
         return claims
 
@@ -542,10 +535,6 @@ class AuthService:
             token_jti: JWT ID (jti claim)
             expiration: Token expiration timestamp (Unix) for TTL calculation
         """
-        if not self._redis:
-            logger.warning("Redis not configured, token revocation not persisted")
-            return
-
         try:
             # Calculate TTL from expiration
             now = int(datetime.now(timezone.utc).timestamp())
@@ -592,9 +581,6 @@ class AuthService:
         Returns:
             True if token is revoked
         """
-        if not self._redis:
-            return False
-
         try:
             key = f"{self._revocation_prefix}{jti}"
             result = await self._redis.get(key)

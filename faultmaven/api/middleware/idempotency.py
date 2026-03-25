@@ -61,13 +61,6 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Check if we have Redis client available
-        if not self.redis_client:
-            logger.warning(
-                "Redis client not available for idempotency - processing request normally"
-            )
-            return await call_next(request)
-
         try:
             # Create cache key
             cache_key = self._create_cache_key(idempotency_key, request)

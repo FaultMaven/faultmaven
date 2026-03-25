@@ -23,14 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import jwt
 
-# Conditional Redis import - only available in enterprise edition
-try:
-    from redis.asyncio import Redis
-
-    REDIS_AVAILABLE = True
-except ImportError:
-    Redis = None
-    REDIS_AVAILABLE = False
+# Redis is always available (real Redis or FakeRedis via DI)
+from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import (
@@ -356,10 +350,9 @@ class UserService:
         reset_token = self._encode_reset_token(claims)
 
         # Store token jti in Redis for single-use tracking
-        if self.redis_client:
-            key = f"{RESET_TOKEN_PREFIX}{jti}"
-            ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
-            await self.redis_client.setex(key, ttl_seconds, user.user_id)
+        key = f"{RESET_TOKEN_PREFIX}{jti}"
+        ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
+        await self.redis_client.setex(key, ttl_seconds, user.user_id)
 
         logger.info(f"Password reset token generated for user: {user.user_id}")
         return reset_token
@@ -417,16 +410,15 @@ class UserService:
             )
 
         # Check token not already used (via Redis)
-        if self.redis_client:
-            key = f"{RESET_TOKEN_PREFIX}{jti}"
-            stored_user_id = await self.redis_client.get(key)
-            if not stored_user_id:
-                raise AuthenticationError(
-                    "Password reset token has already been used or expired",
-                    error_code="TOKEN_ALREADY_USED",
-                )
-            # Mark token as used by deleting it
-            await self.redis_client.delete(key)
+        key = f"{RESET_TOKEN_PREFIX}{jti}"
+        stored_user_id = await self.redis_client.get(key)
+        if not stored_user_id:
+            raise AuthenticationError(
+                "Password reset token has already been used or expired",
+                error_code="TOKEN_ALREADY_USED",
+            )
+        # Mark token as used by deleting it
+        await self.redis_client.delete(key)
 
         # Validate new password strength
         validate_password_strength(new_password)
