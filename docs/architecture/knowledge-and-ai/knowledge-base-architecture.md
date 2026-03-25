@@ -1,8 +1,8 @@
 # Knowledge Base Architecture
 
 **Document Type:** Component Specification
-**Version:** 8.0
-**Last Updated:** 2026-03-21
+**Version:** 9.0
+**Last Updated:** 2026-03-25
 
 ---
 
@@ -170,6 +170,20 @@ Live (during investigation):
 | Ingestion pipeline | `KnowledgeIngester` in `core/knowledge/ingestion.py` |
 | Batch ingestion | `scripts/ingest_runbooks.py` (with validation, change detection, progress tracking) |
 
+#### KB vs Evidence Chunking — Why They Differ
+
+Knowledge and evidence use different chunking strategies because they serve different retrieval needs:
+
+| Aspect | Knowledge (Runbooks) | Evidence (Logs, Configs, Metrics) |
+|--------|---------------------|----------------------------------|
+| **Strategy** | Character-based with sentence boundary splitting | Token-based with section-aware splitting |
+| **Chunk size** | 1000 characters, 200-char overlap | 4000 tokens (~16KB), section-aware |
+| **Implementation** | `core/knowledge/ingestion.py:350` | `services/preprocessing/chunking_service.py:33` |
+| **Rationale** | Runbooks are well-structured markdown with predictable sections. Smaller chunks ensure each chunk is topically focused — a diagnostic step doesn't share a chunk with an unrelated prevention tip. Character-based splitting is sufficient because markdown structure provides natural boundaries. | Evidence files are heterogeneous (logs, CSVs, JSON configs) with no predictable structure. Larger chunks preserve context — a log entry only makes sense with surrounding entries. Section-aware splitting respects structural boundaries within files (e.g., config file sections, log timestamp groups). |
+| **Impact on retrieval** | Small, focused chunks → high precision per chunk, multiple chunks needed for full answer | Large, context-rich chunks → each chunk provides enough context for forensic analysis |
+
+This difference is intentional and affects how content is authored. Runbook authors should keep related information (symptoms + error messages, diagnostic commands + expected output) within the same section to ensure they land in the same chunk. The [Runbook Content Architecture](./runbook-content-architecture.md) template is designed with this chunking strategy in mind.
+
 ### Metadata Stored Per Chunk
 
 **Common fields (all tiers):**
@@ -197,19 +211,50 @@ The taxonomy fields (`domain`, `service`, `symptom_class`) are defined in [runbo
 
 ## Retrieval Architecture
 
+### Implementation Status
+
+This section documents the **current implementation** and **planned improvements**. Features marked as **PLANNED** represent the target design; features marked as **CURRENT** describe what exists in code today.
+
+| Feature | Status | Current Reality | Target Design |
+|---------|--------|-----------------|---------------|
+| Federated search | **PLANNED** | 3 separate tools: `global_kb_qa`, `user_kb_qa`, `answer_from_case_evidence` | Single `answer_from_knowledge_base` tool |
+| Collection layout | **CURRENT** | Separate collections per tier: `global_kb`, `user_{user_id}_kb` | No change — separate collections are correct |
+| Hybrid search (metadata filtering) | **PLANNED** | Pure vector similarity, no metadata filtering | `domain_filter`/`service_filter` from case context |
+| Staleness-aware synthesis | **PLANNED** | No staleness warnings injected | Warning injection via `format_chunk_metadata()` |
+| Fast-track confidence | **CURRENT** | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py:3788` | No change needed |
+| Tier-based reranking | **PLANNED** | N/A (single-tier queries) | Personal > Team > Global tiebreaker |
+| Team KB | **PLANNED** | Infrastructure exists, no `TeamKBConfig` | Full team KB with promotion workflow |
+
+#### Current Baseline (3-Tool Architecture)
+
+The milestone engine (`milestone_engine.py:2206-2207`) registers tools individually:
+
+```python
+has_global_kb = "global_kb_qa" in tool_names
+has_user_kb = "user_kb_qa" in tool_names
+```
+
+The agent must decide which KB to query. During INQUIRY (fast-track resolution), this adds reasoning overhead — the agent shouldn't need to choose between global and personal KB.
+
+| Tool (Current) | Collection | Purpose |
+|----------------|------------|---------|
+| `global_kb_qa` | `global_kb` | System-wide remediation knowledge |
+| `user_kb_qa` | `user_{user_id}_kb` | User's personal runbooks |
+| `answer_from_case_evidence` | `case_{case_id}_evidence` | Forensic analysis of uploaded case evidence |
+
 ### Design Principles
 
-Three principles govern how the investigation agent retrieves knowledge at runtime:
+Three principles govern the **target retrieval design**:
 
-1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers concurrently and merges results.
-2. **Hybrid Search** — Vector similarity is augmented with metadata filtering (domain, service) derived from case context, reducing irrelevant retrievals.
-3. **Staleness-Aware Synthesis** — The synthesis LLM sees lifecycle warnings (stale, deprecated) injected directly into chunk context, and propagates them to the user.
+1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers concurrently and merges results. (**PLANNED** — current baseline uses 3 separate tools.)
+2. **Hybrid Search** — Vector similarity is augmented with metadata filtering (domain, service) derived from case context, reducing irrelevant retrievals. (**PLANNED** — metadata fields are stored at ingestion time but no query path uses them yet.)
+3. **Staleness-Aware Synthesis** — The synthesis LLM sees lifecycle warnings (stale, deprecated) injected directly into chunk context, and propagates them to the user. (**PLANNED** — `last_updated` and `status` are stored in metadata; injection logic not yet implemented.)
 
-### Federated Search: One Knowledge Tool
+### Federated Search: One Knowledge Tool (PLANNED)
 
-**The problem with one tool per tier:** LLMs degrade when given too many overlapping tools. With three KB tools (global, team, personal) plus the case evidence tool, the agent wastes reasoning tokens deciding *which library to visit* instead of *what to ask*. The tier distinction matters for governance (who can write), not for retrieval (who can read).
+**The problem with the current 3-tool approach:** LLMs degrade when given too many overlapping tools. With separate `global_kb_qa` and `user_kb_qa` plus the case evidence tool, the agent wastes reasoning tokens deciding *which library to visit* instead of *what to ask*. The tier distinction matters for governance (who can write), not for retrieval (who can read).
 
-**The solution:** A single `answer_from_knowledge_base` tool that performs a federated search across all authorized tiers.
+**The target design:** A single `answer_from_knowledge_base` tool that performs a federated search across all authorized tiers.
 
 ```text
 Agent calls: answer_from_knowledge_base(question, domain_filter?, service_filter?)
@@ -221,7 +266,7 @@ Agent calls: answer_from_knowledge_base(question, domain_filter?, service_filter
   │   ├── team_{team_id}_kb           (if user belongs to team)
   │   └── user_{user_id}_kb           (user's own)
   │
-  ├── Merge chunks from all tiers, rerank by score
+  ├── Merge chunks from all tiers, rerank by score (with tier tiebreaker)
   │
   ├── Inject staleness warnings for stale chunks (see below)
   │
@@ -234,7 +279,7 @@ Agent calls: answer_from_knowledge_base(question, domain_filter?, service_filter
 
 **Case evidence remains a separate tool.** `answer_from_case_evidence` is not part of the federated search. Evidence uses a forensic synthesis prompt and serves a fundamentally different role (diagnose) than knowledge (remediate). This boundary is the evidence-vs-knowledge distinction established in the Purpose section.
 
-**Agent tool interface (2 tools total, down from 4):**
+**Target tool interface (2 tools, down from current 3):**
 
 | Tool | Parameters | Purpose |
 |------|-----------|---------|
@@ -266,11 +311,13 @@ The federated search changes the tool interface, not the internal architecture. 
 | `TeamKBConfig` | `team_{team_id}_kb` | team_id | 12 hours | `[Team KB: ...]` |
 | `UserKBConfig` | `user_{user_id}_kb` | user_id | 24 hours | `[Personal KB: ...]` |
 
-### Hybrid Search: Metadata Filtering
+### Hybrid Search: Metadata Filtering (PLANNED)
+
+> **Implementation status:** The taxonomy metadata fields (`domain`, `service`, `symptom_class`) are stored in ChromaDB at ingestion time via the KB Toolkit pipeline. However, no query path currently uses them — all retrieval is pure vector similarity. This is the **single highest-value missing feature** for retrieval precision.
 
 Pure vector similarity search has a precision problem: "connection pool exhausted" retrieves PostgreSQL, MySQL, and Redis runbooks with similar scores. The agent needs the PostgreSQL runbook — not all three.
 
-**The solution:** The federated search accepts optional `domain_filter` and `service_filter` parameters that are passed as ChromaDB `where` clauses, narrowing the search space before vector similarity runs.
+**The target design:** The federated search accepts optional `domain_filter` and `service_filter` parameters that are passed as ChromaDB `where` clauses, narrowing the search space before vector similarity runs.
 
 ```text
 Agent calls: answer_from_knowledge_base(
@@ -295,7 +342,7 @@ Backend:
 
 **Fallback:** If no filters are provided (e.g., early in investigation before problem verification), the search runs unfiltered across all chunks — same behavior as pure vector search.
 
-### Staleness-Aware Synthesis
+### Staleness-Aware Synthesis (PLANNED)
 
 The [Runbook Content Architecture](./runbook-content-architecture.md) defines lifecycle states (DRAFT, IN-REVIEW, VERIFIED, STALE, DEPRECATED) and staleness rules (>6 months since `last_updated`). The retrieval architecture must act on this at runtime.
 
@@ -320,6 +367,52 @@ Stale chunk context:
 **Deprecated content:** Chunks with `status: deprecated` are excluded from retrieval results entirely. They should not be in ChromaDB (deprecated runbooks are purged per lifecycle rules), but the filter provides defense in depth.
 
 **Staleness computation:** `format_chunk_metadata()` computes staleness on the fly from `last_updated`, independent of whether a background job has formally transitioned the runbook to STALE status. This means staleness warnings work even before the lifecycle state machine is fully implemented.
+
+### Fast-Track Confidence Threshold (CURRENT)
+
+The investigation lifecycle defines a fast-track path: INQUIRY → RESOLVED when a KB search finds a high-confidence match. This is **already implemented** in the milestone engine.
+
+**Threshold:** `KB_FAST_TRACK_THRESHOLD = 0.7` (70% cosine similarity)
+**Location:** `milestone_engine.py:3788`
+
+**Signal path:**
+
+```text
+1. Agent calls KB tool during INQUIRY phase
+2. DocumentQATool returns chunks with cosine similarity scores
+3. Milestone engine stores the best match in case.inquiry.knowledge_matches
+4. _check_fast_track_resolution() validates:
+   - knowledge_resolution exists (agent proposed a KB-based answer)
+   - best_match.relevance_score >= 0.7 (threshold met)
+5. If both: INQUIRY → RESOLVED (fast-track)
+6. If score < 0.7: fast-track blocked, continues to INVESTIGATING
+```
+
+**Why 0.7?** Cosine similarity of 0.7 with BGE-M3 embeddings indicates strong semantic alignment — the query and the runbook are addressing the same failure mode. Below 0.7, the match is likely tangential (e.g., same technology but different failure mode). This threshold was tuned against real incident queries and may need adjustment as the KB grows.
+
+### Tier-Based Reranking (PLANNED)
+
+When the federated search (once implemented) merges chunks from Global, Team, and Personal KBs, all tiers produce cosine similarity scores from the same embedding model — scores are directly comparable. However, **tier provenance should influence ranking** as a tiebreaker.
+
+**Rationale:** A personal runbook that says "our payment service fails when Redis is down due to misconfigured retry" is more specific and more valuable than a global runbook about generic Redis troubleshooting, even if both score similarly on "Redis connection failure."
+
+**Tiebreaker policy (applied when scores are within 0.05 of each other):**
+
+1. **Personal** — highest priority. User-authored content is the most specific to their environment.
+2. **Team** — second priority. Captures institutional memory specific to the organization.
+3. **Global** — lowest priority. Generic best practices, valuable but less specific.
+
+**Implementation approach:** After merging chunks from all tiers, apply a small score boost:
+
+```text
+adjusted_score = raw_score + tier_bonus
+  where tier_bonus:
+    Personal: +0.03
+    Team:     +0.02
+    Global:   +0.00
+```
+
+This ensures that when a personal runbook and a global runbook score within 0.05 of each other, the personal one surfaces first. At score gaps larger than 0.05, the raw relevance score dominates — a highly relevant global runbook still beats a weakly relevant personal one.
 
 ### Extensibility
 
