@@ -122,15 +122,15 @@ class KnowledgeService:
         self._user_patterns: Dict[str, Dict[str, Any]] = {}  # User behavior patterns
         self._frequent_query_cache: Dict[str, Any] = {}  # High-frequency query cache
 
-        # In-memory job tracking (process-local, not persisted)
-        self._jobs_store = {}
         self._document_counter = 0
 
-        # Redis key patterns for KB metadata
+        # Redis key patterns for KB metadata and jobs
         self._kb_doc_key = "kb:doc:{document_id}"
         self._kb_docs_set = "kb:docs"
         self._kb_index_type = "kb:index:type:{document_type}"
         self._kb_index_tag = "kb:index:tag:{tag}"
+        self._kb_job_key = "kb:job:{job_id}"
+        self._kb_job_ttl = 86400  # 24 hours
 
     async def ingest_document(
         self,
@@ -951,8 +951,7 @@ class KnowledgeService:
 
                 # Remove associated job if exists
                 job_id = f"job_{document_id}"
-                if job_id in self._jobs_store:
-                    del self._jobs_store[job_id]
+                await self._redis.delete(self._kb_job_key.format(job_id=job_id))
 
                 # Remove from vector store so archived docs don't appear in searches
                 if self._vector_store:
@@ -1211,8 +1210,14 @@ class KnowledgeService:
                 },
             }
 
-            # Store job record
-            self._jobs_store[job_id] = job_data
+            # Store job record in Redis
+            import json as _json
+
+            await self._redis.setex(
+                self._kb_job_key.format(job_id=job_id),
+                self._kb_job_ttl,
+                _json.dumps(job_data),
+            )
 
             # Also index into vector store if available so retrieval can find it persistently
             try:
@@ -1486,34 +1491,13 @@ class KnowledgeService:
             return None
 
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Get processing job status"""
+        """Get processing job status from Redis."""
         try:
-            # Check stored jobs first
-            if job_id in self._jobs_store:
-                job = self._jobs_store[job_id]
-                logger.info(f"Retrieved job {job_id} from store")
-                return job
+            import json as _json
 
-            if job_id.startswith("job_"):
-                document_id = job_id[4:]
-                # Create a default job status
-                job_data = {
-                    "job_id": job_id,
-                    "document_id": document_id,
-                    "status": "completed",
-                    "progress": 100,
-                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                    "completed_at": to_json_compatible(datetime.now(timezone.utc)),
-                    "processing_results": {
-                        "chunks_created": 1,
-                        "embeddings_generated": 1,
-                        "indexing_complete": True,
-                        "error_count": 0,
-                    },
-                }
-                # Store it for consistency
-                self._jobs_store[job_id] = job_data
-                return job_data
+            raw = await self._redis.get(self._kb_job_key.format(job_id=job_id))
+            if raw:
+                return _json.loads(raw)
 
             return None
 
