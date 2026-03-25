@@ -97,14 +97,20 @@ def register_services(redis_client=None) -> None:
     ServiceContainer.register_factory(EmbeddingService, create_embedding_service)
 
     # VectorStoreService - Used by KnowledgeSearchService
+    # Receives the shared ChromaDB client from the DI container
     def create_vector_store_service():
         logger.debug("Creating VectorStoreService via DI container")
+        from faultmaven.container import container
+
+        chromadb_client = getattr(container, "chromadb_client", None)
+        if chromadb_client is None:
+            # Fallback: get from registered services
+            chromadb_client = container.get_service("chromadb_client")
+
         return VectorStoreService(
+            client=chromadb_client,
             collection_name=getattr(
-                settings, "vector_store_collection", "knowledge_base"
-            ),
-            chroma_persist_directory=getattr(
-                settings, "chroma_persist_directory", "./data/chroma"
+                settings, "vector_store_collection", "knowledge_items"
             ),
         )
 

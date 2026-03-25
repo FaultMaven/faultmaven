@@ -1,28 +1,14 @@
 """Vector Store Service for managing embeddings using ChromaDB.
 
 This service provides vector storage and similarity search capabilities
-using ChromaDB for the RAG (Retrieval-Augmented Generation) system.
+using ChromaDB for the knowledge module's RAG system.
 
-Features:
-- Persistent ChromaDB storage with HNSW index
-- Cosine similarity metric for vector search
-- Metadata filtering for organization isolation
-- Batch operations for efficient bulk indexing
-- Collection statistics and management
-
-Usage:
-    from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
-
-    service = VectorStoreService(persist_directory="./chroma_data")
-    await service.add_item(item_id, embedding, metadata, document)
-    results = await service.search_similar(query_embedding, organization_id, n_results=10)
+Receives a shared ChromaDB client via constructor injection (Principle 5).
+All collections live in the same ChromaDB instance as faultmaven_kb and case_* collections.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
-
-import chromadb
-from chromadb.config import Settings
 
 from faultmaven.exceptions import VectorStoreConnectionError, VectorStoreOperationError
 
@@ -32,60 +18,44 @@ logger = logging.getLogger(__name__)
 class VectorStoreService:
     """Service for managing vector embeddings using ChromaDB.
 
-    This service handles vector storage and retrieval with:
-    - Persistent client for data durability
+    Handles vector storage and retrieval with:
     - Cosine similarity metric for semantic search
     - HNSW index for fast approximate nearest neighbor search
     - Metadata filtering for organization-level isolation
 
-    Attributes:
-        client: ChromaDB PersistentClient
-        collection: ChromaDB collection for knowledge items
-        collection_name: Name of the collection
-        persist_directory: Directory for ChromaDB persistence
+    The ChromaDB client is injected — works with both PersistentClient (local)
+    and HttpClient (cloud) transparently.
     """
 
     def __init__(
         self,
+        client,
         collection_name: str = "knowledge_items",
-        persist_directory: str = "./chroma_data",
     ):
-        """Initialize ChromaDB client.
+        """Initialize vector store service.
 
         Args:
-            collection_name: Name of ChromaDB collection
-            persist_directory: Directory for ChromaDB persistence
+            client: ChromaDB client instance (PersistentClient or HttpClient).
+            collection_name: Name of ChromaDB collection for knowledge items.
         """
+        self.client = client
         self.collection_name = collection_name
-        self.persist_directory = persist_directory
 
         try:
-            # Initialize persistent client
-            self.client = chromadb.PersistentClient(
-                path=persist_directory,
-                settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
-                ),
-            )
-
-            # Get or create collection with cosine similarity
             self.collection = self.client.get_or_create_collection(
                 name=collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
 
             logger.info(
-                f"Initialized vector store with collection '{collection_name}' "
-                f"at '{persist_directory}'"
+                f"VectorStoreService initialized with collection '{collection_name}'"
             )
 
         except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}")
+            logger.error(f"Failed to initialize vector store collection: {e}")
             raise VectorStoreConnectionError(
-                f"Failed to initialize ChromaDB: {e}",
+                f"Failed to initialize ChromaDB collection: {e}",
                 details={
-                    "persist_directory": persist_directory,
                     "collection_name": collection_name,
                     "error_type": type(e).__name__,
                 },
@@ -98,32 +68,10 @@ class VectorStoreService:
         metadata: Dict[str, Any],
         document: str,
     ) -> None:
-        """Add knowledge item to vector store.
-
-        Args:
-            item_id: Unique item identifier
-            embedding: Embedding vector (1536 dimensions)
-            metadata: Item metadata (organization_id, item_type, category, etc.)
-            document: Original text content
-
-        Raises:
-            VectorStoreOperationError: If add operation fails
-        """
-        return await self._add_item_impl(item_id, embedding, metadata, document)
-
-    async def _add_item_impl(
-        self,
-        item_id: str,
-        embedding: List[float],
-        metadata: Dict[str, Any],
-        document: str,
-    ) -> None:
-        """Internal implementation of add_item."""
+        """Add knowledge item to vector store."""
         try:
-            # Sanitize metadata - ChromaDB only supports string, int, float, bool
             sanitized_metadata = self._sanitize_metadata(metadata)
 
-            # Upsert to handle both new and existing items
             self.collection.upsert(
                 ids=[item_id],
                 embeddings=[embedding],
@@ -131,16 +79,11 @@ class VectorStoreService:
                 documents=[document],
             )
 
-            logger.info("Metric: vector_item_added")
-
         except Exception as e:
             logger.error(f"Failed to add item {item_id} to vector store: {e}")
             raise VectorStoreOperationError(
                 f"Failed to add item to vector store: {e}",
-                details={
-                    "item_id": item_id,
-                    "error_type": type(e).__name__,
-                },
+                details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
     async def add_items_batch(
@@ -148,28 +91,11 @@ class VectorStoreService:
         items: List[Dict[str, Any]],
         batch_size: int = 100,
     ) -> None:
-        """Add multiple items in batches.
-
-        Args:
-            items: List of dicts with keys: item_id, embedding, metadata, document
-            batch_size: Number of items per batch
-
-        Raises:
-            VectorStoreOperationError: If batch add operation fails
-        """
-        return await self._add_items_batch_impl(items, batch_size)
-
-    async def _add_items_batch_impl(
-        self,
-        items: List[Dict[str, Any]],
-        batch_size: int,
-    ) -> None:
-        """Internal implementation of batch add."""
+        """Add multiple items in batches."""
         if not items:
             return
 
         try:
-            # Process in batches
             for i in range(0, len(items), batch_size):
                 batch = items[i : i + batch_size]
 
@@ -187,16 +113,11 @@ class VectorStoreService:
                     documents=documents,
                 )
 
-                logger.info("Metric: vector_batch_added")
-
         except Exception as e:
             logger.error(f"Failed to add batch to vector store: {e}")
             raise VectorStoreOperationError(
                 f"Failed to add batch to vector store: {e}",
-                details={
-                    "batch_count": len(items),
-                    "error_type": type(e).__name__,
-                },
+                details={"batch_count": len(items), "error_type": type(e).__name__},
             ) from e
 
     async def search_similar(
@@ -206,59 +127,27 @@ class VectorStoreService:
         n_results: int = 10,
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Search for similar items using cosine similarity.
-
-        Args:
-            query_embedding: Query embedding vector
-            organization_id: Filter by organization
-            n_results: Number of results to return
-            filters: Additional metadata filters (item_type, category, etc.)
-
-        Returns:
-            List of results with item_id, distance, metadata, document
-
-        Raises:
-            VectorStoreOperationError: If search operation fails
-        """
-        return await self._search_similar_impl(
-            query_embedding, organization_id, n_results, filters
-        )
-
-    async def _search_similar_impl(
-        self,
-        query_embedding: List[float],
-        organization_id: str,
-        n_results: int,
-        filters: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Internal implementation of similarity search."""
+        """Search for similar items using cosine similarity."""
         try:
-            # Build where clause for filtering
-            # ChromaDB requires $and operator for multiple conditions
             conditions = [{"organization_id": organization_id}]
 
             if filters:
-                # Handle additional filters
                 for key, value in filters.items():
                     if value is not None:
                         if isinstance(value, (str, int, float, bool)):
                             conditions.append({key: value})
                         elif hasattr(value, "value"):
-                            # Handle enums
                             conditions.append({key: value.value})
 
-            # Use $and if multiple conditions, otherwise use simple dict
             if len(conditions) > 1:
                 where = {"$and": conditions}
             else:
                 where = conditions[0]
 
-            # Check if collection is empty
             count = self.collection.count()
             if count == 0:
                 return []
 
-            # Query with embedding
             results = self.collection.query(
                 query_embeddings=[query_embedding],
                 n_results=min(n_results, count),
@@ -266,7 +155,6 @@ class VectorStoreService:
                 include=["metadatas", "documents", "distances"],
             )
 
-            # Format results
             formatted_results = []
             if results and results["ids"] and results["ids"][0]:
                 for i, item_id in enumerate(results["ids"][0]):
@@ -291,8 +179,6 @@ class VectorStoreService:
                         }
                     )
 
-            logger.info("Metric: vector_search_performed")
-
             return formatted_results
 
         except Exception as e:
@@ -307,62 +193,28 @@ class VectorStoreService:
             ) from e
 
     async def delete_item(self, item_id: str) -> None:
-        """Delete item from vector store.
-
-        Args:
-            item_id: Item identifier to delete
-
-        Raises:
-            VectorStoreOperationError: If delete operation fails
-        """
-        return await self._delete_item_impl(item_id)
-
-    async def _delete_item_impl(self, item_id: str) -> None:
-        """Internal implementation of delete_item."""
+        """Delete item from vector store."""
         try:
             self.collection.delete(ids=[item_id])
-
-            logger.info("Metric: vector_item_deleted")
-
         except Exception as e:
             logger.error(f"Failed to delete item {item_id} from vector store: {e}")
             raise VectorStoreOperationError(
                 f"Failed to delete item from vector store: {e}",
-                details={
-                    "item_id": item_id,
-                    "error_type": type(e).__name__,
-                },
+                details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
     async def delete_items_batch(self, item_ids: List[str]) -> None:
-        """Delete multiple items from vector store.
-
-        Args:
-            item_ids: List of item identifiers to delete
-
-        Raises:
-            VectorStoreOperationError: If batch delete operation fails
-        """
-        return await self._delete_items_batch_impl(item_ids)
-
-    async def _delete_items_batch_impl(self, item_ids: List[str]) -> None:
-        """Internal implementation of batch delete."""
+        """Delete multiple items from vector store."""
         if not item_ids:
             return
 
         try:
             self.collection.delete(ids=item_ids)
-
-            logger.info("Metric: vector_items_deleted")
-
         except Exception as e:
             logger.error(f"Failed to delete batch from vector store: {e}")
             raise VectorStoreOperationError(
                 f"Failed to delete batch from vector store: {e}",
-                details={
-                    "item_count": len(item_ids),
-                    "error_type": type(e).__name__,
-                },
+                details={"item_count": len(item_ids), "error_type": type(e).__name__},
             ) from e
 
     async def update_item(
@@ -372,66 +224,24 @@ class VectorStoreService:
         metadata: Dict[str, Any],
         document: str,
     ) -> None:
-        """Update item in vector store.
-
-        Args:
-            item_id: Item identifier to update
-            embedding: Updated embedding vector
-            metadata: Updated metadata
-            document: Updated document text
-
-        Raises:
-            VectorStoreOperationError: If update operation fails
-        """
-        return await self._update_item_impl(item_id, embedding, metadata, document)
-
-    async def _update_item_impl(
-        self,
-        item_id: str,
-        embedding: List[float],
-        metadata: Dict[str, Any],
-        document: str,
-    ) -> None:
-        """Internal implementation of update_item."""
+        """Update item in vector store."""
         try:
             sanitized_metadata = self._sanitize_metadata(metadata)
-
-            # Use upsert to update (or create if not exists)
             self.collection.upsert(
                 ids=[item_id],
                 embeddings=[embedding],
                 metadatas=[sanitized_metadata],
                 documents=[document],
             )
-
-            logger.info("Metric: vector_item_updated")
-
         except Exception as e:
             logger.error(f"Failed to update item {item_id} in vector store: {e}")
             raise VectorStoreOperationError(
                 f"Failed to update item in vector store: {e}",
-                details={
-                    "item_id": item_id,
-                    "error_type": type(e).__name__,
-                },
+                details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
     async def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
-        """Get item from vector store by ID.
-
-        Args:
-            item_id: Item identifier
-
-        Returns:
-            Item dict with id, embedding, metadata, document, or None if not found
-
-        Raises:
-            VectorStoreOperationError: If get operation fails
-        """
-        return await self._get_item_impl(item_id)
-
-    async def _get_item_impl(self, item_id: str) -> Optional[Dict[str, Any]]:
-        """Internal implementation of get_item."""
+        """Get item from vector store by ID."""
         try:
             result = self.collection.get(
                 ids=[item_id],
@@ -441,11 +251,9 @@ class VectorStoreService:
             if not result["ids"]:
                 return None
 
-            # Handle numpy arrays from ChromaDB - convert to list if needed
             embedding = None
             if result.get("embeddings") is not None and len(result["embeddings"]) > 0:
                 emb = result["embeddings"][0]
-                # Convert numpy array to list if necessary
                 embedding = emb.tolist() if hasattr(emb, "tolist") else list(emb)
 
             metadata = {}
@@ -467,35 +275,18 @@ class VectorStoreService:
             logger.error(f"Failed to get item {item_id} from vector store: {e}")
             raise VectorStoreOperationError(
                 f"Failed to get item from vector store: {e}",
-                details={
-                    "item_id": item_id,
-                    "error_type": type(e).__name__,
-                },
+                details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
     async def get_collection_stats(self) -> Dict[str, Any]:
-        """Get collection statistics.
-
-        Returns:
-            Dictionary with collection statistics (count, etc.)
-
-        Raises:
-            VectorStoreOperationError: If stats retrieval fails
-        """
-        return await self._get_collection_stats_impl()
-
-    async def _get_collection_stats_impl(self) -> Dict[str, Any]:
-        """Internal implementation of get_collection_stats."""
+        """Get collection statistics."""
         try:
             count = self.collection.count()
-
             return {
                 "collection_name": self.collection_name,
-                "persist_directory": self.persist_directory,
                 "item_count": count,
                 "metadata": self.collection.metadata or {},
             }
-
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")
             raise VectorStoreOperationError(
@@ -504,27 +295,13 @@ class VectorStoreService:
             ) from e
 
     async def clear_collection(self) -> None:
-        """Clear all items from the collection.
-
-        This is primarily for testing purposes.
-
-        Raises:
-            VectorStoreOperationError: If clear operation fails
-        """
-        return await self._clear_collection_impl()
-
-    async def _clear_collection_impl(self) -> None:
-        """Internal implementation of clear_collection."""
+        """Clear all items from the collection."""
         try:
-            # Delete and recreate collection
             self.client.delete_collection(self.collection_name)
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
-
-            logger.info("Business event: vector_collection_cleared")
-
         except Exception as e:
             logger.error(f"Failed to clear collection: {e}")
             raise VectorStoreOperationError(
@@ -533,23 +310,8 @@ class VectorStoreService:
             ) from e
 
     async def delete_by_organization(self, organization_id: str) -> int:
-        """Delete all items for an organization.
-
-        Args:
-            organization_id: Organization identifier
-
-        Returns:
-            Number of items deleted
-
-        Raises:
-            VectorStoreOperationError: If delete operation fails
-        """
-        return await self._delete_by_organization_impl(organization_id)
-
-    async def _delete_by_organization_impl(self, organization_id: str) -> int:
-        """Internal implementation of delete_by_organization."""
+        """Delete all items for an organization."""
         try:
-            # Get all items for the organization
             result = self.collection.get(
                 where={"organization_id": organization_id},
                 include=[],
@@ -558,13 +320,8 @@ class VectorStoreService:
             if not result["ids"]:
                 return 0
 
-            # Delete all found items
             self.collection.delete(ids=result["ids"])
-            deleted_count = len(result["ids"])
-
-            logger.info("Metric: vector_items_deleted_by_org")
-
-            return deleted_count
+            return len(result["ids"])
 
         except Exception as e:
             logger.error(
@@ -579,16 +336,7 @@ class VectorStoreService:
             ) from e
 
     def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Sanitize metadata for ChromaDB compatibility.
-
-        ChromaDB only supports string, int, float, bool values in metadata.
-
-        Args:
-            metadata: Original metadata dict
-
-        Returns:
-            Sanitized metadata dict
-        """
+        """Sanitize metadata for ChromaDB compatibility."""
         sanitized = {}
         for key, value in metadata.items():
             if value is None:
@@ -596,26 +344,19 @@ class VectorStoreService:
             elif isinstance(value, (str, int, float, bool)):
                 sanitized[key] = value
             elif hasattr(value, "value"):
-                # Handle enums
                 sanitized[key] = value.value
             elif isinstance(value, (list, dict)):
-                # Skip complex types - could also serialize to JSON string
                 continue
             else:
-                # Convert to string as fallback
                 sanitized[key] = str(value)
         return sanitized
 
     async def health_check(self) -> Dict[str, Any]:
-        """Perform health check for the vector store service.
-
-        Returns:
-            Dictionary with health status
-        """
+        """Perform health check."""
         base_health = {"service": "vector_store_service", "status": "healthy"}
 
         try:
-            stats = await self._get_collection_stats_impl()
+            stats = await self.get_collection_stats()
             store_status = "healthy"
         except Exception as e:
             store_status = "unhealthy"
@@ -626,7 +367,6 @@ class VectorStoreService:
             {
                 "store_status": store_status,
                 "collection_name": self.collection_name,
-                "persist_directory": self.persist_directory,
                 "item_count": stats.get("item_count", 0),
             }
         )

@@ -112,11 +112,28 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 │   - Request deduplication (content-hash with Lua scripts)             │
 │   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
 │                                                                        │
-│ ChromaDB:                                                             │
-│   - User KB: user_kb_{user_id} (permanent)                           │
-│   - Case Working Memory: case_{case_id} (ephemeral)                  │
-│   - Global KB: global_kb (shared)                                     │
-│   - (Report content moved to PostgreSQL per TD-001)                   │
+│ ChromaDB (single PersistentClient at data/chroma/):                   │
+│   - faultmaven_kb: All KB documents (global/personal/team scope,     │
+│     filtered by metadata: scope, owner_id, team_id)                  │
+│   - faultmaven_runbooks: Runbook similarity search (report_type,     │
+│     domain metadata — used for "this looks like runbook X")          │
+│   - knowledge_items: Knowledge module items (organization_id,        │
+│     item_type, category — used by KnowledgeSearchService)            │
+│   - case_{case_id}: Per-case evidence (dynamic, ephemeral —         │
+│     created on first upload, deleted on case close)                  │
+│                                                                        │
+│   NOTE: All collections share one ChromaDB client via DI.             │
+│   Local: PersistentClient (data/chroma/chroma.sqlite3)               │
+│   Cloud: HttpClient to external ChromaDB server                      │
+│                                                                        │
+│   Scope isolation on faultmaven_kb uses metadata filtering:          │
+│   - global_kb_qa tool: {"scope": "global"}                           │
+│   - user_kb_qa tool: {"scope": "personal", "owner_id": user_id}     │
+│   - Team KB: metadata stored, dedicated tool not yet implemented     │
+│                                                                        │
+│   KB config layer returns logical names (global_kb, user_{id}_kb)    │
+│   which map to faultmaven_kb with metadata filters, NOT separate     │
+│   collections.                                                        │
 │                                                                        │
 │ S3-Compatible Storage:                                                │
 │   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │

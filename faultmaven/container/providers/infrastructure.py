@@ -569,8 +569,10 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     if not settings.server.skip_service_checks:
         chromadb_client = create_chromadb_client(settings)
         container._register_service("chromadb_client", chromadb_client)
+        container.chromadb_client = chromadb_client
     else:
         chromadb_client = None
+        container.chromadb_client = None
 
     # Vector store (global KB)
     try:
