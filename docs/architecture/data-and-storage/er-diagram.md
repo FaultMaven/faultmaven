@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-03-18 07:04 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-03-25 22:46 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**30 tables** in the schema.
+**32 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -18,11 +18,13 @@
 | `case_messages` | 9 | `message_id` | cases |
 | `case_tags` | 5 | `tag_id` | cases |
 | `cases` | 21 | `case_id` | sessions |
+| `conversion_drafts` | 15 | `id` | conversion_jobs |
+| `conversion_jobs` | 14 | `id` | — |
 | `evidence` | 15 | `evidence_id` | cases |
 | `evidence_artifacts` | 16 | `evidence_id` | cases |
 | `hypotheses` | 23 | `hypothesis_id` | cases |
 | `investigation_sessions` | 17 | `session_id` | cases |
-| `knowledge_items` | 26 | `item_id` | — |
+| `knowledge_items` | 29 | `item_id` | — |
 | `knowledge_suggestions` | 26 | `suggestion_id` | — |
 | `llm_config_overrides` | 4 | `key` | — |
 | `oauth_authorization_codes` | 7 | `code` | — |
@@ -155,6 +157,39 @@ erDiagram
         DATETIME archived_at
         VARCHAR session_id FK
     }
+    conversion_drafts {
+        VARCHAR id PK
+        VARCHAR conversion_id FK
+        VARCHAR runbook_id
+        VARCHAR title
+        VARCHAR file_path
+        VARCHAR status
+        BOOLEAN validation_passed
+        JSON validation_errors
+        JSON validation_warnings
+        NUMERIC quality_score
+        JSON quality_details
+        VARCHAR knowledge_item_id
+        DATETIME created_at
+        DATETIME verified_at
+        VARCHAR verified_by
+    }
+    conversion_jobs {
+        VARCHAR id PK
+        VARCHAR user_id
+        VARCHAR organization_id
+        VARCHAR scope
+        VARCHAR team_id
+        VARCHAR status
+        VARCHAR source_filename
+        VARCHAR source_content_type
+        INTEGER source_size_bytes
+        VARCHAR source_path
+        INTEGER failure_modes_detected
+        JSON analysis_result
+        DATETIME created_at
+        DATETIME completed_at
+    }
     evidence {
         VARCHAR evidence_id PK
         VARCHAR case_id FK
@@ -237,6 +272,9 @@ erDiagram
     knowledge_items {
         VARCHAR item_id PK
         VARCHAR organization_id
+        VARCHAR scope
+        VARCHAR owner_id
+        VARCHAR team_id
         VARCHAR title
         TEXT content
         VARCHAR item_type
@@ -479,6 +517,7 @@ erDiagram
     cases ||--o{ investigation_sessions : ""
     cases ||--o{ solutions : ""
     cases ||--o{ uploaded_files : ""
+    conversion_jobs ||--o{ conversion_drafts : ""
     investigation_sessions ||--o{ agent_executions : ""
     organizations ||--o{ organization_members : ""
     organizations ||--o{ teams : ""
