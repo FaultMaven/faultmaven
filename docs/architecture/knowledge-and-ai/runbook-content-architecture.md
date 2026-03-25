@@ -1,7 +1,7 @@
 # Runbook Content Architecture: Structuring Knowledge for AI-Driven Troubleshooting
 
 **Document Type:** Component Specification
-**Version:** 2.0
+**Version:** 2.1
 **Status:** Partial Implementation (see [Implementation Status](#implementation-status))
 
 ## Purpose
@@ -111,6 +111,8 @@ Atomic runbooks produce better retrieval because the entire document is relevant
 
 **`service` is the technology, not the team.** Teams change; technologies are stable identifiers. Tag by what the runbook diagnoses, not who owns it.
 
+**Taxonomy fields depend on hybrid search filtering.** The `domain`, `service`, and `symptom_class` fields are stored in ChromaDB metadata at ingestion time but the query-side `domain_filter`/`service_filter` parameters are not yet implemented (see [knowledge-base-architecture.md](./knowledge-base-architecture.md), "Hybrid Search" section). Until the filtering query path is built, these fields provide documentation value and future-proof the metadata. Once implemented, they will narrow vector search to the relevant domain before similarity scoring runs.
+
 ---
 
 ## 3. Standardized Runbook Template
@@ -139,10 +141,9 @@ This template mirrors FaultMaven's investigation stages (`SYMPTOM_VERIFICATION` 
 
 # Runbook: [Title — include the failure mode, not just the technology]
 
-## Context & Prerequisites (recommended, not required)
-What system this applies to, required access permissions, and tools needed.
-
 ## Problem Definition
+PostgreSQL 14+ (applies to AWS RDS, Aurora, self-hosted). Requires `pg_monitor` role or superuser access. Tools: `psql`, `pgbouncer` admin console.
+
 - Exact alert names: "Datadog Alert: PostgreSQL Connection Pool > 90%"
 - Error messages as they appear in logs: "FATAL: too many connections for role"
 - Metric patterns: "pg_stat_activity active connections > pool_size for >5min"
@@ -208,12 +209,12 @@ This section explains WHY each template section is structured the way it is. Thi
 
 | Section | RAG Purpose | What makes it effective |
 |---------|------------|------------------------|
-| **Problem Definition** | The AI matches user-reported symptoms against this section via vector similarity. | Specific error strings and metric names produce precise retrieval. Generic descriptions ("database is slow") match too many runbooks. Put symptoms AND their associated error strings in the same paragraph so they land in the same chunk. |
-| **Diagnostic Steps** | Used during HYPOTHESIS_VALIDATION. The AI proposes these commands to the user. | Each step must include: the command, what to look for in the output, and what the finding means. Vague steps ("check the database") force the AI to guess. |
+| **Problem Definition** | The AI matches user-reported symptoms against this section via vector similarity. This section also establishes scope (system, version, access requirements) so that every retrieved chunk carries its context. | **Co-location rule:** Keep all symptom indicators (alerts, error messages, metric patterns) AND the scope context (system, version, access) within a single tight block. Do not separate them with explanatory prose. If they split across chunks, retrieved symptoms lose their scoping context and vice versa. Generic descriptions ("database is slow") match too many runbooks. |
+| **Diagnostic Steps** | Used during HYPOTHESIS_VALIDATION. The AI proposes these commands to the user. | **Self-contained step rule:** Each diagnostic step must be usable in isolation — if it lands in a chunk alone, the LLM must know what it's checking, the command to run, what to look for in the output, and what the finding means. Do not write "as described in Step 1" — the chunk may not include Step 1. Vague steps ("check the database") force the AI to guess. |
 | **Mitigation** | FaultMaven supports MITIGATION_FIRST investigation. The AI can propose a quick fix early. | Must include risk assessment, the command, verification, and safe duration. Without risk, the AI can't warn the user about side effects. |
 | **Root Cause Resolution** | Linked to diagnostic findings. Structure as "If X, then Y" so the AI matches findings to fixes. | Each fix must be tied to a specific diagnostic outcome. Unlinked fixes force the AI to guess which one applies. |
 | **Verification** | Lets the AI confirm whether the fix worked. | Specific metrics, commands, and observation periods. Without this, the investigation can't reach RESOLVED status. |
-| **Prevention** | Used in post-resolution recommendations. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions, not general advice. |
+| **Prevention** | Used in post-resolution recommendations and report generation. **By design, Prevention chunks are rarely retrieved during active investigation** — they don't match symptom queries. They become relevant only after the problem is resolved, when the agent generates recommendations. This is intentional, not a retrieval gap. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions, not general advice. |
 | **Sources** | Provides provenance for the knowledge. Enables verification and updates. | URL + brief description of what was used from each source. The AI can cite these when presenting the answer. |
 
 ### Template Compliance Rules
@@ -248,7 +249,7 @@ Validates the markdown document contains required sections with actionable conte
 
 **Checks:**
 
-- Required H2 headers are present: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`
+- Required H2 headers are present: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`, `Prevention`, `Sources`
 - At least one fenced code block exists in `Diagnostic Steps` and `Root Cause Resolution` sections
 - No section is empty (header with no content before the next header)
 
