@@ -54,6 +54,8 @@ In the local deployment, the Personal tier provides all KB functionality. The us
 
 ## Storage Architecture
 
+### Target Collection Layout
+
 Each knowledge tier maps to a separate ChromaDB collection with distinct access patterns:
 
 | Tier | Collection Pattern | ChromaDB Isolation | Access Rule |
@@ -64,10 +66,8 @@ Each knowledge tier maps to a separate ChromaDB collection with distinct access 
 
 **Design principle:** These collections must never be confused in implementation. They use different access patterns, different agent tools, and serve different scopes. User isolation is enforced at the repository layer — no cross-tenant data access.
 
-### ChromaDB Collection Layout
-
 ```text
-ChromaDB Instance
+ChromaDB Instance (target layout)
 │
 ├── global_kb                        # Global tier (permanent, system-wide)
 │   └── [pre-built troubleshooting guides and best practices]
@@ -86,6 +86,34 @@ ChromaDB Instance
 ```
 
 All tiers are **permanent** — knowledge persists until explicitly deleted by the owner (user, team admin, or system admin). This is in contrast to case evidence, which is ephemeral and tied to case lifecycle.
+
+### BUG: Collection Name Mismatch (Write/Read Disconnect)
+
+> **Critical finding:** The ingestion pipeline and the retrieval tools write to and read from **different ChromaDB collections**. This means KB Q&A tools are querying empty or wrong collections. This must be fixed before KB retrieval can work correctly.
+
+**The problem in detail:**
+
+The retrieval path (`global_kb_qa` → `DocumentQATool` → `CaseVectorStore`) was designed for case evidence, where `CaseVectorStore` prepends `case_` to every collection name. When repurposed for KB retrieval, the KB config returns `"global_kb"`, but `CaseVectorStore` transforms it to `"case_global_kb"`. Meanwhile, ingestion writes to a completely different collection.
+
+**Current mismatch:**
+
+| Path | Component | Collection Name | Notes |
+|------|-----------|-----------------|-------|
+| Global KB ingestion | `KnowledgeIngester` (`core/knowledge/ingestion.py:120`) | `faultmaven_kb` | Hardcoded |
+| Global KB retrieval | `global_kb_qa` → `CaseVectorStore` | `case_global_kb` | `GlobalKBConfig` returns `"global_kb"`, `CaseVectorStore` prepends `"case_"` |
+| User KB ingestion | `VectorStoreService` (`knowledge/services/vector_store_service.py:33`) | `knowledge_items` | Default parameter |
+| User KB retrieval | `user_kb_qa` → `CaseVectorStore` | `case_user_{id}_kb` | `UserKBConfig` returns `"user_{id}_kb"`, `CaseVectorStore` prepends `"case_"` |
+| Runbook KB (legacy) | `RunbookKB` (`infrastructure/knowledge/runbook_kb.py:45`) | `faultmaven_runbooks` | Appears unused |
+
+**Root cause:** `DocumentQATool` delegates to `CaseVectorStore`, which was built for case evidence (where the `case_` prefix makes sense). KB collections should not go through `CaseVectorStore` — they need their own vector store adapter that uses the collection name as-is from `KBConfig`.
+
+**Fix options:**
+
+1. **Create `KnowledgeVectorStore`** — A new adapter that calls ChromaDB directly without the `case_` prefix. `DocumentQATool` would use this instead of `CaseVectorStore`. This cleanly separates the evidence and knowledge retrieval paths.
+2. **Strip prefix in KBConfig** — Have `GlobalKBConfig.get_collection_name()` return `"faultmaven_kb"` directly (matching what ingestion writes), and have `CaseVectorStore` not prepend `case_` when the input doesn't look like a case ID. Hacky but minimal change.
+3. **Align ingestion to match retrieval** — Change `KnowledgeIngester` to write to `case_global_kb`. This preserves the current retrieval path but conflates the naming convention.
+
+**Recommended fix:** Option 1 — create a dedicated `KnowledgeVectorStore` that uses collection names as-is from `KBConfig`. This also prepares the ground for the federated search, which needs to query multiple KB collections concurrently without the `case_` prefix logic.
 
 ---
 
@@ -218,7 +246,7 @@ This section documents the **current implementation** and **planned improvements
 | Feature | Status | Current Reality | Target Design |
 |---------|--------|-----------------|---------------|
 | Federated search | **PLANNED** | 3 separate tools: `global_kb_qa`, `user_kb_qa`, `answer_from_case_evidence` | Single `answer_from_knowledge_base` tool |
-| Collection layout | **CURRENT** | Separate collections per tier: `global_kb`, `user_{user_id}_kb` | No change — separate collections are correct |
+| Collection naming | **BUG** | Ingestion writes to `faultmaven_kb`/`knowledge_items`; retrieval reads from `case_global_kb`/`case_user_{id}_kb` (mismatched) | Aligned collection names via dedicated `KnowledgeVectorStore` |
 | Hybrid search (metadata filtering) | **PLANNED** | Pure vector similarity, no metadata filtering | `domain_filter`/`service_filter` from case context |
 | Staleness-aware synthesis | **PLANNED** | No staleness warnings injected | Warning injection via `format_chunk_metadata()` |
 | Fast-track confidence | **CURRENT** | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py:3788` | No change needed |
