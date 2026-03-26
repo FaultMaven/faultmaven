@@ -531,6 +531,40 @@ def _post_process_llm_response(
 
 
 # =============================================================================
+# Resolution Summary Helpers
+# =============================================================================
+
+
+def _get_root_cause_summary(case) -> str:
+    """Extract a brief root cause description from the case for confirmation prompts."""
+    if case.root_cause_conclusion and getattr(
+        case.root_cause_conclusion, "root_cause", None
+    ):
+        cause = case.root_cause_conclusion.root_cause
+        return cause[:200] + "..." if len(cause) > 200 else cause
+    if case.working_conclusion and getattr(case.working_conclusion, "statement", None):
+        stmt = case.working_conclusion.statement
+        return stmt[:200] + "..." if len(stmt) > 200 else stmt
+    return "Not yet identified"
+
+
+def _get_solution_summary(case) -> str:
+    """Extract a brief solution description from the case for confirmation prompts."""
+    if case.solutions:
+        sol = case.solutions[-1]  # Most recent solution
+        title = getattr(sol, "title", None)
+        if title:
+            return title
+        longterm = getattr(sol, "longterm_fix", None)
+        if longterm:
+            return longterm[:200] + "..." if len(longterm) > 200 else longterm
+        immediate = getattr(sol, "immediate_action", None)
+        if immediate:
+            return immediate[:200] + "..." if len(immediate) > 200 else immediate
+    return "Not yet documented"
+
+
+# =============================================================================
 # Milestone Engine - Main Implementation
 # =============================================================================
 
@@ -844,10 +878,44 @@ class MilestoneEngine:
                             f"transition for case {case.case_id}"
                         )
 
+                        # Build response with optional runbook suggestion
+                        response_parts = [
+                            "Case resolved. The issue has been marked as resolved."
+                        ]
+
+                        # Check if auto-summary will be generated
+                        if getattr(case, "_pending_summary", False):
+                            response_parts.append(
+                                "\nA resolution summary has been generated."
+                            )
+
+                        # Check runbook suggestion (content readiness + deduplication)
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            evaluate_runbook_suggestion,
+                        )
+
+                        # Pass runbook_kb if available via knowledge_service
+                        runbook_kb = None
+                        if self.knowledge_service and hasattr(
+                            self.knowledge_service, "runbook_kb"
+                        ):
+                            runbook_kb = self.knowledge_service.runbook_kb
+
+                        rb_suggestion = await evaluate_runbook_suggestion(
+                            case, runbook_kb
+                        )
+                        if rb_suggestion.verdict in (
+                            rb_suggestion.SUGGEST,
+                            rb_suggestion.SUGGEST_WITH_CAVEATS,
+                        ):
+                            response_parts.append(f"\n{rb_suggestion.message}")
+                        elif rb_suggestion.verdict == rb_suggestion.EXISTING_COVERS:
+                            response_parts.append(f"\n{rb_suggestion.message}")
+
                         # Save and return — transition is complete
                         await self.repository.save(case)
                         return {
-                            "agent_response": "Case resolved. The issue has been marked as resolved.",
+                            "agent_response": "\n".join(response_parts),
                             "suggested_follow_ups": [],
                             "case_updated": case,
                             "metadata": {
@@ -857,18 +925,56 @@ class MilestoneEngine:
                             },
                         }
 
-                    # No pending transition — propose one via User-Agent Handshake.
-                    # The LLM will ask the user to describe the solution and confirm.
-                    # The transition executes on the NEXT turn when the user confirms.
+                    # No pending transition — check resolution readiness before proposing.
                     from faultmaven.core.investigation.terminal_transitions import (
+                        assess_resolution_readiness,
                         propose_transition,
                     )
 
+                    readiness = assess_resolution_readiness(case)
+
+                    if readiness.verdict == readiness.SUGGEST_CLOSE:
+                        # Case lacks fundamental info — suggest CLOSED instead
+                        logger.info(
+                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} not ready "
+                            f"for resolution (missing: {readiness.missing}). Suggesting CLOSE."
+                        )
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": readiness.message,
+                            "suggested_follow_ups": [],
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
+
+                    if readiness.verdict == readiness.NEEDS_INFO:
+                        # Partially ready — ask for missing details before proposing
+                        logger.info(
+                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} needs more info "
+                            f"(missing: {readiness.missing}). Asking user."
+                        )
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": readiness.message,
+                            "suggested_follow_ups": [],
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
+
+                    # READY — propose transition via User-Agent Handshake
                     propose_transition(
                         case=case,
                         to_status="resolved",
                         reason="User indicated resolution via status dropdown",
-                        summary="You've indicated this issue is resolved. Can you describe what fixed it?",
+                        summary="Case meets resolution criteria. Awaiting user confirmation.",
                     )
                     metadata["transition_proposed_this_turn"] = True
 
@@ -876,7 +982,25 @@ class MilestoneEngine:
                         f"INVESTIGATING->RESOLVED dropdown: proposed transition for "
                         f"case {case.case_id} (pending user confirmation)"
                     )
-                    # Fall through to LLM to generate resolution documentation request
+
+                    # Return immediately with confirmation prompt.
+                    await self.repository.save(case)
+                    return {
+                        "agent_response": (
+                            "You've indicated this issue is resolved.\n\n"
+                            "Here's what I have on record:\n"
+                            f"- **Root cause**: {_get_root_cause_summary(case)}\n"
+                            f"- **Solution**: {_get_solution_summary(case)}\n\n"
+                            "Is this correct? Once you confirm, I'll mark the case as resolved."
+                        ),
+                        "suggested_follow_ups": [],
+                        "case_updated": case,
+                        "metadata": {
+                            "turn_number": case.current_turn,
+                            "milestones_completed": [],
+                            "progress_made": True,
+                        },
+                    }
 
                 elif to_status_str == "investigating":
                     if case.status != CaseStatus.INQUIRY:
@@ -1102,21 +1226,76 @@ class MilestoneEngine:
                             f"Detected NLP intent to RESOLVE case {case.case_id}: '{user_message[:50]}...'"
                         )
                         from faultmaven.core.investigation.terminal_transitions import (
+                            assess_resolution_readiness,
                             propose_transition,
                         )
 
+                        readiness = assess_resolution_readiness(case)
+
+                        if readiness.verdict == readiness.SUGGEST_CLOSE:
+                            logger.info(
+                                f"NLP resolve for case {case.case_id}: not ready "
+                                f"(missing: {readiness.missing}). Suggesting CLOSE."
+                            )
+                            await self.repository.save(case)
+                            return {
+                                "agent_response": readiness.message,
+                                "suggested_follow_ups": [],
+                                "case_updated": case,
+                                "metadata": {
+                                    "turn_number": case.current_turn,
+                                    "milestones_completed": [],
+                                    "progress_made": False,
+                                },
+                            }
+
+                        if readiness.verdict == readiness.NEEDS_INFO:
+                            logger.info(
+                                f"NLP resolve for case {case.case_id}: needs more info "
+                                f"(missing: {readiness.missing}). Asking user."
+                            )
+                            await self.repository.save(case)
+                            return {
+                                "agent_response": readiness.message,
+                                "suggested_follow_ups": [],
+                                "case_updated": case,
+                                "metadata": {
+                                    "turn_number": case.current_turn,
+                                    "milestones_completed": [],
+                                    "progress_made": False,
+                                },
+                            }
+
+                        # READY — propose transition
                         propose_transition(
                             case=case,
                             to_status="resolved",
                             reason="User indicated the problem is resolved",
-                            summary=f"Based on your message, the issue appears to be resolved.",
+                            summary="Case meets resolution criteria. Awaiting user confirmation.",
                         )
 
                         logger.info(
                             f"Proposed RESOLVED transition for case {case.case_id} (pending user confirmation)"
                         )
-                        # Mark that we proposed a transition this turn, so we don't immediately confirm it
                         metadata["transition_proposed_this_turn"] = True
+
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": (
+                                "It sounds like the issue is resolved.\n\n"
+                                "Here's what I have on record:\n"
+                                f"- **Root cause**: {_get_root_cause_summary(case)}\n"
+                                f"- **Solution**: {_get_solution_summary(case)}\n\n"
+                                "Is this correct? Once you confirm, I'll mark the case as resolved."
+                            ),
+                            "suggested_follow_ups": [],
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": True,
+                            },
+                        }
 
                     # CHECK AMBIGUOUS CLOSE PATTERNS (lowest priority)
                     # "close this case" is ambiguous — could mean CLOSED (abandoned) or RESOLVED.
@@ -1125,22 +1304,30 @@ class MilestoneEngine:
                         logger.info(
                             f"Detected ambiguous close intent for case {case.case_id}: '{user_message[:50]}...'"
                         )
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            propose_transition,
-                        )
 
-                        propose_transition(
-                            case=case,
-                            to_status="resolved",
-                            reason="User requested case closure (ambiguous — defaulting to resolved)",
-                            summary=f"You asked to close this case. Should I mark it as resolved (problem fixed) or closed (without solution)?",
-                        )
+                        # Do NOT set pending_transition here — we don't know
+                        # whether the user wants RESOLVED or CLOSED yet.
+                        # Just ask for clarification. Their next message will
+                        # route through the resolve_patterns or abandonment_patterns.
 
-                        logger.info(
-                            f"Proposed transition for case {case.case_id} (pending user clarification)"
-                        )
-                        # Mark that we proposed a transition this turn, so we don't immediately confirm it
-                        metadata["transition_proposed_this_turn"] = True
+                        # Return immediately with clarification request.
+                        await self.repository.save(case)
+                        return {
+                            "agent_response": (
+                                "You'd like to close this case. Before I do, I need to know:\n\n"
+                                "- **Resolved** — The problem is fixed. I'll document the solution.\n"
+                                "- **Closed** — The investigation is ending without a solution "
+                                "(abandoned, escalated, or mitigation was sufficient).\n\n"
+                                "Which would you like?"
+                            ),
+                            "suggested_follow_ups": [],
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
 
             # 1. Gather Context & Build Prompt
             # Phase 3: Inquiry KB Search (Fast-track)
@@ -1586,8 +1773,36 @@ class MilestoneEngine:
             # Persist redaction registry for cross-turn consistency
             await redaction_ctx.save()
 
+            agent_response_text = response_obj.agent_response
+
+            # Append runbook suggestion when case just transitioned to RESOLVED
+            if (
+                metadata.get("status_transitioned")
+                and case_updated.status == CaseStatus.RESOLVED
+            ):
+                from faultmaven.core.investigation.terminal_transitions import (
+                    evaluate_runbook_suggestion,
+                )
+
+                runbook_kb = None
+                if self.knowledge_service and hasattr(
+                    self.knowledge_service, "runbook_kb"
+                ):
+                    runbook_kb = self.knowledge_service.runbook_kb
+
+                rb_suggestion = await evaluate_runbook_suggestion(
+                    case_updated, runbook_kb
+                )
+                if rb_suggestion.verdict in (
+                    rb_suggestion.SUGGEST,
+                    rb_suggestion.SUGGEST_WITH_CAVEATS,
+                ):
+                    agent_response_text += f"\n\n{rb_suggestion.message}"
+                elif rb_suggestion.verdict == rb_suggestion.EXISTING_COVERS:
+                    agent_response_text += f"\n\n{rb_suggestion.message}"
+
             return {
-                "agent_response": response_obj.agent_response,
+                "agent_response": agent_response_text,
                 "suggested_follow_ups": follow_ups,
                 "case_updated": case_updated,
                 "redaction_ctx": redaction_ctx,

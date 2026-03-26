@@ -1367,13 +1367,15 @@ class SQLiteCaseRepository(CaseRepository):
                     generated_at_turn, last_updated_turn, last_progress_at_turn,
                     iterations_without_progress,
                     category, generation_mode, rationale, retirement_reason, evidence_links,
-                    tested_at, concluded_at, proposed_at, updated_at, metadata
+                    tested_at, concluded_at, proposed_at, updated_at, metadata,
+                    created_by, updated_by
                 ) VALUES (
                     :hypothesis_id, :case_id, :organization_id, :statement, :status, :likelihood, :initial_likelihood,
                     :generated_at_turn, :last_updated_turn, :last_progress_at_turn,
                     :iterations_without_progress,
                     :category, :generation_mode, :rationale, :retirement_reason, :evidence_links,
-                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata
+                    :tested_at, :concluded_at, :proposed_at, :updated_at, :metadata,
+                    :created_by, :updated_by
                 )
                 ON CONFLICT (hypothesis_id) DO UPDATE SET
                     statement = EXCLUDED.statement,
@@ -1421,6 +1423,8 @@ class SQLiteCaseRepository(CaseRepository):
                     or datetime.now(UTC),
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
+                    "created_by": "system",
+                    "updated_by": None,
                 },
             )
 

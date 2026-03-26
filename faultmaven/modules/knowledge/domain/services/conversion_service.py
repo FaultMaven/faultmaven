@@ -25,6 +25,7 @@ from faultmaven.infrastructure.persistence.models import (
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
+    CaseConversionRequest,
     ConversionDraft,
     ConversionError,
     ConversionErrorCode,
@@ -36,6 +37,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     SourceAssessment,
     SourceFileInfo,
+    SourceType,
     ValidationResult,
     VerifyResponse,
     generate_conversion_id,
@@ -364,6 +366,159 @@ class ConversionService:
         )
 
     # =========================================================================
+    # Case-to-Runbook Conversion
+    # =========================================================================
+
+    async def convert_from_case(
+        self,
+        request: "CaseConversionRequest",
+        user_id: str,
+        organization_id: str = None,
+        team_id: str = None,
+    ) -> ConversionResponse:
+        """Generate a runbook draft from a resolved case using the canonical template.
+
+        Skips preprocessing and analysis (case data is already structured).
+        Reuses _convert_single_failure_mode() for LLM generation, validation,
+        scoring, and persistence — same pipeline as document-driven conversion.
+        """
+        # Verify LLM provider is available
+        try:
+            knowledge_model = self._settings.llm.get_knowledge_model()
+            if not knowledge_model:
+                raise ConversionRejectedError(
+                    "No LLM provider is configured.",
+                    error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+                )
+        except AttributeError:
+            raise ConversionRejectedError(
+                "No LLM provider is configured.",
+                error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+            )
+
+        conversion_id = generate_conversion_id()
+        created_at = datetime.now(timezone.utc)
+        warnings: List[str] = []
+
+        # Construct a FailureModeAnalysis from the case data
+        failure_mode = FailureModeAnalysis(
+            id=f"case-{request.case_id}",
+            title=request.title,
+            domain=request.domain,
+            service=request.service,
+            symptom_class=request.symptom_class or ["unknown"],
+            severity=request.severity,
+            symptoms_summary=request.description,
+            resolution_summary=request.root_cause or "See solutions below",
+        )
+
+        # Assemble source material text from case context.
+        # Each section maps to a Case domain model field — see CaseConversionRequest docstring.
+        source_parts = [f"CASE TITLE: {request.title}"]
+        if request.description:
+            source_parts.append(f"PROBLEM: {request.description}")
+        if request.root_cause:
+            source_parts.append(f"ROOT CAUSE: {request.root_cause}")
+        if request.root_cause_mechanism:
+            source_parts.append(f"CAUSAL MECHANISM: {request.root_cause_mechanism}")
+        if request.solutions:
+            solutions_text = "\n\n".join(request.solutions)
+            source_parts.append(f"SOLUTIONS APPLIED:\n{solutions_text}")
+        if request.hypotheses_summary:
+            source_parts.append(f"VALIDATED HYPOTHESES: {request.hypotheses_summary}")
+        if request.evidence_summary:
+            source_parts.append(f"KEY EVIDENCE:\n{request.evidence_summary}")
+        source_text = "\n\n".join(source_parts)
+
+        source_filename = f"Case {request.case_id}"
+
+        logger.info(
+            "case_conversion_started",
+            extra={
+                "conversion_id": conversion_id,
+                "case_id": request.case_id,
+                "domain": request.domain,
+                "service": request.service,
+            },
+        )
+
+        # Convert using the same pipeline as document-driven
+        draft_or_error = await self._convert_single_failure_mode(
+            text=source_text,
+            failure_mode=failure_mode,
+            scope=request.scope,
+            filename=source_filename,
+            conversion_id=conversion_id,
+            user_id=user_id,
+            team_id=team_id,
+        )
+
+        drafts: List[ConversionDraft] = []
+        if isinstance(draft_or_error, ConversionError):
+            warnings.append(f"Conversion failed: {draft_or_error.error}")
+            status = ConversionStatus.FAILED
+        else:
+            # Tag the draft with case source info
+            draft_or_error.source_type = SourceType.CASE
+            draft_or_error.case_id = request.case_id
+            drafts.append(draft_or_error)
+            status = ConversionStatus.COMPLETED
+
+        # Build analysis result (single failure mode, always actionable)
+        analysis = AnalysisResult(
+            is_actionable=True,
+            failure_modes=[failure_mode],
+            source_assessment=SourceAssessment(
+                content_type="resolved_case",
+                actionability_rating="high",
+                missing_information=[],
+            ),
+        )
+
+        source_file = SourceFileInfo(
+            filename=source_filename,
+            size_bytes=len(source_text.encode("utf-8")),
+            content_type="application/x-faultmaven-case",
+            retained_path=None,
+        )
+
+        # Persist to database with source_type and case_id
+        await self._persist_job(
+            conversion_id=conversion_id,
+            user_id=user_id,
+            organization_id=organization_id,
+            scope=request.scope,
+            team_id=team_id,
+            status=status,
+            source_file=source_file,
+            analysis=analysis,
+            drafts=drafts,
+            created_at=created_at,
+            source_type="case",
+            case_id=request.case_id,
+        )
+
+        logger.info(
+            "case_conversion_completed",
+            extra={
+                "conversion_id": conversion_id,
+                "case_id": request.case_id,
+                "drafts_generated": len(drafts),
+                "status": status.value,
+            },
+        )
+
+        return ConversionResponse(
+            conversion_id=conversion_id,
+            status=status,
+            source_file=source_file,
+            analysis=analysis,
+            drafts=drafts,
+            warnings=warnings,
+            created_at=created_at,
+        )
+
+    # =========================================================================
     # Analysis Phase
     # =========================================================================
 
@@ -596,6 +751,8 @@ class ConversionService:
         analysis: AnalysisResult,
         drafts: List[ConversionDraft],
         created_at: datetime,
+        source_type: str = "document",
+        case_id: str = None,
     ) -> None:
         """Persist conversion job and drafts to database."""
         if not self._db_session_factory:
@@ -613,6 +770,8 @@ class ConversionService:
                 source_content_type=source_file.content_type,
                 source_size_bytes=source_file.size_bytes,
                 source_path=source_file.retained_path or "",
+                source_type=source_type,
+                case_id=case_id,
                 failure_modes_detected=len(analysis.failure_modes),
                 analysis_result=analysis.model_dump(),
                 created_at=created_at,
@@ -628,6 +787,7 @@ class ConversionService:
                     title=draft.title,
                     file_path=draft.file_path,
                     status=draft.status.value,
+                    source_type=source_type,
                     validation_passed=draft.validation.passed,
                     validation_errors=draft.validation.errors,
                     validation_warnings=draft.validation.warnings,
@@ -725,6 +885,29 @@ class ConversionService:
                 drafts=drafts,
                 created_at=job.created_at,
             )
+
+    async def get_conversion_by_case(
+        self, case_id: str, user_id: str
+    ) -> Optional[ConversionResponse]:
+        """Get conversion job for a specific case."""
+        if not self._db_session_factory:
+            return None
+
+        async with self._db_session_factory() as session:
+            result = await session.execute(
+                select(ConversionJobModel)
+                .where(
+                    ConversionJobModel.case_id == case_id,
+                    ConversionJobModel.user_id == user_id,
+                )
+                .order_by(ConversionJobModel.created_at.desc())
+            )
+            job = result.scalar_one_or_none()
+            if not job:
+                return None
+
+            # Delegate to get_conversion for consistent draft loading
+            return await self.get_conversion(job.id, user_id)
 
     async def list_conversions(
         self, user_id: str, limit: int = 20, offset: int = 0

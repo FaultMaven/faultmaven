@@ -89,6 +89,30 @@ def base_case():
     )
 
 
+def _make_resolution_ready(case):
+    """Add root cause and solution to a case so it passes resolution readiness check."""
+    from faultmaven.modules.case.contracts import (
+        RootCauseConclusion,
+        Solution,
+        SolutionType,
+    )
+
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause="Misconfigured connection pool timeout",
+        confidence_level="verified",
+        likelihood=0.9,
+        mechanism="Connection pool timeout set to 1s caused cascading failures",
+    )
+    case.solutions = [
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Increase connection pool timeout to 30s",
+            longterm_fix="Update pool timeout in application config",
+        )
+    ]
+    return case
+
+
 class TestMilestoneEngine:
 
     @pytest.mark.asyncio
@@ -423,22 +447,15 @@ class TestMilestoneEngine:
             evidence_service=MagicMock(),
         )
 
-        # Set case to INVESTIGATING status
+        # Set case to INVESTIGATING status with resolution-ready data
         base_case.status = CaseStatus.INVESTIGATING
+        _make_resolution_ready(base_case)
 
-        # Mock LLM response (doesn't matter much, user intent happens before LLM call)
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "It sounds like the issue is resolved. Can you confirm?",
-                "state_updates": {"outcome": "conversation"},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
-
-        # Test various resolution phrases — all should PROPOSE, not execute
+        # Test various resolution phrases — all should PROPOSE, not execute.
+        # Note: "close this case" is ambiguous and handled separately
+        # (asks for clarification without setting pending_transition).
         resolution_phrases = [
             "mark as resolved",
-            "close this case",
             "case is resolved",
             "problem solved",
             "issue fixed",
@@ -487,15 +504,7 @@ class TestMilestoneEngine:
         )
 
         base_case.status = CaseStatus.INVESTIGATING
-
-        # Mock LLM response
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "It sounds like the issue is resolved. Can you confirm?",
-                "state_updates": {"outcome": "conversation"},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
+        _make_resolution_ready(base_case)
 
         # Test uppercase, mixed case, with punctuation
         result = await engine.process_turn(
@@ -618,7 +627,7 @@ class TestMilestoneEngine:
         """Integration test: Complete User-Agent Handshake flow for terminal transition
 
         This test exercises the complete two-step handshake:
-        1. Turn N: User says "close this case" → system proposes transition (pending)
+        1. Turn N: User says "the fix worked" → readiness check passes → system proposes transition
         2. Turn N+1: User says "yes" → system confirms and executes transition
 
         Design Decision B: Terminal transitions are irreversible, so the agent
@@ -631,26 +640,15 @@ class TestMilestoneEngine:
             evidence_service=MagicMock(),
         )
 
-        # Start in INVESTIGATING with some progress
+        # Start in INVESTIGATING with resolution-ready case
         base_case.status = CaseStatus.INVESTIGATING
         base_case.progress.symptom_verified = True
         base_case.progress.scope_assessed = True
+        _make_resolution_ready(base_case)
 
-        # ===== TURN N: User requests closure (ambiguous) =====
+        # ===== TURN N: User says "the fix worked" → proposes transition =====
 
-        # Mock LLM response for the proposal turn
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "It sounds like you'd like to close this case. Should I mark it as resolved (problem fixed) or closed (without solution)?",
-                "state_updates": {
-                    "outcome": "conversation",
-                },
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
-
-        # User says "close this case" — triggers propose_transition
-        result_turn_n = await engine.process_turn(base_case, "close this case")
+        result_turn_n = await engine.process_turn(base_case, "the fix worked")
 
         updated_case = result_turn_n["case_updated"]
 
@@ -662,7 +660,6 @@ class TestMilestoneEngine:
 
         # ===== TURN N+1: User confirms the transition =====
 
-        # Mock LLM response (won't be called — handshake short-circuits)
         mock_llm.generate.reset_mock()
         mock_response_content_confirm = json.dumps(
             {
@@ -774,14 +771,15 @@ class TestMilestoneEngine:
         assert "abandoned" in last_transition.reason.lower()
 
     @pytest.mark.asyncio
-    async def test_user_intent_ambiguous_close_proposes_transition(
+    async def test_user_intent_ambiguous_close_asks_for_clarification(
         self, mock_llm, mock_repo, base_case
     ):
-        """Test user intent: Ambiguous 'close this case' proposes transition for clarification
+        """Ambiguous 'close this case' asks for clarification without setting pending_transition.
 
-        User-Agent Handshake: When user says just "close this case" without clarification,
-        the system proposes a transition and asks the user to clarify whether they mean
-        resolved (problem fixed) or closed (without solution).
+        When user says "close this case" without indicating resolved vs closed,
+        the system asks for clarification. No pending_transition is set because
+        we don't know the user's intent yet. Their next message will route
+        through resolve_patterns or abandonment_patterns.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -790,31 +788,24 @@ class TestMilestoneEngine:
             evidence_service=MagicMock(),
         )
 
-        # Start in INVESTIGATING with some progress
         base_case.status = CaseStatus.INVESTIGATING
         base_case.progress.symptom_verified = True
 
-        # Mock LLM response
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "Should I mark this as resolved or closed without solution?",
-                "state_updates": {
-                    "outcome": "conversation",
-                },
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
-
-        # User says ambiguous "close this case" — should PROPOSE, not execute
         result = await engine.process_turn(base_case, "close this case")
 
         updated_case = result["case_updated"]
 
-        # Case stays INVESTIGATING with pending_transition
+        # Case stays INVESTIGATING — no transition proposed
         assert updated_case.status == CaseStatus.INVESTIGATING
         assert updated_case.progress.solution_verified is False
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_status"] == "resolved"
+        assert updated_case.pending_transition is None  # NOT set — clarification needed
+
+        # Response asks for clarification
+        assert "resolved" in result["agent_response"].lower()
+        assert "closed" in result["agent_response"].lower()
+
+        # LLM is NOT called
+        assert not mock_llm.generate.called
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_inquiry_to_closed(
@@ -1053,26 +1044,40 @@ class TestMilestoneEngine:
     async def test_resolved_dropdown_proposes_transition(
         self, mock_llm, mock_repo, base_case
     ):
-        """Dropdown INVESTIGATING→RESOLVED proposes transition via User-Agent Handshake.
+        """Dropdown INVESTIGATING→RESOLVED proposes transition when case is ready.
 
-        Design: Dropdown = message. The first click proposes the transition;
-        it does NOT execute immediately. The user must confirm on the next turn.
+        Design: The first click checks resolution readiness. If the case has
+        root cause + solution, it proposes the transition and returns immediately
+        with a confirmation prompt (skips the full LLM pipeline to avoid timeout).
+        The transition does NOT execute until the user confirms on the next turn.
         """
+        from faultmaven.modules.case.contracts import (
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        # Set up a case that meets resolution criteria
+        base_case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Misconfigured connection pool timeout",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Connection pool timeout set to 1s caused cascading failures under load",
+        )
+        base_case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Increase connection pool timeout to 30s",
+                longterm_fix="Update pool timeout in application config",
+            )
+        ]
+
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
             evidence_service=MagicMock(),
         )
-
-        # Mock LLM response for the proposal turn
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "You've indicated this is resolved. Can you describe what fixed the issue?",
-                "state_updates": {"outcome": "conversation"},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
 
         result = await engine.process_turn(
             case=base_case,
@@ -1090,8 +1095,46 @@ class TestMilestoneEngine:
         assert updated_case.pending_transition is not None
         assert updated_case.pending_transition["to_status"] == "resolved"
 
-        # LLM was called
-        assert mock_llm.generate.called
+        # LLM is NOT called — response is returned immediately with proposal message
+        assert not mock_llm.generate.called
+
+        # Response contains confirmation prompt with root cause and solution
+        assert "resolved" in result["agent_response"].lower()
+        assert "root cause" in result["agent_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_resolved_dropdown_suggests_close_when_not_ready(
+        self, mock_llm, mock_repo, base_case
+    ):
+        """Dropdown RESOLVED suggests CLOSE when case lacks root cause and solution.
+
+        If the case has no root cause, no solution, and no evidence, the system
+        should not allow resolution. Instead, it suggests closing the case.
+        """
+        # base_case has no root_cause_conclusion, no solutions, no evidence
+        engine = MilestoneEngine(
+            mock_llm,
+            mock_repo,
+            investigation_tools=MagicMock(),
+            evidence_service=MagicMock(),
+        )
+
+        result = await engine.process_turn(
+            case=base_case,
+            user_message="The issue is resolved.",
+            intent_type="status_transition",
+            intent_data={"from_status": "investigating", "to_status": "resolved"},
+        )
+
+        # Case should still be INVESTIGATING — no transition proposed
+        assert result["case_updated"].status == CaseStatus.INVESTIGATING
+        assert result["case_updated"].pending_transition is None
+
+        # Response suggests closing instead
+        assert "close" in result["agent_response"].lower()
+
+        # LLM is NOT called
+        assert not mock_llm.generate.called
 
     @pytest.mark.asyncio
     async def test_resolved_dropdown_with_pending_confirms(
@@ -1137,21 +1180,38 @@ class TestMilestoneEngine:
     async def test_resolved_dropdown_injects_precomposed_message(
         self, mock_llm, mock_repo, base_case
     ):
-        """Dropdown RESOLVED with empty message injects pre-composed message."""
+        """Dropdown RESOLVED with empty message returns proposal immediately.
+
+        When user clicks the dropdown without typing a message, the system
+        checks readiness and returns a confirmation prompt directly (no LLM call).
+        """
+        from faultmaven.modules.case.contracts import (
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        # Set up a case that meets resolution criteria
+        base_case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Misconfigured connection pool timeout",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Timeout too low for production load",
+        )
+        base_case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Increase pool timeout",
+                longterm_fix="Set timeout to 30s",
+            )
+        ]
+
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
             investigation_tools=MagicMock(),
             evidence_service=MagicMock(),
         )
-
-        mock_response_content = json.dumps(
-            {
-                "agent_response": "You mentioned the issue is resolved. Can you describe the solution?",
-                "state_updates": {"outcome": "conversation"},
-            }
-        )
-        mock_llm.generate.return_value = mock_response_content
 
         result = await engine.process_turn(
             case=base_case,
@@ -1160,10 +1220,12 @@ class TestMilestoneEngine:
             intent_data={"from_status": "investigating", "to_status": "resolved"},
         )
 
-        # LLM was called (pre-composed message injected)
-        assert mock_llm.generate.called
+        # LLM is NOT called — returns immediately with proposal
+        assert not mock_llm.generate.called
         # Pending transition proposed
         assert result["case_updated"].pending_transition is not None
+        # Response asks for confirmation
+        assert "resolved" in result["agent_response"].lower()
 
     @pytest.mark.asyncio
     async def test_closed_transitions_still_execute_immediately(
@@ -1313,3 +1375,362 @@ class TestInquiryConfirmation:
         updated_case = result["case_updated"]
         assert updated_case.inquiry.problem_statement_confirmed is True
         assert updated_case.status == CaseStatus.INVESTIGATING
+
+
+# =============================================================================
+# Tests: Resolution & Runbook Readiness, Terminal Summary Guardrail
+# =============================================================================
+
+
+class TestReadinessAssessments:
+    """Test resolution readiness, runbook readiness, and terminal summary guardrail."""
+
+    def _make_case(self, **overrides):
+        defaults = {
+            "user_id": "user_123",
+            "organization_id": "org_123",
+            "title": "Test Case",
+            "description": "Database queries timing out",
+            "status": CaseStatus.INVESTIGATING,
+            "problem_verification": ProblemVerification(
+                symptom_statement="Database queries timing out",
+                severity="HIGH",
+                temporal_state="ongoing",
+                urgency_level="high",
+            ),
+            "inquiry": InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Database queries timing out",
+            ),
+        }
+        defaults.update(overrides)
+        return Case(**defaults)
+
+    def test_resolution_readiness_suggest_close_when_empty(self):
+        """No root cause, no solution, no evidence → suggest close."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_resolution_readiness,
+        )
+
+        case = self._make_case()
+        result = assess_resolution_readiness(case)
+        assert result.verdict == result.SUGGEST_CLOSE
+        assert "root cause" in result.missing
+        assert "solution" in result.missing
+
+    def test_resolution_readiness_needs_info_when_partial(self):
+        """Has root cause but no solution → needs info."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_resolution_readiness,
+        )
+        from faultmaven.modules.case.contracts import RootCauseConclusion
+
+        case = self._make_case()
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Connection pool exhaustion",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Pool limit too low for concurrent requests",
+        )
+        result = assess_resolution_readiness(case)
+        assert result.verdict == result.NEEDS_INFO
+        assert "solution" in result.missing
+        assert "root cause" not in result.missing
+
+    def test_resolution_readiness_ready_when_complete(self):
+        """Has root cause + solution → ready."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_resolution_readiness,
+        )
+        from faultmaven.modules.case.contracts import (
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        case = self._make_case()
+        _make_resolution_ready(case)
+        result = assess_resolution_readiness(case)
+        assert result.verdict == result.READY
+
+    def test_runbook_readiness_not_suitable_without_root_cause(self):
+        """Has solution but no root cause → not suitable for runbook."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_runbook_readiness,
+        )
+        from faultmaven.modules.case.contracts import (
+            Solution,
+            SolutionType,
+        )
+
+        case = self._make_case()
+        # Solution exists but no root_cause_conclusion
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Fix config",
+                longterm_fix="Set timeout to 30s",
+            )
+        ]
+        result = assess_runbook_readiness(case)
+        assert result.verdict == result.NOT_SUITABLE
+
+    def test_runbook_readiness_ready_with_rich_solution(self):
+        """Root cause + solution with commands + evidence → ready."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_runbook_readiness,
+        )
+        from faultmaven.modules.case.contracts import (
+            Evidence,
+            EvidenceCategory,
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        case = self._make_case()
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Connection pool timeout too low",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="1s timeout causes cascading failures under load",
+        )
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Increase pool timeout",
+                longterm_fix="Set pool.timeout=30s in application.yaml",
+                commands=["kubectl edit configmap app-config"],
+                implementation_steps=["Edit configmap", "Restart pods"],
+                verification_method="Check p99 latency < 500ms for 30 min",
+            )
+        ]
+        case.evidence = [
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                primary_purpose="symptom_verified",
+                summary="Timeout errors in application logs at 14:03 UTC",
+                preprocessed_content="Error: connection timeout after 1000ms",
+                content_size_bytes=1024,
+                preprocessing_method="crime_scene_extraction",
+                source_type="logs",
+                form="document",
+                collected_by="user_123",
+                collected_at_turn=1,
+            )
+        ]
+        result = assess_runbook_readiness(case)
+        assert result.verdict == result.READY
+
+    def test_runbook_readiness_needs_enrichment(self):
+        """Root cause + commands but no evidence, no mitigation, no verification → needs enrichment."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_runbook_readiness,
+        )
+        from faultmaven.modules.case.contracts import (
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        case = self._make_case()
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Config error",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Wrong pool timeout",
+        )
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Fix config",
+                longterm_fix="Set timeout to 30s",
+                commands=["kubectl edit configmap"],
+            )
+        ]
+        # No evidence, no mitigation, no verification
+        result = assess_runbook_readiness(case)
+        assert result.verdict == result.NEEDS_ENRICHMENT
+
+    def test_summary_guardrail_skips_trivial_cases(self):
+        """Trivial case (no evidence, no hypotheses, <4 messages) → skip summary."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            should_generate_terminal_summary,
+        )
+
+        # Use a simple mock to avoid Pydantic terminal-state validators
+        case = MagicMock()
+        case.case_id = "case_trivial"
+        case.closure_reason = "inquiry_only"
+        case.evidence = []
+        case.hypotheses = {}
+        case.message_count = 2
+        assert should_generate_terminal_summary(case) is False
+
+    def test_summary_guardrail_generates_for_real_investigations(self):
+        """Case with evidence → generate summary."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            should_generate_terminal_summary,
+        )
+
+        case = MagicMock()
+        case.case_id = "case_real"
+        case.closure_reason = "resolved"
+        case.evidence = [MagicMock()]  # Has at least one evidence item
+        case.hypotheses = {}
+        case.message_count = 8
+        assert should_generate_terminal_summary(case) is True
+
+    def test_summary_guardrail_skips_duplicates(self):
+        """Duplicate cases → always skip regardless of content."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            should_generate_terminal_summary,
+        )
+
+        case = MagicMock()
+        case.case_id = "case_dup"
+        case.closure_reason = "duplicate"
+        case.evidence = [MagicMock(), MagicMock()]
+        case.hypotheses = {"h1": MagicMock()}
+        case.message_count = 10
+        assert should_generate_terminal_summary(case) is False
+
+
+@pytest.mark.asyncio
+class TestRunbookSuggestion:
+    """Test the combined runbook suggestion logic (content + dedup)."""
+
+    async def test_suggest_when_ready_and_no_kb(self):
+        """Content ready, no KB available → suggest (skip dedup)."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            RunbookSuggestion,
+            evaluate_runbook_suggestion,
+        )
+        from faultmaven.modules.case.contracts import (
+            Case,
+            InquiryData,
+            ProblemVerification,
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        case = Case(
+            user_id="u1",
+            organization_id="o1",
+            title="Pool timeout issue",
+            description="DB queries timing out",
+            status=CaseStatus.INVESTIGATING,
+            problem_verification=ProblemVerification(
+                symptom_statement="Timeout errors",
+                severity="HIGH",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Timeout",
+            ),
+        )
+        _make_resolution_ready(case)
+        # Add commands + evidence so runbook readiness is fully READY
+        case.solutions[0].commands = ["kubectl edit configmap"]
+        case.solutions[0].verification_method = "Check p99 < 500ms for 30 min"
+        from faultmaven.modules.case.contracts import Evidence, EvidenceCategory
+
+        case.evidence = [
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                primary_purpose="symptom_verified",
+                summary="Timeout errors in logs",
+                preprocessed_content="Error: timeout",
+                content_size_bytes=100,
+                preprocessing_method="crime_scene_extraction",
+                source_type="logs",
+                form="document",
+                collected_by="u1",
+                collected_at_turn=1,
+            )
+        ]
+
+        result = await evaluate_runbook_suggestion(case, runbook_kb=None)
+        assert result.verdict == RunbookSuggestion.SUGGEST
+
+    async def test_existing_covers_when_high_similarity(self):
+        """KB returns ≥85% match → existing covers."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            RunbookSuggestion,
+            evaluate_runbook_suggestion,
+        )
+        from faultmaven.modules.case.contracts import (
+            Case,
+            InquiryData,
+            ProblemVerification,
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
+        case = Case(
+            user_id="u1",
+            organization_id="o1",
+            title="Pool timeout issue",
+            description="DB queries timing out",
+            status=CaseStatus.INVESTIGATING,
+            problem_verification=ProblemVerification(
+                symptom_statement="Timeout errors",
+                severity="HIGH",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Timeout",
+            ),
+        )
+        _make_resolution_ready(case)
+        case.solutions[0].commands = ["kubectl edit configmap"]
+
+        # Mock runbook_kb that returns a high-similarity match
+        mock_kb = AsyncMock()
+        mock_kb.search_by_text = AsyncMock(
+            return_value=[
+                {"similarity_score": 0.92, "title": "Connection Pool Timeout Runbook"},
+            ]
+        )
+
+        result = await evaluate_runbook_suggestion(case, runbook_kb=mock_kb)
+        assert result.verdict == RunbookSuggestion.EXISTING_COVERS
+        assert "Connection Pool Timeout Runbook" in result.message
+
+    async def test_not_ready_when_content_insufficient(self):
+        """No root cause, no solution → not ready (skip dedup entirely)."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            RunbookSuggestion,
+            evaluate_runbook_suggestion,
+        )
+        from faultmaven.modules.case.contracts import (
+            Case,
+            InquiryData,
+            ProblemVerification,
+        )
+
+        case = Case(
+            user_id="u1",
+            organization_id="o1",
+            title="Mystery issue",
+            description="Something is wrong",
+            status=CaseStatus.INVESTIGATING,
+            problem_verification=ProblemVerification(
+                symptom_statement="Unknown",
+                severity="LOW",
+            ),
+            inquiry=InquiryData(
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+                proposed_problem_statement="Unknown",
+            ),
+        )
+        # No root cause, no solution → NOT_SUITABLE → NOT_READY
+
+        result = await evaluate_runbook_suggestion(case, runbook_kb=None)
+        assert result.verdict == RunbookSuggestion.NOT_READY

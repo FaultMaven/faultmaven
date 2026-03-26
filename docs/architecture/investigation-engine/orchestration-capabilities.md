@@ -193,3 +193,102 @@ The `Evidence.original_filename` field (set during `_preprocess_attachment()`) p
 * Knowledge queries bypass the tool loop entirely (no tool_choice="required" overhead)
 
 See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.
+
+## 6. Terminal Metrics & Analytics
+
+When a case reaches a terminal state (RESOLVED or CLOSED), the system emits structured metrics and log events for operational intelligence. These metrics follow the existing Prometheus bounded-label discipline — no case_id, user_id, or other unbounded identifiers.
+
+### 6.1 Prometheus Metrics
+
+**Implementation**: New module `faultmaven/infrastructure/observability/case_metrics.py`. Metrics are emitted in `terminal_transitions.py` immediately after the case status update.
+
+**Counters:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `faultmaven_case_terminal_total` | `status`, `closure_reason` | Cases reaching terminal state |
+| `faultmaven_case_created_total` | — | Total cases created |
+| `faultmaven_summary_generated_total` | `summary_type`, `status` | Auto-generated terminal summaries (success/failure) |
+
+**Histograms:**
+
+| Metric | Labels | Buckets | Description |
+|--------|--------|---------|-------------|
+| `faultmaven_case_duration_seconds` | `status`, `closure_reason` | 60, 300, 900, 1800, 3600, 7200, 14400, 43200, 86400 | Time from creation to terminal state |
+| `faultmaven_case_turn_count` | `status` | 1, 2, 3, 5, 8, 13, 21, 34, 55 | Agent turns per terminal case |
+| `faultmaven_case_evidence_count` | `status` | 0, 1, 2, 3, 5, 8, 13, 21 | Evidence items per terminal case |
+
+**Gauges:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `faultmaven_cases_active` | — | Currently active (non-terminal) cases |
+
+### 6.2 Label Values (Bounded)
+
+All labels use bounded, enumerated values:
+
+- `status`: `"resolved"` | `"closed"` (from `CaseStatus` enum)
+- `closure_reason`: `"resolved"` | `"abandoned"` | `"escalated"` | `"mitigation_sufficient"` | `"inquiry_only"` | `"duplicate"` | `"other"`
+- `summary_type`: `"resolution_summary"` | `"closure_summary"` (from `ReportType` enum)
+
+### 6.3 Emission Point
+
+```python
+# In terminal_transitions.py, after case status update:
+
+def _emit_terminal_metrics(case: Case) -> None:
+    """Emit Prometheus metrics when case reaches terminal state."""
+    duration = (case.closed_at - case.created_at).total_seconds()
+
+    case_terminal_total.labels(
+        status=case.status.value,
+        closure_reason=case.closure_reason,
+    ).inc()
+
+    case_duration_seconds.labels(
+        status=case.status.value,
+        closure_reason=case.closure_reason,
+    ).observe(duration)
+
+    case_turn_count.labels(
+        status=case.status.value,
+    ).observe(case.current_turn)
+
+    case_evidence_count.labels(
+        status=case.status.value,
+    ).observe(len(case.evidence))
+
+    cases_active_gauge.dec()
+```
+
+### 6.4 Structured Log Event
+
+Alongside Prometheus metrics, a structured log event is emitted via structlog for log aggregation and ad-hoc analysis:
+
+```python
+structlog.get_logger().info(
+    "case.terminal",
+    case_status=case.status.value,
+    closure_reason=case.closure_reason,
+    duration_seconds=duration,
+    turn_count=case.current_turn,
+    evidence_count=len(case.evidence),
+    hypothesis_count=len(case.hypotheses),
+    milestones_reached=[m for m, v in case.progress.dict().items() if v is True],
+    investigation_path=case.path_selection.path.value if case.path_selection else None,
+    had_mitigation=any(a.action_type == "MITIGATION" for a in case.action_attempts),
+)
+```
+
+### 6.5 Operational Questions These Metrics Answer
+
+| Question | Metric / Query |
+|----------|---------------|
+| What % of cases resolve vs get abandoned? | `case_terminal_total` by `status` |
+| How long do investigations take? | `case_duration_seconds` p50/p90/p99 |
+| Are cases getting abandoned faster (triage failure)? | `case_duration_seconds{closure_reason="abandoned"}` trend |
+| Do cases with more evidence resolve faster? | Correlate `case_evidence_count` with `case_duration_seconds` |
+| Is mitigation becoming a terminal path too often? | `case_terminal_total{closure_reason="mitigation_sufficient"}` / total |
+| Are auto-summaries generating reliably? | `summary_generated_total` success vs failure rate |
+| How many cases are currently active? | `cases_active` gauge |

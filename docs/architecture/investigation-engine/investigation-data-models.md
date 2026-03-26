@@ -591,6 +591,29 @@ class Case(BaseModel):
             return self.closed_at - self.created_at
         return None
 
+    @property
+    def has_linked_report(self) -> bool:
+        """Check if any report is linked to case closure"""
+        return any(r.linked_to_closure for r in self.reports)
+
+    @property
+    def interaction_mode(self) -> str:
+        """Derived post-terminal interaction mode.
+
+        Determines what operations are permitted on a terminal case.
+        Derived from case status and report state — no new stored field.
+
+        Returns:
+            "active"     - Full investigation (evidence, milestones, agent turns)
+            "query_only" - Q&A over existing case data, report generation allowed
+            "frozen"     - No interaction, reports download-only
+        """
+        if not self.is_terminal:
+            return "active"
+        if self.has_linked_report:
+            return "frozen"
+        return "query_only"
+
 class CaseAction(BaseModel):
     """Record of a case action (phase transition or disposition change)"""
     from_status: CaseStatus
@@ -599,6 +622,111 @@ class CaseAction(BaseModel):
     triggered_by: str
     reason: str
 ```
+
+### 1.5.1 Terminal Summary Report Types
+
+When a case reaches a disposition, the system auto-generates a lightweight summary report. These are distinct from user-requested reports (`incident_report`, `post_mortem`, `runbook`).
+
+```python
+class ReportType(str, Enum):
+    """Type of case documentation report"""
+
+    # User-requested report types
+    INCIDENT_REPORT = "incident_report"
+    RUNBOOK = "runbook"
+    POST_MORTEM = "post_mortem"
+
+    # Auto-generated terminal summaries
+    RESOLUTION_SUMMARY = "resolution_summary"
+    CLOSURE_SUMMARY = "closure_summary"
+
+
+class Report(BaseModel):
+    """Case documentation report"""
+
+    report_id: str
+    case_id: str
+    report_type: ReportType
+    content: str
+    auto_generated: bool = Field(
+        default=False,
+        description="True for system-generated summaries (RESOLUTION_SUMMARY, CLOSURE_SUMMARY). "
+                    "False for user-requested reports (incident_report, post_mortem, runbook)."
+    )
+    linked_to_closure: bool = Field(
+        default=False,
+        description="When True, case transitions from QUERY-ONLY to FROZEN mode"
+    )
+    version: int = Field(default=1)
+    created_at: datetime
+    created_by: str  # "system" for auto-generated, user_id for user-requested
+```
+
+**Auto-generated summary mapping:**
+
+| Case Status | Auto-Generated Type | Content Focus |
+|-------------|---------------------|---------------|
+| RESOLVED | `RESOLUTION_SUMMARY` | Root cause, solution, confirming evidence, timeline, milestones |
+| CLOSED | `CLOSURE_SUMMARY` | Investigation state at closure, approaches tried, closure reason, leading hypotheses |
+
+**Key properties:**
+
+- `auto_generated=True` — distinguishes from user-requested reports
+- `linked_to_closure=False` — auto-summaries do NOT freeze the case; only user-requested reports do
+- `version=1` — no versioning for auto-summaries (generated once)
+- `created_by="system"` — audit trail shows system origin
+- Generation uses SYNTHESIS LLM capability (Fireworks/Groq) for speed and cost
+
+**Skip-if-trivial guardrail** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
+
+Auto-summary generation is skipped when a case has nothing meaningful to summarize:
+
+- `closure_reason == "duplicate"` — parent case has the real content
+- Zero evidence AND zero hypotheses AND fewer than 4 messages — trivial inquiry-only closure
+
+Everything else gets a summary, including abandoned and escalated cases (the investigation state is worth recording even without a solution).
+
+### 1.5.2 Resolution & Runbook Readiness Models
+
+Two validation checks gate the resolve and runbook generation flows. Both are in `terminal_transitions.py`.
+
+**ResolutionReadiness** (`assess_resolution_readiness(case)`) — minimum bar for marking a case as RESOLVED:
+
+```python
+class ResolutionReadiness:
+    READY = "ready"           # Root cause + solution present → propose transition
+    NEEDS_INFO = "needs_info" # One missing (e.g., root cause but no solution) → ask user
+    SUGGEST_CLOSE = "suggest_close"  # No root cause, no solution, no evidence → suggest CLOSED
+```
+
+Checks: `root_cause_conclusion` (or `working_conclusion` with likelihood ≥0.6), `solutions` list, `problem_verification`, `evidence` list.
+
+**RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation:
+
+```python
+class RunbookReadiness:
+    READY = "ready"                    # Problem + root cause + actionable solution (commands/steps)
+    NEEDS_ENRICHMENT = "needs_enrichment"  # Critical sections OK, 2+ enrichment gaps
+    NOT_SUITABLE = "not_suitable"      # Missing problem definition or root cause with fix
+```
+
+Maps case data to the 7 canonical runbook sections:
+
+| Runbook Section | Case Data Source | Required? |
+|---|---|---|
+| Problem Definition | `problem_verification.symptom_statement` | Critical |
+| Root Cause Resolution | `root_cause_conclusion` + solution with commands/steps/longterm_fix | Critical |
+| Diagnostic Steps | `evidence[].summary` + `hypotheses` | Enrichment |
+| Mitigation | `action_attempts` (MITIGATION) or `solutions[].immediate_action` | Enrichment |
+| Verification | `solutions[].verification_method` | Enrichment |
+| Prevention | LLM-generated from context | Always available |
+| Sources | Case ID reference | Always available |
+
+**RunbookSuggestion** (`evaluate_runbook_suggestion(case, runbook_kb)`) — combines all 3 factors:
+
+1. Content readiness (RunbookReadiness check — no I/O)
+2. User approval (not checked here — caller presents suggestion)
+3. Deduplication (ChromaDB vector search via `runbook_kb` — ≥85% = existing covers, 70-84% = suggest with caveat)
 
 ### 1.6 ProblemVerification
 

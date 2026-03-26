@@ -805,31 +805,92 @@ else:
 
 **INVESTIGATING → RESOLVED**
 
+Before presenting the confirmation, the system runs `assess_resolution_readiness(case)` which checks for root cause + solution. Three outcomes:
+
+- **READY** — Root cause and solution present. System shows what's on record and asks user to confirm.
+- **NEEDS_INFO** — Partially ready (e.g., root cause but no solution). System asks user to provide the missing piece.
+- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. System tells user the case can't be resolved and suggests closing instead. If the issue was actually fixed, user can provide the root cause and solution.
+
 ```python
-# Agent asks for resolution details
-return f"""You've requested to mark this as resolved.
+readiness = assess_resolution_readiness(case)
 
-Problem: {case.problem_verification.symptom_statement}
-Root cause: {case.root_cause_conclusion.root_cause if exists else "Not identified"}
+if readiness.verdict == "suggest_close":
+    return readiness.message  # Suggests closing; offers to accept resolution info
 
-What did you do to resolve this issue?
+if readiness.verdict == "needs_info":
+    return readiness.message  # Asks for missing root cause or solution
 
-(Agent waits for user to explain, then presents confirmation)
-"""
+# READY — show what's on record and ask for confirmation
+return f"""You've indicated this issue is resolved.
+
+Here's what I have on record:
+- **Root cause**: {case.root_cause_conclusion.root_cause}
+- **Solution**: {case.solutions[-1].title}
+
+Is this correct? Once you confirm, I'll mark the case as resolved.
+
+What will happen:
+- A Resolution Summary will be auto-generated
+- No further evidence submission or investigation will be possible
+- You can still ask questions about this case until a report is generated
+- After report generation, the case will be frozen (read-only)
+
+[✅ Yes, mark as resolved]  [❌ No, continue investigating]"""
 ```
 
 **INVESTIGATING → CLOSED**
 
 ```python
-# Agent confirms closure without resolution
+# Agent confirms closure with consequences
 return f"""You've requested to close this case without resolution.
 
 Problem: {case.problem_verification.symptom_statement}
 Current findings: {case.working_conclusion.summary if exists else "Limited data"}
 
-Should I close the case and archive our findings?
+Here's what will happen when I close this case:
 
-[✅ Yes]  [❌ No]"""
+- A Closure Summary will be auto-generated capturing investigation state and findings so far
+- No further evidence submission or investigation will be possible
+- You can still ask questions about this case until a report is generated
+- You'll be able to generate an Incident Report from the Dashboard
+- After report generation, the case will be frozen (read-only)
+
+Please select a closure reason:
+
+[Abandoned]  [Escalated]  [Mitigation Sufficient]  [Other]
+
+Or type your reason."""
+```
+
+**INQUIRY → CLOSED**
+
+```python
+# Agent confirms inquiry-only closure with consequences
+return f"""You've requested to close this case without investigation.
+
+Here's what will happen:
+
+- A Closure Summary will be auto-generated with the inquiry conversation
+- The case will remain on your list until archived from the Dashboard
+
+Close this case?
+
+[✅ Yes, close]  [❌ No, keep open]"""
+```
+
+**Ambiguous "close this case" (NLP pattern)**
+
+When a user types "close this case" during INVESTIGATING without specifying resolved or closed, the system asks for clarification. No `pending_transition` is set — we don't know the user's intent yet. Their next message routes through the standard pattern matching (resolve_patterns or abandonment_patterns).
+
+```python
+# No pending_transition set — just ask for clarification
+return """You'd like to close this case. Before I do, I need to know:
+
+- **Resolved** — The problem is fixed. I'll document the solution.
+- **Closed** — The investigation is ending without a solution
+  (abandoned, escalated, or mitigation was sufficient).
+
+Which would you like?"""
 ```
 
 ---
@@ -910,6 +971,139 @@ All manual case actions use **existing endpoints** - no new APIs required:
 **Rationale**: This constraint ensures user expectations align with actual capabilities. Users who think the agent is executing commands will become frustrated when nothing happens.
 
 **Implementation**: LLM system prompts must explicitly state advisor-only role and prohibit execution language.
+
+---
+
+### 1.7 Post-Terminal Lifecycle
+
+When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive for a limited period. The post-terminal lifecycle defines three **interaction modes** derived from existing state — no new database fields required.
+
+#### 1.7.1 Case Interaction Modes
+
+```
+┌─────────────┐   terminal    ┌──────────────┐   report       ┌──────────┐   archived /
+│   ACTIVE    │──transition──►│  QUERY-ONLY  │──generated───► │  FROZEN  │──retention──► removed
+│             │               │              │                │          │   expires
+└─────────────┘               └──────────────┘                └──────────┘
+ Evidence ✓                    Evidence ✗                      Evidence ✗
+ Milestones ✓                  Milestones ✗                    Queries ✗
+ Agent turns ✓                 Q&A over case data ✓            Reports: download only
+ Full investigation            Report generation ✓             Read-only until purge
+                               Auto-summary available ✓
+```
+
+**Derivation logic** (no new stored field):
+
+```python
+@property
+def interaction_mode(self) -> str:
+    """Derived from case status and report state."""
+    if not self.is_terminal:
+        return "active"
+    if self.has_linked_report:   # any report with linked_to_closure=True
+        return "frozen"
+    return "query_only"
+```
+
+#### 1.7.2 QUERY-ONLY Mode
+
+**Purpose**: Allow users to ask questions about the completed investigation before generating a final report. The agent answers from existing case data only — no new investigation.
+
+**Behavior**:
+
+- `process_turn()` short-circuits before milestone processing
+- Routes to a **CASE_REVIEW prompt template** instead of DIAGNOSIS/MITIGATION/TREATMENT
+- The review template instructs the LLM: "You are reviewing a completed case. Answer questions using only the existing case data. Do not propose new actions or evidence requests."
+- Agent has read access to: messages, evidence, hypotheses, solutions, action_history, auto-generated summary
+- Agent can NOT: accept new evidence, update milestones, propose transitions
+- Agent CAN: explain what happened, clarify evidence, help interpret the timeline, assist with report generation
+
+**Implementation in milestone engine**:
+
+```python
+async def process_turn(self, case, user_message, ...):
+    if case.is_terminal:
+        if case.interaction_mode == "frozen":
+            raise CaseFrozenError(
+                "Case is frozen after report generation. "
+                "View existing reports in Dashboard."
+            )
+        # QUERY-ONLY mode: skip milestones, use review template
+        return await self._process_review_turn(case, user_message)
+
+    # Normal investigation flow...
+```
+
+#### 1.7.3 FROZEN Mode
+
+Once a report is linked to closure (`linked_to_closure=True`):
+
+- All session endpoints reject new messages with `409 Conflict`
+- Copilot shows a read-only banner: "This case is closed. View reports in Dashboard."
+- Existing reports remain downloadable
+- Case stays visible in case list until archived from Dashboard or retention policy expires
+
+**Edge case: user never generates a report**: The case stays in QUERY-ONLY indefinitely. The retention policy handles eventual cleanup. No artificial timeout. If the user wants to freeze without a report, they archive from Dashboard.
+
+#### 1.7.4 Auto-Generated Terminal Summary
+
+When a case reaches any terminal state, the system automatically generates a lightweight summary report. This is distinct from user-requested reports (incident_report, post_mortem, runbook) — it's automatic, generated using the SYNTHESIS LLM capability (cheap/fast provider), and serves as the canonical "what happened" record.
+
+**Two summary types**:
+
+| Case Status | Report Type | Content Focus |
+|-------------|-------------|---------------|
+| RESOLVED | `RESOLUTION_SUMMARY` | What the problem was, root cause, solution applied, confirming evidence, timeline, milestones reached, investigation path used |
+| CLOSED | `CLOSURE_SUMMARY` | What the problem was, investigation state at closure, approaches attempted, closure reason, leading hypotheses with confidence, mitigation status, recommendation for next investigator (if escalated) |
+
+**Generation approach**:
+
+- Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost)
+- Input assembled via `context_builder.py`: case messages, evidence list, hypothesis states, action_history, milestone progress
+- Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports)
+- **Fire-and-forget**: failure does not block the transition. Error logged, case still transitions. Summary can be retried later via Dashboard.
+- No versioning (auto-generated once; user-requested reports have versioning)
+
+**Resolution Summary content**:
+
+```
+Problem Statement    — One-line description of the issue
+Root Cause           — What was identified as the cause
+Solution Applied     — What fixed it, with key commands/configs
+Confirming Evidence  — Which evidence items confirmed the fix
+Timeline             — created_at → key milestones → resolved_at
+Milestones Reached   — Which of the 9 progress milestones completed
+Investigation Path   — MITIGATION_FIRST or ROOT_CAUSE, mitigation applied?
+```
+
+**Closure Summary content**:
+
+```
+Problem Statement         — One-line description
+Investigation State       — How far diagnosis progressed (milestones reached)
+Approaches Attempted      — What was tried (from action_history + action_attempts)
+Closure Reason            — The reason + any user-provided context
+Leading Hypotheses        — Top hypotheses at time of closure with confidence
+Mitigation Status         — Whether mitigation was applied (for "mitigation_sufficient")
+Timeline                  — created_at → key actions → closed_at
+Recommendation            — If escalated: what the next investigator should look at first
+```
+
+#### 1.7.5 Session Cleanup on Terminal Transition
+
+When a case transitions to a terminal state, all active sessions are gracefully completed:
+
+```python
+# In terminal_transitions.py, after case status update:
+active_sessions = await session_repo.get_active_sessions(case.case_id)
+for session in active_sessions:
+    session.complete(
+        findings_summary=f"Case {case.status.value}: {closure_reason}"
+    )
+    await session_repo.update(session)
+```
+
+Uses the existing `InvestigationSession.complete()` method. No new session statuses needed. When the user queries in QUERY-ONLY mode, a new session is created with the review prompt template.
 
 ---
 
@@ -1706,23 +1900,40 @@ determine mitigation involvement, not the boolean flags.
 
 ### 4.5 Post-Terminal Operations
 
-After a case reaches RESOLVED or CLOSED, several operations become available. These are **user-initiated** (not automatic) and span both frontends.
+After a case reaches RESOLVED or CLOSED, operations proceed in phases governed by the **case interaction mode** (see §1.7). Auto-generated summaries happen immediately. User-initiated operations (reports, knowledge extraction) are available during QUERY-ONLY mode. After report generation, the case transitions to FROZEN mode.
 
-#### 4.5.1 Report Generation
+#### 4.5.0 Auto-Generated Terminal Summary
+
+**Trigger**: Automatic on terminal transition (both RESOLVED and CLOSED). See §1.7.4 for full specification.
+
+**Summary types**:
+
+| Case Status | Report Type | Generated By |
+|-------------|-------------|-------------|
+| RESOLVED | `RESOLUTION_SUMMARY` | SYNTHESIS LLM (auto) |
+| CLOSED | `CLOSURE_SUMMARY` | SYNTHESIS LLM (auto) |
+
+These are stored as `Report` records with `auto_generated=True` and are immediately available in both Copilot and Dashboard. They provide a structured snapshot of the investigation outcome without requiring user action.
+
+#### 4.5.1 Report Generation (User-Initiated)
+
+**Availability**: During QUERY-ONLY mode (after terminal transition, before freeze).
 
 **Trigger points:**
 
-- **Copilot**: `ResolutionActionsCard` appears in chat when case reaches terminal state. Offers one-click report generation (Incident Report, Post-Mortem for resolved; Investigation Notes for closed).
+- **Copilot**: `ResolutionActionsCard` appears in chat when case reaches terminal state. Offers one-click report generation (Incident Report, Post-Mortem for resolved; Incident Report for closed).
 - **Dashboard**: `ReportTab` on CaseDetailPage shows report type cards with generate/view/download actions.
 
 **Report types by case status:**
 
-| Case Status | Available Report Types                |
-|-------------|---------------------------------------|
-| RESOLVED    | incident_report, post_mortem, runbook |
-| CLOSED      | incident_report only                  |
+| Case Status | Auto-Generated | User-Requested Report Types |
+|-------------|----------------|----------------------------|
+| RESOLVED | `RESOLUTION_SUMMARY` | incident_report, post_mortem, runbook |
+| CLOSED | `CLOSURE_SUMMARY` | incident_report only |
 
 **Runbook recommendation**: `ReportRecommendationService` checks for similar existing runbooks (70%/85% similarity thresholds). Dashboard shows "Update Existing" vs "Create New" options. Copilot does not offer runbook generation (requires the richer dashboard UI for similarity decisions).
+
+**Report-triggered freeze**: When any user-requested report is linked to closure (`linked_to_closure=True`), the case transitions from QUERY-ONLY to FROZEN mode (see §1.7.3). No further queries accepted.
 
 **API endpoints:**
 
@@ -1733,20 +1944,71 @@ After a case reaches RESOLVED or CLOSED, several operations become available. Th
 
 **Versioning**: Up to 5 regenerations per report type (enforced by `MAX_REGENERATIONS`).
 
-#### 4.5.2 Knowledge Extraction
+#### 4.5.2 Runbook Generation (Knowledge Flywheel)
+
+**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible — quality over quantity.
+
+**Trigger**: Two paths — both require user approval (never automatic):
+
+1. **Agent suggests** — When the case reaches RESOLVED, the agent evaluates runbook readiness and suggests generation if appropriate. User approves or ignores.
+2. **User requests** — Via Dashboard RunbookTab or by asking the agent directly.
+
+**Rationale**: Only resolved cases have a confirmed root cause and verified solution. Extracting runbooks from abandoned or escalated cases would produce incomplete, unverified procedures that could mislead future investigators. Automatic generation is avoided to prevent unreviewed content in the knowledge pipeline.
+
+**3-Factor Runbook Gate** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
+
+Before suggesting or attempting runbook generation, the system checks three factors (cheapest first):
+
+| Factor | Check | Blocks if |
+|--------|-------|-----------|
+| **1. Content readiness** | `assess_runbook_readiness(case)` — maps case data to the 7 canonical runbook sections | Missing problem definition OR root cause with actionable fix (commands/steps) |
+| **2. User approval** | Agent suggests, user approves | User ignores or declines |
+| **3. No similar runbook exists** | `RunbookKnowledgeBase` vector search in ChromaDB | ≥85% match with existing runbook |
+
+**Content readiness verdicts** (`RunbookReadiness`):
+
+| Verdict | Condition | Agent behavior |
+|---------|-----------|----------------|
+| `READY` | Problem + root cause + actionable solution + at most 1 enrichment gap | Suggests: "Would you like me to create a runbook?" |
+| `NEEDS_ENRICHMENT` | Critical sections OK, but 2+ enrichment sections thin (diagnostic steps, mitigation, verification) | Suggests with caveat: "Some sections would be thin. Proceed or provide more detail?" |
+| `NOT_SUITABLE` | Missing problem definition or root cause with actionable fix | No suggestion shown |
+
+**Deduplication verdicts** (`RunbookSuggestion`):
+
+| Similarity | Verdict | Agent behavior |
+|------------|---------|----------------|
+| ≥85% | `EXISTING_COVERS` | "A similar runbook already exists: **{title}** ({score}% match)" |
+| 70-84% | `SUGGEST_WITH_CAVEATS` | "A partially similar runbook exists. Generate new or review existing?" |
+| <70% | `SUGGEST` | "Would you like me to create a runbook?" |
+
+**Workflow** (canonical path via `ConversionService`, triggered after user approves):
+
+1. `POST /api/v1/knowledge/convert-from-case` — extracts case data (solutions, root cause, hypotheses, evidence, domain/service)
+2. LLM generates canonical runbook (YAML frontmatter + 7 markdown sections) using `CONVERSION_SYSTEM_PROMPT`
+3. `RunbookValidator` checks structure; `QualityScorer` evaluates completeness, clarity, actionability (0-100 score)
+4. Draft created in `draft` status for user review
+5. User edits draft → re-validates → verifies → ingests into ChromaDB vector DB
+6. Verified runbook is chunked (512 tokens, 50-token overlap), embedded (BGE-M3, 1024 dims), indexed for future similarity search
+
+**Canonical runbook sections**: Problem Definition, Diagnostic Steps, Mitigation, Root Cause Resolution, Verification, Prevention, Sources.
+
+**API endpoints:**
+
+- `POST /api/v1/knowledge/convert-from-case` — Generate runbook from resolved case
+- `PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` — Edit draft (re-validates)
+- `POST /api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify` — Verify → ingest into vector DB
+- `DELETE /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` — Soft delete draft
+
+#### 4.5.3 Knowledge Suggestion Extraction
+
+**Eligibility**: RESOLVED cases only. This is a separate workflow from runbook generation — it produces structured knowledge articles (Problem, Root Cause, Solution, Prevention) rather than step-by-step runbooks.
 
 **Trigger point**: Dashboard only (`KnowledgeTab` on CaseDetailPage).
-
-**Eligibility:**
-
-- RESOLVED cases: always eligible
-- CLOSED with `closure_reason="mitigation_sufficient"`: eligible (mitigation steps are valuable)
-- Other CLOSED cases: not eligible
 
 **Workflow:**
 
 1. User clicks "Extract Knowledge" → `POST /api/v1/knowledge/suggestions/extract`
-2. LLM extracts structured article (Problem, Root Cause, Solution, Prevention) with automatic PII removal
+2. LLM extracts structured article with automatic PII removal
 3. Suggestion created in `PENDING_REVIEW` status with PII scan
 4. Admin reviews: edit title/content, verify PII scan, approve or reject
 5. On approval: creates `KnowledgeItem` in the knowledge base

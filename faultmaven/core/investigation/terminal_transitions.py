@@ -24,7 +24,7 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 
 import logging
 from datetime import UTC, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from faultmaven.modules.case.contracts import Case, CaseAction, CaseStatus
 
@@ -152,6 +152,10 @@ def _execute_resolved_transition(case: Case, user_id: str, reason: str):
             reason=f"User confirmed resolution: {reason}",
         )
     )
+
+    # Schedule auto-summary generation (checked by milestone engine after save)
+    case._pending_summary = should_generate_terminal_summary(case)
+
     logger.info(f"Case {case.case_id} transitioned to RESOLVED (terminal state)")
 
 
@@ -185,7 +189,486 @@ def _execute_closed_transition(case: Case, user_id: str, reason: str):
             reason=f"User confirmed closure: {reason}",
         )
     )
+
+    # Schedule auto-summary generation (checked by milestone engine after save)
+    case._pending_summary = should_generate_terminal_summary(case)
+
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
+
+
+# ============================================================
+# RESOLUTION READINESS ASSESSMENT
+# ============================================================
+
+
+class ResolutionReadiness:
+    """Assessment of whether a case is ready to be marked as RESOLVED.
+
+    Three possible outcomes:
+    - READY: Case has enough information for resolution (root cause + solution).
+    - NEEDS_INFO: Case is partially ready but missing key details. Ask user to provide them.
+    - SUGGEST_CLOSE: Case lacks fundamental information. Suggest CLOSED instead.
+    """
+
+    READY = "ready"
+    NEEDS_INFO = "needs_info"
+    SUGGEST_CLOSE = "suggest_close"
+
+    def __init__(self, verdict: str, message: str, missing: list[str]):
+        self.verdict = verdict
+        self.message = message
+        self.missing = missing
+
+
+def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
+    """Check whether a case meets minimum criteria for RESOLVED status.
+
+    Minimum criteria for RESOLVED:
+    - Root cause identified (root_cause_conclusion OR working_conclusion with high likelihood)
+    - At least one solution proposed or applied
+    - Problem verification exists (symptom_statement)
+
+    If the case has none of these, suggest CLOSED instead.
+    If the case has some but not all, ask user to provide missing information.
+
+    Args:
+        case: Case being assessed for resolution readiness
+
+    Returns:
+        ResolutionReadiness with verdict, user-facing message, and missing items list
+    """
+    missing = []
+
+    # Check 1: Problem verification (basic — should always exist if INVESTIGATING)
+    has_problem = bool(
+        case.problem_verification
+        and getattr(case.problem_verification, "symptom_statement", None)
+    )
+    if not has_problem:
+        missing.append("problem statement")
+
+    # Check 2: Root cause identified
+    has_root_cause = bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
+    )
+    has_working_conclusion = bool(
+        case.working_conclusion
+        and getattr(case.working_conclusion, "statement", None)
+        and getattr(case.working_conclusion, "likelihood", 0) >= 0.6
+    )
+    has_cause = has_root_cause or has_working_conclusion
+    if not has_cause:
+        missing.append("root cause")
+
+    # Check 3: At least one solution
+    has_solution = bool(case.solutions and len(case.solutions) > 0)
+    if not has_solution:
+        missing.append("solution")
+
+    # Check 4: Any evidence collected
+    has_evidence = bool(case.evidence and len(case.evidence) > 0)
+    if not has_evidence:
+        missing.append("evidence")
+
+    # Determine verdict
+    critical_missing = [m for m in missing if m in ("root cause", "solution")]
+
+    if not missing:
+        # Everything present
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.READY,
+            message="",
+            missing=[],
+        )
+
+    if len(critical_missing) >= 2 and not has_evidence:
+        # No root cause, no solution, no evidence — this isn't a resolved case
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.SUGGEST_CLOSE,
+            message=(
+                "This case doesn't have enough information to be marked as **resolved**. "
+                "There's no identified root cause, no solution on record, and no evidence collected.\n\n"
+                "If the issue is no longer relevant, you can **close** the case instead "
+                "(abandoned, escalated, or mitigation sufficient).\n\n"
+                "If the issue was actually resolved, please describe:\n"
+                "1. What was the root cause?\n"
+                "2. What fixed it?"
+            ),
+            missing=missing,
+        )
+
+    if critical_missing:
+        # Partially ready — ask for the missing pieces
+        missing_desc = []
+        if "root cause" in critical_missing:
+            missing_desc.append("- **Root cause**: What caused the problem?")
+        if "solution" in critical_missing:
+            missing_desc.append("- **Solution**: What action resolved the issue?")
+
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.NEEDS_INFO,
+            message=(
+                "Before I can mark this as resolved, I need a bit more detail:\n\n"
+                + "\n".join(missing_desc)
+                + "\n\nPlease provide this information so I can properly document the resolution."
+            ),
+            missing=missing,
+        )
+
+    # Non-critical items missing (just evidence or problem statement) — still ready
+    return ResolutionReadiness(
+        verdict=ResolutionReadiness.READY,
+        message="",
+        missing=missing,
+    )
+
+
+# ============================================================
+# RUNBOOK READINESS ASSESSMENT
+# ============================================================
+
+
+class RunbookReadiness:
+    """Assessment of whether a resolved case has enough data for quality runbook generation.
+
+    This is a HIGHER bar than ResolutionReadiness. A case can be resolved with a
+    brief root cause + solution title, but a runbook needs concrete commands,
+    diagnostic steps, and verification procedures.
+
+    Three verdicts:
+    - READY: Case has rich enough data for all critical runbook sections.
+    - NEEDS_ENRICHMENT: Case has basics but key sections will be thin. Agent
+      should tell the user what's missing before attempting generation.
+    - NOT_SUITABLE: Case lacks the structural data needed. Don't offer runbook.
+    """
+
+    READY = "ready"
+    NEEDS_ENRICHMENT = "needs_enrichment"
+    NOT_SUITABLE = "not_suitable"
+
+    def __init__(self, verdict: str, message: str, section_coverage: dict):
+        self.verdict = verdict
+        self.message = message
+        self.section_coverage = section_coverage  # section_name → bool
+
+
+def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
+    """Check whether a resolved case has enough data for quality runbook generation.
+
+    Maps case data to the 7 canonical runbook sections and checks coverage.
+
+    Required for READY:
+    - Problem Definition: symptom_statement exists
+    - Root Cause Resolution: root_cause + (commands OR implementation_steps OR longterm_fix)
+    - At least one solution with actionable content (commands, steps, or longterm_fix)
+
+    Enriches quality (not required, but flagged if missing):
+    - Diagnostic Steps: evidence items with summaries
+    - Mitigation: action_attempts with MITIGATION type, or immediate_action
+    - Verification: verification_method on any solution
+
+    Always available (LLM generates from context):
+    - Prevention, Sources
+    """
+    coverage = {}
+
+    # Problem Definition ← problem_verification.symptom_statement + symptom_indicators
+    has_problem_def = bool(
+        case.problem_verification
+        and getattr(case.problem_verification, "symptom_statement", None)
+    )
+    coverage["problem_definition"] = has_problem_def
+
+    # Diagnostic Steps ← evidence summaries + hypotheses tested
+    evidence_count = len(case.evidence) if case.evidence else 0
+    hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
+    has_diagnostic_steps = evidence_count >= 1 or hypothesis_count >= 1
+    coverage["diagnostic_steps"] = has_diagnostic_steps
+
+    # Mitigation ← action_attempts with MITIGATION type, or solutions[].immediate_action
+    has_mitigation = False
+    if case.action_attempts:
+        has_mitigation = any(
+            getattr(a, "action_type", "").upper() == "MITIGATION"
+            for a in case.action_attempts
+        )
+    if not has_mitigation and case.solutions:
+        has_mitigation = any(
+            getattr(s, "immediate_action", None) for s in case.solutions
+        )
+    coverage["mitigation"] = has_mitigation
+
+    # Root Cause Resolution ← root_cause_conclusion + solution with actionable content
+    has_root_cause = bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
+    )
+    has_actionable_solution = False
+    if case.solutions:
+        for sol in case.solutions:
+            has_commands = bool(getattr(sol, "commands", None))
+            has_steps = bool(getattr(sol, "implementation_steps", None))
+            has_longterm = bool(getattr(sol, "longterm_fix", None))
+            if has_commands or has_steps or has_longterm:
+                has_actionable_solution = True
+                break
+    coverage["root_cause_resolution"] = has_root_cause and has_actionable_solution
+
+    # Verification ← solution with verification_method
+    has_verification = False
+    if case.solutions:
+        has_verification = any(
+            getattr(s, "verification_method", None) for s in case.solutions
+        )
+    coverage["verification"] = has_verification
+
+    # Prevention + Sources — always LLM-generated
+    coverage["prevention"] = True
+    coverage["sources"] = True
+
+    # Determine verdict
+    critical_sections = ["problem_definition", "root_cause_resolution"]
+    critical_missing = [s for s in critical_sections if not coverage[s]]
+
+    enrichment_sections = ["diagnostic_steps", "mitigation", "verification"]
+    enrichment_missing = [s for s in enrichment_sections if not coverage[s]]
+
+    if not critical_missing:
+        if len(enrichment_missing) <= 1:
+            return RunbookReadiness(
+                verdict=RunbookReadiness.READY,
+                message="",
+                section_coverage=coverage,
+            )
+        else:
+            # Has the essentials but multiple enrichment sections are thin
+            missing_names = {
+                "diagnostic_steps": "diagnostic steps (evidence or hypotheses tested)",
+                "mitigation": "mitigation procedures",
+                "verification": "verification method for the solution",
+            }
+            missing_desc = [f"- {missing_names[s]}" for s in enrichment_missing]
+            return RunbookReadiness(
+                verdict=RunbookReadiness.NEEDS_ENRICHMENT,
+                message=(
+                    "I can generate a runbook, but some sections will be thin. "
+                    "The following information would improve quality:\n\n"
+                    + "\n".join(missing_desc)
+                    + "\n\nWould you like to proceed anyway, or provide more detail first?"
+                ),
+                section_coverage=coverage,
+            )
+
+    # Critical sections missing
+    missing_names = {
+        "problem_definition": "problem description (symptoms, error messages)",
+        "root_cause_resolution": "root cause with actionable fix (commands or steps)",
+    }
+    missing_desc = [f"- {missing_names[s]}" for s in critical_missing]
+    return RunbookReadiness(
+        verdict=RunbookReadiness.NOT_SUITABLE,
+        message=(
+            "This case doesn't have enough structured data for a quality runbook. "
+            "Missing:\n\n"
+            + "\n".join(missing_desc)
+            + "\n\nYou can still generate reports (Incident Report, Post-Mortem) from the Dashboard."
+        ),
+        section_coverage=coverage,
+    )
+
+
+# ============================================================
+# TERMINAL SUMMARY AUTO-GENERATION
+# ============================================================
+
+
+def should_generate_terminal_summary(case: "Case") -> bool:
+    """Determine whether a terminal case warrants an auto-generated summary.
+
+    Skip generation for trivial cases: no evidence, no hypotheses, and
+    fewer than 4 messages (typical inquiry-only or duplicate closures).
+
+    Also skip for duplicate closures — the parent case has the real content.
+    """
+    # Always skip duplicates
+    if case.closure_reason == "duplicate":
+        return False
+
+    evidence_count = len(case.evidence) if case.evidence else 0
+    hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
+    message_count = getattr(case, "message_count", 0) or 0
+
+    # Skip if trivial: no evidence, no hypotheses, fewer than 4 messages
+    if evidence_count == 0 and hypothesis_count == 0 and message_count < 4:
+        logger.info(
+            f"Skipping terminal summary for case {case.case_id}: trivial case "
+            f"(evidence={evidence_count}, hypotheses={hypothesis_count}, "
+            f"messages={message_count})"
+        )
+        return False
+
+    return True
+
+
+# ============================================================
+# RUNBOOK SUGGESTION (Combines All 3 Factors)
+# ============================================================
+
+
+class RunbookSuggestion:
+    """Result of evaluating whether to suggest runbook generation.
+
+    Combines three factors:
+    1. Content readiness (assess_runbook_readiness)
+    2. User request/approval (not checked here — caller handles)
+    3. No similar runbook already exists (deduplication via RunbookKnowledgeBase)
+    """
+
+    SUGGEST = "suggest"
+    SUGGEST_WITH_CAVEATS = "suggest_with_caveats"
+    EXISTING_COVERS = "existing_covers"
+    NOT_READY = "not_ready"
+
+    def __init__(self, verdict: str, message: str):
+        self.verdict = verdict
+        self.message = message
+
+
+async def evaluate_runbook_suggestion(
+    case: "Case",
+    runbook_kb: Any = None,
+) -> RunbookSuggestion:
+    """Evaluate whether to suggest runbook generation for a resolved case.
+
+    Checks three factors in order (cheapest first):
+    1. Content readiness — does the case have enough structured data?
+    2. Deduplication — is there already a similar runbook in the KB?
+    3. User approval — NOT checked here; the caller presents the suggestion.
+
+    Args:
+        case: Resolved case to evaluate
+        runbook_kb: Optional RunbookKnowledgeBase for similarity search.
+            If None, deduplication check is skipped (suggestion still based on content).
+    """
+    # Factor 1: Content readiness (cheap, no I/O)
+    readiness = assess_runbook_readiness(case)
+
+    if readiness.verdict == RunbookReadiness.NOT_SUITABLE:
+        return RunbookSuggestion(
+            verdict=RunbookSuggestion.NOT_READY,
+            message=readiness.message,
+        )
+
+    # Factor 3: Deduplication (requires ChromaDB, skip if KB unavailable)
+    if runbook_kb:
+        try:
+            similar = await _find_similar_runbooks_for_case(case, runbook_kb)
+            if similar:
+                top_match = similar[0]
+                similarity = top_match.get("similarity_score", 0)
+                title = top_match.get("title", "existing runbook")
+
+                if similarity >= 0.85:
+                    return RunbookSuggestion(
+                        verdict=RunbookSuggestion.EXISTING_COVERS,
+                        message=(
+                            f"A similar runbook already exists: **{title}** "
+                            f"({similarity:.0%} match). "
+                            "You can view or update it from the Dashboard Knowledge Base."
+                        ),
+                    )
+                elif similarity >= 0.70:
+                    return RunbookSuggestion(
+                        verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
+                        message=(
+                            f"A partially similar runbook exists: **{title}** "
+                            f"({similarity:.0%} match). "
+                            "Would you like to generate a new one, or review the existing one first? "
+                            "You can manage runbooks from the Dashboard."
+                        ),
+                    )
+        except Exception as e:
+            logger.warning(
+                f"Runbook deduplication check failed for case {case.case_id}: {e}. "
+                "Proceeding without dedup check.",
+                extra={"case_id": case.case_id},
+            )
+
+    # No similar runbook found (or KB unavailable) — suggest based on content readiness
+    if readiness.verdict == RunbookReadiness.NEEDS_ENRICHMENT:
+        return RunbookSuggestion(
+            verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
+            message=readiness.message,
+        )
+
+    return RunbookSuggestion(
+        verdict=RunbookSuggestion.SUGGEST,
+        message=(
+            "This case has enough detail to generate a **runbook** "
+            "for the knowledge base. Would you like me to create one? "
+            "You can also do this later from the Dashboard."
+        ),
+    )
+
+
+async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list[dict]:
+    """Search for existing runbooks similar to a resolved case.
+
+    Builds a query from case title + root cause + solution for semantic search.
+    Returns list of matches with similarity_score and title.
+    """
+    # Build search text from case context
+    parts = []
+    if case.title:
+        parts.append(case.title)
+    if case.root_cause_conclusion:
+        rc = getattr(case.root_cause_conclusion, "root_cause", None)
+        if rc:
+            parts.append(rc)
+    if case.solutions:
+        sol = case.solutions[-1]
+        title = getattr(sol, "title", None)
+        if title:
+            parts.append(title)
+
+    if not parts:
+        return []
+
+    query_text = " | ".join(parts)
+
+    # Use runbook_kb.search_runbooks if available (ChromaDB vector search)
+    if hasattr(runbook_kb, "search_by_text"):
+        results = await runbook_kb.search_by_text(
+            query_text=query_text,
+            top_k=3,
+            min_similarity=0.65,
+        )
+        return results
+    elif hasattr(runbook_kb, "search_runbooks"):
+        # Fallback: some implementations use search_runbooks with query text
+        try:
+            results = await runbook_kb.search_runbooks(
+                query_text=query_text,
+                top_k=3,
+                min_similarity=0.65,
+            )
+            return (
+                [
+                    {
+                        "similarity_score": getattr(r, "similarity_score", 0),
+                        "title": getattr(r, "title", "Unknown"),
+                    }
+                    for r in results
+                ]
+                if results
+                else []
+            )
+        except TypeError:
+            # search_runbooks may require query_embedding instead of text
+            return []
+
+    return []
 
 
 # ============================================================

@@ -35,6 +35,11 @@ class DraftStatus(str, Enum):
     DELETED = "deleted"
 
 
+class SourceType(str, Enum):
+    DOCUMENT = "document"
+    CASE = "case"
+
+
 class ConversionErrorCode(str, Enum):
     """Structured error codes for frontend translation."""
 
@@ -179,6 +184,8 @@ class ConversionDraft(BaseModel):
     title: str
     scope: str
     status: DraftStatus = DraftStatus.DRAFT
+    source_type: SourceType = SourceType.DOCUMENT
+    case_id: Optional[str] = None
     validation: ValidationResult
     quality_score: QualityScore
     file_path: str
@@ -240,6 +247,42 @@ class VerifyResponse(BaseModel):
     ingested_at: Optional[datetime] = None
     collection: str
     chunks_created: int
+
+
+# =============================================================================
+# Case-to-Runbook Conversion Request
+# =============================================================================
+
+
+class CaseConversionRequest(BaseModel):
+    """Data extracted from a resolved case for runbook generation.
+
+    Fields are populated from the Case domain model:
+    - title: Case.title
+    - description: Case.problem_verification.symptom_statement
+    - root_cause: Case.root_cause_conclusion.root_cause
+    - root_cause_mechanism: Case.root_cause_conclusion.mechanism
+    - solutions: Structured text from Case.solutions[] (title, steps, commands, risks)
+    - hypotheses_summary: Validated hypothesis statements from Case.hypotheses
+    - evidence_summary: Case.working_conclusion.statement + evidence summaries
+    - severity: Case.problem_verification.severity
+    - service: Case.problem_verification.affected_services[0]
+    """
+
+    case_id: str
+    title: str
+    description: str
+    root_cause: Optional[str] = None
+    root_cause_mechanism: Optional[str] = None
+    solutions: List[str] = Field(default_factory=list)
+    hypotheses_summary: str = ""
+    evidence_summary: str = ""
+    domain: str = "general"
+    service: str = "unknown"
+    symptom_class: List[str] = Field(default_factory=list)
+    severity: str = "medium"
+    tags: List[str] = Field(default_factory=list)
+    scope: str = "global"
 
 
 # =============================================================================

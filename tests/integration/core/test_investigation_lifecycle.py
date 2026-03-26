@@ -625,21 +625,36 @@ class TestCheckpointing:
         Design: Dropdown = message. First click proposes transition via
         User-Agent Handshake. Second click (or confirm) executes it.
         """
+        from faultmaven.modules.case.contracts import (
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
         case = _make_investigating_case(current_turn=5)
+        # Add root cause + solution so resolution readiness check passes
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Connection pool timeout misconfigured",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Timeout too low for production load",
+        )
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Increase pool timeout to 30s",
+                longterm_fix="Update application config",
+            )
+        ]
         await case_repo.save(case)
 
         # Turn 1: First Resolve dropdown — proposes transition, does NOT execute
-        with patch.object(
-            engine,
-            "_generate_structured_output",
-            return_value=_investigation_verification_response(),
-        ):
-            result = await engine.process_turn(
-                case,
-                "Mark as resolved",
-                intent_type="status_transition",
-                intent_data={"to_status": "resolved", "from_status": "investigating"},
-            )
+        result = await engine.process_turn(
+            case,
+            "Mark as resolved",
+            intent_type="status_transition",
+            intent_data={"to_status": "resolved", "from_status": "investigating"},
+        )
 
         case = result["case_updated"]
         assert case.status == CaseStatus.INVESTIGATING  # NOT resolved yet
@@ -921,15 +936,30 @@ class TestNaturalLanguageIntentDetection:
 
     async def test_resolve_proposal_via_natural_language(self, engine, case_repo):
         """User says 'the fix worked' → proposes transition (User-Agent Handshake)."""
+        from faultmaven.modules.case.contracts import (
+            RootCauseConclusion,
+            Solution,
+            SolutionType,
+        )
+
         case = _make_investigating_case(current_turn=5)
+        # Add root cause + solution so readiness check passes
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="Stale cache entries after deploy",
+            confidence_level="verified",
+            likelihood=0.9,
+            mechanism="Cache not invalidated on deployment",
+        )
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.RESTART,
+                title="Flush cache after deploy",
+                longterm_fix="Add cache flush to deployment pipeline",
+            )
+        ]
         await case_repo.save(case)
 
-        with patch.object(
-            engine,
-            "_generate_structured_output",
-            return_value=_investigation_no_progress_response(),
-        ):
-            result = await engine.process_turn(case, "the fix worked")
+        result = await engine.process_turn(case, "the fix worked")
 
         updated = result["case_updated"]
         # Should propose transition, not immediately resolve
