@@ -787,6 +787,12 @@ YOUR TASK:
 - DO NOT perform new investigation or suggest state changes.
 - Focus on documentation and knowledge sharing.
 
+FOLLOW-UP SUGGESTIONS (suggested_follow_ups):
+For RESOLVED cases, include 2-4 COOPERATIVE suggestions for post-resolution actions.
+Always include a suggestion to generate a runbook from this case:
+{{"label": "Generate runbook from this case", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Generate a runbook from this resolved case", "body": "Create a reusable troubleshooting runbook from the root cause and solution found in this investigation."}}
+Other useful suggestions: generate incident report, extract to knowledge base, share findings with team.
+
 ASSISTANT ROLE:
 You are an ADVISOR. 
 - BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".

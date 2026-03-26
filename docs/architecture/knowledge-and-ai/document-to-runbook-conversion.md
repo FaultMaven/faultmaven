@@ -1,15 +1,20 @@
-# Document-to-Runbook Conversion
+# Runbook Conversion (Document + Case Sources)
 
 **Document Type:** Feature Specification
-**Version:** 1.0
-**Status:** Design Complete -- Pending Implementation
-**Date:** 2026-03-22
+**Version:** 2.0
+**Status:** Implemented
+**Date:** 2026-03-26
 
 ---
 
 ## Executive Summary
 
-This specification defines a new feature that converts uploaded documents (PDF, DOCX, TXT, Markdown, HTML) into one or more standardized runbook files compliant with the [Runbook Content Architecture](./runbook-content-architecture.md). The feature introduces a new LLM capability (`KNOWLEDGE_PROVIDER`), an API endpoint for document conversion, a multi-runbook splitting pipeline, and Dashboard UI for reviewing and promoting generated drafts.
+This specification defines the runbook conversion feature that generates standardized runbook files from two sources:
+
+1. **Document-to-runbook**: Uploaded documents (PDF, DOCX, TXT, Markdown, HTML) are analyzed for failure modes and converted to runbooks.
+2. **Case-to-runbook**: Resolved investigation cases are converted to runbooks using the root cause, solutions, and evidence collected during the investigation.
+
+Both sources produce output compliant with the [Runbook Content Architecture](./runbook-content-architecture.md) and share the same draft review workflow (edit → verify → ingest).
 
 ### Objectives
 
@@ -17,6 +22,7 @@ This specification defines a new feature that converts uploaded documents (PDF, 
 2. Enforce the "one runbook = one failure mode" rule automatically by detecting and splitting multi-topic source documents.
 3. Maintain quality standards by gating all generated output through the existing `kb-validate` pipeline and quality scorer.
 4. Keep generated runbooks as non-searchable drafts until a human explicitly promotes them to `verified` status.
+5. Close the knowledge flywheel: resolved cases automatically produce draft runbooks for future investigations.
 
 ### Non-Goals
 
@@ -70,7 +76,9 @@ graph TD
 
     subgraph "API Layer"
         EP[POST /knowledge/convert]
+        EP6[POST /knowledge/convert-from-case]
         EP2[GET /knowledge/conversions/{id}]
+        EP7[GET /knowledge/conversions/by-case/{case_id}]
         EP3[PUT /knowledge/conversions/{id}/drafts/{draft_id}]
         EP4[POST /knowledge/conversions/{id}/drafts/{draft_id}/verify]
         EP5[DELETE /knowledge/conversions/{id}/drafts/{draft_id}]
@@ -124,6 +132,23 @@ faultmaven/modules/knowledge/
 ```
 
 This placement follows the established pattern: conversion is business logic that creates knowledge items through the existing knowledge module contracts.
+
+### 1.4 Two Conversion Sources
+
+Both sources use the same downstream pipeline (LLM generation with canonical template, validation, quality scoring, draft persistence) but differ in input:
+
+| Aspect | Document Source | Case Source |
+|--------|----------------|-------------|
+| **Entry point** | `POST /knowledge/convert` (file upload) | `POST /knowledge/convert-from-case` (case_id) |
+| **Preprocessing** | 6-stage pipeline (extract, PII, triage, etc.) | None (case data is already structured) |
+| **Analysis** | LLM identifies failure modes from text | Single failure mode from case root cause |
+| **Source material** | Extracted document text | Assembled from case title, description, root cause, solutions, hypotheses, evidence |
+| **Tracking** | `source_type = "document"` on ConversionJob | `source_type = "case"`, `case_id` populated |
+| **Dashboard** | Drafts tab on KB page | Runbook tab on case detail + Drafts tab on KB page |
+
+The `ConversionService.convert_from_case()` method constructs a `FailureModeAnalysis` from the case data and calls `_convert_single_failure_mode()` — the same method used for document-driven conversion. This ensures identical template compliance, validation, and quality scoring.
+
+**Case conversion lookup**: `GET /knowledge/conversions/by-case/{case_id}` returns the conversion job and drafts for a specific case, used by the Dashboard Runbook tab.
 
 ---
 

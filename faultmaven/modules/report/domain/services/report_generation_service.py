@@ -304,7 +304,19 @@ Keep it professional, concise, and actionable. Focus on facts and outcomes."""
         return response
 
     async def _generate_runbook(self, case: Case, context: Dict[str, Any]) -> str:
-        """Generate runbook using LLM."""
+        """Generate runbook using LLM.
+
+        DEPRECATED: This method uses a non-canonical template that does not match
+        the runbook content architecture (runbook-content-architecture.md).
+        New runbook generation should use ConversionService.convert_from_case()
+        which produces drafts with the canonical template (Problem Definition,
+        Diagnostic Steps, Mitigation, Root Cause Resolution, Verification,
+        Prevention, Sources) and YAML frontmatter.
+
+        This method is retained for backward compatibility with the Report tab's
+        existing generation flow. It will be removed once the Runbook tab
+        (which uses convert_from_case) is the primary path.
+        """
         prompt = f"""Generate a step-by-step operational runbook for the following incident.
 
 **Incident:** {case.title}

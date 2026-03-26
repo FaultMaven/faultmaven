@@ -656,10 +656,12 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
 | Knowledge | `POST /knowledge/search` | Semantic search |
 | Knowledge | `POST /knowledge/convert` | Convert document to runbook drafts |
+| Knowledge | `POST /knowledge/convert-from-case` | Generate runbook from resolved case |
 | Knowledge | `POST /knowledge/runbooks/create` | Create runbook manually from template |
 | Knowledge | `GET /knowledge/drafts` | List all draft runbooks |
 | Knowledge | `POST /knowledge/scan` | Discover runbooks on disk (KB Toolkit bridge) |
 | Knowledge | `GET /knowledge/conversions` | List conversion jobs |
+| Knowledge | `GET /knowledge/conversions/by-case/{case_id}` | Get conversion for a case |
 | Knowledge | `PUT/POST/DELETE .../drafts/{id}` | Draft management (edit, verify, delete) |
 | Auth | `POST /auth/register` | User registration |
 | Auth | `POST /auth/login` | User login |

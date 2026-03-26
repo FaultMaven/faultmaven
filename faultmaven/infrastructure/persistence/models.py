@@ -1965,6 +1965,8 @@ class ConversionJobModel(Base):
     source_content_type = Column(String(100), nullable=False)
     source_size_bytes = Column(Integer, nullable=False)
     source_path = Column(String(500), nullable=False)
+    source_type = Column(String(20), nullable=False, server_default="document")
+    case_id = Column(String(36), nullable=True, index=True)
     failure_modes_detected = Column(Integer, nullable=False, server_default="0")
     analysis_result = Column(JSON, nullable=True)
     created_at = Column(
@@ -2001,6 +2003,7 @@ class ConversionDraftModel(Base):
     title = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
     status = Column(String(20), nullable=False, server_default="draft")
+    source_type = Column(String(20), nullable=False, server_default="document")
     validation_passed = Column(Boolean, nullable=False, server_default="1")
     validation_errors = Column(JSON, nullable=True)
     validation_warnings = Column(JSON, nullable=True)

@@ -538,6 +538,88 @@ async def update_global_kb(
 
 ---
 
+## 4. Conversion Storage (Runbook Draft Pipeline)
+
+### 4.1 Conversion Jobs Table
+
+Tracks conversion requests — both document-to-runbook and case-to-runbook.
+
+```sql
+CREATE TABLE conversion_jobs (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    organization_id VARCHAR(36),
+    scope VARCHAR(20) NOT NULL,              -- global, team, personal
+    team_id VARCHAR(36),
+    status VARCHAR(20) NOT NULL DEFAULT 'processing',  -- processing, completed, partial, failed
+    source_filename VARCHAR(255) NOT NULL,
+    source_content_type VARCHAR(100) NOT NULL,
+    source_size_bytes INTEGER NOT NULL,
+    source_path VARCHAR(500) NOT NULL,
+    source_type VARCHAR(20) NOT NULL DEFAULT 'document',  -- 'document' or 'case'
+    case_id VARCHAR(36),                     -- populated when source_type = 'case'
+    failure_modes_detected INTEGER NOT NULL DEFAULT 0,
+    analysis_result JSON,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX ix_conversion_jobs_user_id ON conversion_jobs(user_id);
+CREATE INDEX ix_conversion_jobs_case_id ON conversion_jobs(case_id);
+```
+
+### 4.2 Conversion Drafts Table
+
+Individual runbook drafts generated from a conversion job.
+
+```sql
+CREATE TABLE conversion_drafts (
+    id VARCHAR(36) PRIMARY KEY,
+    conversion_id VARCHAR(36) NOT NULL REFERENCES conversion_jobs(id) ON DELETE CASCADE,
+    runbook_id VARCHAR(100) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    file_path VARCHAR(500) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',       -- draft, verified, deleted
+    source_type VARCHAR(20) NOT NULL DEFAULT 'document', -- mirrors job source_type
+    validation_passed BOOLEAN NOT NULL DEFAULT TRUE,
+    validation_errors JSON,
+    validation_warnings JSON,
+    quality_score NUMERIC(5,1),
+    quality_details JSON,
+    knowledge_item_id VARCHAR(36),           -- set after verify & ingest
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at TIMESTAMPTZ,
+    verified_by VARCHAR(36)
+);
+CREATE INDEX ix_conversion_drafts_conversion_id ON conversion_drafts(conversion_id);
+```
+
+### 4.3 Source Type Tracking
+
+The `source_type` field distinguishes the two conversion pipelines:
+
+| Value | Source | Entry Point | Notes |
+| --- | --- | --- | --- |
+| `document` | Uploaded file (PDF, DOCX, MD, etc.) | `POST /knowledge/convert` | Default. Multi-failure-mode analysis. |
+| `case` | Resolved investigation case | `POST /knowledge/convert-from-case` | Single failure mode from case data. `case_id` populated. |
+
+Both produce drafts with the canonical runbook template and enter the same review workflow (edit → verify → ingest).
+
+### 4.4 VectorMetadata Tags Format
+
+ChromaDB metadata only accepts scalar values. Tags are stored as **comma-joined strings**, not lists:
+
+```python
+# Correct (ChromaDB compatible)
+metadata = {"tags": "postgresql,aws-rds,pgbouncer"}
+
+# Wrong (ChromaDB rejects lists)
+metadata = {"tags": ["postgresql", "aws-rds", "pgbouncer"]}
+```
+
+The `VectorMetadata.to_chroma_metadata()` method handles this conversion. The `KnowledgeIngester` uses `",".join(document.tags)` for the same purpose.
+
+---
+
 ## Related Documentation
 
 - **[vector-storage.md](../vector-storage.md)** - ChromaDB implementation details and operations

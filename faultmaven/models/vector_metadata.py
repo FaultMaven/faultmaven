@@ -58,7 +58,7 @@ class VectorMetadata(BaseModel):
         if self.document_type:
             data["document_type"] = self.document_type
         if self.tags:
-            data["tags"] = self.tags
+            data["tags"] = ",".join(self.tags)
         if self.source_url:
             data["source_url"] = self.source_url
         if self.scope:

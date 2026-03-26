@@ -845,6 +845,8 @@ class ConversionService:
                         title=dm.title,
                         scope=job.scope,
                         status=DraftStatus(dm.status),
+                        source_type=SourceType(dm.source_type or "document"),
+                        case_id=job.case_id,
                         validation=ValidationResult(
                             passed=dm.validation_passed,
                             errors=dm.validation_errors or [],
@@ -968,6 +970,8 @@ class ConversionService:
                     "title": dm.title,
                     "scope": job.scope,
                     "status": dm.status,
+                    "source_type": dm.source_type or "document",
+                    "case_id": job.case_id,
                     "validation_passed": dm.validation_passed,
                     "quality_score": (
                         float(dm.quality_score) if dm.quality_score else None

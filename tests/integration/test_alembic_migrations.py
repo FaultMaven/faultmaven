@@ -22,8 +22,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
-# Current head revision (scope isolation migration)
-HEAD_REVISION = "0a6eafc2e4cf"
+# Current head revision (conversion tables with source_type)
+HEAD_REVISION = "b7f3c1d2e5a8"
 
 
 @pytest.fixture(scope="function")
@@ -90,8 +90,8 @@ def get_current_revision(database_url: str) -> str:
     return ""
 
 
-# Expected tables from the clean baseline migration
-# 19 domain tables + 11 auth/RBAC tables + alembic_version = 31
+# Expected tables from all migrations
+# 19 domain tables + 11 auth/RBAC tables + 2 conversion tables + alembic_version = 33
 EXPECTED_TABLES = [
     "agent_executions",
     "agent_tool_calls",
@@ -102,6 +102,8 @@ EXPECTED_TABLES = [
     "case_messages",
     "case_tags",
     "cases",
+    "conversion_drafts",
+    "conversion_jobs",
     "evidence",
     "evidence_artifacts",
     "hypotheses",

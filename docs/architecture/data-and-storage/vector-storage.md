@@ -206,14 +206,29 @@ POST /api/v1/knowledge/documents
 
 # Service flow
 1. Validate document (format, size, ownership)
-2. Generate BGE-M3 embeddings
-3. Store in kb_private_{user_id} collection
-4. Save metadata to PostgreSQL (kb_documents table)
-5. Return document_id to client
+2. Store in faultmaven_kb collection with scope/owner_id/team_id metadata
+3. ChromaDB generates embeddings server-side
+4. Return document_id to client
 
 # Python API
-await user_kb_store.add_documents(user_id, documents)
+await vector_store.add_documents([doc_dict])  # ChromaDBVectorStore
 ```
+
+**Metadata passthrough**: `ChromaDBVectorStore.add_documents()` normalizes metadata through `VectorMetadata` which includes all scope fields (`scope`, `owner_id`, `team_id`). Tags are serialized as comma-joined strings (ChromaDB rejects list values in metadata).
+
+### 3.2.1 Document Listing and Retrieval
+
+**Source of truth**: ChromaDB is the persistent store for KB documents. `KnowledgeService.list_documents()` queries ChromaDB via `ChromaDBVectorStore.list_documents()` — NOT Redis.
+
+```python
+# ChromaDBVectorStore methods for document management
+await vector_store.list_documents(limit=100, offset=0, where={"scope": "global"})
+await vector_store.get_document(document_id)
+await vector_store.count()
+await vector_store.delete_documents([document_id])
+```
+
+Redis is used only as a write-through cache for upload metadata. If Redis is unavailable (FakeRedis restart), documents persist in ChromaDB and remain listable.
 
 ### 3.3 Global KB Administration
 

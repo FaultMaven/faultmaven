@@ -1113,20 +1113,16 @@ class KnowledgeService:
             # Don't raise exception here as indexing failure shouldn't block ingestion
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
-        """
-        Remove document from vector store index
-
-        Args:
-            document_id: ID of document to remove
-        """
+        """Remove document from vector store index."""
         if not self._vector_store:
             return
 
         try:
-            # Vector store interface doesn't have delete method in current interface
-            # This would need to be added to IVectorStore in a future phase
-            logger.debug(f"Would remove document {document_id} from vector store")
-
+            if hasattr(self._vector_store, "delete_documents"):
+                await self._vector_store.delete_documents([document_id])
+                logger.info(f"Removed document {document_id} from vector store")
+            else:
+                logger.debug(f"Vector store does not support delete for {document_id}")
         except Exception as e:
             logger.error(f"Failed to remove document from vector store: {e}")
 
@@ -1267,50 +1263,85 @@ class KnowledgeService:
         offset: int = 0,
         user: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """List documents with filtering"""
+        """List documents from ChromaDB (persistent) with RBAC filtering.
+
+        ChromaDB is the source of truth for document listing. Redis is used
+        only as a write-through cache for upload metadata, not for listing.
+        """
         try:
-            # Get all documents from Redis
-            all_documents: List[Dict[str, Any]] = []
-            import json as _json
+            if not self._vector_store:
+                logger.warning("No vector store available for list_documents")
+                return {
+                    "documents": [],
+                    "total_count": 0,
+                    "limit": limit,
+                    "offset": offset,
+                }
 
-            ids = await self._redis.smembers(self._kb_docs_set)
-            if ids:
-                for did in ids:
-                    doc_key = self._kb_doc_key.format(document_id=did)
-                    raw = await self._redis.hget(doc_key, "data")
-                    if raw:
-                        try:
-                            all_documents.append(_json.loads(raw))
-                        except Exception:
-                            continue
-
-            # Extract user context for RBAC
+            # Build ChromaDB where clause for scope-based pre-filtering
             user_id = getattr(user, "user_id", None) if user else None
-            team_id = getattr(user, "organization_id", None) if user else None
+            user_team_id = getattr(user, "team_id", None) if user else None
 
-            # Apply filters
+            # Query ChromaDB — fetch more than needed for post-filtering
+            # ChromaDB doesn't support OR across scope filters, so we fetch all
+            # and filter in Python (same as before, but from persistent store)
+            where = None
+            if document_type:
+                where = {"document_type": document_type}
+
+            raw_docs = await self._vector_store.list_documents(
+                limit=500,  # Fetch enough for filtering
+                offset=0,
+                where=where,
+            )
+
+            # Deduplicate by document_id (chunked docs may have multiple entries)
+            seen_ids: set = set()
+            all_documents: List[Dict[str, Any]] = []
+            for raw in raw_docs:
+                meta = raw.get("metadata", {})
+                doc_id = raw.get("id", meta.get("document_id", ""))
+
+                if doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
+
+                # Parse tags from comma-joined string back to list
+                raw_tags = meta.get("tags", "")
+                tag_list = (
+                    [t.strip() for t in raw_tags.split(",") if t.strip()]
+                    if isinstance(raw_tags, str)
+                    else raw_tags if isinstance(raw_tags, list) else []
+                )
+
+                doc = {
+                    "document_id": doc_id,
+                    "title": meta.get("title", "Untitled"),
+                    "content": raw.get("content", ""),
+                    "document_type": meta.get("document_type", "unknown"),
+                    "tags": tag_list,
+                    "scope": meta.get("scope", "global"),
+                    "owner_id": meta.get("owner_id"),
+                    "team_id": meta.get("team_id"),
+                    "source_url": meta.get("source_url"),
+                    "created_at": meta.get("created_at", ""),
+                    "updated_at": meta.get("updated_at", ""),
+                    "metadata": meta,
+                }
+                all_documents.append(doc)
+
+            # Apply RBAC scope filtering
             filtered_docs = []
             for doc in all_documents:
-                # Exclude archived documents
-                if doc.get("archived_at"):
-                    continue
-
-                # Apply RBAC Scope
-                metadata = doc.get("metadata", {})
-                scope = metadata.get("scope", doc.get("scope", "global"))
+                scope = doc.get("scope", "global")
 
                 if scope == "personal":
-                    owner_id = metadata.get("owner_id", doc.get("owner_id"))
-                    if not user_id or owner_id != user_id:
+                    if not user_id or doc.get("owner_id") != user_id:
                         continue
                 elif scope == "team":
-                    doc_team_id = metadata.get("team_id", doc.get("team_id"))
-                    if not team_id or doc_team_id != team_id:
+                    if not user_team_id or doc.get("team_id") != user_team_id:
                         continue
-
-                # Filter by document type
-                if document_type and doc.get("document_type") != document_type:
-                    continue
+                # global scope: visible to all
 
                 # Filter by tags
                 if tags:
@@ -1324,14 +1355,9 @@ class KnowledgeService:
             total = len(filtered_docs)
             paginated_docs = filtered_docs[offset : offset + limit]
 
-            # Normalize tags to ensure API contract compliance (List[str])
-            from faultmaven.api.v1.utils.parsing import normalize_tags_field
-
-            for doc in paginated_docs:
-                if "tags" in doc:
-                    doc["tags"] = normalize_tags_field(doc["tags"])
-
-            logger.info(f"Listed {len(paginated_docs)} documents (total: {total})")
+            logger.info(
+                f"Listed {len(paginated_docs)} documents from ChromaDB (total: {total})"
+            )
 
             return {
                 "documents": paginated_docs,
@@ -1342,7 +1368,7 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Failed to list documents: {e}")
+            logger.error(f"Failed to list documents from ChromaDB: {e}")
             return {
                 "documents": [],
                 "total_count": 0,
@@ -1352,16 +1378,46 @@ class KnowledgeService:
             }
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific document by ID"""
+        """Get a specific document by ID from ChromaDB (persistent store)."""
         try:
-            if document_id:
+            if not document_id:
+                return None
+
+            # Try ChromaDB first (persistent, source of truth)
+            if self._vector_store and hasattr(self._vector_store, "get_document"):
+                raw = await self._vector_store.get_document(document_id)
+                if raw:
+                    meta = raw.get("metadata", {})
+                    raw_tags = meta.get("tags", "")
+                    tag_list = (
+                        [t.strip() for t in raw_tags.split(",") if t.strip()]
+                        if isinstance(raw_tags, str)
+                        else raw_tags if isinstance(raw_tags, list) else []
+                    )
+                    return {
+                        "document_id": document_id,
+                        "title": meta.get("title", "Untitled"),
+                        "content": raw.get("content", ""),
+                        "document_type": meta.get("document_type", "unknown"),
+                        "tags": tag_list,
+                        "scope": meta.get("scope", "global"),
+                        "owner_id": meta.get("owner_id"),
+                        "team_id": meta.get("team_id"),
+                        "source_url": meta.get("source_url"),
+                        "created_at": meta.get("created_at", ""),
+                        "updated_at": meta.get("updated_at", ""),
+                        "metadata": meta,
+                    }
+
+            # Fallback to Redis cache
+            if self._redis:
                 import json as _json
 
-                raw = await self._redis.hget(
+                raw_data = await self._redis.hget(
                     self._kb_doc_key.format(document_id=document_id), "data"
                 )
-                if raw:
-                    document = _json.loads(raw)
+                if raw_data:
+                    document = _json.loads(raw_data)
                     from faultmaven.api.v1.utils.parsing import normalize_tags_field
 
                     if "tags" in document:

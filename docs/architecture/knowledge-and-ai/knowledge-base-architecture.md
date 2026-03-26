@@ -536,12 +536,20 @@ Team KB is **designed but not yet fully implemented**. The infrastructure suppor
 
 In the local (single-user) deployment, this is the only KB tier available. The user builds their entire knowledge base here. In the cloud deployment, users can additionally promote their personal runbooks to the Team KB for shared access.
 
+### Storage Architecture
+
+**Write path**: `upload_document()` → Redis (metadata cache) + ChromaDB (persistent vector store with scope metadata)
+
+**Read path**: `list_documents()` and `get_document()` read from **ChromaDB** (source of truth), not Redis. This ensures documents persist across server restarts and FakeRedis resets.
+
+**Delete path**: `archive_document()` removes from both Redis and ChromaDB via `delete_documents()`.
+
 ### API Endpoints
 
 Managed through the Knowledge module (`/api/v1/knowledge/`):
 
 - `POST /documents` — Upload document (with background embedding)
-- `GET /documents` — List with filtering (type, tags)
+- `GET /documents` — List with filtering (type, tags, scope) — reads from ChromaDB
 - `GET /documents/{id}` — Get specific document
 - `PUT /documents/{id}` — Update document
 - `DELETE /documents/{id}` — Delete document and remove from ChromaDB

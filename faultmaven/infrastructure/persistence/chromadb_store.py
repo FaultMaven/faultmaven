@@ -72,6 +72,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                         document_type=md.get("document_type"),
                         tags=md.get("tags", []),
                         source_url=md.get("source_url"),
+                        scope=md.get("scope"),
+                        owner_id=md.get("owner_id"),
+                        team_id=md.get("team_id"),
                         created_at=md.get("created_at"),
                         updated_at=md.get("updated_at"),
                     )
@@ -175,6 +178,96 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             call_func=_query_wrapper,
             timeout=10.0,
             retries=2,
+            retry_delay=1.0,
+        )
+
+    async def list_documents(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict]:
+        """List documents with metadata from the collection.
+
+        Uses ChromaDB's collection.get() to retrieve documents without
+        requiring a query embedding. Returns document metadata for listing.
+        """
+
+        async def _list_wrapper():
+            get_params: Dict[str, Any] = {
+                "include": ["documents", "metadatas"],
+                "limit": limit,
+                "offset": offset,
+            }
+            if where:
+                get_params["where"] = where
+
+            results = self.collection.get(**get_params)
+
+            formatted: List[Dict] = []
+            if results["ids"]:
+                for i in range(len(results["ids"])):
+                    formatted.append(
+                        {
+                            "id": results["ids"][i],
+                            "content": (
+                                results["documents"][i]
+                                if results["documents"]
+                                else None
+                            ),
+                            "metadata": (
+                                results["metadatas"][i] if results["metadatas"] else {}
+                            ),
+                        }
+                    )
+
+            self.logger.debug(f"Listed {len(formatted)} documents from collection")
+            return formatted
+
+        return await self.call_external(
+            operation_name="list_documents",
+            call_func=_list_wrapper,
+            timeout=10.0,
+            retries=2,
+            retry_delay=1.0,
+        )
+
+    async def get_document(self, document_id: str) -> Optional[Dict]:
+        """Get a single document by ID with content and metadata."""
+
+        async def _get_wrapper():
+            results = self.collection.get(
+                ids=[document_id],
+                include=["documents", "metadatas"],
+            )
+            if not results["ids"]:
+                return None
+
+            return {
+                "id": results["ids"][0],
+                "content": results["documents"][0] if results["documents"] else None,
+                "metadata": results["metadatas"][0] if results["metadatas"] else {},
+            }
+
+        return await self.call_external(
+            operation_name="get_document",
+            call_func=_get_wrapper,
+            timeout=10.0,
+            retries=2,
+            retry_delay=1.0,
+        )
+
+    async def count(self) -> int:
+        """Return the number of documents in the collection."""
+
+        async def _count_wrapper():
+            return self.collection.count()
+
+        return await self.call_external(
+            operation_name="count",
+            call_func=_count_wrapper,
+            timeout=5.0,
+            retries=1,
             retry_delay=1.0,
         )
 
