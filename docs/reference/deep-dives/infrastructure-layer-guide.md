@@ -34,7 +34,7 @@ from faultmaven.infrastructure.base_client import BaseExternalClient
 
 class OpenAIClient(BaseExternalClient):
     """External LLM provider with comprehensive monitoring."""
-    
+
     def __init__(self, api_key: str):
         super().__init__(
             client_name="openai_client",
@@ -44,10 +44,10 @@ class OpenAIClient(BaseExternalClient):
             circuit_breaker_timeout=30
         )
         self.api_key = api_key
-    
+
     async def generate_completion(self, prompt: str) -> Dict[str, Any]:
         """Generate completion with full monitoring."""
-        
+
         async def llm_api_call(prompt: str) -> Dict[str, Any]:
             # Actual API call implementation
             response = await self._http_client.post(
@@ -56,7 +56,7 @@ class OpenAIClient(BaseExternalClient):
                 json={"model": "gpt-3.5-turbo", "prompt": prompt}
             )
             return response.json()
-        
+
         # Execute with comprehensive monitoring
         return await self.call_external(
             operation_name="generate_completion",
@@ -88,18 +88,18 @@ from faultmaven.models.interfaces import ISessionStore
 
 class RedisSessionStore(ISessionStore):
     """Lightweight Redis session store for high-frequency operations."""
-    
+
     def __init__(self):
         # Lightweight factory function - no BaseExternalClient overhead
         self.redis_client = create_redis_client()
         self.default_ttl = 1800
         self.prefix = "session:"
-    
+
     async def get(self, key: str) -> Optional[Dict]:
         """Direct Redis operation with minimal logging."""
         full_key = f"{self.prefix}{key}"
         data = await self.redis_client.get(full_key)
-        
+
         if data:
             try:
                 return json.loads(data)
@@ -108,17 +108,17 @@ class RedisSessionStore(ISessionStore):
                 logger.warning(f"Invalid JSON in session {key}")
                 return None
         return None
-    
+
     async def set(self, key: str, value: Dict, ttl: Optional[int] = None) -> None:
         """Direct Redis operation - no comprehensive logging."""
         full_key = f"{self.prefix}{key}"
-        
+
         if 'last_activity' not in value:
             value['last_activity'] = datetime.utcnow().isoformat()
-        
+
         serialized = json.dumps(value)
         ttl = ttl if ttl is not None else self.default_ttl
-        
+
         # Direct Redis call - minimal overhead
         await self.redis_client.set(full_key, serialized, ex=ttl)
 ```
@@ -139,12 +139,12 @@ Previously, `RedisSessionStore` used a verbose `RedisClient` that inherited from
    class RedisSessionStore(BaseExternalClient):
        async def get(self, key: str):
            return await self.call_external("get_session", self._redis_get, key)
-   
+
    # After (optimized)
    class RedisSessionStore(ISessionStore):
        def __init__(self):
            self.redis_client = create_redis_client()  # Lightweight factory
-   
+
        async def get(self, key: str):
            return await self.redis_client.get(f"{self.prefix}{key}")  # Direct call
    ```
@@ -198,7 +198,7 @@ class ExternalAPIClient(BaseExternalClient):
         )
         self.base_url = base_url
         self.api_key = api_key
-    
+
     async def call_api(self, endpoint: str, data: dict) -> dict:
         return await self.call_external(
             f"api_{endpoint}",
@@ -225,7 +225,7 @@ class InternalCacheStore:
     def __init__(self):
         self.redis = create_redis_client()
         self.prefix = "cache:"
-    
+
     async def get(self, key: str) -> Optional[str]:
         try:
             return await self.redis.get(f"{self.prefix}{key}")
@@ -261,13 +261,13 @@ class SessionStore(BaseExternalClient):
    ```python
    # Replace BaseExternalClient inheritance
    class MyStore(BaseExternalClient):  # Remove this
-   
+
    # With interface implementation
    class MyStore(IMyStoreInterface):   # Add this
-   
+
    # Replace call_external() calls
    return await self.call_external("op", func, args)  # Remove this
-   
+
    # With direct calls
    return await self.client.operation(args)           # Add this
    ```
@@ -276,7 +276,7 @@ class SessionStore(BaseExternalClient):
    ```python
    # Replace complex client creation
    self.client = MyClient("name", "service", circuit_breaker=True)
-   
+
    # With factory function
    self.client = create_my_client()
    ```
@@ -316,7 +316,7 @@ async def test_session_store_direct_operations(mock_create_client, redis_store):
     # Test should verify direct operations, not monitoring
     mock_client = AsyncMock()
     mock_create_client.return_value = mock_client
-    
+
     await redis_store.get("test-session")
     mock_client.get.assert_called_once_with("session:test-session")
 ```

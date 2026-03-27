@@ -21,12 +21,10 @@ Usage:
 import logging
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import List, Optional, Tuple
 
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    EvidenceStance,
     HypothesisStatus,
     InvestigationProgress,
 )
@@ -49,8 +47,8 @@ class ValidationIssue:
     code: str
     message: str
     severity: ValidationSeverity
-    field: Optional[str] = None
-    suggested_fix: Optional[str] = None
+    field: str | None = None
+    suggested_fix: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -69,7 +67,7 @@ class StateValidator:
     - Likelihood value bounds
     """
 
-    def validate_case(self, case: Case) -> List[ValidationIssue]:
+    def validate_case(self, case: Case) -> list[ValidationIssue]:
         """
         Run all validations on a case.
 
@@ -79,7 +77,7 @@ class StateValidator:
         Returns:
             List of validation issues found
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
         issues.extend(self._validate_milestone_ordering(case.progress))
         issues.extend(self._validate_status_consistency(case))
         issues.extend(self._validate_hypothesis_states(case))
@@ -89,7 +87,7 @@ class StateValidator:
 
     def _validate_milestone_ordering(
         self, progress: InvestigationProgress
-    ) -> List[ValidationIssue]:
+    ) -> list[ValidationIssue]:
         """
         Validate milestone dependencies are respected.
 
@@ -100,7 +98,7 @@ class StateValidator:
         - mitigation_verified requires mitigation_accepted
         - root_cause_identified should have root_cause_likelihood
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
 
         # solution_verified requires solution_proposed
         if progress.solution_verified and not progress.solution_proposed:
@@ -166,14 +164,14 @@ class StateValidator:
 
         return issues
 
-    def _validate_status_consistency(self, case: Case) -> List[ValidationIssue]:
+    def _validate_status_consistency(self, case: Case) -> list[ValidationIssue]:
         """
         Ensure status matches progress state.
 
         RESOLVED status requires solution_verified milestone.
         INVESTIGATING status should have problem statement.
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
 
         # RESOLVED requires solution_verified
         if case.status == CaseStatus.RESOLVED and not case.progress.solution_verified:
@@ -217,14 +215,14 @@ class StateValidator:
 
         return issues
 
-    def _validate_hypothesis_states(self, case: Case) -> List[ValidationIssue]:
+    def _validate_hypothesis_states(self, case: Case) -> list[ValidationIssue]:
         """
         Validate hypothesis lifecycle states.
 
         VALIDATED hypotheses should have sufficient supporting evidence.
         REFUTED hypotheses should have refuting evidence.
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
 
         for hyp_id, hypothesis in case.hypotheses.items():
             # VALIDATED requires sufficient evidence
@@ -272,13 +270,13 @@ class StateValidator:
 
         return issues
 
-    def _validate_evidence_links(self, case: Case) -> List[ValidationIssue]:
+    def _validate_evidence_links(self, case: Case) -> list[ValidationIssue]:
         """
         Validate evidence-hypothesis links are consistent.
 
         Evidence IDs referenced in hypotheses should exist.
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
         evidence_ids = {e.evidence_id for e in case.evidence}
 
         for hyp_id, hypothesis in case.hypotheses.items():
@@ -328,11 +326,11 @@ class StateValidator:
 
         return issues
 
-    def _validate_likelihood_bounds(self, case: Case) -> List[ValidationIssue]:
+    def _validate_likelihood_bounds(self, case: Case) -> list[ValidationIssue]:
         """
         Validate all likelihood/confidence values are in [0, 1].
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
 
         # Check hypothesis likelihoods
         for hyp_id, hypothesis in case.hypotheses.items():
@@ -376,7 +374,7 @@ class StateValidator:
 
         return issues
 
-    def is_valid(self, case: Case) -> Tuple[bool, List[ValidationIssue]]:
+    def is_valid(self, case: Case) -> tuple[bool, list[ValidationIssue]]:
         """
         Check if case state is valid (no ERROR or CRITICAL issues).
 

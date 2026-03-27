@@ -15,7 +15,7 @@ NOTE: SubmissionClassification was removed in Phase 1-2. Evidence form is now
 payload-driven: attachments → DOCUMENT, agent findings → SUBMITTED_DATA.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -74,7 +74,7 @@ def _make_evidence(**overrides) -> Evidence:
         "summary": "Test evidence",
         "primary_purpose": "Shows test data",
         "content_ref": "s3://evidence/test.log",
-        "collected_at": datetime.now(timezone.utc),
+        "collected_at": datetime.now(UTC),
         "collected_by": "user_123",
         "collected_at_turn": 1,
         "preprocessing_method": "crime_scene",

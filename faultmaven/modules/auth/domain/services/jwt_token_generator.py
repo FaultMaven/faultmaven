@@ -12,8 +12,7 @@ Design:
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from datetime import UTC, datetime, timedelta
 
 import jwt
 
@@ -54,7 +53,7 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def validate_access_token(self, token: str) -> Optional[Dict]:
+    async def validate_access_token(self, token: str) -> dict | None:
         """Validate access token and return payload.
 
         Args:
@@ -66,7 +65,7 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def validate_refresh_token(self, token: str) -> Optional[Dict]:
+    async def validate_refresh_token(self, token: str) -> dict | None:
         """Validate refresh token and check revocation status.
 
         Args:
@@ -145,7 +144,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT access token string
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(
             minutes=self.settings.jwt_access_token_expire_minutes
         )
@@ -197,7 +196,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT refresh token string
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
 
         # Generate unique JWT ID for revocation tracking
@@ -229,7 +228,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def validate_access_token(self, token: str) -> Optional[Dict]:
+    async def validate_access_token(self, token: str) -> dict | None:
         """Validate access token using public key.
 
         Verification:
@@ -301,7 +300,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.error(f"Token validation error: {e}")
             return None
 
-    async def validate_refresh_token(self, token: str) -> Optional[Dict]:
+    async def validate_refresh_token(self, token: str) -> dict | None:
         """Validate refresh token using public key.
 
         Verification:
@@ -402,8 +401,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             exp = payload.get("exp")
             user_id = payload.get("sub")
             if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+                expires_at = datetime.fromtimestamp(exp, tz=UTC)
+                ttl = int((expires_at - datetime.now(UTC)).total_seconds())
                 if ttl > 0:
                     await self.revocation_store.add_revoked_token(jti, ttl)
                     logger.info(
@@ -456,8 +455,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             exp = payload.get("exp")
             user_id = payload.get("sub")
             if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+                expires_at = datetime.fromtimestamp(exp, tz=UTC)
+                ttl = int((expires_at - datetime.now(UTC)).total_seconds())
                 if ttl > 0:
                     await self.revocation_store.add_revoked_token(jti, ttl)
                     logger.info(
@@ -546,7 +545,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT access token string
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(
             minutes=self.settings.jwt_access_token_expire_minutes
         )
@@ -631,7 +630,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT refresh token string
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
 
         # Generate unique JWT ID for revocation tracking
@@ -665,7 +664,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def validate_access_token(self, token: str) -> Optional[Dict]:
+    async def validate_access_token(self, token: str) -> dict | None:
         """Validate access token using secret key.
 
         Verification:
@@ -739,7 +738,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
-    async def validate_refresh_token(self, token: str) -> Optional[Dict]:
+    async def validate_refresh_token(self, token: str) -> dict | None:
         """Validate refresh token and check revocation status.
 
         Args:
@@ -830,8 +829,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             exp = payload.get("exp")
             user_id = payload.get("sub")
             if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+                expires_at = datetime.fromtimestamp(exp, tz=UTC)
+                ttl = int((expires_at - datetime.now(UTC)).total_seconds())
                 if ttl > 0:
                     await self.revocation_store.add_revoked_token(jti, ttl)
                     logger.info(
@@ -884,8 +883,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             exp = payload.get("exp")
             user_id = payload.get("sub")
             if exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                ttl = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+                expires_at = datetime.fromtimestamp(exp, tz=UTC)
+                ttl = int((expires_at - datetime.now(UTC)).total_seconds())
                 if ttl > 0:
                     await self.revocation_store.add_revoked_token(jti, ttl)
                     logger.info(

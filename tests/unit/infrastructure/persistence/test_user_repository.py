@@ -9,7 +9,7 @@ Tests for:
 Coverage target: 90%+
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,7 +32,7 @@ def user_repo():
 @pytest.fixture
 def sample_user():
     """Create a sample user for testing."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return User(
         user_id="user-001",
         username="testuser",
@@ -47,9 +47,9 @@ def sample_user():
 
 
 @pytest.fixture
-def sample_users() -> List[User]:
+def sample_users() -> list[User]:
     """Create a list of sample users for pagination tests."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     users = []
     for i in range(10):
         users.append(
@@ -178,8 +178,8 @@ class TestInMemoryUserRepositoryCreate:
             hashed_password="$2b$12$hash",
             is_active=True,
             is_email_verified=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         with pytest.raises(ConflictError) as excinfo:
@@ -199,8 +199,8 @@ class TestInMemoryUserRepositoryCreate:
             hashed_password="$2b$12$hash",
             is_active=True,
             is_email_verified=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         with pytest.raises(ConflictError) as excinfo:
@@ -247,8 +247,8 @@ class TestInMemoryUserRepositoryUpdate:
             hashed_password="$2b$12$hash",
             is_active=True,
             is_email_verified=False,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         await user_repo.save(other_user)
 
@@ -372,7 +372,7 @@ class TestUserModel:
 
     def test_user_model_validation(self):
         """User model should validate fields."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         user = User(
             user_id="user-001",
             username="testuser",
@@ -388,7 +388,7 @@ class TestUserModel:
 
     def test_user_email_validation(self):
         """User model should validate email format."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with pytest.raises(Exception):  # Pydantic validation error
             User(
                 user_id="user-001",
@@ -401,7 +401,7 @@ class TestUserModel:
 
     def test_user_optional_fields(self):
         """User model should allow optional fields to be None."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         user = User(
             user_id="user-001",
             username="testuser",
@@ -419,7 +419,7 @@ class TestUserModel:
 
     def test_user_default_values(self):
         """User model should have correct defaults."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         user = User(
             user_id="user-001",
             username="testuser",
@@ -451,7 +451,7 @@ class TestEmailUniquenessEnforcement:
     @pytest.mark.asyncio
     async def test_create_enforces_email_uniqueness(self, user_repo):
         """Create should prevent duplicate emails (case-insensitive)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create first user
         user1 = User(
@@ -482,7 +482,7 @@ class TestEmailUniquenessEnforcement:
     @pytest.mark.asyncio
     async def test_create_enforces_email_uniqueness_exact_match(self, user_repo):
         """Create should prevent duplicate emails (exact match)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create first user
         user1 = User(
@@ -513,7 +513,7 @@ class TestEmailUniquenessEnforcement:
     @pytest.mark.asyncio
     async def test_update_enforces_email_uniqueness(self, user_repo):
         """Update should prevent changing email to existing email."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create two users
         user1 = User(
@@ -547,7 +547,7 @@ class TestEmailUniquenessEnforcement:
     @pytest.mark.asyncio
     async def test_update_allows_same_user_email_change_case(self, user_repo):
         """Update should allow changing own email case."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create user
         user = User(
@@ -579,7 +579,7 @@ class TestEmailUniquenessEnforcement:
         object references instead of deep copies, allowing external modifications
         to affect stored data.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create and save user
         user = User(
@@ -612,7 +612,7 @@ class TestEmailUniquenessEnforcement:
         This verifies that external modifications to user objects don't corrupt
         the email index, which could lead to duplicate email bypass.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create and save first user
         user1 = User(
@@ -653,7 +653,7 @@ class TestEmailUniquenessEnforcement:
         This test ensures that the immutable copy fix doesn't break the
         update() method's ability to detect email/username changes.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create user
         user = User(

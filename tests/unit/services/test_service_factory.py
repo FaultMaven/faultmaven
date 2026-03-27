@@ -10,7 +10,7 @@ Tests the service factory functionality including:
 - Evidence artifact service creation (TASK-013)
 """
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

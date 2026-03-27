@@ -4,7 +4,7 @@ Tests the AgentExecution and AgentToolCall dataclasses and related enums.
 """
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -90,9 +90,9 @@ class TestAgentToolCallCreation:
 
     def test_create_full_tool_call(self):
         """Test creating tool call with all fields."""
-        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=timezone.utc)
-        started = datetime(2025, 12, 29, 10, 0, 1, tzinfo=timezone.utc)
-        completed = datetime(2025, 12, 29, 10, 0, 3, tzinfo=timezone.utc)
+        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=UTC)
+        started = datetime(2025, 12, 29, 10, 0, 1, tzinfo=UTC)
+        completed = datetime(2025, 12, 29, 10, 0, 3, tzinfo=UTC)
 
         tool_call = AgentToolCall(
             tool_call_id="tc_full123",
@@ -115,7 +115,7 @@ class TestAgentToolCallCreation:
 
     def test_default_timestamps(self):
         """Test that timestamps are auto-generated if not provided."""
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
 
         tool_call = AgentToolCall(
             tool_call_id="tc_timestamps",
@@ -123,7 +123,7 @@ class TestAgentToolCallCreation:
             tool_name="test_tool",
         )
 
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert before <= tool_call.created_at <= after
         assert before <= tool_call.updated_at <= after
@@ -205,9 +205,9 @@ class TestAgentToolCallMethods:
 
     def test_mark_started(self, sample_tool_call):
         """Test mark_started method."""
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         sample_tool_call.mark_started()
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert sample_tool_call.status == "running"
         assert before <= sample_tool_call.started_at <= after
@@ -295,9 +295,9 @@ class TestAgentExecutionCreation:
 
     def test_create_full_execution(self):
         """Test creating execution with all fields."""
-        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=timezone.utc)
-        started = datetime(2025, 12, 29, 10, 0, 1, tzinfo=timezone.utc)
-        completed = datetime(2025, 12, 29, 10, 1, 0, tzinfo=timezone.utc)
+        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=UTC)
+        started = datetime(2025, 12, 29, 10, 0, 1, tzinfo=UTC)
+        completed = datetime(2025, 12, 29, 10, 1, 0, tzinfo=UTC)
 
         execution = AgentExecution(
             execution_id="exec_full123",
@@ -332,7 +332,7 @@ class TestAgentExecutionCreation:
 
     def test_default_timestamps(self):
         """Test that timestamps are auto-generated if not provided."""
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
 
         execution = AgentExecution(
             execution_id="exec_timestamps",
@@ -341,7 +341,7 @@ class TestAgentExecutionCreation:
             agent_model="gpt-4",
         )
 
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert before <= execution.created_at <= after
         assert before <= execution.updated_at <= after
@@ -457,9 +457,9 @@ class TestAgentExecutionMethods:
 
     def test_mark_started(self, sample_execution):
         """Test mark_started method."""
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         sample_execution.mark_started()
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert sample_execution.status == ExecutionStatus.RUNNING
         assert before <= sample_execution.started_at <= after

@@ -16,7 +16,7 @@ is created in Step 1 before the engine runs.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -369,7 +369,7 @@ class TestEvidenceCategoryImmutability:
             summary="Error logs",
             primary_purpose="Shows errors",
             content_ref="s3://logs",
-            collected_at=datetime.now(timezone.utc),
+            collected_at=datetime.now(UTC),
             collected_by="user_ghi111222333",
             collected_at_turn=1,
             preprocessing_method="none",

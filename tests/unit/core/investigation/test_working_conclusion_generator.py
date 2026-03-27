@@ -3,7 +3,7 @@
 Tests progress metrics and working conclusion generation.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -98,7 +98,7 @@ def create_turn(
     """Helper to create a turn progress record."""
     return TurnProgress(
         turn_number=turn_number,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         milestones_completed=milestones_completed or [],
         evidence_added=evidence_added or [],
         hypotheses_generated=[],

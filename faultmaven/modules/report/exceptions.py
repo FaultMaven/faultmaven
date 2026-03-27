@@ -3,9 +3,7 @@
 This module defines exceptions specific to the report generation module.
 """
 
-from typing import Any, Dict, Optional
-
-from faultmaven.exceptions import FaultMavenException, ServiceError
+from faultmaven.exceptions import FaultMavenException
 
 
 class ReportException(FaultMavenException):
@@ -20,8 +18,8 @@ class ReportNotFoundError(ReportException):
     def __init__(
         self,
         message: str = "Report not found",
-        report_id: Optional[str] = None,
-        case_id: Optional[str] = None,
+        report_id: str | None = None,
+        case_id: str | None = None,
     ):
         self.report_id = report_id
         self.case_id = case_id
@@ -38,9 +36,9 @@ class ReportGenerationError(ReportException):
     def __init__(
         self,
         message: str,
-        case_id: Optional[str] = None,
-        report_type: Optional[str] = None,
-        error_code: Optional[str] = None,
+        case_id: str | None = None,
+        report_type: str | None = None,
+        error_code: str | None = None,
     ):
         self.case_id = case_id
         self.report_type = report_type
@@ -65,8 +63,8 @@ class ReportTemplateError(ReportException):
     def __init__(
         self,
         message: str,
-        template_name: Optional[str] = None,
-        error_code: Optional[str] = None,
+        template_name: str | None = None,
+        error_code: str | None = None,
     ):
         self.template_name = template_name
         self.error_code = error_code
@@ -85,9 +83,9 @@ class ReportExportError(ReportException):
     def __init__(
         self,
         message: str,
-        report_id: Optional[str] = None,
-        export_format: Optional[str] = None,
-        error_code: Optional[str] = None,
+        report_id: str | None = None,
+        export_format: str | None = None,
+        error_code: str | None = None,
     ):
         self.report_id = report_id
         self.export_format = export_format
@@ -108,8 +106,8 @@ class ReportAccessError(ReportException):
     def __init__(
         self,
         message: str = "Access denied",
-        report_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        report_id: str | None = None,
+        organization_id: str | None = None,
     ):
         self.report_id = report_id
         self.organization_id = organization_id
@@ -129,8 +127,8 @@ class ReportValidationError(ReportException):
     def __init__(
         self,
         message: str,
-        field: Optional[str] = None,
-        constraint: Optional[str] = None,
+        field: str | None = None,
+        constraint: str | None = None,
     ):
         self.field = field
         self.constraint = constraint

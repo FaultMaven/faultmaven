@@ -7,8 +7,8 @@ progressive penalties, and graceful degradation.
 
 import logging
 import time
-from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -35,9 +35,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     - Security headers in responses
     """
 
-    def __init__(
-        self, app, settings: ProtectionSettings, redis_url: Optional[str] = None
-    ):
+    def __init__(self, app, settings: ProtectionSettings, redis_url: str | None = None):
         super().__init__(app)
         self.settings = settings
         self.logger = logging.getLogger(__name__)
@@ -239,7 +237,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
     async def _check_endpoint_rate_limits(
-        self, endpoint: str, session_id: Optional[str], request: Request
+        self, endpoint: str, session_id: str | None, request: Request
     ) -> None:
         """Check endpoint-specific rate limits"""
 
@@ -252,7 +250,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if config.get("special_handling"):
             await config["special_handling"](request, session_id)
 
-    def _extract_session_id(self, request: Request) -> Optional[str]:
+    def _extract_session_id(self, request: Request) -> str | None:
         """Extract session ID from request"""
 
         # Try multiple methods to get session ID
@@ -365,7 +363,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             current_avg * (total_requests - 1) + check_duration
         ) / total_requests
 
-    async def get_metrics(self) -> Dict[str, Any]:
+    async def get_metrics(self) -> dict[str, Any]:
         """Get middleware metrics"""
 
         # Get rate limiter health

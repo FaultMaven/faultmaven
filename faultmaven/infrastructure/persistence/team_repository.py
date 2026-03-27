@@ -4,8 +4,7 @@ Implements ITeamRepository for team and member management.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -52,7 +51,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         logger.info(f"Created team: {team.team_id} ({team.name})")
         return team
 
-    async def get_team(self, team_id: str) -> Optional[Team]:
+    async def get_team(self, team_id: str) -> Team | None:
         """Get team by ID."""
         stmt = select(TeamModel).where(
             TeamModel.team_id == team_id,
@@ -64,7 +63,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
 
     async def update_team(self, team: Team) -> bool:
         """Update team."""
-        team.updated_at = datetime.now(timezone.utc)
+        team.updated_at = datetime.now(UTC)
 
         stmt = (
             update(TeamModel)
@@ -90,13 +89,13 @@ class PostgreSQLTeamRepository(ITeamRepository):
                 TeamModel.team_id == team_id,
                 TeamModel.deleted_at.is_(None),
             )
-            .values(deleted_at=datetime.now(timezone.utc))
+            .values(deleted_at=datetime.now(UTC))
         )
         result = await self.db.execute(stmt)
         await self.db.commit()
         return result.rowcount > 0
 
-    async def list_organization_teams(self, organization_id: str) -> List[Team]:
+    async def list_organization_teams(self, organization_id: str) -> list[Team]:
         """List all teams in an organization."""
         stmt = (
             select(TeamModel)
@@ -110,7 +109,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         models = result.scalars().all()
         return [_model_to_domain(m) for m in models]
 
-    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
+    async def list_user_teams(self, user_id: str, organization_id: str) -> list[Team]:
         """List all teams a user belongs to in an organization."""
         stmt = (
             select(TeamModel)
@@ -127,10 +126,10 @@ class PostgreSQLTeamRepository(ITeamRepository):
         return [_model_to_domain(m) for m in models]
 
     async def add_member(
-        self, team_id: str, user_id: str, team_role: Optional[str] = None
+        self, team_id: str, user_id: str, team_role: str | None = None
     ) -> bool:
         """Add user to team (upsert)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stmt = sqlite_insert(TeamMemberModel).values(
             user_id=user_id,
             team_id=team_id,
@@ -157,7 +156,7 @@ class PostgreSQLTeamRepository(ITeamRepository):
         await self.db.commit()
         return result.rowcount > 0
 
-    async def list_team_members(self, team_id: str) -> List[TeamMember]:
+    async def list_team_members(self, team_id: str) -> list[TeamMember]:
         """List all members of a team."""
         stmt = (
             select(TeamMemberModel)

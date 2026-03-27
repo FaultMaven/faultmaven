@@ -30,9 +30,7 @@ Anchoring Prevention:
 """
 
 import logging
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from uuid import uuid4
+from typing import Any
 
 from faultmaven.modules.case.contracts import (
     EvidenceStance,
@@ -89,7 +87,7 @@ class HypothesisManager:
         current_turn: int,
         generation_mode: HypothesisGenerationMode = HypothesisGenerationMode.SYSTEMATIC,
         status: HypothesisStatus = HypothesisStatus.ACTIVE,
-        rationale: Optional[str] = None,
+        rationale: str | None = None,
     ) -> Hypothesis:
         """Create new hypothesis"""
         hypothesis = Hypothesis(
@@ -118,7 +116,7 @@ class HypothesisManager:
         statement: str,
         category: str,
         likelihood: float,
-        supporting_evidence_ids: List[str],
+        supporting_evidence_ids: list[str],
         current_turn: int,
     ) -> Hypothesis:
         """Create hypothesis already in VALIDATED state (Single-Shot Validation)."""
@@ -157,7 +155,7 @@ class HypothesisManager:
         turn: int,
         reasoning: str = "Linked by agent",
         stance_confidence: float = 1.0,
-        stance_override: Optional[EvidenceStance] = None,
+        stance_override: EvidenceStance | None = None,
     ) -> None:
         """Link evidence to hypothesis.
 
@@ -412,7 +410,7 @@ class HypothesisManager:
         self,
         hypothesis: Hypothesis,
         current_turn: int,
-        refuting_evidence_ids: List[str],
+        refuting_evidence_ids: list[str],
         reason: str,
     ) -> Hypothesis:
         """Mark hypothesis as refuted by evidence
@@ -450,9 +448,9 @@ class HypothesisManager:
 
     def detect_anchoring(
         self,
-        hypotheses: List[Hypothesis],
+        hypotheses: list[Hypothesis],
         current_iteration: int,
-    ) -> Tuple[bool, Optional[str], List[str]]:
+    ) -> tuple[bool, str | None, list[str]]:
         """Detect anchoring bias in hypothesis generation/testing
 
         Anchoring conditions:
@@ -477,7 +475,7 @@ class HypothesisManager:
             return False, None, []
 
         # Condition 1: Too many in same category
-        category_counts: Dict[str, List[str]] = {}
+        category_counts: dict[str, list[str]] = {}
         for h in active_hypotheses:
             if h.category not in category_counts:
                 category_counts[h.category] = []
@@ -524,9 +522,9 @@ class HypothesisManager:
 
     def force_alternative_generation(
         self,
-        existing_hypotheses: List[Hypothesis],
+        existing_hypotheses: list[Hypothesis],
         current_turn: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Force generation of alternative hypotheses to break anchoring
 
         Strategy:
@@ -542,7 +540,7 @@ class HypothesisManager:
             Generation constraints and actions taken
         """
         # Identify over-represented categories
-        category_counts: Dict[str, int] = {}
+        category_counts: dict[str, int] = {}
         for h in existing_hypotheses:
             if h.status not in [HypothesisStatus.RETIRED, HypothesisStatus.REFUTED]:
                 category_counts[h.category] = category_counts.get(h.category, 0) + 1
@@ -582,9 +580,9 @@ class HypothesisManager:
 
     def get_testable_hypotheses(
         self,
-        hypotheses: List[Hypothesis],
+        hypotheses: list[Hypothesis],
         max_count: int = 3,
-    ) -> List[Hypothesis]:
+    ) -> list[Hypothesis]:
         """Get list of hypotheses ready for testing, sorted by priority
 
         Priority:
@@ -613,8 +611,8 @@ class HypothesisManager:
 
     def get_validated_hypothesis(
         self,
-        hypotheses: List[Hypothesis],
-    ) -> Optional[Hypothesis]:
+        hypotheses: list[Hypothesis],
+    ) -> Hypothesis | None:
         """Get the validated root cause hypothesis if any
 
         Args:
@@ -637,8 +635,8 @@ class HypothesisManager:
 
     def get_hypothesis_summary(
         self,
-        hypotheses: List[Hypothesis],
-    ) -> Dict[str, Any]:
+        hypotheses: list[Hypothesis],
+    ) -> dict[str, Any]:
         """Get summary statistics of hypothesis state
 
         Args:
@@ -703,8 +701,8 @@ class HypothesisManager:
 
     def get_best_hypothesis(
         self,
-        hypotheses: List[Hypothesis],
-    ) -> Optional[Hypothesis]:
+        hypotheses: list[Hypothesis],
+    ) -> Hypothesis | None:
         """Get the hypothesis with highest confidence
 
         Args:
@@ -724,9 +722,9 @@ class HypothesisManager:
 
     def get_hypotheses_by_category(
         self,
-        hypotheses: List[Hypothesis],
+        hypotheses: list[Hypothesis],
         category: str,
-    ) -> List[Hypothesis]:
+    ) -> list[Hypothesis]:
         """Get all hypotheses for a specific category
 
         Args:
@@ -740,7 +738,7 @@ class HypothesisManager:
 
     def has_validated_hypothesis(
         self,
-        hypotheses: List[Hypothesis],
+        hypotheses: list[Hypothesis],
     ) -> bool:
         """Check if investigation has at least one validated hypothesis
 
@@ -762,7 +760,7 @@ def create_hypothesis_manager() -> HypothesisManager:
     return HypothesisManager()
 
 
-def rank_hypotheses_by_likelihood(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
+def rank_hypotheses_by_likelihood(hypotheses: list[Hypothesis]) -> list[Hypothesis]:
     """Sort hypotheses by likelihood (descending)
 
     Args:

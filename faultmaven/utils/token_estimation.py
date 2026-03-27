@@ -17,7 +17,6 @@ Usage:
 
 import logging
 from functools import lru_cache
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +170,7 @@ def estimate_tokens_fallback(text: str) -> int:
 
 
 def estimate_tokens(
-    text: str, provider: str = "openai", model: Optional[str] = None
+    text: str, provider: str = "openai", model: str | None = None
 ) -> int:
     """Estimate token count for given text and provider
 
@@ -216,7 +215,7 @@ def estimate_prompt_tokens(
     user_message: str,
     conversation_history: str = "",
     provider: str = "openai",
-    model: Optional[str] = None,
+    model: str | None = None,
 ) -> dict:
     """Estimate total tokens for a complete prompt assembly
 

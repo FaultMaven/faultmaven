@@ -15,8 +15,8 @@ Usage:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 
 @dataclass
@@ -41,10 +41,10 @@ class Session:
     organization_id: str = (
         "00000000-0000-0000-0000-000000000001"  # Default org for single-tenant mode
     )
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_accessed: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    expires_at: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_accessed: datetime = field(default_factory=lambda: datetime.now(UTC))
+    expires_at: datetime | None = None
+    metadata: dict[str, Any] | None = None
 
     def is_expired(self) -> bool:
         """Check if session has expired.
@@ -55,7 +55,7 @@ class Session:
         """
         if self.expires_at is None:
             return False
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     def is_active(self) -> bool:
         """Check if session is active.
@@ -67,7 +67,7 @@ class Session:
 
     def touch(self) -> None:
         """Update last_accessed to current time."""
-        self.last_accessed = datetime.now(timezone.utc)
+        self.last_accessed = datetime.now(UTC)
 
     def __repr__(self) -> str:
         return (

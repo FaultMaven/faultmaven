@@ -15,8 +15,7 @@ Key Features:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 
 from faultmaven.modules.case.contracts import (
     Case,
@@ -53,10 +52,10 @@ class ProgressMetrics:
     highest_hypothesis_likelihood: float
     """Highest likelihood among active hypotheses"""
 
-    blocked_reasons: List[str]
+    blocked_reasons: list[str]
     """Reasons why investigation is blocked or slow"""
 
-    next_steps: List[str]
+    next_steps: list[str]
     """Suggested next actions for the investigation"""
 
 
@@ -115,7 +114,7 @@ def generate_working_conclusion(
         f"with {evidence_completeness * 100:.0f}% evidence completeness.",
         supporting_evidence_ids=list(best_hypothesis.supporting_evidence),
         caveats=caveats,
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
     )
 
 
@@ -163,7 +162,7 @@ def calculate_progress_metrics(
     next_steps = _generate_next_steps(case, momentum, evidence_completeness)
 
     # Generate blocked reasons if momentum low
-    blocked_reasons: List[str] = []
+    blocked_reasons: list[str] = []
     if momentum in [InvestigationMomentum.LOW, InvestigationMomentum.BLOCKED]:
         blocked_reasons = _generate_blocked_reasons(
             case, evidence_completeness, active_count
@@ -218,7 +217,7 @@ def _calculate_hypothesis_evidence_completeness(
 
 
 def _calculate_overall_evidence_completeness(
-    active_hypotheses: List[Hypothesis],
+    active_hypotheses: list[Hypothesis],
     case: Case,
 ) -> float:
     """Calculate average evidence completeness across all active hypotheses."""
@@ -276,7 +275,7 @@ def _generate_caveats(
     hypothesis: Hypothesis,
     evidence_completeness: float,
     case: Case,
-) -> List[str]:
+) -> list[str]:
     """Generate caveats based on evidence state and confidence."""
     caveats = []
 
@@ -309,7 +308,7 @@ def _generate_next_steps(
     case: Case,
     momentum: InvestigationMomentum,
     evidence_completeness: float,
-) -> List[str]:
+) -> list[str]:
     """Generate next steps based on investigation state."""
     steps = []
 
@@ -356,7 +355,7 @@ def _generate_blocked_reasons(
     case: Case,
     evidence_completeness: float,
     active_hypotheses_count: int,
-) -> List[str]:
+) -> list[str]:
     """Generate reasons why investigation is blocked or progressing slowly."""
     reasons = []
 
@@ -402,5 +401,5 @@ def _create_early_stage_conclusion(
         reasoning="Investigation in early stage - hypotheses not yet generated",
         supporting_evidence_ids=[],
         caveats=["No hypotheses generated yet"],
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
     )

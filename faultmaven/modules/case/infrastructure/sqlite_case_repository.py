@@ -26,7 +26,7 @@ import builtins
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -262,7 +262,7 @@ class SQLiteCaseRepository(CaseRepository):
         columns = list(result.keys())
         files = []
         for row in rows:
-            row_dict = dict(zip(columns, row))
+            row_dict = dict(zip(columns, row, strict=False))
             files.append(
                 {
                     "file_id": row_dict.get("file_id"),
@@ -301,7 +301,7 @@ class SQLiteCaseRepository(CaseRepository):
         columns = list(result.keys())
         messages = []
         for row in rows:
-            row_dict = dict(zip(columns, row))
+            row_dict = dict(zip(columns, row, strict=False))
 
             msg_timestamp = row_dict.get("created_at")
             if msg_timestamp:
@@ -658,7 +658,7 @@ class SQLiteCaseRepository(CaseRepository):
                 f"Failed to add report to case {report.case_id}: {e}"
             ) from e
 
-    async def get_report(self, report_id: str) -> Optional[CaseReport]:
+    async def get_report(self, report_id: str) -> CaseReport | None:
         """Get report by ID (SQLite-compatible)."""
         try:
             query = text(
@@ -685,10 +685,10 @@ class SQLiteCaseRepository(CaseRepository):
     async def get_reports(
         self,
         case_id: str,
-        report_type: Optional[ReportType] = None,
+        report_type: ReportType | None = None,
         include_history: bool = False,
         only_current: bool = False,
-    ) -> List[CaseReport]:
+    ) -> builtins.list[CaseReport]:
         """Get reports for case (SQLite-compatible)."""
         try:
             where_clauses = ["case_id = :case_id"]
@@ -793,7 +793,7 @@ class SQLiteCaseRepository(CaseRepository):
 
     def _row_to_case_report(self, row: Any) -> CaseReport:
         """Convert DB row to CaseReport domain model."""
-        row_dict = dict(zip(row._fields, row))
+        row_dict = dict(zip(row._fields, row, strict=False))
 
         # Parse JSON fields
         runbook_data = row_dict.get("runbook")
@@ -878,7 +878,7 @@ class SQLiteCaseRepository(CaseRepository):
                 f"Failed to create checkpoint for case {checkpoint.case_id}: {e}"
             ) from e
 
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
+    async def get_checkpoint(self, checkpoint_id: str) -> CaseCheckpoint | None:
         """Get a checkpoint by ID (SQLite-compatible)."""
         try:
             query = text(
@@ -903,7 +903,7 @@ class SQLiteCaseRepository(CaseRepository):
                 f"Failed to get checkpoint {checkpoint_id}: {e}"
             ) from e
 
-    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
+    async def get_checkpoints(self, case_id: str) -> builtins.list[CaseCheckpoint]:
         """Get all checkpoints for a case (SQLite-compatible)."""
         try:
             query = text(
@@ -946,11 +946,11 @@ class SQLiteCaseRepository(CaseRepository):
                     "created_at",
                     "metadata",
                 ]
-                row_dict = dict(zip(keys, row))
+                row_dict = dict(zip(keys, row, strict=False))
             except Exception:
                 # If row has keys/keys()
                 if hasattr(row, "keys"):
-                    row_dict = dict(zip(row.keys(), row))
+                    row_dict = dict(zip(row.keys(), row, strict=False))
                 else:
                     raise Exception("Cannot map row to dictionary")
 

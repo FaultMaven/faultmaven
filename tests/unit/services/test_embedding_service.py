@@ -58,12 +58,12 @@ def embedding_service(mock_openai_client):
 
 def create_mock_embedding(
     dimensions: int = EMBEDDING_DIMENSIONS, value: float = 0.1
-) -> List[float]:
+) -> list[float]:
     """Create mock embedding vector."""
     return [value] * dimensions
 
 
-def create_mock_response(embedding: List[float], total_tokens: int = 100):
+def create_mock_response(embedding: list[float], total_tokens: int = 100):
     """Create mock OpenAI embedding response."""
     response = MagicMock()
     response.data = [MagicMock(embedding=embedding, index=0)]
@@ -71,7 +71,7 @@ def create_mock_response(embedding: List[float], total_tokens: int = 100):
     return response
 
 
-def create_mock_batch_response(embeddings: List[List[float]], total_tokens: int = 100):
+def create_mock_batch_response(embeddings: list[list[float]], total_tokens: int = 100):
     """Create mock OpenAI batch embedding response."""
     response = MagicMock()
     response.data = [

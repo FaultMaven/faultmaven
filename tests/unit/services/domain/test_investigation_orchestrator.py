@@ -16,7 +16,7 @@ Test Coverage:
 Testing Pattern: AsyncMock for repositories, verify business logic without database.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -64,8 +64,8 @@ def sample_hypothesis():
         "supporting_evidence_ids": [],
         "validation_result": None,
         "validation_timestamp": None,
-        "proposed_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
+        "proposed_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
         "created_by": "user_test789",
         "updated_by": None,
         "metadata": {},
@@ -86,8 +86,8 @@ def sample_solution():
         "applied_at": None,
         "verified_at": None,
         "hypothesis_id": None,
-        "proposed_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
+        "proposed_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
         "created_by": "user_test789",
         "updated_by": None,
         "metadata": {},
@@ -424,11 +424,11 @@ async def test_get_investigation_progress(
     # Create solutions (2 implemented, 1 proposed)
     sol1 = sample_solution.copy()
     sol1["solution_id"] = "sol_001"
-    sol1["applied_at"] = datetime.now(timezone.utc)
+    sol1["applied_at"] = datetime.now(UTC)
 
     sol2 = sample_solution.copy()
     sol2["solution_id"] = "sol_002"
-    sol2["applied_at"] = datetime.now(timezone.utc)
+    sol2["applied_at"] = datetime.now(UTC)
 
     sol3 = sample_solution.copy()
     sol3["solution_id"] = "sol_003"

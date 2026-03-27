@@ -21,8 +21,7 @@ Reference:
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
@@ -32,7 +31,6 @@ from faultmaven.infrastructure.persistence.models import (
     AgentExecutionModel,
     AgentToolCallModel,
     AgentToolCallV2Model,
-    Base,
     CaseActionModel,
     CaseCheckpointModel,
     CaseMessageModel,
@@ -67,17 +65,17 @@ class SchemaValidationResult:
     def __init__(
         self,
         is_valid: bool,
-        errors: List[str],
-        warnings: List[str],
+        errors: list[str],
+        warnings: list[str],
         tables_checked: int,
     ):
         self.is_valid = is_valid
         self.errors = errors
         self.warnings = warnings
-        self.checked_at = datetime.now(timezone.utc)
+        self.checked_at = datetime.now(UTC)
         self.tables_checked = tables_checked
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """Convert to dictionary for health check response."""
         return {
             "is_valid": self.is_valid,
@@ -158,8 +156,8 @@ class SchemaValidator:
         self.cache_ttl_seconds = cache_ttl_seconds
         self.critical_only = critical_only
 
-        self._cached_result: Optional[SchemaValidationResult] = None
-        self._cache_expires_at: Optional[datetime] = None
+        self._cached_result: SchemaValidationResult | None = None
+        self._cache_expires_at: datetime | None = None
 
     def validate(self, force: bool = False) -> SchemaValidationResult:
         """Validate database schema matches SQLAlchemy models.
@@ -241,7 +239,7 @@ class SchemaValidator:
 
         # Cache result
         self._cached_result = result
-        self._cache_expires_at = datetime.now(timezone.utc) + timedelta(
+        self._cache_expires_at = datetime.now(UTC) + timedelta(
             seconds=self.cache_ttl_seconds
         )
 
@@ -265,9 +263,9 @@ class SchemaValidator:
         """Check if cached result is still valid."""
         if self._cached_result is None or self._cache_expires_at is None:
             return False
-        return datetime.now(timezone.utc) < self._cache_expires_at
+        return datetime.now(UTC) < self._cache_expires_at
 
-    def validate_critical_columns(self) -> Tuple[bool, List[str]]:
+    def validate_critical_columns(self) -> tuple[bool, list[str]]:
         """Fast validation of only critical columns from P0 incident.
 
         Returns:

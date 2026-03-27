@@ -1,16 +1,13 @@
 # File: faultmaven/infrastructure/protection/reputation_engine.py
 
-import asyncio
 import json
 import logging
 import math
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from faultmaven.models.behavioral import (
-    BehaviorProfile,
-    ClientProfile,
     ReputationEvent,
     ReputationLevel,
     ReputationScore,
@@ -25,7 +22,7 @@ class AccessLevel:
     """Access level configuration based on reputation"""
 
     def __init__(
-        self, level: str, rate_multiplier: float, priority: int, restrictions: List[str]
+        self, level: str, rate_multiplier: float, priority: int, restrictions: list[str]
     ):
         self.level = level
         self.rate_multiplier = (
@@ -43,8 +40,8 @@ class RecoveryPlan:
         current_score: int,
         target_score: int,
         estimated_time: timedelta,
-        required_actions: List[str],
-        milestones: List[Dict[str, Any]],
+        required_actions: list[str],
+        milestones: list[dict[str, Any]],
     ):
         self.current_score = current_score
         self.target_score = target_score
@@ -65,7 +62,7 @@ class ReputationEngine:
     - Access level determination
     """
 
-    def __init__(self, session_store: Optional[ISessionStore] = None):
+    def __init__(self, session_store: ISessionStore | None = None):
         self.logger = logging.getLogger(__name__)
         self.session_store = session_store
 
@@ -98,9 +95,9 @@ class ReputationEngine:
         }
 
         # In-memory cache for frequently accessed reputations
-        self._reputation_cache: Dict[str, ReputationScore] = {}
+        self._reputation_cache: dict[str, ReputationScore] = {}
         self._cache_ttl = timedelta(minutes=15)
-        self._cache_timestamps: Dict[str, datetime] = {}
+        self._cache_timestamps: dict[str, datetime] = {}
 
         # Score calculation weights
         self.score_weights = {
@@ -192,7 +189,7 @@ class ReputationEngine:
             reputation.overall_score = max(0, min(100, reputation.overall_score))
 
             # Update metadata
-            reputation.last_updated = datetime.now(timezone.utc)
+            reputation.last_updated = datetime.now(UTC)
 
             # Log significant changes
             score_change = reputation.overall_score - old_score
@@ -322,7 +319,7 @@ class ReputationEngine:
                 0, 50, timedelta(days=30), ["Maintain good behavior"], []
             )
 
-    async def get_reputation_statistics(self) -> Dict[str, Any]:
+    async def get_reputation_statistics(self) -> dict[str, Any]:
         """Get overall reputation system statistics"""
         try:
             stats = {
@@ -348,11 +345,11 @@ class ReputationEngine:
             self.logger.error(f"Error getting reputation statistics: {e}")
             return {}
 
-    async def _get_cached_reputation(self, client_id: str) -> Optional[ReputationScore]:
+    async def _get_cached_reputation(self, client_id: str) -> ReputationScore | None:
         """Get reputation from cache if valid"""
         if client_id in self._reputation_cache:
             cache_time = self._cache_timestamps.get(client_id)
-            if cache_time and datetime.now(timezone.utc) - cache_time < self._cache_ttl:
+            if cache_time and datetime.now(UTC) - cache_time < self._cache_ttl:
                 return self._reputation_cache[client_id]
 
         return None
@@ -360,7 +357,7 @@ class ReputationEngine:
     async def _cache_reputation(self, reputation: ReputationScore):
         """Cache reputation score"""
         self._reputation_cache[reputation.client_id] = reputation
-        self._cache_timestamps[reputation.client_id] = datetime.now(timezone.utc)
+        self._cache_timestamps[reputation.client_id] = datetime.now(UTC)
 
     async def _invalidate_cache(self, client_id: str):
         """Invalidate cache for client"""
@@ -369,7 +366,7 @@ class ReputationEngine:
         if client_id in self._cache_timestamps:
             del self._cache_timestamps[client_id]
 
-    async def _load_reputation(self, client_id: str) -> Optional[ReputationScore]:
+    async def _load_reputation(self, client_id: str) -> ReputationScore | None:
         """Load reputation from persistent storage"""
         try:
             if not self.session_store:
@@ -478,7 +475,7 @@ class ReputationEngine:
 
     async def _create_new_reputation(self, client_id: str) -> ReputationScore:
         """Create new reputation score with default values"""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return ReputationScore(
             client_id=client_id,
             overall_score=75,  # Start with neutral-good score
@@ -493,7 +490,7 @@ class ReputationEngine:
 
     async def _update_reputation_scores(self, reputation: ReputationScore):
         """Update component scores based on recent events"""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent_window = timedelta(days=7)  # Consider events from last 7 days
 
         recent_events = [
@@ -532,7 +529,7 @@ class ReputationEngine:
 
     async def _apply_temporal_decay(self, reputation: ReputationScore):
         """Apply temporal decay for reputation recovery"""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Apply daily decay if no updates in the last day
         if now - reputation.last_updated > timedelta(days=1):
@@ -664,9 +661,7 @@ class ReputationEngine:
     async def cleanup_old_reputations(self):
         """Clean up old reputation data"""
         try:
-            cutoff_time = datetime.now(timezone.utc) - timedelta(
-                days=60
-            )  # Keep 60 days of data
+            cutoff_time = datetime.now(UTC) - timedelta(days=60)  # Keep 60 days of data
 
             # Clean up cache
             to_remove = []

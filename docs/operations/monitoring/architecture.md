@@ -28,14 +28,14 @@ graph TB
         SVC --> CORE[Core Layer]
         CORE --> INFRA[Infrastructure Layer]
     end
-    
+
     subgraph "Logging Infrastructure"
         MW --> LC[LoggingCoordinator]
         LC --> RC[RequestContext]
         RC --> UL[UnifiedLogger]
         UL --> SL[StructLog]
     end
-    
+
     subgraph "Context Management"
         RC --> EC[ErrorContext]
         RC --> PT[PerformanceTracker]
@@ -43,7 +43,7 @@ graph TB
         RC --> SC[Session Context]
         RC --> UC[User Context]
     end
-    
+
     subgraph "Output Destinations"
         SL --> STDOUT[Standard Output]
         SL --> FILE[Log Files]
@@ -63,23 +63,23 @@ sequenceDiagram
     participant Logger as UnifiedLogger
     participant Service as BaseService
     participant Infrastructure as BaseExternalClient
-    
+
     Client->>Middleware: HTTP Request
     Middleware->>Middleware: extract session_id/user_id
     Middleware->>Coordinator: start_request(session_id, user_id)
     Coordinator->>Context: create RequestContext with business context
     Context->>Context: initialize tracking with session data
-    
+
     Middleware->>Service: route to service
     Service->>Logger: execute_operation()
     Logger->>Context: check deduplication
     Logger->>Logger: log with context
-    
+
     Service->>Infrastructure: external call
     Infrastructure->>Logger: call_external()
     Logger->>Context: check circuit breaker
     Logger->>Infrastructure: execute with retry
-    
+
     Infrastructure-->>Service: result
     Service-->>Middleware: response
     Middleware->>Coordinator: end_request()
@@ -97,17 +97,17 @@ sequenceDiagram
 class LoggingCoordinator:
     """
     Manages the complete lifecycle of request logging.
-    
+
     Responsibilities:
     - Initialize and cleanup request contexts
     - Coordinate between components
     - Generate request summaries
     - Manage context variable state
     """
-    
+
     def __init__(self):
         self.context: Optional[RequestContext] = None
-    
+
     def start_request(self, **initial_context) -> RequestContext:
         """Initialize request with context variables and tracking."""
         self.context = RequestContext(
@@ -116,22 +116,22 @@ class LoggingCoordinator:
         )
         self.context.error_context = ErrorContext()
         self.context.performance_tracker = PerformanceTracker()
-        
+
         # Set in thread-local context variable
         request_context.set(self.context)
         return self.context
-    
+
     def end_request(self) -> Dict[str, Any]:
         """Clean up context and return request summary."""
         if not self.context:
             return {}
-        
+
         summary = self._generate_summary()
-        
+
         # Clean up context
         request_context.set(None)
         self.context = None
-        
+
         return summary
 ```
 
@@ -150,7 +150,7 @@ class LoggingCoordinator:
 class RequestContext:
     """
     Request-scoped context with deduplication and performance tracking.
-    
+
     Architecture:
     - Immutable identification (correlation_id, session_id, etc.)
     - Mutable tracking (logged_operations, performance_tracker)
@@ -164,7 +164,7 @@ class RequestContext:
     investigation_id: Optional[str] = None
     agent_phase: Optional[str] = None
     start_time: datetime = field(default_factory=datetime.utcnow)
-    
+
     # Mutable request state
     attributes: Dict[str, Any] = field(default_factory=dict)
     logged_operations: Set[str] = field(default_factory=set)
@@ -176,7 +176,7 @@ class RequestContext:
 ```
 Request Start → Context Creation → Context Population → Operation Tracking → Request End
      ↓               ↓                    ↓                    ↓                ↓
-Initialize      Set correlation      Add session/user    Track operations   Generate 
+Initialize      Set correlation      Add session/user    Track operations   Generate
 variables       ID and metadata      information         and performance    summary
 ```
 
@@ -194,7 +194,7 @@ class UnifiedLogger:
     - Performance tracking
     - Error cascade prevention
     """
-    
+
     def __init__(self, logger_name: str, layer: str):
         self.logger_name = logger_name
         self.layer = layer
@@ -212,7 +212,7 @@ flowchart TD
     LOG --> MARK[Mark as Logged]
     LOG --> PERF[Update Performance]
     LOG --> OUT[Output to Structured Log]
-    
+
     SKIP --> END[Complete]
     OUT --> END
 ```
@@ -231,7 +231,7 @@ class BaseService(ABC):
     - Business event logging
     - Performance monitoring
     """
-    
+
     async def execute_operation(
         self,
         operation_name: str,
@@ -243,7 +243,7 @@ class BaseService(ABC):
     ):
         """
         Standardized operation execution pattern:
-        
+
         1. Log inbound service boundary
         2. Start operation context with timing
         3. Validate inputs if validator provided
@@ -267,12 +267,12 @@ class BaseExternalClient(ABC):
     - Connection metrics tracking
     - Health monitoring
     - Comprehensive logging for external API monitoring
-    
+
     Note: This is used for external service calls (LLM providers, APIs) that require
-    full monitoring and logging. For internal infrastructure like Redis session 
+    full monitoring and logging. For internal infrastructure like Redis session
     storage, use lightweight clients instead.
     """
-    
+
     async def call_external(
         self,
         operation_name: str,
@@ -284,7 +284,7 @@ class BaseExternalClient(ABC):
     ):
         """
         External service call pattern:
-        
+
         1. Check circuit breaker status
         2. Log inbound boundary
         3. Execute with retry logic
@@ -306,7 +306,7 @@ class RedisSessionStore(ISessionStore):
     def __init__(self):
         # Uses lightweight Redis client - no verbose logging
         self.redis_client = create_redis_client()  # Simple factory function
-    
+
     async def get(self, key: str) -> Optional[Dict]:
         # Direct Redis operations without comprehensive logging
         return await self.redis_client.get(f"{self.prefix}{key}")
@@ -342,25 +342,25 @@ graph TD
         API_VALID[Input Validation]
         API_SERIAL[Response Serialization]
     end
-    
-    subgraph "Service Layer" 
+
+    subgraph "Service Layer"
         SVC_ORCH[Business Logic Orchestration]
         SVC_TRANS[Data Transformation]
         SVC_COORD[Cross-Domain Coordination]
     end
-    
+
     subgraph "Core Layer"
         CORE_DOMAIN[Domain Logic]
         CORE_PROC[Data Processing]
         CORE_RULES[Business Rules]
     end
-    
+
     subgraph "Infrastructure Layer"
         INFRA_EXT[External Service Calls]
         INFRA_DB[Database Access]
         INFRA_CACHE[Caching]
     end
-    
+
     API_RESP --> SVC_ORCH
     SVC_ORCH --> CORE_DOMAIN
     CORE_DOMAIN --> INFRA_EXT
@@ -383,8 +383,8 @@ async def api_endpoint(request: RequestModel):
         "endpoint": "/api/v1/endpoint",
         "content_length": len(request.json())
     })
-    
-    async with logger.operation("api_endpoint", 
+
+    async with logger.operation("api_endpoint",
                                endpoint="/api/v1/endpoint") as ctx:
         # API logic here
         pass
@@ -418,7 +418,7 @@ class BusinessService(BaseService):
 # - Performance threshold: 300ms
 
 async def core_processing(data):
-    async with core_logger.operation("core_processing", 
+    async with core_logger.operation("core_processing",
                                    data_size=len(data)) as ctx:
         ctx["algorithm"] = "classification_v2"
         result = await classify_data(data)
@@ -462,7 +462,7 @@ class RedisSessionStore(ISessionStore):
     def __init__(self):
         # Lightweight Redis client for internal operations
         self.redis_client = create_redis_client()
-    
+
     async def get(self, key: str) -> Optional[Dict]:
         # Direct operation - no comprehensive logging
         # Only application-level errors are logged, not every Redis call
@@ -488,7 +488,7 @@ class RedisSessionStore(ISessionStore):
 async def session_heartbeat(session_id: str):
     """
     Heartbeat endpoint with routine operation logging pattern.
-    
+
     - Errors logged with rate limiting (prevents log spam)
     - Request/response logged at DEBUG level
     - 404s for expired sessions handled gracefully
@@ -511,11 +511,11 @@ def get_log_level_for_request(request: Request, response: Response) -> str:
     """Determine appropriate log level based on operation type."""
     is_heartbeat = request.url.path.endswith('/heartbeat')
     is_heartbeat_404 = is_heartbeat and response.status_code == 404
-    
+
     # DEBUG for routine operations, INFO for business operations
     return "debug" if (is_heartbeat or is_heartbeat_404) else "info"
 
-# Observability integration for routine operations  
+# Observability integration for routine operations
 def should_create_verbose_span(operation_name: str) -> bool:
     """Determine if verbose span logging should occur."""
     routine_patterns = ['heartbeat', 'update_last_activity', 'health_check']
@@ -537,34 +537,34 @@ def should_create_verbose_span(operation_name: str) -> bool:
 sequenceDiagram
     participant Client
     participant MW as Middleware
-    participant API as API Layer  
+    participant API as API Layer
     participant SVC as Service Layer
     participant CORE as Core Layer
     participant INFRA as Infrastructure
     participant EXT as External Service
-    
+
     Note over Client,EXT: Request Initialization Phase
     Client->>MW: HTTP Request
     MW->>MW: start_request() → create RequestContext
     MW->>MW: set correlation_id, session_id
-    
+
     Note over Client,EXT: API Layer Processing
     MW->>API: route request
     API->>API: log_boundary("inbound")
     API->>API: operation("api_endpoint") start
-    
-    Note over Client,EXT: Service Layer Processing  
+
+    Note over Client,EXT: Service Layer Processing
     API->>SVC: call service method
     SVC->>SVC: log_boundary("inbound")
     SVC->>SVC: execute_operation() start
     SVC->>SVC: validate inputs
-    
+
     Note over Client,EXT: Core Layer Processing
     SVC->>CORE: call core logic
     CORE->>CORE: operation("core_processing") start
     CORE->>CORE: process domain logic
     CORE->>CORE: operation("core_processing") end
-    
+
     Note over Client,EXT: Infrastructure Layer Processing
     CORE->>INFRA: call external service
     INFRA->>INFRA: check circuit breaker
@@ -573,7 +573,7 @@ sequenceDiagram
     EXT-->>INFRA: response
     INFRA->>INFRA: update metrics & circuit breaker
     INFRA->>INFRA: call_external() end
-    
+
     Note over Client,EXT: Response Chain
     INFRA-->>CORE: result
     CORE-->>SVC: processed data
@@ -581,12 +581,12 @@ sequenceDiagram
     SVC->>SVC: execute_operation() end
     SVC->>SVC: log_boundary("outbound")
     SVC-->>API: service result
-    
+
     API->>API: serialize response
     API->>API: operation("api_endpoint") end
     API->>API: log_boundary("outbound")
     API-->>MW: HTTP response
-    
+
     Note over Client,EXT: Request Cleanup Phase
     MW->>MW: end_request() → generate summary
     MW->>MW: clear RequestContext
@@ -603,7 +603,7 @@ sequenceDiagram
         "start": "2024-01-15T10:30:45.123Z",
         "api_layer": {
             "start": "2024-01-15T10:30:45.125Z",
-            "end": "2024-01-15T10:30:45.180Z", 
+            "end": "2024-01-15T10:30:45.180Z",
             "duration": 0.055,
             "threshold": 0.1,
             "violation": false
@@ -612,7 +612,7 @@ sequenceDiagram
             "start": "2024-01-15T10:30:45.127Z",
             "end": "2024-01-15T10:30:45.175Z",
             "duration": 0.048,
-            "threshold": 0.5, 
+            "threshold": 0.5,
             "violation": false
         },
         "core_layer": {
@@ -623,7 +623,7 @@ sequenceDiagram
             "violation": false
         },
         "infrastructure_layer": {
-            "start": "2024-01-15T10:30:45.135Z", 
+            "start": "2024-01-15T10:30:45.135Z",
             "end": "2024-01-15T10:30:45.160Z",
             "duration": 0.025,
             "threshold": 1.0,
@@ -641,20 +641,20 @@ sequenceDiagram
 
 ```python
 def generate_operation_key(
-    layer: str, 
-    operation_type: str, 
-    operation_name: str, 
+    layer: str,
+    operation_type: str,
+    operation_name: str,
     direction: Optional[str] = None
 ) -> str:
     """
     Generate unique operation key for deduplication.
-    
+
     Algorithm:
     1. Combine layer, operation_type, and operation_name
     2. Include direction for boundary operations
     3. Create deterministic hash
     4. Ensure uniqueness within request scope
-    
+
     Examples:
     - "api.operation.process_query"
     - "service.boundary.user_service_call.inbound"
@@ -663,7 +663,7 @@ def generate_operation_key(
     components = [layer, operation_type, operation_name]
     if direction:
         components.append(direction)
-    
+
     return ".".join(components)
 ```
 
@@ -674,25 +674,25 @@ flowchart TD
     LOG[Log Request] --> KEY[Generate Operation Key]
     KEY --> CTX[Get Request Context]
     CTX --> EXISTS{Key Exists?}
-    
+
     EXISTS -->|No| FIRST[First Occurrence]
     EXISTS -->|Yes| CHECK[Check Dedup Policy]
-    
+
     FIRST --> ALLOW[Allow Logging]
     FIRST --> MARK[Mark as Logged]
-    
+
     CHECK --> POLICY{Policy Check}
     POLICY -->|Always Allow| ALLOW
     POLICY -->|Time-based| TIME[Check Time Window]
     POLICY -->|Never Allow| BLOCK[Block Logging]
-    
+
     TIME --> RECENT{Within Window?}
     RECENT -->|Yes| BLOCK
     RECENT -->|No| ALLOW
-    
+
     ALLOW --> OUTPUT[Output to Log]
     BLOCK --> SKIP[Skip Logging]
-    
+
     OUTPUT --> END[Complete]
     SKIP --> END
 ```
@@ -702,42 +702,42 @@ flowchart TD
 ```python
 class DeduplicationPolicy:
     """Configurable deduplication policies."""
-    
+
     STRICT = "strict"           # No duplicates ever
     TIME_WINDOW = "time_window" # Allow after time window
     COUNT_BASED = "count_based" # Allow after N occurrences
     NONE = "none"              # No deduplication
-    
+
     def __init__(self, policy: str = STRICT, **params):
         self.policy = policy
         self.params = params
-    
+
     def should_allow_duplicate(
-        self, 
-        operation_key: str, 
+        self,
+        operation_key: str,
         context: RequestContext
     ) -> bool:
         """Determine if duplicate logging should be allowed."""
-        
+
         if self.policy == self.NONE:
             return True
-        
+
         if self.policy == self.STRICT:
             return not context.has_logged(operation_key)
-        
+
         if self.policy == self.TIME_WINDOW:
             last_logged = context.get_last_logged_time(operation_key)
             if not last_logged:
                 return True
-            
+
             window_seconds = self.params.get("window_seconds", 60)
             return (datetime.utcnow() - last_logged).seconds > window_seconds
-        
+
         if self.policy == self.COUNT_BASED:
             count = context.get_operation_count(operation_key)
             max_count = self.params.get("max_count", 1)
             return count < max_count
-        
+
         return False
 ```
 
@@ -752,14 +752,14 @@ FaultMaven's context management has been enhanced to include **session and user 
 1. **RequestContext**: Core context container with session/user data
    - `correlation_id`: Unique request identifier
    - `session_id`: Business session identifier (NEW)
-   - `user_id`: User identifier from session lookup (NEW)  
+   - `user_id`: User identifier from session lookup (NEW)
    - `investigation_id`: Troubleshooting session identifier (NEW)
    - `agent_phase`: Current troubleshooting phase
    - `attributes`: Additional request metadata
 
-2. **Session Context Integration**: 
+2. **Session Context Integration**:
    - LoggingMiddleware extracts `session_id` from requests
-   - SessionService lookup provides `user_id` 
+   - SessionService lookup provides `user_id`
    - Context populated for entire request lifecycle
    - Enables session-aware tracing and logging
 
@@ -791,29 +791,29 @@ request_context: ContextVar[Optional[RequestContext]] = ContextVar(
 
 class ContextManager:
     """Manages context variables across async boundaries."""
-    
+
     @staticmethod
     def set_context(context: RequestContext) -> None:
         """Set request context in current async context."""
         request_context.set(context)
-    
+
     @staticmethod
     def get_context() -> Optional[RequestContext]:
         """Get current request context."""
         return request_context.get()
-    
+
     @staticmethod
     def clear_context() -> None:
         """Clear current request context."""
         request_context.set(None)
-    
+
     @staticmethod
     def copy_context() -> dict:
         """Copy current context for async task propagation."""
         return {
             'request_context': request_context.get()
         }
-    
+
     @staticmethod
     def restore_context(context_copy: dict) -> None:
         """Restore context from copy."""
@@ -829,7 +829,7 @@ class ContextManager:
 async def parent_function():
     # Context set here
     coordinator.start_request(session_id="123")
-    
+
     # Context available in child function
     await child_function()
 
@@ -847,13 +847,13 @@ from contextvars import copy_context
 async def create_background_task():
     # Copy current context
     current_context = copy_context()
-    
+
     # Create task with context
     task = current_context.run(
         asyncio.create_task,
         background_operation()
     )
-    
+
     return task
 
 async def background_operation():
@@ -869,13 +869,13 @@ async def isolated_context():
     """Provide isolated context for testing."""
     # Clear any existing context
     request_context.set(None)
-    
+
     # Create test context
     coordinator = LoggingCoordinator()
     context = coordinator.start_request(session_id="test_session")
-    
+
     yield context
-    
+
     # Clean up after test
     coordinator.end_request()
     request_context.set(None)
@@ -899,13 +899,13 @@ _ERROR_LOG_INTERVAL = 30  # Log every 30 seconds per key
 def _log_error_rate_limited(error_key: str, message: str) -> None:
     """
     Log error with rate limiting to prevent log spam.
-    
+
     Only logs once per interval per error_key to reduce noise from
     repeated failures while preserving diagnostic capability.
     """
     current_time = time.time()
     last_logged = _error_log_tracker.get(error_key, 0)
-    
+
     if current_time - last_logged >= _ERROR_LOG_INTERVAL:
         # Include repeat count for context
         if last_logged > 0:
@@ -915,9 +915,9 @@ def _log_error_rate_limited(error_key: str, message: str) -> None:
             )
         else:
             logger.warning(message)
-        
+
         _error_log_tracker[error_key] = current_time
-        
+
         # Clean up old entries to prevent memory leak
         cutoff_time = current_time - (2 * _ERROR_LOG_INTERVAL)
         for key, logged_time in list(_error_log_tracker.items()):
@@ -949,7 +949,7 @@ LoggingCoordinator.log_once(
 
 # Conditional logging for status combinations
 is_routine_404 = (
-    request.url.path.endswith('/heartbeat') and 
+    request.url.path.endswith('/heartbeat') and
     response.status_code == 404
 )
 completion_log_level = "debug" if is_routine_404 else "info"
@@ -990,17 +990,17 @@ else:
 ```python
 class RequestContext:
     """Optimized for memory efficiency."""
-    
+
     # Limit collections to prevent memory leaks
     MAX_LOGGED_OPERATIONS = 1000
     MAX_ATTRIBUTES_SIZE = 10000
     MAX_ERROR_HISTORY = 50
-    
+
     def __post_init__(self):
         """Initialize with memory limits."""
         self._operation_count = 0
         self._attribute_size = 0
-    
+
     def mark_logged(self, operation_key: str) -> None:
         """Mark operation as logged with memory management."""
         if self._operation_count >= self.MAX_LOGGED_OPERATIONS:
@@ -1010,18 +1010,18 @@ class RequestContext:
             for op in oldest_operations:
                 self.logged_operations.discard(op)
             self._operation_count -= removal_count
-        
+
         self.logged_operations.add(operation_key)
         self._operation_count += 1
-    
+
     def set_attribute(self, key: str, value: Any) -> None:
         """Set attribute with size limits."""
         value_size = len(str(value))
-        
+
         if self._attribute_size + value_size > self.MAX_ATTRIBUTES_SIZE:
             # Remove attributes to make space
             self._trim_attributes()
-        
+
         self.attributes[key] = value
         self._attribute_size += value_size
 ```
@@ -1031,7 +1031,7 @@ class RequestContext:
 ```python
 class PerformanceTracker:
     """Optimized performance tracking."""
-    
+
     def __init__(self):
         # Pre-compile performance thresholds
         self.thresholds = {
@@ -1040,26 +1040,26 @@ class PerformanceTracker:
             'core': float(os.getenv('LOG_PERF_THRESHOLD_CORE', '0.3')),
             'infrastructure': float(os.getenv('LOG_PERF_THRESHOLD_INFRASTRUCTURE', '1.0'))
         }
-        
+
         # Use deque for efficient insertion/removal
         from collections import deque
         self.recent_timings = deque(maxlen=100)
-    
+
     def record_timing(self, layer: str, operation: str, duration: float) -> tuple[bool, float]:
         """Optimized timing recording."""
         # Fast threshold lookup
         threshold = self.thresholds.get(layer, 1.0)
         exceeds_threshold = duration > threshold
-        
+
         # Only store if needed for analysis
         if exceeds_threshold or len(self.recent_timings) < 50:
             self.recent_timings.append({
                 'layer': layer,
-                'operation': operation, 
+                'operation': operation,
                 'duration': duration,
                 'timestamp': time.time()
             })
-        
+
         return exceeds_threshold, threshold
 ```
 
@@ -1068,42 +1068,42 @@ class PerformanceTracker:
 ```python
 class AsyncLogBuffer:
     """Asynchronous log buffering for improved I/O performance."""
-    
+
     def __init__(self, buffer_size: int = 1000, flush_interval: float = 1.0):
         self.buffer_size = buffer_size
         self.flush_interval = flush_interval
         self.buffer = []
         self.last_flush = time.time()
         self._lock = asyncio.Lock()
-    
+
     async def add_log_entry(self, entry: dict) -> None:
         """Add log entry to buffer."""
         async with self._lock:
             self.buffer.append(entry)
-            
+
             # Flush if buffer full or interval elapsed
-            if (len(self.buffer) >= self.buffer_size or 
+            if (len(self.buffer) >= self.buffer_size or
                 time.time() - self.last_flush >= self.flush_interval):
                 await self._flush_buffer()
-    
+
     async def _flush_buffer(self) -> None:
         """Flush buffer to output."""
         if not self.buffer:
             return
-        
+
         # Batch write to improve I/O performance
         batch = self.buffer[:]
         self.buffer.clear()
         self.last_flush = time.time()
-        
+
         # Write batch asynchronously
         await self._write_batch(batch)
-    
+
     async def _write_batch(self, entries: list) -> None:
         """Write batch of entries efficiently."""
         # Convert to newline-delimited JSON
         batch_content = '\n'.join(json.dumps(entry) for entry in entries) + '\n'
-        
+
         # Async file write
         async with aiofiles.open('/app/logs/app.log', 'a') as f:
             await f.write(batch_content)
@@ -1125,10 +1125,10 @@ app.add_middleware(LoggingMiddleware)
 @app.middleware("http")
 async def request_context_middleware(request: Request, call_next):
     """Ensure request context is available throughout request."""
-    
+
     # Context is automatically created by LoggingMiddleware
     response = await call_next(request)
-    
+
     # Context is automatically cleaned up by LoggingMiddleware
     return response
 ```
@@ -1141,14 +1141,14 @@ from faultmaven.services.base import BaseService
 
 class IntegratedService(BaseService):
     """Service that integrates with DI container."""
-    
+
     def __init__(self):
         super().__init__("integrated_service")
-        
+
         # Get dependencies from container
         self.llm_provider = container.get_llm_provider()
         self.knowledge_service = container.get_knowledge_service()
-        
+
         # Dependencies automatically have logging
         self.log_business_event(
             "service_dependencies_resolved",
@@ -1167,15 +1167,15 @@ from opentelemetry.propagate import inject, extract
 
 class TracingIntegration:
     """Integration with OpenTelemetry tracing."""
-    
+
     @staticmethod
     def start_span_with_logging_context(operation_name: str):
         """Start span with logging context correlation."""
         tracer = trace.get_tracer(__name__)
-        
+
         # Get current logging context
         log_ctx = request_context.get()
-        
+
         # Start span with correlation
         span = tracer.start_span(
             operation_name,
@@ -1185,15 +1185,15 @@ class TracingIntegration:
                 'layer': 'service'
             }
         )
-        
+
         return span
-    
+
     @staticmethod
     def inject_trace_context(headers: dict) -> dict:
         """Inject trace context into headers for external calls."""
         inject(headers)
         return headers
-    
+
     @staticmethod
     def extract_trace_context(headers: dict) -> None:
         """Extract trace context from incoming headers."""

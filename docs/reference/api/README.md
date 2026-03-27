@@ -75,10 +75,10 @@ All data submitted to the API is processed through privacy-first pipelines with:
 - **Throughput**: Supports 100+ concurrent requests
 - **Availability**: 99.9% uptime target with health monitoring
 - **Scalability**: Horizontal scaling support via stateless design
-        
 
-**Version:** 1.0.0  
-**Base URL:** `/`  
+
+**Version:** 1.0.0
+**Base URL:** `/`
 **Generated:** 2026-02-11T07:42:01.351963Z
 
 ## Authentication
@@ -5196,7 +5196,7 @@ System infers: category, advances_milestones
 - `category` (unknown) ✅ - System-inferred category: SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER
 - `primary_purpose` (string) ✅ - What this evidence validates (milestone name or hypothesis ID)
 - `summary` (string) ✅ - Brief summary of evidence content (<500 chars) for UI display and quick scanning
-- `preprocessed_content` (string) ✅ - 
+- `preprocessed_content` (string) ✅ -
         Extracted relevant diagnostic information from preprocessing pipeline.
 
         This is what the agent uses for hypothesis evaluation and evidence analysis.
@@ -5214,14 +5214,14 @@ System infers: category, advances_milestones
         Compression ratios: 200:1 for logs, 167:1 for metrics, 50:1 for code.
 
         This field is REQUIRED for all evidence. Raw files remain in S3 for audit/deep dive.
-        
+
 - `content_ref` (unknown) ❌ - S3 URI to original raw file (1-10MB) for audit, compliance, and deep dive analysis. May be None for user-typed evidence.
 - `content_size_bytes` (integer) ✅ - Size of original raw file in bytes
-- `preprocessing_method` (string) ✅ - 
+- `preprocessing_method` (string) ✅ -
         Preprocessing method used to extract preprocessed_content from raw file.
         Examples: crime_scene_extraction, anomaly_detection, parse_and_sanitize,
         ast_extraction, vision_analysis, single_shot_summary, map_reduce_summary
-        
+
 - `compression_ratio` (unknown) ❌ - Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1 compression)
 - `analysis` (unknown) ❌ - Agent analysis of this evidence and its significance to the investigation
 - `source_type` (unknown) ✅ - Type of evidence source
@@ -5420,7 +5420,7 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 - `status` (unknown) ❌ - Current hypothesis status
 - `likelihood` (number) ❌ - Estimated likelihood this hypothesis is correct (0.0-1.0)
 - `initial_likelihood` (number) ❌ - Original likelihood when hypothesis was generated
-- `evidence_links` (object) ❌ - 
+- `evidence_links` (object) ❌ -
         Maps evidence_id to relationship details.
 
         ONE evidence can:
@@ -5430,7 +5430,7 @@ Philosophy: Hypotheses are OPTIONAL. Agent may:
 
         Backed by hypothesis_evidence junction table in database.
         LLM evaluates each evidence against ALL active hypotheses after submission.
-        
+
 - `generated_at_turn` (integer) ✅ - Turn number when hypothesis was generated
 - `last_updated_turn` (integer) ❌ - Turn number when hypothesis was last updated
 - `last_progress_at_turn` (integer) ❌ - Turn number when hypothesis last showed progress
@@ -5534,7 +5534,7 @@ Captures early problem exploration before formal investigation commitment.
 **Properties:**
 
 - `problem_confirmation` (unknown) ❌ - Agent initial understanding of the problem
-- `proposed_problem_statement` (unknown) ❌ - 
+- `proposed_problem_statement` (unknown) ❌ -
         Agent formalized problem statement (clear, specific, actionable) - ITERATIVE REFINEMENT pattern.
 
         UI Display:
@@ -5548,7 +5548,7 @@ Captures early problem exploration before formal investigation commitment.
         4. Copied to case.description when investigation starts
 
         Pattern: Iterative Refinement - refine until user confirms without reservation
-        
+
 - `problem_statement_confirmed` (boolean) ❌ - User confirmed the formalized problem statement
 - `problem_statement_confirmed_at` (unknown) ❌ - When user confirmed the problem statement
 - `decided_to_investigate` (boolean) ❌ - Whether user committed to formal investigation
@@ -5631,7 +5631,7 @@ Agent completes milestones opportunistically based on data availability.
 - `solution_proposed` (boolean) ❌ - Solution or mitigation has been proposed
 - `solution_applied` (boolean) ❌ - Solution has been applied by user
 - `solution_verified` (boolean) ❌ - Solution effectiveness verified (error rate decreased, metrics improved)
-- `mitigation_applied` (boolean) ❌ - 
+- `mitigation_applied` (boolean) ❌ -
         MITIGATION_FIRST path: Quick mitigation applied (stage 1 -> 4 complete).
 
         Used to track progress in MITIGATION_FIRST path (1-4-2-3-4):
@@ -5646,7 +5646,7 @@ Agent completes milestones opportunistically based on data availability.
 
         Note: Different from solution_applied - mitigation is quick correlation-based fix,
         solution is comprehensive permanent fix after RCA.
-        
+
 - `mitigation_verified` (boolean) ❌ - Mitigation effectiveness confirmed (problem stopped)
 - `mitigation_effectiveness` (unknown) ❌ - How well mitigation worked: 1.0 = fully resolved, 0.5 = partially, 0.0 = ineffective
 - `mitigation_solution_id` (unknown) ❌ - Solution ID of applied mitigation (links to case.solutions)
@@ -7075,7 +7075,7 @@ Represents one complete troubleshooting investigation.
 - `user_id` (string) ✅ - User who created the case
 - `organization_id` (string) ✅ - Organization this case belongs to
 - `title` (string) ✅ - Short case title for list views and headers (e.g., 'API Performance Issue')
-- `description` (string) ❌ - 
+- `description` (string) ❌ -
         Confirmed problem description - canonical, user-facing, displayed prominently in UI.
 
         Lifecycle:
@@ -7086,7 +7086,7 @@ Represents one complete troubleshooting investigation.
 
         Example: "API experiencing slowness with 30% of requests taking >5s response time
                   across all US regions, started 2 hours ago coinciding with v2.1.3 deployment"
-        
+
 - `status` (unknown) ❌ - Current lifecycle status
 - `status_history` (array) ❌ - Complete history of status changes
 - `closure_reason` (unknown) ❌ - Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other
@@ -7094,7 +7094,7 @@ Represents one complete troubleshooting investigation.
 - `current_turn` (integer) ❌ - Current turn number (increments with each user-agent exchange)
 - `turns_without_progress` (integer) ❌ - Consecutive turns with no milestone advancement (for stuck detection)
 - `turn_history` (array) ❌ - Complete history of all turns
-- `messages` (array) ❌ - 
+- `messages` (array) ❌ -
         Complete conversation history (user queries + agent responses).
 
         Per case-storage-design.md Section 4.7, each message contains:
@@ -7113,13 +7113,13 @@ Represents one complete troubleshooting investigation.
         Relationship to turn_history:
         - messages[i].turn_number references turn_history[j].turn_number
         - Provides the "what was said" to complement turn_history's "what happened"
-        
+
 - `message_count` (integer) ❌ - Total number of messages (user + agent combined)
 - `path_selection` (unknown) ❌ - Selected investigation path (MITIGATION vs ROOT_CAUSE)
 - `investigation_strategy` (unknown) ❌ - Investigation approach: ACTIVE_INCIDENT (speed) vs POST_MORTEM (thoroughness)
 - `inquiry` (unknown) ❌ - Pre-investigation INQUIRY status data
 - `problem_verification` (unknown) ❌ - Consolidated verification data (symptom, scope, timeline, changes)
-- `uploaded_files` (array) ❌ - 
+- `uploaded_files` (array) ❌ -
         All files uploaded to this case (raw file metadata).
 
         Files can be uploaded at ANY phase (INQUIRY or INVESTIGATING).
@@ -7128,7 +7128,7 @@ Represents one complete troubleshooting investigation.
         Difference from evidence:
         - uploaded_files: Raw file metadata (file_id, filename, size, upload time)
         - evidence: Investigation data linked to hypotheses (only in INVESTIGATING phase)
-        
+
 - `evidence` (array) ❌ - All evidence collected during investigation
 - `hypotheses` (object) ❌ - Generated hypotheses (key = hypothesis_id)
 - `solutions` (array) ❌ - Proposed and applied solutions
@@ -7273,4 +7273,3 @@ Represents one complete troubleshooting investigation.
 ```
 
 ---
-

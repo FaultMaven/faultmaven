@@ -5,8 +5,6 @@ Handles OTHER and unsupported data types with basic text processing.
 
 import logging
 import time
-import uuid
-from typing import Optional
 
 from faultmaven.models.api import (
     DataType,
@@ -32,7 +30,7 @@ class GenericPreprocessor(IPreprocessor):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional[SourceMetadata] = None,
+        source_metadata: SourceMetadata | None = None,
     ) -> PreprocessedData:
         """
         Generic preprocessing: truncate and format plainly
@@ -70,7 +68,7 @@ class GenericPreprocessor(IPreprocessor):
         )
 
     def _format_generic_summary(
-        self, content: str, filename: str, source_metadata: Optional[SourceMetadata]
+        self, content: str, filename: str, source_metadata: SourceMetadata | None
     ) -> str:
         """Format generic summary"""
         sections = []

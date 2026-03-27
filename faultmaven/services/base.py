@@ -7,11 +7,12 @@ unified logging, error handling, and operation management patterns.
 
 import asyncio
 from abc import ABC
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, TypeVar
 
 from faultmaven.exceptions import FaultMavenException, ValidationException
-from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
+from faultmaven.infrastructure.logging.unified import get_unified_logger
 from faultmaven.utils.serialization import to_json_compatible
 
 # Type variable for generic return types
@@ -34,7 +35,7 @@ class BaseService(ABC):
         logger: UnifiedLogger instance for the service layer
     """
 
-    def __init__(self, service_name: Optional[str] = None):
+    def __init__(self, service_name: str | None = None):
         """
         Initialize base service with unified logging.
 
@@ -69,10 +70,10 @@ class BaseService(ABC):
     async def execute_operation(
         self,
         operation_name: str,
-        operation_func: Callable[..., Union[T, any]],
+        operation_func: Callable[..., T | any],
         *args,
-        validate_inputs: Optional[Callable[..., None]] = None,
-        transform_result: Optional[Callable[[T], T]] = None,
+        validate_inputs: Callable[..., None] | None = None,
+        transform_result: Callable[[T], T] | None = None,
         log_result: bool = True,
         **kwargs,
     ) -> T:
@@ -174,18 +175,14 @@ class BaseService(ABC):
                         ) from validation_error
 
                 # Execute the operation function
-                ctx["execution_started"] = to_json_compatible(
-                    datetime.now(timezone.utc)
-                )
+                ctx["execution_started"] = to_json_compatible(datetime.now(UTC))
 
                 if asyncio.iscoroutinefunction(operation_func):
                     result = await operation_func(*args, **kwargs)
                 else:
                     result = operation_func(*args, **kwargs)
 
-                ctx["execution_completed"] = to_json_compatible(
-                    datetime.now(timezone.utc)
-                )
+                ctx["execution_completed"] = to_json_compatible(datetime.now(UTC))
 
                 # Transform result if transformer provided
                 if transform_result:
@@ -254,7 +251,7 @@ class BaseService(ABC):
 
                 return result
 
-            except ValidationException as validation_error:
+            except ValidationException:
                 # Re-raise ValidationException directly for test compatibility
                 raise
             except FileNotFoundError:
@@ -335,8 +332,8 @@ class BaseService(ABC):
         operation_name: str,
         operation_func: Callable[..., T],
         *args,
-        validate_inputs: Optional[Callable[..., None]] = None,
-        transform_result: Optional[Callable[[T], T]] = None,
+        validate_inputs: Callable[..., None] | None = None,
+        transform_result: Callable[[T], T] | None = None,
         log_result: bool = True,
         **kwargs,
     ) -> T:
@@ -400,13 +397,9 @@ class BaseService(ABC):
                         ) from validation_error
 
                 # Execute the operation function
-                ctx["execution_started"] = to_json_compatible(
-                    datetime.now(timezone.utc)
-                )
+                ctx["execution_started"] = to_json_compatible(datetime.now(UTC))
                 result = operation_func(*args, **kwargs)
-                ctx["execution_completed"] = to_json_compatible(
-                    datetime.now(timezone.utc)
-                )
+                ctx["execution_completed"] = to_json_compatible(datetime.now(UTC))
 
                 # Transform result if transformer provided
                 if transform_result:
@@ -472,7 +465,7 @@ class BaseService(ABC):
 
                 return result
 
-            except ValidationException as validation_error:
+            except ValidationException:
                 # Re-raise ValidationException directly for test compatibility
                 raise
             except FileNotFoundError:
@@ -551,9 +544,9 @@ class BaseService(ABC):
     def log_metric(
         self,
         metric_name: str,
-        value: Union[int, float],
+        value: int | float,
         unit: str = "count",
-        tags: Optional[Dict[str, str]] = None,
+        tags: dict[str, str] | None = None,
         **extra_fields,
     ) -> None:
         """
@@ -579,7 +572,7 @@ class BaseService(ABC):
         self,
         event_name: str,
         severity: str = "info",
-        data: Optional[Dict[str, Any]] = None,
+        data: dict[str, Any] | None = None,
         **extra_fields,
     ) -> None:
         """
@@ -646,7 +639,7 @@ class BaseService(ABC):
             exc_info=True,
         )
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         Perform health check for the service.
 
@@ -659,6 +652,6 @@ class BaseService(ABC):
         return {
             "service": self.service_name,
             "status": "healthy",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "layer": "service",
         }

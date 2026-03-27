@@ -18,16 +18,13 @@ import asyncio
 import hashlib
 import logging
 import time
-from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Optional
 
 from faultmaven.core.preprocessing.models import (
     DuplicateFileError,
     ExtractionResult,
-    FileInfo,
     FileTooLargeError,
     PreprocessingResult,
-    SanitizationResult,
     generate_concise_summary,
     to_unified_data_type,
 )
@@ -45,7 +42,7 @@ from faultmaven.services.preprocessing.extractors.logs_extractor import (
 from faultmaven.services.preprocessing.extractors.protocol import Extractor
 
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +107,7 @@ class PreprocessingService:
         self.chunk_trigger_tokens = chunk_trigger_tokens
 
         # Extractor registry - all 11 data types
-        self.extractors: Dict[DataType, Extractor] = {
+        self.extractors: dict[DataType, Extractor] = {
             DataType.LOGS_AND_ERRORS: logs_extractor,
         }
 
@@ -149,10 +146,10 @@ class PreprocessingService:
         self,
         filename: str,
         content: str,
-        agent_hint: Optional[DataType] = None,
-        browser_context: Optional[str] = None,
-        user_override: Optional[DataType] = None,
-        source_metadata: Optional[SourceMetadata] = None,
+        agent_hint: DataType | None = None,
+        browser_context: str | None = None,
+        user_override: DataType | None = None,
+        source_metadata: SourceMetadata | None = None,
     ) -> PreprocessedData:
         """
         4-step preprocessing pipeline
@@ -316,7 +313,7 @@ class PreprocessingService:
         filename: str,
         content: str,
         classification,
-        source_metadata: Optional[SourceMetadata],
+        source_metadata: SourceMetadata | None,
         elapsed_time: float,
     ) -> PreprocessedData:
         """
@@ -345,7 +342,7 @@ class PreprocessingService:
         filename: str,
         content: str,
         classification,
-        source_metadata: Optional[SourceMetadata],
+        source_metadata: SourceMetadata | None,
         elapsed_time: float,
     ) -> PreprocessedData:
         """
@@ -410,10 +407,10 @@ class PreprocessingService:
         filename: str,
         content_type: str,
         case_id: str,
-        source_metadata: Optional[SourceMetadata] = None,
+        source_metadata: SourceMetadata | None = None,
         max_upload_size: int = DEFAULT_MAX_UPLOAD_SIZE,
-        storage_service: Optional[object] = None,
-        evidence_repo: Optional[object] = None,
+        storage_service: object | None = None,
+        evidence_repo: object | None = None,
     ) -> PreprocessingResult:
         """
         Main Tier 0+1 entry point per design specification v3.0.
@@ -539,7 +536,7 @@ class PreprocessingService:
         self,
         content: str,
         filename: str = "pasted_content.txt",
-        source_metadata: Optional[SourceMetadata] = None,
+        source_metadata: SourceMetadata | None = None,
     ) -> PreprocessingResult:
         """
         Classify content and run the matched extractor.
@@ -661,7 +658,7 @@ class PreprocessingService:
                 content=result_content,
                 metadata={},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"Tier 1 extraction timed out after {TIER1_TIMEOUT_SECONDS}s "
                 f"for {filename}. Falling back to TEXT preview."

@@ -22,9 +22,8 @@ Usage:
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
 
-from faultmaven.modules.case.contracts import Case, HypothesisCategory, HypothesisStatus
+from faultmaven.modules.case.contracts import Case, HypothesisStatus
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ class BreakoutAction:
 
     action: str
     message: str
-    prompt_injection: Optional[str] = None
+    prompt_injection: str | None = None
 
 
 class StagnationDetector:
@@ -73,7 +72,7 @@ class StagnationDetector:
         self.category_anchoring_threshold = category_anchoring_threshold
         self.action_loop_threshold = action_loop_threshold
 
-    def detect_stagnation(self, case: Case) -> Optional[StagnationType]:
+    def detect_stagnation(self, case: Case) -> StagnationType | None:
         """
         Detect if investigation is stagnating.
 
@@ -265,7 +264,7 @@ class StagnationBreaker:
     """
 
     # All hypothesis categories for suggesting alternatives
-    ALL_CATEGORIES: List[str] = [
+    ALL_CATEGORIES: list[str] = [
         "code",
         "config",
         "environment",

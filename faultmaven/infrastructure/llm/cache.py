@@ -7,10 +7,8 @@ to reduce API calls and improve response times.
 
 import hashlib
 import logging
-import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 
@@ -24,8 +22,8 @@ class SemanticCache:
     def __init__(self, similarity_threshold: float = 0.85, max_size: int = 1000):
         self.similarity_threshold = similarity_threshold
         self.max_size = max_size
-        self.cache: Dict[str, Dict[str, Any]] = {}
-        self.embeddings: Dict[str, np.ndarray] = {}
+        self.cache: dict[str, dict[str, Any]] = {}
+        self.embeddings: dict[str, np.ndarray] = {}
         self.logger = logging.getLogger(__name__)
 
         # Initialize sentence transformer for semantic similarity using cached model
@@ -38,13 +36,13 @@ class SemanticCache:
             )
 
     def _get_cache_key(
-        self, prompt: str, model: str, case_id: Optional[str] = None
+        self, prompt: str, model: str, case_id: str | None = None
     ) -> str:
         """Generate cache key scoped to case, prompt, and model"""
         content = f"{case_id or ''}:{prompt}:{model}"
         return hashlib.sha256(content.encode()).hexdigest()
 
-    def _compute_embedding(self, text: str) -> Optional[np.ndarray]:
+    def _compute_embedding(self, text: str) -> np.ndarray | None:
         """Compute embedding for text"""
         if not self.encoder:
             return None
@@ -66,8 +64,8 @@ class SemanticCache:
             return 0.0
 
     def check(
-        self, prompt: str, model: str, case_id: Optional[str] = None
-    ) -> Optional[LLMResponse]:
+        self, prompt: str, model: str, case_id: str | None = None
+    ) -> LLMResponse | None:
         """Check cache for semantically similar response, scoped to case_id."""
 
         # Simple hash-based cache if no embeddings
@@ -129,7 +127,7 @@ class SemanticCache:
         prompt: str,
         model: str,
         response: LLMResponse,
-        case_id: Optional[str] = None,
+        case_id: str | None = None,
     ):
         """Store response in cache, tagged with case_id."""
         cache_key = self._get_cache_key(prompt, model, case_id)
@@ -141,7 +139,7 @@ class SemanticCache:
             "provider": response.provider,
             "model": response.model,
             "tokens_used": response.tokens_used,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "case_id": case_id,
         }
 

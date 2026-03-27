@@ -15,7 +15,7 @@ Tests the API investigation session service layer functionality including:
 - Get session statistics
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -188,13 +188,13 @@ class TestCreateSession:
         mock_session_repo.get_active_session.return_value = None
         mock_session_repo.create.side_effect = lambda s: s
 
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         result = await session_service.create_session(
             case_id=sample_case.case_id,
             organization_id=sample_case.organization_id,
             user_id="user_123",
         )
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert result.created_at >= before
         assert result.created_at <= after
@@ -810,13 +810,13 @@ class TestCompleteSession:
         mock_case_repo.get.return_value = sample_case
         mock_session_repo.update.side_effect = lambda s: s
 
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         result = await session_service.complete_session(
             sample_session.session_id,
             sample_case.organization_id,
             "Findings",
         )
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert result.ended_at is not None
         assert result.ended_at >= before

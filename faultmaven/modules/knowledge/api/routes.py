@@ -27,9 +27,7 @@ Core Design Principles:
 """
 
 import logging
-import uuid
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -82,10 +80,10 @@ async def upload_document(
     file: UploadFile = File(...),
     title: str = Form(...),
     document_type: str = Form(...),
-    category: Optional[str] = Form(None),
-    tags: Optional[str] = Form(None),
-    source_url: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
+    category: str | None = Form(None),
+    tags: str | None = Form(None),
+    source_url: str | None = Form(None),
+    description: str | None = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
     current_user: DevUser = Depends(require_admin),
@@ -199,12 +197,12 @@ async def upload_document(
 
 @router.get("/documents")
 async def list_documents(
-    document_type: Optional[str] = None,
-    tags: Optional[str] = None,
+    document_type: str | None = None,
+    tags: str | None = None,
     limit: int = 50,
     offset: int = 0,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: Optional[DevUser] = Depends(get_current_user_optional),
+    current_user: DevUser | None = Depends(get_current_user_optional),
 ) -> dict:
     """
     List knowledge base documents with optional filtering
@@ -277,13 +275,11 @@ async def get_document(
 async def get_document_snippet(
     document_id: str,
     line_start: int = Query(default=1, ge=1, description="Starting line number"),
-    line_end: Optional[int] = Query(
-        default=None, ge=1, description="Ending line number"
-    ),
+    line_end: int | None = Query(default=None, ge=1, description="Ending line number"),
     max_lines: int = Query(
         default=5, ge=1, le=50, description="Maximum lines to return"
     ),
-    query_string: Optional[str] = Query(
+    query_string: str | None = Query(
         default=None, description="Query for semantic snippet extraction"
     ),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
@@ -461,7 +457,7 @@ async def get_job_status(
 async def search_documents(
     request: SearchRequest,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: Optional[DevUser] = Depends(get_current_user_optional),
+    current_user: DevUser | None = Depends(get_current_user_optional),
 ) -> dict:
     """
     Search knowledge base documents
@@ -519,7 +515,7 @@ async def search_documents(
 async def fulltext_search_documents(
     request: SearchRequest,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: Optional[DevUser] = Depends(get_current_user_optional),
+    current_user: DevUser | None = Depends(get_current_user_optional),
 ) -> dict:
     """
     Full-text search for knowledge base documents (Microservices Parity)
@@ -657,7 +653,7 @@ async def update_document(
 
 @router.post("/documents/bulk-update")
 async def bulk_update_documents(
-    request: Dict[str, Any],
+    request: dict[str, Any],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: DevUser = Depends(require_admin),
 ) -> dict:
@@ -691,7 +687,7 @@ async def bulk_update_documents(
 
 @router.post("/documents/bulk-delete")
 async def bulk_delete_documents(
-    request: Dict[str, List[str]],
+    request: dict[str, list[str]],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: DevUser = Depends(require_admin),
 ) -> dict:
@@ -775,7 +771,7 @@ async def get_suggestion_service(request: Request):
 @router.get("/suggestions")
 @trace("api_list_suggestions")
 async def list_suggestions(
-    status: Optional[str] = Query(
+    status: str | None = Query(
         default=None, description="Filter by status: pending_review, approved, rejected"
     ),
     limit: int = Query(default=20, ge=1, le=100, description="Maximum items to return"),
@@ -917,7 +913,7 @@ async def update_suggestion(
 @trace("api_approve_suggestion")
 async def approve_suggestion(
     suggestion_id: str,
-    request_body: Optional[dict] = None,
+    request_body: dict | None = None,
     suggestion_service=Depends(get_suggestion_service),
     current_user: DevUser = Depends(require_admin),
 ) -> dict:

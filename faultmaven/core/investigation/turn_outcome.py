@@ -6,12 +6,10 @@ Reference: investigation-lifecycle-logic.md Section 3.2 (lines 822-852)
 """
 
 import logging
-from typing import List
 
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
-    HypothesisStatus,
     TurnOutcome,
 )
 
@@ -21,8 +19,8 @@ logger = logging.getLogger(__name__)
 def determine_turn_outcome(
     case: Case,
     progress_made: bool,
-    milestones_completed: List[str],
-    evidence_added: List[str],
+    milestones_completed: list[str],
+    evidence_added: list[str],
     hypotheses_generated: int,
     solutions_proposed: int,
 ) -> TurnOutcome:

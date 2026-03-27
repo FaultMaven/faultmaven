@@ -11,7 +11,7 @@ context across requests within the same session.
 
 import json
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -223,7 +223,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Re-raise the exception to maintain FastAPI error handling
             raise
 
-    async def _extract_session_id(self, request: Request) -> Optional[str]:
+    async def _extract_session_id(self, request: Request) -> str | None:
         """
         Extract session_id from request using multiple sources with priority order.
 
@@ -271,7 +271,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         return None
 
-    async def _extract_case_id(self, request: Request) -> Optional[str]:
+    async def _extract_case_id(self, request: Request) -> str | None:
         """
         Extract case_id from request headers or body.
 
@@ -324,7 +324,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
     async def _get_user_id_from_session(
         self, request: Request, session_id: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Look up user_id from session_id using SessionService.
 

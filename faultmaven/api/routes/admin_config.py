@@ -12,11 +12,11 @@ Endpoints:
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from faultmaven.api.middleware.auth import get_current_user, require_admin
+from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
     EnvConfigStatusResponse,
     LLMConfigResponse,
@@ -151,7 +151,7 @@ async def get_llm_config(
             strict_mode=strict_mode,
             fallback_chain=fallback_chain,
             providers=providers,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
     except HTTPException:
@@ -243,7 +243,7 @@ async def update_llm_config(
             return LLMConfigUpdateResponse(
                 updated_keys=[],
                 message="No changes requested",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
 
         # Persist to DB and hot-reload
@@ -262,7 +262,7 @@ async def update_llm_config(
         return LLMConfigUpdateResponse(
             updated_keys=safe_keys,
             message="Configuration updated and applied",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
     except HTTPException:
@@ -334,7 +334,7 @@ async def check_llm_connection(
                     f"No API key configured for {display}. "
                     "Add an API key first, then test the connection."
                 ),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
 
         # Send a minimal test prompt directly to the provider
@@ -351,7 +351,7 @@ async def check_llm_connection(
             connected=True,
             response_time_ms=elapsed_ms,
             model_used=response.model if hasattr(response, "model") else None,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
     except HTTPException:
@@ -366,7 +366,7 @@ async def check_llm_connection(
             connected=False,
             response_time_ms=elapsed_ms,
             error_message=str(e),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
 
@@ -443,7 +443,7 @@ async def get_env_config_status(
             pii_redaction_enabled=settings.protection.protection_enabled,
             rate_limit_enabled=settings.security.rate_limit_enabled,
             features=features,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
     except Exception as e:

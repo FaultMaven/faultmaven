@@ -24,15 +24,15 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from threading import RLock
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 from uuid import uuid4
 
 from faultmaven.exceptions import ServiceException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.models.contracts.core_contracts import DecisionRecord, TurnContext
+from faultmaven.models.contracts.core_contracts import DecisionRecord
 from faultmaven.models.interfaces import ITracer
 
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
@@ -52,7 +52,7 @@ class DecisionRecorder:
 
     def __init__(
         self,
-        tracer: Optional[ITracer] = None,
+        tracer: ITracer | None = None,
         retention_days: int = 90,
         enable_structured_logging: bool = True,
         enable_performance_tracking: bool = True,
@@ -145,21 +145,21 @@ class DecisionRecorder:
         session_id: str,
         turn_id: str,
         turn: int,
-        selected_agents: List[str],
+        selected_agents: list[str],
         routing_rationale: str,
-        features: Dict[str, float],
-        confidence: Dict[str, Any],
-        budget_allocated: Dict[str, Any],
-        budget_used: Dict[str, Any],
+        features: dict[str, float],
+        confidence: dict[str, Any],
+        budget_allocated: dict[str, Any],
+        budget_used: dict[str, Any],
         latency_ms: int,
-        agent_latencies: Optional[Dict[str, int]] = None,
-        agent_results: Optional[Dict[str, Any]] = None,
+        agent_latencies: dict[str, int] | None = None,
+        agent_results: dict[str, Any] | None = None,
         final_response: str = "",
-        sanitized_prompt: Optional[str] = None,
-        raw_prompt: Optional[str] = None,
+        sanitized_prompt: str | None = None,
+        raw_prompt: str | None = None,
         status: str = "completed",
-        errors: Optional[List[Dict[str, Any]]] = None,
-        correlation_id: Optional[str] = None,
+        errors: list[dict[str, Any]] | None = None,
+        correlation_id: str | None = None,
     ) -> str:
         """
         Create comprehensive decision record
@@ -215,10 +215,8 @@ class DecisionRecorder:
                 raw_prompt=raw_prompt,
                 status=status,
                 errors=errors or [],
-                started_at=datetime.now(timezone.utc),
-                completed_at=(
-                    datetime.now(timezone.utc) if status == "completed" else None
-                ),
+                started_at=datetime.now(UTC),
+                completed_at=(datetime.now(UTC) if status == "completed" else None),
             )
 
             # Store record
@@ -235,7 +233,7 @@ class DecisionRecorder:
                     {
                         "record": decision_record,
                         "correlation_id": correlation_id,
-                        "created_at": datetime.now(timezone.utc),
+                        "created_at": datetime.now(UTC),
                     }
                 )
 
@@ -246,7 +244,7 @@ class DecisionRecorder:
                     "session_id": session_id,
                     "turn_id": turn_id,
                     "record_id": record_id,
-                    "created_at": datetime.now(timezone.utc),
+                    "created_at": datetime.now(UTC),
                 },
             )
 
@@ -280,7 +278,7 @@ class DecisionRecorder:
             self._logger.error(f"Failed to create decision record: {e}")
             raise ServiceException(f"Decision record creation failed: {str(e)}") from e
 
-    def _convert_budget_dict(self, budget_dict: Dict[str, Any]) -> Any:
+    def _convert_budget_dict(self, budget_dict: dict[str, Any]) -> Any:
         """Convert budget dictionary to Budget object if needed"""
         from faultmaven.models.contracts.core_contracts import Budget
 
@@ -348,7 +346,7 @@ class DecisionRecorder:
 
     def _calculate_budget_utilization(
         self, allocated: Any, used: Any
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Calculate budget utilization percentages"""
         try:
             return {
@@ -434,7 +432,7 @@ class DecisionRecorder:
         except Exception as e:
             self._logger.error(f"Failed to emit to Opik: {e}")
 
-    def _track_correlation_id(self, correlation_id: str, metadata: Dict[str, Any]):
+    def _track_correlation_id(self, correlation_id: str, metadata: dict[str, Any]):
         """Track correlation ID for request tracing"""
         with self._storage_lock:
             self._active_correlations[correlation_id] = metadata
@@ -545,7 +543,7 @@ class DecisionRecorder:
 
     async def _cleanup_expired_records(self):
         """Clean up expired decision records"""
-        cutoff_time = datetime.now(timezone.utc) - self._retention_period
+        cutoff_time = datetime.now(UTC) - self._retention_period
 
         with self._storage_lock:
             # Find expired records
@@ -568,7 +566,7 @@ class DecisionRecorder:
             # Cleanup expired correlations
             expired_correlations = []
             for corr_id, metadata in self._active_correlations.items():
-                if metadata.get("created_at", datetime.now(timezone.utc)) < cutoff_time:
+                if metadata.get("created_at", datetime.now(UTC)) < cutoff_time:
                     expired_correlations.append(corr_id)
 
             for corr_id in expired_correlations:
@@ -583,11 +581,11 @@ class DecisionRecorder:
     @trace("decision_recorder_get_records")
     async def get_decision_records(
         self,
-        session_id: Optional[str] = None,
-        correlation_id: Optional[str] = None,
+        session_id: str | None = None,
+        correlation_id: str | None = None,
         limit: int = 100,
         include_details: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get decision records with optional filtering
 
@@ -643,7 +641,7 @@ class DecisionRecorder:
 
     def _format_record_response(
         self, record: DecisionRecord, include_details: bool
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Format decision record for API response"""
         base_info = {
             "record_id": record.record_id,
@@ -685,7 +683,7 @@ class DecisionRecorder:
 
         return base_info
 
-    async def get_metrics(self) -> Dict[str, Any]:
+    async def get_metrics(self) -> dict[str, Any]:
         """Get comprehensive telemetry metrics"""
         try:
             with self._storage_lock:
@@ -711,7 +709,7 @@ class DecisionRecorder:
                 ) * 100
 
             return {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "service": "decision_recorder",
                 "records": {
                     "created": self._metrics["records_created"],
@@ -746,7 +744,7 @@ class DecisionRecorder:
             self._logger.error(f"Failed to get metrics: {e}")
             return {"error": str(e)}
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Get service health status"""
         try:
             # Calculate health metrics
@@ -782,7 +780,7 @@ class DecisionRecorder:
             return {
                 "service": "decision_recorder",
                 "status": status,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "version": "1.0.0",
                 "metrics": {
                     "records_created": self._metrics["records_created"],
@@ -803,7 +801,7 @@ class DecisionRecorder:
             return {
                 "service": "decision_recorder",
                 "status": "unhealthy",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "error": str(e),
             }
 
@@ -817,7 +815,7 @@ class DecisionRecorder:
 
     # Utility methods for advanced telemetry features
 
-    async def get_session_analytics(self, session_id: str) -> Dict[str, Any]:
+    async def get_session_analytics(self, session_id: str) -> dict[str, Any]:
         """Get analytics for a specific session"""
         try:
             with self._storage_lock:
@@ -878,7 +876,7 @@ class DecisionRecorder:
             self._logger.error(f"Failed to get session analytics: {e}")
             return {"session_id": session_id, "error": str(e)}
 
-    async def get_correlation_trace(self, correlation_id: str) -> Dict[str, Any]:
+    async def get_correlation_trace(self, correlation_id: str) -> dict[str, Any]:
         """Get complete trace for a correlation ID"""
         try:
             correlation_metadata = self._active_correlations.get(correlation_id)

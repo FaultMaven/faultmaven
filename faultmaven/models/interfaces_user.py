@@ -12,7 +12,7 @@ Implemented by:
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -64,14 +64,14 @@ class Organization(BaseModel):
     organization_id: str
     name: str
     slug: str
-    description: Optional[str] = None
+    description: str | None = None
     plan_tier: OrgPlanTier = OrgPlanTier.FREE
     max_members: int = 5
-    max_cases: Optional[int] = None
-    settings: Dict[str, Any] = Field(default_factory=dict)
+    max_cases: int | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
-    deleted_at: Optional[datetime] = None
+    deleted_at: datetime | None = None
 
 
 class OrganizationMember(BaseModel):
@@ -81,7 +81,7 @@ class OrganizationMember(BaseModel):
     organization_id: str
     role_id: str  # References roles.role_id
     joined_at: datetime
-    last_active_at: Optional[datetime] = None
+    last_active_at: datetime | None = None
 
 
 class Team(BaseModel):
@@ -90,10 +90,10 @@ class Team(BaseModel):
     team_id: str
     organization_id: str
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     created_at: datetime
     updated_at: datetime
-    deleted_at: Optional[datetime] = None
+    deleted_at: datetime | None = None
 
 
 class TeamMember(BaseModel):
@@ -101,7 +101,7 @@ class TeamMember(BaseModel):
 
     user_id: str
     team_id: str
-    team_role: Optional[str] = None  # 'lead', 'member', or custom
+    team_role: str | None = None  # 'lead', 'member', or custom
     joined_at: datetime
 
 
@@ -110,7 +110,7 @@ class Role(BaseModel):
 
     role_id: str
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     scope: str  # 'system', 'organization', 'team'
     is_system_role: bool = False
     created_at: datetime
@@ -122,7 +122,7 @@ class Permission(BaseModel):
     permission_id: str
     resource: str  # 'cases', 'knowledge_base', 'teams', etc.
     action: str  # 'read', 'write', 'delete', 'manage'
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class UserAuditLog(BaseModel):
@@ -132,13 +132,13 @@ class UserAuditLog(BaseModel):
     user_id: str
     event_type: AuditEventType
     event_category: AuditCategory
-    resource_type: Optional[str] = None
-    resource_id: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
-    ip_address: Optional[str] = None
-    user_agent: Optional[str] = None
-    session_id: Optional[str] = None
-    organization_id: Optional[str] = None
+    resource_type: str | None = None
+    resource_id: str | None = None
+    details: dict[str, Any] | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    session_id: str | None = None
+    organization_id: str | None = None
     event_at: datetime
     success: bool = True
 
@@ -164,7 +164,7 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_organization(self, organization_id: str) -> Optional[Organization]:
+    async def get_organization(self, organization_id: str) -> Organization | None:
         """Get organization by ID.
 
         Args:
@@ -176,7 +176,7 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
+    async def get_organization_by_slug(self, slug: str) -> Organization | None:
         """Get organization by slug.
 
         Args:
@@ -212,7 +212,7 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_user_organizations(self, user_id: str) -> List[Organization]:
+    async def list_user_organizations(self, user_id: str) -> list[Organization]:
         """List all organizations a user belongs to.
 
         Args:
@@ -271,7 +271,7 @@ class IOrganizationRepository(ABC):
     @abstractmethod
     async def list_organization_members(
         self, organization_id: str
-    ) -> List[OrganizationMember]:
+    ) -> list[OrganizationMember]:
         """List all members of an organization.
 
         Args:
@@ -283,9 +283,7 @@ class IOrganizationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_member_role(
-        self, organization_id: str, user_id: str
-    ) -> Optional[str]:
+    async def get_member_role(self, organization_id: str, user_id: str) -> str | None:
         """Get user's role in organization.
 
         Args:
@@ -330,7 +328,7 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_team(self, team_id: str) -> Optional[Team]:
+    async def get_team(self, team_id: str) -> Team | None:
         """Get team by ID.
 
         Args:
@@ -366,7 +364,7 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_organization_teams(self, organization_id: str) -> List[Team]:
+    async def list_organization_teams(self, organization_id: str) -> list[Team]:
         """List all teams in an organization.
 
         Args:
@@ -378,7 +376,7 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
+    async def list_user_teams(self, user_id: str, organization_id: str) -> list[Team]:
         """List all teams a user belongs to in an organization.
 
         Args:
@@ -392,7 +390,7 @@ class ITeamRepository(ABC):
 
     @abstractmethod
     async def add_member(
-        self, team_id: str, user_id: str, team_role: Optional[str] = None
+        self, team_id: str, user_id: str, team_role: str | None = None
     ) -> bool:
         """Add user to team.
 
@@ -420,7 +418,7 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_team_members(self, team_id: str) -> List[TeamMember]:
+    async def list_team_members(self, team_id: str) -> list[TeamMember]:
         """List all members of a team.
 
         Args:
@@ -454,13 +452,13 @@ class IAuditRepository(ABC):
         user_id: str,
         event_type: AuditEventType,
         event_category: AuditCategory,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        session_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        details: dict[str, Any] | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        session_id: str | None = None,
+        organization_id: str | None = None,
         success: bool = True,
     ) -> bool:
         """Log an audit event.
@@ -486,7 +484,7 @@ class IAuditRepository(ABC):
     @abstractmethod
     async def get_user_audit_log(
         self, user_id: str, limit: int = 100, offset: int = 0
-    ) -> List[UserAuditLog]:
+    ) -> list[UserAuditLog]:
         """Get audit log entries for a user.
 
         Args:
@@ -502,7 +500,7 @@ class IAuditRepository(ABC):
     @abstractmethod
     async def get_organization_audit_log(
         self, organization_id: str, limit: int = 100, offset: int = 0
-    ) -> List[UserAuditLog]:
+    ) -> list[UserAuditLog]:
         """Get audit log entries for an organization.
 
         Args:

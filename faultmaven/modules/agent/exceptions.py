@@ -4,9 +4,9 @@ This module defines exceptions specific to the agent module,
 providing a hierarchical exception structure for agent operations.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
-from faultmaven.exceptions import AgentException, ServiceError
+from faultmaven.exceptions import AgentException
 
 
 class AgentOrchestrationError(AgentException):
@@ -19,9 +19,9 @@ class AgentOrchestrationError(AgentException):
     def __init__(
         self,
         message: str,
-        phase: Optional[str] = None,
-        tool_name: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        phase: str | None = None,
+        tool_name: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         self.phase = phase
         self.tool_name = tool_name
@@ -41,8 +41,8 @@ class ToolExecutionError(AgentException):
         self,
         message: str,
         tool_name: str,
-        error_code: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        error_code: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         self.tool_name = tool_name
         self.error_code = error_code
@@ -66,9 +66,9 @@ class InvestigationError(AgentException):
     def __init__(
         self,
         message: str,
-        session_id: Optional[str] = None,
-        phase: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        session_id: str | None = None,
+        phase: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         self.session_id = session_id
         self.phase = phase
@@ -88,9 +88,9 @@ class CaseActionError(AgentException):
     def __init__(
         self,
         message: str,
-        from_status: Optional[str] = None,
-        to_status: Optional[str] = None,
-        reason: Optional[str] = None,
+        from_status: str | None = None,
+        to_status: str | None = None,
+        reason: str | None = None,
     ):
         self.from_status = from_status
         self.to_status = to_status
@@ -115,7 +115,7 @@ class AgentTimeoutError(AgentException):
     def __init__(
         self,
         message: str = "Agent operation timed out",
-        timeout_seconds: Optional[float] = None,
+        timeout_seconds: float | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         super().__init__(message, details={"timeout_seconds": timeout_seconds})

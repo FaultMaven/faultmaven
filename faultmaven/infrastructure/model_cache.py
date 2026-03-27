@@ -22,9 +22,8 @@ Configuration:
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 # Import with graceful fallback
 try:
@@ -44,7 +43,7 @@ class ModelLoadInfo:
     loaded_at: datetime
     load_time_seconds: float
     load_triggered_by: str = "lazy"  # "lazy", "startup", "preload"
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class ModelCache:
@@ -60,20 +59,20 @@ class ModelCache:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
                     cls._instance._models = {}
-                    cls._instance._load_info: Dict[str, ModelLoadInfo] = {}
+                    cls._instance._load_info: dict[str, ModelLoadInfo] = {}
         return cls._instance
 
     def __init__(self):
         if not self._initialized:
             self.logger = logging.getLogger(__name__)
             self._models = {}
-            self._load_info: Dict[str, ModelLoadInfo] = {}
+            self._load_info: dict[str, ModelLoadInfo] = {}
             self._initialized = True
             self.logger.debug("ModelCache initialized")
 
     def get_bge_m3_model(
         self, triggered_by: str = "lazy"
-    ) -> Optional[SentenceTransformer]:
+    ) -> SentenceTransformer | None:
         """
         Get cached BGE-M3 model instance.
 
@@ -97,7 +96,7 @@ class ModelCache:
             )
             self._load_info[model_key] = ModelLoadInfo(
                 model_name=model_key,
-                loaded_at=datetime.now(timezone.utc),
+                loaded_at=datetime.now(UTC),
                 load_time_seconds=0,
                 load_triggered_by=triggered_by,
                 error="sentence-transformers not installed",
@@ -119,7 +118,7 @@ class ModelCache:
                 self._models[model_key] = model
                 self._load_info[model_key] = ModelLoadInfo(
                     model_name=model_key,
-                    loaded_at=datetime.now(timezone.utc),
+                    loaded_at=datetime.now(UTC),
                     load_time_seconds=round(load_time, 3),
                     load_triggered_by=triggered_by,
                 )
@@ -132,7 +131,7 @@ class ModelCache:
                 load_time = time.time() - start_time
                 self._load_info[model_key] = ModelLoadInfo(
                     model_name=model_key,
-                    loaded_at=datetime.now(timezone.utc),
+                    loaded_at=datetime.now(UTC),
                     load_time_seconds=round(load_time, 3),
                     load_triggered_by=triggered_by,
                     error=str(e),
@@ -146,7 +145,7 @@ class ModelCache:
 
     def get_model_load_info(
         self, model_key: str = "BAAI/bge-m3"
-    ) -> Optional[ModelLoadInfo]:
+    ) -> ModelLoadInfo | None:
         """Get load information for a specific model."""
         return self._load_info.get(model_key)
 

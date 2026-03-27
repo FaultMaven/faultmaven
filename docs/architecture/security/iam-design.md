@@ -982,13 +982,13 @@ async def logout(
     """Logout user and cleanup session state."""
     # 1. Revoke token
     await auth_service.revoke_token(token)
-    
+
     # 2. Delete investigation state from Redis
     await state_manager.delete_investigation_state(session_id)
-    
+
     # 3. Clean up client mapping
     await session_store.cleanup_client_session_mapping(session_id)
-    
+
     return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
 ```
 

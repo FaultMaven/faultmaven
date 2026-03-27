@@ -48,7 +48,7 @@ export LOG_FORMAT=json
 export LOG_ENABLE_TRACING=true
 
 # Request context
-export LOG_CORRELATION_ID_HEADER=X-Correlation-ID  
+export LOG_CORRELATION_ID_HEADER=X-Correlation-ID
 export LOG_REQUEST_TIMEOUT=300
 export LOG_MAX_LOGGED_OPERATIONS=1000
 ```
@@ -85,7 +85,7 @@ REDIS_PASSWORD=faultmaven-dev-redis-2025
 class RedisSessionStore(ISessionStore):
     def __init__(self):
         self.redis_client = create_redis_client()  # Lightweight factory
-    
+
     async def get(self, key: str):
         # Direct operation - no verbose logging
         return await self.redis_client.get(f"{self.prefix}{key}")
@@ -118,7 +118,7 @@ LOG_EXTERNAL_TIMEOUT=30.0
 class OpenAIClient(BaseExternalClient):
     def __init__(self):
         super().__init__("openai_client", "OpenAI", enable_circuit_breaker=True)
-    
+
     async def call_api(self, prompt: str):
         # Full monitoring with logging, retries, circuit breakers
         return await self.call_external("completion", self._api_call, prompt)
@@ -146,11 +146,11 @@ class RedisSessionStore(BaseExternalClient):
 
 **After (Optimized)**:
 ```python
-# ✅ Lightweight Redis session store  
+# ✅ Lightweight Redis session store
 class RedisSessionStore(ISessionStore):
     def __init__(self):
         self.redis_client = create_redis_client()
-    
+
     async def get(self, session_id):
         return await self.redis_client.get(f"session:{session_id}")
 # Result: Zero log entries for normal operations, errors only when needed
@@ -198,7 +198,7 @@ class RedisSessionStore(ISessionStore):
 ```bash
 # Performance thresholds
 export LOG_PERF_THRESHOLD_API=0.05      # Strict 50ms API threshold
-export LOG_PERF_THRESHOLD_SERVICE=0.3   # Tighter 300ms service threshold  
+export LOG_PERF_THRESHOLD_SERVICE=0.3   # Tighter 300ms service threshold
 export LOG_PERF_THRESHOLD_CORE=0.2      # 200ms core threshold
 export LOG_PERF_THRESHOLD_INFRASTRUCTURE=2.0  # Relaxed 2s infrastructure threshold
 
@@ -241,7 +241,7 @@ export LOG_PERFORMANCE_SAMPLE_RATE=0.1  # Sample 10% of operations
 ```bash
 # Production: Compact JSON to stdout only
 export LOG_OUTPUT_STDOUT=true
-export LOG_OUTPUT_FILE=false  
+export LOG_OUTPUT_FILE=false
 export LOG_JSON_INDENT=null
 export LOG_TIMESTAMP_FORMAT=iso
 
@@ -335,7 +335,7 @@ export LOG_METRICS_ENABLED=true
 export LOG_METRICS_ENDPOINT=http://prometheus:9090/metrics
 export LOG_METRICS_INTERVAL=15
 
-# Elasticsearch integration  
+# Elasticsearch integration
 export LOG_ELASTICSEARCH_ENABLED=true
 export LOG_ELASTICSEARCH_URL=http://elasticsearch:9200
 export LOG_ELASTICSEARCH_INDEX=faultmaven-logs-%{+YYYY.MM.dd}
@@ -421,7 +421,7 @@ LOG_MAX_CONTEXT_ATTRIBUTES=200
 ### Staging Environment
 
 ```bash
-# .env.staging  
+# .env.staging
 # Production-like settings with enhanced monitoring
 LOG_LEVEL=INFO
 LOG_FORMAT=json
@@ -466,7 +466,7 @@ LOG_JSON_INDENT=null
 
 # Strict performance thresholds
 LOG_PERF_THRESHOLD_API=0.1
-LOG_PERF_THRESHOLD_SERVICE=0.5  
+LOG_PERF_THRESHOLD_SERVICE=0.5
 LOG_PERF_THRESHOLD_CORE=0.3
 LOG_PERF_THRESHOLD_INFRASTRUCTURE=1.0
 
@@ -586,7 +586,7 @@ export LOG_ENABLE_MEMORY_TRACKING=true
 export LOG_MEMORY_CHECK_INTERVAL=10
 export LOG_MAX_CONTEXT_MEMORY_MB=1  # Strict limit for debugging
 
-# Memory leak detection  
+# Memory leak detection
 export LOG_ENABLE_LEAK_DETECTION=true
 export LOG_LEAK_DETECTION_THRESHOLD=100
 ```
@@ -619,18 +619,18 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FORMAT=json
       - LOG_ENABLE_TRACING=true
-      
+
       # Performance
       - LOG_PERF_THRESHOLD_API=0.1
       - LOG_PERF_THRESHOLD_SERVICE=0.5
       - LOG_PERF_THRESHOLD_CORE=0.3
       - LOG_PERF_THRESHOLD_INFRASTRUCTURE=1.0
-      
+
       # Integrations
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://opik:4317
       - LOG_ELASTICSEARCH_ENABLED=true
       - LOG_ELASTICSEARCH_URL=http://elasticsearch:9200
-      
+
       # Security
       - LOG_ENABLE_DATA_SANITIZATION=true
       - LOG_SANITIZATION_MODE=redact
@@ -653,7 +653,7 @@ metadata:
   name: faultmaven-logging-config
 data:
   LOG_LEVEL: "INFO"
-  LOG_FORMAT: "json" 
+  LOG_FORMAT: "json"
   LOG_ENABLE_TRACING: "true"
   LOG_PERF_THRESHOLD_API: "0.1"
   LOG_PERF_THRESHOLD_SERVICE: "0.5"
@@ -702,7 +702,7 @@ locals {
     development = {
       log_level                    = "DEBUG"
       performance_api_threshold    = "1.0"
-      performance_service_threshold = "2.0" 
+      performance_service_threshold = "2.0"
       enable_file_output          = true
       elasticsearch_enabled       = false
     }
@@ -714,7 +714,7 @@ locals {
       elasticsearch_enabled       = true
     }
     production = {
-      log_level                    = "INFO"  
+      log_level                    = "INFO"
       performance_api_threshold    = "0.1"
       performance_service_threshold = "0.5"
       enable_file_output          = false

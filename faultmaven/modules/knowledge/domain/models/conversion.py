@@ -10,12 +10,10 @@ Defines the data structures for the conversion pipeline:
 import hashlib
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
-from typing import List, Optional
 
 from pydantic import BaseModel, Field
-
 
 # =============================================================================
 # Enums
@@ -82,7 +80,7 @@ class FailureModeAnalysis(BaseModel):
     title: str
     domain: str
     service: str
-    symptom_class: List[str]
+    symptom_class: list[str]
     severity: str
     symptoms_summary: str
     resolution_summary: str
@@ -91,12 +89,12 @@ class FailureModeAnalysis(BaseModel):
 class SourceAssessment(BaseModel):
     content_type: str
     actionability_rating: str = Field(description="low, medium, or high")
-    missing_information: List[str]
+    missing_information: list[str]
 
 
 class AnalysisResult(BaseModel):
     is_actionable: bool
-    failure_modes: List[FailureModeAnalysis]
+    failure_modes: list[FailureModeAnalysis]
     source_assessment: SourceAssessment
 
 
@@ -123,8 +121,8 @@ class RedactionEntry(BaseModel):
 
 
 class RedactionReport(BaseModel):
-    redactions: List[RedactionEntry] = Field(default_factory=list)
-    warning: Optional[str] = None
+    redactions: list[RedactionEntry] = Field(default_factory=list)
+    warning: str | None = None
     total_redacted: int = 0
 
 
@@ -132,11 +130,11 @@ class PreprocessingResult(BaseModel):
     extracted_text: str
     source_metadata: dict
     redaction_report: RedactionReport = Field(default_factory=RedactionReport)
-    triage_result: Optional[TriageResult] = None
-    warnings: List[str] = Field(default_factory=list)
+    triage_result: TriageResult | None = None
+    warnings: list[str] = Field(default_factory=list)
     is_rejected: bool = False
-    rejection_reason: Optional[str] = None
-    error_code: Optional[str] = None
+    rejection_reason: str | None = None
+    error_code: str | None = None
     token_count: int = 0
     is_existing_runbook: bool = False
 
@@ -148,8 +146,8 @@ class PreprocessingResult(BaseModel):
 
 class ValidationResult(BaseModel):
     passed: bool
-    errors: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class QualityScore(BaseModel):
@@ -170,7 +168,7 @@ class SourceFileInfo(BaseModel):
     filename: str
     size_bytes: int
     content_type: str
-    retained_path: Optional[str] = None
+    retained_path: str | None = None
 
 
 # =============================================================================
@@ -185,17 +183,17 @@ class ConversionDraft(BaseModel):
     scope: str
     status: DraftStatus = DraftStatus.DRAFT
     source_type: SourceType = SourceType.DOCUMENT
-    case_id: Optional[str] = None
+    case_id: str | None = None
     validation: ValidationResult
     quality_score: QualityScore
     file_path: str
     content_preview: str = Field(
         max_length=500, description="First 500 chars of generated markdown"
     )
-    content: Optional[str] = Field(
+    content: str | None = Field(
         default=None, description="Full markdown content, included on detail requests"
     )
-    quality_warning: Optional[str] = Field(
+    quality_warning: str | None = Field(
         default=None, description="Warning if quality score < 50"
     )
 
@@ -221,8 +219,8 @@ class ConversionResponse(BaseModel):
     status: ConversionStatus
     source_file: SourceFileInfo
     analysis: AnalysisResult
-    drafts: List[ConversionDraft]
-    warnings: List[str] = Field(default_factory=list)
+    drafts: list[ConversionDraft]
+    warnings: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -244,7 +242,7 @@ class VerifyResponse(BaseModel):
     status: str = "verified"
     knowledge_item_id: str
     ingested: bool
-    ingested_at: Optional[datetime] = None
+    ingested_at: datetime | None = None
     collection: str
     chunks_created: int
 
@@ -272,16 +270,16 @@ class CaseConversionRequest(BaseModel):
     case_id: str
     title: str
     description: str
-    root_cause: Optional[str] = None
-    root_cause_mechanism: Optional[str] = None
-    solutions: List[str] = Field(default_factory=list)
+    root_cause: str | None = None
+    root_cause_mechanism: str | None = None
+    solutions: list[str] = Field(default_factory=list)
     hypotheses_summary: str = ""
     evidence_summary: str = ""
     domain: str = "general"
     service: str = "unknown"
-    symptom_class: List[str] = Field(default_factory=list)
+    symptom_class: list[str] = Field(default_factory=list)
     severity: str = "medium"
-    tags: List[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     scope: str = "global"
 
 

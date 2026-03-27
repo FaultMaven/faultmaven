@@ -1,7 +1,7 @@
 # Vertical vs Layer Structuring: Purpose and Implications
 
-**Version**: 1.0  
-**Date**: 2026-01-09  
+**Version**: 1.0
+**Date**: 2026-01-09
 **Purpose**: Clarify what "vertical" and "layer" structuring mean, their purposes, and whether restructuring Evidence/Agent/Report achieves the same goals
 
 ---
@@ -86,7 +86,7 @@ faultmaven/
 3. **Simpler Structure**: Less duplication of technical layers
 4. **Traditional Pattern**: Common in layered architectures
 
-**When to use**: 
+**When to use**:
 - Cross-cutting infrastructure (logging, LLM, storage)
 - Services that don't own domain data
 - Shared utilities and core logic
@@ -160,11 +160,11 @@ faultmaven/
 
 ### Purpose Achieved?
 
-✅ **Domain Logic Separation**: Business logic still organized by domain (evidence_service, agent_service, report_service)  
-✅ **Technical Separation**: Clear layer boundaries (API → Service → Infrastructure)  
-❌ **Module Boundaries**: No `contracts.py` - direct imports allowed (but discouraged via conventions)  
-✅ **Data Access**: Uses Case module's repository via dependency injection  
-✅ **Simpler Structure**: No need for contracts when data owned elsewhere  
+✅ **Domain Logic Separation**: Business logic still organized by domain (evidence_service, agent_service, report_service)
+✅ **Technical Separation**: Clear layer boundaries (API → Service → Infrastructure)
+❌ **Module Boundaries**: No `contracts.py` - direct imports allowed (but discouraged via conventions)
+✅ **Data Access**: Uses Case module's repository via dependency injection
+✅ **Simpler Structure**: No need for contracts when data owned elsewhere
 
 **Pros**:
 - Simpler structure (no contracts needed)
@@ -207,11 +207,11 @@ modules/report/
 
 ### Purpose Achieved?
 
-✅ **Domain Cohesion**: Evidence/Agent/Report logic still grouped by domain  
-✅ **Boundary Clarity**: No contracts (they don't own data, no need to expose)  
-✅ **Data Access**: Uses Case module's `ICaseRepository` contract  
-✅ **Module Separation**: Still in `modules/` directory (domain organization)  
-❌ **Full Vertical Benefits**: No contracts, can't enforce strict boundaries  
+✅ **Domain Cohesion**: Evidence/Agent/Report logic still grouped by domain
+✅ **Boundary Clarity**: No contracts (they don't own data, no need to expose)
+✅ **Data Access**: Uses Case module's `ICaseRepository` contract
+✅ **Module Separation**: Still in `modules/` directory (domain organization)
+❌ **Full Vertical Benefits**: No contracts, can't enforce strict boundaries
 
 **Pros**:
 - Domain logic stays organized by domain
@@ -408,11 +408,11 @@ modules/evidence/
 class EvidenceService:
     def __init__(self, case_repo: ICaseRepository):  # Uses Case contract
         self.case_repo = case_repo
-    
+
     async def collect_evidence(self, case_id: str, evidence_data: Evidence):
         # Business logic: validation, preprocessing
         processed = await self.preprocess(evidence_data)
-        
+
         # Persistence via Case repository (Case owns the table)
         case = await self.case_repo.get_case(case_id)
         case.evidence.append(processed)
@@ -437,7 +437,7 @@ class EvidenceService:
 # modules/agent/domain/agent_service.py
 class AgentService:
     def __init__(
-        self, 
+        self,
         case_service: ICaseService,  # Uses Case contract
         knowledge_service: IKnowledgeService,  # Uses Knowledge contract
         llm_provider: ILLMProvider  # Uses infrastructure contract
@@ -445,12 +445,12 @@ class AgentService:
         self.case_service = case_service
         self.knowledge_service = knowledge_service
         self.llm_provider = llm_provider
-    
+
     async def investigate(self, case_id: str, query: str):
         # LangGraph orchestration (ephemeral state)
         # All persistent state goes through Case module
         result = await self.orchestrate_investigation(case_id, query)
-        
+
         # Save investigation state via Case service
         await self.case_service.add_investigation_result(case_id, result)
 ```
@@ -483,14 +483,14 @@ class ReportService:
     ):
         self.case_service = case_service
         self.llm_provider = llm_provider
-    
+
     async def generate_report(self, case_id: str, report_type: ReportType):
         # Get case data via Case service
         case = await self.case_service.get_case(case_id)
-        
+
         # Generate report (business logic)
         report = await self.generate(case, report_type)
-        
+
         # Store in ephemeral storage (Redis + ChromaDB) - temporary
         await self.report_store.save(report)  # Redis + ChromaDB
         # TODO: After TD-001, use case_repo.save_report() instead
@@ -594,6 +594,6 @@ modules/agent/            # Domain Service (NOT vertical)
 
 ---
 
-**Document Owner**: Engineering Leadership  
-**Status**: Clarification Document  
+**Document Owner**: Engineering Leadership
+**Status**: Clarification Document
 **Last Updated**: 2026-01-09

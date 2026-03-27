@@ -42,7 +42,7 @@ class MockTool(AgentTool):
         return f"Mock tool: {self._name}"
 
     @property
-    def parameters_schema(self) -> Dict[str, Any]:
+    def parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -54,7 +54,7 @@ class MockTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         if self._should_fail:
@@ -358,11 +358,11 @@ class TestToolRegistry:
                 return "Tool that always fails"
 
             @property
-            def parameters_schema(self) -> Dict[str, Any]:
+            def parameters_schema(self) -> dict[str, Any]:
                 return {"type": "object", "properties": {}}
 
             async def execute_with_context(
-                self, params: Dict[str, Any], context: ToolContext
+                self, params: dict[str, Any], context: ToolContext
             ) -> ToolResult:
                 raise RuntimeError("Intentional failure")
 

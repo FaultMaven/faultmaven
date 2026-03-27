@@ -26,9 +26,9 @@ Security:
 """
 
 import logging
-from typing import Literal, Optional
+from typing import Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
@@ -41,7 +41,6 @@ from faultmaven.modules.auth.api.rate_limiting import (
 from faultmaven.modules.auth.contracts import (
     IOAuthService,
     OAuthAuthorizationDTO,
-    OAuthTokenDTO,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
@@ -72,10 +71,10 @@ class AuthorizationRequest(BaseModel):
     code_challenge: str = Field(
         description="PKCE code challenge (SHA256 hash of verifier)"
     )
-    code_challenge_method: Optional[Literal["S256"]] = Field(
+    code_challenge_method: Literal["S256"] | None = Field(
         default="S256", description="PKCE challenge method (only S256 supported)"
     )
-    scope: Optional[str] = Field(
+    scope: str | None = Field(
         default="openid profile email", description="OAuth scopes requested"
     )
 
@@ -103,7 +102,7 @@ class AuthorizationApprovalRequest(BaseModel):
 
     approved: bool = Field(description="True if user approved, False if denied")
     code_challenge: str = Field(description="PKCE code challenge")
-    code_challenge_method: Optional[Literal["S256"]] = Field(default="S256")
+    code_challenge_method: Literal["S256"] | None = Field(default="S256")
     client_id: str = Field(description="OAuth client ID")
     redirect_uri: str = Field(description="Callback URI")
     scope: str = Field(description="Requested scopes")
@@ -133,21 +132,21 @@ class TokenRequest(BaseModel):
     )
 
     # For authorization_code grant
-    code: Optional[str] = Field(
+    code: str | None = Field(
         default=None,
         description="Authorization code (required for authorization_code grant)",
     )
-    redirect_uri: Optional[str] = Field(
+    redirect_uri: str | None = Field(
         default=None,
         description="Redirect URI (required for authorization_code grant, must match)",
     )
-    code_verifier: Optional[str] = Field(
+    code_verifier: str | None = Field(
         default=None,
         description="PKCE code verifier (required for authorization_code grant)",
     )
 
     # For refresh_token grant
-    refresh_token: Optional[str] = Field(
+    refresh_token: str | None = Field(
         default=None, description="Refresh token (required for refresh_token grant)"
     )
 
@@ -179,7 +178,7 @@ class RevokeRequest(BaseModel):
     """
 
     token: str = Field(description="Token to revoke (access or refresh)")
-    token_type_hint: Optional[Literal["access_token", "refresh_token"]] = Field(
+    token_type_hint: Literal["access_token", "refresh_token"] | None = Field(
         default=None, description="Hint about token type (optional)"
     )
     client_id: str = Field(description="OAuth client ID")

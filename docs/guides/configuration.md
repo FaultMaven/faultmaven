@@ -1,8 +1,8 @@
 # FaultMaven Operational Configuration Guide
 
-**Version**: 1.0  
-**Last Updated**: 2025-10-11  
-**Status**: Operational Guide  
+**Version**: 1.0
+**Last Updated**: 2025-10-11
+**Status**: Operational Guide
 **Source**: Created from investigation framework operational patterns
 
 ---
@@ -31,17 +31,17 @@ runtime:
   python_version: "3.10+"
   memory: "2GB minimum, 4GB recommended"
   cpu: "2 cores minimum, 4 cores recommended"
-  
+
 dependencies:
   # LLM Providers (at least one required)
   - openai >= 1.0.0
   - anthropic >= 0.5.0
-  
+
   # Core Dependencies
   - pydantic >= 2.0.0
   - fastapi >= 0.100.0
   - redis >= 4.0.0
-  
+
   # Optional but Recommended
   - prometheus-client  # For monitoring
   - sentry-sdk  # For error tracking
@@ -68,57 +68,57 @@ dependencies:
 @dataclass
 class InvestigationConfig:
     """Configuration for investigation framework"""
-    
+
     # OODA Settings
     max_ooda_iterations: int = 10
     """Maximum OODA iterations before escalation"""
-    
+
     progress_stall_threshold: int = 3
     """Iterations without progress before stall detection"""
-    
+
     anchoring_detection_threshold: int = 4
     """Tests of same category before forcing alternatives"""
-    
+
     confidence_decay_factor: float = 0.85
     """Decay factor for hypothesis confidence (per iteration)"""
-    
+
     # Memory Settings
     hot_memory_size: int = 2
     """Number of iterations kept in hot memory (full fidelity)"""
-    
+
     warm_memory_size: int = 3
     """Number of iterations in warm memory (summarized)"""
-    
+
     max_conversation_history: int = 50
     """Maximum conversation turns to retain"""
-    
+
     memory_compression_interval: int = 3
     """Compress memory every N turns"""
-    
+
     # Escalation Settings
     auto_escalate_after_iterations: int = 10
     """Auto-recommend escalation after N iterations"""
-    
+
     auto_escalate_on_mitigation_failures: int = 3
     """Auto-recommend escalation after N failed mitigations"""
-    
+
     # Phase Transition Settings
     phase_0_timeout_turns: int = 10
     """Max turns in Phase 0 (Intake) before timeout"""
-    
+
     require_phase_confirmation: bool = True
     """Require user confirmation for phase transitions"""
-    
+
     allow_phase_skipping: bool = True
     """Allow skipping phases for critical incidents"""
-    
+
     # Evidence Settings
     max_evidence_requests_per_turn: int = 3
     """Maximum evidence requests per turn"""
-    
+
     evidence_coverage_threshold: float = 0.7
     """Minimum coverage before phase advancement"""
-    
+
     blocked_evidence_escalation_threshold: int = 3
     """Escalate after N critical evidence blocked"""
 ```
@@ -129,19 +129,19 @@ class InvestigationConfig:
 @dataclass
 class LLMConfig:
     """LLM provider configuration"""
-    
+
     # Provider Settings
     llm_provider: str = "openai"  # or "anthropic", "fireworks"
     llm_model: str = "gpt-4-turbo"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 2000
     llm_timeout_seconds: int = 30
-    
+
     # Retry Settings
     max_retries: int = 3
     retry_base_delay: float = 2.0  # seconds
     retry_exponential_base: float = 2.0
-    
+
     # Fallback Settings
     enable_fallback: bool = True
     fallback_provider: str = "anthropic"
@@ -154,25 +154,25 @@ class LLMConfig:
 @dataclass
 class PersistenceConfig:
     """Data persistence configuration"""
-    
+
     # Redis Settings
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[str] = None
     redis_ssl: bool = False
-    
+
     # Session TTL
     session_ttl_seconds: int = 3600  # 1 hour
     hot_memory_ttl_seconds: int = 3600  # 1 hour
     warm_memory_ttl_seconds: int = 7200  # 2 hours
     cold_memory_ttl_seconds: int = 86400  # 24 hours
-    
+
     # State Persistence
     save_state_on_each_turn: bool = True
     async_state_save: bool = True
     compress_state_in_redis: bool = True
-    
+
     # Backup Settings
     enable_postgres_backup: bool = False
     postgres_dsn: Optional[str] = None
@@ -184,20 +184,20 @@ class PersistenceConfig:
 @dataclass
 class PerformanceConfig:
     """Performance and optimization settings"""
-    
+
     # Caching
     enable_caching: bool = True
     cache_ttl_seconds: int = 3600
-    
+
     # Concurrency
     max_concurrent_investigations: int = 100
     max_concurrent_llm_requests: int = 10
-    
+
     # Token Management
     enable_token_counting: bool = True
     token_budget_per_turn: int = 4000
     warn_at_token_percentage: float = 0.8  # 80%
-    
+
     # Memory Management
     enable_automatic_compression: bool = True
     compression_target_tokens: int = 1600
@@ -250,7 +250,7 @@ export LOG_LEVEL="INFO"
 ```python
 class InvestigationMetrics:
     """Prometheus metrics for investigation framework"""
-    
+
     def __init__(self):
         # Investigation Counters
         self.investigation_counter = Counter(
@@ -258,119 +258,119 @@ class InvestigationMetrics:
             'Total investigations started',
             ['engagement_mode', 'investigation_strategy']
         )
-        
+
         self.investigation_completed = Counter(
             'faultmaven_investigations_completed_total',
             'Investigations completed',
             ['completion_type']  # resolved, escalated, abandoned
         )
-        
+
         # Phase Metrics
         self.phase_duration = Histogram(
             'faultmaven_phase_duration_seconds',
             'Time spent in each investigation phase',
             ['phase_number', 'phase_name']
         )
-        
+
         self.phase_transitions = Counter(
             'faultmaven_phase_transitions_total',
             'Phase transitions',
             ['from_phase', 'to_phase']
         )
-        
+
         # OODA Metrics
         self.ooda_iterations = Histogram(
             'faultmaven_ooda_iterations',
             'Number of OODA iterations per investigation',
             ['investigation_strategy']
         )
-        
+
         self.ooda_step_duration = Histogram(
             'faultmaven_ooda_step_duration_seconds',
             'Duration of OODA steps',
             ['step_name']
         )
-        
+
         # Success Metrics
         self.root_cause_identified = Counter(
             'faultmaven_root_cause_identified_total',
             'Investigations where root cause was identified',
             ['confidence_level']  # high (>0.8), medium (0.6-0.8), low (<0.6)
         )
-        
+
         self.escalation_rate = Counter(
             'faultmaven_escalations_total',
             'Investigations escalated',
             ['escalation_reason']
         )
-        
+
         # Evidence Metrics
         self.evidence_requests = Histogram(
             'faultmaven_evidence_requests',
             'Evidence requests per investigation'
         )
-        
+
         self.evidence_coverage = Histogram(
             'faultmaven_evidence_coverage',
             'Evidence coverage score (0.0-1.0)'
         )
-        
+
         self.evidence_blocked = Counter(
             'faultmaven_evidence_blocked_total',
             'Evidence requests blocked',
             ['category']
         )
-        
+
         # Hypothesis Metrics
         self.hypotheses_generated = Histogram(
             'faultmaven_hypotheses_generated',
             'Hypotheses generated per investigation'
         )
-        
+
         self.anchoring_detected = Counter(
             'faultmaven_anchoring_detected_total',
             'Anchoring bias detected'
         )
-        
+
         # LLM Metrics
         self.llm_latency = Histogram(
             'faultmaven_llm_latency_seconds',
             'LLM API call latency',
             ['provider', 'model']
         )
-        
+
         self.llm_errors = Counter(
             'faultmaven_llm_errors_total',
             'LLM API errors',
             ['provider', 'error_type']
         )
-        
+
         # Memory Metrics
         self.memory_compression_duration = Histogram(
             'faultmaven_memory_compression_duration_seconds',
             'Memory compression duration'
         )
-        
+
         self.memory_token_count = Histogram(
             'faultmaven_memory_tokens',
             'Token count after compression',
             ['tier']  # hot, warm, cold
         )
-    
+
     def record_investigation_start(self, engagement_mode: str, strategy: str):
         """Record new investigation"""
         self.investigation_counter.labels(
             engagement_mode=engagement_mode,
             investigation_strategy=strategy
         ).inc()
-    
+
     def record_phase_duration(self, phase: int, phase_name: str, duration: float):
         """Record time spent in phase"""
         self.phase_duration.labels(
             phase_number=str(phase),
             phase_name=phase_name
         ).observe(duration)
-    
+
     def record_root_cause_found(self, confidence: float):
         """Record root cause identification"""
         if confidence >= 0.8:
@@ -379,9 +379,9 @@ class InvestigationMetrics:
             level = "medium"
         else:
             level = "low"
-        
+
         self.root_cause_identified.labels(confidence_level=level).inc()
-    
+
     def record_escalation(self, reason: str):
         """Record escalation"""
         self.escalation_rate.labels(escalation_reason=reason).inc()
@@ -392,13 +392,13 @@ class InvestigationMetrics:
 ```python
 async def health_check() -> Dict:
     """Comprehensive health check"""
-    
+
     health = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "components": {}
     }
-    
+
     # Check Redis
     try:
         await redis_client.ping()
@@ -406,7 +406,7 @@ async def health_check() -> Dict:
     except Exception as e:
         health["components"]["redis"] = {"status": "unhealthy", "error": str(e)}
         health["status"] = "degraded"
-    
+
     # Check LLM Provider
     try:
         await llm_client.health_check()
@@ -414,7 +414,7 @@ async def health_check() -> Dict:
     except Exception as e:
         health["components"]["llm"] = {"status": "unhealthy", "error": str(e)}
         health["status"] = "degraded"
-    
+
     # Check Investigation Metrics
     metrics = get_investigation_metrics()
     health["components"]["investigations"] = {
@@ -422,7 +422,7 @@ async def health_check() -> Dict:
         "active_count": metrics["active"],
         "avg_duration_minutes": metrics["avg_duration"]
     }
-    
+
     return health
 ```
 
@@ -527,5 +527,3 @@ config = InvestigationConfig(
 ---
 
 **END OF DOCUMENT**
-
-

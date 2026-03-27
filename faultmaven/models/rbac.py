@@ -12,7 +12,6 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
 
 from enum import Enum
-from typing import FrozenSet, List, Set
 
 
 class Role(str, Enum):
@@ -70,7 +69,7 @@ class Permission(str, Enum):
 
 # Role-Permission mapping
 # Each role grants a set of permissions
-ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
+ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.ADMIN: frozenset(
         [
             # All permissions
@@ -115,7 +114,7 @@ ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
 }
 
 
-def get_permissions_for_role(role: Role) -> FrozenSet[Permission]:
+def get_permissions_for_role(role: Role) -> frozenset[Permission]:
     """Get all permissions granted by a role.
 
     Args:
@@ -127,7 +126,7 @@ def get_permissions_for_role(role: Role) -> FrozenSet[Permission]:
     return ROLE_PERMISSIONS.get(role, frozenset())
 
 
-def get_permissions_for_roles(roles: List[str]) -> Set[Permission]:
+def get_permissions_for_roles(roles: list[str]) -> set[Permission]:
     """Get combined permissions for multiple roles.
 
     This aggregates permissions from all specified roles.
@@ -139,7 +138,7 @@ def get_permissions_for_roles(roles: List[str]) -> Set[Permission]:
     Returns:
         Combined set of permissions from all roles
     """
-    permissions: Set[Permission] = set()
+    permissions: set[Permission] = set()
     for role_name in roles:
         try:
             role = Role(role_name)
@@ -150,7 +149,7 @@ def get_permissions_for_roles(roles: List[str]) -> Set[Permission]:
     return permissions
 
 
-def has_permission(user_permissions: List[str], required_permission: str) -> bool:
+def has_permission(user_permissions: list[str], required_permission: str) -> bool:
     """Check if user has a specific permission.
 
     Args:
@@ -164,7 +163,7 @@ def has_permission(user_permissions: List[str], required_permission: str) -> boo
 
 
 def has_any_permission(
-    user_permissions: List[str], required_permissions: List[str]
+    user_permissions: list[str], required_permissions: list[str]
 ) -> bool:
     """Check if user has any of the specified permissions.
 
@@ -179,7 +178,7 @@ def has_any_permission(
 
 
 def has_all_permissions(
-    user_permissions: List[str], required_permissions: List[str]
+    user_permissions: list[str], required_permissions: list[str]
 ) -> bool:
     """Check if user has all of the specified permissions.
 
@@ -193,7 +192,7 @@ def has_all_permissions(
     return all(perm in user_permissions for perm in required_permissions)
 
 
-def has_role(user_roles: List[str], required_role: str) -> bool:
+def has_role(user_roles: list[str], required_role: str) -> bool:
     """Check if user has a specific role.
 
     Args:
@@ -206,7 +205,7 @@ def has_role(user_roles: List[str], required_role: str) -> bool:
     return required_role in user_roles
 
 
-def is_admin(user_roles: List[str]) -> bool:
+def is_admin(user_roles: list[str]) -> bool:
     """Check if user is an admin.
 
     Args:

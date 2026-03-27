@@ -9,8 +9,6 @@ Enhanced for Task 2: Includes response-type-specific and intent-aware examples
 that integrate with the intelligent prompt system.
 """
 
-from typing import Dict, List, Optional
-
 from faultmaven.models.api import ResponseType
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent
 
@@ -224,7 +222,7 @@ def get_response_pattern(response_type: ResponseType) -> str:
 
 
 def format_pattern_prompt(
-    response_type: Optional[ResponseType] = None, domain: Optional[str] = None
+    response_type: ResponseType | None = None, domain: str | None = None
 ) -> str:
     """Format pattern templates into a concise prompt section
 
@@ -382,8 +380,8 @@ def get_examples_by_intent(intent: QueryIntent, limit: int = 1) -> str:
 
 def select_intelligent_examples(
     response_type: ResponseType,
-    intent: Optional[QueryIntent] = None,
-    domain: Optional[str] = None,
+    intent: QueryIntent | None = None,
+    domain: str | None = None,
     limit: int = 2,
 ) -> str:
     """
@@ -422,8 +420,8 @@ def select_intelligent_examples(
 
 def format_intelligent_few_shot_prompt(
     response_type: ResponseType,
-    intent: Optional[QueryIntent] = None,
-    domain: Optional[str] = None,
+    intent: QueryIntent | None = None,
+    domain: str | None = None,
     limit: int = 2,
 ) -> str:
     """

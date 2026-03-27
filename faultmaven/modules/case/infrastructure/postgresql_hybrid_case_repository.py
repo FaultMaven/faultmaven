@@ -18,10 +18,11 @@ Architecture:
     └── agent_tool_calls (1:N normalized table)
 """
 
+import builtins
 import json
 import logging
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -44,7 +45,6 @@ from faultmaven.modules.case.domain.models import (
     ProblemVerification,
     RootCauseConclusion,
     Solution,
-    TurnProgress,
     UploadedFile,
     WorkingConclusion,
 )
@@ -113,7 +113,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Update timestamp
-            case.updated_at = datetime.now(timezone.utc)
+            case.updated_at = datetime.now(UTC)
 
             organization_id = case.organization_id
 
@@ -161,7 +161,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
 
-    async def get(self, case_id: str) -> Optional[Case]:
+    async def get(self, case_id: str) -> Case | None:
         """
         Retrieve case by ID using JOINs for normalized tables.
 
@@ -339,12 +339,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def list(
         self,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
+        status: CaseStatus | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[List[Case], int]:
+    ) -> tuple[list[Case], int]:
         """
         List cases with optional filters and pagination.
 
@@ -464,7 +464,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         case_id: str,
         target_user_id: str,
         role: str,  # ParticipantRole: owner, collaborator, viewer
-        sharer_user_id: Optional[str] = None,
+        sharer_user_id: str | None = None,
     ) -> bool:
         """
         Share a case with another user.
@@ -514,7 +514,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to share case {case_id}: {e}") from e
 
     async def unshare_case(
-        self, case_id: str, user_id: str, unsharer_user_id: Optional[str] = None
+        self, case_id: str, user_id: str, unsharer_user_id: str | None = None
     ) -> bool:
         """
         Unshare a case from a user.
@@ -556,7 +556,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(f"Failed to unshare case {case_id}: {e}") from e
 
-    async def get_case_participants(self, case_id: str) -> List[Dict[str, Any]]:
+    async def get_case_participants(
+        self, case_id: str
+    ) -> builtins.list[dict[str, Any]]:
         """
         Get all participants for a case.
 
@@ -598,10 +600,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def search(
         self,
         query: str,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 20,
-    ) -> tuple[List[Case], int]:
+    ) -> tuple[builtins.list[Case], int]:
         """
         Search cases using PostgreSQL full-text search.
 
@@ -715,7 +717,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> List[dict]:
+    ) -> builtins.list[dict]:
         """
         Get messages for case with pagination.
 
@@ -795,7 +797,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
-    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """
         Compute analytics for case from normalized tables.
 
@@ -1059,7 +1061,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         )
 
     async def _upsert_evidence(
-        self, case_id: str, evidence_list: List[Evidence], organization_id: str
+        self, case_id: str, evidence_list: builtins.list[Evidence], organization_id: str
     ) -> None:
         """Upsert evidence records (normalized table)."""
         # Delete existing evidence not in current list
@@ -1114,7 +1116,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_hypotheses(
-        self, case_id: str, hypotheses_dict: Dict[str, Hypothesis], organization_id: str
+        self, case_id: str, hypotheses_dict: dict[str, Hypothesis], organization_id: str
     ) -> None:
         """Upsert hypotheses records (normalized table)."""
         # Delete existing hypotheses not in current dict
@@ -1193,8 +1195,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "tested_at": hypothesis.tested_at,
                     "concluded_at": hypothesis.concluded_at,
                     "proposed_at": getattr(hypothesis, "proposed_at", None)
-                    or datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc),
+                    or datetime.now(UTC),
+                    "updated_at": datetime.now(UTC),
                     "metadata": json.dumps(hypothesis.metadata),
                     "created_by": "system",
                     "updated_by": None,
@@ -1202,7 +1204,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_solutions(
-        self, case_id: str, solutions_list: List[Solution], organization_id: str
+        self,
+        case_id: str,
+        solutions_list: builtins.list[Solution],
+        organization_id: str,
     ) -> None:
         """Upsert solutions records (normalized table)."""
         # Delete existing solutions not in current list
@@ -1315,9 +1320,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "verification_result": None,
                     "verification_timestamp": None,
                     "proposed_at": getattr(solution, "proposed_at", None)
-                    or datetime.now(timezone.utc),
+                    or datetime.now(UTC),
                     "implemented_at": None,
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
                     "created_by": "system",
                     "updated_by": None,
@@ -1325,7 +1330,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_uploaded_files(
-        self, case_id: str, files_list: List[UploadedFile], organization_id: str
+        self,
+        case_id: str,
+        files_list: builtins.list[UploadedFile],
+        organization_id: str,
     ) -> None:
         """Upsert uploaded_files records (normalized table) - matches UploadedFile Pydantic model."""
         # Delete existing files not in current list
@@ -1386,7 +1394,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             )
 
     async def _upsert_messages(
-        self, case_id: str, messages_list: List[Dict[str, Any]], organization_id: str
+        self,
+        case_id: str,
+        messages_list: builtins.list[dict[str, Any]],
+        organization_id: str,
     ) -> None:
         """Upsert case messages (PostgreSQL-optimized).
 
@@ -1449,14 +1460,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "turn_number": msg.get("turn_number", idx),
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", ""),
-                    "created_at": msg.get("created_at") or datetime.now(timezone.utc),
+                    "created_at": msg.get("created_at") or datetime.now(UTC),
                     "token_count": msg.get("token_count"),
                     "metadata": json.dumps(msg.get("metadata", {})),
                 },
             )
 
     async def _append_case_actions(
-        self, case_id: str, transitions: List[CaseAction], organization_id: str
+        self, case_id: str, transitions: builtins.list[CaseAction], organization_id: str
     ) -> None:
         """Append case actions (append-only audit trail)."""
         for transition in transitions:
@@ -1662,14 +1673,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Add report to PostgreSQL reports table."""
-        from datetime import timezone
-
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
@@ -1721,7 +1724,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         generated_at = (
             datetime.fromisoformat(report.generated_at.replace("Z", "+00:00"))
             if isinstance(report.generated_at, str)
@@ -1762,17 +1765,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def get_report(self, report_id: str) -> Optional["CaseReport"]:
         """Get report by ID from PostgreSQL."""
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportStatus,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
 
         query = text(
             """
-            SELECT 
+            SELECT
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
@@ -1796,15 +1792,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         report_type: Optional["ReportType"] = None,
         include_history: bool = False,
         only_current: bool = False,
-    ) -> List["CaseReport"]:
+    ) -> builtins.list["CaseReport"]:
         """Get reports for a case with optional filtering."""
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportStatus,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
 
         conditions = ["case_id = :case_id"]
         params = {"case_id": case_id}
@@ -1820,7 +1809,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         query = text(
             f"""
-            SELECT 
+            SELECT
                 report_id, case_id, report_type, version, is_current,
                 linked_to_closure, title, content, format,
                 generation_status, generation_time_ms, metadata,
@@ -1838,14 +1827,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in PostgreSQL."""
-        from datetime import timezone
-
-        from faultmaven.modules.case.domain.owned_models.report import (
-            CaseReport,
-            ReportType,
-            RunbookMetadata,
-        )
-        from faultmaven.utils.serialization import to_json_compatible
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
@@ -1874,7 +1855,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             if report.metadata
             else "{}"
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Use report.updated_at if set, otherwise use current time (for updates, always refresh)
         if report.updated_at:
             updated_at = (
@@ -1971,20 +1952,20 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Ensure UTC: if timezone-aware, convert to UTC; if naive, assume UTC
             gen_dt = row.generated_at
             if gen_dt.tzinfo is None:
-                gen_dt = gen_dt.replace(tzinfo=timezone.utc)
-            elif gen_dt.tzinfo != timezone.utc:
-                gen_dt = gen_dt.astimezone(timezone.utc)
+                gen_dt = gen_dt.replace(tzinfo=UTC)
+            elif gen_dt.tzinfo != UTC:
+                gen_dt = gen_dt.astimezone(UTC)
             generated_at = to_json_compatible(gen_dt)
         else:
-            generated_at = to_json_compatible(datetime.now(timezone.utc))
+            generated_at = to_json_compatible(datetime.now(UTC))
 
         if row.updated_at:
             # Ensure UTC: if timezone-aware, convert to UTC; if naive, assume UTC
             upd_dt = row.updated_at
             if upd_dt.tzinfo is None:
-                upd_dt = upd_dt.replace(tzinfo=timezone.utc)
-            elif upd_dt.tzinfo != timezone.utc:
-                upd_dt = upd_dt.astimezone(timezone.utc)
+                upd_dt = upd_dt.replace(tzinfo=UTC)
+            elif upd_dt.tzinfo != UTC:
+                upd_dt = upd_dt.astimezone(UTC)
             updated_at = to_json_compatible(upd_dt)
         else:
             updated_at = generated_at  # Fallback to generated_at if NULL
@@ -2018,8 +1999,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         size_bytes: int,
         storage_path: str,
         uploaded_by: str,
-        description: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        description: str | None = None,
+        tags: builtins.list[str] | None = None,
     ) -> Any:
         """Create standalone evidence record (PostgreSQL stub - needs implementation)."""
         # TODO: Implement using standalone_evidence table
@@ -2027,13 +2008,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "create_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
         )
 
-    async def get_standalone_evidence(self, evidence_id: str) -> Optional[Any]:
+    async def get_standalone_evidence(self, evidence_id: str) -> Any | None:
         """Get standalone evidence by ID (PostgreSQL stub)."""
         raise NotImplementedError(
             "get_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
         )
 
-    async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
+    async def list_standalone_evidence(
+        self, filters: Any
+    ) -> tuple[builtins.list[Any], int]:
         """List standalone evidence with filters (PostgreSQL stub)."""
         raise NotImplementedError(
             "list_standalone_evidence not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2047,7 +2030,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def link_standalone_evidence_to_case(
         self, evidence_id: str, case_id: str
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Link standalone evidence to a case (PostgreSQL stub)."""
         raise NotImplementedError(
             "link_standalone_evidence_to_case not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2065,7 +2048,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "create_agent_execution not yet implemented in PostgreSQLHybridCaseRepository"
         )
 
-    async def get_agent_execution(self, execution_id: str) -> Optional[Any]:
+    async def get_agent_execution(self, execution_id: str) -> Any | None:
         """Get agent execution by ID (PostgreSQL stub)."""
         raise NotImplementedError(
             "get_agent_execution not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2074,11 +2057,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def list_agent_executions_by_case(
         self,
         case_id: str,
-        status: Optional[str] = None,
-        agent_type: Optional[str] = None,
+        status: str | None = None,
+        agent_type: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List[Any], int]:
+    ) -> tuple[builtins.list[Any], int]:
         """List agent executions for a case (PostgreSQL stub)."""
         raise NotImplementedError(
             "list_agent_executions_by_case not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2087,10 +2070,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def list_agent_executions_by_session(
         self,
         session_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List[Any], int]:
+    ) -> tuple[builtins.list[Any], int]:
         """List agent executions for a session (PostgreSQL stub)."""
         raise NotImplementedError(
             "list_agent_executions_by_session not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2121,7 +2104,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             "update_agent_tool_call not yet implemented in PostgreSQLHybridCaseRepository"
         )
 
-    async def get_agent_tool_calls_for_execution(self, execution_id: str) -> List[Any]:
+    async def get_agent_tool_calls_for_execution(
+        self, execution_id: str
+    ) -> builtins.list[Any]:
         """Get all tool calls for an execution (PostgreSQL stub)."""
         raise NotImplementedError(
             "get_agent_tool_calls_for_execution not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2136,8 +2121,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     async def get_latest_agent_execution(
         self,
         case_id: str,
-        agent_type: Optional[str] = None,
-    ) -> Optional[Any]:
+        agent_type: str | None = None,
+    ) -> Any | None:
         """Get the most recent agent execution (PostgreSQL stub)."""
         raise NotImplementedError(
             "get_latest_agent_execution not yet implemented in PostgreSQLHybridCaseRepository"
@@ -2190,7 +2175,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to create checkpoint for case {checkpoint.case_id}: {e}"
             ) from e
 
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
+    async def get_checkpoint(self, checkpoint_id: str) -> CaseCheckpoint | None:
         """Get a checkpoint by ID (PostgreSQL)."""
         try:
             query = text(
@@ -2215,7 +2200,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 f"Failed to get checkpoint {checkpoint_id}: {e}"
             ) from e
 
-    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
+    async def get_checkpoints(self, case_id: str) -> builtins.list[CaseCheckpoint]:
         """Get all checkpoints for a case (PostgreSQL)."""
         try:
             query = text(
@@ -2250,7 +2235,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         created_at = row.created_at
         if created_at and created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
 
         return CaseCheckpoint(
             checkpoint_id=row.checkpoint_id,

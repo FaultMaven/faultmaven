@@ -177,7 +177,7 @@
 ## Key Architectural Patterns
 
 1. **Dependency Injection**: All layers connected via DI container
-2. **Interface Segregation**: Heavy use of interfaces for testability  
+2. **Interface Segregation**: Heavy use of interfaces for testability
 3. **Lazy Initialization**: Objects created on-demand
 4. **Unified Logging**: All services use BaseService with consistent logging
 5. **Error Handling**: Centralized exception handling with FaultMavenException hierarchy
@@ -188,26 +188,7 @@
 - **Start with**: `main.py` for app setup, `container.py` for dependencies
 - **API endpoints**: Look in `api/v1/routes/`
 - **Business logic**: Check `services/` folder
-- **Core algorithms**: Examine `core/` folder  
+- **Core algorithms**: Examine `core/` folder
 - **External integrations**: Look in `infrastructure/`
 - **Interfaces**: Check `models/interfaces.py` for contracts
 - **Configuration**: All settings in `config/settings.py`
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

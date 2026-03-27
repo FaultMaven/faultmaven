@@ -364,8 +364,8 @@ sys.modules.setdefault(
 
 import asyncio
 import os
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -623,7 +623,7 @@ sys.modules.setdefault(
 try:
     from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
     from faultmaven.modules.agent.tools.web_search import WebSearchTool
-except Exception as e:
+except Exception:
     # If import fails for any reason (ctypes, langchain version, torch, etc.), create mock versions
     # This allows tests to run even if these heavy dependencies have issues
     KnowledgeBaseTool = Mock
@@ -684,7 +684,7 @@ def initialized_container(reset_container):
     try:
         reset_container.initialize()
         return reset_container
-    except Exception as e:
+    except Exception:
         # If real initialization fails, create minimal mock container
         from unittest.mock import MagicMock
 
@@ -928,7 +928,7 @@ def sample_case_message():
         turn_number=1,
         role="user",
         content="This is a test message for case persistence testing",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         author_id="test-user-456",
         metadata={"test": True, "source": "pytest"},
     )
@@ -944,7 +944,7 @@ def sample_case_participant():
     return CaseParticipant(
         user_id="test-collaborator-789",
         role="collaborator",
-        added_at=datetime.now(timezone.utc),
+        added_at=datetime.now(UTC),
         added_by="test-user-456",
     )
 
@@ -963,9 +963,9 @@ def sample_case_summary():
         status=CaseStatus.INQUIRY,
         user_id="test-user-456",
         organization_id="test-org-123",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        last_activity_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
         current_turn=0,
         milestones_completed=0,
         total_milestones=8,
@@ -977,7 +977,7 @@ def sample_case_summary():
 @pytest.fixture
 def mock_case_store():
     """Mock case store for testing."""
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
 
     store = Mock()
     store.create_case = AsyncMock(return_value=True)
@@ -1000,7 +1000,7 @@ def mock_case_store():
 @pytest.fixture
 def mock_case_service():
     """Mock case service for testing."""
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
 
     service = Mock()
     service.create_case = AsyncMock()
@@ -1098,7 +1098,7 @@ def case_with_conversation():
 
     from faultmaven.modules.case.domain.models import Case, CaseStatus
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     case_id = "case_conversation1"
 
     # Create messages as dicts per case-storage-design.md Section 4.7

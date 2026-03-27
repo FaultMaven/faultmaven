@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # FaultMaven Opik Configuration for opik.faultmaven.local
-# 
+#
 # PURPOSE: Connect to the FaultMaven team's Opik server
-# SETUP: 
+# SETUP:
 #   1. Copy this file: cp scripts/config/opik_faultmaven_local.sh.example scripts/config/opik_faultmaven_local.sh
 #   2. Edit the copied file if needed (default values should work)
 #   3. USAGE: source scripts/config/opik_faultmaven_local.sh && ./run_faultmaven.sh
-# 
+#
 # This connects to opik.faultmaven.local (192.168.0.111) instead of localhost
 
 echo "🔧 Configuring FaultMaven for Remote Opik Instance"
@@ -26,7 +26,7 @@ fi
 # NOTE: Ensure 'opik.faultmaven.local' resolves in your /etc/hosts file
 export OPIK_USE_LOCAL="true"
 export OPIK_LOCAL_URL="http://opik.faultmaven.local:30080"  # Hostname-based URL
-export OPIK_LOCAL_HOST="opik.faultmaven.local"              # Your Opik hostname  
+export OPIK_LOCAL_HOST="opik.faultmaven.local"              # Your Opik hostname
 export OPIK_PROJECT_NAME="FaultMaven Development"           # Project name
 export OPIK_API_KEY="local-dev-key"                         # Development key
 

@@ -11,7 +11,7 @@ Tests cover:
 - Error handling
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -88,7 +88,7 @@ def search_service(knowledge_repo, mock_embedding_service, mock_vector_store):
     )
 
 
-def create_embedding(value: float = 0.1) -> List[float]:
+def create_embedding(value: float = 0.1) -> list[float]:
     """Create test embedding vector."""
     return [value] * EMBEDDING_DIMENSIONS
 
@@ -101,7 +101,7 @@ def create_knowledge_item(
     item_type: KnowledgeItemType = KnowledgeItemType.FAQ,
     category: str = "general",
     is_published: bool = True,
-    embedding_vector: List[float] = None,
+    embedding_vector: list[float] = None,
 ) -> KnowledgeItem:
     """Create test knowledge item."""
     return KnowledgeItem(
@@ -113,8 +113,8 @@ def create_knowledge_item(
         category=category,
         is_published=is_published,
         embedding_vector=embedding_vector,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
 

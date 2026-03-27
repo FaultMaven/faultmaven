@@ -11,12 +11,11 @@ This middleware provides comprehensive system-wide performance enhancements:
 import asyncio
 import gc
 import gzip
-import json
 import logging
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import Request, Response
 from starlette.background import BackgroundTasks
@@ -197,7 +196,7 @@ class SystemOptimizationMiddleware(BaseHTTPMiddleware):
 
         return response
 
-    async def _check_cache(self, request: Request) -> Optional[Response]:
+    async def _check_cache(self, request: Request) -> Response | None:
         """Check if response is cached with intelligent cache management"""
         cache_key = self._generate_cache_key(request)
 
@@ -570,7 +569,7 @@ class SystemOptimizationMiddleware(BaseHTTPMiddleware):
         # Start background task
         asyncio.create_task(background_optimizer())
 
-    def get_optimization_metrics(self) -> Dict[str, Any]:
+    def get_optimization_metrics(self) -> dict[str, Any]:
         """Get comprehensive optimization metrics"""
         return {
             **self._optimization_metrics,

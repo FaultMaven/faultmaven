@@ -6,7 +6,7 @@ Rules are aligned with the KB Toolkit's RunbookValidator and QualityScorer.
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -85,8 +85,8 @@ class RunbookValidator:
 
     def validate_content(self, content: str) -> ValidationResult:
         """Validate runbook markdown content."""
-        errors: List[str] = []
-        warnings: List[str] = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         # Gate 1: YAML frontmatter metadata
         metadata = self._extract_metadata(content)
@@ -108,17 +108,17 @@ class RunbookValidator:
             passed=len(errors) == 0, errors=errors, warnings=warnings
         )
 
-    def _extract_metadata(self, content: str) -> Optional[Dict[str, Any]]:
+    def _extract_metadata(self, content: str) -> dict[str, Any] | None:
         match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
         if not match:
             return None
         try:
             return yaml.safe_load(match.group(1))
-        except yaml.YAMLError as e:
+        except yaml.YAMLError:
             return None
 
     def _validate_metadata(
-        self, metadata: Dict[str, Any], errors: List[str], warnings: List[str]
+        self, metadata: dict[str, Any], errors: list[str], warnings: list[str]
     ) -> None:
         # Required fields
         for field in REQUIRED_METADATA:
@@ -210,14 +210,14 @@ class RunbookValidator:
                 )
 
     def _validate_structure(
-        self, content: str, errors: List[str], warnings: List[str]
+        self, content: str, errors: list[str], warnings: list[str]
     ) -> None:
         for section in REQUIRED_SECTIONS:
             pattern = rf"^##+ {re.escape(section)}"
             if not re.search(pattern, content, re.MULTILINE):
                 errors.append(f"Missing required section: {section}")
 
-    def _validate_quality(self, content: str, warnings: List[str]) -> None:
+    def _validate_quality(self, content: str, warnings: list[str]) -> None:
         content_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL)
 
         if len(content_body) < MIN_CONTENT_LENGTH:
@@ -236,7 +236,7 @@ class RunbookValidator:
         if len(links) == 0:
             warnings.append("No external references found")
 
-    def _validate_security(self, content: str, warnings: List[str]) -> None:
+    def _validate_security(self, content: str, warnings: list[str]) -> None:
         secret_patterns = [
             (r"password\s*=\s*['\"][^'\"]+['\"]", "Potential hardcoded password"),
             (r"api[_-]?key\s*=\s*['\"][^'\"]+['\"]", "Potential hardcoded API key"),
@@ -452,7 +452,7 @@ class QualityScorer:
         else:
             return "F"
 
-    def _extract_metadata(self, content: str) -> Dict:
+    def _extract_metadata(self, content: str) -> dict:
         match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
         if match:
             try:

@@ -15,7 +15,6 @@ Security Notes:
 """
 
 import re
-from typing import List
 
 import bcrypt
 
@@ -114,7 +113,7 @@ def validate_password_strength(password: str) -> None:
         raise ValidationException(errors[0])
 
 
-def get_password_validation_errors(password: str) -> List[str]:
+def get_password_validation_errors(password: str) -> list[str]:
     """Get list of password validation errors.
 
     Useful when you want to show all validation errors at once
@@ -131,7 +130,7 @@ def get_password_validation_errors(password: str) -> List[str]:
         >>> len(errors) > 0
         True
     """
-    errors: List[str] = []
+    errors: list[str] = []
 
     if len(password) < MIN_PASSWORD_LENGTH:
         errors.append(

@@ -8,7 +8,7 @@ This specification defines the implementation of centralized configuration manag
 ### Identified Issues
 - **Scattered Configuration**: Direct `os.getenv()` calls in 15+ files
 - **No Validation**: Missing configuration validation at startup
-- **Inconsistent Defaults**: Different default values across modules  
+- **Inconsistent Defaults**: Different default values across modules
 - **Poor Error Handling**: Silent failures when configuration is invalid
 - **No Type Safety**: String-only configuration without type conversion
 
@@ -51,10 +51,10 @@ class ConfigSection:
 
 class ConfigurationManager(IConfiguration):
     """Centralized configuration management with validation and type safety.
-    
+
     This class replaces scattered os.getenv() calls throughout the codebase
     with a centralized, validated, and type-safe configuration system.
-    
+
     Features:
         - Environment variable loading with validation
         - Type conversion and default value handling
@@ -63,15 +63,15 @@ class ConfigurationManager(IConfiguration):
         - Hot-reload capability for development
         - Configuration documentation generation
     """
-    
+
     def __init__(
-        self, 
+        self,
         config_file: Optional[Path] = None,
         validate_on_init: bool = True,
         allow_missing_optional: bool = True
     ):
         """Initialize configuration manager.
-        
+
         Args:
             config_file: Optional configuration file path (.env, .json, .yaml)
             validate_on_init: Whether to validate configuration at initialization
@@ -80,21 +80,21 @@ class ConfigurationManager(IConfiguration):
         self._config_data: Dict[str, Any] = {}
         self._config_sections: List[ConfigSection] = []
         self._validation_errors: List[str] = []
-        
+
         # Load configuration from multiple sources
         self._load_environment_variables()
         if config_file:
             self._load_config_file(config_file)
-            
+
         # Initialize configuration sections
         self._initialize_sections()
-        
+
         if validate_on_init:
             if not self.validate():
                 raise ConfigurationException(
                     f"Configuration validation failed: {self._validation_errors}"
                 )
-    
+
     def _initialize_sections(self) -> None:
         """Initialize all configuration sections with their requirements."""
         self._config_sections = [
@@ -106,7 +106,7 @@ class ConfigurationManager(IConfiguration):
             self._get_observability_section(),
             self._get_performance_section()
         ]
-    
+
     def _get_database_section(self) -> ConfigSection:
         """Database configuration section."""
         return ConfigSection(
@@ -127,7 +127,7 @@ class ConfigurationManager(IConfiguration):
                 "CHROMADB_URL": lambda x: x.startswith(("http://", "https://"))
             }
         )
-    
+
     def _get_llm_section(self) -> ConfigSection:
         """LLM provider configuration section."""
         return ConfigSection(
@@ -149,7 +149,7 @@ class ConfigurationManager(IConfiguration):
                 "LLM_MAX_RETRIES": lambda x: 0 <= int(x) <= 10
             }
         )
-    
+
     def _get_logging_section(self) -> ConfigSection:
         """Logging configuration section."""
         return ConfigSection(
@@ -171,7 +171,7 @@ class ConfigurationManager(IConfiguration):
                 "LOG_FLUSH_INTERVAL": lambda x: int(x) > 0
             }
         )
-    
+
     def _get_session_section(self) -> ConfigSection:
         """Session management configuration section."""
         return ConfigSection(
@@ -191,7 +191,7 @@ class ConfigurationManager(IConfiguration):
                 "SESSION_CLEANUP_BATCH_SIZE": lambda x: 1 <= int(x) <= 1000
             }
         )
-    
+
     def _get_security_section(self) -> ConfigSection:
         """Security configuration section."""
         return ConfigSection(
@@ -210,7 +210,7 @@ class ConfigurationManager(IConfiguration):
                 "PRESIDIO_ANALYZER_URL": lambda x: x.startswith(("http://", "https://"))
             }
         )
-    
+
     def _get_observability_section(self) -> ConfigSection:
         """Observability configuration section."""
         return ConfigSection(
@@ -230,7 +230,7 @@ class ConfigurationManager(IConfiguration):
                 "TRACING_SAMPLE_RATE": lambda x: 0.0 <= float(x) <= 1.0
             }
         )
-    
+
     def _get_performance_section(self) -> ConfigSection:
         """Performance configuration section."""
         return ConfigSection(
@@ -255,7 +255,7 @@ class ConfigurationManager(IConfiguration):
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key."""
         return self._config_data.get(key, default)
-    
+
     def get_int(self, key: str, default: int = 0) -> int:
         """Get integer configuration value with type conversion."""
         value = self.get(key, default)
@@ -263,7 +263,7 @@ class ConfigurationManager(IConfiguration):
             return int(value)
         except (ValueError, TypeError):
             return default
-    
+
     def get_bool(self, key: str, default: bool = False) -> bool:
         """Get boolean configuration value with type conversion."""
         value = self.get(key, default)
@@ -272,21 +272,21 @@ class ConfigurationManager(IConfiguration):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return default
-    
+
     def get_str(self, key: str, default: str = "") -> str:
         """Get string configuration value."""
         value = self.get(key, default)
         return str(value) if value is not None else default
-    
+
     def validate(self) -> bool:
         """Validate all configuration sections."""
         self._validation_errors.clear()
-        
+
         for section in self._config_sections:
             self._validate_section(section)
-        
+
         return len(self._validation_errors) == 0
-    
+
     # Specialized configuration getters
     def get_database_config(self) -> Dict[str, Any]:
         """Get database configuration as a dictionary."""
@@ -298,17 +298,17 @@ class ConfigurationManager(IConfiguration):
             "ssl": self.get_bool("REDIS_SSL", False),
             "timeout": self.get_int("REDIS_TIMEOUT", 30)
         }
-    
+
     def get_llm_config(self) -> Dict[str, str]:
         """Get LLM provider configuration."""
         provider = self.get_str("CHAT_PROVIDER", "openai")
-        
+
         config = {
             "provider": provider,
             "timeout": self.get_int("LLM_REQUEST_TIMEOUT", 30),
             "max_retries": self.get_int("LLM_MAX_RETRIES", 3)
         }
-        
+
         # Add provider-specific configuration
         if provider == "openai":
             config.update({
@@ -325,9 +325,9 @@ class ConfigurationManager(IConfiguration):
                 "api_key": self.get_str("FIREWORKS_API_KEY"),
                 "model": self.get_str("FIREWORKS_MODEL", "accounts/fireworks/models/llama-v3p1-70b-instruct")
             })
-            
+
         return config
-    
+
     def get_logging_config(self) -> Dict[str, Any]:
         """Get logging configuration."""
         return {
@@ -339,7 +339,7 @@ class ConfigurationManager(IConfiguration):
             "file_path": self.get_str("LOG_FILE_PATH"),
             "max_file_size": self.get_str("LOG_MAX_FILE_SIZE", "10MB")
         }
-    
+
     def get_session_config(self) -> Dict[str, Any]:
         """Get session management configuration."""
         return {
@@ -400,21 +400,21 @@ async def lifespan(app: FastAPI):
     """Application lifespan with configuration validation."""
     # Startup
     logger.info("Validating configuration...")
-    
+
     # Initialize and validate configuration
     config = get_config()
     if not config.validate():
         logger.error("Configuration validation failed")
         raise ConfigurationException("Invalid configuration")
-    
+
     logger.info("Configuration validated successfully")
-    
+
     # Make configuration available to app
     app.extra["config"] = config
-    
+
     # Rest of existing startup code...
     yield
-    
+
     # Shutdown code...
 ```
 
@@ -427,11 +427,11 @@ async def lifespan(app: FastAPI):
 def _create_infrastructure_layer(self):
     """Create infrastructure layer with centralized configuration."""
     config = get_config()
-    
+
     # Use configuration for service initialization
     llm_config = config.get_llm_config()
     self.llm_provider = self._create_llm_provider(llm_config)
-    
+
     db_config = config.get_database_config()
     self.session_store = self._create_session_store(db_config)
 ```
@@ -445,22 +445,22 @@ def _create_infrastructure_layer(self):
 class TestConfigurationManager:
     def test_initialization_with_valid_config(self):
         """Test configuration manager initialization with valid configuration."""
-        
+
     def test_initialization_with_invalid_config_fails(self):
         """Test that invalid configuration raises exception."""
-        
+
     def test_type_conversion_methods(self):
         """Test get_int, get_bool, get_str type conversion."""
-        
+
     def test_validation_comprehensive(self):
         """Test comprehensive configuration validation."""
-        
+
     def test_section_specific_getters(self):
         """Test database_config, llm_config, etc. methods."""
-        
+
     def test_configuration_file_loading(self):
         """Test loading configuration from files."""
-        
+
     def test_environment_variable_precedence(self):
         """Test that environment variables override file config."""
 ```
@@ -472,10 +472,10 @@ class TestConfigurationManager:
 class TestConfigurationMigration:
     def test_replaced_environment_access(self):
         """Test that all direct os.getenv calls have been replaced."""
-        
+
     def test_configuration_consistency(self):
         """Test that migrated configuration produces same values."""
-        
+
     def test_application_startup_with_new_config(self):
         """Test application startup with configuration manager."""
 ```

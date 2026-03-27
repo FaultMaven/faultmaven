@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 from uuid import UUID
 
 # ============================================================
@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
 
 # Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
+import builtins
+
 from faultmaven.modules.case.domain.owned_models.agent_execution import (
     AgentExecution,
     AgentToolCall,
@@ -101,12 +103,12 @@ class ICaseRepository(Protocol):
 
     async def list(
         self,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
         status: Optional["CaseStatus"] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[List["Case"], int]:
+    ) -> tuple[list["Case"], int]:
         """List cases with optional filters."""
         ...
 
@@ -117,10 +119,10 @@ class ICaseRepository(Protocol):
     async def search(
         self,
         query: str,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 20,
-    ) -> tuple[List["Case"], int]:
+    ) -> tuple[builtins.list["Case"], int]:
         """Search cases by text query."""
         ...
 
@@ -130,7 +132,7 @@ class ICaseRepository(Protocol):
 
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> List[dict]:
+    ) -> builtins.list[dict]:
         """Get messages for a case with pagination."""
         ...
 
@@ -138,7 +140,7 @@ class ICaseRepository(Protocol):
         """Update case last_activity_at timestamp."""
         ...
 
-    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for a case."""
         ...
 
@@ -153,17 +155,17 @@ class ICaseRepository(Protocol):
         """Save report to persistence layer."""
         ...
 
-    async def get_report(self, report_id: str) -> Optional[CaseReport]:
+    async def get_report(self, report_id: str) -> CaseReport | None:
         """Retrieve a report by ID."""
         ...
 
     async def get_reports(
         self,
         case_id: str,
-        report_type: Optional[ReportType] = None,
+        report_type: ReportType | None = None,
         include_history: bool = False,
         only_current: bool = False,
-    ) -> List[CaseReport]:
+    ) -> builtins.list[CaseReport]:
         """Get reports for a case with optional filtering."""
         ...
 
@@ -183,21 +185,21 @@ class ICaseRepository(Protocol):
         size_bytes: int,
         storage_path: str,
         uploaded_by: UUID,
-        description: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        description: str | None = None,
+        tags: builtins.list[str] | None = None,
     ) -> EvidenceArtifact:
         """Create standalone evidence record (can link to multiple cases)."""
         ...
 
     async def get_standalone_evidence(
         self, evidence_id: UUID
-    ) -> Optional[EvidenceArtifact]:
+    ) -> EvidenceArtifact | None:
         """Get standalone evidence by ID."""
         ...
 
     async def list_standalone_evidence(
         self, filters: EvidenceListFilter
-    ) -> tuple[List[EvidenceArtifact], int]:
+    ) -> tuple[builtins.list[EvidenceArtifact], int]:
         """List standalone evidence with filters."""
         ...
 
@@ -207,7 +209,7 @@ class ICaseRepository(Protocol):
 
     async def link_standalone_evidence_to_case(
         self, evidence_id: UUID, case_id: UUID
-    ) -> Optional[EvidenceArtifact]:
+    ) -> EvidenceArtifact | None:
         """Link standalone evidence to a case."""
         ...
 
@@ -221,7 +223,7 @@ class ICaseRepository(Protocol):
         """Set evidence as primary for a case (unsets others for the same case)."""
         ...
 
-    async def get_primary_evidence(self, case_id: str) -> Optional[EvidenceArtifact]:
+    async def get_primary_evidence(self, case_id: str) -> EvidenceArtifact | None:
         """Get primary evidence for a case."""
         ...
 
@@ -230,28 +232,28 @@ class ICaseRepository(Protocol):
         """Create new agent execution record."""
         ...
 
-    async def get_agent_execution(self, execution_id: str) -> Optional[AgentExecution]:
+    async def get_agent_execution(self, execution_id: str) -> AgentExecution | None:
         """Get agent execution by ID with tool calls loaded."""
         ...
 
     async def list_agent_executions_by_case(
         self,
         case_id: str,
-        status: Optional[ExecutionStatus] = None,
-        agent_type: Optional[AgentType] = None,
+        status: ExecutionStatus | None = None,
+        agent_type: AgentType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List[AgentExecution], int]:
+    ) -> tuple[builtins.list[AgentExecution], int]:
         """List agent executions for a case with optional filters."""
         ...
 
     async def list_agent_executions_by_session(
         self,
         session_id: str,
-        status: Optional[ExecutionStatus] = None,
+        status: ExecutionStatus | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List[AgentExecution], int]:
+    ) -> tuple[builtins.list[AgentExecution], int]:
         """List agent executions for a session with optional filters."""
         ...
 
@@ -274,7 +276,7 @@ class ICaseRepository(Protocol):
     async def get_agent_tool_calls_for_execution(
         self,
         execution_id: str,
-    ) -> List[AgentToolCall]:
+    ) -> builtins.list[AgentToolCall]:
         """Get all tool calls for an execution."""
         ...
 
@@ -285,8 +287,8 @@ class ICaseRepository(Protocol):
     async def get_latest_agent_execution(
         self,
         case_id: str,
-        agent_type: Optional[AgentType] = None,
-    ) -> Optional[AgentExecution]:
+        agent_type: AgentType | None = None,
+    ) -> AgentExecution | None:
         """Get the most recent agent execution for a case."""
         ...
 
@@ -295,11 +297,11 @@ class ICaseRepository(Protocol):
         """Create a new case checkpoint."""
         ...
 
-    async def get_checkpoint(self, checkpoint_id: str) -> Optional[CaseCheckpoint]:
+    async def get_checkpoint(self, checkpoint_id: str) -> CaseCheckpoint | None:
         """Get a checkpoint by ID."""
         ...
 
-    async def get_checkpoints(self, case_id: str) -> List[CaseCheckpoint]:
+    async def get_checkpoints(self, case_id: str) -> builtins.list[CaseCheckpoint]:
         """Get all checkpoints for a case."""
         ...
 
@@ -322,11 +324,11 @@ class IHypothesisRepository(Protocol):
         organization_id: str,
         statement: str,
         created_by: str,
-        status: Optional[str] = "captured",
-        likelihood: Optional[Decimal] = None,
+        status: str | None = "captured",
+        likelihood: Decimal | None = None,
         category: str = "other",
-        evidence_links: Optional[Dict] = None,
-        metadata: Optional[Dict] = None,
+        evidence_links: dict | None = None,
+        metadata: dict | None = None,
     ) -> "Hypothesis": ...
 
     async def get_hypothesis(
@@ -339,22 +341,22 @@ class IHypothesisRepository(Protocol):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List["Hypothesis"], int]: ...
+    ) -> tuple[list["Hypothesis"], int]: ...
 
     async def update_hypothesis(
         self,
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        statement: Optional[str] = None,
-        status: Optional[str] = None,
-        likelihood: Optional[Decimal] = None,
-        evidence_links: Optional[Dict] = None,
-        retirement_reason: Optional[str] = None,
-        metadata: Optional[Dict] = None,
+        statement: str | None = None,
+        status: str | None = None,
+        likelihood: Decimal | None = None,
+        evidence_links: dict | None = None,
+        retirement_reason: str | None = None,
+        metadata: dict | None = None,
     ) -> Optional["Hypothesis"]: ...
 
     async def delete_hypothesis(
@@ -367,7 +369,7 @@ class IHypothesisRepository(Protocol):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
     ) -> int: ...
 
 
@@ -384,11 +386,11 @@ class ISolutionRepository(Protocol):
         organization_id: str,
         description: str,
         created_by: str,
-        status: Optional[str] = "proposed",
-        implementation_steps: Optional[List[str]] = None,
-        risk_level: Optional[str] = None,
-        estimated_effort: Optional[str] = None,
-        metadata: Optional[Dict] = None,
+        status: str | None = "proposed",
+        implementation_steps: list[str] | None = None,
+        risk_level: str | None = None,
+        estimated_effort: str | None = None,
+        metadata: dict | None = None,
     ) -> "Solution": ...
 
     async def get_solution(
@@ -401,24 +403,24 @@ class ISolutionRepository(Protocol):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List["Solution"], int]: ...
+    ) -> tuple[list["Solution"], int]: ...
 
     async def update_solution(
         self,
         solution_id: str,
         organization_id: str,
         updated_by: str,
-        description: Optional[str] = None,
-        status: Optional[str] = None,
-        implementation_steps: Optional[List[str]] = None,
-        risk_level: Optional[str] = None,
-        estimated_effort: Optional[str] = None,
-        verification_result: Optional[str] = None,
-        implemented: Optional[bool] = None,
-        metadata: Optional[Dict] = None,
+        description: str | None = None,
+        status: str | None = None,
+        implementation_steps: list[str] | None = None,
+        risk_level: str | None = None,
+        estimated_effort: str | None = None,
+        verification_result: str | None = None,
+        implemented: bool | None = None,
+        metadata: dict | None = None,
     ) -> Optional["Solution"]: ...
 
     async def delete_solution(
@@ -488,23 +490,20 @@ class CaseDTO:
     title: str
     status: CaseStatusDTO
     user_id: str
-    organization_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    organization_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 # Re-export domain models for backward compatibility
 # These can be used directly until full DTO migration is complete
 # Services should import from contracts.py (not domain.models) per Principle 2
-from faultmaven.modules.case.domain.models import (
-    CaseStatusTransition,  # Backward compat alias for CaseAction
-)
 from faultmaven.modules.case.domain.models import (  # noqa: E402
-    ActionAttempt,
     Case,
     CaseAction,
     CaseSeverity,
     CaseStatus,
+    CaseStatusTransition,  # Backward compat alias for CaseAction
     ConfidenceLevel,
     DocumentationData,
     DocumentType,
@@ -522,7 +521,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     HypothesisGenerationMode,
     HypothesisStatus,
     InquiryData,
-    InvestigationActionType,
     InvestigationMomentum,
     InvestigationPath,
     InvestigationProgress,
@@ -533,7 +531,6 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     PathSelection,
     PreliminaryUrgency,
     ProblemVerification,
-    ProposedAction,
     RootCauseConclusion,
     Solution,
     SolutionType,

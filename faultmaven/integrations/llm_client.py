@@ -7,15 +7,14 @@ and tool/function calling.
 Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any
 
-from faultmaven.exceptions import LLMException, ServiceError
+from faultmaven.exceptions import LLMException
 from faultmaven.modules.agent.domain.events.execution_events import (
-    AgentContext,
     LLMEvent,
     LLMEventType,
     Message,
@@ -40,9 +39,9 @@ class BaseLLMClient(ABC):
     @abstractmethod
     async def stream_completion(
         self,
-        messages: List[Message],
-        system: Optional[str] = None,
-        tools: Optional[List[Tool]] = None,
+        messages: list[Message],
+        system: str | None = None,
+        tools: list[Tool] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[LLMEvent, None]:
@@ -61,7 +60,7 @@ class BaseLLMClient(ABC):
         pass
 
     @abstractmethod
-    async def count_tokens(self, messages: List[Message]) -> int:
+    async def count_tokens(self, messages: list[Message]) -> int:
         """Estimate token count for messages.
 
         Args:
@@ -73,7 +72,7 @@ class BaseLLMClient(ABC):
         pass
 
     @abstractmethod
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """Get information about the model.
 
         Returns:
@@ -119,9 +118,9 @@ class AnthropicClient(BaseLLMClient):
 
     async def stream_completion(
         self,
-        messages: List[Message],
-        system: Optional[str] = None,
-        tools: Optional[List[Tool]] = None,
+        messages: list[Message],
+        system: str | None = None,
+        tools: list[Tool] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[LLMEvent, None]:
@@ -142,7 +141,7 @@ class AnthropicClient(BaseLLMClient):
 
         try:
             # Create streaming request
-            kwargs: Dict[str, Any] = {
+            kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": anthropic_messages,
                 "max_tokens": max_tokens,
@@ -156,7 +155,7 @@ class AnthropicClient(BaseLLMClient):
                 kwargs["tools"] = anthropic_tools
 
             async with client.messages.stream(**kwargs) as stream:
-                current_tool_call: Optional[Dict[str, Any]] = None
+                current_tool_call: dict[str, Any] | None = None
                 accumulated_text = ""
                 index = 0
 
@@ -233,7 +232,7 @@ class AnthropicClient(BaseLLMClient):
                 metadata={"error_type": type(e).__name__},
             )
 
-    def _convert_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
+    def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert messages to Anthropic format."""
         result = []
         for msg in messages:
@@ -241,7 +240,7 @@ class AnthropicClient(BaseLLMClient):
                 # System messages are handled separately
                 continue
 
-            anthropic_msg: Dict[str, Any] = {"role": msg.role.value}
+            anthropic_msg: dict[str, Any] = {"role": msg.role.value}
 
             if msg.role == MessageRole.TOOL:
                 # Convert tool result to Anthropic format
@@ -275,7 +274,7 @@ class AnthropicClient(BaseLLMClient):
 
         return result
 
-    def _convert_tool(self, tool: Tool) -> Dict[str, Any]:
+    def _convert_tool(self, tool: Tool) -> dict[str, Any]:
         """Convert Tool to Anthropic format."""
         return {
             "name": tool.name,
@@ -283,7 +282,7 @@ class AnthropicClient(BaseLLMClient):
             "input_schema": tool.parameters,
         }
 
-    async def count_tokens(self, messages: List[Message]) -> int:
+    async def count_tokens(self, messages: list[Message]) -> int:
         """Estimate token count using simple heuristic.
 
         For accurate counting, we'd need to use the Anthropic tokenizer,
@@ -295,7 +294,7 @@ class AnthropicClient(BaseLLMClient):
         # Rough estimate: ~4 characters per token for English
         return total_chars // 4
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """Get model information."""
         return {
             "provider": LLMProvider.ANTHROPIC.value,
@@ -341,9 +340,9 @@ class OpenAIClient(BaseLLMClient):
 
     async def stream_completion(
         self,
-        messages: List[Message],
-        system: Optional[str] = None,
-        tools: Optional[List[Tool]] = None,
+        messages: list[Message],
+        system: str | None = None,
+        tools: list[Tool] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[LLMEvent, None]:
@@ -364,7 +363,7 @@ class OpenAIClient(BaseLLMClient):
 
         try:
             # Create streaming request
-            kwargs: Dict[str, Any] = {
+            kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": openai_messages,
                 "max_tokens": max_tokens,
@@ -379,7 +378,7 @@ class OpenAIClient(BaseLLMClient):
             stream = await client.chat.completions.create(**kwargs)
 
             accumulated_text = ""
-            tool_calls: Dict[int, Dict[str, Any]] = {}
+            tool_calls: dict[int, dict[str, Any]] = {}
             index = 0
 
             async for chunk in stream:
@@ -465,9 +464,9 @@ class OpenAIClient(BaseLLMClient):
 
     def _convert_messages(
         self,
-        messages: List[Message],
-        system: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        messages: list[Message],
+        system: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Convert messages to OpenAI format."""
         result = []
 
@@ -487,7 +486,7 @@ class OpenAIClient(BaseLLMClient):
                     }
                 )
             elif msg.tool_calls:
-                openai_msg: Dict[str, Any] = {
+                openai_msg: dict[str, Any] = {
                     "role": "assistant",
                     "content": msg.content or None,
                     "tool_calls": [
@@ -512,7 +511,7 @@ class OpenAIClient(BaseLLMClient):
 
         return result
 
-    def _convert_tool(self, tool: Tool) -> Dict[str, Any]:
+    def _convert_tool(self, tool: Tool) -> dict[str, Any]:
         """Convert Tool to OpenAI format."""
         return {
             "type": "function",
@@ -523,7 +522,7 @@ class OpenAIClient(BaseLLMClient):
             },
         }
 
-    async def count_tokens(self, messages: List[Message]) -> int:
+    async def count_tokens(self, messages: list[Message]) -> int:
         """Estimate token count using tiktoken if available."""
         try:
             import tiktoken
@@ -538,7 +537,7 @@ class OpenAIClient(BaseLLMClient):
             total_chars = sum(len(msg.content) for msg in messages)
             return total_chars // 4
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """Get model information."""
         return {
             "provider": LLMProvider.OPENAI.value,
@@ -557,9 +556,9 @@ class LLMClient:
 
     def __init__(
         self,
-        provider: Union[str, LLMProvider] = LLMProvider.ANTHROPIC,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None,
+        provider: str | LLMProvider = LLMProvider.ANTHROPIC,
+        model: str | None = None,
+        api_key: str | None = None,
         timeout: int = 120,
     ):
         """Initialize LLM client.
@@ -599,9 +598,9 @@ class LLMClient:
 
     async def stream_completion(
         self,
-        messages: List[Message],
-        system: Optional[str] = None,
-        tools: Optional[List[Tool]] = None,
+        messages: list[Message],
+        system: str | None = None,
+        tools: list[Tool] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[LLMEvent, None]:
@@ -628,12 +627,12 @@ class LLMClient:
 
     async def complete(
         self,
-        messages: List[Message],
-        system: Optional[str] = None,
-        tools: Optional[List[Tool]] = None,
+        messages: list[Message],
+        system: str | None = None,
+        tools: list[Tool] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get complete response (non-streaming).
 
         Args:
@@ -647,8 +646,8 @@ class LLMClient:
             Dictionary with response content, tool_calls, and usage
         """
         content = ""
-        tool_calls: List[ToolCall] = []
-        usage: Dict[str, Any] = {}
+        tool_calls: list[ToolCall] = []
+        usage: dict[str, Any] = {}
 
         async for event in self.stream_completion(
             messages=messages,
@@ -672,19 +671,19 @@ class LLMClient:
             "usage": usage,
         }
 
-    async def count_tokens(self, messages: List[Message]) -> int:
+    async def count_tokens(self, messages: list[Message]) -> int:
         """Estimate token count for messages."""
         return await self._client.count_tokens(messages)
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def get_model_info(self) -> dict[str, Any]:
         """Get model information."""
         return self._client.get_model_info()
 
 
 def create_llm_client(
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
     timeout: int = 120,
 ) -> LLMClient:
     """Factory function to create an LLM client.

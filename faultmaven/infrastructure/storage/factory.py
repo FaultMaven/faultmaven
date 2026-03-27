@@ -10,20 +10,19 @@ Usage:
 """
 
 import logging
-from typing import Optional
 
 from faultmaven.config.settings import StorageBackend
-from faultmaven.infrastructure.storage.base import IFileStorageBackend, StorageType
+from faultmaven.infrastructure.storage.base import IFileStorageBackend
 
 logger = logging.getLogger(__name__)
 
 
 # Singleton instance
-_storage_backend: Optional[IFileStorageBackend] = None
+_storage_backend: IFileStorageBackend | None = None
 
 
 def get_storage_backend(
-    storage_type: Optional[str] = None,
+    storage_type: str | None = None,
     reset: bool = False,
 ) -> IFileStorageBackend:
     """Get the storage backend instance.

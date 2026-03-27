@@ -12,7 +12,7 @@ Tests cover:
 import base64
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -245,7 +245,7 @@ class TestCodeExchange:
             user_id="user_123",
             redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
             used=False,
         )
         mock_code_repository.get_code.return_value = code_data
@@ -305,7 +305,7 @@ class TestCodeExchange:
             user_id="user_123",
             redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
-            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),  # Expired
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),  # Expired
             used=False,
         )
         mock_code_repository.get_code.return_value = expired_code_data
@@ -329,7 +329,7 @@ class TestCodeExchange:
             user_id="user_123",
             redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
             used=True,  # Already used
         )
         mock_code_repository.get_code.return_value = used_code_data
@@ -355,7 +355,7 @@ class TestCodeExchange:
             user_id="user_123",
             redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
             used=False,
         )
         mock_code_repository.get_code.return_value = code_data
@@ -382,7 +382,7 @@ class TestCodeExchange:
             user_id="user_123",
             redirect_uri="chrome-extension://abc123/callback.html",
             code_challenge=code_challenge,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
             used=False,
         )
         mock_code_repository.get_code.return_value = code_data

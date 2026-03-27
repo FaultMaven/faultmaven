@@ -5,7 +5,7 @@ Step 1 (pre-LLM): Attachment preprocessing, implicit query generation
 Step 2 (LLM): Handled by MilestoneEngine
 """
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.schemas import Attachment
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def generate_implicit_query(
-    attachments: List["Attachment"], evidence: List["Evidence"]
+    attachments: list["Attachment"], evidence: list["Evidence"]
 ) -> str:
     """Generate a system query when data is submitted without a question.
 

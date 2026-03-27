@@ -21,12 +21,12 @@ class ToolResult(BaseModel):
 
 class BaseTool(ABC):
     """Base interface for all agent tools"""
-    
+
     @abstractmethod
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """Execute the tool with given parameters"""
         pass
-    
+
     @abstractmethod
     def get_schema(self) -> Dict[str, Any]:
         """Return tool schema for agent discovery"""
@@ -55,25 +55,25 @@ from faultmaven.tools.registry import register_tool
 class MyCustomTool(BaseTool):
     """
     Custom tool for [specific purpose].
-    
+
     This tool [description of what it does and when to use it].
     """
-    
+
     def __init__(self, config: Optional[Dict] = None, **kwargs):
         """Initialize the tool with configuration"""
         self.logger = logging.getLogger(__name__)
         self.config = config or {}
         # Accept and ignore other parameters from tool registry
-    
+
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the tool.
-        
+
         Args:
             params: Dictionary containing:
                 - param1: Description
                 - param2: Description
-        
+
         Returns:
             ToolResult with success status, data, and optional error
         """
@@ -85,16 +85,16 @@ class MyCustomTool(BaseTool):
                     data=None,
                     error="Missing required parameter: required_param"
                 )
-            
+
             # Execute tool logic
             result_data = self._do_work(params)
-            
+
             return ToolResult(
                 success=True,
                 data=result_data,
                 error=None
             )
-            
+
         except Exception as e:
             self.logger.error(f"Tool execution failed: {e}")
             return ToolResult(
@@ -102,7 +102,7 @@ class MyCustomTool(BaseTool):
                 data=None,
                 error=str(e)
             )
-    
+
     def get_schema(self) -> Dict[str, Any]:
         """Return tool schema for agent"""
         return {
@@ -123,7 +123,7 @@ class MyCustomTool(BaseTool):
                 "required": ["required_param"]
             }
         }
-    
+
     def _do_work(self, params: Dict[str, Any]) -> Any:
         """Private method for actual tool logic"""
         # Implementation
@@ -151,10 +151,10 @@ from faultmaven.tools.my_custom_tool import MyCustomTool
 async def test_my_custom_tool_success():
     """Test successful tool execution"""
     tool = MyCustomTool()
-    
+
     params = {"required_param": "test_value"}
     result = await tool.execute(params)
-    
+
     assert result.success is True
     assert result.error is None
     assert result.data is not None
@@ -163,10 +163,10 @@ async def test_my_custom_tool_success():
 async def test_my_custom_tool_missing_param():
     """Test tool with missing required parameter"""
     tool = MyCustomTool()
-    
+
     params = {}  # Missing required_param
     result = await tool.execute(params)
-    
+
     assert result.success is False
     assert "required parameter" in result.error.lower()
 
@@ -175,7 +175,7 @@ async def test_tool_schema():
     """Test tool schema is valid"""
     tool = MyCustomTool()
     schema = tool.get_schema()
-    
+
     assert schema["name"] == "my_custom_tool"
     assert "description" in schema
     assert "parameters" in schema
@@ -228,7 +228,7 @@ class ExternalAPITool(BaseTool):
     def __init__(self, api_key: str, api_url: str, **kwargs):
         self.api_key = api_key
         self.api_url = api_url
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -264,17 +264,17 @@ class MCPServerTool(BaseTool):
             command=server_command[0],
             args=server_command[1:]
         )
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         async with ClientSession(*self.server_params) as session:
             await session.initialize()
-            
+
             # Call MCP tool
             result = await session.call_tool(
                 name=params['tool_name'],
                 arguments=params['arguments']
             )
-            
+
             return ToolResult(
                 success=not result.isError,
                 data=result.content
@@ -303,21 +303,21 @@ import shlex
 class SystemCommandTool(BaseTool):
     # Whitelist of allowed commands
     ALLOWED_COMMANDS = ['kubectl', 'curl', 'nslookup', 'dig']
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         command = params['command']
         args = params.get('args', [])
-        
+
         # Validate command is whitelisted
         if command not in self.ALLOWED_COMMANDS:
             return ToolResult(
                 success=False,
                 error=f"Command '{command}' not in whitelist"
             )
-        
+
         # Build safe command
         cmd = [command] + [shlex.quote(arg) for arg in args]
-        
+
         try:
             # Execute with timeout
             process = await asyncio.create_subprocess_exec(
@@ -325,12 +325,12 @@ class SystemCommandTool(BaseTool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            
+
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=30.0
             )
-            
+
             return ToolResult(
                 success=process.returncode == 0,
                 data={
@@ -339,7 +339,7 @@ class SystemCommandTool(BaseTool):
                     "returncode": process.returncode
                 }
             )
-            
+
         except asyncio.TimeoutError:
             return ToolResult(
                 success=False,
@@ -360,17 +360,17 @@ from faultmaven.infrastructure.security.redaction import DataSanitizer
 class PrivacyAwareTool(BaseTool):
     def __init__(self, sanitizer: DataSanitizer = None, **kwargs):
         self.sanitizer = sanitizer or DataSanitizer()
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         # ALWAYS sanitize user input
         sanitized_query = self.sanitizer.sanitize(params['query'])
-        
+
         # Process with sanitized data
         result = await self._process(sanitized_query)
-        
+
         # Sanitize output before returning
         sanitized_result = self.sanitizer.sanitize(result)
-        
+
         return ToolResult(success=True, data=sanitized_result)
 ```
 
@@ -382,19 +382,19 @@ For tools calling external APIs (web search, MCP servers), sanitize TWICE:
 async def execute(self, params: Dict) -> ToolResult:
     # Sanitization 1: Input from user
     sanitized_input = self.sanitizer.sanitize(params['query'])
-    
+
     # Sanitization 2: Before external call
     external_safe_input = self.sanitizer.sanitize(
         sanitized_input,
         context={"external_api": True}
     )
-    
+
     # Call external API
     external_result = await self._call_external_api(external_safe_input)
-    
+
     # Sanitize result before returning
     sanitized_output = self.sanitizer.sanitize(external_result)
-    
+
     return ToolResult(success=True, data=sanitized_output)
 ```
 
@@ -456,10 +456,10 @@ Edit `faultmaven/config/settings.py`:
 ```python
 class ToolsSettings(BaseSettings):
     """Tools and external service configuration"""
-    
+
     # Existing tools
     web_search_api_key: Optional[SecretStr] = Field(default=None, env="WEB_SEARCH_API_KEY")
-    
+
     # Your new tool
     my_tool_api_key: Optional[SecretStr] = Field(default=None, env="MY_TOOL_API_KEY")
     my_tool_endpoint: str = Field(default="https://api.example.com", env="MY_TOOL_ENDPOINT")
@@ -507,13 +507,13 @@ async def test_tool_with_real_dependencies():
     """Test tool with real infrastructure"""
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.security.redaction import DataSanitizer
-    
+
     settings = get_settings()
     sanitizer = DataSanitizer(settings)
-    
+
     tool = MyTool(settings=settings, sanitizer=sanitizer)
     result = await tool.execute({'param': 'value'})
-    
+
     assert result.success
     assert result.data is not None
 ```
@@ -679,7 +679,3 @@ async def execute(self, params):
 **Last Updated**: 2026-03-04
 **Version**: 1.1
 **Maintainer**: Architecture Team
-
-
-
-

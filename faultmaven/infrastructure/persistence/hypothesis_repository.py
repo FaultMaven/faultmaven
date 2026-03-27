@@ -32,17 +32,16 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.models import HypothesisModel
-from faultmaven.modules.case.domain.models import Hypothesis, HypothesisStatus
+from faultmaven.modules.case.domain.models import Hypothesis
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +62,11 @@ class HypothesisRepository(ABC):
         organization_id: str,
         statement: str,
         created_by: str,
-        status: Optional[str] = "captured",
-        likelihood: Optional[Decimal] = None,
+        status: str | None = "captured",
+        likelihood: Decimal | None = None,
         category: str = "other",
-        evidence_links: Optional[Dict] = None,
-        metadata: Optional[Dict] = None,
+        evidence_links: dict | None = None,
+        metadata: dict | None = None,
     ) -> Hypothesis:
         """Create new hypothesis record.
 
@@ -96,7 +95,7 @@ class HypothesisRepository(ABC):
         self,
         hypothesis_id: str,
         organization_id: str,
-    ) -> Optional[Hypothesis]:
+    ) -> Hypothesis | None:
         """Get hypothesis by ID with multi-tenant isolation.
 
         Args:
@@ -113,10 +112,10 @@ class HypothesisRepository(ABC):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List[Hypothesis], int]:
+    ) -> tuple[list[Hypothesis], int]:
         """List hypotheses for a case with optional status filter.
 
         Args:
@@ -137,13 +136,13 @@ class HypothesisRepository(ABC):
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        statement: Optional[str] = None,
-        status: Optional[str] = None,
-        likelihood: Optional[Decimal] = None,
-        evidence_links: Optional[Dict] = None,
-        retirement_reason: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Optional[Hypothesis]:
+        statement: str | None = None,
+        status: str | None = None,
+        likelihood: Decimal | None = None,
+        evidence_links: dict | None = None,
+        retirement_reason: str | None = None,
+        metadata: dict | None = None,
+    ) -> Hypothesis | None:
         """Update hypothesis fields.
 
         Args:
@@ -184,7 +183,7 @@ class HypothesisRepository(ABC):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
     ) -> int:
         """Count hypotheses for a case.
 
@@ -221,11 +220,11 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         organization_id: str,
         statement: str,
         created_by: str,
-        status: Optional[str] = "captured",
-        likelihood: Optional[Decimal] = None,
+        status: str | None = "captured",
+        likelihood: Decimal | None = None,
         category: str = "other",
-        evidence_links: Optional[Dict] = None,
-        metadata: Optional[Dict] = None,
+        evidence_links: dict | None = None,
+        metadata: dict | None = None,
     ) -> Hypothesis:
         """Create new hypothesis in database."""
         try:
@@ -245,8 +244,8 @@ class DatabaseHypothesisRepository(HypothesisRepository):
                 evidence_links=json.dumps(evidence_links or {}),
                 hypothesis_metadata=json.dumps(metadata or {}),
                 created_by=created_by,
-                proposed_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+                proposed_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
 
             # Add to session and commit
@@ -272,7 +271,7 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         self,
         hypothesis_id: str,
         organization_id: str,
-    ) -> Optional[Hypothesis]:
+    ) -> Hypothesis | None:
         """Get hypothesis by ID with multi-tenant isolation."""
         try:
             stmt = select(HypothesisModel).where(
@@ -297,10 +296,10 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List[Hypothesis], int]:
+    ) -> tuple[list[Hypothesis], int]:
         """List hypotheses for a case with optional status filter."""
         try:
             # Build query conditions
@@ -349,13 +348,13 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        statement: Optional[str] = None,
-        status: Optional[str] = None,
-        likelihood: Optional[Decimal] = None,
-        evidence_links: Optional[Dict] = None,
-        retirement_reason: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Optional[Hypothesis]:
+        statement: str | None = None,
+        status: str | None = None,
+        likelihood: Decimal | None = None,
+        evidence_links: dict | None = None,
+        retirement_reason: str | None = None,
+        metadata: dict | None = None,
+    ) -> Hypothesis | None:
         """Update hypothesis fields."""
         try:
             # Get existing hypothesis
@@ -392,7 +391,7 @@ class DatabaseHypothesisRepository(HypothesisRepository):
                 hypothesis_model.hypothesis_metadata = json.dumps(metadata)
 
             hypothesis_model.updated_by = updated_by
-            hypothesis_model.updated_at = datetime.now(timezone.utc)
+            hypothesis_model.updated_at = datetime.now(UTC)
 
             await self.session.commit()
             await self.session.refresh(hypothesis_model)
@@ -432,7 +431,7 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
     ) -> int:
         """Count hypotheses for a case."""
         try:
@@ -516,7 +515,7 @@ class InMemoryHypothesisRepository(HypothesisRepository):
 
     def __init__(self):
         """Initialize in-memory storage."""
-        self._hypotheses: Dict[str, Dict] = {}
+        self._hypotheses: dict[str, dict] = {}
 
     async def create_hypothesis(
         self,
@@ -524,10 +523,10 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         organization_id: str,
         description: str,
         created_by: str,
-        status: Optional[str] = "proposed",
-        confidence_score: Optional[Decimal] = None,
-        supporting_evidence_ids: Optional[List[str]] = None,
-        metadata: Optional[Dict] = None,
+        status: str | None = "proposed",
+        confidence_score: Decimal | None = None,
+        supporting_evidence_ids: list[str] | None = None,
+        metadata: dict | None = None,
     ) -> Hypothesis:
         """Create new hypothesis in memory."""
         hypothesis_id = f"hyp_{uuid4().hex[:12]}"
@@ -542,8 +541,8 @@ class InMemoryHypothesisRepository(HypothesisRepository):
             "supporting_evidence_ids": supporting_evidence_ids or [],
             "validation_result": None,
             "validation_timestamp": None,
-            "proposed_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
+            "proposed_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
             "created_by": created_by,
             "updated_by": None,
             "metadata": metadata or {},
@@ -556,7 +555,7 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         self,
         hypothesis_id: str,
         organization_id: str,
-    ) -> Optional[Hypothesis]:
+    ) -> Hypothesis | None:
         """Get hypothesis by ID with multi-tenant isolation."""
         hypothesis = self._hypotheses.get(hypothesis_id)
 
@@ -569,10 +568,10 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List[Hypothesis], int]:
+    ) -> tuple[list[Hypothesis], int]:
         """List hypotheses for a case."""
         # Filter by case and organization
         filtered = [
@@ -604,13 +603,13 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        statement: Optional[str] = None,
-        status: Optional[str] = None,
-        likelihood: Optional[Decimal] = None,
-        evidence_links: Optional[Dict] = None,
-        retirement_reason: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Optional[Hypothesis]:
+        statement: str | None = None,
+        status: str | None = None,
+        likelihood: Decimal | None = None,
+        evidence_links: dict | None = None,
+        retirement_reason: str | None = None,
+        metadata: dict | None = None,
+    ) -> Hypothesis | None:
         """Update hypothesis in memory."""
         hypothesis = self._hypotheses.get(hypothesis_id)
 
@@ -637,7 +636,7 @@ class InMemoryHypothesisRepository(HypothesisRepository):
             hypothesis["metadata"] = metadata
 
         hypothesis["updated_by"] = updated_by
-        hypothesis["updated_at"] = datetime.now(timezone.utc)
+        hypothesis["updated_at"] = datetime.now(UTC)
 
         return deepcopy(hypothesis)
 
@@ -659,7 +658,7 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[str] = None,
+        status: str | None = None,
     ) -> int:
         """Count hypotheses for a case."""
         filtered = [

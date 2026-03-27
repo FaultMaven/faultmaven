@@ -8,7 +8,7 @@ Design Reference: docs/architecture/data-processing/README.md
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
@@ -46,7 +46,7 @@ class DeepAnalysisTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> Dict[str, Any]:
+    def parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -67,7 +67,7 @@ class DeepAnalysisTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Execute deep analysis on a file."""

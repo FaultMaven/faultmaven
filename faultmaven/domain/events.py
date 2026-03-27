@@ -7,9 +7,9 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ExecutionEventType(str, Enum):
@@ -73,12 +73,12 @@ class ExecutionEvent:
 
     event_type: ExecutionEventType
     content: str
-    metadata: Optional[Dict[str, Any]] = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    event_id: Optional[str] = None
-    execution_id: Optional[str] = None
+    metadata: dict[str, Any] | None = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    event_id: str | None = None
+    execution_id: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert event to dictionary for serialization."""
         return {
             "event_type": self.event_type.value,
@@ -94,7 +94,7 @@ class ExecutionEvent:
         cls,
         execution_id: str,
         message: str = "Execution started",
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> "ExecutionEvent":
         """Factory method for started event."""
         return cls(
@@ -108,7 +108,7 @@ class ExecutionEvent:
     def thinking(
         cls,
         content: str,
-        execution_id: Optional[str] = None,
+        execution_id: str | None = None,
     ) -> "ExecutionEvent":
         """Factory method for thinking event."""
         return cls(
@@ -121,9 +121,9 @@ class ExecutionEvent:
     def tool_call(
         cls,
         tool_name: str,
-        tool_input: Dict[str, Any],
+        tool_input: dict[str, Any],
         tool_call_id: str,
-        execution_id: Optional[str] = None,
+        execution_id: str | None = None,
     ) -> "ExecutionEvent":
         """Factory method for tool call event."""
         return cls(
@@ -144,7 +144,7 @@ class ExecutionEvent:
         result: Any,
         success: bool,
         tool_call_id: str,
-        execution_id: Optional[str] = None,
+        execution_id: str | None = None,
     ) -> "ExecutionEvent":
         """Factory method for tool result event."""
         return cls(
@@ -163,7 +163,7 @@ class ExecutionEvent:
     def response(
         cls,
         content: str,
-        execution_id: Optional[str] = None,
+        execution_id: str | None = None,
         is_final: bool = False,
     ) -> "ExecutionEvent":
         """Factory method for response event."""
@@ -178,8 +178,8 @@ class ExecutionEvent:
     def error(
         cls,
         error_message: str,
-        error_type: Optional[str] = None,
-        execution_id: Optional[str] = None,
+        error_type: str | None = None,
+        execution_id: str | None = None,
     ) -> "ExecutionEvent":
         """Factory method for error event."""
         return cls(
@@ -193,8 +193,8 @@ class ExecutionEvent:
     def completed(
         cls,
         execution_id: str,
-        total_tokens: Optional[int] = None,
-        duration_ms: Optional[int] = None,
+        total_tokens: int | None = None,
+        duration_ms: int | None = None,
     ) -> "ExecutionEvent":
         """Factory method for completed event."""
         return cls(
@@ -225,10 +225,10 @@ class LLMEvent:
 
     event_type: LLMEventType
     content: Any
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
     index: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert event to dictionary for serialization."""
         return {
             "event_type": self.event_type.value,
@@ -253,9 +253,9 @@ class ToolCall:
 
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "id": self.id,
@@ -283,9 +283,9 @@ class ToolResult:
     tool_name: str
     success: bool
     content: str
-    error: Optional[str] = None
+    error: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "tool_call_id": self.tool_call_id,
@@ -312,13 +312,13 @@ class Message:
 
     role: MessageRole
     content: str
-    name: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
-    tool_call_id: Optional[str] = None
+    name: str | None = None
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for LLM API."""
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "role": self.role.value,
             "content": self.content,
         }
@@ -344,7 +344,7 @@ class Message:
     def assistant(
         cls,
         content: str,
-        tool_calls: Optional[List[ToolCall]] = None,
+        tool_calls: list[ToolCall] | None = None,
     ) -> "Message":
         """Create an assistant message."""
         return cls(role=MessageRole.ASSISTANT, content=content, tool_calls=tool_calls)
@@ -375,9 +375,9 @@ class Tool:
 
     name: str
     description: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, Any]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for LLM API."""
         return {
             "type": "function",
@@ -407,13 +407,13 @@ class AgentContext:
     """
 
     system_prompt: str
-    messages: List[Message]
-    tools: List[Tool]
-    context_data: Dict[str, Any] = field(default_factory=dict)
+    messages: list[Message]
+    tools: list[Tool]
+    context_data: dict[str, Any] = field(default_factory=dict)
     agent_type: str = "investigator"
     max_tokens: int = 4096
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "system_prompt": self.system_prompt,
@@ -431,7 +431,7 @@ class AgentContext:
     def add_assistant_message(
         self,
         content: str,
-        tool_calls: Optional[List[ToolCall]] = None,
+        tool_calls: list[ToolCall] | None = None,
     ) -> None:
         """Add an assistant message to the conversation."""
         self.messages.append(Message.assistant(content, tool_calls))
@@ -445,7 +445,7 @@ class AgentContext:
         """Add a tool result message to the conversation."""
         self.messages.append(Message.tool(content, tool_call_id, tool_name))
 
-    def get_tool_by_name(self, name: str) -> Optional[Tool]:
+    def get_tool_by_name(self, name: str) -> Tool | None:
         """Get a tool by its name."""
         for tool in self.tools:
             if tool.name == name:

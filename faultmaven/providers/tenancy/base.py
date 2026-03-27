@@ -7,7 +7,6 @@ Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from faultmaven.models.interfaces_user import Organization
 from faultmaven.models.user import User
@@ -30,7 +29,7 @@ class TenantProvider(ABC):
 
     @abstractmethod
     async def get_current_organization(
-        self, current_user: User, organization_id: Optional[str] = None
+        self, current_user: User, organization_id: str | None = None
     ) -> Organization:
         """Resolve the current organization context.
 

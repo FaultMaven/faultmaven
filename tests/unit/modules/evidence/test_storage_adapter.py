@@ -223,7 +223,7 @@ class TestStorageAdapterGetFileContent:
         self, storage_adapter, mock_file_storage
     ):
         """Test that errors are caught and None is returned."""
-        mock_file_storage.retrieve_file.side_effect = IOError("Read error")
+        mock_file_storage.retrieve_file.side_effect = OSError("Read error")
 
         result = await storage_adapter.get_file_content("error/path.log")
 

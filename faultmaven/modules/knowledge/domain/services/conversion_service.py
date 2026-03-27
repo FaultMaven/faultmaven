@@ -11,13 +11,10 @@ Pipeline:
 import asyncio
 import json
 import logging
-import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
@@ -32,7 +29,6 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionResponse,
     ConversionStatus,
     DraftStatus,
-    DraftUpdateRequest,
     FailureModeAnalysis,
     QualityScore,
     SourceAssessment,
@@ -259,8 +255,8 @@ class ConversionService:
             )
 
         conversion_id = generate_conversion_id()
-        created_at = datetime.now(timezone.utc)
-        warnings: List[str] = []
+        created_at = datetime.now(UTC)
+        warnings: list[str] = []
 
         # Step 1: Preprocess
         logger.info(
@@ -397,8 +393,8 @@ class ConversionService:
             )
 
         conversion_id = generate_conversion_id()
-        created_at = datetime.now(timezone.utc)
-        warnings: List[str] = []
+        created_at = datetime.now(UTC)
+        warnings: list[str] = []
 
         # Construct a FailureModeAnalysis from the case data
         failure_mode = FailureModeAnalysis(
@@ -453,7 +449,7 @@ class ConversionService:
             team_id=team_id,
         )
 
-        drafts: List[ConversionDraft] = []
+        drafts: list[ConversionDraft] = []
         if isinstance(draft_or_error, ConversionError):
             warnings.append(f"Conversion failed: {draft_or_error.error}")
             status = ConversionStatus.FAILED
@@ -566,16 +562,16 @@ class ConversionService:
     async def _convert_all_failure_modes(
         self,
         text: str,
-        failure_modes: List[FailureModeAnalysis],
+        failure_modes: list[FailureModeAnalysis],
         scope: str,
         filename: str,
         conversion_id: str,
         user_id: str,
         team_id: str = None,
-    ) -> Tuple[List[ConversionDraft], List[ConversionError]]:
+    ) -> tuple[list[ConversionDraft], list[ConversionError]]:
         """Convert all failure modes, parallel for <=5, sequential for 6+."""
-        drafts: List[ConversionDraft] = []
-        errors: List[ConversionError] = []
+        drafts: list[ConversionDraft] = []
+        errors: list[ConversionError] = []
 
         # Deduplicate by (service, symptom_class tuple)
         seen = set()
@@ -634,7 +630,7 @@ class ConversionService:
         """Convert a single failure mode to a runbook draft."""
         try:
             knowledge_model = self._settings.llm.get_knowledge_model()
-            today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            today_iso = datetime.now(UTC).strftime("%Y-%m-%d")
 
             user_message = (
                 f"Convert the following source material into a runbook for this specific "
@@ -749,7 +745,7 @@ class ConversionService:
         status: ConversionStatus,
         source_file: SourceFileInfo,
         analysis: AnalysisResult,
-        drafts: List[ConversionDraft],
+        drafts: list[ConversionDraft],
         created_at: datetime,
         source_type: str = "document",
         case_id: str = None,
@@ -775,7 +771,7 @@ class ConversionService:
                 failure_modes_detected=len(analysis.failure_modes),
                 analysis_result=analysis.model_dump(),
                 created_at=created_at,
-                completed_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(UTC),
             )
             session.add(job)
 
@@ -805,7 +801,7 @@ class ConversionService:
 
     async def get_conversion(
         self, conversion_id: str, user_id: str
-    ) -> Optional[ConversionResponse]:
+    ) -> ConversionResponse | None:
         """Get conversion job with all drafts."""
         if not self._db_session_factory:
             return None
@@ -890,7 +886,7 @@ class ConversionService:
 
     async def get_conversion_by_case(
         self, case_id: str, user_id: str
-    ) -> Optional[ConversionResponse]:
+    ) -> ConversionResponse | None:
         """Get conversion job for a specific case."""
         if not self._db_session_factory:
             return None
@@ -913,7 +909,7 @@ class ConversionService:
 
     async def list_conversions(
         self, user_id: str, limit: int = 20, offset: int = 0
-    ) -> List[dict]:
+    ) -> list[dict]:
         """List user's conversion jobs (summary, no draft content)."""
         if not self._db_session_factory:
             return []
@@ -942,7 +938,7 @@ class ConversionService:
                 for job in jobs
             ]
 
-    async def list_all_drafts(self, user_id: str) -> List[dict]:
+    async def list_all_drafts(self, user_id: str) -> list[dict]:
         """List all non-deleted drafts across all jobs for this user."""
         if not self._db_session_factory:
             return []
@@ -993,7 +989,7 @@ class ConversionService:
         draft_id: str,
         user_id: str,
         content: str,
-    ) -> Optional[ConversionDraft]:
+    ) -> ConversionDraft | None:
         """Update draft content, re-validate, and re-score."""
         if not self._db_session_factory:
             return None
@@ -1063,7 +1059,7 @@ class ConversionService:
         draft_id: str,
         user_id: str,
         username: str,
-    ) -> Optional[VerifyResponse]:
+    ) -> VerifyResponse | None:
         """Promote draft to verified status, update frontmatter, trigger ingestion."""
         if not self._db_session_factory:
             return None
@@ -1121,7 +1117,7 @@ class ConversionService:
                 file_path.write_text(content, encoding="utf-8")
 
             # Update database
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             dm.status = DraftStatus.VERIFIED.value
             dm.verified_at = now
             dm.verified_by = user_id
@@ -1175,10 +1171,10 @@ class ConversionService:
         title: str,
         domain: str,
         service_name: str,
-        symptom_class: List[str],
+        symptom_class: list[str],
         severity: str,
         scope: str,
-        tags: List[str],
+        tags: list[str],
         difficulty: str,
         problem_definition: str,
         diagnostic_steps: str,
@@ -1193,7 +1189,7 @@ class ConversionService:
         """Create a runbook from user-provided template fields (no LLM)."""
         import re as _re
 
-        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_iso = datetime.now(UTC).strftime("%Y-%m-%d")
 
         # Generate kebab-case ID
         base = f"{service_name}-{title}"
@@ -1308,7 +1304,7 @@ status: draft
                 ),
             ),
             drafts=[draft],
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
         return {"conversion_id": conversion_id, "draft": draft}
@@ -1442,7 +1438,7 @@ status: draft
                     ),
                 ),
                 drafts=[draft],
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
 
             discovered.append(

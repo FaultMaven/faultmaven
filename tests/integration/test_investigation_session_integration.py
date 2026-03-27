@@ -12,8 +12,8 @@ Requirements:
 
 import os
 import time
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -380,9 +380,9 @@ async def test_four_level_cascade_delete_chain(
         agent_model="gpt-4",
         status="queued",
         prompt="Test prompt 1",
-        started_at=datetime.now(timezone.utc),
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
     exec2 = AgentExecutionModel(
@@ -393,9 +393,9 @@ async def test_four_level_cascade_delete_chain(
         agent_model="gpt-4",
         status="queued",
         prompt="Test prompt 2",
-        started_at=datetime.now(timezone.utc),
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
     test_session.add(exec1)
@@ -409,8 +409,8 @@ async def test_four_level_cascade_delete_chain(
         tool_name="web_search",
         tool_input='{"query": "test"}',
         status="pending",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
     tc2 = AgentToolCallV2Model(
@@ -419,8 +419,8 @@ async def test_four_level_cascade_delete_chain(
         tool_name="file_read",
         tool_input='{"path": "test.txt"}',
         status="pending",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
     tc3 = AgentToolCallV2Model(
@@ -429,8 +429,8 @@ async def test_four_level_cascade_delete_chain(
         tool_name="code_exec",
         tool_input='{"code": "print(1)"}',
         status="pending",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
     test_session.add(tc1)
@@ -882,7 +882,7 @@ async def test_session_ordering_by_started_at(
     sample_case: Case,
 ):
     """Test sessions are returned ordered by started_at descending."""
-    base_time = datetime.now(timezone.utc)
+    base_time = datetime.now(UTC)
 
     # Create sessions with different started_at times
     for i in range(5):

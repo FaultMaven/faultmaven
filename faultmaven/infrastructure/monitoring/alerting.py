@@ -6,12 +6,12 @@ with multiple alert channels and intelligent alert management.
 """
 
 import asyncio
-import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any
 
 
 class AlertSeverity(Enum):
@@ -56,11 +56,11 @@ class AlertRule:
     evaluation_window_minutes: int = 5
     min_occurrences: int = 1
     max_occurrences_per_hour: int = 10
-    channels: List[AlertChannel] = field(default_factory=list)
-    tags: Dict[str, str] = field(default_factory=dict)
+    channels: list[AlertChannel] = field(default_factory=list)
+    tags: dict[str, str] = field(default_factory=dict)
     suppress_duration_minutes: int = 60
     auto_resolve: bool = True
-    custom_message: Optional[str] = None
+    custom_message: str | None = None
 
 
 @dataclass
@@ -76,11 +76,11 @@ class Alert:
     severity: AlertSeverity
     status: AlertStatus
     triggered_at: datetime
-    resolved_at: Optional[datetime] = None
+    resolved_at: datetime | None = None
     message: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     notification_count: int = 0
-    last_notification: Optional[datetime] = None
+    last_notification: datetime | None = None
 
 
 @dataclass
@@ -89,7 +89,7 @@ class AlertChannelConfig:
 
     channel: AlertChannel
     enabled: bool = True
-    config: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 class AlertManager:
@@ -106,14 +106,14 @@ class AlertManager:
             settings = get_settings()
         self.settings = settings
 
-        self.alert_rules: Dict[str, AlertRule] = {}
-        self.active_alerts: Dict[str, Alert] = {}
-        self.alert_history: List[Alert] = []
-        self.channel_configs: Dict[AlertChannel, AlertChannelConfig] = {}
-        self.notification_handlers: Dict[AlertChannel, Callable] = {}
-        self.suppressed_rules: Dict[str, datetime] = {}
+        self.alert_rules: dict[str, AlertRule] = {}
+        self.active_alerts: dict[str, Alert] = {}
+        self.alert_history: list[Alert] = []
+        self.channel_configs: dict[AlertChannel, AlertChannelConfig] = {}
+        self.notification_handlers: dict[AlertChannel, Callable] = {}
+        self.suppressed_rules: dict[str, datetime] = {}
         self.is_running = False
-        self.evaluation_task: Optional[asyncio.Task] = None
+        self.evaluation_task: asyncio.Task | None = None
 
         self._initialize_default_channels()
         self._register_default_handlers()
@@ -223,9 +223,7 @@ class AlertManager:
             True if rule was suppressed, False if not found
         """
         if rule_id in self.alert_rules:
-            suppress_until = datetime.now(timezone.utc) + timedelta(
-                minutes=duration_minutes
-            )
+            suppress_until = datetime.now(UTC) + timedelta(minutes=duration_minutes)
             self.suppressed_rules[rule_id] = suppress_until
             self.logger.info(f"Suppressed alert rule {rule_id} until {suppress_until}")
             return True
@@ -235,8 +233,8 @@ class AlertManager:
         self,
         metric_name: str,
         metric_value: float,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> List[Alert]:
+        metadata: dict[str, Any] | None = None,
+    ) -> list[Alert]:
         """Evaluate a metric against all applicable alert rules.
 
         Args:
@@ -248,7 +246,7 @@ class AlertManager:
             List of triggered alerts
         """
         triggered_alerts = []
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         for rule in self.alert_rules.values():
             if not rule.enabled or rule.metric_name != metric_name:
@@ -298,8 +296,8 @@ class AlertManager:
             return False
 
     def _handle_rule_violation(
-        self, rule: AlertRule, metric_value: float, metadata: Dict[str, Any]
-    ) -> Optional[Alert]:
+        self, rule: AlertRule, metric_value: float, metadata: dict[str, Any]
+    ) -> Alert | None:
         """Handle a rule violation by creating or updating an alert.
 
         Args:
@@ -310,7 +308,7 @@ class AlertManager:
         Returns:
             Alert if one was triggered, None otherwise
         """
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         # Check if alert already exists for this rule
         existing_alert = None
@@ -381,7 +379,7 @@ class AlertManager:
             if alert.rule_id == rule.rule_id and alert.status == AlertStatus.ACTIVE:
                 alerts_to_resolve.append(alert)
 
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         for alert in alerts_to_resolve:
             alert.status = AlertStatus.RESOLVED
@@ -402,7 +400,7 @@ class AlertManager:
         Returns:
             True if notification should be sent
         """
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         # Check max occurrences per hour
         if alert.notification_count >= rule.max_occurrences_per_hour:
@@ -592,7 +590,7 @@ class AlertManager:
                     "condition": rule.condition,
                     "threshold": rule.threshold_value,
                 },
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
 
             timeout = aiohttp.ClientTimeout(
@@ -628,9 +626,7 @@ class AlertManager:
             f"Email notification would be sent for {action}: {alert.message}"
         )
 
-    def get_active_alerts(
-        self, severity: Optional[AlertSeverity] = None
-    ) -> List[Alert]:
+    def get_active_alerts(self, severity: AlertSeverity | None = None) -> list[Alert]:
         """Get active alerts, optionally filtered by severity.
 
         Args:
@@ -650,7 +646,7 @@ class AlertManager:
 
         return sorted(alerts, key=lambda x: x.triggered_at, reverse=True)
 
-    def get_alert_statistics(self) -> Dict[str, Any]:
+    def get_alert_statistics(self) -> dict[str, Any]:
         """Get alert statistics.
 
         Returns:
@@ -666,7 +662,7 @@ class AlertManager:
             )
 
         # Recent alerts (last 24 hours)
-        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+        recent_threshold = datetime.now(UTC) - timedelta(hours=24)
         recent_alerts = [
             a for a in self.alert_history if a.triggered_at >= recent_threshold
         ]

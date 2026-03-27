@@ -8,7 +8,6 @@ Design Reference:
 """
 
 import logging
-from typing import Optional
 
 from faultmaven.modules.case.contracts import (
     InvestigationPath,

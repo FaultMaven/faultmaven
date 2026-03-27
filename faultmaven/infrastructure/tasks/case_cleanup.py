@@ -19,7 +19,6 @@ Usage:
 
 import asyncio
 import logging
-from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -92,7 +91,7 @@ def _sync_cleanup_wrapper(case_vector_store: CaseVectorStore, case_store: ICaseS
 
 def start_case_cleanup_scheduler(
     case_vector_store: CaseVectorStore, case_store: ICaseStore, interval_hours: int = 6
-) -> Optional[BackgroundScheduler]:
+) -> BackgroundScheduler | None:
     """
     Start background scheduler for case collection cleanup.
 
@@ -128,7 +127,7 @@ def start_case_cleanup_scheduler(
         return None
 
 
-def stop_case_cleanup_scheduler(scheduler: Optional[BackgroundScheduler]):
+def stop_case_cleanup_scheduler(scheduler: BackgroundScheduler | None):
     """
     Stop the case cleanup scheduler.
 

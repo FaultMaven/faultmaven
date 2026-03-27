@@ -21,8 +21,8 @@ Reference: docs/architecture/case-and-session-concepts.md
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 from faultmaven.exceptions import ServiceException, ValidationException
@@ -42,8 +42,8 @@ class AuthSessionService:
 
     def __init__(
         self,
-        session_store: Optional[Any] = None,
-        settings: Optional[Any] = None,
+        session_store: Any | None = None,
+        settings: Any | None = None,
         max_sessions_per_user: int = 10,
         inactive_threshold_hours: int = 24,
         session_ttl_hours: int = 24,
@@ -91,9 +91,9 @@ class AuthSessionService:
     async def create_session(
         self,
         user_id: str,
-        client_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[SessionContext, bool]:
+        client_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[SessionContext, bool]:
         """Create new session or resume existing session for (user, client) pair
 
         Implements session resumption per spec lines 83-86, 394-416.
@@ -132,7 +132,7 @@ class AuthSessionService:
         await self._enforce_session_limit(user_id)
 
         # Create new session
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         session = SessionContext(
             session_id=str(uuid4()),
             user_id=user_id,
@@ -153,11 +153,7 @@ class AuthSessionService:
             if client_id:
                 # Calculate TTL in seconds from expires_at
                 ttl_seconds = (
-                    int(
-                        (
-                            session.expires_at - datetime.now(timezone.utc)
-                        ).total_seconds()
-                    )
+                    int((session.expires_at - datetime.now(UTC)).total_seconds())
                     if session.expires_at
                     else self.session_ttl.total_seconds()
                 )
@@ -169,7 +165,7 @@ class AuthSessionService:
         return session, False
 
     @trace("session_service_get_session")
-    async def get_session(self, session_id: str) -> Optional[SessionContext]:
+    async def get_session(self, session_id: str) -> SessionContext | None:
         """Get session by ID
 
         Args:
@@ -189,7 +185,7 @@ class AuthSessionService:
             return None
 
         # Check if session is expired
-        if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
+        if session.expires_at and datetime.now(UTC) > session.expires_at:
             logger.info(f"Session {session_id} has expired, deleting")
             await self.delete_session(session_id)
             return None
@@ -210,7 +206,7 @@ class AuthSessionService:
         return session is not None
 
     @trace("session_service_get_user_from_session")
-    async def get_user_from_session(self, session_id: str) -> Optional[str]:
+    async def get_user_from_session(self, session_id: str) -> str | None:
         """Get user_id from session for authorization (spec line 421)
 
         Args:
@@ -226,7 +222,7 @@ class AuthSessionService:
     async def update_session(
         self,
         session_id: str,
-        updates: Dict[str, Any],
+        updates: dict[str, Any],
     ) -> bool:
         """Update session metadata (authentication context only)
 
@@ -268,7 +264,7 @@ class AuthSessionService:
             if hasattr(session, key):
                 setattr(session, key, value)
 
-        session.updated_at = datetime.now(timezone.utc)
+        session.updated_at = datetime.now(UTC)
 
         # Persist
         if self.session_store:
@@ -291,7 +287,7 @@ class AuthSessionService:
         if not session:
             return False
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         session.expires_at = now + timedelta(hours=extend_by_hours)
         session.updated_at = now
 
@@ -315,7 +311,7 @@ class AuthSessionService:
         if not session:
             return False
 
-        session.last_activity = datetime.now(timezone.utc)
+        session.last_activity = datetime.now(UTC)
         session.updated_at = session.last_activity
 
         if self.session_store:
@@ -351,7 +347,7 @@ class AuthSessionService:
     # =========================================================================
 
     @trace("session_service_get_user_sessions")
-    async def get_user_sessions(self, user_id: str) -> List[SessionContext]:
+    async def get_user_sessions(self, user_id: str) -> list[SessionContext]:
         """Get all active sessions for a user (multi-device support)
 
         Implements spec lines 88-92: "Multiple concurrent sessions per user"
@@ -376,9 +372,7 @@ class AuthSessionService:
         return user_sessions
 
     @trace("session_service_list_sessions")
-    async def list_sessions(
-        self, user_id: Optional[str] = None
-    ) -> List[SessionContext]:
+    async def list_sessions(self, user_id: str | None = None) -> list[SessionContext]:
         """List sessions, optionally filtered by user
 
         Args:
@@ -412,7 +406,7 @@ class AuthSessionService:
             return 0
 
         all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cleaned = 0
 
         for session in all_sessions:
@@ -436,7 +430,7 @@ class AuthSessionService:
             return 0
 
         all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cleaned = 0
 
         for session in all_sessions:
@@ -455,7 +449,7 @@ class AuthSessionService:
     # =========================================================================
 
     @trace("session_service_get_session_analytics")
-    async def get_session_analytics(self) -> Dict[str, Any]:
+    async def get_session_analytics(self) -> dict[str, Any]:
         """Get session analytics
 
         Returns:
@@ -465,7 +459,7 @@ class AuthSessionService:
             return {}
 
         all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         active_sessions = [s for s in all_sessions if await self._is_active(s)]
 
@@ -490,7 +484,7 @@ class AuthSessionService:
         }
 
     @trace("session_service_get_user_session_analytics")
-    async def get_user_session_analytics(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_session_analytics(self, user_id: str) -> dict[str, Any]:
         """Get session analytics for specific user
 
         Args:
@@ -520,7 +514,7 @@ class AuthSessionService:
         }
 
     @trace("session_service_get_session_health")
-    async def get_session_health(self) -> Dict[str, Any]:
+    async def get_session_health(self) -> dict[str, Any]:
         """Get session health metrics
 
         Returns:
@@ -530,7 +524,7 @@ class AuthSessionService:
             return {"status": "unhealthy", "reason": "session_store not configured"}
 
         all_sessions = await self.session_store.list_sessions()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         active = sum(1 for s in all_sessions if await self._is_active(s))
         expired = sum(1 for s in all_sessions if s.expires_at and now > s.expires_at)
@@ -549,7 +543,7 @@ class AuthSessionService:
 
     async def _find_session_by_user_and_client(
         self, user_id: str, client_id: str
-    ) -> Optional[SessionContext]:
+    ) -> SessionContext | None:
         """Find existing session for (user, client) pair for resumption
 
         Args:
@@ -607,7 +601,7 @@ class AuthSessionService:
         Returns:
             True if session is active
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Check expiration
         if session.expires_at and now > session.expires_at:
@@ -625,10 +619,10 @@ class AuthSessionService:
     async def search_sessions(
         self,
         user_id: str,
-        query: Optional[str] = None,
-        status: Optional[str] = None,
+        query: str | None = None,
+        status: str | None = None,
         limit: int = 50,
-    ) -> List[SessionContext]:
+    ) -> list[SessionContext]:
         """Search user's sessions with filters
 
         Implements microservices parity endpoint from fm-session-service.
@@ -691,7 +685,7 @@ class AuthSessionService:
         if not session.metadata:
             session.metadata = {}
         session.metadata["status"] = "archived"
-        session.updated_at = datetime.now(timezone.utc)
+        session.updated_at = datetime.now(UTC)
 
         # Persist
         if self.session_store:

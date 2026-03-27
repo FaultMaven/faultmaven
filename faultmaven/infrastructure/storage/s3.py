@@ -18,8 +18,7 @@ Configuration:
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime, timedelta
 
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
@@ -67,7 +66,7 @@ class S3StorageBackend(IFileStorageBackend):
         bucket_name: str,
         region: str = "us-east-1",
         prefix: str = "",
-        endpoint_url: Optional[str] = None,
+        endpoint_url: str | None = None,
         signature_version: str = "s3v4",
     ):
         """Initialize S3 storage backend.
@@ -129,7 +128,7 @@ class S3StorageBackend(IFileStorageBackend):
         key: str,
         content_type: str = "application/octet-stream",
         expires_in: timedelta = timedelta(hours=1),
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> PresignedUrl:
         """Generate a presigned URL for file upload to S3.
 
@@ -162,7 +161,7 @@ class S3StorageBackend(IFileStorageBackend):
             ExpiresIn=expires_seconds,
         )
 
-        expires_at = datetime.now(timezone.utc) + expires_in
+        expires_at = datetime.now(UTC) + expires_in
 
         logger.debug(f"Generated S3 upload URL for key={full_key}")
 
@@ -179,7 +178,7 @@ class S3StorageBackend(IFileStorageBackend):
         self,
         key: str,
         expires_in: timedelta = timedelta(hours=1),
-        filename: Optional[str] = None,
+        filename: str | None = None,
     ) -> PresignedUrl:
         """Generate a presigned URL for file download from S3.
 
@@ -221,7 +220,7 @@ class S3StorageBackend(IFileStorageBackend):
             ExpiresIn=expires_seconds,
         )
 
-        expires_at = datetime.now(timezone.utc) + expires_in
+        expires_at = datetime.now(UTC) + expires_in
 
         logger.debug(f"Generated S3 download URL for key={full_key}")
 
@@ -236,7 +235,7 @@ class S3StorageBackend(IFileStorageBackend):
         key: str,
         data: bytes,
         content_type: str = "application/octet-stream",
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> StoredFile:
         """Store a file directly to S3.
 
@@ -269,11 +268,11 @@ class S3StorageBackend(IFileStorageBackend):
             key=key,
             size_bytes=len(data),
             content_type=content_type,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             metadata=metadata,
         )
 
-    async def retrieve_file(self, key: str) -> Optional[bytes]:
+    async def retrieve_file(self, key: str) -> bytes | None:
         """Retrieve file content from S3.
 
         Args:
@@ -340,7 +339,7 @@ class S3StorageBackend(IFileStorageBackend):
                 return False
             raise
 
-    async def get_file_info(self, key: str) -> Optional[StoredFile]:
+    async def get_file_info(self, key: str) -> StoredFile | None:
         """Get file metadata from S3 without downloading content.
 
         Args:
@@ -361,7 +360,7 @@ class S3StorageBackend(IFileStorageBackend):
                 key=key,
                 size_bytes=response["ContentLength"],
                 content_type=response.get("ContentType", "application/octet-stream"),
-                created_at=response.get("LastModified", datetime.now(timezone.utc)),
+                created_at=response.get("LastModified", datetime.now(UTC)),
                 metadata=response.get("Metadata"),
             )
         except ClientError as e:

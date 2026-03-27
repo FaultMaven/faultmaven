@@ -13,7 +13,7 @@ Run with:
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -211,7 +211,7 @@ class TestCaseUpdatePerformance:
         # Modify case
         case.title = "Updated Title"
         case.description = "Updated description"
-        case.updated_at = datetime.now(timezone.utc)
+        case.updated_at = datetime.now(UTC)
 
         # Benchmark update
         start = time.perf_counter()

@@ -20,9 +20,9 @@ Architecture:
 - Repository abstraction (no direct database imports)
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -180,7 +180,7 @@ class CaseAction(BaseModel):
     to_status: CaseStatus = Field(description="Status after the action")
 
     triggered_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the action occurred",
     )
 
@@ -405,7 +405,7 @@ class InvestigationProgress(BaseModel):
         description="Likelihood in root cause identification (0.0 = unknown, 1.0 = certain)",
     )
 
-    root_cause_method: Optional[str] = Field(
+    root_cause_method: str | None = Field(
         default=None,
         description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | other",
     )
@@ -413,16 +413,16 @@ class InvestigationProgress(BaseModel):
     # ============================================================
     # Milestone Completion Timestamps
     # ============================================================
-    verification_completed_at: Optional[datetime] = Field(
+    verification_completed_at: datetime | None = Field(
         default=None,
         description="When all verification milestones (symptom, scope, timeline, changes) were completed",
     )
 
-    investigation_completed_at: Optional[datetime] = Field(
+    investigation_completed_at: datetime | None = Field(
         default=None, description="When root cause was identified"
     )
 
-    resolution_completed_at: Optional[datetime] = Field(
+    resolution_completed_at: datetime | None = Field(
         default=None, description="When solution was verified"
     )
 
@@ -490,7 +490,7 @@ class InvestigationProgress(BaseModel):
         return self.solution_verified
 
     @property
-    def completed_milestones(self) -> List[str]:
+    def completed_milestones(self) -> list[str]:
         """Get list of completed milestone and indicator names."""
         milestone_map = {
             # Stage-gate milestones
@@ -509,7 +509,7 @@ class InvestigationProgress(BaseModel):
         return [name for name, completed in milestone_map.items() if completed]
 
     @property
-    def pending_milestones(self) -> List[str]:
+    def pending_milestones(self) -> list[str]:
         """Get list of pending progress indicator names."""
         indicator_map = {
             "symptom_verified": self.symptom_verified,
@@ -744,7 +744,7 @@ class ProblemConfirmation(BaseModel):
     )
 
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When this confirmation was created",
     )
 
@@ -794,7 +794,7 @@ class KnowledgeMatch(BaseModel):
     match_type: str  # "past_case" | "runbook" | "documentation"
     relevance_score: float  # 0.0-1.0
     summary: str
-    potential_solution: Optional[str] = None
+    potential_solution: str | None = None
 
 
 class InquiryData(BaseModel):
@@ -803,14 +803,14 @@ class InquiryData(BaseModel):
     Captures early problem exploration before formal investigation commitment.
     """
 
-    problem_confirmation: Optional[ProblemConfirmation] = Field(
+    problem_confirmation: ProblemConfirmation | None = Field(
         default=None, description="Agent initial understanding of the problem"
     )
 
     # ============================================================
     # Problem Statement Confirmation Workflow
     # ============================================================
-    proposed_problem_statement: Optional[str] = Field(
+    proposed_problem_statement: str | None = Field(
         default=None,
         description="""
         Agent formalized problem statement (clear, specific, actionable) - ITERATIVE REFINEMENT pattern.
@@ -834,7 +834,7 @@ class InquiryData(BaseModel):
         default=False, description="User confirmed the formalized problem statement"
     )
 
-    problem_statement_confirmed_at: Optional[datetime] = Field(
+    problem_statement_confirmed_at: datetime | None = Field(
         default=None, description="When user confirmed the problem statement"
     )
 
@@ -845,7 +845,7 @@ class InquiryData(BaseModel):
         default=False, description="Whether user committed to formal investigation"
     )
 
-    decision_made_at: Optional[datetime] = Field(
+    decision_made_at: datetime | None = Field(
         default=None, description="When user decided to investigate (or not)"
     )
 
@@ -853,15 +853,15 @@ class InquiryData(BaseModel):
         default=0, ge=0, description="Number of turns spent in INQUIRY status"
     )
 
-    knowledge_matches: List[KnowledgeMatch] = Field(
+    knowledge_matches: list[KnowledgeMatch] = Field(
         default_factory=list, description="Potential solutions found in KB"
     )
 
-    knowledge_resolution: Optional[KnowledgeResolution] = Field(
+    knowledge_resolution: KnowledgeResolution | None = Field(
         default=None, description="Resolution details if fixed via KB match"
     )
 
-    preliminary_urgency: Optional[PreliminaryUrgency] = Field(
+    preliminary_urgency: PreliminaryUrgency | None = Field(
         default=None, description="Early urgency assessment"
     )
 
@@ -885,7 +885,7 @@ class InquiryData(BaseModel):
 
         if self.problem_statement_confirmed and not self.problem_statement_confirmed_at:
             # Auto-set confirmation timestamp if missing
-            self.problem_statement_confirmed_at = datetime.now(timezone.utc)
+            self.problem_statement_confirmed_at = datetime.now(UTC)
 
         return self
 
@@ -894,7 +894,7 @@ class InquiryData(BaseModel):
         """Validate investigation decision consistency."""
         if self.decided_to_investigate and not self.decision_made_at:
             # Auto-set decision timestamp if missing
-            self.decision_made_at = datetime.now(timezone.utc)
+            self.decision_made_at = datetime.now(UTC)
 
         return self
 
@@ -913,13 +913,13 @@ class Change(BaseModel):
         max_length=50,
     )
 
-    changed_by: Optional[str] = Field(
+    changed_by: str | None = Field(
         default=None,
         description="Who made the change (user, system, team)",
         max_length=200,
     )
 
-    details: Optional[Dict[str, Any]] = Field(
+    details: dict[str, Any] | None = Field(
         default=None,
         description="Additional structured details (version numbers, config values, etc.)",
     )
@@ -966,7 +966,7 @@ class Correlation(BaseModel):
         description="Type: temporal | causal | coincidental | other", max_length=50
     )
 
-    evidence: Optional[str] = Field(
+    evidence: str | None = Field(
         default=None,
         description="Evidence supporting this correlation",
         max_length=1000,
@@ -1003,7 +1003,7 @@ class ProblemVerification(BaseModel):
         max_length=1000,
     )
 
-    symptom_indicators: List[str] = Field(
+    symptom_indicators: list[str] = Field(
         default_factory=list,
         description="Specific metrics/observations confirming symptom (e.g., 'Error rate: 15%', 'P99 latency: 5s')",
     )
@@ -1011,17 +1011,17 @@ class ProblemVerification(BaseModel):
     # ============================================================
     # Scope
     # ============================================================
-    affected_services: List[str] = Field(
+    affected_services: list[str] = Field(
         default_factory=list, description="Services/components affected"
     )
 
-    affected_users: Optional[str] = Field(
+    affected_users: str | None = Field(
         default=None,
         description="User impact description: 'all users' | '10% of users' | 'premium tier' | etc.",
         max_length=200,
     )
 
-    affected_regions: List[str] = Field(
+    affected_regions: list[str] = Field(
         default_factory=list, description="Geographic regions affected"
     )
 
@@ -1029,42 +1029,42 @@ class ProblemVerification(BaseModel):
         description="Assessed severity: CRITICAL | HIGH | MEDIUM | LOW", max_length=50
     )
 
-    user_impact: Optional[str] = Field(
+    user_impact: str | None = Field(
         default=None, description="Description of user-facing impact", max_length=1000
     )
 
     # ============================================================
     # Timeline
     # ============================================================
-    started_at: Optional[datetime] = Field(
+    started_at: datetime | None = Field(
         default=None, description="When problem began (best estimate)"
     )
 
-    noticed_at: Optional[datetime] = Field(
+    noticed_at: datetime | None = Field(
         default=None, description="When problem was noticed/reported"
     )
 
-    resolved_naturally_at: Optional[datetime] = Field(
+    resolved_naturally_at: datetime | None = Field(
         default=None, description="If problem resolved on its own, when?"
     )
 
-    duration: Optional[timedelta] = Field(
+    duration: timedelta | None = Field(
         default=None, description="How long problem lasted (for historical problems)"
     )
 
-    temporal_state: Optional[TemporalState] = Field(
+    temporal_state: TemporalState | None = Field(
         default=None, description="ONGOING | HISTORICAL"
     )
 
     # ============================================================
     # Changes
     # ============================================================
-    recent_changes: List[Change] = Field(
+    recent_changes: list[Change] = Field(
         default_factory=list,
         description="Recent changes that may be relevant (deployments, configs, etc.)",
     )
 
-    correlations: List[Correlation] = Field(
+    correlations: list[Correlation] = Field(
         default_factory=list,
         description="Identified correlations between changes and symptom",
         max_items=10,  # Limit to top 10
@@ -1085,14 +1085,14 @@ class ProblemVerification(BaseModel):
         description="Urgency classification for path routing",
     )
 
-    urgency_factors: List[str] = Field(
+    urgency_factors: list[str] = Field(
         default_factory=list, description="Factors contributing to urgency assessment"
     )
 
     # ============================================================
     # Metadata
     # ============================================================
-    verified_at: Optional[datetime] = Field(
+    verified_at: datetime | None = Field(
         default=None, description="When verification was completed"
     )
 
@@ -1117,7 +1117,7 @@ class ProblemVerification(BaseModel):
         )
 
     @property
-    def time_to_detection(self) -> Optional[timedelta]:
+    def time_to_detection(self) -> timedelta | None:
         """Time between problem start and detection"""
         if self.started_at and self.noticed_at:
             return self.noticed_at - self.started_at
@@ -1496,13 +1496,13 @@ class UploadedFile(BaseModel):
         max_length=50,
     )
 
-    preprocessing_summary: Optional[str] = Field(
+    preprocessing_summary: str | None = Field(
         default=None,
         description="Brief summary from preprocessing pipeline (<500 chars)",
         max_length=500,
     )
 
-    content_ref: Optional[str] = Field(
+    content_ref: str | None = Field(
         default=None,
         description="Reference to stored file content (S3 URI or data_id). May be None if processing pending.",
         max_length=5000,
@@ -1579,7 +1579,7 @@ class Evidence(BaseModel):
         """
     )
 
-    content_ref: Optional[str] = Field(
+    content_ref: str | None = Field(
         default=None,
         description="S3 URI to original raw file (1-10MB) for audit, compliance, and deep dive analysis. May be None for user-typed evidence.",
         max_length=5000,
@@ -1597,14 +1597,14 @@ class Evidence(BaseModel):
         """
     )
 
-    compression_ratio: Optional[float] = Field(
+    compression_ratio: float | None = Field(
         default=None,
         ge=0.0,
         le=1.0,
         description="Ratio of preprocessed to raw content size (e.g., 0.005 = 200:1 compression)",
     )
 
-    analysis: Optional[str] = Field(
+    analysis: str | None = Field(
         default=None,
         description="Agent analysis of this evidence and its significance to the investigation",
         max_length=2000,
@@ -1613,7 +1613,7 @@ class Evidence(BaseModel):
     # ============================================================
     # Data Type & Deduplication (from Preprocessing Pipeline)
     # ============================================================
-    data_type: Optional[str] = Field(
+    data_type: str | None = Field(
         default=None,
         description=(
             "Unified data type from preprocessing (logs, metrics, configuration, "
@@ -1622,7 +1622,7 @@ class Evidence(BaseModel):
         max_length=50,
     )
 
-    content_hash: Optional[str] = Field(
+    content_hash: str | None = Field(
         default=None,
         description=(
             "SHA-256 hash of raw file content for deduplication. "
@@ -1632,7 +1632,7 @@ class Evidence(BaseModel):
         max_length=64,
     )
 
-    extraction_method: Optional[str] = Field(
+    extraction_method: str | None = Field(
         default=None,
         description=(
             "Extraction method used: structural_index, statistical_profile, "
@@ -1644,7 +1644,7 @@ class Evidence(BaseModel):
     # ============================================================
     # Processing Mode (Scenario-Driven Data Processing)
     # ============================================================
-    processing_mode: Optional[str] = Field(
+    processing_mode: str | None = Field(
         default=None,
         description="Processing mode: triage | directed_analysis | semantic_search",
         max_length=50,
@@ -1665,12 +1665,12 @@ class Evidence(BaseModel):
         description="How evidence was provided: DOCUMENT, USER_TEXT, or SUBMITTED_DATA"
     )
 
-    source_file_id: Optional[str] = Field(
+    source_file_id: str | None = Field(
         default=None,
         description="ID of the UploadedFile this evidence was derived from (None if from user input)",
     )
 
-    original_filename: Optional[str] = Field(
+    original_filename: str | None = Field(
         default=None,
         description="Original filename when uploaded (e.g., 'OpenSSH_2k.log'). Used by search_file tool for display.",
         max_length=512,
@@ -1679,7 +1679,7 @@ class Evidence(BaseModel):
     # ============================================================
     # Milestone Advancement
     # ============================================================
-    advances_milestones: List[str] = Field(
+    advances_milestones: list[str] = Field(
         default_factory=list,
         description="Which milestones this evidence helped complete",
     )
@@ -1688,7 +1688,7 @@ class Evidence(BaseModel):
     # Metadata
     # ============================================================
     collected_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When evidence was collected",
     )
 
@@ -1842,7 +1842,7 @@ class HypothesisEvidenceLink(BaseModel):
     )
 
     analyzed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When this relationship was established",
     )
 
@@ -1893,7 +1893,7 @@ class Hypothesis(BaseModel):
     # ============================================================
     # Evidence Relationships (Many-to-Many)
     # ============================================================
-    evidence_links: Dict[str, HypothesisEvidenceLink] = Field(
+    evidence_links: dict[str, HypothesisEvidenceLink] = Field(
         default_factory=dict,
         description="""
         Maps evidence_id to relationship details.
@@ -1931,7 +1931,7 @@ class Hypothesis(BaseModel):
         description="How hypothesis was generated"
     )
 
-    retirement_reason: Optional[str] = Field(
+    retirement_reason: str | None = Field(
         default=None, description="Reason if hypothesis was retired"
     )
 
@@ -1942,11 +1942,11 @@ class Hypothesis(BaseModel):
     # ============================================================
     # Testing History
     # ============================================================
-    tested_at: Optional[datetime] = Field(
+    tested_at: datetime | None = Field(
         default=None, description="When hypothesis testing began"
     )
 
-    concluded_at: Optional[datetime] = Field(
+    concluded_at: datetime | None = Field(
         default=None, description="When hypothesis was validated/refuted/retired"
     )
 
@@ -1954,7 +1954,7 @@ class Hypothesis(BaseModel):
     # Computed Properties
     # ============================================================
     @property
-    def supporting_evidence(self) -> List[str]:
+    def supporting_evidence(self) -> list[str]:
         """Get evidence IDs that support this hypothesis"""
 
         return [
@@ -1964,7 +1964,7 @@ class Hypothesis(BaseModel):
         ]
 
     @property
-    def refuting_evidence(self) -> List[str]:
+    def refuting_evidence(self) -> list[str]:
         """Get evidence IDs that refute this hypothesis"""
 
         return [
@@ -2046,26 +2046,26 @@ class Solution(BaseModel):
     # ============================================================
     title: str = Field(description="Short solution title", min_length=1, max_length=200)
 
-    immediate_action: Optional[str] = Field(
+    immediate_action: str | None = Field(
         default=None, description="Quick fix or mitigation (temporary)", max_length=2000
     )
 
-    longterm_fix: Optional[str] = Field(
+    longterm_fix: str | None = Field(
         default=None, description="Permanent solution (comprehensive)", max_length=2000
     )
 
     # ============================================================
     # Implementation
     # ============================================================
-    implementation_steps: List[str] = Field(
+    implementation_steps: list[str] = Field(
         default_factory=list, description="Step-by-step implementation instructions"
     )
 
-    commands: List[str] = Field(
+    commands: list[str] = Field(
         default_factory=list, description="Specific commands to execute"
     )
 
-    risks: List[str] = Field(
+    risks: list[str] = Field(
         default_factory=list, description="Risks or side effects of this solution"
     )
 
@@ -2073,7 +2073,7 @@ class Solution(BaseModel):
     # Lifecycle
     # ============================================================
     proposed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When solution was proposed",
     )
 
@@ -2081,30 +2081,28 @@ class Solution(BaseModel):
         default="agent", description="Who proposed: 'agent' or user_id"
     )
 
-    applied_at: Optional[datetime] = Field(
+    applied_at: datetime | None = Field(
         default=None, description="When solution was applied"
     )
 
-    applied_by: Optional[str] = Field(
-        default=None, description="Who applied the solution"
-    )
+    applied_by: str | None = Field(default=None, description="Who applied the solution")
 
-    verified_at: Optional[datetime] = Field(
+    verified_at: datetime | None = Field(
         default=None, description="When solution effectiveness was verified"
     )
 
     # ============================================================
     # Verification
     # ============================================================
-    verification_method: Optional[str] = Field(
+    verification_method: str | None = Field(
         default=None, description="How effectiveness was verified", max_length=500
     )
 
-    verification_evidence_id: Optional[str] = Field(
+    verification_evidence_id: str | None = Field(
         default=None, description="Evidence ID proving solution worked"
     )
 
-    effectiveness: Optional[float] = Field(
+    effectiveness: float | None = Field(
         default=None,
         ge=0.0,
         le=1.0,
@@ -2187,13 +2185,13 @@ class ProposedAction(BaseModel):
         max_length=2000,
     )
 
-    commands: List[str] = Field(
+    commands: list[str] = Field(
         default_factory=list,
         description="Specific commands for the user to execute",
     )
 
     proposed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the action was proposed",
     )
 
@@ -2237,7 +2235,7 @@ class ActionAttempt(BaseModel):
     )
 
     submitted_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the attempt was submitted",
     )
 
@@ -2356,31 +2354,31 @@ class TurnProgress(BaseModel):
     turn_number: int = Field(ge=0, description="Sequential turn number")
 
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When turn occurred",
     )
 
     # ============================================================
     # What Advanced This Turn
     # ============================================================
-    milestones_completed: List[str] = Field(
+    milestones_completed: list[str] = Field(
         default_factory=list,
         description="Milestone names completed this turn (e.g., 'symptom_verified')",
     )
 
-    evidence_added: List[str] = Field(
+    evidence_added: list[str] = Field(
         default_factory=list, description="Evidence IDs added this turn"
     )
 
-    hypotheses_generated: List[str] = Field(
+    hypotheses_generated: list[str] = Field(
         default_factory=list, description="Hypothesis IDs generated this turn"
     )
 
-    hypotheses_validated: List[str] = Field(
+    hypotheses_validated: list[str] = Field(
         default_factory=list, description="Hypothesis IDs validated this turn"
     )
 
-    solutions_proposed: List[str] = Field(
+    solutions_proposed: list[str] = Field(
         default_factory=list, description="Solution IDs proposed this turn"
     )
 
@@ -2389,7 +2387,7 @@ class TurnProgress(BaseModel):
     # ============================================================
     progress_made: bool = Field(description="Did investigation advance this turn?")
 
-    actions_taken: List[str] = Field(
+    actions_taken: list[str] = Field(
         default_factory=list,
         description="Agent actions: 'verified_symptom', 'requested_logs', 'generated_hypothesis', etc.",
     )
@@ -2402,18 +2400,18 @@ class TurnProgress(BaseModel):
     # ============================================================
     # User Interaction
     # ============================================================
-    user_message_summary: Optional[str] = Field(
+    user_message_summary: str | None = Field(
         default=None, description="Summary of user message", max_length=500
     )
 
-    agent_response_summary: Optional[str] = Field(
+    agent_response_summary: str | None = Field(
         default=None, description="Summary of agent response", max_length=500
     )
 
     # ============================================================
     # System Feedback (for iterative correction)
     # ============================================================
-    system_feedback: Optional[str] = Field(
+    system_feedback: str | None = Field(
         default=None,
         description="Instruction or error from system to agent (e.g., 'Invalid evidence ID')",
         max_length=1000,
@@ -2422,17 +2420,17 @@ class TurnProgress(BaseModel):
     # ============================================================
     # Progress Metrics (populated by WorkingConclusionGenerator)
     # ============================================================
-    momentum: Optional[InvestigationMomentum] = Field(
+    momentum: InvestigationMomentum | None = Field(
         default=None,
         description="Investigation momentum indicator for this turn",
     )
 
-    blocked_reasons: List[str] = Field(
+    blocked_reasons: list[str] = Field(
         default_factory=list,
         description="Reasons why investigation is blocked or progressing slowly",
     )
 
-    next_steps: List[str] = Field(
+    next_steps: list[str] = Field(
         default_factory=list,
         description="Suggested next steps for the investigation",
     )
@@ -2440,12 +2438,12 @@ class TurnProgress(BaseModel):
     # ============================================================
     # Observability Fields (for stagnation and validation tracking)
     # ============================================================
-    stagnation_detected: Optional[str] = Field(
+    stagnation_detected: str | None = Field(
         default=None,
         description="Stagnation type detected this turn: no_progress, hypothesis_anchoring, action_loop, hypothesis_deadlock",
     )
 
-    validation_repairs: List[str] = Field(
+    validation_repairs: list[str] = Field(
         default_factory=list,
         description="State repairs made by StateValidator this turn (e.g., 'Fixed milestone ordering')",
     )
@@ -2601,13 +2599,13 @@ class PathSelection(BaseModel):
 
     rationale: str = Field(description="Why this path was selected", max_length=500)
 
-    alternate_path: Optional[InvestigationPath] = Field(
+    alternate_path: InvestigationPath | None = Field(
         default=None,
         description="Alternative path user could have chosen (if auto-selected)",
     )
 
     selected_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When path was selected",
     )
 
@@ -2619,11 +2617,11 @@ class PathSelection(BaseModel):
     # ============================================================
     # Decision Inputs
     # ============================================================
-    temporal_state: Optional[TemporalState] = Field(
+    temporal_state: TemporalState | None = Field(
         default=None, description="Temporal state used in decision"
     )
 
-    urgency_level: Optional[UrgencyLevel] = Field(
+    urgency_level: UrgencyLevel | None = Field(
         default=None, description="Urgency level used in decision"
     )
 
@@ -2702,11 +2700,11 @@ class WorkingConclusion(BaseModel):
         description="Why agent believes this conclusion", max_length=2000
     )
 
-    supporting_evidence_ids: List[str] = Field(
+    supporting_evidence_ids: list[str] = Field(
         default_factory=list, description="Evidence IDs supporting this conclusion"
     )
 
-    caveats: List[str] = Field(
+    caveats: list[str] = Field(
         default_factory=list, description="Limitations or uncertainties"
     )
 
@@ -2714,11 +2712,11 @@ class WorkingConclusion(BaseModel):
     # Metadata
     # ============================================================
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When this conclusion was formed/updated",
     )
 
-    supersedes_conclusion_at: Optional[datetime] = Field(
+    supersedes_conclusion_at: datetime | None = Field(
         default=None, description="Timestamp of previous conclusion this replaces"
     )
 
@@ -2748,11 +2746,11 @@ class RootCauseConclusion(BaseModel):
     # ============================================================
     # Evidence Basis
     # ============================================================
-    evidence_basis: List[str] = Field(
+    evidence_basis: list[str] = Field(
         default_factory=list, description="Evidence IDs supporting this conclusion"
     )
 
-    validated_hypothesis_id: Optional[str] = Field(
+    validated_hypothesis_id: str | None = Field(
         default=None,
         description="If identified via hypothesis validation, the hypothesis ID",
     )
@@ -2760,7 +2758,7 @@ class RootCauseConclusion(BaseModel):
     # ============================================================
     # Contributing Factors
     # ============================================================
-    contributing_factors: List[str] = Field(
+    contributing_factors: list[str] = Field(
         default_factory=list,
         description="Secondary factors that made the problem worse or more likely",
     )
@@ -2769,7 +2767,7 @@ class RootCauseConclusion(BaseModel):
     # Metadata
     # ============================================================
     determined_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When root cause was determined",
     )
 
@@ -2851,12 +2849,12 @@ class EscalationState(BaseModel):
         description="Detailed explanation of escalation reason", max_length=1000
     )
 
-    escalated_to: Optional[str] = Field(
+    escalated_to: str | None = Field(
         default=None, description="Team or person escalated to", max_length=200
     )
 
     escalated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When escalation occurred",
     )
 
@@ -2868,18 +2866,18 @@ class EscalationState(BaseModel):
         max_length=5000,
     )
 
-    key_findings: List[str] = Field(
+    key_findings: list[str] = Field(
         default_factory=list, description="Key findings to communicate to expert"
     )
 
     # ============================================================
     # Resolution
     # ============================================================
-    resolution: Optional[str] = Field(
+    resolution: str | None = Field(
         default=None, description="How escalation was resolved", max_length=2000
     )
 
-    resolved_at: Optional[datetime] = Field(
+    resolved_at: datetime | None = Field(
         default=None, description="When escalation was resolved"
     )
 
@@ -2943,7 +2941,7 @@ class GeneratedDocument(BaseModel):
     )
 
     generated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When document was generated",
     )
 
@@ -2952,7 +2950,7 @@ class GeneratedDocument(BaseModel):
         max_length=50,
     )
 
-    size_bytes: Optional[int] = Field(
+    size_bytes: int | None = Field(
         default=None, ge=0, description="Document size in bytes"
     )
 
@@ -2974,50 +2972,50 @@ class DocumentationData(BaseModel):
     Captures lessons learned and artifacts.
     """
 
-    documents_generated: List[GeneratedDocument] = Field(
+    documents_generated: list[GeneratedDocument] = Field(
         default_factory=list, description="All documents generated for this case"
     )
 
-    runbook_entry: Optional[str] = Field(
+    runbook_entry: str | None = Field(
         default=None,
         description="Runbook entry created from this case",
         max_length=5000,
     )
 
-    post_mortem_id: Optional[str] = Field(
+    post_mortem_id: str | None = Field(
         default=None, description="Link to post-mortem doc if created"
     )
 
     # ============================================================
     # Lessons Learned
     # ============================================================
-    lessons_learned: List[str] = Field(
+    lessons_learned: list[str] = Field(
         default_factory=list, description="Key takeaways from investigation"
     )
 
-    what_went_well: List[str] = Field(
+    what_went_well: list[str] = Field(
         default_factory=list, description="Positive aspects of investigation"
     )
 
-    what_could_improve: List[str] = Field(
+    what_could_improve: list[str] = Field(
         default_factory=list, description="Areas for improvement"
     )
 
     # ============================================================
     # Prevention
     # ============================================================
-    preventive_measures: List[str] = Field(
+    preventive_measures: list[str] = Field(
         default_factory=list, description="How to prevent recurrence"
     )
 
-    monitoring_recommendations: List[str] = Field(
+    monitoring_recommendations: list[str] = Field(
         default_factory=list, description="Monitoring/alerts to add"
     )
 
     # ============================================================
     # Metadata
     # ============================================================
-    generated_at: Optional[datetime] = Field(
+    generated_at: datetime | None = Field(
         default=None, description="When documentation was generated"
     )
 
@@ -3088,18 +3086,18 @@ class Case(BaseModel):
         description="Current lifecycle status (phase or disposition)",
     )
 
-    action_history: List[CaseAction] = Field(
+    action_history: list[CaseAction] = Field(
         default_factory=list,
         description="Complete history of case actions (phase transitions and dispositions)",
     )
 
-    closure_reason: Optional[str] = Field(
+    closure_reason: str | None = Field(
         default=None,
         description="Why case was closed: resolved | abandoned | escalated | inquiry_only | duplicate | other",
         max_length=100,
     )
 
-    pending_transition: Optional[Dict[str, Any]] = Field(
+    pending_transition: dict[str, Any] | None = Field(
         default=None,
         description="""
         Pending status transition awaiting user confirmation (User-Agent Handshake pattern).
@@ -3139,14 +3137,14 @@ class Case(BaseModel):
         description="Consecutive turns with no milestone advancement (for stuck detection)",
     )
 
-    turn_history: List[TurnProgress] = Field(
+    turn_history: list[TurnProgress] = Field(
         default_factory=list, description="Complete history of all turns"
     )
 
     # ============================================================
     # Conversation Messages (RESTORED)
     # ============================================================
-    messages: List[Dict[str, Any]] = Field(
+    messages: list[dict[str, Any]] = Field(
         default_factory=list,
         description="""
         Complete conversation history (user queries + agent responses).
@@ -3177,7 +3175,7 @@ class Case(BaseModel):
     # ============================================================
     # Investigation Path & Strategy
     # ============================================================
-    path_selection: Optional[PathSelection] = Field(
+    path_selection: PathSelection | None = Field(
         default=None,
         description="Selected investigation path (MITIGATION vs ROOT_CAUSE)",
     )
@@ -3195,7 +3193,7 @@ class Case(BaseModel):
         description="Pre-investigation INQUIRY status data",
     )
 
-    problem_verification: Optional[ProblemVerification] = Field(
+    problem_verification: ProblemVerification | None = Field(
         default=None,
         description="Consolidated verification data (symptom, scope, timeline, changes)",
     )
@@ -3203,7 +3201,7 @@ class Case(BaseModel):
     # ============================================================
     # Investigation Data
     # ============================================================
-    uploaded_files: List["UploadedFile"] = Field(
+    uploaded_files: list["UploadedFile"] = Field(
         default_factory=list,
         description="""
         All files uploaded to this case (raw file metadata).
@@ -3217,24 +3215,24 @@ class Case(BaseModel):
         """,
     )
 
-    evidence: List[Evidence] = Field(
+    evidence: list[Evidence] = Field(
         default_factory=list, description="All evidence collected during investigation"
     )
 
-    hypotheses: Dict[str, Hypothesis] = Field(
+    hypotheses: dict[str, Hypothesis] = Field(
         default_factory=dict, description="Generated hypotheses (key = hypothesis_id)"
     )
 
-    solutions: List[Solution] = Field(
+    solutions: list[Solution] = Field(
         default_factory=list, description="Proposed and applied solutions"
     )
 
-    proposed_actions: List[ProposedAction] = Field(
+    proposed_actions: list[ProposedAction] = Field(
         default_factory=list,
         description="Actions proposed by agent for user to execute (evidence-driven framework)",
     )
 
-    action_attempts: List[ActionAttempt] = Field(
+    action_attempts: list[ActionAttempt] = Field(
         default_factory=list,
         description="User attempts to execute proposed actions (compliance tracking)",
     )
@@ -3242,19 +3240,19 @@ class Case(BaseModel):
     # ============================================================
     # Cross-Cutting State
     # ============================================================
-    working_conclusion: Optional[WorkingConclusion] = Field(
+    working_conclusion: WorkingConclusion | None = Field(
         default=None,
         description="Agent current best understanding (updated iteratively)",
     )
 
-    root_cause_conclusion: Optional[RootCauseConclusion] = Field(
+    root_cause_conclusion: RootCauseConclusion | None = Field(
         default=None, description="Final root cause determination"
     )
 
     # ============================================================
     # Special States
     # ============================================================
-    escalation_state: Optional[EscalationState] = Field(
+    escalation_state: EscalationState | None = Field(
         default=None, description="Escalated to human expert"
     )
 
@@ -3270,25 +3268,25 @@ class Case(BaseModel):
     # Timestamps
     # ============================================================
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When case was created",
     )
 
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="Last modification timestamp",
     )
 
     last_activity_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="Most recent user/agent interaction (for 'updated Xm ago' display)",
     )
 
-    resolved_at: Optional[datetime] = Field(
+    resolved_at: datetime | None = Field(
         default=None, description="When case reached RESOLVED status"
     )
 
-    closed_at: Optional[datetime] = Field(
+    closed_at: datetime | None = Field(
         default=None,
         description="When case reached terminal state (RESOLVED or CLOSED)",
     )
@@ -3303,7 +3301,7 @@ class Case(BaseModel):
         "fully accessible. Independent of case status.",
     )
 
-    archived_at: Optional[datetime] = Field(
+    archived_at: datetime | None = Field(
         default=None,
         description="When the case was archived",
     )
@@ -3312,7 +3310,7 @@ class Case(BaseModel):
     # Computed Properties
     # ============================================================
     @property
-    def current_stage(self) -> Optional[InvestigationStage]:
+    def current_stage(self) -> InvestigationStage | None:
         """
         Computed investigation stage (only when INVESTIGATING).
         Returns: UNDERSTANDING | DIAGNOSING | RESOLVING | None
@@ -3330,7 +3328,7 @@ class Case(BaseModel):
         return self.turns_without_progress >= 5
 
     @property
-    def current_momentum(self) -> Optional[InvestigationMomentum]:
+    def current_momentum(self) -> InvestigationMomentum | None:
         """
         Get momentum from the most recent turn for real-time dashboard display.
 
@@ -3350,7 +3348,7 @@ class Case(BaseModel):
         return self.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
 
     @property
-    def time_to_resolution(self) -> Optional[timedelta]:
+    def time_to_resolution(self) -> timedelta | None:
         """
         Time from case creation to terminal state.
         Returns None if case not yet closed.
@@ -3360,7 +3358,7 @@ class Case(BaseModel):
         return None
 
     @property
-    def valid_evidence(self) -> List[Evidence]:
+    def valid_evidence(self) -> list[Evidence]:
         """
         Evidence with actionable categories (excludes REJECTED).
 
@@ -3373,7 +3371,7 @@ class Case(BaseModel):
         return [ev for ev in self.evidence if ev.category != EvidenceCategory.REJECTED]
 
     @property
-    def rejected_submissions(self) -> List[Evidence]:
+    def rejected_submissions(self) -> list[Evidence]:
         """
         Submissions analyzed but rejected as not useful.
 
@@ -3401,23 +3399,23 @@ class Case(BaseModel):
         return len(self.valid_evidence) / total
 
     @property
-    def evidence_count_by_category(self) -> Dict[str, int]:
+    def evidence_count_by_category(self) -> dict[str, int]:
         """Count evidence by category for analytics"""
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         for ev in self.evidence:
             cat = ev.category.value
             counts[cat] = counts.get(cat, 0) + 1
         return counts
 
     @property
-    def active_hypotheses(self) -> List[Hypothesis]:
+    def active_hypotheses(self) -> list[Hypothesis]:
         """Get hypotheses currently being tested"""
         return [
             h for h in self.hypotheses.values() if h.status == HypothesisStatus.ACTIVE
         ]
 
     @property
-    def validated_hypotheses(self) -> List[Hypothesis]:
+    def validated_hypotheses(self) -> list[Hypothesis]:
         """Get validated hypotheses (found root cause)"""
         return [
             h
@@ -3426,14 +3424,14 @@ class Case(BaseModel):
         ]
 
     @property
-    def warnings(self) -> List[Dict[str, Any]]:
+    def warnings(self) -> list[dict[str, Any]]:
         """
         Get active warnings for UI display.
 
         Returns list of warning dictionaries with type, severity, message.
         Used by frontend to display alert banners.
         """
-        warnings: List[Dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
 
         # Info: Investigation adapting strategy
         if self.is_stuck:
@@ -3741,6 +3739,6 @@ class Case(BaseModel):
         use_enum_values = False  # Keep enum instances
         json_encoders = {
             datetime: lambda v: v.isoformat()
-            + ("Z" if v.tzinfo in (None, timezone.utc) else ""),
+            + ("Z" if v.tzinfo in (None, UTC) else ""),
             timedelta: lambda v: v.total_seconds(),
         }

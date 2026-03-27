@@ -6,13 +6,12 @@ and standardized metrics export capabilities.
 """
 
 import asyncio
-import json
 import logging
-import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 
 class APMProvider(Enum):
@@ -35,11 +34,11 @@ class APMMetrics:
     operation_name: str
     duration_ms: float
     status: str  # "success", "error", "timeout"
-    tags: Dict[str, str] = field(default_factory=dict)
-    attributes: Dict[str, Any] = field(default_factory=dict)
-    trace_id: Optional[str] = None
-    span_id: Optional[str] = None
-    parent_span_id: Optional[str] = None
+    tags: dict[str, str] = field(default_factory=dict)
+    attributes: dict[str, Any] = field(default_factory=dict)
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
 
 
 @dataclass
@@ -48,13 +47,13 @@ class APMConfiguration:
 
     provider: APMProvider
     enabled: bool = True
-    endpoint_url: Optional[str] = None
-    api_key: Optional[str] = None
-    project_name: Optional[str] = None
+    endpoint_url: str | None = None
+    api_key: str | None = None
+    project_name: str | None = None
     batch_size: int = 100
     flush_interval_seconds: int = 30
-    custom_headers: Dict[str, str] = field(default_factory=dict)
-    custom_tags: Dict[str, str] = field(default_factory=dict)
+    custom_headers: dict[str, str] = field(default_factory=dict)
+    custom_tags: dict[str, str] = field(default_factory=dict)
 
 
 class APMIntegration:
@@ -80,12 +79,12 @@ class APMIntegration:
                 settings = None
 
         self.settings = settings
-        self.configurations: Dict[APMProvider, APMConfiguration] = {}
-        self.metrics_buffer: List[APMMetrics] = []
-        self.export_callbacks: Dict[APMProvider, Callable] = {}
-        self.last_flush_time = datetime.now(timezone.utc)
+        self.configurations: dict[APMProvider, APMConfiguration] = {}
+        self.metrics_buffer: list[APMMetrics] = []
+        self.export_callbacks: dict[APMProvider, Callable] = {}
+        self.last_flush_time = datetime.now(UTC)
         self.is_running = False
-        self.flush_task: Optional[asyncio.Task] = None
+        self.flush_task: asyncio.Task | None = None
 
         self._initialize_default_configurations()
         self._register_default_exporters()
@@ -241,11 +240,11 @@ class APMIntegration:
         operation_name: str,
         duration_ms: float,
         status: str = "success",
-        tags: Optional[Dict[str, str]] = None,
-        attributes: Optional[Dict[str, Any]] = None,
-        trace_id: Optional[str] = None,
-        span_id: Optional[str] = None,
-        parent_span_id: Optional[str] = None,
+        tags: dict[str, str] | None = None,
+        attributes: dict[str, Any] | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
     ) -> None:
         """Record an operation for APM export.
 
@@ -260,7 +259,7 @@ class APMIntegration:
             parent_span_id: Parent span ID
         """
         metric = APMMetrics(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             service_name=self.service_name,
             operation_name=operation_name,
             duration_ms=duration_ms,
@@ -299,10 +298,10 @@ class APMIntegration:
                 except Exception as e:
                     self.logger.error(f"Failed to export to {provider.value}: {e}")
 
-        self.last_flush_time = datetime.now(timezone.utc)
+        self.last_flush_time = datetime.now(UTC)
 
     async def _export_to_opik(
-        self, metrics: List[APMMetrics], config: APMConfiguration
+        self, metrics: list[APMMetrics], config: APMConfiguration
     ) -> None:
         """No-op: APM HTTP metrics are not exported to Opik.
 
@@ -316,7 +315,7 @@ class APMIntegration:
         )
 
     async def _export_to_prometheus(
-        self, metrics: List[APMMetrics], config: APMConfiguration
+        self, metrics: list[APMMetrics], config: APMConfiguration
     ) -> None:
         """Export metrics to Prometheus pushgateway."""
         try:
@@ -348,7 +347,7 @@ class APMIntegration:
             self.logger.error(f"Prometheus export error: {e}")
 
     def _convert_to_prometheus_format(
-        self, metrics: List[APMMetrics], config: APMConfiguration
+        self, metrics: list[APMMetrics], config: APMConfiguration
     ) -> str:
         """Convert metrics to Prometheus format."""
         lines = []
@@ -393,7 +392,7 @@ class APMIntegration:
         return "\n".join(lines)
 
     async def _export_to_generic(
-        self, metrics: List[APMMetrics], config: APMConfiguration
+        self, metrics: list[APMMetrics], config: APMConfiguration
     ) -> None:
         """Export metrics to generic HTTP endpoint."""
         if not config.endpoint_url:
@@ -405,7 +404,7 @@ class APMIntegration:
             # Convert metrics to JSON format
             json_data = {
                 "service": self.service_name,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "metrics": [
                     {
                         "timestamp": metric.timestamp.isoformat(),
@@ -437,7 +436,7 @@ class APMIntegration:
         except Exception as e:
             self.logger.error(f"Generic export error: {e}")
 
-    def get_export_statistics(self) -> Dict[str, Any]:
+    def get_export_statistics(self) -> dict[str, Any]:
         """Get statistics about metrics export.
 
         Returns:
@@ -471,7 +470,7 @@ class APMIntegration:
     def add_custom_exporter(
         self,
         provider: APMProvider,
-        exporter_func: Callable[[List[APMMetrics], APMConfiguration], None],
+        exporter_func: Callable[[list[APMMetrics], APMConfiguration], None],
     ) -> None:
         """Add custom metrics exporter.
 

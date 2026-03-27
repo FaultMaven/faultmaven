@@ -1,26 +1,18 @@
 # File: faultmaven/infrastructure/protection/behavioral_analyzer.py
 
-import asyncio
-import hashlib
-import json
 import logging
 import statistics
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
+from datetime import UTC, datetime, timedelta
 
 from faultmaven.models.behavioral import (
     AnomalyType,
-    BehaviorAnalysisResult,
     BehaviorProfile,
     BehaviorScore,
     BehaviorType,
     BehaviorVector,
     ErrorPattern,
     RequestPattern,
-    ResourceProfile,
     RiskLevel,
     TemporalAnomaly,
     TimingProfile,
@@ -41,7 +33,7 @@ class BehavioralAnalyzer:
     - Anomaly detection integration
     """
 
-    def __init__(self, session_store: Optional[ISessionStore] = None):
+    def __init__(self, session_store: ISessionStore | None = None):
         self.logger = logging.getLogger(__name__)
         self.session_store = session_store
 
@@ -51,12 +43,12 @@ class BehavioralAnalyzer:
         self.min_requests_for_analysis = 5  # Minimum requests for reliable analysis
 
         # In-memory storage for real-time analysis
-        self._behavior_profiles: Dict[str, BehaviorProfile] = {}
-        self._request_history: Dict[str, deque] = defaultdict(
+        self._behavior_profiles: dict[str, BehaviorProfile] = {}
+        self._request_history: dict[str, deque] = defaultdict(
             lambda: deque(maxlen=1000)
         )
-        self._timing_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=500))
-        self._error_history: Dict[str, List[ErrorPattern]] = defaultdict(list)
+        self._timing_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=500))
+        self._error_history: dict[str, list[ErrorPattern]] = defaultdict(list)
 
         # Pattern recognition parameters
         self.timing_outlier_threshold = 2.5  # Standard deviations for timing outliers
@@ -64,7 +56,7 @@ class BehavioralAnalyzer:
         self.error_rate_threshold = 0.1  # Error rate threshold (10%)
 
         # Behavioral baseline storage
-        self._session_baselines: Dict[str, Dict[str, float]] = {}
+        self._session_baselines: dict[str, dict[str, float]] = {}
 
         self.logger.info(
             "BehavioralAnalyzer initialized with real-time pattern recognition"
@@ -99,7 +91,7 @@ class BehavioralAnalyzer:
             behavior_score = await self._calculate_behavior_score(profile)
 
             # Update profile with latest analysis
-            profile.last_updated = datetime.now(timezone.utc)
+            profile.last_updated = datetime.now(UTC)
             profile.current_risk_level = behavior_score.risk_level
             profile.confidence_score = behavior_score.confidence
 
@@ -117,11 +109,11 @@ class BehavioralAnalyzer:
                 overall_behavior_score=0.5,
                 risk_level=RiskLevel.MEDIUM,
                 confidence=0.0,
-                analysis_timestamp=datetime.now(timezone.utc),
+                analysis_timestamp=datetime.now(UTC),
                 analysis_window=self.analysis_window,
             )
 
-    async def detect_anomalies(self, session_id: str) -> List[TemporalAnomaly]:
+    async def detect_anomalies(self, session_id: str) -> list[TemporalAnomaly]:
         """
         Detect anomalies in client behavior patterns
 
@@ -201,7 +193,7 @@ class BehavioralAnalyzer:
                     }
 
             profile.total_requests += 1
-            profile.last_updated = datetime.now(timezone.utc)
+            profile.last_updated = datetime.now(UTC)
 
             self._behavior_profiles[session_id] = profile
 
@@ -263,13 +255,13 @@ class BehavioralAnalyzer:
             )
             return RiskLevel.MEDIUM
 
-    async def get_behavior_profile(self, session_id: str) -> Optional[BehaviorProfile]:
+    async def get_behavior_profile(self, session_id: str) -> BehaviorProfile | None:
         """Get the current behavior profile for a session"""
         return self._behavior_profiles.get(session_id)
 
     async def _record_request(self, session_id: str, request_data: dict):
         """Record request for historical analysis"""
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(UTC)
 
         # Add timestamp to request data
         request_record = {
@@ -295,7 +287,7 @@ class BehavioralAnalyzer:
         if session_id in self._behavior_profiles:
             return self._behavior_profiles[session_id]
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         profile = BehaviorProfile(
             session_id=session_id,
             first_seen=now,
@@ -339,7 +331,7 @@ class BehavioralAnalyzer:
                 1 - alpha
             ) * existing_pattern.error_rate + alpha * (1.0 if is_error else 0.0)
 
-            existing_pattern.timestamp = datetime.now(timezone.utc)
+            existing_pattern.timestamp = datetime.now(UTC)
         else:
             # Create new pattern
             new_pattern = RequestPattern(
@@ -349,7 +341,7 @@ class BehavioralAnalyzer:
                 avg_response_time=response_time,
                 error_rate=1.0 if status_code >= 400 else 0.0,
                 payload_size_avg=payload_size,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             profile.request_patterns.append(new_pattern)
 
@@ -413,7 +405,7 @@ class BehavioralAnalyzer:
 
             if existing_error:
                 existing_error.frequency += 1
-                existing_error.last_occurrence = datetime.now(timezone.utc)
+                existing_error.last_occurrence = datetime.now(UTC)
                 if endpoint not in existing_error.endpoints_affected:
                     existing_error.endpoints_affected.append(endpoint)
             else:
@@ -421,8 +413,8 @@ class BehavioralAnalyzer:
                     error_type=error_type,
                     frequency=1,
                     endpoints_affected=[endpoint],
-                    first_occurrence=datetime.now(timezone.utc),
-                    last_occurrence=datetime.now(timezone.utc),
+                    first_occurrence=datetime.now(UTC),
+                    last_occurrence=datetime.now(UTC),
                     error_rate_trend=Trend.STABLE,
                     resolution_attempts=0,
                 )
@@ -489,7 +481,7 @@ class BehavioralAnalyzer:
             ),  # Confidence builds with data
             risk_factors=risk_factors,
             positive_indicators=positive_indicators,
-            analysis_timestamp=datetime.now(timezone.utc),
+            analysis_timestamp=datetime.now(UTC),
             analysis_window=self.analysis_window,
         )
 
@@ -584,7 +576,7 @@ class BehavioralAnalyzer:
 
     async def _detect_frequency_anomalies(
         self, session_id: str
-    ) -> List[TemporalAnomaly]:
+    ) -> list[TemporalAnomaly]:
         """Detect frequency-based anomalies"""
         anomalies = []
         request_history = self._request_history[session_id]
@@ -594,7 +586,7 @@ class BehavioralAnalyzer:
 
         # Calculate request frequencies over time windows
         recent_requests = list(request_history)[-50:]  # Last 50 requests
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Check for sudden spikes in the last 5 minutes
         recent_5min = [
@@ -615,7 +607,7 @@ class BehavioralAnalyzer:
 
         return anomalies
 
-    async def _detect_timing_anomalies(self, session_id: str) -> List[TemporalAnomaly]:
+    async def _detect_timing_anomalies(self, session_id: str) -> list[TemporalAnomaly]:
         """Detect timing-based anomalies"""
         anomalies = []
         timing_history = self._timing_history[session_id]
@@ -643,7 +635,7 @@ class BehavioralAnalyzer:
                     anomalies.append(
                         TemporalAnomaly(
                             anomaly_type=AnomalyType.TIMING_ANOMALY,
-                            timestamp=datetime.now(timezone.utc),
+                            timestamp=datetime.now(UTC),
                             severity=0.8,
                             duration=timedelta(minutes=1),
                             affected_patterns=["request_timing"],
@@ -653,7 +645,7 @@ class BehavioralAnalyzer:
 
         return anomalies
 
-    async def _detect_pattern_anomalies(self, session_id: str) -> List[TemporalAnomaly]:
+    async def _detect_pattern_anomalies(self, session_id: str) -> list[TemporalAnomaly]:
         """Detect pattern-based anomalies"""
         anomalies = []
         profile = self._behavior_profiles.get(session_id)
@@ -683,7 +675,7 @@ class BehavioralAnalyzer:
                     anomalies.append(
                         TemporalAnomaly(
                             anomaly_type=AnomalyType.PATTERN_ANOMALY,
-                            timestamp=datetime.now(timezone.utc),
+                            timestamp=datetime.now(UTC),
                             severity=abs(recent_pref - historical_pref),
                             duration=timedelta(minutes=10),
                             affected_patterns=[f"endpoint_usage_{endpoint}"],
@@ -693,7 +685,7 @@ class BehavioralAnalyzer:
 
         return anomalies
 
-    async def _detect_error_anomalies(self, session_id: str) -> List[TemporalAnomaly]:
+    async def _detect_error_anomalies(self, session_id: str) -> list[TemporalAnomaly]:
         """Detect error pattern anomalies"""
         anomalies = []
         recent_requests = list(self._request_history[session_id])[-20:]
@@ -708,7 +700,7 @@ class BehavioralAnalyzer:
                 anomalies.append(
                     TemporalAnomaly(
                         anomaly_type=AnomalyType.PATTERN_ANOMALY,
-                        timestamp=datetime.now(timezone.utc),
+                        timestamp=datetime.now(UTC),
                         severity=recent_error_rate,
                         duration=timedelta(minutes=5),
                         affected_patterns=["error_rate"],
@@ -760,12 +752,12 @@ class BehavioralAnalyzer:
         return BehaviorVector(
             features=features,
             feature_names=list(features.keys()),
-            extraction_timestamp=datetime.now(timezone.utc),
+            extraction_timestamp=datetime.now(UTC),
             window_size=10,  # Based on last 10 requests
             confidence=min(len(recent_requests) / 10.0, 1.0),
         )
 
-    def _calculate_burst_frequency(self, intervals: List[float]) -> float:
+    def _calculate_burst_frequency(self, intervals: list[float]) -> float:
         """Calculate request burst frequency"""
         if len(intervals) < 3:
             return 0.0
@@ -797,7 +789,7 @@ class BehavioralAnalyzer:
 
         return min(risk_score, 1.0)
 
-    def _is_trend_increasing(self, values: List[float]) -> bool:
+    def _is_trend_increasing(self, values: list[float]) -> bool:
         """Check if a trend is consistently increasing"""
         if len(values) < 3:
             return False
@@ -812,7 +804,7 @@ class BehavioralAnalyzer:
     async def cleanup_old_data(self):
         """Clean up old behavioral data to manage memory"""
         try:
-            cutoff_time = datetime.now(timezone.utc) - self.pattern_memory
+            cutoff_time = datetime.now(UTC) - self.pattern_memory
 
             # Clean up old profiles
             to_remove = []

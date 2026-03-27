@@ -15,7 +15,7 @@ Usage:
         # Use services for operations...
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,7 +47,7 @@ from faultmaven.services.investigation_session_service import (
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 
 class ServiceFactory:
@@ -75,7 +75,7 @@ class ServiceFactory:
     """
 
     def __init__(
-        self, db_session: AsyncSession, tenant_provider: Optional[TenantProvider] = None
+        self, db_session: AsyncSession, tenant_provider: TenantProvider | None = None
     ):
         """Initialize service factory.
 
@@ -133,9 +133,9 @@ class ServiceFactory:
 
     def create_file_storage_service(
         self,
-        storage_root: Optional[str] = None,
-        max_file_size_bytes: Optional[int] = None,
-        allowed_mime_types: Optional[list] = None,
+        storage_root: str | None = None,
+        max_file_size_bytes: int | None = None,
+        allowed_mime_types: list | None = None,
     ) -> FileStorageService:
         """Create file storage service.
 
@@ -160,7 +160,7 @@ class ServiceFactory:
 
     def create_evidence_artifact_service(
         self,
-        file_storage: Optional[FileStorageService] = None,
+        file_storage: FileStorageService | None = None,
     ) -> APIEvidenceArtifactService:
         """Create evidence artifact service with dependencies.
 
@@ -214,7 +214,6 @@ class ServiceFactory:
         from faultmaven.api.middleware.auth import get_auth_service
         from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
-            PostgreSQLUserRepository,
         )
         from faultmaven.services.user_service import UserService
 

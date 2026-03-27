@@ -16,8 +16,8 @@ Case Actions:
                 └───────────────────────────┴──────► CLOSED (disposition)
 """
 
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.modules.case.domain.models import CaseStatus, KnowledgeResolution
 from faultmaven.utils.serialization import to_json_compatible
@@ -92,7 +92,7 @@ class CaseActionManager:
     @staticmethod
     def validate_action(
         old_status: CaseStatus, new_status: CaseStatus
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """
         Validate a case action.
 
@@ -122,9 +122,7 @@ class CaseActionManager:
     validate_transition = validate_action
 
     @staticmethod
-    def get_agent_message(
-        old_status: CaseStatus, new_status: CaseStatus
-    ) -> Optional[str]:
+    def get_agent_message(old_status: CaseStatus, new_status: CaseStatus) -> str | None:
         """
         Get agent message for a case action.
 
@@ -138,8 +136,8 @@ class CaseActionManager:
         new_status: CaseStatus,
         user_id: str,
         auto: bool = False,
-        reason: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        reason: str | None = None,
+    ) -> dict[str, Any]:
         """
         Build case action audit record.
 
@@ -156,7 +154,7 @@ class CaseActionManager:
         return {
             "from_status": old_status.value,
             "to_status": new_status.value,
-            "changed_at": to_json_compatible(datetime.now(timezone.utc)),
+            "changed_at": to_json_compatible(datetime.now(UTC)),
             "changed_by": user_id,
             "auto": auto,
             "reason": reason,
@@ -166,7 +164,7 @@ class CaseActionManager:
     build_status_change_record = build_action_record
 
     @staticmethod
-    def get_disposition_fields(new_status: CaseStatus, user_id: str) -> Dict[str, Any]:
+    def get_disposition_fields(new_status: CaseStatus, user_id: str) -> dict[str, Any]:
         """
         Get fields to update for disposition (terminal) states.
 
@@ -177,7 +175,7 @@ class CaseActionManager:
         Returns:
             Dictionary of fields to update
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if new_status == CaseStatus.RESOLVED:
             return {
@@ -207,9 +205,9 @@ class CaseActionManager:
     def build_fast_track_record(
         knowledge_resolution: KnowledgeResolution,
         user_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build audit record for Fast-Track resolution (disposition from INQUIRY)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return {
             "from_status": CaseStatus.INQUIRY.value,
             "to_status": CaseStatus.RESOLVED.value,

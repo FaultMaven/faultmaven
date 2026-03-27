@@ -9,7 +9,7 @@ Tests that organization data is properly isolated:
 Coverage Target: 15-20 tests
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,7 +51,7 @@ def client(app):
 @pytest.fixture
 def org_a():
     """Create organization A."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Organization(
         organization_id="org-a",
         name="Organization A",
@@ -68,7 +68,7 @@ def org_a():
 @pytest.fixture
 def org_b():
     """Create organization B."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Organization(
         organization_id="org-b",
         name="Organization B",
@@ -142,7 +142,7 @@ class TestOrganizationDataIsolation:
     @pytest.mark.asyncio
     async def test_list_organizations_only_shows_user_memberships(self, org_a, org_b):
         """list_organizations only shows user's memberships."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         member_a = OrganizationMember(
             user_id="user-a",
             organization_id="org-a",

@@ -18,8 +18,8 @@ Design Reference: TASK-018 User Management Service, TASK-019 Admin User Manageme
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import jwt
 
@@ -30,7 +30,7 @@ from faultmaven.config.settings import get_settings
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore
+    pass
 
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -38,10 +38,10 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
-from faultmaven.infrastructure.persistence.user_repository import UserRepository
-from faultmaven.models.auth import TokenPair
+from faultmaven.infrastructure.persistence.user_repository import (
+    UserRepository,
+)
 from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
@@ -90,7 +90,7 @@ class UserService(BaseService):
         self,
         user_repo: UserRepository,
         auth_service: Any,
-        redis_client: Optional[Redis] = None,
+        redis_client: Redis | None = None,
     ):
         """Initialize user service.
 
@@ -170,7 +170,7 @@ class UserService(BaseService):
         hashed_password = hash_password(password)
 
         # Create user
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         user = RepositoryUser(
             user_id=str(uuid.uuid4()),
             username=email.split("@")[0],  # Use email prefix as username
@@ -204,8 +204,8 @@ class UserService(BaseService):
         self,
         email: str,
         password: str,
-        organization_id: Optional[str] = None,
-    ) -> Tuple[RepositoryUser, str, str]:
+        organization_id: str | None = None,
+    ) -> tuple[RepositoryUser, str, str]:
         """Authenticate user with email and password.
 
         Args:
@@ -262,8 +262,8 @@ class UserService(BaseService):
             )
 
         # Update last login timestamp
-        user.last_login_at = datetime.now(timezone.utc)
-        user.updated_at = datetime.now(timezone.utc)
+        user.last_login_at = datetime.now(UTC)
+        user.updated_at = datetime.now(UTC)
         await self.user_repo.save(user)
 
         # Use default organization if not specified
@@ -325,7 +325,7 @@ class UserService(BaseService):
             return self._generate_dummy_reset_token()
 
         # Generate reset token
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
         jti = str(uuid.uuid4())
 
@@ -430,8 +430,8 @@ class UserService(BaseService):
 
         # Hash new password and update
         user.hashed_password = hash_password(new_password)
-        user.last_password_change_at = datetime.now(timezone.utc)
-        user.updated_at = datetime.now(timezone.utc)
+        user.last_password_change_at = datetime.now(UTC)
+        user.updated_at = datetime.now(UTC)
 
         # Save user
         updated_user = await self.user_repo.save(user)
@@ -498,8 +498,8 @@ class UserService(BaseService):
 
         # Hash new password and update
         user.hashed_password = hash_password(new_password)
-        user.last_password_change_at = datetime.now(timezone.utc)
-        user.updated_at = datetime.now(timezone.utc)
+        user.last_password_change_at = datetime.now(UTC)
+        user.updated_at = datetime.now(UTC)
 
         # Save user
         updated_user = await self.user_repo.save(user)
@@ -517,8 +517,8 @@ class UserService(BaseService):
     async def update_user_profile(
         self,
         user_id: str,
-        email: Optional[str] = None,
-        full_name: Optional[str] = None,
+        email: str | None = None,
+        full_name: str | None = None,
     ) -> RepositoryUser:
         """Update user profile information.
 
@@ -577,7 +577,7 @@ class UserService(BaseService):
             user.display_name = full_name
 
         # Update timestamp
-        user.updated_at = datetime.now(timezone.utc)
+        user.updated_at = datetime.now(UTC)
 
         # Save user
         updated_user = await self.user_repo.save(user)
@@ -607,8 +607,8 @@ class UserService(BaseService):
             raise NotFoundError("User", user_id)
 
         user.is_active = False
-        user.deleted_at = datetime.now(timezone.utc)
-        user.updated_at = datetime.now(timezone.utc)
+        user.deleted_at = datetime.now(UTC)
+        user.updated_at = datetime.now(UTC)
 
         deactivated_user = await self.user_repo.save(user)
         await self.auth_service.revoke_user_tokens(user_id)
@@ -647,7 +647,7 @@ class UserService(BaseService):
 
         user.is_active = True
         user.deleted_at = None
-        user.updated_at = datetime.now(timezone.utc)
+        user.updated_at = datetime.now(UTC)
         return await self.user_repo.save(user)
 
     async def activate_user_admin(
@@ -666,7 +666,7 @@ class UserService(BaseService):
     async def get_user(
         self,
         user_id: str,
-    ) -> Optional[RepositoryUser]:
+    ) -> RepositoryUser | None:
         """Get user by ID.
 
         Args:
@@ -680,7 +680,7 @@ class UserService(BaseService):
     async def get_user_by_email(
         self,
         email: str,
-    ) -> Optional[RepositoryUser]:
+    ) -> RepositoryUser | None:
         """Get user by email.
 
         Args:
@@ -693,13 +693,13 @@ class UserService(BaseService):
 
     async def list_users(
         self,
-        organization_id: Optional[str] = None,
+        organization_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
-        is_active: Optional[bool] = None,
-        role: Optional[str] = None,
-        search: Optional[str] = None,
-    ) -> Tuple[List[RepositoryUser], int]:
+        is_active: bool | None = None,
+        role: str | None = None,
+        search: str | None = None,
+    ) -> tuple[list[RepositoryUser], int]:
         """List users with pagination and optional filtering.
 
         Args:
@@ -760,7 +760,7 @@ class UserService(BaseService):
     async def get_user_with_metadata(
         self,
         user_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Get user with additional metadata (TASK-019).
 
         Returns user dict with:
@@ -855,7 +855,7 @@ class UserService(BaseService):
 
         # Assign new role (replaces existing)
         user.roles = [role]
-        user.updated_at = datetime.now(timezone.utc)
+        user.updated_at = datetime.now(UTC)
         updated_user = await self.user_repo.save(user)
 
         # Revoke all user tokens (roles changed, tokens stale)
@@ -919,7 +919,7 @@ class UserService(BaseService):
 
         # Downgrade to viewer (minimum privilege)
         user.roles = [Role.VIEWER.value]
-        user.updated_at = datetime.now(timezone.utc)
+        user.updated_at = datetime.now(UTC)
         updated_user = await self.user_repo.save(user)
 
         # Revoke all user tokens (roles changed, tokens stale)
@@ -957,7 +957,7 @@ class UserService(BaseService):
             Dummy token string
         """
         # Generate a random token that looks valid but won't verify
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
 
         claims = {
@@ -973,7 +973,7 @@ class UserService(BaseService):
 
         return self._encode_reset_token(claims)
 
-    def _encode_reset_token(self, claims: Dict[str, Any]) -> str:
+    def _encode_reset_token(self, claims: dict[str, Any]) -> str:
         """Encode reset token claims into JWT.
 
         Args:
@@ -989,7 +989,7 @@ class UserService(BaseService):
             algorithm=self._settings.security.jwt_algorithm,
         )
 
-    def _verify_reset_token(self, token: str) -> Dict[str, Any]:
+    def _verify_reset_token(self, token: str) -> dict[str, Any]:
         """Verify and decode reset token.
 
         Args:

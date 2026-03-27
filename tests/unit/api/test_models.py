@@ -10,7 +10,7 @@ Tests:
 - Pydantic validation errors (min_length, ge constraints)
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict
 from unittest.mock import MagicMock
 
@@ -182,7 +182,7 @@ class TestCaseResponse:
 
     def test_case_response_all_fields(self):
         """Test case response with all fields."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = CaseResponse(
             case_id="case_123",
             organization_id="org_456",
@@ -212,8 +212,8 @@ class TestCaseResponse:
         mock_case.description = "Description"
         mock_case.status = CaseStatus.INVESTIGATING
         mock_case.assigned_to = None
-        mock_case.created_at = datetime.now(timezone.utc)
-        mock_case.updated_at = datetime.now(timezone.utc)
+        mock_case.created_at = datetime.now(UTC)
+        mock_case.updated_at = datetime.now(UTC)
         mock_case.closed_at = None
         mock_case.resolution = None
         mock_case.problem_verification = None
@@ -236,8 +236,8 @@ class TestCaseResponse:
         mock_case.description = "Description"
         mock_case.status = CaseStatus.INQUIRY
         mock_case.assigned_to = None
-        mock_case.created_at = datetime.now(timezone.utc)
-        mock_case.updated_at = datetime.now(timezone.utc)
+        mock_case.created_at = datetime.now(UTC)
+        mock_case.updated_at = datetime.now(UTC)
         mock_case.closed_at = None
         mock_case.resolution = None
         mock_case.problem_verification = None
@@ -254,7 +254,7 @@ class TestCaseListResponse:
 
     def test_case_list_response(self):
         """Test case list response."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         item = CaseResponse(
             case_id="case_123",
             organization_id="org_456",
@@ -347,7 +347,7 @@ class TestSessionResponse:
 
     def test_session_response_all_fields(self):
         """Test session response with all fields."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = SessionResponse(
             session_id="session_123",
             case_id="case_456",
@@ -372,7 +372,7 @@ class TestSessionResponse:
 
     def test_session_response_from_domain(self):
         """Test creating response from domain model."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         mock_session = MagicMock()
         mock_session.session_id = "session_123"
         mock_session.case_id = "case_456"
@@ -433,7 +433,7 @@ class TestEvidenceResponse:
 
     def test_evidence_response_all_fields(self):
         """Test evidence response with all fields."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = EvidenceResponse(
             evidence_id="evd_123",
             case_id="case_456",
@@ -454,7 +454,7 @@ class TestEvidenceResponse:
 
     def test_evidence_response_from_domain(self):
         """Test creating response from domain model."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         mock_evidence = MagicMock()
         mock_evidence.evidence_id = "evd_123"
         mock_evidence.case_id = "case_456"
@@ -476,7 +476,7 @@ class TestEvidenceResponse:
 
     def test_evidence_response_all_types(self):
         """Test all evidence types."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for evidence_type in EvidenceArtifactType:
             response = EvidenceResponse(
                 evidence_id="evd_123",
@@ -554,7 +554,7 @@ class TestEdgeCases:
 
     def test_case_response_with_closed_status(self):
         """Test case response with closed status."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = CaseResponse(
             case_id="case_123",
             organization_id="org_456",
@@ -574,7 +574,7 @@ class TestEdgeCases:
 
     def test_session_response_completed(self):
         """Test session response with completed status."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = SessionResponse(
             session_id="session_123",
             case_id="case_456",

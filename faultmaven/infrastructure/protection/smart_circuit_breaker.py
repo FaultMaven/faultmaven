@@ -3,13 +3,13 @@
 import asyncio
 import logging
 import statistics
-import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any
 
-from faultmaven.models.behavioral import ClientProfile, ReputationLevel, RiskLevel
+from faultmaven.models.behavioral import ClientProfile, ReputationLevel
 from faultmaven.models.protection import SystemMetrics
 
 
@@ -38,7 +38,7 @@ class Request:
     method: str
     timestamp: datetime
     payload_size: int = 0
-    headers: Dict[str, str] = None
+    headers: dict[str, str] = None
     client_ip: str = ""
 
     def __post_init__(self):
@@ -52,12 +52,12 @@ class Response:
 
     status_code: int
     response_time: float  # milliseconds
-    error_type: Optional[str] = None
+    error_type: str | None = None
     timestamp: datetime = None
 
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.now(timezone.utc)
+            self.timestamp = datetime.now(UTC)
 
     @property
     def is_success(self) -> bool:
@@ -77,7 +77,7 @@ class CircuitMetrics:
     failed_requests: int = 0
     avg_response_time: float = 0.0
     error_rate: float = 0.0
-    last_failure_time: Optional[datetime] = None
+    last_failure_time: datetime | None = None
     consecutive_failures: int = 0
     consecutive_successes: int = 0
 
@@ -101,7 +101,7 @@ class RiskPrediction:
         self.risk_score = risk_score  # 0.0 to 1.0
         self.predicted_failures = predicted_failures
         self.confidence = confidence  # 0.0 to 1.0
-        self.timestamp = datetime.now(timezone.utc)
+        self.timestamp = datetime.now(UTC)
 
 
 class Decision:
@@ -112,13 +112,13 @@ class Decision:
         action: CircuitDecision,
         reason: str,
         confidence: float = 1.0,
-        metadata: Dict[str, Any] = None,
+        metadata: dict[str, Any] = None,
     ):
         self.action = action
         self.reason = reason
         self.confidence = confidence
         self.metadata = metadata or {}
-        self.timestamp = datetime.now(timezone.utc)
+        self.timestamp = datetime.now(UTC)
 
 
 class SmartCircuitBreaker:
@@ -140,7 +140,7 @@ class SmartCircuitBreaker:
 
         # Circuit state
         self.state = CircuitState.CLOSED
-        self.state_changed_at = datetime.now(timezone.utc)
+        self.state_changed_at = datetime.now(UTC)
         self.metrics = CircuitMetrics()
 
         # Adaptive thresholds
@@ -149,30 +149,30 @@ class SmartCircuitBreaker:
         self.adaptive_error_rate_threshold = self.config.error_rate_threshold
 
         # Request tracking
-        self.request_history: List[Dict[str, Any]] = []
-        self.response_history: List[Response] = []
+        self.request_history: list[dict[str, Any]] = []
+        self.response_history: list[Response] = []
         self.max_history = 1000
 
         # Performance tracking
-        self.response_times: List[float] = []
-        self.error_counts: Dict[str, int] = {}
+        self.response_times: list[float] = []
+        self.error_counts: dict[str, int] = {}
 
         # Predictive components
-        self.failure_predictions: List[RiskPrediction] = []
+        self.failure_predictions: list[RiskPrediction] = []
         self.trend_window = timedelta(minutes=5)
 
         # Callbacks for events
-        self.on_state_change: Optional[
-            Callable[[CircuitState, CircuitState], Awaitable[None]]
-        ] = None
-        self.on_failure: Optional[Callable[[Request, Response], Awaitable[None]]] = None
+        self.on_state_change: (
+            Callable[[CircuitState, CircuitState], Awaitable[None]] | None
+        ) = None
+        self.on_failure: Callable[[Request, Response], Awaitable[None]] | None = None
 
         self.logger.info(
             f"SmartCircuitBreaker '{name}' initialized in {self.state.value} state"
         )
 
     async def should_allow_request(
-        self, request: Request, client: Optional[ClientProfile] = None
+        self, request: Request, client: ClientProfile | None = None
     ) -> Decision:
         """
         Determine if a request should be allowed through the circuit
@@ -188,10 +188,7 @@ class SmartCircuitBreaker:
             # Check current state
             if self.state == CircuitState.OPEN:
                 # Check if timeout has elapsed for half-open transition
-                if (
-                    datetime.now(timezone.utc) - self.state_changed_at
-                    >= self.config.timeout
-                ):
+                if datetime.now(UTC) - self.state_changed_at >= self.config.timeout:
                     await self._transition_to_half_open()
                 else:
                     return Decision(
@@ -201,7 +198,7 @@ class SmartCircuitBreaker:
                             "state": self.state.value,
                             "time_remaining": (
                                 self.config.timeout
-                                - (datetime.now(timezone.utc) - self.state_changed_at)
+                                - (datetime.now(UTC) - self.state_changed_at)
                             ).total_seconds(),
                         },
                     )
@@ -253,7 +250,7 @@ class SmartCircuitBreaker:
             )
 
     async def update_metrics(
-        self, response: Response, client: Optional[ClientProfile] = None
+        self, response: Response, client: ClientProfile | None = None
     ):
         """
         Update circuit metrics based on response
@@ -363,7 +360,7 @@ class SmartCircuitBreaker:
             self.logger.error(f"Error adjusting thresholds: {e}")
 
     async def predict_failure_risk(
-        self, current_state: Optional[Dict[str, Any]] = None
+        self, current_state: dict[str, Any] | None = None
     ) -> RiskPrediction:
         """
         Predict the risk of future failures
@@ -436,7 +433,7 @@ class SmartCircuitBreaker:
             self.failure_predictions.append(prediction)
 
             # Keep only recent predictions
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+            cutoff = datetime.now(UTC) - timedelta(hours=1)
             self.failure_predictions = [
                 p for p in self.failure_predictions if p.timestamp > cutoff
             ]
@@ -447,13 +444,13 @@ class SmartCircuitBreaker:
             self.logger.error(f"Error predicting failure risk: {e}")
             return RiskPrediction(0.0, 0, 0.0)
 
-    async def get_status(self) -> Dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Get current circuit breaker status"""
         return {
             "name": self.name,
             "state": self.state.value,
             "state_duration": (
-                datetime.now(timezone.utc) - self.state_changed_at
+                datetime.now(UTC) - self.state_changed_at
             ).total_seconds(),
             "metrics": {
                 "total_requests": self.metrics.total_requests,
@@ -479,7 +476,7 @@ class SmartCircuitBreaker:
         """Reset circuit breaker to initial state"""
         old_state = self.state
         self.state = CircuitState.CLOSED
-        self.state_changed_at = datetime.now(timezone.utc)
+        self.state_changed_at = datetime.now(UTC)
         self.metrics = CircuitMetrics()
         self.response_times = []
         self.error_counts = {}
@@ -556,7 +553,7 @@ class SmartCircuitBreaker:
         """Transition circuit to open state"""
         old_state = self.state
         self.state = CircuitState.OPEN
-        self.state_changed_at = datetime.now(timezone.utc)
+        self.state_changed_at = datetime.now(UTC)
 
         self.logger.warning(
             f"Circuit breaker '{self.name}' opened - failures: {self.metrics.consecutive_failures}, "
@@ -570,7 +567,7 @@ class SmartCircuitBreaker:
         """Transition circuit to half-open state"""
         old_state = self.state
         self.state = CircuitState.HALF_OPEN
-        self.state_changed_at = datetime.now(timezone.utc)
+        self.state_changed_at = datetime.now(UTC)
 
         self.logger.info(f"Circuit breaker '{self.name}' half-opened for testing")
 
@@ -581,7 +578,7 @@ class SmartCircuitBreaker:
         """Transition circuit to closed state"""
         old_state = self.state
         self.state = CircuitState.CLOSED
-        self.state_changed_at = datetime.now(timezone.utc)
+        self.state_changed_at = datetime.now(UTC)
 
         # Reset consecutive failures when closing
         self.metrics.consecutive_failures = 0
@@ -591,20 +588,20 @@ class SmartCircuitBreaker:
         if self.on_state_change:
             asyncio.create_task(self.on_state_change(old_state, self.state))
 
-    def _get_recent_requests(self, window: timedelta) -> List[Dict[str, Any]]:
+    def _get_recent_requests(self, window: timedelta) -> list[dict[str, Any]]:
         """Get requests within the specified time window"""
-        cutoff = datetime.now(timezone.utc) - window
+        cutoff = datetime.now(UTC) - window
         # Use timezone-aware minimum datetime to avoid naive/aware comparison errors
-        min_datetime_aware = datetime.min.replace(tzinfo=timezone.utc)
+        min_datetime_aware = datetime.min.replace(tzinfo=UTC)
         return [
             req
             for req in self.request_history
             if req.get("timestamp", min_datetime_aware) > cutoff
         ]
 
-    def _get_recent_responses(self, window: timedelta) -> List[Response]:
+    def _get_recent_responses(self, window: timedelta) -> list[Response]:
         """Get responses within the specified time window"""
-        cutoff = datetime.now(timezone.utc) - window
+        cutoff = datetime.now(UTC) - window
         return [resp for resp in self.response_history if resp.timestamp > cutoff]
 
     async def _calculate_recent_error_rate(self) -> float:
@@ -641,7 +638,7 @@ class SmartCircuitBreaker:
         load_factor = await self._calculate_load_factor()
         return load_factor > 0.8
 
-    def _calculate_trend(self, values: List[float]) -> float:
+    def _calculate_trend(self, values: list[float]) -> float:
         """Calculate trend factor (>1.0 = increasing, <1.0 = decreasing)"""
         if len(values) < 2:
             return 1.0

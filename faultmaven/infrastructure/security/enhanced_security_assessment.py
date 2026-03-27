@@ -29,13 +29,12 @@ import hashlib
 import logging
 import re
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from faultmaven.core.processing.pattern_learner import (
-    Pattern,
     PatternLearner,
     PatternType,
 )
@@ -76,7 +75,7 @@ class SecurityFinding:
     pattern_matched: str
     context_snippet: str
     confidence: float
-    position: Tuple[int, int]  # start, end
+    position: tuple[int, int]  # start, end
     remediation: str
     learned_pattern: bool
 
@@ -90,13 +89,13 @@ class SecurityAssessmentResult:
     content_hash: str
     overall_risk_level: SecurityRiskLevel
     total_findings: int
-    findings_by_category: Dict[PIICategory, int]
-    findings_by_risk: Dict[SecurityRiskLevel, int]
-    detailed_findings: List[SecurityFinding]
+    findings_by_category: dict[PIICategory, int]
+    findings_by_risk: dict[SecurityRiskLevel, int]
+    detailed_findings: list[SecurityFinding]
     sanitized_content: str
     memory_enhanced: bool
-    patterns_applied: List[str]
-    recommendations: List[str]
+    patterns_applied: list[str]
+    recommendations: list[str]
     processing_time_ms: float
 
 
@@ -114,9 +113,9 @@ class EnhancedSecurityAssessment:
 
     def __init__(
         self,
-        memory_service: Optional[IMemoryService] = None,
-        data_sanitizer: Optional[ISanitizer] = None,
-        pattern_learner: Optional[PatternLearner] = None,
+        memory_service: IMemoryService | None = None,
+        data_sanitizer: ISanitizer | None = None,
+        pattern_learner: PatternLearner | None = None,
     ):
         """
         Initialize Enhanced Security Assessment with integrated services
@@ -280,7 +279,7 @@ class EnhancedSecurityAssessment:
 
     @trace("enhanced_security_assessment_assess")
     async def assess_security(
-        self, content: str, session_id: str, context: Optional[Dict[str, Any]] = None
+        self, content: str, session_id: str, context: dict[str, Any] | None = None
     ) -> SecurityAssessmentResult:
         """
         Perform comprehensive security assessment with memory integration
@@ -414,9 +413,9 @@ class EnhancedSecurityAssessment:
         self,
         content: str,
         assessment_result: SecurityAssessmentResult,
-        user_feedback: Dict[str, Any],
+        user_feedback: dict[str, Any],
         session_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Learn security patterns from user feedback
 
@@ -469,9 +468,9 @@ class EnhancedSecurityAssessment:
 
     def _extract_security_context(
         self,
-        memory_context: Optional[ConversationContext],
-        additional_context: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        memory_context: ConversationContext | None,
+        additional_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         """Extract security-relevant context from memory and additional context"""
         security_context = {
             "user_expertise": "unknown",
@@ -550,8 +549,8 @@ class EnhancedSecurityAssessment:
         return security_context
 
     async def _perform_enhanced_detection(
-        self, content: str, security_context: Dict[str, Any]
-    ) -> List[SecurityFinding]:
+        self, content: str, security_context: dict[str, Any]
+    ) -> list[SecurityFinding]:
         """Perform enhanced pattern-based security detection"""
         findings = []
 
@@ -590,8 +589,8 @@ class EnhancedSecurityAssessment:
         return findings
 
     async def _apply_learned_security_patterns(
-        self, content: str, security_context: Dict[str, Any]
-    ) -> List[SecurityFinding]:
+        self, content: str, security_context: dict[str, Any]
+    ) -> list[SecurityFinding]:
         """Apply learned security patterns from the pattern learner"""
         findings = []
 
@@ -623,8 +622,8 @@ class EnhancedSecurityAssessment:
         return findings
 
     def _assess_risk_levels(
-        self, findings: List[SecurityFinding], security_context: Dict[str, Any]
-    ) -> List[SecurityFinding]:
+        self, findings: list[SecurityFinding], security_context: dict[str, Any]
+    ) -> list[SecurityFinding]:
         """Assess risk levels for findings based on context"""
         assessed_findings = []
 
@@ -660,7 +659,7 @@ class EnhancedSecurityAssessment:
         self,
         base_risk: SecurityRiskLevel,
         finding: SecurityFinding,
-        security_context: Dict[str, Any],
+        security_context: dict[str, Any],
     ) -> SecurityRiskLevel:
         """Adjust risk level based on security context"""
         risk_score = self._risk_scores[base_risk]
@@ -710,7 +709,7 @@ class EnhancedSecurityAssessment:
         self,
         base_confidence: float,
         category: PIICategory,
-        security_context: Dict[str, Any],
+        security_context: dict[str, Any],
     ) -> float:
         """Adjust pattern confidence based on security context"""
         adjusted = base_confidence
@@ -740,7 +739,7 @@ class EnhancedSecurityAssessment:
         return min(1.0, adjusted)
 
     def _calculate_overall_risk(
-        self, findings: List[SecurityFinding]
+        self, findings: list[SecurityFinding]
     ) -> SecurityRiskLevel:
         """Calculate overall risk level from individual findings"""
         if not findings:
@@ -782,7 +781,7 @@ class EnhancedSecurityAssessment:
             return SecurityRiskLevel.NONE
 
     def _generate_enhanced_sanitized_content(
-        self, content: str, findings: List[SecurityFinding]
+        self, content: str, findings: list[SecurityFinding]
     ) -> str:
         """Generate sanitized content based on findings"""
         sanitized = content
@@ -824,10 +823,10 @@ class EnhancedSecurityAssessment:
 
     def _generate_security_recommendations(
         self,
-        findings: List[SecurityFinding],
-        security_context: Dict[str, Any],
-        memory_context: Optional[ConversationContext],
-    ) -> List[str]:
+        findings: list[SecurityFinding],
+        security_context: dict[str, Any],
+        memory_context: ConversationContext | None,
+    ) -> list[str]:
         """Generate security recommendations based on findings and context"""
         recommendations = []
 
@@ -933,11 +932,11 @@ class EnhancedSecurityAssessment:
         base_advice = remediation_map.get(category, "Review and redact if sensitive")
         return f"{base_advice}: {description}"
 
-    def _get_learned_pattern_remediation(self, match: Dict[str, Any]) -> str:
+    def _get_learned_pattern_remediation(self, match: dict[str, Any]) -> str:
         """Get remediation advice for learned pattern matches"""
         return f"Learned pattern detected: {match.get('description', 'Review for sensitivity')}"
 
-    def _infer_category_from_pattern(self, match: Dict[str, Any]) -> PIICategory:
+    def _infer_category_from_pattern(self, match: dict[str, Any]) -> PIICategory:
         """Infer PII category from learned pattern match"""
         description = match.get("description", "").lower()
 
@@ -959,8 +958,8 @@ class EnhancedSecurityAssessment:
             return PIICategory.TECHNICAL  # Default category
 
     def _group_findings_by_category(
-        self, findings: List[SecurityFinding]
-    ) -> Dict[PIICategory, int]:
+        self, findings: list[SecurityFinding]
+    ) -> dict[PIICategory, int]:
         """Group findings by PII category"""
         groups = {}
         for finding in findings:
@@ -968,15 +967,15 @@ class EnhancedSecurityAssessment:
         return groups
 
     def _group_findings_by_risk(
-        self, findings: List[SecurityFinding]
-    ) -> Dict[SecurityRiskLevel, int]:
+        self, findings: list[SecurityFinding]
+    ) -> dict[SecurityRiskLevel, int]:
         """Group findings by risk level"""
         groups = {}
         for finding in findings:
             groups[finding.risk_level] = groups.get(finding.risk_level, 0) + 1
         return groups
 
-    def _get_applied_patterns(self, findings: List[SecurityFinding]) -> List[str]:
+    def _get_applied_patterns(self, findings: list[SecurityFinding]) -> list[str]:
         """Get list of patterns that were applied"""
         patterns = []
         for finding in findings:
@@ -987,8 +986,8 @@ class EnhancedSecurityAssessment:
         return list(set(patterns))  # Remove duplicates
 
     def _extract_security_feedback(
-        self, user_feedback: Dict[str, Any], assessment_result: SecurityAssessmentResult
-    ) -> Dict[str, Any]:
+        self, user_feedback: dict[str, Any], assessment_result: SecurityAssessmentResult
+    ) -> dict[str, Any]:
         """Extract security-specific feedback for learning"""
         security_feedback = {
             "false_positives": [],
@@ -1050,7 +1049,7 @@ class EnhancedSecurityAssessment:
         """Generate hash for content"""
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
-    def get_security_statistics(self) -> Dict[str, Any]:
+    def get_security_statistics(self) -> dict[str, Any]:
         """Get comprehensive security assessment statistics"""
         return {
             "metrics": self._security_metrics.copy(),

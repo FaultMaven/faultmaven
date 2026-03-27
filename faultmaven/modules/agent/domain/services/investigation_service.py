@@ -12,8 +12,8 @@ This service wraps the MilestoneEngine and provides:
 
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
@@ -147,7 +147,7 @@ class InvestigationService:
             )
             processing_mode = classification.mode.value
 
-            evidence_created: List["Evidence"] = []
+            evidence_created: list[Evidence] = []
             if payload.has_attachments:
                 for attachment in payload.attachments:
                     evidence = await self._preprocess_attachment(
@@ -177,7 +177,7 @@ class InvestigationService:
                 "role": "user",
                 "message_type": "user_query",
                 "content": query or "",
-                "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                "created_at": to_json_compatible(datetime.now(UTC)),
                 "author_id": user_id,
                 "token_count": None,
                 "metadata": {
@@ -232,7 +232,7 @@ class InvestigationService:
             elif intent_type == IntentType.CONVERSATION:
                 # Build attachment metadata for the engine
                 attachment_metadata = []
-                for att, ev in zip(payload.attachments, evidence_created):
+                for att, ev in zip(payload.attachments, evidence_created, strict=False):
                     is_paste = att.filename.startswith("pasted-content-")
                     source = "paste" if is_paste else "file_upload"
                     # UploadedFile.file_id requires ^(file_|data_)[a-f0-9]{12,16}$
@@ -288,7 +288,7 @@ class InvestigationService:
                 "role": "agent",
                 "message_type": "agent_response",
                 "content": agent_response_text,
-                "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                "created_at": to_json_compatible(datetime.now(UTC)),
                 "author_id": None,
                 "token_count": None,
                 "metadata": {},
@@ -331,14 +331,16 @@ class InvestigationService:
                         data_type=ev.data_type or "",
                         file_size=ev.content_size_bytes,
                         processing_status="completed",
-                        uploaded_at=datetime.now(timezone.utc).isoformat(),
+                        uploaded_at=datetime.now(UTC).isoformat(),
                         source_type=(
                             att.source_metadata.get("source_type", "file_upload")
                             if att.source_metadata
                             else "file_upload"
                         ),
                     )
-                    for att, ev in zip(payload.attachments, evidence_created)
+                    for att, ev in zip(
+                        payload.attachments, evidence_created, strict=False
+                    )
                 ],
                 suggested_actions=suggested_actions,
             )
@@ -358,7 +360,7 @@ class InvestigationService:
             raise ServiceException(f"Turn processing failed: {str(e)}") from e
 
     @trace("investigation_service_get_progress")
-    async def get_progress(self, case_id: str, user_id: str) -> Dict[str, Any]:
+    async def get_progress(self, case_id: str, user_id: str) -> dict[str, Any]:
         """
         Get current investigation progress.
 
@@ -504,10 +506,10 @@ class InvestigationService:
         self,
         case: "Case",
         user_message: str,
-        from_status: Optional[str],
-        to_status: Optional[str],
+        from_status: str | None,
+        to_status: str | None,
         user_confirmed: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Handle status transition intent with validation.
 
         Args:
@@ -545,8 +547,8 @@ class InvestigationService:
         return result
 
     async def _handle_confirmation(
-        self, case: "Case", user_message: str, confirmation_value: Optional[bool]
-    ) -> Dict[str, Any]:
+        self, case: "Case", user_message: str, confirmation_value: bool | None
+    ) -> dict[str, Any]:
         """Handle yes/no confirmation intent.
 
         Args:
@@ -575,9 +577,9 @@ class InvestigationService:
         self,
         case: "Case",
         user_message: str,
-        hypothesis_id: Optional[str],
-        action: Optional[str],
-    ) -> Dict[str, Any]:
+        hypothesis_id: str | None,
+        action: str | None,
+    ) -> dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
         Args:
@@ -608,7 +610,7 @@ class InvestigationService:
 
         return result
 
-    async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:
+    async def _handle_greeting(self, case: "Case") -> dict[str, Any]:
         """Handle greeting intent without LLM.
 
         Args:
@@ -655,7 +657,7 @@ class InvestigationService:
             },
         }
 
-    def _detect_intent_heuristic(self, message: str) -> Optional[IntentType]:
+    def _detect_intent_heuristic(self, message: str) -> IntentType | None:
         """Detect intent from message content using simple heuristics.
 
         Args:
@@ -723,11 +725,11 @@ class InvestigationService:
 
             if not case.inquiry.problem_statement_confirmed:
                 case.inquiry.problem_statement_confirmed = True
-                case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
+                case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
 
             if not case.inquiry.decided_to_investigate:
                 case.inquiry.decided_to_investigate = True
-                case.inquiry.decision_made_at = datetime.now(timezone.utc)
+                case.inquiry.decision_made_at = datetime.now(UTC)
 
             # Update case
             case.description = confirmed_description
@@ -784,7 +786,7 @@ class InvestigationService:
                 )
 
             # Update status and timestamps (use model_copy to bypass field-by-field validation)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             updated_case_data = case.model_copy(
                 update={
                     "status": CaseStatus.CLOSED,

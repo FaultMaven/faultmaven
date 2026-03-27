@@ -314,25 +314,25 @@ class TestRealDataSanitizationWorkflows:
         mixed_content = """
         Incident Report #12345
         ======================
-        
+
         User: jane.smith@acme.corp reported login issues
         Phone: +1-555-987-6543
-        
+
         System Details:
         - Server IP: 10.0.0.15
         - Database: mysql://root:admin123@db.local:3306/prod
         - API Endpoint: https://api.service.com/v1/auth
-        
+
         Error Details:
         - JWT Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature
         - AWS Key: AKIAI234567890ABCDEF
         - Credit Card: User attempted payment with 4532-1234-5678-9012
-        
+
         Resolution Steps:
         1. Check user permissions for jane.smith@acme.corp
         2. Verify API key sk-abcd1234efgh5678ijkl is valid
         3. Contact user at +1-555-987-6543 for confirmation
-        
+
         Internal Notes:
         - SSN on file: 123-45-6789
         - Home address: 123 Main St, Anytown, ST 12345
@@ -508,7 +508,7 @@ class TestRealSecurityPerformanceValidation:
         assert len(results) == 50
         assert total_time < 5.0  # Should complete concurrent processing quickly
 
-        sanitized_docs, individual_times = zip(*results)
+        sanitized_docs, individual_times = zip(*results, strict=False)
 
         # All documents should be sanitized
         assert all(isinstance(doc, str) and len(doc) > 0 for doc in sanitized_docs)
@@ -535,19 +535,19 @@ class TestRealSecurityPerformanceValidation:
             # Create document with realistic sensitive content
             document = f"""
             Iteration {iteration} processing log:
-            
+
             2025-01-15 10:{iteration%60:02d}:00 [INFO] User login: user{iteration}@corp.com
             2025-01-15 10:{iteration%60:02d}:01 [DEBUG] Client IP: 10.0.{iteration%255}.{(iteration*3)%255}
             2025-01-15 10:{iteration%60:02d}:02 [ERROR] DB connection: postgresql://app:secret{iteration}@db{iteration}.internal:5432/data
             2025-01-15 10:{iteration%60:02d}:03 [WARN] API limit reached for key sk-{iteration:010d}abcdef
             2025-01-15 10:{iteration%60:02d}:04 [INFO] Payment processed for card ****-****-****-{iteration%10000:04d}
-            
+
             Full request details:
             - Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.{iteration}.signature{iteration}
             - AWS Access: AKIA{iteration:08d}EXAMPLE
             - Phone verification: +1-555-{iteration%1000:03d}-{(iteration*7)%10000:04d}
             - SSN reference: {100+iteration%900}-{10+iteration%90}-{1000+iteration%9000}
-            
+
             Additional context data: {{"context": "value", "iteration": {iteration}, "data": "{'x' * (100 + iteration % 500)}"}}
             """
 

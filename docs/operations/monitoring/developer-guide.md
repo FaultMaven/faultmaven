@@ -90,31 +90,31 @@ async def process_user_query(
     # Log API boundary - inbound
     logger.log_boundary(
         operation="process_user_query",
-        direction="inbound", 
+        direction="inbound",
         data={
             "session_id": session_id,
             "query_type": query_data.query_type,
             "data_size": len(str(query_data))
         }
     )
-    
+
     # Use operation context for timing and error handling
     async with logger.operation(
         "process_user_query",
         session_id=session_id,
         query_type=query_data.query_type
     ) as ctx:
-        
+
         # Update context as operation progresses
         ctx["validation_phase"] = "started"
         await validate_query(query_data)
         ctx["validation_phase"] = "completed"
-        
+
         # Call service layer
         ctx["service_call"] = "agent_service"
         result = await agent_service.process_query(session_id, query_data)
         ctx["result_items"] = len(result.get("items", []))
-        
+
         # Log business event
         logger.log_event(
             event_type="business",
@@ -126,14 +126,14 @@ async def process_user_query(
                 "result_count": len(result.get("items", []))
             }
         )
-    
+
     # Log API boundary - outbound
     logger.log_boundary(
         operation="process_user_query",
         direction="outbound",
         data={"success": True, "result_type": type(result).__name__}
     )
-    
+
     return result
 ```
 
@@ -150,14 +150,14 @@ class AgentService(BaseService):
         super().__init__("agent_service")
         self.llm_provider = llm_provider
         self.knowledge_service = knowledge_service
-    
+
     async def process_query(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         query_data: QueryRequest
     ) -> Dict[str, Any]:
         """Process user query through agent reasoning."""
-        
+
         # Validation function
         def validate_query_inputs(session_id: str, query_data: QueryRequest) -> None:
             if not session_id:
@@ -166,14 +166,14 @@ class AgentService(BaseService):
                 raise ValueError("Query text cannot be empty")
             if len(query_data.query_text) > 10000:
                 raise ValueError("Query text too long")
-        
+
         # Result transformation function
         def transform_agent_response(result: Dict[str, Any]) -> Dict[str, Any]:
             # Add response metadata
             result["response_timestamp"] = datetime.utcnow().isoformat()
             result["agent_version"] = "v2.1"
             return result
-        
+
         # Execute with unified logging, validation, and error handling
         return await self.execute_operation(
             operation_name="process_query",
@@ -184,44 +184,44 @@ class AgentService(BaseService):
             transform_result=transform_agent_response,
             log_result=True
         )
-    
+
     async def _internal_process_query(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         query_data: QueryRequest
     ) -> Dict[str, Any]:
         """Internal query processing implementation."""
-        
+
         # Phase 1: Knowledge retrieval
         self.log_business_event(
             "agent_phase_started",
             data={"phase": "knowledge_retrieval", "session_id": session_id}
         )
-        
+
         knowledge_results = await self.knowledge_service.search(
             query_data.query_text,
             session_id=session_id
         )
-        
+
         self.log_metric(
             "knowledge_results_found",
             len(knowledge_results),
             "count",
             tags={"session_id": session_id}
         )
-        
+
         # Phase 2: LLM reasoning
         self.log_business_event(
-            "agent_phase_started", 
+            "agent_phase_started",
             data={"phase": "llm_reasoning", "session_id": session_id}
         )
-        
+
         llm_response = await self.llm_provider.generate_response(
             query_data.query_text,
             context=knowledge_results,
             session_id=session_id
         )
-        
+
         # Phase 3: Response synthesis
         response = {
             "answer": llm_response.text,
@@ -229,7 +229,7 @@ class AgentService(BaseService):
             "sources": [r["source"] for r in knowledge_results],
             "session_id": session_id
         }
-        
+
         self.log_business_event(
             "query_processed",
             data={
@@ -238,7 +238,7 @@ class AgentService(BaseService):
                 "sources_used": len(knowledge_results)
             }
         )
-        
+
         return response
 ```
 
@@ -253,14 +253,14 @@ from faultmaven.core.processing.data_classifier import DataType
 class DataProcessor:
     def __init__(self):
         self.logger = get_unified_logger(__name__, "core")
-    
+
     async def classify_troubleshooting_data(
-        self, 
+        self,
         data_content: str,
         context: Dict[str, Any]
     ) -> DataType:
         """Classify troubleshooting data with comprehensive logging."""
-        
+
         # Log processing boundary
         self.logger.log_boundary(
             operation="classify_data",
@@ -270,30 +270,30 @@ class DataProcessor:
                 "context_keys": list(context.keys())
             }
         )
-        
+
         # Use operation context for detailed processing tracking
         async with self.logger.operation(
             "classify_troubleshooting_data",
             data_size=len(data_content),
             context_type=context.get("type", "unknown")
         ) as ctx:
-            
+
             # Phase 1: Text preprocessing
             ctx["phase"] = "preprocessing"
             preprocessed_text = await self._preprocess_text(data_content)
             ctx["preprocessed_length"] = len(preprocessed_text)
-            
+
             # Phase 2: Pattern analysis
             ctx["phase"] = "pattern_analysis"
             patterns = await self._analyze_patterns(preprocessed_text)
             ctx["patterns_found"] = len(patterns)
-            
+
             # Phase 3: Classification
             ctx["phase"] = "classification"
             classification = await self._perform_classification(patterns, context)
             ctx["classification"] = classification.value
             ctx["confidence"] = classification.confidence
-            
+
             # Log classification results
             self.logger.log_event(
                 event_type="technical",
@@ -305,7 +305,7 @@ class DataProcessor:
                     "patterns_count": len(patterns)
                 }
             )
-            
+
             # Log performance metrics
             self.logger.log_metric(
                 "data_classification_confidence",
@@ -316,7 +316,7 @@ class DataProcessor:
                     "context_type": context.get("type", "unknown")
                 }
             )
-        
+
         # Log outbound boundary
         self.logger.log_boundary(
             operation="classify_data",
@@ -326,7 +326,7 @@ class DataProcessor:
                 "confidence": classification.confidence
             }
         )
-        
+
         return classification
 
     async def _preprocess_text(self, text: str) -> str:
@@ -335,11 +335,11 @@ class DataProcessor:
             # Normalize whitespace
             normalized = " ".join(text.split())
             ctx["normalization"] = "completed"
-            
+
             # Remove sensitive patterns
             cleaned = self._remove_sensitive_patterns(normalized)
             ctx["sensitive_patterns_removed"] = len(normalized) - len(cleaned)
-            
+
             return cleaned
 ```
 
@@ -363,22 +363,22 @@ class RedisSessionClient(BaseExternalClient):
         )
         self.redis_url = redis_url
         self._connection = None
-    
+
     async def get_session(self, session_id: str) -> Dict[str, Any]:
         """Get session data with unified logging and circuit breaker."""
-        
+
         async def redis_get_operation(session_id: str) -> Dict[str, Any]:
             """Internal Redis GET operation."""
             if not self._connection:
                 self._connection = await aioredis.from_url(self.redis_url)
-            
+
             session_data = await self._connection.hgetall(f"session:{session_id}")
             return {k.decode(): v.decode() for k, v in session_data.items()}
-        
+
         def validate_session_response(session_data: Dict[str, Any]) -> bool:
             """Validate that session data is present and valid."""
             return bool(session_data) and "created_at" in session_data
-        
+
         def transform_session_data(raw_data: Dict[str, Any]) -> Dict[str, Any]:
             """Transform raw Redis data to application format."""
             return {
@@ -388,7 +388,7 @@ class RedisSessionClient(BaseExternalClient):
                 "user_id": raw_data.get("user_id"),
                 "context": json.loads(raw_data.get("context", "{}"))
             }
-        
+
         # Execute with circuit breaker, retry, validation, and transformation
         return await self.call_external(
             operation_name="get_session",
@@ -400,10 +400,10 @@ class RedisSessionClient(BaseExternalClient):
             validate_response=validate_session_response,
             transform_response=transform_session_data
         )
-    
+
     async def set_session(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         session_data: Dict[str, Any],
         ttl: int = 3600
 ```
@@ -459,7 +459,7 @@ Each layer has specific performance thresholds:
 async with api_logger.operation("handle_request") as ctx:
     await process_request()  # If > 100ms, logs performance violation
 
-# Service layer operations should complete within 500ms  
+# Service layer operations should complete within 500ms
 async with service_logger.operation("business_logic") as ctx:
     await complex_business_logic()  # If > 500ms, logs performance violation
 
@@ -516,14 +516,14 @@ from faultmaven.services.base import BaseService
 class DataProcessor(BaseService):
     def __init__(self):
         super().__init__("data_processor")
-    
+
     async def process_data(self, data):
         return await self.execute_operation(
             "process_data",
             self._do_processing,
             data
         )
-    
+
     async def _do_processing(self, data):
         # Business logic here - automatic logging handled by execute_operation
         return await do_processing(data)
@@ -552,7 +552,7 @@ async def call_external_api():
 class ApiClient(BaseExternalClient):
     def __init__(self):
         super().__init__("api_client", "ExternalAPI")
-    
+
     async def make_request(self):
         return await self.call_external(
             "api_request",
@@ -561,7 +561,7 @@ class ApiClient(BaseExternalClient):
             retries=2,
             retry_delay=1.0
         )
-    
+
     async def _api_request_impl(self):
         return await self.http_client.request()
 ```
@@ -575,7 +575,7 @@ import time
 async def timed_operation():
     start_time = time.time()
     logger.info("Operation started")
-    
+
     try:
         result = await do_work()
         duration = time.time() - start_time
@@ -602,7 +602,7 @@ For each component you're migrating:
 
 - [ ] Replace direct logger imports with unified patterns
 - [ ] Choose appropriate base class (BaseService/BaseExternalClient) or direct UnifiedLogger
-- [ ] Replace manual try/except with operation patterns  
+- [ ] Replace manual try/except with operation patterns
 - [ ] Replace manual timing with context managers
 - [ ] Add service boundary logging for cross-service calls
 - [ ] Add business events for significant state changes
@@ -617,7 +617,7 @@ For each component you're migrating:
 # API Layer - request handling, input validation
 api_logger = get_unified_logger(__name__, "api")
 
-# Service Layer - business logic orchestration  
+# Service Layer - business logic orchestration
 class BusinessService(BaseService): ...
 
 # Core Layer - domain logic, data processing
@@ -634,10 +634,10 @@ class ExternalClient(BaseExternalClient): ...
 async with logger.operation("complex_process", item_count=len(items)) as ctx:
     ctx["phase"] = "validation"
     await validate_items(items)
-    
+
     ctx["phase"] = "processing"
     result = await process_items(items)
-    
+
     ctx["result_count"] = len(result)
     return result
 
@@ -684,7 +684,7 @@ logger.log_event(
 
 ```python
 # Good - rich context for debugging
-async with logger.operation("generate_report", 
+async with logger.operation("generate_report",
                            user_id=user_id,
                            report_type=report_type,
                            date_range=f"{start_date} to {end_date}") as ctx:
@@ -733,13 +733,13 @@ _SESSION_NOT_FOUND_LOG_INTERVAL = 30  # Log every 30 seconds per session_id
 def _log_session_not_found_rate_limited(session_id: str) -> None:
     """
     Log session not found error with rate limiting to prevent log spam.
-    
+
     Only logs once per 30 seconds per session_id to reduce noise from
     frontend clients that repeatedly send heartbeats for expired sessions.
     """
     current_time = time.time()
     last_logged = _session_not_found_log_tracker.get(session_id, 0)
-    
+
     if current_time - last_logged >= _SESSION_NOT_FOUND_LOG_INTERVAL:
         # Include repeat information for context
         if last_logged > 0:
@@ -749,9 +749,9 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
             )
         else:
             logger.warning(f"Session not found for heartbeat: {session_id}")
-        
+
         _session_not_found_log_tracker[session_id] = current_time
-        
+
         # Clean up old entries to prevent memory leak
         cutoff_time = current_time - (2 * _SESSION_NOT_FOUND_LOG_INTERVAL)
         for sid, logged_time in list(_session_not_found_log_tracker.items()):
@@ -762,7 +762,7 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
 async def session_heartbeat(session_id: str):
     """
     Heartbeat endpoint with routine operation logging pattern.
-    
+
     Key patterns:
     - Rate-limited error logging prevents spam
     - Minimal success logging (DEBUG level via middleware)
@@ -773,10 +773,10 @@ async def session_heartbeat(session_id: str):
         if not result:
             _log_session_not_found_rate_limited(session_id)
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Success case - minimal logging (handled by middleware at DEBUG level)
         return {"status": "active", "session_id": session_id}
-        
+
     except FileNotFoundError:
         # Use rate-limited logging for expected errors
         _log_session_not_found_rate_limited(session_id)
@@ -796,7 +796,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # Reduce verbosity for routine operations
         is_heartbeat = request.url.path.endswith('/heartbeat')
         start_log_level = "debug" if is_heartbeat else "info"
-        
+
         LoggingCoordinator.log_once(
             operation_key=f"request_start:{correlation_id}",
             logger=logger,
@@ -804,16 +804,16 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             message=f"Request started: {request.method} {request.url.path}",
             # ... other context
         )
-        
+
         response = await call_next(request)
-        
+
         # Conditional logging for response based on operation + status
         is_heartbeat_404 = (
-            request.url.path.endswith('/heartbeat') and 
+            request.url.path.endswith('/heartbeat') and
             response.status_code == 404
         )
         completion_log_level = "debug" if is_heartbeat_404 else "info"
-        
+
         LoggingCoordinator.log_once(
             operation_key=f"request_complete:{correlation_id}",
             logger=logger,
@@ -821,7 +821,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             message=f"Request completed: {request.method} {request.url.path} -> {response.status_code}",
             # ... other context
         )
-        
+
         return response
 
 # Prometheus metrics for routine operations
@@ -856,16 +856,16 @@ async def traced_heartbeat_operation():
 ```python
 async def validate_and_process(data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate input data and process with comprehensive logging."""
-    
+
     def validate_input(data: Dict[str, Any]) -> None:
         required_fields = ["user_id", "action", "timestamp"]
         missing_fields = [f for f in required_fields if f not in data]
         if missing_fields:
             raise ValueError(f"Missing required fields: {missing_fields}")
-        
+
         if not isinstance(data["timestamp"], str):
             raise ValueError("Timestamp must be a string")
-    
+
     return await self.execute_operation(
         "validate_and_process",
         self._process_validated_data,
@@ -879,30 +879,30 @@ async def validate_and_process(data: Dict[str, Any]) -> Dict[str, Any]:
 ```python
 async def complex_multi_step_operation(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """Multi-step operation with phase tracking."""
-    
-    async with self.logger.operation("complex_operation", 
+
+    async with self.logger.operation("complex_operation",
                                    input_size=len(input_data)) as ctx:
-        
+
         # Step 1: Data preparation
         ctx["phase"] = "preparation"
         prepared_data = await self._prepare_data(input_data)
         ctx["prepared_items"] = len(prepared_data)
-        
+
         # Step 2: External enrichment
         ctx["phase"] = "enrichment"
         enriched_data = await self._enrich_data(prepared_data)
         ctx["enrichment_sources"] = ["api_1", "api_2", "cache"]
-        
+
         # Step 3: Processing
         ctx["phase"] = "processing"
         processed_data = await self._process_data(enriched_data)
         ctx["processing_rules_applied"] = len(processed_data["rules"])
-        
+
         # Step 4: Output formatting
         ctx["phase"] = "formatting"
         final_result = await self._format_output(processed_data)
         ctx["output_format"] = "json_api_v2"
-        
+
         return final_result
 ```
 
@@ -911,26 +911,26 @@ async def complex_multi_step_operation(input_data: Dict[str, Any]) -> Dict[str, 
 ```python
 async def conditional_processing(data: Dict[str, Any]) -> Dict[str, Any]:
     """Process data based on conditions with appropriate logging."""
-    
+
     async with self.logger.operation("conditional_processing",
                                    data_type=data.get("type")) as ctx:
-        
+
         data_type = data.get("type")
         ctx["condition_check"] = data_type
-        
+
         if data_type == "premium":
             ctx["processing_path"] = "premium_flow"
             result = await self._premium_processing(data)
-            
+
         elif data_type == "standard":
-            ctx["processing_path"] = "standard_flow"  
+            ctx["processing_path"] = "standard_flow"
             result = await self._standard_processing(data)
-            
+
         else:
             ctx["processing_path"] = "default_flow"
             self.logger.warning(f"Unknown data type: {data_type}, using default processing")
             result = await self._default_processing(data)
-        
+
         ctx["result_type"] = result.get("type")
         return result
 ```
@@ -940,18 +940,18 @@ async def conditional_processing(data: Dict[str, Any]) -> Dict[str, Any]:
 ```python
 async def process_batch(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Process batch of items with progress tracking."""
-    
-    async with self.logger.operation("batch_processing", 
+
+    async with self.logger.operation("batch_processing",
                                    batch_size=len(items)) as ctx:
-        
+
         results = []
         failed_items = []
-        
+
         for i, item in enumerate(items):
             try:
                 result = await self._process_single_item(item)
                 results.append(result)
-                
+
                 # Log progress every 100 items
                 if (i + 1) % 100 == 0:
                     ctx[f"progress_{i + 1}"] = {
@@ -959,11 +959,11 @@ async def process_batch(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                         "success": len(results),
                         "failed": len(failed_items)
                     }
-                    
+
             except Exception as e:
                 failed_items.append({"item": item, "error": str(e)})
                 self.logger.warning(f"Failed to process item {i}: {e}")
-        
+
         # Final results
         ctx["batch_summary"] = {
             "total_items": len(items),
@@ -971,7 +971,7 @@ async def process_batch(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "failed": len(failed_items),
             "success_rate": len(results) / len(items) * 100
         }
-        
+
         if failed_items:
             self.logger.log_event(
                 event_type="technical",
@@ -983,7 +983,7 @@ async def process_batch(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "failure_rate": len(failed_items) / len(items) * 100
                 }
             )
-        
+
         return results
 ```
 
@@ -1088,7 +1088,7 @@ def debug_request_context():
             "logged_operations_count": len(ctx.logged_operations),
             "logged_operations": list(ctx.logged_operations),
             "performance_violations": (
-                len([t for t, v in ctx.performance_tracker.layer_timings.items() 
+                len([t for t, v in ctx.performance_tracker.layer_timings.items()
                      if v > ctx.performance_tracker.thresholds.get(t.split('.')[0], 1.0)])
                 if ctx.performance_tracker else 0
             )
@@ -1107,7 +1107,7 @@ def validate_logger_setup(logger_instance):
         "layer_configured": hasattr(logger_instance, 'layer'),
         "structlog_configured": hasattr(logger_instance.logger, 'bind')
     }
-    
+
     logger.info("Logger validation", **checks)
     return all(checks.values())
 ```
@@ -1121,15 +1121,15 @@ async def analyze_operation_performance(operation_name: str):
     if ctx and ctx.performance_tracker:
         timings = ctx.performance_tracker.layer_timings
         operation_timings = {
-            k: v for k, v in timings.items() 
+            k: v for k, v in timings.items()
             if operation_name in k
         }
-        
-        logger.info("Operation performance analysis", 
+
+        logger.info("Operation performance analysis",
                    operation=operation_name,
                    timings=operation_timings)
         return operation_timings
-    
+
     return {}
 ```
 
@@ -1154,15 +1154,15 @@ async def mock_request_context():
 async def test_service_operation_logging(mock_request_context):
     """Test that service operations log correctly."""
     service = YourService()
-    
+
     # Execute operation
     result = await service.process_data({"test": "data"})
-    
+
     # Verify logging behavior
     ctx = mock_request_context
     assert len(ctx.logged_operations) > 0
     assert any("process_data" in op for op in ctx.logged_operations)
-    
+
     # Verify no performance violations for fast operations
     assert ctx.performance_tracker is not None
     # Add specific assertions based on your operation
@@ -1180,17 +1180,17 @@ def mock_external_client():
     client.circuit_breaker.can_execute.return_value = True
     return client
 
-@pytest.mark.asyncio  
+@pytest.mark.asyncio
 async def test_external_call_with_circuit_breaker(mock_external_client):
     """Test external call with circuit breaker protection."""
     # Mock successful response
     mock_external_client._connection.get.return_value = {"data": "test"}
-    
+
     result = await mock_external_client.get_data("key")
-    
+
     # Verify circuit breaker was checked
     mock_external_client.circuit_breaker.can_execute.assert_called_once()
-    
+
     # Verify call was made
     mock_external_client._connection.get.assert_called_once_with("key")
 ```

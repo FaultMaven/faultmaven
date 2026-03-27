@@ -22,13 +22,14 @@ Usage:
     alembic -x database=auth upgrade head   # Migrate auth_db
     alembic -x database=cases upgrade head  # Migrate cases_db
 """
+
 import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 

@@ -8,9 +8,9 @@ Design Reference: TASK-008 Investigation Session Repository Pattern
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class SessionStatus(str, Enum):
@@ -57,20 +57,18 @@ class InvestigationSession:
     user_id: str
     organization_id: str
     status: SessionStatus = SessionStatus.ACTIVE
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    ended_at: Optional[datetime] = None
-    last_activity_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    total_duration_ms: Optional[int] = None
-    session_goal: Optional[str] = None
-    findings_summary: Optional[str] = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    ended_at: datetime | None = None
+    last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    total_duration_ms: int | None = None
+    session_goal: str | None = None
+    findings_summary: str | None = None
     total_token_usage: int = 0
     total_agent_executions: int = 0
-    token_budget_limit: Optional[int] = None
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    token_budget_limit: int | None = None
+    metadata: dict[str, Any] | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
         """Validate investigation session data."""
@@ -108,7 +106,7 @@ class InvestigationSession:
             )
         self.status = SessionStatus.PAUSED
         self._update_duration()
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def resume(self) -> None:
         """Resume a paused session.
@@ -124,8 +122,8 @@ class InvestigationSession:
                 "Only paused sessions can be resumed."
             )
         self.status = SessionStatus.ACTIVE
-        self.last_activity_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.last_activity_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     def complete(self, findings_summary: str) -> None:
         """Mark session as completed with findings.
@@ -145,9 +143,9 @@ class InvestigationSession:
             )
         self.status = SessionStatus.COMPLETED
         self.findings_summary = findings_summary
-        self.ended_at = datetime.now(timezone.utc)
+        self.ended_at = datetime.now(UTC)
         self._update_duration()
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def abandon(self) -> None:
         """Mark session as abandoned.
@@ -163,9 +161,9 @@ class InvestigationSession:
                 "Session is already in a terminal state."
             )
         self.status = SessionStatus.ABANDONED
-        self.ended_at = datetime.now(timezone.utc)
+        self.ended_at = datetime.now(UTC)
         self._update_duration()
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def add_agent_execution(self, token_usage: int) -> None:
         """Record an agent execution and update token usage.
@@ -186,8 +184,8 @@ class InvestigationSession:
             )
         self.total_token_usage += token_usage
         self.total_agent_executions += 1
-        self.last_activity_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.last_activity_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     def is_active(self) -> bool:
         """Check if session is currently active.
@@ -224,7 +222,7 @@ class InvestigationSession:
             return False
         return self.total_token_usage > self.token_budget_limit
 
-    def get_remaining_budget(self) -> Optional[int]:
+    def get_remaining_budget(self) -> int | None:
         """Get remaining token budget.
 
         Returns:
@@ -235,7 +233,7 @@ class InvestigationSession:
             return None
         return self.token_budget_limit - self.total_token_usage
 
-    def get_budget_usage_percent(self) -> Optional[float]:
+    def get_budget_usage_percent(self) -> float | None:
         """Get budget usage as a percentage.
 
         Returns:
@@ -253,7 +251,7 @@ class InvestigationSession:
         """
         if self.total_duration_ms is None:
             # Calculate current duration for active sessions
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             duration_ms = int((now - self.started_at).total_seconds() * 1000)
         else:
             duration_ms = self.total_duration_ms
@@ -281,19 +279,19 @@ class InvestigationSession:
         if self.ended_at is not None:
             end_time = self.ended_at
         else:
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(UTC)
 
         duration = end_time - self.started_at
         self.total_duration_ms = int(duration.total_seconds() * 1000)
 
     def touch(self) -> None:
         """Update the updated_at timestamp to current time."""
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def update_last_activity(self) -> None:
         """Update the last_activity_at timestamp to current time."""
-        self.last_activity_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.last_activity_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     def __repr__(self) -> str:
         return (

@@ -35,7 +35,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ConversionService,
 )
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

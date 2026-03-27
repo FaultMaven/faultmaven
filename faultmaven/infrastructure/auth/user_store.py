@@ -23,8 +23,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 
 from redis import Redis
 
@@ -65,7 +64,7 @@ class RedisUserStore:
         # Allow both email addresses and traditional usernames
         self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
 
-    async def get_user(self, user_id: str) -> Optional[DevUser]:
+    async def get_user(self, user_id: str) -> DevUser | None:
         """Get user by ID
 
         Args:
@@ -91,7 +90,7 @@ class RedisUserStore:
             logger.error(f"Failed to get user {user_id}: {e}")
             return None
 
-    async def get_user_by_username(self, username: str) -> Optional[DevUser]:
+    async def get_user_by_username(self, username: str) -> DevUser | None:
         """Get user by username
 
         Args:
@@ -116,7 +115,7 @@ class RedisUserStore:
             logger.error(f"Failed to get user by username {username}: {e}")
             return None
 
-    async def get_user_by_email(self, email: str) -> Optional[DevUser]:
+    async def get_user_by_email(self, email: str) -> DevUser | None:
         """Get user by email address
 
         Args:
@@ -181,7 +180,7 @@ class RedisUserStore:
 
             # Generate user data
             user_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             # Auto-generate display name if not provided
             if not display_name:
@@ -312,7 +311,7 @@ class RedisUserStore:
             logger.error(f"Failed to delete user {user_id}: {e}")
             return False
 
-    async def list_users(self, limit: int = 100, offset: int = 0) -> List[DevUser]:
+    async def list_users(self, limit: int = 100, offset: int = 0) -> list[DevUser]:
         """List all users with pagination
 
         Args:
@@ -390,7 +389,7 @@ class RedisUserStore:
             logger.error(f"Redis SET failed for key {key}: {e}")
             raise
 
-    async def _redis_get(self, key: str) -> Optional[str]:
+    async def _redis_get(self, key: str) -> str | None:
         """Get Redis key value"""
         try:
             result = await self.redis.get(key)
@@ -420,7 +419,7 @@ class RedisUserStore:
         except Exception as e:
             logger.error(f"Redis SREM failed for key {key}: {e}")
 
-    async def _redis_smembers(self, key: str) -> List[str]:
+    async def _redis_smembers(self, key: str) -> list[str]:
         """Get Redis set members"""
         try:
             members = await self.redis.smembers(key)

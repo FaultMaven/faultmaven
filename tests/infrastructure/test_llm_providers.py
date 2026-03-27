@@ -741,7 +741,7 @@ class TestRealProviderIntegration:
 
                 # Validate load performance
                 assert len(results) == 20
-                responses, latencies = zip(*results)
+                responses, latencies = zip(*results, strict=False)
 
                 assert all(isinstance(r, LLMResponse) for r in responses)
                 assert all(r.content is not None for r in responses)

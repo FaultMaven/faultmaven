@@ -79,14 +79,14 @@ class RecoveryAction:
 @dataclass
 class ErrorContext:
     """Enhanced error context with intelligent handling capabilities.
-    
+
     This enhanced version provides layer-specific error thresholds, automated
     recovery strategies, pattern detection, and intelligent escalation logic.
     """
     original_error: Optional[Exception] = None
     layer_errors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     recovery_attempts: int = 0
-    
+
     # Enhanced features
     layer_configs: Dict[str, LayerErrorConfig] = field(default_factory=dict)
     error_timeline: List[Tuple[datetime, str, Exception]] = field(default_factory=list)
@@ -94,12 +94,12 @@ class ErrorContext:
     recovery_actions: List[RecoveryAction] = field(default_factory=list)
     escalation_level: ErrorSeverity = ErrorSeverity.LOW
     correlation_metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         """Initialize default layer configurations."""
         if not self.layer_configs:
             self.layer_configs = self._get_default_layer_configs()
-    
+
     def _get_default_layer_configs(self) -> Dict[str, LayerErrorConfig]:
         """Get default configuration for each architectural layer."""
         return {
@@ -152,16 +152,16 @@ class ErrorContext:
                 }
             )
         }
-    
+
     def add_layer_error(
-        self, 
-        layer: str, 
-        error: Exception, 
+        self,
+        layer: str,
+        error: Exception,
         severity: ErrorSeverity = ErrorSeverity.MEDIUM,
         metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Add error from specific layer with enhanced tracking.
-        
+
         Args:
             layer: The architectural layer where error occurred
             error: The exception that occurred
@@ -169,7 +169,7 @@ class ErrorContext:
             metadata: Additional context about the error
         """
         current_time = datetime.utcnow()
-        
+
         # Store error in layer errors
         if layer not in self.layer_errors:
             self.layer_errors[layer] = {
@@ -178,44 +178,44 @@ class ErrorContext:
                 "error_count": 0,
                 "severity_score": 0.0
             }
-        
+
         error_info = {
             "error": error,
             "timestamp": current_time,
             "severity": severity,
             "metadata": metadata or {}
         }
-        
+
         self.layer_errors[layer]["errors"].append(error_info)
         self.layer_errors[layer]["last_error_time"] = current_time
         self.layer_errors[layer]["error_count"] += 1
-        
+
         # Update severity score using configured weights
         if layer in self.layer_configs:
             weight = self.layer_configs[layer].severity_weights.get(severity, 1.0)
             self.layer_errors[layer]["severity_score"] += weight
-        
+
         # Add to timeline for pattern detection
         self.error_timeline.append((current_time, layer, error))
-        
+
         # Update escalation level
         self._update_escalation_level(layer, severity)
-        
+
         # Detect patterns
         self._detect_error_patterns()
-        
+
         # Attempt automatic recovery if configured
         if self._should_attempt_recovery(layer):
             self._attempt_automatic_recovery(layer, error)
-    
+
     def _update_escalation_level(self, layer: str, severity: ErrorSeverity) -> None:
         """Update overall escalation level based on new error."""
         if layer not in self.layer_configs:
             return
-            
+
         config = self.layer_configs[layer]
         layer_errors = self.layer_errors.get(layer, {})
-        
+
         # Check if we've exceeded escalation threshold
         if layer_errors.get("error_count", 0) >= config.escalation_threshold:
             if severity.value == "critical" or self.escalation_level.value == "critical":
@@ -224,26 +224,26 @@ class ErrorContext:
                 self.escalation_level = ErrorSeverity.HIGH
             elif severity.value == "medium" or self.escalation_level.value == "medium":
                 self.escalation_level = ErrorSeverity.MEDIUM
-    
+
     def _detect_error_patterns(self) -> None:
         """Detect error patterns in the timeline."""
         if len(self.error_timeline) < 3:
             return
-            
+
         current_time = datetime.utcnow()
-        
+
         # Pattern 1: Recurring errors (same error type repeating)
         self._detect_recurring_pattern()
-        
+
         # Pattern 2: Error cascade (errors propagating through layers)
         self._detect_cascade_pattern()
-        
+
         # Pattern 3: Error burst (multiple errors in short time)
         self._detect_burst_pattern(current_time)
-        
+
         # Pattern 4: System degradation (increasing error rate)
         self._detect_degradation_pattern()
-    
+
     def _detect_recurring_pattern(self) -> None:
         """Detect recurring error patterns."""
         error_types = {}
@@ -251,11 +251,11 @@ class ErrorContext:
             error_type = type(error).__name__
             if error_type not in error_types:
                 error_types[error_type] = {"count": 0, "first": timestamp, "last": timestamp, "layers": set()}
-            
+
             error_types[error_type]["count"] += 1
             error_types[error_type]["last"] = timestamp
             error_types[error_type]["layers"].add(layer)
-        
+
         for error_type, info in error_types.items():
             if info["count"] >= 3:  # 3 or more occurrences
                 pattern = ErrorPattern(
@@ -272,25 +272,25 @@ class ErrorContext:
                         "Review error handling in affected layers"
                     ]
                 )
-                
+
                 # Add pattern if not already detected
                 if not any(p.pattern_id == pattern.pattern_id for p in self.detected_patterns):
                     self.detected_patterns.append(pattern)
-    
+
     def _detect_cascade_pattern(self) -> None:
         """Detect error cascade patterns across layers."""
         if len(self.error_timeline) < 3:
             return
-            
+
         # Look for errors spreading from infrastructure -> core -> service -> api
         layer_order = ["infrastructure", "core", "service", "api"]
         recent_errors = self.error_timeline[-5:]  # Check last 5 errors
-        
+
         cascade_sequence = []
         for timestamp, layer, error in recent_errors:
             if layer in layer_order:
                 cascade_sequence.append((layer_order.index(layer), timestamp))
-        
+
         # Check if sequence shows upward cascade
         if len(cascade_sequence) >= 3:
             is_cascade = True
@@ -298,7 +298,7 @@ class ErrorContext:
                 if cascade_sequence[i][0] <= cascade_sequence[i-1][0]:
                     is_cascade = False
                     break
-            
+
             if is_cascade:
                 pattern = ErrorPattern(
                     pattern_id=f"cascade_{datetime.utcnow().timestamp()}",
@@ -315,7 +315,7 @@ class ErrorContext:
                     ]
                 )
                 self.detected_patterns.append(pattern)
-    
+
     def _detect_burst_pattern(self, current_time: datetime) -> None:
         """Detect error burst patterns."""
         # Check for multiple errors in last 60 seconds
@@ -324,7 +324,7 @@ class ErrorContext:
             (ts, layer, error) for ts, layer, error in self.error_timeline
             if ts >= recent_threshold
         ]
-        
+
         if len(recent_errors) >= 5:  # 5+ errors in 60 seconds
             pattern = ErrorPattern(
                 pattern_id=f"burst_{current_time.timestamp()}",
@@ -341,23 +341,23 @@ class ErrorContext:
                 ]
             )
             self.detected_patterns.append(pattern)
-    
+
     def _detect_degradation_pattern(self) -> None:
         """Detect system degradation patterns."""
         if len(self.error_timeline) < 6:
             return
-            
+
         # Check if error rate is increasing over time
         current_time = datetime.utcnow()
-        
+
         # Split recent errors into two time windows
         window_size = timedelta(minutes=5)
         mid_time = current_time - window_size
         old_threshold = current_time - (window_size * 2)
-        
+
         old_errors = [ts for ts, _, _ in self.error_timeline if old_threshold <= ts < mid_time]
         recent_errors = [ts for ts, _, _ in self.error_timeline if ts >= mid_time]
-        
+
         if len(old_errors) > 0 and len(recent_errors) > len(old_errors) * 1.5:
             pattern = ErrorPattern(
                 pattern_id=f"degradation_{current_time.timestamp()}",
@@ -374,38 +374,38 @@ class ErrorContext:
                 ]
             )
             self.detected_patterns.append(pattern)
-    
+
     def _should_attempt_recovery(self, layer: str) -> bool:
         """Determine if automatic recovery should be attempted."""
         if layer not in self.layer_configs:
             return False
-            
+
         config = self.layer_configs[layer]
         if not config.automatic_recovery:
             return False
-            
+
         # Don't attempt if too many recent attempts
         recent_attempts = [
             action for action in self.recovery_actions
             if (datetime.utcnow() - action.attempted_at).total_seconds() < 300  # 5 minutes
         ]
-        
+
         return len(recent_attempts) < 3
-    
+
     def _attempt_automatic_recovery(self, layer: str, error: Exception) -> None:
         """Attempt automatic recovery for the given layer and error."""
         if layer not in self.layer_configs:
             return
-            
+
         config = self.layer_configs[layer]
-        
+
         for strategy in config.recovery_strategies:
             start_time = datetime.utcnow()
-            
+
             try:
                 result = self._execute_recovery_strategy(layer, strategy, error)
                 duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-                
+
                 recovery_action = RecoveryAction(
                     action_name=strategy,
                     attempted_at=start_time,
@@ -413,12 +413,12 @@ class ErrorContext:
                     duration_ms=duration,
                     metadata={"layer": layer, "error_type": type(error).__name__}
                 )
-                
+
                 self.recovery_actions.append(recovery_action)
-                
+
                 if result == RecoveryResult.SUCCESS:
                     break  # Stop trying other strategies
-                    
+
             except Exception as recovery_error:
                 duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
                 recovery_action = RecoveryAction(
@@ -430,14 +430,14 @@ class ErrorContext:
                     metadata={"layer": layer, "error_type": type(error).__name__}
                 )
                 self.recovery_actions.append(recovery_action)
-    
+
     def _execute_recovery_strategy(self, layer: str, strategy: str, error: Exception) -> RecoveryResult:
         """Execute a specific recovery strategy."""
         # This would be implemented with actual recovery logic
         # For now, return a placeholder result
         logger = logging.getLogger(__name__)
         logger.info(f"Executing recovery strategy '{strategy}' for layer '{layer}'")
-        
+
         # Placeholder implementation - would be replaced with actual strategies
         if strategy == "retry_request":
             return RecoveryResult.SUCCESS
@@ -447,23 +447,23 @@ class ErrorContext:
             return RecoveryResult.SUCCESS
         else:
             return RecoveryResult.NOT_ATTEMPTED
-    
+
     def should_escalate_error(self, layer: str) -> bool:
         """Determine if error should be escalated based on current context."""
         if layer not in self.layer_configs:
             return True  # Escalate unknown layers
-            
+
         config = self.layer_configs[layer]
         layer_info = self.layer_errors.get(layer, {})
-        
+
         # Escalate if error count exceeds threshold
         if layer_info.get("error_count", 0) >= config.escalation_threshold:
             return True
-            
+
         # Escalate if severity score is too high
         if layer_info.get("severity_score", 0) >= config.escalation_threshold * 2:
             return True
-            
+
         # Escalate if critical patterns detected
         critical_patterns = [
             p for p in self.detected_patterns
@@ -471,14 +471,14 @@ class ErrorContext:
         ]
         if critical_patterns:
             return True
-            
+
         return False
-    
+
     def get_recovery_summary(self) -> Dict[str, Any]:
         """Get summary of recovery attempts and their effectiveness."""
         total_attempts = len(self.recovery_actions)
         successful_attempts = len([a for a in self.recovery_actions if a.result == RecoveryResult.SUCCESS])
-        
+
         return {
             "total_attempts": total_attempts,
             "successful_attempts": successful_attempts,
@@ -494,13 +494,13 @@ class ErrorContext:
                 for a in self.recovery_actions[-5:]  # Last 5 attempts
             ]
         }
-    
+
     def get_pattern_summary(self) -> Dict[str, Any]:
         """Get summary of detected error patterns."""
         pattern_counts = {}
         for pattern in self.detected_patterns:
             pattern_counts[pattern.pattern_type] = pattern_counts.get(pattern.pattern_type, 0) + 1
-        
+
         return {
             "total_patterns": len(self.detected_patterns),
             "pattern_types": pattern_counts,
@@ -530,12 +530,12 @@ import logging
 
 class RecoveryStrategy(ABC):
     """Abstract base class for error recovery strategies."""
-    
+
     @abstractmethod
     async def execute(self, error: Exception, context: Dict[str, Any]) -> RecoveryResult:
         """Execute the recovery strategy."""
         pass
-    
+
     @abstractmethod
     def is_applicable(self, error: Exception, layer: str) -> bool:
         """Check if this strategy is applicable to the given error and layer."""
@@ -543,16 +543,16 @@ class RecoveryStrategy(ABC):
 
 class RetryRecoveryStrategy(RecoveryStrategy):
     """Recovery strategy that retries the failed operation."""
-    
+
     def __init__(self, max_retries: int = 3, backoff_factor: float = 1.5):
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
-    
+
     async def execute(self, error: Exception, context: Dict[str, Any]) -> RecoveryResult:
         """Execute retry recovery strategy."""
         # Implementation would retry the operation
         return RecoveryResult.SUCCESS
-    
+
     def is_applicable(self, error: Exception, layer: str) -> bool:
         """Check if retry is applicable."""
         # Retry is applicable for transient errors
@@ -561,54 +561,54 @@ class RetryRecoveryStrategy(RecoveryStrategy):
 
 class CircuitBreakerRecoveryStrategy(RecoveryStrategy):
     """Recovery strategy that implements circuit breaker pattern."""
-    
+
     async def execute(self, error: Exception, context: Dict[str, Any]) -> RecoveryResult:
         """Execute circuit breaker recovery."""
         # Implementation would open circuit breaker
         return RecoveryResult.PARTIAL
-    
+
     def is_applicable(self, error: Exception, layer: str) -> bool:
         """Check if circuit breaker is applicable."""
         return layer in ["service", "infrastructure"]
 
 class FallbackRecoveryStrategy(RecoveryStrategy):
     """Recovery strategy that uses fallback mechanisms."""
-    
+
     async def execute(self, error: Exception, context: Dict[str, Any]) -> RecoveryResult:
         """Execute fallback recovery."""
         # Implementation would use fallback service/data
         return RecoveryResult.SUCCESS
-    
+
     def is_applicable(self, error: Exception, layer: str) -> bool:
         """Check if fallback is applicable."""
         return True  # Fallback can be applicable to most errors
 
 class RecoveryManager:
     """Manages error recovery strategies and execution."""
-    
+
     def __init__(self):
         self.strategies: Dict[str, RecoveryStrategy] = {
             "retry": RetryRecoveryStrategy(),
             "circuit_breaker": CircuitBreakerRecoveryStrategy(),
             "fallback": FallbackRecoveryStrategy()
         }
-    
+
     async def execute_recovery(
-        self, 
-        strategy_name: str, 
-        error: Exception, 
+        self,
+        strategy_name: str,
+        error: Exception,
         context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute a named recovery strategy."""
         if strategy_name not in self.strategies:
             return RecoveryResult.NOT_ATTEMPTED
-        
+
         strategy = self.strategies[strategy_name]
         layer = context.get("layer", "unknown")
-        
+
         if not strategy.is_applicable(error, layer):
             return RecoveryResult.NOT_ATTEMPTED
-        
+
         try:
             return await strategy.execute(error, context)
         except Exception:
@@ -645,13 +645,13 @@ class RecoveryManager:
 class TestEnhancedErrorContext:
     def test_layer_specific_error_tracking(self):
         """Test layer-specific error tracking and thresholds."""
-        
+
     def test_pattern_detection_algorithms(self):
         """Test all pattern detection algorithms."""
-        
+
     def test_recovery_strategy_execution(self):
         """Test recovery strategy selection and execution."""
-        
+
     def test_escalation_logic(self):
         """Test intelligent escalation based on context."""
 ```
@@ -662,7 +662,7 @@ class TestEnhancedErrorContext:
 class TestErrorRecovery:
     async def test_end_to_end_error_recovery(self):
         """Test complete error recovery workflow."""
-        
+
     async def test_pattern_detection_in_real_scenarios(self):
         """Test pattern detection with realistic error sequences."""
 ```

@@ -16,7 +16,7 @@ Tests all 11 organization API endpoints:
 Coverage Target: 50-60 tests
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -53,7 +53,7 @@ def mock_api_service(sample_organization, sample_members):
                     "slug": "test-org",
                     "plan_tier": "pro",
                     "role": "owner",
-                    "member_since": datetime.now(timezone.utc),
+                    "member_since": datetime.now(UTC),
                 }
             ],
             1,
@@ -67,7 +67,7 @@ def mock_api_service(sample_organization, sample_members):
                     "email": "owner@test.com",
                     "full_name": "Owner",
                     "role": "owner",
-                    "joined_at": datetime.now(timezone.utc),
+                    "joined_at": datetime.now(UTC),
                 }
             ],
             1,
@@ -79,7 +79,7 @@ def mock_api_service(sample_organization, sample_members):
             "email": "new@test.com",
             "full_name": "New User",
             "role": "member",
-            "joined_at": datetime.now(timezone.utc),
+            "joined_at": datetime.now(UTC),
             "invitation_sent": True,
         }
     )
@@ -90,8 +90,8 @@ def mock_api_service(sample_organization, sample_members):
             "email": "member@test.com",
             "full_name": "Member",
             "role": "admin",
-            "joined_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
+            "joined_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
     )
     mock_service.get_organization_settings = AsyncMock(
@@ -110,7 +110,7 @@ def mock_api_service(sample_organization, sample_members):
         return_value={
             "organization_id": "org-123",
             "settings": {"allow_public_cases": True},
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         }
     )
 
@@ -288,7 +288,7 @@ def member_user():
 @pytest.fixture
 def sample_organization():
     """Create sample organization."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Organization(
         organization_id="org-123",
         name="Test Organization",
@@ -305,7 +305,7 @@ def sample_organization():
 @pytest.fixture
 def sample_members():
     """Create sample organization members."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return [
         OrganizationMember(
             user_id="user-owner",

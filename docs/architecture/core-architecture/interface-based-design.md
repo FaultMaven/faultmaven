@@ -1,6 +1,6 @@
 # Enhanced Interface-Based Design Architecture
 
-**Document Type**: Architecture Deep-dive  
+**Document Type**: Architecture Deep-dive
 **Last Updated**: August 2025
 
 ## Overview
@@ -41,7 +41,7 @@ The system defines **13 primary interfaces** in `faultmaven/models/interfaces.py
 - **Implementations**: LLMRouter with OpenAI, Anthropic, Fireworks AI providers and memory integration
 - **Benefits**: Provider switching without code changes, memory-aware generation, easy testing with mocks
 
-**`ITracer`** 
+**`ITracer`**
 - **Purpose**: Distributed tracing and observability
 - **Methods**: `trace(operation) -> ContextManager`
 - **Implementations**: OpikTracer for production, mock for testing
@@ -126,14 +126,14 @@ class MemoryService(IMemoryService):
         self._vector_store = vector_store
         self._redis_store = redis_store
         self._memory_manager = MemoryManager()
-    
+
     async def retrieve_context(self, session_id: str, query: str) -> ConversationContext:
         # Retrieve from working memory
         working_memory = await self._redis_store.get(f"working_memory:{session_id}")
-        
+
         # Enhance with semantic search
         semantic_context = await self._vector_store.search(query, k=5, context={"session_id": session_id})
-        
+
         # Combine and return enhanced context
         return ConversationContext(
             working_memory=working_memory,
@@ -169,27 +169,27 @@ class EnhancedAgentService:
         self._memory = memory_service
         self._planning = planning_service
         self._prompt_engine = prompt_engine
-    
+
     async def process_query(self, request: QueryRequest) -> AgentResponse:
         # Get memory context
         context = await self._memory.retrieve_context(request.session_id, request.query)
-        
+
         # Plan response strategy
         strategy = await self._planning.plan_response_strategy(request.query, context)
-        
+
         # Generate optimized prompt
         prompt = await self._prompt_engine.assemble_prompt(
             question=request.query,
             response_type=ResponseType.ANSWER,
             context=context
         )
-        
+
         # Execute with intelligence
         result = await self._llm.generate_with_context(prompt, context)
-        
+
         # Consolidate insights
         await self._memory.consolidate_insights(request.session_id, result)
-        
+
         return result
 ```
 
@@ -204,17 +204,17 @@ class EnhancedDataClassifier(IDataClassifier):
         # Use context for better classification
         session_context = context.get('session_context', {})
         user_expertise = context.get('user_expertise', 'intermediate')
-        
+
         # Enhanced classification with context
         base_classification = await self._base_classify(content, filename)
-        
+
         # Refine based on context
         if session_context.get('previous_uploads'):
             base_classification = self._refine_with_history(
-                base_classification, 
+                base_classification,
                 session_context['previous_uploads']
             )
-        
+
         return base_classification
 
 # Context-aware log processing
@@ -222,17 +222,17 @@ class EnhancedLogProcessor(ILogProcessor):
     async def process(self, content: str, data_type: DataType, context: Dict) -> Dict[str, Any]:
         # Use context for enhanced processing
         memory_context = context.get('memory_context', {})
-        
+
         # Process with memory correlation
         base_analysis = await self._base_process(content, data_type)
-        
+
         # Correlate with previous findings
         if memory_context.get('previous_findings'):
             base_analysis = await self._correlate_with_memory(
-                base_analysis, 
+                base_analysis,
                 memory_context['previous_findings']
             )
-        
+
         return base_analysis
 ```
 
@@ -250,18 +250,18 @@ class MemoryEnhancedVectorStore(IVectorStore):
         session_id = context.get('session_id')
         if session_id:
             memory_context = await self._memory_service.get_context(session_id)
-            
+
             # Enhance query with memory
             enhanced_query = await self._enhance_query_with_memory(query, memory_context)
-            
+
             # Search with enhanced query
             results = await self._base_search(enhanced_query, k)
-            
+
             # Rank results with memory relevance
             ranked_results = await self._rank_with_memory_relevance(results, memory_context)
-            
+
             return ranked_results
-        
+
         # Fallback to base search
         return await self._base_search(query, k)
 ```
@@ -276,7 +276,7 @@ class PlanningEnhancedTool(BaseTool):
     async def execute(self, params: Dict, context: Dict) -> ToolResult:
         # Get planning context
         planning_context = context.get('planning_context', {})
-        
+
         # Execute with strategic guidance
         if planning_context.get('current_phase') == 'analysis':
             # Focus on analysis during analysis phase
@@ -287,10 +287,10 @@ class PlanningEnhancedTool(BaseTool):
         else:
             # Default execution
             result = await self._execute_default(params)
-        
+
         # Update planning context with results
         await self._update_planning_context(planning_context, result)
-        
+
         return result
 ```
 
@@ -310,12 +310,12 @@ class ContextAwareServiceComposer:
         self._memory = memory_service
         self._planning = planning_service
         self._base = base_service
-    
+
     async def execute_with_context(self, operation: str, params: Dict, session_id: str) -> Any:
         # Get comprehensive context
         memory_context = await self._memory.retrieve_context(session_id, operation)
         planning_context = await self._planning.get_current_context(session_id)
-        
+
         # Combine contexts
         full_context = {
             'memory': memory_context,
@@ -323,17 +323,17 @@ class ContextAwareServiceComposer:
             'operation': operation,
             'session_id': session_id
         }
-        
+
         # Execute with enhanced context
         result = await self._base.execute(operation, params, full_context)
-        
+
         # Learn from execution
         await self._memory.consolidate_insights(session_id, {
             'operation': operation,
             'result': result,
             'context_used': full_context
         })
-        
+
         return result
 ```
 
@@ -349,23 +349,23 @@ class TestMemoryService:
     @pytest.fixture
     def mock_vector_store(self):
         return Mock(spec=IVectorStore)
-    
+
     @pytest.fixture
     def mock_redis_store(self):
         return Mock(spec=ISessionStore)
-    
+
     @pytest.fixture
     def memory_service(self, mock_vector_store, mock_redis_store):
         return MemoryService(mock_vector_store, mock_redis_store)
-    
+
     async def test_retrieve_context_with_memory(self, memory_service, mock_vector_store, mock_redis_store):
         # Setup mocks
         mock_redis_store.get.return_value = {"conversation": ["test"]}
         mock_vector_store.search.return_value = [{"content": "test", "relevance": 0.9}]
-        
+
         # Execute
         context = await memory_service.retrieve_context("session_1", "test query")
-        
+
         # Verify
         assert context.working_memory is not None
         assert context.semantic_context is not None
@@ -376,18 +376,18 @@ class TestPlanningService:
     @pytest.fixture
     def mock_llm(self):
         return Mock(spec=ILLMProvider)
-    
+
     @pytest.fixture
     def planning_service(self, mock_llm):
         return PlanningService(mock_llm)
-    
+
     async def test_plan_response_strategy(self, planning_service, mock_llm):
         # Setup mock
         mock_llm.generate.return_value = "Strategic plan: Analyze, Plan, Execute"
-        
+
         # Execute
         strategy = await planning_service.plan_response_strategy("test query", {})
-        
+
         # Verify
         assert strategy is not None
         assert strategy.plan_components is not None
@@ -408,7 +408,7 @@ class TestIntelligentWorkflow:
             'prompt_engine': Mock(spec=IPromptEngine),
             'llm': Mock(spec=ILLMProvider)
         }
-    
+
     @pytest.fixture
     def enhanced_agent_service(self, mock_services):
         return EnhancedAgentService(
@@ -417,7 +417,7 @@ class TestIntelligentWorkflow:
             planning_service=mock_services['planning'],
             prompt_engine=mock_services['prompt_engine']
         )
-    
+
     async def test_complete_intelligent_workflow(self, enhanced_agent_service, mock_services):
         # Setup mocks
         mock_services['memory'].retrieve_context.return_value = MockConversationContext()
@@ -425,18 +425,18 @@ class TestIntelligentWorkflow:
         mock_services['prompt_engine'].assemble_prompt.return_value = "Enhanced prompt"
         mock_services['llm'].generate_with_context.return_value = "Intelligent response"
         mock_services['memory'].consolidate_insights.return_value = True
-        
+
         # Execute
         request = QueryRequest(session_id="test", query="test query")
         result = await enhanced_agent_service.process_query(request)
-        
+
         # Verify all intelligence features were used
         mock_services['memory'].retrieve_context.assert_called_once()
         mock_services['planning'].plan_response_strategy.assert_called_once()
         mock_services['prompt_engine'].assemble_prompt.assert_called_once()
         mock_services['llm'].generate_with_context.assert_called_once()
         mock_services['memory'].consolidate_insights.assert_called_once()
-        
+
         assert result is not None
 ```
 
@@ -452,20 +452,20 @@ class MemoryAwareCache:
     def __init__(self, memory_service: IMemoryService):
         self._memory = memory_service
         self._cache = {}
-    
+
     async def get(self, key: str, session_id: str) -> Optional[Any]:
         # Check cache first
         if key in self._cache:
             return self._cache[key]
-        
+
         # Get memory context for optimization
         memory_context = await self._memory.get_context(session_id)
-        
+
         # Use memory patterns for cache optimization
         if memory_context.get('frequently_accessed', {}).get(key):
             # Pre-warm cache for frequently accessed items
             await self._pre_warm_cache(key, memory_context)
-        
+
         return None
 ```
 
@@ -478,11 +478,11 @@ Interfaces optimize based on planning context:
 class PlanningAwareResourceManager:
     def __init__(self, planning_service: IPlanningService):
         self._planning = planning_service
-    
+
     async def allocate_resources(self, operation: str, session_id: str) -> ResourceAllocation:
         # Get planning context
         planning_context = await self._planning.get_current_context(session_id)
-        
+
         # Allocate based on planning phase
         if planning_context.get('current_phase') == 'analysis':
             # Allocate more resources for analysis
@@ -511,11 +511,11 @@ class BackwardCompatibleMemoryService(IMemoryService):
         except Exception:
             # Fallback to basic retrieval
             return await self._basic_retrieve_context(session_id, query)
-    
+
     async def _enhanced_retrieve_context(self, session_id: str, query: str) -> ConversationContext:
         # Enhanced implementation with memory
         pass
-    
+
     async def _basic_retrieve_context(self, session_id: str, query: str) -> ConversationContext:
         # Basic implementation for compatibility
         pass
@@ -532,7 +532,7 @@ class InterfaceMigrationHelper:
         self._old = old_service
         self._new = new_service
         self._migration_enabled = os.getenv('ENABLE_INTELLIGENT_FEATURES', 'false').lower() == 'true'
-    
+
     async def execute(self, operation: str, params: Dict, context: Dict) -> Any:
         if self._migration_enabled:
             try:

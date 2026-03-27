@@ -5,8 +5,8 @@ Complete catalog of available tools for troubleshooting sessions.
 ## Implemented Tools ✅
 
 ### Knowledge Base Search Tool
-**Status**: ✅ Production  
-**File**: `faultmaven/tools/knowledge_base.py`  
+**Status**: ✅ Production
+**File**: `faultmaven/tools/knowledge_base.py`
 **Type**: Direct Implementation
 
 **Purpose**: Search team's internal runbooks, documentation, and historical incident resolutions.
@@ -142,8 +142,8 @@ WEB_SEARCH_MAX_RESULTS=3
 ---
 
 ### Log Analyzer Tool
-**Status**: ✅ Production  
-**File**: `faultmaven/core/processing/log_analyzer.py`  
+**Status**: ✅ Production
+**File**: `faultmaven/core/processing/log_analyzer.py`
 **Type**: Direct Implementation
 
 **Purpose**: Parse, analyze, and extract insights from uploaded log files (Step 2 of data processing pipeline).
@@ -166,7 +166,7 @@ WEB_SEARCH_MAX_RESULTS=3
   - **Kubernetes**: pod/namespace/deployment patterns
   - **Database**: connection issues, deadlocks, transactions
   - **HTTP**: Status codes, response times, endpoints
-  
+
 **Analysis Types**:
 - Error frequency and clustering
 - Performance degradation detection
@@ -195,8 +195,8 @@ Phase 4: "Check application logs for database connection patterns"
 ---
 
 ### Data Classifier Tool
-**Status**: ✅ Production  
-**File**: `faultmaven/core/processing/classifier.py`  
+**Status**: ✅ Production
+**File**: `faultmaven/core/processing/classifier.py`
 **Type**: Direct Implementation
 
 **Purpose**: Automatically identify uploaded data types for appropriate processing (Step 1 of data processing pipeline).
@@ -313,8 +313,8 @@ SEARCH_FILE_CONTEXT_LINES=20
 ## Partially Implemented Tools 🟡
 
 ### Document Generator Tool
-**Status**: 🟡 Prompts configured, storage layer incomplete  
-**Planned File**: `faultmaven/tools/document_generator.py`  
+**Status**: 🟡 Prompts configured, storage layer incomplete
+**Planned File**: `faultmaven/tools/document_generator.py`
 **Type**: Direct Implementation (LLM-based)
 
 **Purpose**: Generate structured runbooks, post-mortems, and session summaries from resolved cases.
@@ -346,8 +346,8 @@ SEARCH_FILE_CONTEXT_LINES=20
 ## Planned Tools 🔲
 
 ### Metrics Analyzer Tool
-**Status**: 🔲 Designed, not implemented  
-**Planned File**: `faultmaven/tools/metrics_analyzer.py`  
+**Status**: 🔲 Designed, not implemented
+**Planned File**: `faultmaven/tools/metrics_analyzer.py`
 **Type**: Direct Implementation
 
 **Purpose**: Analyze time-series metrics data from Prometheus, Grafana, CloudWatch, etc.
@@ -363,8 +363,8 @@ SEARCH_FILE_CONTEXT_LINES=20
 ---
 
 ### Trace Analyzer Tool
-**Status**: 🔲 Concept  
-**Planned File**: `faultmaven/tools/trace_analyzer.py`  
+**Status**: 🔲 Concept
+**Planned File**: `faultmaven/tools/trace_analyzer.py`
 **Type**: Direct Implementation
 
 **Purpose**: Analyze distributed traces to identify latency issues and service dependencies.
@@ -380,8 +380,8 @@ SEARCH_FILE_CONTEXT_LINES=20
 ---
 
 ### System Commands Tool
-**Status**: 🔲 Designed, security concerns  
-**Planned File**: `faultmaven/tools/system_commands.py`  
+**Status**: 🔲 Designed, security concerns
+**Planned File**: `faultmaven/tools/system_commands.py`
 **Type**: System Integration (requires sandboxing)
 
 **Purpose**: Execute diagnostic commands like kubectl, curl, grep for validation.
@@ -404,8 +404,8 @@ SEARCH_FILE_CONTEXT_LINES=20
 ---
 
 ### Configuration Validator Tool
-**Status**: 🔲 Concept  
-**Planned File**: `faultmaven/tools/config_validator.py`  
+**Status**: 🔲 Concept
+**Planned File**: `faultmaven/tools/config_validator.py`
 **Type**: Direct Implementation
 
 **Purpose**: Validate YAML/JSON configuration files for syntax and best practices.
@@ -423,7 +423,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 ## Integration Tools 🔌
 
 ### MCP Server Tools
-**Status**: 🔲 Integration pattern defined  
+**Status**: 🔲 Integration pattern defined
 **Type**: External Protocol Integration
 
 **Purpose**: Connect to external Model Context Protocol servers for extended capabilities.
@@ -442,7 +442,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 ---
 
 ### Custom API Tools
-**Status**: 🔲 Pattern documented  
+**Status**: 🔲 Pattern documented
 **Type**: External API Integration
 
 **Purpose**: Wrap custom REST/GraphQL APIs as tools.
@@ -454,7 +454,7 @@ class CustomAPITool(BaseTool):
     def __init__(self, api_url: str, api_key: str):
         self.api_url = api_url
         self.api_key = api_key
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         # Make API call with sanitized params
         pass
@@ -506,4 +506,3 @@ class CustomAPITool(BaseTool):
 
 **Last Updated**: 2026-03-13
 **Maintained By**: Architecture Team
-

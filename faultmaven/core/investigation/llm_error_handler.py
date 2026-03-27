@@ -17,9 +17,10 @@ Usage:
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class RetryConfig:
     exponential_base: float = 2.0
 
     # Error message patterns that indicate retryable errors
-    retryable_patterns: Tuple[str, ...] = (
+    retryable_patterns: tuple[str, ...] = (
         "rate limit",
         "over capacity",
         "503",
@@ -66,7 +67,7 @@ class ErrorResult:
 
     action: ErrorAction
     message: str
-    error_code: Optional[str] = None
+    error_code: str | None = None
     retry_count: int = 0
     should_use_fallback: bool = False
 
@@ -82,7 +83,7 @@ class LLMErrorHandler:
     - Error tracking for patterns
     """
 
-    def __init__(self, config: Optional[RetryConfig] = None):
+    def __init__(self, config: RetryConfig | None = None):
         self.config = config or RetryConfig()
         self._error_counts: dict[str, int] = {}
 
@@ -234,8 +235,8 @@ class LLMErrorHandler:
     async def with_retry(
         self,
         operation: Callable[[], Awaitable[T]],
-        on_fallback: Optional[Callable[[], Awaitable[T]]] = None,
-    ) -> Tuple[Optional[T], Optional[ErrorResult]]:
+        on_fallback: Callable[[], Awaitable[T]] | None = None,
+    ) -> tuple[T | None, ErrorResult | None]:
         """
         Execute operation with automatic retry and fallback.
 
@@ -247,7 +248,7 @@ class LLMErrorHandler:
             Tuple of (result, error_result) where result is None if all attempts failed
         """
         retry_count = 0
-        last_error_result: Optional[ErrorResult] = None
+        last_error_result: ErrorResult | None = None
 
         while retry_count <= self.config.max_retries:
             try:

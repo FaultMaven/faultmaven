@@ -343,7 +343,7 @@ graph TB
         HEALTH[Health Checks]
         MEMORY[Memory Management]
     end
-    
+
     subgraph "Service Interfaces"
         IAGENT[IAgentService]
         IDATA[IDataService]
@@ -352,7 +352,7 @@ graph TB
         IMEMORY[IMemoryService]
         IPLANNING[IPlanningService]
     end
-    
+
     subgraph "Infrastructure Interfaces"
         ILLM[ILLMProvider]
         ISAN[ISanitizer]
@@ -361,7 +361,7 @@ graph TB
         IVECTOR[IVectorStore]
         ICACHE[IMemoryCache]
     end
-    
+
     subgraph "Service Implementations"
         AGENT_IMPL[AgentService]
         DATA_IMPL[DataService]
@@ -370,7 +370,7 @@ graph TB
         MEMORY_IMPL[MemoryService]
         PLANNING_IMPL[PlanningService]
     end
-    
+
     subgraph "Infrastructure Implementations"
         LLM_IMPL[LLMRouter]
         SAN_IMPL[DataSanitizer]
@@ -379,12 +379,12 @@ graph TB
         VECTOR_IMPL[ChromaDBStore]
         CACHE_IMPL[RedisMemoryCache]
     end
-    
+
     %% Container relationships
     CONT --> INIT
     CONT --> HEALTH
     CONT --> MEMORY
-    
+
     %% Service interfaces
     CONT --> IAGENT
     CONT --> IDATA
@@ -392,7 +392,7 @@ graph TB
     CONT --> ISESSION
     CONT --> IMEMORY
     CONT --> IPLANNING
-    
+
     %% Infrastructure interfaces
     CONT --> ILLM
     CONT --> ISAN
@@ -400,7 +400,7 @@ graph TB
     CONT --> ISTORE
     CONT --> IVECTOR
     CONT --> ICACHE
-    
+
     %% Implementation bindings
     IAGENT -.-> AGENT_IMPL
     IDATA -.-> DATA_IMPL
@@ -408,14 +408,14 @@ graph TB
     ISESSION -.-> SESSION_IMPL
     IMEMORY -.-> MEMORY_IMPL
     IPLANNING -.-> PLANNING_IMPL
-    
+
     ILLM -.-> LLM_IMPL
     ISAN -.-> SAN_IMPL
     ITRACE -.-> TRACE_IMPL
     ISTORE -.-> STORE_IMPL
     IVECTOR -.-> VECTOR_IMPL
     ICACHE -.-> CACHE_IMPL
-    
+
     %% Service dependencies
     AGENT_IMPL --> ILLM
     AGENT_IMPL --> ITRACE
@@ -426,11 +426,11 @@ graph TB
     SESSION_IMPL --> ISTORE
     MEMORY_IMPL --> ICACHE
     PLANNING_IMPL --> ILLM
-    
+
     classDef container fill:#e3f2fd
     classDef interface fill:#f3e5f5
     classDef implementation fill:#e8f5e8
-    
+
     class CONT,INIT,HEALTH,MEMORY container
     class IAGENT,IDATA,IKNOWLEDGE,ISESSION,IMEMORY,IPLANNING,ILLM,ISAN,ITRACE,ISTORE,IVECTOR,ICACHE interface
     class AGENT_IMPL,DATA_IMPL,KNOWLEDGE_IMPL,SESSION_IMPL,MEMORY_IMPL,PLANNING_IMPL,LLM_IMPL,SAN_IMPL,TRACE_IMPL,STORE_IMPL,VECTOR_IMPL,CACHE_IMPL implementation
@@ -548,13 +548,13 @@ graph TB
         CLIENT[Browser Extension/API Client]
         REQUEST[QueryRequest]
     end
-    
+
     subgraph "API Gateway"
         ENDPOINT["POST /api/v1/cases/{case_id}/queries"]
         VALIDATION[Request Validation]
         ROUTING[Route to AgentService]
     end
-    
+
     subgraph "Service Processing"
         AGENT_SVC[AgentService.process_query]
         MEMORY[Memory Context Retrieval]
@@ -564,7 +564,7 @@ graph TB
         AI_PROCESSING[AI Agent Processing]
         RESPONSE_FORMAT[Response Formatting]
     end
-    
+
     subgraph "Response Construction"
         CONTENT[Content Generation]
         RESPONSE_TYPE[ResponseType Determination]
@@ -573,40 +573,40 @@ graph TB
         PLAN[Plan Generation]
         MEMORY_UPDATE[Memory Consolidation]
     end
-    
+
     subgraph "v3.1.0 Response"
         SCHEMA_VER[schema_version: 3.1.0]
         AGENT_RESPONSE[AgentResponse]
         CLIENT_UPDATE[Client State Update]
     end
-    
+
     CLIENT --> REQUEST
     REQUEST --> ENDPOINT
     ENDPOINT --> VALIDATION
     VALIDATION --> ROUTING
     ROUTING --> AGENT_SVC
-    
+
     AGENT_SVC --> MEMORY
     AGENT_SVC --> PLANNING
     AGENT_SVC --> SANITIZE
     AGENT_SVC --> CASE_GEN
     AGENT_SVC --> AI_PROCESSING
     AI_PROCESSING --> RESPONSE_FORMAT
-    
+
     RESPONSE_FORMAT --> CONTENT
     RESPONSE_FORMAT --> RESPONSE_TYPE
     RESPONSE_FORMAT --> VIEW_STATE
     RESPONSE_FORMAT --> SOURCES
     RESPONSE_FORMAT --> PLAN
     RESPONSE_FORMAT --> MEMORY_UPDATE
-    
+
     CONTENT --> AGENT_RESPONSE
     RESPONSE_TYPE --> AGENT_RESPONSE
     VIEW_STATE --> AGENT_RESPONSE
     SOURCES --> AGENT_RESPONSE
     PLAN --> AGENT_RESPONSE
     MEMORY_UPDATE --> AGENT_RESPONSE
-    
+
     AGENT_RESPONSE --> SCHEMA_VER
     SCHEMA_VER --> CLIENT_UPDATE
 ```
@@ -622,28 +622,28 @@ graph LR
         SESSION_ACTIVE[Active Session]
         SESSION_EXPIRE[Session Expiry]
     end
-    
+
     subgraph "Case Lifecycle"
         CASE_CREATE[Case Creation per Query]
         CASE_PROCESS[Investigation Processing]
         CASE_COMPLETE[Case Resolution]
         CASE_ARCHIVE[Case Archival]
     end
-    
+
     subgraph "Memory Integration"
         MEMORY_CONSOLIDATE[Memory Consolidation]
         MEMORY_RETRIEVE[Context Retrieval]
         MEMORY_LEARN[Learning & Insights]
     end
-    
+
     SESSION_CREATE --> SESSION_ACTIVE
     SESSION_ACTIVE --> SESSION_EXPIRE
-    
+
     SESSION_ACTIVE --> CASE_CREATE
     CASE_CREATE --> CASE_PROCESS
     CASE_PROCESS --> CASE_COMPLETE
     CASE_COMPLETE --> CASE_ARCHIVE
-    
+
     CASE_PROCESS --> MEMORY_CONSOLIDATE
     MEMORY_CONSOLIDATE --> MEMORY_LEARN
     MEMORY_LEARN --> MEMORY_RETRIEVE
@@ -678,25 +678,25 @@ graph TD
     QUERY[User Query] --> AGENT[AI Agent Processing]
     AGENT --> MEMORY[Memory Context Retrieval]
     AGENT --> PLANNING[Strategic Planning]
-    
+
     MEMORY --> INTENT_ANALYSIS[Intent Analysis]
     PLANNING --> INTENT_ANALYSIS
-    
+
     INTENT_ANALYSIS --> ANSWER{Direct Answer?}
     INTENT_ANALYSIS --> PLAN{Multi-step Solution?}
     INTENT_ANALYSIS --> CLARIFY{Need Info?}
     INTENT_ANALYSIS --> CONFIRM{Need Approval?}
-    
+
     ANSWER -->|Yes| ANSWER_RESP[ResponseType: ANSWER]
     PLAN -->|Yes| PLAN_RESP[ResponseType: PLAN_PROPOSAL]
     CLARIFY -->|Yes| CLARIFY_RESP[ResponseType: CLARIFICATION_REQUEST]
     CONFIRM -->|Yes| CONFIRM_RESP[ResponseType: CONFIRMATION_REQUEST]
-    
+
     ANSWER_RESP --> UI_RENDER[UI: Display Message]
     PLAN_RESP --> UI_STEPS[UI: Show Action Steps]
     CLARIFY_RESP --> UI_FORM[UI: Show Input Form]
     CONFIRM_RESP --> UI_DIALOG[UI: Show Confirmation]
-    
+
     ANSWER_RESP --> MEMORY_UPDATE[Memory Consolidation]
     PLAN_RESP --> MEMORY_UPDATE
     CLARIFY_RESP --> MEMORY_UPDATE
@@ -720,32 +720,32 @@ graph TB
         METRICS[System Metrics]
         MEMORY[Memory Insights]
     end
-    
+
     subgraph "Source Processing"
         EXTRACT[Evidence Extraction]
         SNIPPET[Snippet Generation]
         ATTRIBUTION[Source Attribution]
         RELEVANCE[Relevance Scoring]
     end
-    
+
     subgraph "Response Integration"
         SOURCE_ARRAY[Sources Array]
         TRUST_BUILD[User Trust Building]
         VERIFICATION[Evidence Verification]
         MEMORY_UPDATE[Memory Learning]
     end
-    
+
     KB --> EXTRACT
     LOGS --> EXTRACT
     WEB --> EXTRACT
     METRICS --> EXTRACT
     MEMORY --> EXTRACT
-    
+
     EXTRACT --> SNIPPET
     SNIPPET --> ATTRIBUTION
     ATTRIBUTION --> RELEVANCE
     RELEVANCE --> SOURCE_ARRAY
-    
+
     SOURCE_ARRAY --> TRUST_BUILD
     SOURCE_ARRAY --> VERIFICATION
     SOURCE_ARRAY --> MEMORY_UPDATE
@@ -761,7 +761,7 @@ graph TB
 ```json
 {
   "type": "knowledge_base",
-  "name": "database_troubleshooting.md", 
+  "name": "database_troubleshooting.md",
   "snippet": "Connection pool exhaustion occurs when activeCount equals maxActive...",
   "relevance_score": 0.95,
   "confidence": 0.9
@@ -780,30 +780,30 @@ graph TB
         MEMORY_CONTEXT[memory_context]
         PLANNING_STATE[planning_state]
     end
-    
+
     subgraph "State Synchronization"
         BACKEND_STATE[Backend State]
         VIEW_STATE[ViewState Snapshot]
         FRONTEND_SYNC[Frontend Synchronization]
     end
-    
+
     subgraph "Client Benefits"
         NO_EXTRA_CALLS[No Additional API Calls]
         CONSISTENT_UI[Consistent UI State]
         CONTEXT_PRESERVATION[Context Preservation]
         INTELLIGENT_UI[Intelligent UI Adaptation]
     end
-    
+
     SESSION_ID --> VIEW_STATE
     CASE_ID --> VIEW_STATE
     SUMMARY --> VIEW_STATE
     UPLOADED --> VIEW_STATE
     MEMORY_CONTEXT --> VIEW_STATE
     PLANNING_STATE --> VIEW_STATE
-    
+
     BACKEND_STATE --> VIEW_STATE
     VIEW_STATE --> FRONTEND_SYNC
-    
+
     FRONTEND_SYNC --> NO_EXTRA_CALLS
     FRONTEND_SYNC --> CONSISTENT_UI
     FRONTEND_SYNC --> CONTEXT_PRESERVATION
@@ -836,48 +836,48 @@ sequenceDiagram
     participant PlanningService
     participant AIAgent
     participant Knowledge
-    
+
     Client->>API: POST /api/v1/cases/{case_id}/queries
     Note over Client,API: QueryRequest{session_id, query}
-    
+
     API->>AgentService: process_query(request)
-    
+
     %% Memory and Context Retrieval
     AgentService->>MemoryService: retrieve_relevant_context(session_id, query)
     MemoryService->>MemoryService: semantic_search + relevance_scoring
     MemoryService-->>AgentService: contextual_information
-    
+
     %% Strategic Planning
     AgentService->>PlanningService: plan_response_strategy(query, context)
     PlanningService->>PlanningService: problem_decomposition + solution_planning
     PlanningService-->>AgentService: strategic_plan
-    
+
     AgentService->>AgentService: generate_case_id()
     AgentService->>AgentService: sanitize_query()
-    
+
     AgentService->>AIAgent: run(query, tools, context, plan)
     AIAgent->>Knowledge: search_knowledge_base()
     Knowledge-->>AIAgent: relevant_documents
-    
+
     AIAgent-->>AgentService: agent_result{findings, recommendations}
-    
+
     %% Response Construction
     AgentService->>AgentService: determine_response_type()
     AgentService->>AgentService: extract_sources()
     AgentService->>AgentService: create_view_state()
     AgentService->>AgentService: format_response()
-    
+
     %% Memory Consolidation
     AgentService->>MemoryService: consolidate_insights(session_id, result)
     MemoryService->>MemoryService: extract_key_learnings + update_memory
     MemoryService-->>AgentService: consolidation_complete
-    
+
     AgentService-->>API: AgentResponse
     Note over AgentService,API: v3.1.0 Schema Response
-    
+
     API-->>Client: JSON Response
     Note over API,Client: {schema_version, content, response_type, view_state, sources, plan?}
-    
+
     Client->>Client: update_ui_based_on_response_type()
     Client->>Client: update_view_state()
     Client->>Client: display_sources()
@@ -894,33 +894,33 @@ graph TB
         REQ_CHECKS[Business Rule Checks]
         MEMORY_VALIDATION[Memory Context Validation]
     end
-    
+
     subgraph "Response Validation"
         RESP_MODEL[AgentResponse Model]
         PLAN_VALIDATION[Plan Consistency Check]
         SCHEMA_VERSION[Schema Version Check]
         MEMORY_INTEGRITY[Memory Integration Check]
     end
-    
+
     subgraph "Error Handling"
         VALIDATION_ERROR[ValidationException]
         ERROR_RESPONSE[ErrorResponse Model]
         CLIENT_ERROR[Structured Error to Client]
         MEMORY_ERROR[Memory Processing Error]
     end
-    
+
     REQ_MODEL --> PYDANTIC
     PYDANTIC --> REQ_CHECKS
     REQ_CHECKS --> MEMORY_VALIDATION
     MEMORY_VALIDATION -->|Valid| RESP_MODEL
     MEMORY_VALIDATION -->|Invalid| VALIDATION_ERROR
-    
+
     RESP_MODEL --> PLAN_VALIDATION
     PLAN_VALIDATION --> SCHEMA_VERSION
     SCHEMA_VERSION --> MEMORY_INTEGRITY
     MEMORY_INTEGRITY -->|Valid| CLIENT_ERROR
     MEMORY_INTEGRITY -->|Invalid| ERROR_RESPONSE
-    
+
     VALIDATION_ERROR --> ERROR_RESPONSE
     ERROR_RESPONSE --> CLIENT_ERROR
     MEMORY_ERROR --> ERROR_RESPONSE
@@ -951,11 +951,11 @@ class IMemoryService(ABC):
     @abstractmethod
     async def retrieve_context(self, session_id: str, query: str) -> ConversationContext:
         pass
-    
+
     @abstractmethod
     async def consolidate_insights(self, session_id: str, result: dict) -> bool:
         pass
-    
+
     @abstractmethod
     async def get_user_profile(self, session_id: str) -> UserProfile:
         pass
@@ -968,8 +968,8 @@ High-level modules depend on abstractions, not concretions:
 # Service depends on interface, not implementation
 class AgentService:
     def __init__(
-        self, 
-        llm_provider: ILLMProvider, 
+        self,
+        llm_provider: ILLMProvider,
         tracer: ITracer,
         memory_service: IMemoryService,
         planning_service: IPlanningService
@@ -987,7 +987,7 @@ Clear separation between commands (state changes) and queries:
 # Query - read-only operation
 async def get_session_info(session_id: str) -> SessionInfo
 
-# Command - state-changing operation  
+# Command - state-changing operation
 async def create_session(metadata: dict) -> str
 
 # Memory operations
@@ -1548,7 +1548,7 @@ This section provides a complete navigation map to all FaultMaven design documen
 
 ### 2. Service Layer Design
 
-**Code Location**: `faultmaven/services/`  
+**Code Location**: `faultmaven/services/`
 **Update Frequency**: 🔥 HIGH (business logic evolves frequently)
 
 #### Domain Services (`services/domain/`)
@@ -1580,7 +1580,7 @@ Milestone-based investigation engine:
 
 ### 3. API Layer Design
 
-**Code Location**: `faultmaven/api/`, `faultmaven/models/api.py`  
+**Code Location**: `faultmaven/api/`, `faultmaven/models/api.py`
 **Update Frequency**: 🔥 HIGH (API evolves with features)
 
 #### API Schema and Contracts
@@ -1598,7 +1598,7 @@ Milestone-based investigation engine:
 
 ### 4. Core Domain Design
 
-**Code Location**: `faultmaven/core/`  
+**Code Location**: `faultmaven/core/`
 **Update Frequency**: 🔶 MEDIUM (stable domain logic)
 
 #### Investigation Engine
@@ -1619,7 +1619,7 @@ Milestone-based investigation engine:
 
 ### 5. Infrastructure Layer Design
 
-**Code Location**: `faultmaven/infrastructure/`  
+**Code Location**: `faultmaven/infrastructure/`
 **Update Frequency**: 🔶 MEDIUM (infrastructure more stable)
 
 #### LLM and AI Infrastructure (`infrastructure/llm/`)
@@ -1654,7 +1654,7 @@ Milestone-based investigation engine:
 
 ### 6. Data Models and Interfaces
 
-**Code Location**: `faultmaven/models/`  
+**Code Location**: `faultmaven/models/`
 **Update Frequency**: 🔥 HIGH (models evolve with features)
 
 - [`Data Models Reference`](./data-models-reference.md) - 📝 *To create* - Core models: api.py (API schema), agentic.py (framework), case.py, evidence.py, interfaces.py
@@ -1665,7 +1665,7 @@ Milestone-based investigation engine:
 
 ### 7. Configuration and Deployment
 
-**Code Location**: `faultmaven/config/`, deployment  
+**Code Location**: `faultmaven/config/`, deployment
 **Update Frequency**: 🔷 LOW (stable operational configs)
 
 - [`Configuration Management`](specifications/configuration-management-spec.md) - Settings system (config/settings.py): Environment-based, centralized thresholds
@@ -1678,7 +1678,7 @@ Milestone-based investigation engine:
 
 ### 8. Implementation Reference
 
-**Code Organization and Patterns**  
+**Code Organization and Patterns**
 **Update Frequency**: 🔶 MEDIUM (updates with refactoring)
 
 - [`Implementation Module Mapping`](api-and-integration/implementation-module-mapping.md) - 📝 *To create* **HIGH PRIORITY** - Complete breakdown: All modules, file responsibilities, dependency graph
@@ -1690,7 +1690,7 @@ Milestone-based investigation engine:
 
 ### 9. Developer Guides
 
-**Onboarding and Best Practices**  
+**Onboarding and Best Practices**
 **Update Frequency**: 🔷 LOW (stable guides)
 
 - [`Developer Guide`](./developer-guide.md) - Getting started, development setup, workflow
@@ -1704,7 +1704,7 @@ Milestone-based investigation engine:
 
 ### 10. Evolution and Historical Context
 
-**Historical Reference**  
+**Historical Reference**
 **Update Frequency**: 🔷 LOW (historical record)
 
 **Architecture Evolution**:
@@ -1731,7 +1731,7 @@ Milestone-based investigation engine:
 **Code-to-Docs Mapping**:
 ```
 faultmaven/services/domain/     → Section 2 (Domain Services)
-faultmaven/services/agentic/    → Section 2 (Agentic Framework)  
+faultmaven/services/agentic/    → Section 2 (Agentic Framework)
 faultmaven/services/evidence/   → Section 2 (Evidence Collection Design)
 faultmaven/api/                 → Section 3 (API Layer)
 faultmaven/core/                → Section 4 (Core Domain)
@@ -1752,4 +1752,3 @@ faultmaven/config/              → Section 7 (Configuration)
 **Document Version**: 3.0
 **Last Updated**: 2025-11-12
 **Status**: Master Architecture Document - System Specification
-

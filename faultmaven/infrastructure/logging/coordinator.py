@@ -10,8 +10,8 @@ import os
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any, Optional
 
 # Import enhanced error handling components
 from ...exceptions import ErrorSeverity, RecoveryResult
@@ -39,13 +39,13 @@ class RequestContext:
     """
 
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None
-    case_id: Optional[str] = None
-    agent_phase: Optional[str] = None
-    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    attributes: Dict[str, Any] = field(default_factory=dict)
-    logged_operations: Set[str] = field(default_factory=set)
+    session_id: str | None = None
+    user_id: str | None = None
+    case_id: str | None = None
+    agent_phase: str | None = None
+    start_time: datetime = field(default_factory=lambda: datetime.now(UTC))
+    attributes: dict[str, Any] = field(default_factory=dict)
+    logged_operations: set[str] = field(default_factory=set)
     error_context: Optional["ErrorContext"] = None
     performance_tracker: Optional["PerformanceTracker"] = None
 
@@ -87,9 +87,9 @@ class LayerErrorConfig:
 
     max_errors_per_minute: int = 10
     escalation_threshold: int = 5
-    recovery_strategies: List[str] = field(default_factory=list)
+    recovery_strategies: list[str] = field(default_factory=list)
     automatic_recovery: bool = True
-    severity_weights: Dict[ErrorSeverity, float] = field(default_factory=dict)
+    severity_weights: dict[ErrorSeverity, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -101,9 +101,9 @@ class ErrorPattern:
     first_occurrence: datetime
     last_occurrence: datetime
     occurrence_count: int
-    affected_layers: List[str]
+    affected_layers: list[str]
     confidence_score: float
-    suggested_actions: List[str]
+    suggested_actions: list[str]
 
 
 @dataclass
@@ -114,8 +114,8 @@ class RecoveryAction:
     attempted_at: datetime
     result: RecoveryResult
     duration_ms: int
-    error_message: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    error_message: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -126,24 +126,24 @@ class ErrorContext:
     recovery strategies, pattern detection, and intelligent escalation logic.
     """
 
-    original_error: Optional[Exception] = None
-    layer_errors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    original_error: Exception | None = None
+    layer_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
     recovery_attempts: int = 0
 
     # Enhanced features
-    layer_configs: Dict[str, LayerErrorConfig] = field(default_factory=dict)
-    error_timeline: List[Tuple[datetime, str, Exception]] = field(default_factory=list)
-    detected_patterns: List[ErrorPattern] = field(default_factory=list)
-    recovery_actions: List[RecoveryAction] = field(default_factory=list)
+    layer_configs: dict[str, LayerErrorConfig] = field(default_factory=dict)
+    error_timeline: list[tuple[datetime, str, Exception]] = field(default_factory=list)
+    detected_patterns: list[ErrorPattern] = field(default_factory=list)
+    recovery_actions: list[RecoveryAction] = field(default_factory=list)
     escalation_level: ErrorSeverity = ErrorSeverity.LOW
-    correlation_metadata: Dict[str, Any] = field(default_factory=dict)
+    correlation_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """Initialize default layer configurations."""
         if not self.layer_configs:
             self.layer_configs = self._get_default_layer_configs()
 
-    def _get_default_layer_configs(self) -> Dict[str, LayerErrorConfig]:
+    def _get_default_layer_configs(self) -> dict[str, LayerErrorConfig]:
         """Get default configuration for each architectural layer."""
         return {
             "api": LayerErrorConfig(
@@ -201,7 +201,7 @@ class ErrorContext:
         layer: str,
         error: Exception,
         severity: ErrorSeverity = ErrorSeverity.MEDIUM,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Add error from specific layer with enhanced tracking.
 
@@ -211,7 +211,7 @@ class ErrorContext:
             severity: Severity level of the error
             metadata: Additional context about the error
         """
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         # Store error in layer errors - format expected by tests
         if layer not in self.layer_errors:
@@ -313,7 +313,7 @@ class ErrorContext:
         if len(self.error_timeline) < 3:
             return
 
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         # Pattern 1: Recurring errors (same error type repeating)
         self._detect_recurring_pattern()
@@ -393,7 +393,7 @@ class ErrorContext:
 
             if is_cascade:
                 pattern = ErrorPattern(
-                    pattern_id=f"cascade_{datetime.now(timezone.utc).timestamp()}",
+                    pattern_id=f"cascade_{datetime.now(UTC).timestamp()}",
                     pattern_type="cascade",
                     first_occurrence=cascade_sequence[0][1],
                     last_occurrence=cascade_sequence[-1][1],
@@ -441,7 +441,7 @@ class ErrorContext:
             return
 
         # Check if error rate is increasing over time
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
 
         # Split recent errors into two time windows
         window_size = timedelta(minutes=5)
@@ -488,7 +488,7 @@ class ErrorContext:
         recent_attempts = [
             action
             for action in self.recovery_actions
-            if (datetime.now(timezone.utc) - action.attempted_at).total_seconds()
+            if (datetime.now(UTC) - action.attempted_at).total_seconds()
             < 300  # 5 minutes
         ]
 
@@ -502,13 +502,11 @@ class ErrorContext:
         config = self.layer_configs[layer]
 
         for strategy in config.recovery_strategies:
-            start_time = datetime.now(timezone.utc)
+            start_time = datetime.now(UTC)
 
             try:
                 result = self._execute_recovery_strategy(layer, strategy, error)
-                duration = int(
-                    (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
-                )
+                duration = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
                 recovery_action = RecoveryAction(
                     action_name=strategy,
@@ -524,9 +522,7 @@ class ErrorContext:
                     break  # Stop trying other strategies
 
             except Exception as recovery_error:
-                duration = int(
-                    (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
-                )
+                duration = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
                 recovery_action = RecoveryAction(
                     action_name=strategy,
                     attempted_at=start_time,
@@ -583,7 +579,7 @@ class ErrorContext:
 
         return False
 
-    def get_recovery_summary(self) -> Dict[str, Any]:
+    def get_recovery_summary(self) -> dict[str, Any]:
         """Get summary of recovery attempts and their effectiveness."""
         total_attempts = len(self.recovery_actions)
         successful_attempts = len(
@@ -612,7 +608,7 @@ class ErrorContext:
             ],
         }
 
-    def get_pattern_summary(self) -> Dict[str, Any]:
+    def get_pattern_summary(self) -> dict[str, Any]:
         """Get summary of detected error patterns."""
         pattern_counts = {}
         for pattern in self.detected_patterns:
@@ -653,7 +649,7 @@ class PerformanceTracker:
 
     def __init__(self):
         """Initialize with default performance thresholds per layer."""
-        self.layer_timings: Dict[str, float] = {}
+        self.layer_timings: dict[str, float] = {}
         self.thresholds = {
             "api": 0.1,  # 100ms - API should be fast
             "service": 0.5,  # 500ms - Service orchestration
@@ -685,7 +681,7 @@ class PerformanceTracker:
 
 
 # Thread-safe context variable for request context
-request_context: ContextVar[Optional[RequestContext]] = ContextVar(
+request_context: ContextVar[RequestContext | None] = ContextVar(
     "request_context", default=None
 )
 
@@ -701,7 +697,7 @@ class LoggingCoordinator:
 
     def __init__(self):
         """Initialize the logging coordinator."""
-        self.context: Optional[RequestContext] = None
+        self.context: RequestContext | None = None
 
     def start_request(self, **initial_context) -> RequestContext:
         """
@@ -746,7 +742,7 @@ class LoggingCoordinator:
         request_context.set(self.context)
         return self.context
 
-    def end_request(self) -> Dict[str, Any]:
+    def end_request(self) -> dict[str, Any]:
         """
         Finalize request - returns metrics for single summary log.
 
@@ -759,9 +755,7 @@ class LoggingCoordinator:
         if not self.context:
             return {}
 
-        duration = (
-            datetime.now(timezone.utc) - self.context.start_time
-        ).total_seconds()
+        duration = (datetime.now(UTC) - self.context.start_time).total_seconds()
 
         # Calculate performance violations
         performance_violations = 0
@@ -803,7 +797,7 @@ class LoggingCoordinator:
         return summary
 
     @staticmethod
-    def get_context() -> Optional[RequestContext]:
+    def get_context() -> RequestContext | None:
         """
         Get current request context.
 
@@ -837,7 +831,7 @@ class LoggingCoordinator:
             # Mark as logged to prevent duplicates
             ctx.mark_logged(operation_key)
 
-    def get_health_status(self) -> Dict[str, Any]:
+    def get_health_status(self) -> dict[str, Any]:
         """
         Get health status of the logging system.
 

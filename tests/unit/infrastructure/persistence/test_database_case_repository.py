@@ -13,8 +13,8 @@ Coverage:
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -387,7 +387,7 @@ async def test_add_message(repository: DatabaseCaseRepository, sample_case: Case
         "message_id": f"msg_{uuid4().hex[:12]}",
         "role": "user",
         "content": "What's causing the slowness?",
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
         "metadata": {"source": "web"},
     }
 
@@ -432,7 +432,7 @@ async def test_get_messages_with_pagination(
             "turn_number": i,
             "role": "user" if i % 2 == 0 else "assistant",
             "content": f"Message {i}",
-            "timestamp": datetime.now(timezone.utc) + timedelta(seconds=i),
+            "timestamp": datetime.now(UTC) + timedelta(seconds=i),
         }
         await repository.add_message(sample_case.case_id, message)
 
@@ -576,7 +576,7 @@ async def test_cleanup_expired(repository: DatabaseCaseRepository):
     """Test cleaning up expired cases."""
     # Arrange
     # Create old closed case (closed 100 days ago)
-    old_closed_time = datetime.now(timezone.utc) - timedelta(days=100)
+    old_closed_time = datetime.now(UTC) - timedelta(days=100)
     old_created_time = old_closed_time - timedelta(days=10)
     old_case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
@@ -592,7 +592,7 @@ async def test_cleanup_expired(repository: DatabaseCaseRepository):
     await repository.save(old_case)
 
     # Create recent closed case (closed today)
-    recent_closed_time = datetime.now(timezone.utc)
+    recent_closed_time = datetime.now(UTC)
     recent_created_time = recent_closed_time - timedelta(days=1)
     recent_case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
@@ -775,7 +775,7 @@ class TestClosedAtTimestampHandling:
     @pytest.mark.asyncio
     async def test_cleanup_expired_uses_closed_at_timestamp(self, repository):
         """Cleanup should use closed_at from metadata, not updated_at."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create a closed case with closed_at set 100 days ago
         old_closed_at = now - timedelta(days=100)
@@ -807,7 +807,7 @@ class TestClosedAtTimestampHandling:
     @pytest.mark.asyncio
     async def test_cleanup_expired_respects_recent_closed_at(self, repository):
         """Cleanup should NOT delete cases with recent closed_at."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create a closed case with closed_at set 30 days ago
         recent_closed_at = now - timedelta(days=30)
@@ -840,7 +840,7 @@ class TestClosedAtTimestampHandling:
     @pytest.mark.asyncio
     async def test_cleanup_expired_ignores_active_cases(self, repository):
         """Cleanup should NOT delete active cases regardless of timestamps."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create an active inquiry case
         created_at = now - timedelta(days=101)
@@ -870,7 +870,7 @@ class TestClosedAtTimestampHandling:
     @pytest.mark.asyncio
     async def test_case_preserves_closed_at_on_updates(self, repository):
         """Closed_at timestamp should be preserved when case is updated."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create and save a closed case
         original_closed_at = now - timedelta(days=50)
@@ -917,7 +917,7 @@ class TestClosedAtTimestampHandling:
         This test is simplified since the application now enforces closed_at at creation time.
         The backfill migration script handles any legacy data without closed_at.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create a case with very old closed_at to verify cleanup logic
         old_closed_at = now - timedelta(days=200)
@@ -947,7 +947,7 @@ class TestClosedAtTimestampHandling:
     @pytest.mark.asyncio
     async def test_cleanup_expired_batch_processing(self, repository):
         """Cleanup should correctly process multiple cases in batch."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create 5 old closed cases (should be deleted)
         old_ids = []
@@ -1009,7 +1009,7 @@ class TestClosedAtTimestampHandling:
     @pytest.mark.asyncio
     async def test_resolved_cases_have_closed_at_set(self, repository):
         """Resolved cases should have closed_at timestamp set."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Create and save a resolved case
         created_at = now - timedelta(days=1)

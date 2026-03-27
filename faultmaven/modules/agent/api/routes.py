@@ -15,7 +15,7 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 import logging
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Body, Depends, Path, status
 from fastapi.responses import StreamingResponse
@@ -255,7 +255,7 @@ async def _stream_agent_execution(
         )
         yield error_event.to_sse()
 
-    except Exception as e:
+    except Exception:
         # Unexpected error
         logger.exception("Unexpected error during agent execution streaming")
         error_event = ExecutionEventSSE.error_event(
@@ -294,7 +294,7 @@ async def _execute_non_streaming(
         ConflictError: Session not active or budget exceeded
         ServiceError: LLM or internal error
     """
-    execution_id: Optional[str] = None
+    execution_id: str | None = None
 
     # Execute agent - exceptions propagate to FastAPI exception handlers
     async for event in agent_service.execute_agent(

@@ -18,7 +18,7 @@ Design Notes:
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +170,7 @@ def run_alembic_migrations() -> bool:
         raise RuntimeError(f"Alembic migration failed: {e}") from e
 
 
-async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
+async def ensure_default_admin_exists(container: Any) -> Any | None:
     """Create default admin user if no users exist.
 
     For local development, creates a default admin account so users

@@ -3,9 +3,9 @@
 This module defines exceptions specific to the case management module.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
-from faultmaven.exceptions import FaultMavenException, ServiceError
+from faultmaven.exceptions import FaultMavenException
 
 
 class CaseException(FaultMavenException):
@@ -17,7 +17,7 @@ class CaseException(FaultMavenException):
 class CaseNotFoundError(CaseException):
     """Raised when a case is not found."""
 
-    def __init__(self, message: str = "Case not found", case_id: Optional[str] = None):
+    def __init__(self, message: str = "Case not found", case_id: str | None = None):
         self.case_id = case_id
         super().__init__(message, details={"case_id": case_id})
 
@@ -32,9 +32,9 @@ class CaseStateError(CaseException):
     def __init__(
         self,
         message: str,
-        case_id: Optional[str] = None,
-        current_state: Optional[str] = None,
-        requested_state: Optional[str] = None,
+        case_id: str | None = None,
+        current_state: str | None = None,
+        requested_state: str | None = None,
     ):
         self.case_id = case_id
         self.current_state = current_state
@@ -59,9 +59,9 @@ class CaseAccessError(CaseException):
     def __init__(
         self,
         message: str = "Access denied",
-        case_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
-        required_permission: Optional[str] = None,
+        case_id: str | None = None,
+        organization_id: str | None = None,
+        required_permission: str | None = None,
     ):
         self.case_id = case_id
         self.organization_id = organization_id
@@ -86,9 +86,9 @@ class CaseValidationError(CaseException):
     def __init__(
         self,
         message: str,
-        field: Optional[str] = None,
-        value: Optional[Any] = None,
-        constraint: Optional[str] = None,
+        field: str | None = None,
+        value: Any | None = None,
+        constraint: str | None = None,
     ):
         self.field = field
         self.value = value
@@ -113,9 +113,9 @@ class CaseOperationError(CaseException):
     def __init__(
         self,
         message: str,
-        case_id: Optional[str] = None,
-        operation: Optional[str] = None,
-        error_code: Optional[str] = None,
+        case_id: str | None = None,
+        operation: str | None = None,
+        error_code: str | None = None,
     ):
         self.case_id = case_id
         self.operation = operation

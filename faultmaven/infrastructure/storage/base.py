@@ -19,9 +19,9 @@ Usage:
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +47,17 @@ class PresignedUrl:
     url: str
     expires_at: datetime
     method: str
-    headers: Optional[Dict[str, str]] = None
+    headers: dict[str, str] | None = None
 
     @property
     def is_expired(self) -> bool:
         """Check if the URL has expired."""
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     @property
     def seconds_until_expiry(self) -> int:
         """Seconds until URL expires (0 if already expired)."""
-        delta = self.expires_at - datetime.now(timezone.utc)
+        delta = self.expires_at - datetime.now(UTC)
         return max(0, int(delta.total_seconds()))
 
 
@@ -77,7 +77,7 @@ class StoredFile:
     size_bytes: int
     content_type: str
     created_at: datetime
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
 
 class IFileStorageBackend(ABC):
@@ -101,7 +101,7 @@ class IFileStorageBackend(ABC):
         key: str,
         content_type: str = "application/octet-stream",
         expires_in: timedelta = timedelta(hours=1),
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> PresignedUrl:
         """Generate a presigned URL for file upload.
 
@@ -129,7 +129,7 @@ class IFileStorageBackend(ABC):
         self,
         key: str,
         expires_in: timedelta = timedelta(hours=1),
-        filename: Optional[str] = None,
+        filename: str | None = None,
     ) -> PresignedUrl:
         """Generate a presigned URL for file download.
 
@@ -159,7 +159,7 @@ class IFileStorageBackend(ABC):
         key: str,
         data: bytes,
         content_type: str = "application/octet-stream",
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> StoredFile:
         """Store a file directly (for server-side operations).
 
@@ -182,7 +182,7 @@ class IFileStorageBackend(ABC):
         pass
 
     @abstractmethod
-    async def retrieve_file(self, key: str) -> Optional[bytes]:
+    async def retrieve_file(self, key: str) -> bytes | None:
         """Retrieve file content directly (for server-side operations).
 
         Args:
@@ -218,7 +218,7 @@ class IFileStorageBackend(ABC):
         pass
 
     @abstractmethod
-    async def get_file_info(self, key: str) -> Optional[StoredFile]:
+    async def get_file_info(self, key: str) -> StoredFile | None:
         """Get file metadata without downloading content.
 
         Args:

@@ -9,7 +9,7 @@ at runtime, not at import time.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import structlog
 from opentelemetry import trace
@@ -138,8 +138,8 @@ class FaultMavenLogger:
 
     @staticmethod
     def add_request_context(
-        logger, method_name: str, event_dict: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        logger, method_name: str, event_dict: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Add request context without duplication.
 
@@ -176,8 +176,8 @@ class FaultMavenLogger:
 
     @staticmethod
     def deduplicate_fields(
-        logger, method_name: str, event_dict: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        logger, method_name: str, event_dict: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Remove duplicate fields from log entries.
 
@@ -204,8 +204,8 @@ class FaultMavenLogger:
 
     @staticmethod
     def add_trace_context(
-        logger, method_name: str, event_dict: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        logger, method_name: str, event_dict: dict[str, Any]
+    ) -> dict[str, Any]:
         """
         Add OpenTelemetry trace context to log entries.
 
@@ -233,7 +233,7 @@ class FaultMavenLogger:
 
 
 # Singleton configuration instance
-_logger_config: Optional[FaultMavenLogger] = None
+_logger_config: FaultMavenLogger | None = None
 
 
 def get_logger(name: str) -> structlog.BoundLogger:

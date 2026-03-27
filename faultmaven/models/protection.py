@@ -6,9 +6,9 @@ for rate limiting, request deduplication, and timeout management.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -83,7 +83,7 @@ class ProtectionSettings(BaseModel):
     timeout_management_enabled: bool = True
 
     # Rate limiting configuration
-    rate_limits: Dict[str, RateLimitConfig] = Field(
+    rate_limits: dict[str, RateLimitConfig] = Field(
         default_factory=lambda: {
             "global": RateLimitConfig(requests=1000, window=60),
             "per_session": RateLimitConfig(requests=10, window=60),
@@ -94,7 +94,7 @@ class ProtectionSettings(BaseModel):
     )
 
     # Deduplication configuration
-    deduplication: Dict[str, DeduplicationConfig] = Field(
+    deduplication: dict[str, DeduplicationConfig] = Field(
         default_factory=lambda: {
             "default": DeduplicationConfig(ttl=30),
             "title_generation": DeduplicationConfig(ttl=300),
@@ -111,7 +111,7 @@ class ProtectionSettings(BaseModel):
 
     # Development/debugging
     debug_protection: bool = False
-    protection_bypass_headers: List[str] = Field(default_factory=list)
+    protection_bypass_headers: list[str] = Field(default_factory=list)
 
     # Redis configuration
     redis_url: str = "redis://localhost:6379/1"
@@ -144,8 +144,8 @@ class RateLimitResult:
     limit_type: LimitType
     current_count: int
     limit: int
-    retry_after: Optional[int] = None
-    reset_time: Optional[datetime] = None
+    retry_after: int | None = None
+    reset_time: datetime | None = None
 
 
 class ProtectionError(Exception):
@@ -156,7 +156,7 @@ class ProtectionError(Exception):
         self.message = message
         self.error_code = error_code
         self.correlation_id = correlation_id
-        self.timestamp = datetime.now(timezone.utc)
+        self.timestamp = datetime.now(UTC)
 
 
 class RateLimitError(ProtectionError):
@@ -208,11 +208,11 @@ class ProtectionErrorResponse:
 
     error_type: str
     message: str
-    retry_after: Optional[int] = None
+    retry_after: int | None = None
     error_code: str = ""
     correlation_id: str = ""
     timestamp: str = ""
-    suggestions: List[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
 
     @classmethod
     def from_rate_limit_error(cls, error: RateLimitError) -> "ProtectionErrorResponse":
@@ -294,7 +294,7 @@ class ProtectionMetrics:
     redis_errors: int = 0
     memory_usage: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert metrics to dictionary for serialization"""
         return {
             "rate_limiting": {
@@ -339,4 +339,4 @@ class SystemMetrics:
 
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.now(timezone.utc)
+            self.timestamp = datetime.now(UTC)

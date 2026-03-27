@@ -14,7 +14,8 @@ Note: Thresholds are set for CI environments where performance varies.
 import asyncio
 import statistics
 import time
-from typing import AsyncGenerator, List
+from collections.abc import AsyncGenerator
+from typing import List
 from uuid import uuid4
 
 import pytest
@@ -109,7 +110,7 @@ async def measure_operation(operation, iterations: int = 100) -> dict:
     Returns:
         Dictionary with timing statistics
     """
-    times: List[float] = []
+    times: list[float] = []
 
     for _ in range(iterations):
         start = time.perf_counter()
@@ -158,10 +159,10 @@ class TestCreateCaseBenchmark:
 
         stats = await measure_operation(create_case, iterations=50)
 
-        print(f"\nCreate Case Benchmark:")
+        print("\nCreate Case Benchmark:")
         print(f"  Mean: {stats['mean_ms']:.2f}ms")
         print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <200ms p95")
+        print("  Target: <200ms p95")
 
         # Assert target is met
         assert (
@@ -198,10 +199,10 @@ class TestGetCaseBenchmark:
 
         stats = await measure_operation(get_case, iterations=100)
 
-        print(f"\nGet Case Benchmark:")
+        print("\nGet Case Benchmark:")
         print(f"  Mean: {stats['mean_ms']:.2f}ms")
         print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <100ms p95")
+        print("  Target: <100ms p95")
 
         assert (
             stats["p95_ms"] < 100
@@ -245,10 +246,10 @@ class TestUpdateCaseBenchmark:
 
         stats = await measure_operation(update_case, iterations=50)
 
-        print(f"\nUpdate Case Benchmark:")
+        print("\nUpdate Case Benchmark:")
         print(f"  Mean: {stats['mean_ms']:.2f}ms")
         print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <150ms p95")
+        print("  Target: <150ms p95")
 
         assert (
             stats["p95_ms"] < 150
@@ -285,10 +286,10 @@ class TestListCasesBenchmark:
 
         stats = await measure_operation(list_cases, iterations=30)
 
-        print(f"\nList Cases (100 cases) Benchmark:")
+        print("\nList Cases (100 cases) Benchmark:")
         print(f"  Mean: {stats['mean_ms']:.2f}ms")
         print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <300ms p95")
+        print("  Target: <300ms p95")
 
         assert (
             stats["p95_ms"] < 300
@@ -330,10 +331,10 @@ class TestGetCaseWithDetailsBenchmark:
 
         stats = await measure_operation(get_details, iterations=50)
 
-        print(f"\nGet Case With Details Benchmark:")
+        print("\nGet Case With Details Benchmark:")
         print(f"  Mean: {stats['mean_ms']:.2f}ms")
         print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <250ms p95")
+        print("  Target: <250ms p95")
 
         assert (
             stats["p95_ms"] < 250
@@ -380,10 +381,10 @@ class TestGetStatisticsBenchmark:
 
         stats = await measure_operation(get_stats, iterations=20)
 
-        print(f"\nGet Statistics (100 cases) Benchmark:")
+        print("\nGet Statistics (100 cases) Benchmark:")
         print(f"  Mean: {stats['mean_ms']:.2f}ms")
         print(f"  P95: {stats['p95_ms']:.2f}ms")
-        print(f"  Target: <1000ms p95")
+        print("  Target: <1000ms p95")
 
         assert (
             stats["p95_ms"] < 1000
@@ -429,9 +430,9 @@ class TestCloseBenchmark:
         times.sort()
         p95 = times[int(len(times) * 0.95)]
 
-        print(f"\nClose Case Benchmark:")
+        print("\nClose Case Benchmark:")
         print(f"  Mean: {statistics.mean(times):.2f}ms")
         print(f"  P95: {p95:.2f}ms")
-        print(f"  Target: <200ms p95")
+        print("  Target: <200ms p95")
 
         assert p95 < 200, f"Close case P95 ({p95:.2f}ms) exceeds target (200ms)"

@@ -1,7 +1,7 @@
 # FaultMaven Architecture Testing Guide
 
-**Document Type**: Architecture Testing Guide  
-**Last Updated**: August 2025  
+**Document Type**: Architecture Testing Guide
+**Last Updated**: August 2025
 **Context**: Post-Architecture Overhaul - Clean Architecture Testing
 
 ## Overview
@@ -137,7 +137,7 @@ pytest
 pytest -m unit
 
 # Integration tests (requires Docker services)
-pytest -m integration  
+pytest -m integration
 
 # Security and privacy tests
 pytest -m security
@@ -145,7 +145,7 @@ pytest -m security
 # API endpoint tests
 pytest -m api
 
-# Enhanced AI agent functionality tests  
+# Enhanced AI agent functionality tests
 pytest -m agent
 
 # Enhanced LLM provider and routing tests
@@ -239,7 +239,7 @@ mock_llm.generate_response = AsyncMock(return_value="response")
 ```python
 def test_service_implements_interface():
     agent_service = container.get_agent_service()
-    
+
     # Validate interface methods exist
     assert hasattr(agent_service, 'process_query')
     assert callable(getattr(agent_service, 'process_query'))
@@ -266,7 +266,7 @@ def test_production_configuration(clean_env):
         'CHAT_PROVIDER': 'fireworks',
         'FIREWORKS_API_KEY': 'prod-key'
     }
-    
+
     with patch.dict(os.environ, prod_config):
         settings = get_settings()
         assert settings.environment == Environment.PRODUCTION
@@ -278,12 +278,12 @@ def test_production_configuration(clean_env):
 ```python
 def test_container_performance():
     import time
-    
+
     start_time = time.time()
     for _ in range(100):
         container.reset()
         container.get_agent_service()
-    
+
     elapsed = time.time() - start_time
     assert elapsed < 1.0  # Less than 1 second for 100 operations
 ```
@@ -294,7 +294,7 @@ def test_container_performance():
 def test_service_performance():
     if not os.getenv('RUN_PERFORMANCE_TESTS', '').lower() == 'true':
         pytest.skip("Performance tests disabled")
-    
+
     # Performance test code here
 ```
 

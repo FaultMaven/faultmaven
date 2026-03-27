@@ -182,4 +182,3 @@ All documents referenced by architecture-overview.md remain at the root level fo
 - [Orchestration Capabilities §5.4](investigation-engine/orchestration-capabilities.md#54-da-tool-loop-bounded-tool-calling-v50) — DA Tool Loop details
 - [Error Handling §3.2](investigation-engine/error-handling-and-recovery.md#32-reasoning-validation-with-self-correction) — Diagnostic reasoning validator
 - [Evidence Flow Architecture](data-processing/evidence-flow-architecture.md) — Updated flow diagrams
-

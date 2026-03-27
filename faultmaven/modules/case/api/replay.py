@@ -5,7 +5,7 @@ This module provides endpoints for "Time Travel" debugging:
 - Diffing state between turns.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -65,7 +65,7 @@ async def get_case_snapshot(
 
 @router.get(
     "/{case_id}/diff",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     summary="Diff two case states",
     operation_id="diff_case_turns",
 )
@@ -75,7 +75,7 @@ async def diff_case_turns(
     turn_to: int = Query(..., alias="to", description="End turn number"),
     case_repo: CaseRepository = Depends(get_case_repository),
     current_user: UserDTO = Depends(require_authentication),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Compute the semantic difference between two turns of a case.
 

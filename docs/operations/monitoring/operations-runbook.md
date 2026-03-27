@@ -41,14 +41,14 @@ filter {
     json {
       source => "message"
     }
-    
+
     # Extract performance violations
     if [performance_violation] == true {
       mutate {
         add_tag => ["performance_issue"]
       }
     }
-    
+
     # Extract error cascades
     if [cascade_prevented] == true {
       mutate {
@@ -105,7 +105,7 @@ processors:
         }]
       },
       {
-        "title": "Performance Violations by Layer", 
+        "title": "Performance Violations by Layer",
         "type": "bargauge",
         "targets": [{
           "expr": "increase(faultmaven_performance_violations_total[1h])",
@@ -114,7 +114,7 @@ processors:
       },
       {
         "title": "Error Cascade Prevention",
-        "type": "stat", 
+        "type": "stat",
         "targets": [{
           "expr": "increase(faultmaven_error_cascades_prevented_total[1h])",
           "legendFormat": "Cascades Prevented"
@@ -124,7 +124,7 @@ processors:
         "title": "Duplicate Logs Prevented",
         "type": "stat",
         "targets": [{
-          "expr": "increase(faultmaven_duplicate_logs_prevented_total[1h])",  
+          "expr": "increase(faultmaven_duplicate_logs_prevented_total[1h])",
           "legendFormat": "Duplicates Prevented"
         }]
       }
@@ -172,11 +172,11 @@ ACTIVE_REQUESTS = Gauge(
 def export_request_metrics(request_summary: dict):
     """Export metrics from request summary."""
     REQUEST_DURATION.observe(request_summary.get('duration_seconds', 0))
-    
+
     performance_violations = request_summary.get('performance_violations', 0)
     if performance_violations > 0:
         PERFORMANCE_VIOLATIONS.inc(performance_violations)
-    
+
     operations_logged = request_summary.get('operations_logged', 0)
     # Estimate duplicates prevented (rough calculation)
     estimated_duplicates = max(0, operations_logged - request_summary.get('unique_operations', operations_logged))
@@ -539,8 +539,8 @@ kubectl set env deployment/faultmaven LOG_LEVEL=WARNING
 ```python
 # Add to logging configuration
 VERBOSE_OPERATION_FILTER = [
-    "heartbeat", 
-    "health_check", 
+    "heartbeat",
+    "health_check",
     "metrics_collection"
 ]
 
@@ -622,7 +622,7 @@ async def optimize_slow_operation(data):
     cached_result = await cache.get(cache_key)
     if cached_result:
         return cached_result
-    
+
     result = await perform_operation(data)
     await cache.set(cache_key, result, ttl=300)
     return result
@@ -659,12 +659,12 @@ grep -r "LoggingMiddleware" src/
 async def debug_context_propagation(request: Request, call_next):
     ctx = request_context.get()
     logger.info(f"Context before request: {ctx.correlation_id if ctx else 'None'}")
-    
+
     response = await call_next(request)
-    
+
     ctx_after = request_context.get()
     logger.info(f"Context after request: {ctx_after.correlation_id if ctx_after else 'None'}")
-    
+
     return response
 ```
 
@@ -716,7 +716,7 @@ curl http://faultmaven:8090/health/dependencies
     "by_service": {"terms": {"field": "service"}},
     "failure_timeline": {
       "date_histogram": {
-        "field": "timestamp", 
+        "field": "timestamp",
         "interval": "5m"
       }
     }
@@ -759,14 +759,14 @@ class LazyLogData:
     def __init__(self, data_func):
         self._data_func = data_func
         self._cached_data = None
-    
+
     def __str__(self):
         if self._cached_data is None:
             self._cached_data = self._data_func()
         return json.dumps(self._cached_data)
 
 # Usage
-logger.info("Complex operation", 
+logger.info("Complex operation",
            expensive_data=LazyLogData(lambda: compute_expensive_data()))
 ```
 
@@ -794,14 +794,14 @@ def clear_context_cache():
 class RequestContext:
     MAX_LOGGED_OPERATIONS = 1000
     MAX_ATTRIBUTES_SIZE = 10000
-    
+
     def mark_logged(self, operation_key: str):
         if len(self.logged_operations) >= self.MAX_LOGGED_OPERATIONS:
             # Remove oldest entries
             oldest_ops = sorted(self.logged_operations)[:100]
             for op in oldest_ops:
                 self.logged_operations.discard(op)
-        
+
         self.logged_operations.add(operation_key)
 ```
 
@@ -809,13 +809,13 @@ class RequestContext:
 ```python
 class PerformanceTracker:
     MAX_TIMINGS = 500
-    
+
     def record_timing(self, layer: str, operation: str, duration: float):
         if len(self.layer_timings) >= self.MAX_TIMINGS:
             # Keep only recent timings
             recent_timings = dict(list(self.layer_timings.items())[-400:])
             self.layer_timings = recent_timings
-        
+
         # Continue with normal recording
         key = f"{layer}.{operation}"
         self.layer_timings[key] = duration
@@ -832,17 +832,17 @@ class AsyncLogWriter:
     def __init__(self, max_queue_size=10000):
         self.log_queue = Queue(maxsize=max_queue_size)
         self.writer_task = None
-    
+
     async def start(self):
         self.writer_task = asyncio.create_task(self._write_logs())
-    
+
     async def write_log(self, log_entry):
         try:
             await self.log_queue.put(log_entry, timeout=0.1)
         except asyncio.TimeoutError:
             # Drop log if queue full (backpressure)
             pass
-    
+
     async def _write_logs(self):
         while True:
             try:
@@ -953,7 +953,7 @@ async def check_logging_system_health():
         "overall_status": "healthy",
         "components": {}
     }
-    
+
     # Check context management
     try:
         coordinator = LoggingCoordinator()
@@ -963,7 +963,7 @@ async def check_logging_system_health():
     except Exception as e:
         health_status["components"]["context_management"] = f"unhealthy: {e}"
         health_status["overall_status"] = "degraded"
-    
+
     # Check logger creation
     try:
         test_logger = get_unified_logger("health_check", "api")
@@ -971,7 +971,7 @@ async def check_logging_system_health():
     except Exception as e:
         health_status["components"]["logger_factory"] = f"unhealthy: {e}"
         health_status["overall_status"] = "degraded"
-    
+
     # Check performance tracking
     try:
         tracker = PerformanceTracker()
@@ -980,7 +980,7 @@ async def check_logging_system_health():
     except Exception as e:
         health_status["components"]["performance_tracking"] = f"unhealthy: {e}"
         health_status["overall_status"] = "degraded"
-    
+
     return health_status
 ```
 
@@ -1090,38 +1090,38 @@ class EmergencyLogAggregator:
     def __init__(self, output_dir="/app/emergency-logs"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+
     def aggregate_logs(self, timeframe_hours=24):
         """Aggregate logs for emergency analysis."""
         log_files = list(Path("/app/logs").glob("*.log"))
-        
+
         aggregated_data = {
             "errors": [],
             "performance_violations": [],
             "circuit_breaker_events": []
         }
-        
+
         for log_file in log_files:
             with open(log_file) as f:
                 for line in f:
                     try:
                         entry = json.loads(line)
-                        
+
                         if entry.get("level") == "ERROR":
                             aggregated_data["errors"].append(entry)
                         elif entry.get("performance_violation"):
                             aggregated_data["performance_violations"].append(entry)
                         elif "circuit_breaker" in entry.get("event_type", ""):
                             aggregated_data["circuit_breaker_events"].append(entry)
-                            
+
                     except json.JSONDecodeError:
                         continue
-        
+
         # Write aggregated data
         output_file = self.output_dir / f"emergency-aggregate-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json.gz"
         with gzip.open(output_file, 'wt') as f:
             json.dump(aggregated_data, f, indent=2)
-        
+
         return str(output_file)
 ```
 

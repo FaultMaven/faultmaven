@@ -10,7 +10,7 @@ Tests cover:
 """
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock
 
 import jwt
@@ -127,8 +127,8 @@ class TestAccessTokenGeneration:
         assert "iat" in payload
 
         # Verify expiry is approximately 1 hour from now
-        exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
-        now = datetime.now(timezone.utc)
+        exp_time = datetime.fromtimestamp(payload["exp"], tz=UTC)
+        now = datetime.now(UTC)
         time_diff = (exp_time - now).total_seconds()
         assert 3590 <= time_diff <= 3610  # Allow 10 second tolerance
 
@@ -177,8 +177,8 @@ class TestRefreshTokenGeneration:
         assert "iat" in payload
 
         # Verify expiry is approximately 7 days from now
-        exp_time = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
-        now = datetime.now(timezone.utc)
+        exp_time = datetime.fromtimestamp(payload["exp"], tz=UTC)
+        now = datetime.now(UTC)
         time_diff = (exp_time - now).total_seconds()
         expected_seconds = 7 * 24 * 60 * 60  # 7 days
         assert expected_seconds - 10 <= time_diff <= expected_seconds + 10
@@ -218,7 +218,7 @@ class TestTokenValidation:
     ):
         """Test validation of expired access token."""
         # Create token with past expiry
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_time = now - timedelta(hours=1)
 
         payload = {
@@ -245,10 +245,8 @@ class TestTokenValidation:
             {
                 "sub": "user_123",
                 "username": "testuser",
-                "exp": int(
-                    (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
-                ),
-                "iat": int(datetime.now(timezone.utc).timestamp()),
+                "exp": int((datetime.now(UTC) + timedelta(hours=1)).timestamp()),
+                "iat": int(datetime.now(UTC).timestamp()),
                 "jti": "invalid_sig_jti",
                 "type": "access",
             },
@@ -308,7 +306,7 @@ class TestRefreshTokenValidation:
     ):
         """Test validation of expired refresh token."""
         # Create token with past expiry
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_time = now - timedelta(days=1)
 
         payload = {
@@ -395,7 +393,7 @@ class TestTokenRevocation:
     ):
         """Test revoking expired token (should not add to revocation store)."""
         # Create expired token
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_time = now - timedelta(hours=1)
 
         payload = {

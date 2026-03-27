@@ -52,7 +52,7 @@ except ImportError:
         toml = TomlWrapper()
     except ImportError:
         try:
-            import tomli as toml  # Read-only backport (also requires binary)
+            import tomli  # Read-only backport (also requires binary)
 
             # tomli also needs binary mode, create similar wrapper
             class TomliWrapper:
@@ -91,24 +91,24 @@ def pyproject_path() -> Path:
 @pytest.fixture
 def pyproject_data(pyproject_path: Path) -> dict:
     """Load pyproject.toml data."""
-    with open(pyproject_path, "r") as f:
+    with open(pyproject_path) as f:
         return toml.load(f)
 
 
 @pytest.fixture
-def base_dependencies(pyproject_data: dict) -> List[str]:
+def base_dependencies(pyproject_data: dict) -> list[str]:
     """Get base (community) dependencies."""
     return pyproject_data["project"]["dependencies"]
 
 
 @pytest.fixture
-def enterprise_dependencies(pyproject_data: dict) -> List[str]:
+def enterprise_dependencies(pyproject_data: dict) -> list[str]:
     """Get enterprise optional dependencies."""
     return pyproject_data["project"]["optional-dependencies"]["enterprise"]
 
 
 @pytest.fixture
-def test_dependencies(pyproject_data: dict) -> List[str]:
+def test_dependencies(pyproject_data: dict) -> list[str]:
     """Get test dependencies."""
     return pyproject_data["project"]["optional-dependencies"]["test"]
 
@@ -172,7 +172,7 @@ class TestProjectMetadata:
 class TestDependencyCategorization:
     """Test that dependencies are correctly categorized."""
 
-    def test_base_has_core_framework(self, base_dependencies: List[str]):
+    def test_base_has_core_framework(self, base_dependencies: list[str]):
         """Verify base dependencies include core FastAPI stack."""
         base_str = " ".join(base_dependencies)
 
@@ -182,7 +182,7 @@ class TestDependencyCategorization:
                 pkg in dep for dep in base_dependencies
             ), f"Missing core dependency: {pkg}"
 
-    def test_base_has_llm_framework(self, base_dependencies: List[str]):
+    def test_base_has_llm_framework(self, base_dependencies: list[str]):
         """Verify base dependencies include LLM framework (required for core functionality)."""
         base_str = " ".join(base_dependencies)
 
@@ -192,7 +192,7 @@ class TestDependencyCategorization:
                 pkg in dep for dep in base_dependencies
             ), f"Missing LLM dependency: {pkg}"
 
-    def test_enterprise_has_observability(self, enterprise_dependencies: List[str]):
+    def test_enterprise_has_observability(self, enterprise_dependencies: list[str]):
         """Verify enterprise dependencies include observability tools."""
         enterprise_str = " ".join(enterprise_dependencies)
 
@@ -202,7 +202,7 @@ class TestDependencyCategorization:
                 pkg in dep for dep in enterprise_dependencies
             ), f"Missing observability dependency: {pkg}"
 
-    def test_enterprise_has_security(self, enterprise_dependencies: List[str]):
+    def test_enterprise_has_security(self, enterprise_dependencies: list[str]):
         """Verify enterprise dependencies include PII protection."""
         enterprise_str = " ".join(enterprise_dependencies)
 
@@ -212,7 +212,7 @@ class TestDependencyCategorization:
                 pkg in dep for dep in enterprise_dependencies
             ), f"Missing security dependency: {pkg}"
 
-    def test_enterprise_has_infrastructure(self, enterprise_dependencies: List[str]):
+    def test_enterprise_has_infrastructure(self, enterprise_dependencies: list[str]):
         """Verify enterprise dependencies include distributed infrastructure."""
         enterprise_str = " ".join(enterprise_dependencies)
 
@@ -222,7 +222,7 @@ class TestDependencyCategorization:
                 pkg in dep for dep in enterprise_dependencies
             ), f"Missing infrastructure dependency: {pkg}"
 
-    def test_enterprise_has_cloud_storage(self, enterprise_dependencies: List[str]):
+    def test_enterprise_has_cloud_storage(self, enterprise_dependencies: list[str]):
         """Verify enterprise dependencies include cloud storage adapters."""
         enterprise_str = " ".join(enterprise_dependencies)
 
@@ -232,7 +232,7 @@ class TestDependencyCategorization:
                 pkg in dep for dep in enterprise_dependencies
             ), f"Missing cloud storage dependency: {pkg}"
 
-    def test_test_dependencies_complete(self, test_dependencies: List[str]):
+    def test_test_dependencies_complete(self, test_dependencies: list[str]):
         """Verify test dependencies include all testing tools."""
         test_str = " ".join(test_dependencies)
 
@@ -243,7 +243,7 @@ class TestDependencyCategorization:
             ), f"Missing test dependency: {pkg}"
 
     def test_no_enterprise_leakage_to_base(
-        self, base_dependencies: List[str], enterprise_dependencies: List[str]
+        self, base_dependencies: list[str], enterprise_dependencies: list[str]
     ):
         """Verify enterprise dependencies are NOT in base dependencies."""
         base_str = " ".join(base_dependencies).lower()
@@ -383,21 +383,21 @@ class TestConfigurationDefaults:
 class TestInstallationSimulation:
     """Test installation scenarios (mocked to avoid actual installation)."""
 
-    def test_base_installation_package_list(self, base_dependencies: List[str]):
+    def test_base_installation_package_list(self, base_dependencies: list[str]):
         """Verify base installation has reasonable package count."""
         # Community edition should be lightweight but functional
         assert len(base_dependencies) > 10, "Too few base dependencies"
         assert len(base_dependencies) < 100, "Too many base dependencies"
 
     def test_enterprise_installation_package_list(
-        self, enterprise_dependencies: List[str]
+        self, enterprise_dependencies: list[str]
     ):
         """Verify enterprise installation adds appropriate packages."""
         # Enterprise should add significant functionality
         assert len(enterprise_dependencies) >= 6, "Enterprise dependencies too minimal"
 
     def test_no_conflicting_versions(
-        self, base_dependencies: List[str], enterprise_dependencies: List[str]
+        self, base_dependencies: list[str], enterprise_dependencies: list[str]
     ):
         """Verify no version conflicts between base and enterprise."""
         # Extract package names and versions

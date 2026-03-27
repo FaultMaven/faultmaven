@@ -6,9 +6,7 @@ Does not interpret or transform content — that is the LLM's job.
 
 import logging
 import re
-from io import BytesIO
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +34,7 @@ class DocumentParser:
         ".htm": "html",
     }
 
-    def parse(self, file_path: Path, content_type: Optional[str] = None) -> str:
+    def parse(self, file_path: Path, content_type: str | None = None) -> str:
         """Extract plain text from a document file.
 
         Args:
@@ -76,7 +74,7 @@ class DocumentParser:
 
         return text
 
-    def _detect_format(self, file_path: Path, content_type: Optional[str]) -> str:
+    def _detect_format(self, file_path: Path, content_type: str | None) -> str:
         """Determine format from MIME type or file extension."""
         if content_type and content_type in self.SUPPORTED_FORMATS:
             return self.SUPPORTED_FORMATS[content_type]

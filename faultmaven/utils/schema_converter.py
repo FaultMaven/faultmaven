@@ -6,17 +6,16 @@ function calling schemas for structured output enforcement.
 Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
-import inspect
-from typing import Any, Dict, Type, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 
 
 def pydantic_to_openai_function(
-    model: Type[BaseModel],
+    model: type[BaseModel],
     name: str = None,
     description: str = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Convert Pydantic model to OpenAI function calling schema
 
     Args:
@@ -64,10 +63,10 @@ def pydantic_to_openai_function(
 
 
 def pydantic_to_openai_tools(
-    model: Type[BaseModel],
+    model: type[BaseModel],
     name: str = None,
     description: str = None,
-) -> list[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Convert Pydantic model to OpenAI tools format
 
     This is a convenience wrapper that returns the format expected by
@@ -99,7 +98,7 @@ def pydantic_to_openai_tools(
     ]
 
 
-def create_response_format_json_schema(model: Type[BaseModel]) -> Dict[str, Any]:
+def create_response_format_json_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Create response_format for JSON mode with strict schema enforcement
 
     Creates OpenAI-compatible structured output format with strict: True.
@@ -161,7 +160,7 @@ def create_response_format_json_schema(model: Type[BaseModel]) -> Dict[str, Any]
     }
 
 
-def create_json_mode_format() -> Dict[str, str]:
+def create_json_mode_format() -> dict[str, str]:
     """Create response_format for simple JSON mode
 
     This enables JSON mode without strict schema validation.

@@ -18,15 +18,12 @@ Usage:
 
 import argparse
 import asyncio
-import glob
 import hashlib
 import json
 import logging
-import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -73,10 +70,10 @@ class RunbookValidator:
     ]
 
     def __init__(self):
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
 
-    def validate_runbook(self, file_path: str, content: str, metadata: Dict) -> bool:
+    def validate_runbook(self, file_path: str, content: str, metadata: dict) -> bool:
         """Validate runbook structure and content"""
         self.errors = []
         self.warnings = []
@@ -109,16 +106,16 @@ class RunbookIngestionPipeline:
 
     def __init__(self, runbook_dir: str = "data/knowledge/global"):
         self.runbook_dir = Path(runbook_dir)
-        self.ingester: Optional[KnowledgeIngester] = None
+        self.ingester: KnowledgeIngester | None = None
         self.validator = RunbookValidator()
         self.ingestion_log_file = self.runbook_dir / ".ingestion_log.json"
-        self.ingestion_log: Dict[str, Dict] = self._load_ingestion_log()
+        self.ingestion_log: dict[str, dict] = self._load_ingestion_log()
 
-    def _load_ingestion_log(self) -> Dict:
+    def _load_ingestion_log(self) -> dict:
         """Load log of previously ingested runbooks"""
         if self.ingestion_log_file.exists():
             try:
-                with open(self.ingestion_log_file, "r") as f:
+                with open(self.ingestion_log_file) as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Could not load ingestion log: {e}")
@@ -138,8 +135,8 @@ class RunbookIngestionPipeline:
             return hashlib.md5(f.read()).hexdigest()
 
     def discover_runbooks(
-        self, technology: Optional[str] = None, status_filter: Optional[str] = None
-    ) -> List[Path]:
+        self, technology: str | None = None, status_filter: str | None = None
+    ) -> list[Path]:
         """Discover all runbook markdown files"""
         pattern = "**/*.md"
         if technology:
@@ -166,10 +163,10 @@ class RunbookIngestionPipeline:
 
         return runbook_files
 
-    def _extract_metadata(self, file_path: Path) -> Dict:
+    def _extract_metadata(self, file_path: Path) -> dict:
         """Extract YAML frontmatter metadata from runbook"""
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
             # Parse YAML frontmatter
@@ -202,7 +199,7 @@ class RunbookIngestionPipeline:
 
     async def ingest_runbook(
         self, file_path: Path, validate: bool = True, dry_run: bool = False
-    ) -> Dict[str, any]:
+    ) -> dict[str, any]:
         """Ingest a single runbook"""
         result = {
             "file": str(file_path),
@@ -214,7 +211,7 @@ class RunbookIngestionPipeline:
 
         try:
             # Read runbook content
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
             # Extract metadata
@@ -265,9 +262,9 @@ class RunbookIngestionPipeline:
                     dt = datetime.fromisoformat(last_updated)
                     updated_at = to_json_compatible(dt)
                 except ValueError:
-                    updated_at = to_json_compatible(datetime.now(timezone.utc))
+                    updated_at = to_json_compatible(datetime.now(UTC))
             else:
-                updated_at = to_json_compatible(datetime.now(timezone.utc))
+                updated_at = to_json_compatible(datetime.now(UTC))
 
             created_at = updated_at  # Use same timestamp for both
 
@@ -286,9 +283,7 @@ class RunbookIngestionPipeline:
             file_key = str(file_path.relative_to(self.runbook_dir))
             self.ingestion_log[file_key] = {
                 "hash": self._calculate_file_hash(file_path),
-                "ingested_at": to_json_compatible(
-                    datetime.now(timezone.utc).isoformat()
-                ),
+                "ingested_at": to_json_compatible(datetime.now(UTC).isoformat()),
                 "document_id": document_id,
                 "title": title,
                 "domain": domain,
@@ -307,7 +302,7 @@ class RunbookIngestionPipeline:
 
     async def run_pipeline(
         self,
-        technology: Optional[str] = None,
+        technology: str | None = None,
         status_filter: str = "verified",
         force: bool = False,
         validate: bool = True,
@@ -394,7 +389,7 @@ class RunbookIngestionPipeline:
         # Generate report
         self._print_report(results, dry_run)
 
-    def _print_report(self, results: List[Dict], dry_run: bool):
+    def _print_report(self, results: list[dict], dry_run: bool):
         """Print ingestion report"""
         console.print("\n[bold green]Ingestion Report[/bold green]\n")
 

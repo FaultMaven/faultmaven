@@ -3,7 +3,7 @@
 Tests the EvidenceArtifact dataclass and related enums.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -90,8 +90,8 @@ class TestEvidenceArtifactCreation:
 
     def test_create_full_evidence(self):
         """Test creating evidence with all fields."""
-        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=timezone.utc)
-        updated = datetime(2025, 12, 29, 11, 0, 0, tzinfo=timezone.utc)
+        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=UTC)
+        updated = datetime(2025, 12, 29, 11, 0, 0, tzinfo=UTC)
 
         evidence = EvidenceArtifact(
             evidence_id="ev_full123456",
@@ -121,7 +121,7 @@ class TestEvidenceArtifactCreation:
 
     def test_default_timestamps(self):
         """Test that timestamps are auto-generated if not provided."""
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
 
         evidence = EvidenceArtifact(
             evidence_id="ev_timestamps",
@@ -136,7 +136,7 @@ class TestEvidenceArtifactCreation:
             file_size=100,
         )
 
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
 
         assert before <= evidence.created_at <= after
         assert before <= evidence.updated_at <= after

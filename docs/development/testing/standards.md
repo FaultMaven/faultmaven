@@ -50,7 +50,7 @@ This document establishes the new testing architecture and standards for FaultMa
 # Good: Clear, focused test structure
 class TestServiceIntegration:
     """Test service behavior with real dependencies."""
-    
+
     @pytest.fixture
     def service_with_real_deps(self):
         """Service with real internal dependencies."""
@@ -58,15 +58,15 @@ class TestServiceIntegration:
             real_dependency=RealDependency(),
             external_client=MockExternalClient()  # Only mock external
         )
-    
+
     async def test_business_operation(self, service_with_real_deps):
         """Test business operation with real internal flow."""
         # Arrange - real data, minimal setup
         request = BusinessRequest(valid_data)
-        
+
         # Act - call actual service method
         result = await service_with_real_deps.process(request)
-        
+
         # Assert - verify behavior, not implementation
         assert result.status == "success"
         assert result.data.processed_correctly()
@@ -122,17 +122,17 @@ def service_with_test_doubles():
 def test_operation_logging(logging_setup, service):
     """Test actual log output, not mock calls."""
     log_capture = logging_setup
-    
+
     # Execute operation
     result = service.process_data(test_data)
-    
+
     # Verify real log content
     log_capture.assert_logged(
         message_contains="operation_completed",
         level=logging.INFO,
         min_count=1
     )
-    
+
     # Verify log structure
     business_logs = log_capture.get_logs(message_contains="business_event")
     assert all("correlation_id" in log.getMessage() for log in business_logs)
@@ -145,13 +145,13 @@ async def test_request_lifecycle_coordination(
 ):
     """Test coordination across layers with real log output."""
     log_capture = logging_setup
-    
+
     with coordinator.start_request() as ctx:
         correlation_id = ctx.correlation_id
-        
+
         # Execute multi-layer operation
         result = await service.process_with_external_call(data)
-        
+
         # Verify coordination
         correlation_logs = log_capture.get_logs(
             message_contains=correlation_id
@@ -167,7 +167,7 @@ async def test_request_lifecycle_coordination(
 ```python
 class TestAgentService:
     """Test agent service with real AI processing flow."""
-    
+
     async def test_troubleshooting_workflow(self, agent_service):
         """Test complete troubleshooting workflow."""
         # Use real service with mocked LLM only
@@ -175,10 +175,10 @@ class TestAgentService:
             query="Database timeout errors",
             context={"environment": "production"}
         )
-        
+
         # Execute real business logic
         response = await agent_service.process_query(request)
-        
+
         # Verify business outcomes
         assert response.findings
         assert response.confidence_score > 0.5
@@ -191,10 +191,10 @@ async def test_error_propagation(self, service):
     """Test real error handling without mocking exceptions."""
     # Configure external dependency to fail
     service.external_client.configure_failure_mode()
-    
+
     with pytest.raises(ServiceException) as exc_info:
         await service.process_data(valid_data)
-    
+
     # Verify proper error wrapping and context
     assert "External service unavailable" in str(exc_info.value)
     assert exc_info.value.correlation_id
@@ -208,22 +208,22 @@ async def test_error_propagation(self, service):
 ```python
 class TestExternalClientIntegration:
     """Test external clients with real retry/timeout logic."""
-    
+
     async def test_retry_behavior(self, external_client):
         """Test actual retry logic with simulated failures."""
         call_count = 0
-        
+
         def failing_then_succeeding(*args):
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
                 raise ConnectionError("Simulated failure")
             return {"success": True}
-        
+
         # Test real retry logic
         external_client.api_call = failing_then_succeeding
         result = await external_client.call_with_retries(data, retries=3)
-        
+
         assert result["success"]
         assert call_count == 3  # Verified actual retry behavior
 ```
@@ -238,16 +238,16 @@ class TestExternalClientIntegration:
 async def test_operation_performance(self, service):
     """Test actual operation performance."""
     import time
-    
+
     start_time = time.time()
-    
+
     results = await asyncio.gather(*[
-        service.process_data(f"test_{i}") 
+        service.process_data(f"test_{i}")
         for i in range(100)
     ])
-    
+
     duration = time.time() - start_time
-    
+
     # Verify performance requirements
     assert len(results) == 100
     assert duration < 5.0  # 100 operations in under 5 seconds
@@ -264,7 +264,7 @@ async def test_operation_performance(self, service):
 mock_service.process.assert_called_once_with(data)
 assert mock_logger.info.call_count == 3
 
-# Good: Behavior-focused assertions  
+# Good: Behavior-focused assertions
 assert result.status == "completed"
 assert result.findings[0].confidence > 0.8
 assert log_capture.has_business_event("operation_completed")
@@ -287,14 +287,14 @@ def test_service_calls_dependency_method():
 def test_complex_business_scenario(self):
     """
     Test complete user troubleshooting workflow.
-    
+
     Verifies that when a user submits a query about database issues:
     1. Query is processed through AI reasoning
-    2. Knowledge base is consulted for similar issues  
+    2. Knowledge base is consulted for similar issues
     3. External monitoring is checked for system status
     4. Recommendations are generated with confidence scores
     5. Results are returned with proper correlation tracking
-    
+
     This test uses real service integration with mocked external APIs only.
     """
 ```
@@ -310,7 +310,7 @@ with patch('service.component_a') as mock_a:
     with patch('service.component_b') as mock_b:
         with patch('service.logger') as mock_log:
             # Test becomes meaningless
-            
+
 # Good: Mock only boundaries
 external_api_mock = Mock()
 service = ServiceClass(external_api=external_api_mock)
@@ -323,7 +323,7 @@ result = service.real_business_logic(data)
 def test_mock_configuration():
     mock.configure_mock(return_value="test")
     assert mock.return_value == "test"  # Meaningless
-    
+
 # Good: Testing business behavior
 def test_business_logic_handles_external_failures():
     service.external_client.will_fail = True
@@ -339,7 +339,7 @@ def test_service_calls_components_in_order():
     assert mock_a.call_count == 1
     assert mock_b.call_count == 1
     mock_a.assert_called_before(mock_b)
-    
+
 # Good: Test observable behavior
 def test_service_produces_correct_results():
     result = service.process(data)

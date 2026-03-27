@@ -9,8 +9,8 @@ Design Reference: TASK-018 User Management Service
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 
 @dataclass
@@ -39,10 +39,10 @@ class User:
     full_name: str
     is_active: bool = True
     is_verified: bool = False
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_login_at: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_login_at: datetime | None = None
+    metadata: dict[str, Any] | None = None
 
     def verify_password(self, plain_password: str) -> bool:
         """Verify password against hashed password.
@@ -61,20 +61,20 @@ class User:
 
     def update_last_login(self) -> None:
         """Update last login timestamp."""
-        self.last_login_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.last_login_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     def deactivate(self) -> None:
         """Deactivate user account (soft delete)."""
         self.is_active = False
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def activate(self) -> None:
         """Activate user account."""
         self.is_active = True
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization.
 
         Note: This does NOT include hashed_password for security.
@@ -99,7 +99,7 @@ class User:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "User":
+    def from_dict(cls, data: dict[str, Any]) -> "User":
         """Create User from dictionary.
 
         Args:
@@ -148,7 +148,7 @@ class PasswordResetToken:
     email: str
     created_at: datetime
     expires_at: datetime
-    used_at: Optional[datetime] = None
+    used_at: datetime | None = None
 
     @property
     def is_used(self) -> bool:
@@ -158,7 +158,7 @@ class PasswordResetToken:
     @property
     def is_expired(self) -> bool:
         """Check if token has expired."""
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     @property
     def is_valid(self) -> bool:
@@ -167,4 +167,4 @@ class PasswordResetToken:
 
     def mark_used(self) -> None:
         """Mark the token as used."""
-        self.used_at = datetime.now(timezone.utc)
+        self.used_at = datetime.now(UTC)

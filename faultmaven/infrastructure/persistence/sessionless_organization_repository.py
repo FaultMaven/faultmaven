@@ -6,8 +6,6 @@ using get_db_session() context manager, following the same pattern as Sessionles
 This removes the need for a long-lived db_session in the DI container.
 """
 
-from typing import List, Optional
-
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.organization_repository import (
     PostgreSQLOrganizationRepository,
@@ -25,19 +23,19 @@ class SessionlessOrganizationRepository(IOrganizationRepository):
     Creates a new database session for each operation using get_db_session().
     """
 
-    async def get_organization(self, organization_id: str) -> Optional[Organization]:
+    async def get_organization(self, organization_id: str) -> Organization | None:
         """Get organization by ID."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
             return await repo.get_organization(organization_id)
 
-    async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
+    async def get_organization_by_slug(self, slug: str) -> Organization | None:
         """Get organization by slug."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
             return await repo.get_organization_by_slug(slug)
 
-    async def list_user_organizations(self, user_id: str) -> List[Organization]:
+    async def list_user_organizations(self, user_id: str) -> list[Organization]:
         """List all organizations a user belongs to."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
@@ -85,15 +83,13 @@ class SessionlessOrganizationRepository(IOrganizationRepository):
 
     async def list_organization_members(
         self, organization_id: str
-    ) -> List[OrganizationMember]:
+    ) -> list[OrganizationMember]:
         """List all members of an organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
             return await repo.list_organization_members(organization_id)
 
-    async def get_member_role(
-        self, organization_id: str, user_id: str
-    ) -> Optional[str]:
+    async def get_member_role(self, organization_id: str, user_id: str) -> str | None:
         """Get user's role in organization."""
         async with get_db_session() as session:
             repo = PostgreSQLOrganizationRepository(session)
