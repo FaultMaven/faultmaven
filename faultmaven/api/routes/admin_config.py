@@ -433,16 +433,16 @@ async def get_env_config_status(
 
         # Report actual runtime state, not raw setting defaults.
         # Bootstrap may create persistent stores even when settings say "inmemory".
-        import os
         from pathlib import Path
 
         # Database: check alembic.ini for actual DB URL (bootstrap always uses this)
         db_backend = settings.database.case_storage_type
         alembic_url = ""
-        for ini_path in [
-            Path("alembic.ini"),
-            Path(os.environ.get("ALEMBIC_CONFIG", "")),
-        ]:
+        alembic_config = getattr(settings.database, "alembic_config", None)
+        ini_candidates = [Path("alembic.ini")]
+        if alembic_config:
+            ini_candidates.append(Path(alembic_config))
+        for ini_path in ini_candidates:
             if ini_path.exists():
                 for line in ini_path.read_text().splitlines():
                     if line.strip().startswith("sqlalchemy.url"):
