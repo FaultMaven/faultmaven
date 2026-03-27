@@ -1781,21 +1781,19 @@ class KnowledgeService:
     async def update_document_metadata(
         self, document_id: str, **kwargs
     ) -> Dict[str, Any]:
-        """Update document metadata - API-compatible method"""
-        try:
-            import json as _json
+        """Update document metadata and/or content.
 
-            # Load current document from Redis
-            raw = await self._redis.hget(
-                self._kb_doc_key.format(document_id=document_id), "data"
-            )
-            if not raw:
-                logger.warning(f"Document {document_id} not found in Redis for update")
+        Loads from ChromaDB (source of truth), applies updates, re-indexes
+        if content changed, and updates Redis cache.
+        """
+        try:
+            # Load current document from ChromaDB (source of truth)
+            document = await self.get_document(document_id)
+            if not document:
+                logger.warning(f"Document {document_id} not found for update")
                 return None
 
-            document = _json.loads(raw)
-
-            # Update fields
+            # Apply updates
             if "title" in kwargs and kwargs["title"]:
                 document["title"] = kwargs["title"]
             if "content" in kwargs and kwargs["content"]:
@@ -1811,78 +1809,52 @@ class KnowledgeService:
                     document["metadata"] = {}
                 document["metadata"]["version"] = kwargs["version"]
 
-            # Update timestamp
             document["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
 
-            # Persist updated document and maintain indexes
+            # Re-index in ChromaDB (add with same ID overwrites — atomic swap)
+            content_changed = "content" in kwargs and kwargs["content"]
+            if self._vector_store:
+                doc_model = KnowledgeBaseDocument(
+                    document_id=document_id,
+                    title=document.get("title", ""),
+                    content=document.get("content", ""),
+                    document_type=document.get("document_type", "unknown"),
+                    tags=document.get("tags", []),
+                    source_url=document.get("source_url"),
+                    scope=document.get("scope", "global"),
+                    owner_id=document.get("owner_id"),
+                    team_id=document.get("team_id"),
+                    created_at=document.get("created_at", ""),
+                    updated_at=document["updated_at"],
+                )
+                await self._index_document_in_vector_store(doc_model)
+
+            # Update Redis cache
             try:
                 import json as _json
 
-                raw_existing = await self._redis.hget(
-                    self._kb_doc_key.format(document_id=document_id), "data"
-                )
-                existing = {}
-                if raw_existing:
-                    try:
-                        existing = _json.loads(raw_existing)
-                    except Exception:
-                        existing = {}
                 await self._redis.hset(
                     self._kb_doc_key.format(document_id=document_id),
                     "data",
                     _json.dumps(document),
                 )
-                # Update type index if changed
-                old_type = (
-                    existing.get("document_type")
-                    if isinstance(existing, dict)
-                    else None
-                )
-                new_type = document.get("document_type")
-                if old_type and old_type != new_type:
-                    await self._redis.srem(
-                        self._kb_index_type.format(document_type=old_type),
-                        document_id,
-                    )
-                if new_type:
-                    await self._redis.sadd(
-                        self._kb_index_type.format(document_type=new_type),
-                        document_id,
-                    )
-                # Update tag indexes
-                old_tags = set(
-                    existing.get("tags", []) if isinstance(existing, dict) else []
-                )
-                new_tags = set(document.get("tags", []) or [])
-                for removed in old_tags - new_tags:
-                    await self._redis.srem(
-                        self._kb_index_tag.format(tag=removed), document_id
-                    )
-                for added in new_tags - old_tags:
-                    await self._redis.sadd(
-                        self._kb_index_tag.format(tag=added), document_id
-                    )
             except Exception as e:
-                logger.error(
-                    f"Failed to persist updated KB metadata in Redis for {document_id}: {e}"
-                )
-                raise
+                logger.warning(f"Failed to update Redis cache for {document_id}: {e}")
 
-            logger.info(f"Successfully updated document {document_id} in store")
+            logger.info(f"Successfully updated document {document_id}")
 
             return {
                 "document_id": document_id,
                 "title": document.get("title", ""),
+                "content": document.get("content", ""),
                 "document_type": document.get("document_type", ""),
                 "category": document.get("category", ""),
-                "version": kwargs.get(
-                    "version", document.get("metadata", {}).get("version", "1.0")
-                ),
+                "tags": document.get("tags", []),
                 "updated_at": document["updated_at"],
             }
 
         except Exception as e:
-            logger.error(f"Failed to update document metadata {document_id}: {e}")
+            logger.error(f"Failed to update document {document_id}: {e}")
             raise
 
     async def bulk_update_documents(
