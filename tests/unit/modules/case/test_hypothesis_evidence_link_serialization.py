@@ -12,7 +12,7 @@ These tests ensure that:
 """
 
 import json
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -35,7 +35,7 @@ class TestHypothesisEvidenceLinkSerialization:
         This is the core fix - model_dump(mode='json') converts datetime to ISO strings,
         while model_dump() leaves them as datetime objects that json.dumps() can't handle.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         link = HypothesisEvidenceLink(
             hypothesis_id="hyp_test123456",
@@ -67,7 +67,7 @@ class TestHypothesisEvidenceLinkSerialization:
         This demonstrates the original bug - model_dump() returns datetime objects
         that json.dumps() cannot serialize.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         link = HypothesisEvidenceLink(
             hypothesis_id="hyp_test123456",
@@ -92,7 +92,7 @@ class TestHypothesisEvidenceLinkSerialization:
 
     def test_round_trip_serialization_preserves_data(self):
         """Test that serialize → JSON → deserialize preserves all data correctly."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         original_link = HypothesisEvidenceLink(
             hypothesis_id="hyp_test123456",
@@ -134,7 +134,7 @@ class TestHypothesisEvidenceLinkSerialization:
 
         This simulates the exact pattern used in the repository code that was failing.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         earlier = now - timedelta(hours=2)
 
         # Create multiple evidence links with different timestamps
@@ -190,7 +190,7 @@ class TestHypothesisEvidenceLinkSerialization:
 
         This tests the complete scenario that was failing in the repository.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Create hypothesis with evidence_links
         # Use valid hex format for hypothesis_id (pattern: ^hyp_[a-f0-9]{12}$)
@@ -276,7 +276,7 @@ class TestHypothesisEvidenceLinkSerialization:
 
     def test_analyzed_at_default_factory(self):
         """Test that analyzed_at gets a default UTC datetime if not provided."""
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
 
         link = HypothesisEvidenceLink(
             hypothesis_id="hyp_test123456",
@@ -287,11 +287,11 @@ class TestHypothesisEvidenceLinkSerialization:
             # analyzed_at not provided - should use default_factory
         )
 
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         # Verify default was set
         assert isinstance(link.analyzed_at, datetime)
-        assert link.analyzed_at.tzinfo == UTC
+        assert link.analyzed_at.tzinfo == timezone.utc
         assert before <= link.analyzed_at <= after
 
         # Verify it can still be serialized

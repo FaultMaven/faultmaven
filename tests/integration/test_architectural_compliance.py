@@ -14,7 +14,7 @@ Test Coverage:
 
 import os
 import time
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 import pytest
@@ -349,7 +349,7 @@ class TestArchitecturalCompliance:
             "case_history": [
                 {
                     "case_id": "case_001",
-                    "timestamp": datetime.now(UTC).isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             ]
         }
@@ -426,7 +426,7 @@ class TestArchitecturalCompliance:
             "metadata": {
                 "last_ip": "192.168.1.1",
                 "user_agent": "Mozilla/5.0",
-                "login_time": datetime.now(UTC).isoformat(),
+                "login_time": datetime.now(timezone.utc).isoformat(),
             }
         }
 

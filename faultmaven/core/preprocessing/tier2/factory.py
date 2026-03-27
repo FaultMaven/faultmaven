@@ -8,7 +8,7 @@ Design Reference:
 """
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from faultmaven.core.preprocessing.tier2.basic import BasicTier2Service
 from faultmaven.core.preprocessing.tier2.external import ExternalTier2Client
@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 def create_tier2_service(
     backend: str = "disabled",
-    base_url: str | None = None,
-    api_key: str | None = None,
-    llm_client: Any | None = None,
-    storage_service: Any | None = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    llm_client: Optional[Any] = None,
+    storage_service: Optional[Any] = None,
     timeout_seconds: int = 30,
-) -> ITier2AnalysisService | None:
+) -> Optional[ITier2AnalysisService]:
     """
     Factory: create Tier 2 service based on configuration.
 

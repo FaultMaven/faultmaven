@@ -12,8 +12,8 @@ Test Focus:
 """
 
 import json
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -93,9 +93,9 @@ def mock_session():
     session.total_token_usage = 500
     session.token_budget_limit = 50000
     session.session_goal = "Test authentication flow"
-    session.started_at = datetime.now(UTC)
-    session.created_at = datetime.now(UTC)
-    session.updated_at = datetime.now(UTC)
+    session.started_at = datetime.now(timezone.utc)
+    session.created_at = datetime.now(timezone.utc)
+    session.updated_at = datetime.now(timezone.utc)
     return session
 
 
@@ -131,7 +131,7 @@ def client(auth_service, mock_session):
     mock_agent_service.execute_agent = mock_execute
 
     # Mock get_execution to return a completed execution record
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
 
     # Create a mock execution with all attributes needed by AgentExecutionResponse.from_domain
     from types import SimpleNamespace

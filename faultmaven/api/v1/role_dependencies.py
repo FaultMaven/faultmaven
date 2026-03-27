@@ -19,6 +19,7 @@ Design Principles:
 
 import logging
 import uuid
+from typing import List
 
 from fastapi import Depends, HTTPException
 
@@ -45,7 +46,7 @@ def check_user_has_role(user: DevUser, required_role: str) -> bool:
     return required_role in user.roles
 
 
-def check_user_has_any_role(user: DevUser, required_roles: list[str]) -> bool:
+def check_user_has_any_role(user: DevUser, required_roles: List[str]) -> bool:
     """Check if user has any of the required roles
 
     Args:
@@ -105,7 +106,7 @@ async def require_admin(user: DevUser = Depends(require_authentication)) -> DevU
     return user
 
 
-def require_roles(roles: list[str]):
+def require_roles(roles: List[str]):
     """Create a dependency that requires user to have any of the specified roles
 
     Args:

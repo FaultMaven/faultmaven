@@ -19,17 +19,18 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import List, Tuple
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 
-async def check_duplicates(database_url: str) -> tuple[bool, list[dict]]:
+async def check_duplicates(database_url: str) -> Tuple[bool, List[dict]]:
     """
     Check for duplicate email addresses in users table.
 
@@ -45,8 +46,7 @@ async def check_duplicates(database_url: str) -> tuple[bool, list[dict]]:
     try:
         async with async_session() as session:
             # Query for duplicate emails (case-insensitive)
-            query = text(
-                """
+            query = text("""
                 SELECT
                     LOWER(email) as normalized_email,
                     COUNT(*) as count,
@@ -58,8 +58,7 @@ async def check_duplicates(database_url: str) -> tuple[bool, list[dict]]:
                 GROUP BY LOWER(email)
                 HAVING COUNT(*) > 1
                 ORDER BY COUNT(*) DESC, LOWER(email)
-            """
-            )
+            """)
 
             result = await session.execute(query)
             rows = result.fetchall()
@@ -69,16 +68,14 @@ async def check_duplicates(database_url: str) -> tuple[bool, list[dict]]:
 
             duplicates = []
             for row in rows:
-                duplicates.append(
-                    {
-                        "normalized_email": row[0],
-                        "count": row[1],
-                        "user_ids": row[2],
-                        "emails": row[3],
-                        "usernames": row[4],
-                        "created_dates": row[5],
-                    }
-                )
+                duplicates.append({
+                    "normalized_email": row[0],
+                    "count": row[1],
+                    "user_ids": row[2],
+                    "emails": row[3],
+                    "usernames": row[4],
+                    "created_dates": row[5],
+                })
 
             return True, duplicates
 
@@ -86,7 +83,7 @@ async def check_duplicates(database_url: str) -> tuple[bool, list[dict]]:
         await engine.dispose()
 
 
-def print_duplicates(duplicates: list[dict]) -> None:
+def print_duplicates(duplicates: List[dict]) -> None:
     """Print duplicate email report."""
     print("\n" + "=" * 80)
     print("DUPLICATE EMAIL ADDRESSES FOUND")
@@ -97,9 +94,9 @@ def print_duplicates(duplicates: list[dict]) -> None:
         print(f"Duplicate Group #{i}:")
         print(f"  Email: {dup['normalized_email']}")
         print(f"  Count: {dup['count']}")
-        print("\n  Conflicting Users:")
+        print(f"\n  Conflicting Users:")
 
-        for j in range(len(dup["user_ids"])):
+        for j in range(len(dup['user_ids'])):
             print(f"    [{j + 1}] User ID: {dup['user_ids'][j]}")
             print(f"        Email: {dup['emails'][j]}")
             print(f"        Username: {dup['usernames'][j]}")
@@ -175,9 +172,7 @@ async def main():
 
     try:
         database_url = get_database_url(args.database)
-        print(
-            f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}"
-        )
+        print(f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}")
         print("Scanning for duplicate emails...\n")
 
         has_duplicates, duplicates = await check_duplicates(database_url)
@@ -193,7 +188,6 @@ async def main():
     except Exception as e:
         print(f"\n✗ Error checking for duplicates: {e}", file=sys.stderr)
         import traceback
-
         traceback.print_exc()
         return 2
 

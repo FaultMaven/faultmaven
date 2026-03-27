@@ -3,7 +3,7 @@
 Tests both InMemoryKnowledgeItemRepository and the repository interface.
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -53,7 +53,7 @@ def create_sample_item(
         view_count=view_count,
         helpful_count=helpful_count,
         not_helpful_count=not_helpful_count,
-        created_at=created_at or datetime.now(UTC),
+        created_at=created_at or datetime.now(timezone.utc),
         metadata=metadata,
     )
 
@@ -359,7 +359,7 @@ class TestInMemoryRepositoryListByOrganization:
     async def test_list_by_organization_ordered_by_created_at_desc(self, repository):
         """Test items are ordered by created_at descending."""
         organization_id = generate_org_id()
-        base_time = datetime.now(UTC)
+        base_time = datetime.now(timezone.utc)
 
         i1 = create_sample_item(
             organization_id=organization_id, created_at=base_time - timedelta(hours=2)
@@ -861,7 +861,7 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
     async def test_get_items_without_embeddings_ordered_oldest_first(self, repository):
         """Test items are ordered by created_at ascending (oldest first)."""
         organization_id = generate_org_id()
-        base_time = datetime.now(UTC)
+        base_time = datetime.now(timezone.utc)
 
         i1 = create_sample_item(organization_id=organization_id, created_at=base_time)
         i2 = create_sample_item(

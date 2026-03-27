@@ -4,7 +4,7 @@ Tests the InvestigationSession dataclass and SessionStatus enum.
 """
 
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -64,10 +64,10 @@ class TestInvestigationSessionCreation:
 
     def test_create_full_session(self):
         """Test creating session with all fields."""
-        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=UTC)
-        started = datetime(2025, 12, 29, 10, 0, 1, tzinfo=UTC)
-        ended = datetime(2025, 12, 29, 11, 0, 0, tzinfo=UTC)
-        last_activity = datetime(2025, 12, 29, 10, 55, 0, tzinfo=UTC)
+        created = datetime(2025, 12, 29, 10, 0, 0, tzinfo=timezone.utc)
+        started = datetime(2025, 12, 29, 10, 0, 1, tzinfo=timezone.utc)
+        ended = datetime(2025, 12, 29, 11, 0, 0, tzinfo=timezone.utc)
+        last_activity = datetime(2025, 12, 29, 10, 55, 0, tzinfo=timezone.utc)
 
         session = InvestigationSession(
             session_id="sess_full123",
@@ -102,7 +102,7 @@ class TestInvestigationSessionCreation:
 
     def test_default_timestamps(self):
         """Test that timestamps are auto-generated if not provided."""
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
 
         session = InvestigationSession(
             session_id="sess_timestamps",
@@ -111,7 +111,7 @@ class TestInvestigationSessionCreation:
             organization_id="org_789",
         )
 
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert before <= session.created_at <= after
         assert before <= session.updated_at <= after
@@ -221,8 +221,8 @@ class TestInvestigationSessionValidation:
 
     def test_ended_before_started_fails(self):
         """Test that ended_at before started_at raises ValueError."""
-        started = datetime(2025, 12, 29, 10, 0, 0, tzinfo=UTC)
-        ended = datetime(2025, 12, 29, 9, 0, 0, tzinfo=UTC)  # Before started
+        started = datetime(2025, 12, 29, 10, 0, 0, tzinfo=timezone.utc)
+        ended = datetime(2025, 12, 29, 9, 0, 0, tzinfo=timezone.utc)  # Before started
 
         with pytest.raises(ValueError, match="ended_at must be after started_at"):
             InvestigationSession(
@@ -269,9 +269,9 @@ class TestInvestigationSessionLifecycleMethods:
 
     def test_pause_from_active(self, sample_session):
         """Test pause() transitions from ACTIVE to PAUSED."""
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
         sample_session.pause()
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert sample_session.status == SessionStatus.PAUSED
         assert before <= sample_session.updated_at <= after
@@ -295,9 +295,9 @@ class TestInvestigationSessionLifecycleMethods:
         """Test resume() transitions from PAUSED to ACTIVE."""
         sample_session.pause()
 
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
         sample_session.resume()
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert sample_session.status == SessionStatus.ACTIVE
         assert before <= sample_session.updated_at <= after
@@ -317,9 +317,9 @@ class TestInvestigationSessionLifecycleMethods:
 
     def test_complete_from_active(self, sample_session):
         """Test complete() from ACTIVE status."""
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
         sample_session.complete("Root cause identified: DB connection leak")
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert sample_session.status == SessionStatus.COMPLETED
         assert (
@@ -354,9 +354,9 @@ class TestInvestigationSessionLifecycleMethods:
 
     def test_abandon_from_active(self, sample_session):
         """Test abandon() from ACTIVE status."""
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
         sample_session.abandon()
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert sample_session.status == SessionStatus.ABANDONED
         assert before <= sample_session.ended_at <= after
@@ -400,9 +400,9 @@ class TestInvestigationSessionAgentExecution:
 
     def test_add_agent_execution(self, sample_session):
         """Test add_agent_execution increments counters."""
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
         sample_session.add_agent_execution(token_usage=500)
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert sample_session.total_token_usage == 500
         assert sample_session.total_agent_executions == 1
@@ -648,7 +648,7 @@ class TestInvestigationSessionDurationDisplay:
 
     def test_duration_display_active_session(self):
         """Test duration display calculates from started_at for active sessions."""
-        started = datetime.now(UTC) - timedelta(seconds=90)
+        started = datetime.now(timezone.utc) - timedelta(seconds=90)
         session = InvestigationSession(
             session_id="sess_dur",
             case_id="case_456",

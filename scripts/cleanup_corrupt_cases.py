@@ -59,7 +59,7 @@ async def main():
         print(f"Errors:         {stats['errors']}")
         print()
 
-        if stats["deleted"] > 0:
+        if stats['deleted'] > 0:
             print(f"✓ Successfully cleaned up {stats['deleted']} corrupt case(s)")
         else:
             print("✓ No corrupt cases found - database is clean!")
@@ -70,7 +70,6 @@ async def main():
         print(f"✗ Error during cleanup: {e}")
         print("=" * 60)
         import traceback
-
         traceback.print_exc()
         return 1
     finally:

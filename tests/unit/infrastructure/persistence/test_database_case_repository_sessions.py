@@ -11,8 +11,8 @@ Coverage:
         --cov-report=term-missing
 """
 
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -81,9 +81,9 @@ def sample_session() -> Session:
     return Session(
         session_id=str(uuid4()),
         user_id="test-user-001",
-        created_at=datetime.now(UTC),
-        last_accessed=datetime.now(UTC),
-        expires_at=datetime.now(UTC) + timedelta(hours=24),
+        created_at=datetime.now(timezone.utc),
+        last_accessed=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
     )
 
 

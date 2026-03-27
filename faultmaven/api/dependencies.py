@@ -23,7 +23,7 @@ Usage:
         return await evidence_service.upload_evidence(...)
 """
 
-from collections.abc import AsyncGenerator
+from typing import AsyncGenerator
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.api.v1.dependencies import (
     get_current_user,
     get_session_id,
+    get_session_service,
     get_user_id,
     require_authenticated_user,
 )
@@ -284,6 +285,9 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
+    from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
+        AgentOrchestrationService,
+    )
 
     return factory.create_agent_orchestration_service()
 

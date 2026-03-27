@@ -32,10 +32,11 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,11 +62,11 @@ class SolutionRepository(ABC):
         organization_id: str,
         description: str,
         created_by: str,
-        status: str | None = "proposed",
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        metadata: dict | None = None,
+        status: Optional[str] = "proposed",
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        metadata: Optional[Dict] = None,
     ) -> Solution:
         """Create new solution record.
 
@@ -94,7 +95,7 @@ class SolutionRepository(ABC):
         self,
         solution_id: str,
         organization_id: str,
-    ) -> Solution | None:
+    ) -> Optional[Solution]:
         """Get solution by ID with multi-tenant isolation.
 
         Args:
@@ -111,10 +112,10 @@ class SolutionRepository(ABC):
         self,
         case_id: str,
         organization_id: str,
-        status: str | None = None,
+        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[list[Solution], int]:
+    ) -> Tuple[List[Solution], int]:
         """List solutions for a case with optional status filter.
 
         Args:
@@ -135,15 +136,15 @@ class SolutionRepository(ABC):
         solution_id: str,
         organization_id: str,
         updated_by: str,
-        description: str | None = None,
-        status: str | None = None,
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        verification_result: str | None = None,
-        implemented: bool | None = None,
-        metadata: dict | None = None,
-    ) -> Solution | None:
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        verification_result: Optional[str] = None,
+        implemented: Optional[bool] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Optional[Solution]:
         """Update solution fields.
 
         Args:
@@ -204,11 +205,11 @@ class DatabaseSolutionRepository(SolutionRepository):
         organization_id: str,
         description: str,
         created_by: str,
-        status: str | None = "proposed",
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        metadata: dict | None = None,
+        status: Optional[str] = "proposed",
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        metadata: Optional[Dict] = None,
     ) -> Solution:
         """Create new solution in database."""
         try:
@@ -227,8 +228,8 @@ class DatabaseSolutionRepository(SolutionRepository):
                 estimated_effort=estimated_effort,
                 solution_metadata=json.dumps(metadata or {}),
                 created_by=created_by,
-                proposed_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
+                proposed_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
             )
 
             # Add to session and commit
@@ -254,7 +255,7 @@ class DatabaseSolutionRepository(SolutionRepository):
         self,
         solution_id: str,
         organization_id: str,
-    ) -> Solution | None:
+    ) -> Optional[Solution]:
         """Get solution by ID with multi-tenant isolation."""
         try:
             stmt = select(SolutionModel).where(
@@ -279,10 +280,10 @@ class DatabaseSolutionRepository(SolutionRepository):
         self,
         case_id: str,
         organization_id: str,
-        status: str | None = None,
+        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[list[Solution], int]:
+    ) -> Tuple[List[Solution], int]:
         """List solutions for a case with optional status filter."""
         try:
             # Build query conditions
@@ -326,15 +327,15 @@ class DatabaseSolutionRepository(SolutionRepository):
         solution_id: str,
         organization_id: str,
         updated_by: str,
-        description: str | None = None,
-        status: str | None = None,
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        verification_result: str | None = None,
-        implemented: bool | None = None,
-        metadata: dict | None = None,
-    ) -> Solution | None:
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        verification_result: Optional[str] = None,
+        implemented: Optional[bool] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Optional[Solution]:
         """Update solution fields."""
         try:
             # Get existing solution
@@ -369,16 +370,16 @@ class DatabaseSolutionRepository(SolutionRepository):
 
             if verification_result is not None:
                 solution_model.verification_result = verification_result
-                solution_model.verification_timestamp = datetime.now(UTC)
+                solution_model.verification_timestamp = datetime.now(timezone.utc)
 
             if implemented is not None and implemented:
-                solution_model.implemented_at = datetime.now(UTC)
+                solution_model.implemented_at = datetime.now(timezone.utc)
 
             if metadata is not None:
                 solution_model.solution_metadata = json.dumps(metadata)
 
             solution_model.updated_by = updated_by
-            solution_model.updated_at = datetime.now(UTC)
+            solution_model.updated_at = datetime.now(timezone.utc)
 
             await self.session.commit()
             await self.session.refresh(solution_model)
@@ -460,7 +461,7 @@ class InMemorySolutionRepository(SolutionRepository):
 
     def __init__(self):
         """Initialize in-memory storage."""
-        self._solutions: dict[str, dict] = {}
+        self._solutions: Dict[str, Dict] = {}
 
     async def create_solution(
         self,
@@ -468,11 +469,11 @@ class InMemorySolutionRepository(SolutionRepository):
         organization_id: str,
         description: str,
         created_by: str,
-        status: str | None = "proposed",
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        metadata: dict | None = None,
+        status: Optional[str] = "proposed",
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        metadata: Optional[Dict] = None,
     ) -> Solution:
         """Create new solution in memory."""
         solution_id = f"sol_{uuid4().hex[:12]}"
@@ -488,9 +489,9 @@ class InMemorySolutionRepository(SolutionRepository):
             "estimated_effort": estimated_effort,
             "verification_result": None,
             "verification_timestamp": None,
-            "proposed_at": datetime.now(UTC),
+            "proposed_at": datetime.now(timezone.utc),
             "implemented_at": None,
-            "updated_at": datetime.now(UTC),
+            "updated_at": datetime.now(timezone.utc),
             "created_by": created_by,
             "updated_by": None,
             "metadata": metadata or {},
@@ -503,7 +504,7 @@ class InMemorySolutionRepository(SolutionRepository):
         self,
         solution_id: str,
         organization_id: str,
-    ) -> Solution | None:
+    ) -> Optional[Solution]:
         """Get solution by ID with multi-tenant isolation."""
         solution = self._solutions.get(solution_id)
 
@@ -516,10 +517,10 @@ class InMemorySolutionRepository(SolutionRepository):
         self,
         case_id: str,
         organization_id: str,
-        status: str | None = None,
+        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[list[Solution], int]:
+    ) -> Tuple[List[Solution], int]:
         """List solutions for a case."""
         # Filter by case and organization
         filtered = [
@@ -546,15 +547,15 @@ class InMemorySolutionRepository(SolutionRepository):
         solution_id: str,
         organization_id: str,
         updated_by: str,
-        description: str | None = None,
-        status: str | None = None,
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        verification_result: str | None = None,
-        implemented: bool | None = None,
-        metadata: dict | None = None,
-    ) -> Solution | None:
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        verification_result: Optional[str] = None,
+        implemented: Optional[bool] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Optional[Solution]:
         """Update solution in memory."""
         solution = self._solutions.get(solution_id)
 
@@ -579,16 +580,16 @@ class InMemorySolutionRepository(SolutionRepository):
 
         if verification_result is not None:
             solution["verification_result"] = verification_result
-            solution["verification_timestamp"] = datetime.now(UTC)
+            solution["verification_timestamp"] = datetime.now(timezone.utc)
 
         if implemented is not None and implemented:
-            solution["implemented_at"] = datetime.now(UTC)
+            solution["implemented_at"] = datetime.now(timezone.utc)
 
         if metadata is not None:
             solution["metadata"] = metadata
 
         solution["updated_by"] = updated_by
-        solution["updated_at"] = datetime.now(UTC)
+        solution["updated_at"] = datetime.now(timezone.utc)
 
         return deepcopy(solution)
 

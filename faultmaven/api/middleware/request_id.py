@@ -16,9 +16,10 @@ Architecture Integration:
 
 import logging
 import time
+from typing import Optional
 from uuid import uuid4
 
-from fastapi import Request
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 

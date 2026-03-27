@@ -16,9 +16,8 @@ Note: As of TASK-020, JWT authentication is required. Legacy header authenticati
 """
 
 import json
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timezone
-from typing import List
+from datetime import datetime, timezone
+from typing import AsyncGenerator, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,9 +64,9 @@ def mock_execution():
     mock.agent_type = AgentType.INVESTIGATOR
     mock.agent_model = "claude-3-opus"
     mock.status = ExecutionStatus.COMPLETED
-    mock.started_at = datetime.now(UTC)
-    mock.completed_at = datetime.now(UTC)
-    mock.created_at = datetime.now(UTC)
+    mock.started_at = datetime.now(timezone.utc)
+    mock.completed_at = datetime.now(timezone.utc)
+    mock.created_at = datetime.now(timezone.utc)
     mock.response = "The error is caused by a misconfigured database connection."
     mock.prompt = "What is causing the errors?"
     mock.error_message = None

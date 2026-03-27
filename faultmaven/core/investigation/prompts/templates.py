@@ -6,7 +6,7 @@ This module defines the core templates for FaultMaven's THREE-TEMPLATE system:
 3. TERMINAL: Documentation and summary.
 """
 
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
@@ -773,7 +773,7 @@ STATUS: {status_upper}
 {identity}
 {core_context}
 
-The case has been {status_lower}.
+The case has been {status_lower}. 
 
 CONVERSATION HISTORY:
 {conversation_history}
@@ -794,7 +794,7 @@ Always include a suggestion to generate a runbook from this case:
 Other useful suggestions: generate incident report, extract to knowledge base, share findings with team.
 
 ASSISTANT ROLE:
-You are an ADVISOR.
+You are an ADVISOR. 
 - BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
   You cannot execute code or access systems.
   Use: "Could you run", "Please check", "It would help to look at".
@@ -944,11 +944,11 @@ advances the investigation to Treatment.
 def get_prompt_for_case(
     case: Case,
     user_message: str,
-    kb_results: list[dict[str, Any]] | None = None,
-    provider_name: str | None = None,
-    model_name: str | None = None,
-    use_state_summary: bool | None = None,
-    processing_mode: str | None = None,
+    kb_results: Optional[List[Dict[str, Any]]] = None,
+    provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
+    use_state_summary: Optional[bool] = None,
+    processing_mode: Optional[str] = None,
 ) -> str:
     """Build the final prompt based on case status and stage.
 

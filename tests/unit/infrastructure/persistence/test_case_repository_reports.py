@@ -19,8 +19,8 @@ Coverage:
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
+from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -170,7 +170,7 @@ def sample_case() -> Case:
 @pytest.fixture
 def sample_report() -> CaseReport:
     """Create a sample report for testing."""
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     generated_at_str = to_json_compatible(now)
     return CaseReport(
         report_id=str(uuid4()),
@@ -193,7 +193,7 @@ def sample_report() -> CaseReport:
 @pytest.fixture
 def sample_runbook_report() -> CaseReport:
     """Create a sample runbook report with metadata."""
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     generated_at_str = to_json_compatible(now)
     metadata = RunbookMetadata(
         source=RunbookSource.INCIDENT_DRIVEN,

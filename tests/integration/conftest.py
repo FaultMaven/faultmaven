@@ -21,9 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import asyncio
 import io
 import time
-from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from typing import Any, AsyncGenerator, Dict
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -122,7 +121,7 @@ def mock_authenticated_user():
 
 
 @pytest.fixture
-def auth_headers() -> dict[str, str]:
+def auth_headers() -> Dict[str, str]:
     """Provide mock authentication headers for integration tests.
 
     For actual integration tests against a running service, you would need
@@ -534,23 +533,23 @@ async def clean_redis(redis_client) -> None:
 def sample_log_content() -> str:
     """Sample log content for testing data ingestion."""
     return """
-2024-01-15 14:30:25.123 [ERROR] DatabaseConnectionError:
+2024-01-15 14:30:25.123 [ERROR] DatabaseConnectionError: 
 Connection timeout after 30 seconds
     at ConnectionPool.getConnection(ConnectionPool.java:245)
     at DataService.executeQuery(DataService.java:89)
     at UserController.getUserData(UserController.java:156)
     at RequestHandler.handleRequest(RequestHandler.java:78)
-
+    
 2024-01-15 14:30:25.456 [WARN] RetryAttempt: Retrying connection (attempt 1/3)
-2024-01-15 14:30:26.789 [ERROR] DatabaseConnectionError:
+2024-01-15 14:30:26.789 [ERROR] DatabaseConnectionError: 
 Connection timeout after 30 seconds
     at ConnectionPool.getConnection(ConnectionPool.java:245)
     at DataService.executeQuery(DataService.java:89)
     at UserController.getUserData(UserController.java:156)
     at RequestHandler.handleRequest(RequestHandler.java:78)
-
+    
 2024-01-15 14:30:27.012 [WARN] RetryAttempt: Retrying connection (attempt 2/3)
-2024-01-15 14:30:28.345 [FATAL] SystemShutdown:
+2024-01-15 14:30:28.345 [FATAL] SystemShutdown: 
 Maximum retry attempts exceeded. Shutting down service.
 """
 
@@ -604,7 +603,7 @@ Set up alerts for connection pool exhaustion.
 
 
 @pytest.fixture
-def sample_query_request() -> dict[str, Any]:
+def sample_query_request() -> Dict[str, Any]:
     """Sample query request for testing troubleshooting."""
     return {
         "query": "What does the magenta platypus do?",
@@ -616,7 +615,7 @@ def sample_query_request() -> dict[str, Any]:
 @pytest_asyncio.fixture
 async def test_session(
     http_client: httpx.AsyncClient, clean_redis: None
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Create a test session for use in tests."""
     response = await http_client.post("/api/v1/sessions")
     assert response.status_code == 200
@@ -632,7 +631,7 @@ async def agent_test_session(
     http_client: httpx.AsyncClient,
     clean_redis: None,
     mock_servers: MockServerManager,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Create a test session with agent capabilities enabled."""
     # Create session
     response = await http_client.post("/api/v1/sessions")
@@ -643,15 +642,15 @@ async def agent_test_session(
 
     # Upload some test data to the session
     test_log_content = """
-2024-01-15 14:30:25.123 [ERROR] DatabaseConnectionError:
+2024-01-15 14:30:25.123 [ERROR] DatabaseConnectionError: 
 Connection timeout after 30 seconds
     at ConnectionPool.getConnection(ConnectionPool.java:245)
     at DataService.executeQuery(DataService.java:89)
     at UserController.getUserData(UserController.java:156)
     at RequestHandler.handleRequest(RequestHandler.java:78)
-
+    
 2024-01-15 14:30:25.456 [WARN] RetryAttempt: Retrying connection (attempt 1/3)
-2024-01-15 14:30:28.345 [FATAL] SystemShutdown:
+2024-01-15 14:30:28.345 [FATAL] SystemShutdown: 
 Maximum retry attempts exceeded. Shutting down service.
 """
 
@@ -670,7 +669,7 @@ Maximum retry attempts exceeded. Shutting down service.
 
 
 @pytest.fixture
-def mock_file_upload() -> dict[str, Any]:
+def mock_file_upload() -> Dict[str, Any]:
     """Mock file upload data for testing."""
     return {
         "file": ("test.log", "sample log content", "text/plain"),
@@ -771,7 +770,7 @@ async def mock_servers() -> AsyncGenerator[MockServerManager, None]:
 
 
 @pytest_asyncio.fixture
-async def mock_llm_responses(mock_servers: MockServerManager) -> dict[str, Any]:
+async def mock_llm_responses(mock_servers: MockServerManager) -> Dict[str, Any]:
     """
     Fixture providing control over mock LLM responses.
 
@@ -786,7 +785,7 @@ async def mock_llm_responses(mock_servers: MockServerManager) -> dict[str, Any]:
 
 
 @pytest_asyncio.fixture
-async def mock_web_search_responses(mock_servers: MockServerManager) -> dict[str, Any]:
+async def mock_web_search_responses(mock_servers: MockServerManager) -> Dict[str, Any]:
     """
     Fixture providing control over mock web search responses.
 
@@ -832,7 +831,7 @@ def create_test_file(content: str, filename: str = "test.log") -> io.BytesIO:
 
 
 @pytest.fixture
-def log_file_upload(sample_log_content: str) -> dict[str, Any]:
+def log_file_upload(sample_log_content: str) -> Dict[str, Any]:
     """Create a log file upload for testing."""
     return {
         "file": create_test_file(sample_log_content, "test.log"),
@@ -841,7 +840,7 @@ def log_file_upload(sample_log_content: str) -> dict[str, Any]:
 
 
 @pytest.fixture
-def kb_document_upload(sample_kb_document: str) -> dict[str, Any]:
+def kb_document_upload(sample_kb_document: str) -> Dict[str, Any]:
     """Create a knowledge base document upload for testing."""
     return {
         "file": create_test_file(sample_kb_document, "troubleshooting.md"),
@@ -943,7 +942,7 @@ async def mock_llm_provider_integration():
         # Simulate different response types based on prompt content
         if "troubleshoot" in prompt.lower() or "diagnose" in prompt.lower():
             return {
-                "response": "Based on the symptoms described, this appears to be a database connectivity issue. Recommended approach: systematic analysis of connection pool and network configuration",
+                "response": f"Based on the symptoms described, this appears to be a database connectivity issue. Recommended approach: systematic analysis of connection pool and network configuration",
                 "confidence": 0.85 + (call_count % 10) / 100,
                 "reasoning": f"Analysis based on {len(interaction_history)} previous interactions and domain expertise",
                 "issue_type": "database_connectivity",
@@ -955,7 +954,7 @@ async def mock_llm_provider_integration():
             }
         elif "plan" in prompt.lower() or "strategy" in prompt.lower():
             return {
-                "response": "Strategic plan for addressing this issue: systematic troubleshooting approach with phased implementation",
+                "response": f"Strategic plan for addressing this issue: systematic troubleshooting approach with phased implementation",
                 "confidence": 0.80 + (call_count % 15) / 100,
                 "reasoning": "Strategic planning based on best practices and similar cases",
                 "plan_type": "systematic_approach",

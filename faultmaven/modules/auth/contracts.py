@@ -11,9 +11,10 @@ Following the design in module-organization-design.md:
 from abc import ABC
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser, TokenPair
     from faultmaven.modules.auth.domain.models.user import User
 
 
@@ -35,7 +36,7 @@ class UserDTO:
     email: str
     display_name: str
     is_active: bool = True
-    roles: list[str] | None = None
+    roles: Optional[List[str]] = None
 
 
 @dataclass
@@ -45,7 +46,7 @@ class SessionDTO:
     session_id: str
     user_id: str
     created_at: datetime
-    expires_at: datetime | None = None
+    expires_at: Optional[datetime] = None
     is_valid: bool = True
 
 
@@ -108,8 +109,8 @@ class AuthTokenDTO:
     username: str
     email: str
     display_name: str
-    roles: list[str]
-    session_id: str | None = None
+    roles: List[str]
+    session_id: Optional[str] = None
     token_type: str = "Bearer"
     expires_in: int = 3600  # 1 hour (in seconds)
     refresh_expires_in: int = 604800  # 7 days (in seconds)
@@ -140,7 +141,7 @@ class IUserRepository(Protocol):
         """Retrieve user by email."""
         ...
 
-    async def list(self, limit: int = 50, offset: int = 0) -> tuple[list["User"], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List["User"], int]:
         """List users with pagination."""
         ...
 
@@ -219,7 +220,7 @@ class IOAuthService(ABC):
         """
         ...
 
-    async def validate_token(self, token: str) -> str | None:
+    async def validate_token(self, token: str) -> Optional[str]:
         """Validate access token and return user_id.
 
         Args:
@@ -274,7 +275,9 @@ class ILocalAuthService(ABC):
     The only difference is the signing algorithm (HS256 vs RS256).
     """
 
-    async def login(self, username: str, password: str | None = None) -> AuthTokenDTO:
+    async def login(
+        self, username: str, password: Optional[str] = None
+    ) -> AuthTokenDTO:
         """Authenticate user with username/password.
 
         Args:
@@ -294,7 +297,7 @@ class ILocalAuthService(ABC):
         username: str,
         email: str,
         display_name: str,
-        password: str | None = None,
+        password: Optional[str] = None,
     ) -> AuthTokenDTO:
         """Register new user account.
 
@@ -312,7 +315,7 @@ class ILocalAuthService(ABC):
         """
         ...
 
-    async def validate_token(self, token: str) -> str | None:
+    async def validate_token(self, token: str) -> Optional[str]:
         """Validate access token and return user_id.
 
         Args:
@@ -367,7 +370,7 @@ class IOAuthCodeRepository(ABC):
         """
         ...
 
-    async def get_code(self, code: str) -> OAuthCodeDTO | None:
+    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
         """Retrieve authorization code data.
 
         Args:
@@ -405,7 +408,7 @@ class ISessionService(Protocol):
 
     async def get_session(
         self, session_id: str, validate: bool = True
-    ) -> SessionDTO | None:
+    ) -> Optional[SessionDTO]:
         """Get session by ID with optional validation.
 
         Args:

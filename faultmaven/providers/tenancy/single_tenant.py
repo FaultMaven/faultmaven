@@ -6,7 +6,8 @@ the same organization, simplifying local development and community edition.
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Optional
 
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import (
@@ -47,10 +48,10 @@ class SingleTenantProvider(TenantProvider):
             organization_repository: Repository for organization persistence
         """
         self.organization_repository = organization_repository
-        self._default_org: Organization | None = None
+        self._default_org: Optional[Organization] = None
 
     async def get_current_organization(
-        self, current_user: User, organization_id: str | None = None
+        self, current_user: User, organization_id: Optional[str] = None
     ) -> Organization:
         """Always returns the default organization (ignores organization_id).
 
@@ -117,7 +118,7 @@ class SingleTenantProvider(TenantProvider):
             return existing
 
         # Create default organization with generous limits for local use
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         default_org = Organization(
             organization_id=self.DEFAULT_ORG_ID,
             slug=self.DEFAULT_ORG_SLUG,

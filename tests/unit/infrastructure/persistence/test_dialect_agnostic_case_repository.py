@@ -4,7 +4,7 @@ Tests that PostgreSQLHybridCaseRepository properly detects database dialect
 and generates appropriate SQL for both SQLite and PostgreSQL.
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -44,8 +44,8 @@ async def test_upsert_case_detects_sqlite_dialect():
         organization_id=str(uuid4()),
         title="Test Case",
         status=CaseStatus.INQUIRY,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         inquiry=InquiryData(
             initial_question="Test question",
             clarifications=[],
@@ -98,8 +98,8 @@ async def test_upsert_case_detects_postgresql_dialect():
         organization_id=str(uuid4()),
         title="Test Case",
         status=CaseStatus.INQUIRY,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         inquiry=InquiryData(
             initial_question="Test question",
             clarifications=[],
@@ -144,8 +144,8 @@ async def test_upsert_case_defaults_to_sqlite_when_no_bind():
         organization_id=str(uuid4()),
         title="Test Case",
         status=CaseStatus.INQUIRY,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         inquiry=InquiryData(
             initial_question="Test question",
             clarifications=[],

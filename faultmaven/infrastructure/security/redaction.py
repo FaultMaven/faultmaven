@@ -27,8 +27,11 @@ Core Design Principles:
 """
 
 import hashlib
+import json
+import logging
+import os
 import re
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import requests
 
@@ -205,7 +208,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         # Entity registry: tracks unique values → indexed placeholder per type.
         # Shared across regex and Presidio to ensure consistent numbering.
-        entity_registry: dict[str, dict[str, str]] = {}  # type → {value → placeholder}
+        entity_registry: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
 
         def _get_placeholder(entity_type: str, value: str) -> str:
             """Return a consistent hashed placeholder for a given entity value."""
@@ -238,7 +241,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
     def sanitize_text_with_registry(
         self,
         text: str,
-        entity_registry: dict[str, dict[str, str]],
+        entity_registry: Dict[str, Dict[str, str]],
     ) -> str:
         """Sanitize text using an externally-provided entity registry.
 
@@ -284,7 +287,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         return sanitized_text
 
-    def _sanitize_dict(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Sanitize dictionary data recursively
 
@@ -340,7 +343,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             sanitized[sanitized_key] = sanitized_value
         return sanitized
 
-    def _sanitize_list(self, data: list[Any]) -> list[Any]:
+    def _sanitize_list(self, data: List[Any]) -> List[Any]:
         """
         Sanitize list data recursively
 
@@ -375,7 +378,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             return False
 
     def _apply_presidio(
-        self, text: str, entity_registry: dict[str, dict[str, str]] | None = None
+        self, text: str, entity_registry: Dict[str, Dict[str, str]] | None = None
     ) -> str:
         """Apply K8s Presidio PII detection with consistent pseudonymization.
 
@@ -541,7 +544,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         return False
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """
         Perform comprehensive health check for DataSanitizer.
 

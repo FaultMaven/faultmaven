@@ -1,7 +1,7 @@
 # File: faultmaven/models/interfaces.py
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, ContextManager, Optional
+from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,7 @@ class ToolResult(BaseModel):
 
     success: bool
     data: Any
-    error: str | None = None
+    error: Optional[str] = None
 
 
 class BaseTool(ABC):
@@ -43,7 +43,7 @@ class BaseTool(ABC):
     """
 
     @abstractmethod
-    async def execute(self, params: dict[str, Any]) -> ToolResult:
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given parameters.
 
         This method performs the tool's core functionality using the
@@ -113,7 +113,7 @@ class BaseTool(ABC):
         pass
 
     @abstractmethod
-    def get_schema(self) -> dict[str, Any]:
+    def get_schema(self) -> Dict[str, Any]:
         """Get the tool's schema definition for parameter validation.
 
         This method returns a JSON Schema that describes the tool's
@@ -408,7 +408,7 @@ class IVectorStore(ABC):
     """
 
     @abstractmethod
-    async def add_documents(self, documents: list[dict]) -> None:
+    async def add_documents(self, documents: List[Dict]) -> None:
         """Add documents to the vector store with automatic embedding generation.
 
         This method processes documents by generating embeddings using the
@@ -448,8 +448,8 @@ class IVectorStore(ABC):
 
     @abstractmethod
     async def search(
-        self, query: str, k: int = 5, filters: dict[str, Any] | None = None
-    ) -> list[dict]:
+        self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict]:
         """Search for semantically similar documents using vector similarity.
 
         This method generates an embedding for the query text and performs
@@ -498,7 +498,7 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_documents(self, ids: list[str]) -> None:
+    async def delete_documents(self, ids: List[str]) -> None:
         """Delete documents from the vector store by their identifiers.
 
         This method removes documents and their associated embeddings from
@@ -550,7 +550,7 @@ class ISessionStore(ABC):
     """
 
     @abstractmethod
-    async def get(self, key: str) -> dict | None:
+    async def get(self, key: str) -> Optional[Dict]:
         """Retrieve session data by session identifier.
 
         This method fetches session data from the persistent store,
@@ -599,7 +599,7 @@ class ISessionStore(ABC):
         pass
 
     @abstractmethod
-    async def set(self, key: str, value: dict, ttl: int | None = None) -> None:
+    async def set(self, key: str, value: Dict, ttl: Optional[int] = None) -> None:
         """Store session data with automatic expiration.
 
         This method persists session data to the storage backend with
@@ -728,7 +728,7 @@ class ISessionStore(ABC):
         pass
 
     @abstractmethod
-    async def extend_ttl(self, key: str, ttl: int | None = None) -> bool:
+    async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
         """Extend session expiration time.
 
         This method refreshes the session TTL without modifying session
@@ -776,7 +776,9 @@ class ISessionStore(ABC):
         pass
 
     @abstractmethod
-    async def find_by_user_and_client(self, user_id: str, client_id: str) -> str | None:
+    async def find_by_user_and_client(
+        self, user_id: str, client_id: str
+    ) -> Optional[str]:
         """Find session ID by user_id and client_id combination.
 
         This method enables client-based session resumption by looking up
@@ -808,7 +810,7 @@ class ISessionStore(ABC):
         pass
 
     @abstractmethod
-    async def increment_counter(self, key: str, ttl: int | None = None) -> int:
+    async def increment_counter(self, key: str, ttl: Optional[int] = None) -> int:
         """Increment an atomic counter.
 
         This method provides atomic increment operations for generating
@@ -1142,7 +1144,7 @@ class IDataClassifier(ABC):
 
     @abstractmethod
     async def classify(
-        self, content: str, filename: str | None = None
+        self, content: str, filename: Optional[str] = None
     ) -> "DataType":  # noqa: F821
         """Classify data content and return appropriate DataType.
 
@@ -1226,7 +1228,7 @@ class ILogProcessor(ABC):
     @abstractmethod
     async def process(
         self, content: str, data_type: Optional["DataType"] = None  # noqa: F821
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Process log content and extract actionable insights.
 
         This method analyzes log content to identify errors, patterns,
@@ -1389,7 +1391,7 @@ class IStorageBackend(ABC):
         pass
 
     @abstractmethod
-    async def retrieve(self, key: str) -> Any | None:
+    async def retrieve(self, key: str) -> Optional[Any]:
         """Retrieve data by key with automatic deserialization.
 
         This method fetches data from the storage backend and automatically
@@ -1472,7 +1474,7 @@ class IKnowledgeIngester(ABC):
         title: str,
         content: str,
         document_type: str,
-        metadata: dict[str, Any] | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Ingest document into knowledge base with full processing pipeline.
 
@@ -1564,7 +1566,7 @@ class IKnowledgeIngester(ABC):
 
     @abstractmethod
     async def update_document(
-        self, document_id: str, content: str, metadata: dict[str, Any] | None = None
+        self, document_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Update existing document with new content and metadata.
 
@@ -1757,7 +1759,7 @@ class IGlobalConfidenceService(ABC):
         pass
 
     @abstractmethod
-    async def get_model_info(self) -> dict[str, Any]:
+    async def get_model_info(self) -> Dict[str, Any]:
         """Get confidence model information and calibration metrics.
 
         This method returns comprehensive information about the current
@@ -1898,7 +1900,7 @@ class IGlobalConfidenceService(ABC):
         pass
 
     @abstractmethod
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """Get service health status and diagnostics.
 
         This method provides comprehensive health information for monitoring,
@@ -2012,21 +2014,21 @@ class ConversationContext(BaseModel):
     """Represents conversation context retrieved from memory"""
 
     session_id: str
-    conversation_history: list[dict[str, Any]] = Field(default_factory=list)
-    user_profile: dict[str, Any] | None = None
-    relevant_insights: list[dict[str, Any]] = Field(default_factory=list)
-    domain_context: dict[str, Any] | None = None
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    user_profile: Optional[Dict[str, Any]] = None
+    relevant_insights: List[Dict[str, Any]] = Field(default_factory=list)
+    domain_context: Optional[Dict[str, Any]] = None
 
 
 class UserProfile(BaseModel):
     """Represents user profile and preferences"""
 
-    user_id: str | None = None
+    user_id: Optional[str] = None
     skill_level: str = "intermediate"  # beginner, intermediate, advanced
     preferred_communication_style: str = "balanced"  # concise, detailed, balanced
-    domain_expertise: list[str] = Field(default_factory=list)
-    interaction_patterns: dict[str, Any] = Field(default_factory=dict)
-    historical_context: dict[str, Any] = Field(default_factory=dict)
+    domain_expertise: List[str] = Field(default_factory=list)
+    interaction_patterns: Dict[str, Any] = Field(default_factory=dict)
+    historical_context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class IMemoryService(ABC):
@@ -2102,7 +2104,7 @@ class IMemoryService(ABC):
 
     @abstractmethod
     async def consolidate_insights(
-        self, session_id: str, result: dict[str, Any]
+        self, session_id: str, result: Dict[str, Any]
     ) -> bool:
         """Consolidate insights from troubleshooting results into memory.
 
@@ -2189,7 +2191,7 @@ class IMemoryService(ABC):
 
     @abstractmethod
     async def update_user_profile(
-        self, session_id: str, updates: dict[str, Any]
+        self, session_id: str, updates: Dict[str, Any]
     ) -> bool:
         """Update user profile based on interaction patterns.
 
@@ -2240,11 +2242,11 @@ class StrategicPlan(BaseModel):
     """Represents a strategic plan for problem resolution"""
 
     plan_id: str
-    problem_analysis: dict[str, Any]
-    solution_strategy: dict[str, Any]
-    risk_assessment: dict[str, Any]
-    success_criteria: list[str] = Field(default_factory=list)
-    estimated_effort: str | None = None
+    problem_analysis: Dict[str, Any]
+    solution_strategy: Dict[str, Any]
+    risk_assessment: Dict[str, Any]
+    success_criteria: List[str] = Field(default_factory=list)
+    estimated_effort: Optional[str] = None
     confidence_score: float = 0.0
 
 
@@ -2252,10 +2254,10 @@ class ProblemComponents(BaseModel):
     """Represents decomposed problem components"""
 
     primary_issue: str
-    contributing_factors: list[str] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    complexity_assessment: dict[str, Any] = Field(default_factory=dict)
-    priority_ranking: list[str] = Field(default_factory=list)
+    contributing_factors: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+    complexity_assessment: Dict[str, Any] = Field(default_factory=dict)
+    priority_ranking: List[str] = Field(default_factory=list)
 
 
 class IPlanningService(ABC):
@@ -2286,7 +2288,7 @@ class IPlanningService(ABC):
 
     @abstractmethod
     async def plan_response_strategy(
-        self, query: str, context: dict[str, Any]
+        self, query: str, context: Dict[str, Any]
     ) -> StrategicPlan:
         """Plan strategic response approach for user query.
 
@@ -2341,7 +2343,7 @@ class IPlanningService(ABC):
 
     @abstractmethod
     async def decompose_problem(
-        self, problem: str, context: dict[str, Any]
+        self, problem: str, context: Dict[str, Any]
     ) -> ProblemComponents:
         """Decompose complex problem into manageable components.
 
@@ -2416,8 +2418,8 @@ class IJobService(ABC):
     async def create_job(
         self,
         job_type: str,
-        payload: dict[str, Any] = None,
-        ttl_seconds: int | None = None,
+        payload: Dict[str, Any] = None,
+        ttl_seconds: Optional[int] = None,
     ) -> str:
         """Create a new async job with initial pending status.
 
@@ -2451,9 +2453,9 @@ class IJobService(ABC):
         self,
         job_id: str,
         status: str,
-        progress: int | None = None,
-        result: dict[str, Any] | None = None,
-        error: str | None = None,
+        progress: Optional[int] = None,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
     ) -> bool:
         """Update job status and metadata.
 
@@ -2614,8 +2616,8 @@ class IJobRunner(ABC):
         self,
         task_func: callable,
         interval_seconds: int,
-        job_id: str | None = None,
-        job_name: str | None = None,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
         replace_existing: bool = True,
@@ -2649,8 +2651,8 @@ class IJobRunner(ABC):
         self,
         task_func: callable,
         run_at: datetime,
-        job_id: str | None = None,
-        job_name: str | None = None,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
     ) -> str:
@@ -2682,7 +2684,7 @@ class IJobRunner(ABC):
         pass
 
     @abstractmethod
-    def get_job_info(self, job_id: str) -> dict[str, Any] | None:
+    def get_job_info(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get information about a scheduled job.
 
         Args:
@@ -2695,7 +2697,7 @@ class IJobRunner(ABC):
         pass
 
     @abstractmethod
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self) -> List[Dict[str, Any]]:
         """List all scheduled jobs.
 
         Returns:

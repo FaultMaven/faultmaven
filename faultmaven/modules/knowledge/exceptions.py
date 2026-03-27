@@ -4,8 +4,12 @@ This module defines exceptions specific to the knowledge base module,
 including RAG, embeddings, and semantic search operations.
 """
 
+from typing import Any, Dict, List, Optional
+
 from faultmaven.exceptions import (
+    EmbeddingException,
     KnowledgeBaseException,
+    VectorStoreException,
 )
 
 
@@ -21,8 +25,8 @@ class DocumentNotFoundError(KnowledgeException):
     def __init__(
         self,
         message: str = "Document not found",
-        document_id: str | None = None,
-        knowledge_base_id: str | None = None,
+        document_id: Optional[str] = None,
+        knowledge_base_id: Optional[str] = None,
     ):
         self.document_id = document_id
         self.knowledge_base_id = knowledge_base_id
@@ -45,9 +49,9 @@ class DocumentIngestionError(KnowledgeException):
     def __init__(
         self,
         message: str,
-        document_name: str | None = None,
-        error_code: str | None = None,
-        processing_step: str | None = None,
+        document_name: Optional[str] = None,
+        error_code: Optional[str] = None,
+        processing_step: Optional[str] = None,
     ):
         self.document_name = document_name
         self.error_code = error_code
@@ -72,9 +76,9 @@ class SearchError(KnowledgeException):
     def __init__(
         self,
         message: str,
-        query: str | None = None,
-        search_type: str | None = None,
-        error_code: str | None = None,
+        query: Optional[str] = None,
+        search_type: Optional[str] = None,
+        error_code: Optional[str] = None,
     ):
         self.query = query
         self.search_type = search_type
@@ -99,9 +103,9 @@ class ChunkingError(KnowledgeException):
     def __init__(
         self,
         message: str,
-        document_id: str | None = None,
-        chunk_size: int | None = None,
-        reason: str | None = None,
+        document_id: Optional[str] = None,
+        chunk_size: Optional[int] = None,
+        reason: Optional[str] = None,
     ):
         self.document_id = document_id
         self.chunk_size = chunk_size
@@ -122,8 +126,8 @@ class KnowledgeBaseAccessError(KnowledgeException):
     def __init__(
         self,
         message: str = "Access denied",
-        knowledge_base_id: str | None = None,
-        organization_id: str | None = None,
+        knowledge_base_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ):
         self.knowledge_base_id = knowledge_base_id
         self.organization_id = organization_id
@@ -146,8 +150,8 @@ class IndexingError(KnowledgeException):
     def __init__(
         self,
         message: str,
-        document_ids: list[str] | None = None,
-        error_code: str | None = None,
+        document_ids: Optional[List[str]] = None,
+        error_code: Optional[str] = None,
     ):
         self.document_ids = document_ids
         self.error_code = error_code

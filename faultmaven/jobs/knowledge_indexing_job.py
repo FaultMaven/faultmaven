@@ -21,8 +21,8 @@ Usage:
 
 import logging
 import time
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
 from faultmaven.modules.knowledge.domain.services.search_service import (
@@ -66,9 +66,9 @@ class KnowledgeIndexingJob:
 
     async def run(
         self,
-        organization_id: str | None = None,
-        max_items: int | None = None,
-    ) -> dict[str, Any]:
+        organization_id: Optional[str] = None,
+        max_items: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Run indexing job.
 
         Workflow:
@@ -91,7 +91,7 @@ class KnowledgeIndexingJob:
             - failed_items: List of failed item IDs (first 10)
         """
         start_time = time.time()
-        job_id = f"indexing_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+        job_id = f"indexing_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
         logger.info(
             f"Starting knowledge indexing job {job_id}",
@@ -106,7 +106,7 @@ class KnowledgeIndexingJob:
         total_processed = 0
         total_succeeded = 0
         total_failed = 0
-        all_failed_items: list[str] = []
+        all_failed_items: List[str] = []
 
         try:
             # Fetch items without embeddings
@@ -218,8 +218,8 @@ class KnowledgeIndexingJob:
     async def _get_items_for_organization(
         self,
         organization_id: str,
-        max_items: int | None,
-    ) -> list[KnowledgeItem]:
+        max_items: Optional[int],
+    ) -> List[KnowledgeItem]:
         """Get items without embeddings for a specific organization."""
         limit = max_items if max_items else 10000
         return await self.knowledge_repo.get_items_without_embeddings(
@@ -229,8 +229,8 @@ class KnowledgeIndexingJob:
 
     async def _get_all_items_without_embeddings(
         self,
-        max_items: int | None,
-    ) -> list[KnowledgeItem]:
+        max_items: Optional[int],
+    ) -> List[KnowledgeItem]:
         """Get items without embeddings across all organizations.
 
         Note: This requires iterating through organizations, which is
@@ -253,11 +253,11 @@ class KnowledgeIndexingJob:
         processed: int,
         succeeded: int,
         failed: int,
-        failed_items: list[str],
+        failed_items: List[str],
         start_time: float,
-        organization_id: str | None,
-        error: str | None = None,
-    ) -> dict[str, Any]:
+        organization_id: Optional[str],
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Build result dictionary with statistics."""
         duration = time.time() - start_time
         items_per_second = processed / duration if duration > 0 else 0
@@ -271,7 +271,7 @@ class KnowledgeIndexingJob:
             "duration_seconds": round(duration, 2),
             "items_per_second": round(items_per_second, 2),
             "failed_items": failed_items[:10],  # Limit to first 10
-            "completed_at": datetime.now(UTC).isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
         }
 
         if error:
@@ -284,7 +284,7 @@ class KnowledgeIndexingJob:
 
     async def get_pending_count(
         self,
-        organization_id: str | None = None,
+        organization_id: Optional[str] = None,
     ) -> int:
         """Get count of items pending indexing.
 

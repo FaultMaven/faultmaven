@@ -25,7 +25,7 @@ Gap #9: Input Sanitization
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.case.contracts import (
     Case,
@@ -299,7 +299,7 @@ class SanitizedInput:
     content: str
     """Sanitized content safe for prompt inclusion"""
 
-    warnings: list[str]
+    warnings: List[str]
     """Security warnings detected during sanitization"""
 
     was_modified: bool
@@ -379,7 +379,7 @@ def sanitize_user_input(message: str, max_length: int = 10000) -> SanitizedInput
 
 
 def get_token_budget_for_provider(
-    provider_name: str, model_name: str | None = None
+    provider_name: str, model_name: Optional[str] = None
 ) -> int:
     """
     Get provider-specific token budget for prompts.
@@ -610,7 +610,7 @@ def _score_evidence_for_tier_a(ev, case) -> float:
 
 def _build_evidence_context(
     case: Case,
-    processing_mode: str | None = None,
+    processing_mode: Optional[str] = None,
     user_query: str = "",
 ) -> str:
     """
@@ -926,14 +926,14 @@ def _build_verbatim_history(messages: list) -> str:
 def build_investigation_context(
     case: Case,
     user_message: str,
-    kb_results: list[dict[str, Any]] | None = None,
-    max_tokens: int | None = None,
-    provider_name: str | None = None,
-    model_name: str | None = None,
-    use_state_summary: bool | None = None,
+    kb_results: Optional[List[Dict[str, Any]]] = None,
+    max_tokens: Optional[int] = None,
+    provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
+    use_state_summary: Optional[bool] = None,
     enable_stage_specific_loading: bool = True,
-    processing_mode: str | None = None,
-) -> dict[str, str]:
+    processing_mode: Optional[str] = None,
+) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
 
@@ -978,7 +978,7 @@ def build_investigation_context(
     budget = TokenBudget(max_tokens)
 
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
-    identity = "<case_identity>\n"
+    identity = f"<case_identity>\n"
     identity += f"CASE_ID: {case.case_id}\n"
     identity += f"STATUS: {case.status.value.upper()}\n"
     if case.status == CaseStatus.INVESTIGATING and case.current_stage:
@@ -986,7 +986,7 @@ def build_investigation_context(
     identity += "</case_identity>"
 
     # 2. Case Core Context
-    core_context = "<problem_context>\n"
+    core_context = f"<problem_context>\n"
     core_context += f"TITLE: {case.title}\n"
     core_context += f"DESCRIPTION: {case.description}\n"
     if case.problem_verification:
@@ -1157,21 +1157,21 @@ def build_investigation_context(
         if stage == InvestigationStage.DIAGNOSIS:
             # DIAGNOSIS covers symptom verification, hypothesis work, and solution proposal
             logger.debug(
-                "Stage-specific loading: DIAGNOSIS - full context for diagnosis"
+                f"Stage-specific loading: DIAGNOSIS - full context for diagnosis"
             )
             # All context sections are relevant during diagnosis
 
         elif stage == InvestigationStage.MITIGATION:
             # MITIGATION: Focus on the proposed mitigation and verification
             logger.debug(
-                "Stage-specific loading: MITIGATION - focusing on mitigation verification"
+                f"Stage-specific loading: MITIGATION - focusing on mitigation verification"
             )
             # Hypotheses are less important during mitigation
 
         elif stage == InvestigationStage.TREATMENT:
             # TREATMENT: Focus on solution verification, extended diagnosis if fix fails
             logger.debug(
-                "Stage-specific loading: TREATMENT - focusing on solution verification"
+                f"Stage-specific loading: TREATMENT - focusing on solution verification"
             )
             # All context sections relevant (may need extended diagnosis)
 

@@ -9,6 +9,7 @@ Configuration is read from the unified settings system (faultmaven.config.settin
 """
 
 import logging
+from typing import Optional
 from urllib.parse import urlparse
 
 # Conditional Redis import - only available in enterprise edition
@@ -55,10 +56,10 @@ class RedisClientFactory:
 
     @staticmethod
     def create_client(
-        redis_url: str | None = None,
-        host: str | None = None,
-        port: int | None = None,
-        password: str | None = None,
+        redis_url: Optional[str] = None,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        password: Optional[str] = None,
         **kwargs,
     ):
         """Create a Redis client with proper configuration.
@@ -120,10 +121,10 @@ class RedisClientFactory:
 
     @staticmethod
     def _build_config(
-        redis_url: str | None,
-        host: str | None,
-        port: int | None,
-        password: str | None,
+        redis_url: Optional[str],
+        host: Optional[str],
+        port: Optional[int],
+        password: Optional[str],
     ) -> dict:
         """Build Redis configuration from various sources.
 
@@ -202,9 +203,9 @@ def create_redis_client(**kwargs):
 
 
 async def get_async_redis_client(
-    redis_url: str | None = None,
-    host: str | None = None,
-    port: int | None = None,
+    redis_url: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
 ) -> object:
     """Create and validate an async Redis client.
 

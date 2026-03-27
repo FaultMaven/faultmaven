@@ -7,7 +7,7 @@ These prompts work alongside the base system prompts to provide specific guidanc
 for different response scenarios.
 """
 
-from typing import Any
+from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.models.api import ResponseType
@@ -51,8 +51,8 @@ def get_response_type_prompt(response_type: ResponseType) -> str:
 def assemble_intelligent_prompt(
     base_system_prompt: str,
     response_type: ResponseType,
-    conversation_state: dict[str, Any] | None = None,
-    query_classification: dict[str, Any] | None = None,
+    conversation_state: Optional[Dict[str, Any]] = None,
+    query_classification: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Assemble complete intelligent prompt with all components
 

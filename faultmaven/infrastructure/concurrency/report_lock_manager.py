@@ -16,6 +16,9 @@ Key Features:
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
+
+import redis.asyncio as redis
 
 
 class ReportLockManager:
@@ -49,7 +52,9 @@ class ReportLockManager:
         """Generate Redis key for case report generation lock."""
         return f"lock:report_generation:case:{case_id}"
 
-    async def acquire_lock(self, case_id: str, wait_timeout: int | None = None) -> bool:
+    async def acquire_lock(
+        self, case_id: str, wait_timeout: Optional[int] = None
+    ) -> bool:
         """
         Acquire lock for report generation on a case.
 
@@ -127,7 +132,7 @@ class ReportLockManager:
             return False
 
     @asynccontextmanager
-    async def lock(self, case_id: str, wait_timeout: int | None = 30):
+    async def lock(self, case_id: str, wait_timeout: Optional[int] = 30):
         """
         Context manager for acquiring and auto-releasing locks.
 

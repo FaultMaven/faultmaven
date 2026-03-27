@@ -18,7 +18,8 @@ Key Features:
 import logging
 import re
 import time
-from typing import Any
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.models.api import (
     DataType,
@@ -70,7 +71,7 @@ class ErrorPreprocessor(IPreprocessor):
         self,
         content: str,
         filename: str,
-        source_metadata: SourceMetadata | None = None,
+        source_metadata: Optional[SourceMetadata] = None,
     ) -> PreprocessedData:
         """
         Process error report into LLM-ready summary
@@ -174,7 +175,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         return "unknown"
 
-    def _parse_stack_trace(self, content: str, language: str) -> dict[str, Any]:
+    def _parse_stack_trace(self, content: str, language: str) -> Dict[str, Any]:
         """
         Parse stack trace based on detected language
 
@@ -196,7 +197,7 @@ class ErrorPreprocessor(IPreprocessor):
         else:
             return self._parse_generic_error(content)
 
-    def _parse_python_traceback(self, content: str) -> dict[str, Any]:
+    def _parse_python_traceback(self, content: str) -> Dict[str, Any]:
         """Parse Python traceback format"""
         parsed = {
             "language": "python",
@@ -241,7 +242,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         return parsed
 
-    def _parse_java_exception(self, content: str) -> dict[str, Any]:
+    def _parse_java_exception(self, content: str) -> Dict[str, Any]:
         """Parse Java exception format"""
         parsed = {
             "language": "java",
@@ -282,7 +283,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         return parsed
 
-    def _parse_javascript_error(self, content: str) -> dict[str, Any]:
+    def _parse_javascript_error(self, content: str) -> Dict[str, Any]:
         """Parse JavaScript/Node.js error format"""
         parsed = {
             "language": "javascript",
@@ -325,7 +326,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         return parsed
 
-    def _parse_go_panic(self, content: str) -> dict[str, Any]:
+    def _parse_go_panic(self, content: str) -> Dict[str, Any]:
         """Parse Go panic format"""
         parsed = {
             "language": "go",
@@ -368,7 +369,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         return parsed
 
-    def _parse_generic_error(self, content: str) -> dict[str, Any]:
+    def _parse_generic_error(self, content: str) -> Dict[str, Any]:
         """Parse unknown/generic error format"""
         parsed = {
             "language": "unknown",
@@ -391,9 +392,9 @@ class ErrorPreprocessor(IPreprocessor):
 
     def _format_error_summary(
         self,
-        parsed: dict[str, Any],
+        parsed: Dict[str, Any],
         filename: str,
-        source_metadata: SourceMetadata | None,
+        source_metadata: Optional[SourceMetadata],
     ) -> str:
         """
         Format parsed error into LLM-ready summary

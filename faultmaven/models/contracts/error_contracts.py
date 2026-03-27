@@ -12,9 +12,9 @@ Design Principles:
 - Standardized retry and recovery guidance
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -73,16 +73,16 @@ class ServiceError(BaseModel):
     operation: str = Field(description="Operation that failed")
 
     # Request context
-    request_id: str | None = Field(
+    request_id: Optional[str] = Field(
         default=None, description="Request identifier for correlation"
     )
-    session_id: str | None = Field(default=None, description="Session identifier")
-    user_id: str | None = Field(
+    session_id: Optional[str] = Field(default=None, description="Session identifier")
+    user_id: Optional[str] = Field(
         default=None, description="User identifier (if applicable)"
     )
 
     # Error details
-    details: dict[str, Any] = Field(
+    details: Dict[str, Any] = Field(
         default_factory=dict, description="Additional error details and context"
     )
     severity: ErrorSeverity = Field(
@@ -91,7 +91,7 @@ class ServiceError(BaseModel):
 
     # Timing information
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Error occurrence timestamp",
     )
 
@@ -99,7 +99,7 @@ class ServiceError(BaseModel):
     caused_by: Optional["ServiceError"] = Field(
         default=None, description="Underlying error that caused this error"
     )
-    correlation_id: str | None = Field(
+    correlation_id: Optional[str] = Field(
         default=None, description="Correlation ID for distributed tracing"
     )
 
@@ -107,26 +107,26 @@ class ServiceError(BaseModel):
     retry_policy: RetryPolicy = Field(
         default=RetryPolicy.NO_RETRY, description="Recommended retry policy"
     )
-    retry_after_ms: int | None = Field(
+    retry_after_ms: Optional[int] = Field(
         default=None, description="Suggested retry delay in milliseconds"
     )
-    max_retries: int | None = Field(
+    max_retries: Optional[int] = Field(
         default=None, description="Maximum recommended retries"
     )
 
     # User guidance
-    user_message: str | None = Field(
+    user_message: Optional[str] = Field(
         default=None, description="User-friendly error message"
     )
-    resolution_steps: list[str] = Field(
+    resolution_steps: List[str] = Field(
         default_factory=list, description="Steps user can take to resolve the error"
     )
 
     # Technical details
-    stack_trace: str | None = Field(
+    stack_trace: Optional[str] = Field(
         default=None, description="Stack trace (for internal errors)"
     )
-    debug_info: dict[str, Any] = Field(
+    debug_info: Dict[str, Any] = Field(
         default_factory=dict, description="Debug information for troubleshooting"
     )
 
@@ -143,10 +143,10 @@ class ValidationError(ServiceError):
     error_type: Literal[ErrorType.VALIDATION] = ErrorType.VALIDATION
 
     # Validation-specific fields
-    field_errors: list[dict[str, str]] = Field(
+    field_errors: List[Dict[str, str]] = Field(
         default_factory=list, description="Per-field validation errors"
     )
-    schema_violations: list[str] = Field(
+    schema_violations: List[str] = Field(
         default_factory=list, description="Schema validation violations"
     )
 
@@ -168,7 +168,7 @@ class BudgetExceededError(ServiceError):
     budget_type: str = Field(description="Type of budget exceeded (time/tokens/calls)")
     limit: int = Field(description="Budget limit that was exceeded")
     consumed: int = Field(description="Amount actually consumed")
-    remaining_budget: dict[str, int] = Field(
+    remaining_budget: Dict[str, int] = Field(
         default_factory=dict, description="Remaining budget for other resource types"
     )
 
@@ -196,7 +196,7 @@ class CircuitBreakerError(ServiceError):
         description="Threshold that triggered circuit opening"
     )
     last_failure_time: datetime = Field(description="Timestamp of last failure")
-    next_attempt_time: datetime | None = Field(
+    next_attempt_time: Optional[datetime] = Field(
         default=None, description="When circuit will try half-open state"
     )
 
@@ -220,10 +220,10 @@ class TimeoutError(ServiceError):
     # Timeout-specific fields
     timeout_ms: int = Field(description="Configured timeout in milliseconds")
     elapsed_ms: int = Field(description="Time elapsed before timeout")
-    operation_stage: str | None = Field(
+    operation_stage: Optional[str] = Field(
         default=None, description="Stage of operation where timeout occurred"
     )
-    partial_results: dict[str, Any] | None = Field(
+    partial_results: Optional[Dict[str, Any]] = Field(
         default=None, description="Partial results if any were obtained"
     )
 
@@ -246,10 +246,10 @@ class RateLimitError(ServiceError):
     limit_type: str = Field(description="Type of rate limit (requests, tokens, etc.)")
     limit: int = Field(description="Rate limit threshold")
     current_usage: int = Field(description="Current usage count")
-    reset_time: datetime | None = Field(
+    reset_time: Optional[datetime] = Field(
         default=None, description="When rate limit resets"
     )
-    retry_after_seconds: int | None = Field(
+    retry_after_seconds: Optional[int] = Field(
         default=None, description="Seconds to wait before retrying"
     )
 
@@ -267,13 +267,13 @@ class ServiceUnavailableError(ServiceError):
     error_type: Literal[ErrorType.SERVICE_UNAVAILABLE] = ErrorType.SERVICE_UNAVAILABLE
 
     # Service availability specific fields
-    unavailable_services: list[str] = Field(
+    unavailable_services: List[str] = Field(
         default_factory=list, description="List of unavailable services"
     )
-    health_check_failures: dict[str, str] = Field(
+    health_check_failures: Dict[str, str] = Field(
         default_factory=dict, description="Health check failure details by service"
     )
-    estimated_recovery_time: datetime | None = Field(
+    estimated_recovery_time: Optional[datetime] = Field(
         default=None, description="Estimated service recovery time"
     )
     fallback_available: bool = Field(
@@ -322,10 +322,10 @@ class AuthorizationError(ServiceError):
 
     # Authorization specific fields
     required_permission: str = Field(description="Permission required for operation")
-    user_permissions: list[str] = Field(
+    user_permissions: List[str] = Field(
         default_factory=list, description="User's current permissions"
     )
-    resource: str | None = Field(
+    resource: Optional[str] = Field(
         default=None, description="Resource that access was denied to"
     )
 
@@ -346,13 +346,13 @@ class ConfigurationError(ServiceError):
     error_type: Literal[ErrorType.CONFIGURATION] = ErrorType.CONFIGURATION
 
     # Configuration specific fields
-    missing_config: list[str] = Field(
+    missing_config: List[str] = Field(
         default_factory=list, description="Missing configuration keys"
     )
-    invalid_config: dict[str, str] = Field(
+    invalid_config: Dict[str, str] = Field(
         default_factory=dict, description="Invalid configuration values"
     )
-    config_source: str | None = Field(
+    config_source: Optional[str] = Field(
         default=None, description="Source of configuration (file, env, etc.)"
     )
 
@@ -375,9 +375,9 @@ class ErrorResponse(BaseModel):
     error: ServiceError = Field(description="Error details")
 
     # Request context
-    request_id: str | None = Field(default=None, description="Request identifier")
+    request_id: Optional[str] = Field(default=None, description="Request identifier")
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Response timestamp",
     )
 
@@ -388,7 +388,7 @@ class ErrorResponse(BaseModel):
 
 # Helper functions for error creation
 def create_validation_error(
-    message: str, field_errors: list[dict[str, str]] = None, **kwargs
+    message: str, field_errors: List[Dict[str, str]] = None, **kwargs
 ) -> ValidationError:
     """Create a validation error with standard formatting."""
     return ValidationError(message=message, field_errors=field_errors or [], **kwargs)

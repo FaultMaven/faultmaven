@@ -17,8 +17,8 @@ Design Reference: TASK-021 Organization Management API Endpoints
 
 import logging
 import re
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -30,6 +30,7 @@ from fastapi import (
     Request,
     status,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from faultmaven.api.middleware.auth import get_current_user
@@ -38,11 +39,14 @@ from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
     NotFoundError,
+    PermissionDeniedException,
     ServiceException,
     ValidationException,
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.models.organization import (
+    Organization,
+    OrganizationMember,
     OrgPlanTier,
 )
 from faultmaven.modules.auth.domain.services.organization_service import (
@@ -70,10 +74,10 @@ class OrganizationCreateRequest(BaseModel):
     slug: str = Field(
         ..., description="URL-friendly identifier", min_length=3, max_length=50
     )
-    description: str | None = Field(
+    description: Optional[str] = Field(
         None, description="Organization description", max_length=500
     )
-    plan_tier: str | None = Field("free", description="Subscription plan tier")
+    plan_tier: Optional[str] = Field("free", description="Subscription plan tier")
 
     @field_validator("slug")
     @classmethod
@@ -86,7 +90,7 @@ class OrganizationCreateRequest(BaseModel):
 
     @field_validator("plan_tier")
     @classmethod
-    def validate_plan_tier(cls, v: str | None) -> str | None:
+    def validate_plan_tier(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return "free"  # Use default when null is passed
         valid_tiers = ["free", "pro", "enterprise"]
@@ -98,10 +102,10 @@ class OrganizationCreateRequest(BaseModel):
 class OrganizationUpdateRequest(BaseModel):
     """Request to update organization details"""
 
-    name: str | None = Field(
+    name: Optional[str] = Field(
         None, description="Updated organization name", max_length=100
     )
-    description: str | None = Field(
+    description: Optional[str] = Field(
         None, description="Updated description", max_length=500
     )
 
@@ -112,12 +116,12 @@ class OrganizationResponse(BaseModel):
     organization_id: str
     name: str
     slug: str
-    description: str | None
+    description: Optional[str]
     plan_tier: str
     max_members: int
     current_member_count: int = 0
-    owner_user_id: str | None = None
-    settings: dict[str, Any] = Field(default_factory=dict)
+    owner_user_id: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -139,7 +143,7 @@ class OrganizationListItem(BaseModel):
 class OrganizationListResponse(BaseModel):
     """Response for listing user's organizations"""
 
-    organizations: list[OrganizationListItem]
+    organizations: List[OrganizationListItem]
     total: int
     limit: int
     offset: int
@@ -149,11 +153,11 @@ class MemberAddRequest(BaseModel):
     """Request to add member to organization"""
 
     email: str = Field(..., description="Email of user to invite")
-    role: str | None = Field("member", description="Role to assign (member, admin)")
+    role: Optional[str] = Field("member", description="Role to assign (member, admin)")
 
     @field_validator("role")
     @classmethod
-    def validate_role(cls, v: str | None) -> str:
+    def validate_role(cls, v: Optional[str]) -> str:
         if v is None:
             return "member"  # Use default when null is passed
         valid_roles = ["member", "admin"]
@@ -192,7 +196,7 @@ class MemberResponse(BaseModel):
 class MemberListResponse(BaseModel):
     """Response for listing organization members"""
 
-    members: list[MemberResponse]
+    members: List[MemberResponse]
     total: int
     limit: int
     offset: int
@@ -227,23 +231,23 @@ class SettingsResponse(BaseModel):
     plan_tier: str
     max_members: int
     current_member_count: int = 0
-    max_cases_per_month: int | None = None
+    max_cases_per_month: Optional[int] = None
     max_storage_gb: int
-    features: dict[str, bool]
-    settings: dict[str, Any]
+    features: Dict[str, bool]
+    settings: Dict[str, Any]
 
 
 class SettingsUpdateRequest(BaseModel):
     """Request to update organization settings"""
 
-    allow_public_cases: bool | None = None
-    require_2fa: bool | None = None
-    session_timeout_minutes: int | None = Field(None, ge=15, le=480)
-    default_case_priority: str | None = None
+    allow_public_cases: Optional[bool] = None
+    require_2fa: Optional[bool] = None
+    session_timeout_minutes: Optional[int] = Field(None, ge=15, le=480)
+    default_case_priority: Optional[str] = None
 
     @field_validator("default_case_priority")
     @classmethod
-    def validate_priority(cls, v: str | None) -> str | None:
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
             valid_priorities = ["low", "medium", "high", "critical"]
             if v.lower() not in valid_priorities:
@@ -258,7 +262,7 @@ class SettingsUpdateResponse(BaseModel):
     """Response for updating organization settings"""
 
     organization_id: str
-    settings: dict[str, Any]
+    settings: Dict[str, Any]
     updated_at: datetime
 
 
@@ -283,8 +287,8 @@ class DeleteResponse(BaseModel):
     """Generic delete response"""
 
     message: str
-    organization_id: str | None = None
-    user_id: str | None = None
+    organization_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 # ============================================================================
@@ -663,7 +667,9 @@ async def delete_organization(
 )
 async def list_organization_members(
     organization_id: str = Path(..., description="Organization ID"),
-    role: str | None = Query(None, description="Filter by role: owner, admin, member"),
+    role: Optional[str] = Query(
+        None, description="Filter by role: owner, admin, member"
+    ),
     limit: int = Query(20, ge=1, le=100, description="Maximum results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     current_user: AuthenticatedUser = Depends(get_current_user),

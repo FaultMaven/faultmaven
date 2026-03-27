@@ -4,6 +4,8 @@ Case Evidence Store Configuration
 KB-specific configuration for case-scoped forensic evidence (logs, configs, metrics, code).
 """
 
+from typing import Optional
+
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
@@ -18,7 +20,7 @@ class CaseEvidenceConfig(KBConfig):
     - Collection per case: case_{case_id}
     """
 
-    def get_collection_name(self, scope_id: str | None) -> str:
+    def get_collection_name(self, scope_id: Optional[str]) -> str:
         """Get case-scoped collection name"""
         if not scope_id:
             raise ValueError("case_id required for case evidence queries")

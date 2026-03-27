@@ -13,7 +13,8 @@ Key Endpoints:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -21,18 +22,24 @@ from fastapi import (
     Depends,
     HTTPException,
     Path,
+    Query,
     Request,
     status,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id,
+    require_authentication,
 )
 from faultmaven.exceptions import (
+    NotFoundError,
+    PermissionDeniedException,
     ServiceException,
     ValidationException,
 )
+from faultmaven.modules.auth.domain.models.organization import Team, TeamMember
 from faultmaven.modules.auth.domain.services.team_service import TeamService
 
 # Create router
@@ -52,7 +59,7 @@ class TeamCreateRequest(BaseModel):
 
     organization_id: str = Field(..., description="Organization ID")
     name: str = Field(..., description="Team name", min_length=1, max_length=200)
-    description: str | None = Field(
+    description: Optional[str] = Field(
         None, description="Team description", max_length=1000
     )
 
@@ -60,8 +67,8 @@ class TeamCreateRequest(BaseModel):
 class TeamUpdateRequest(BaseModel):
     """Request to update team details"""
 
-    name: str | None = Field(None, description="Updated team name", max_length=200)
-    description: str | None = Field(
+    name: Optional[str] = Field(None, description="Updated team name", max_length=200)
+    description: Optional[str] = Field(
         None, description="Updated description", max_length=1000
     )
 
@@ -72,7 +79,7 @@ class TeamResponse(BaseModel):
     team_id: str
     organization_id: str
     name: str
-    description: str | None
+    description: Optional[str]
     created_at: datetime
     updated_at: datetime
 
@@ -84,7 +91,7 @@ class TeamMemberAddRequest(BaseModel):
     """Request to add member to team"""
 
     user_id: str = Field(..., description="User ID to add")
-    team_role: str | None = Field(
+    team_role: Optional[str] = Field(
         "member", description="Team role ('lead' or 'member')"
     )
 
@@ -94,7 +101,7 @@ class TeamMemberResponse(BaseModel):
 
     user_id: str
     team_id: str
-    team_role: str | None
+    team_role: Optional[str]
     joined_at: datetime
 
     class Config:
@@ -289,7 +296,7 @@ async def delete_team(
 
 @router.get(
     "/organization/{organization_id}",
-    response_model=list[TeamResponse],
+    response_model=List[TeamResponse],
     summary="List Organization Teams",
     description="List all teams in an organization.",
 )
@@ -297,7 +304,7 @@ async def list_organization_teams(
     organization_id: str = Path(..., description="Organization ID"),
     user_id: str = Depends(get_current_user_id),
     service: TeamService = Depends(get_team_service),
-) -> list[TeamResponse]:
+) -> List[TeamResponse]:
     """List all teams in an organization."""
     try:
         teams = await service.list_organization_teams(organization_id)
@@ -323,7 +330,7 @@ async def list_organization_teams(
 
 @router.get(
     "/user/{target_user_id}/organization/{organization_id}",
-    response_model=list[TeamResponse],
+    response_model=List[TeamResponse],
     summary="List User Teams",
     description="List all teams a user belongs to in an organization.",
 )
@@ -332,7 +339,7 @@ async def list_user_teams(
     organization_id: str = Path(..., description="Organization ID"),
     user_id: str = Depends(get_current_user_id),
     service: TeamService = Depends(get_team_service),
-) -> list[TeamResponse]:
+) -> List[TeamResponse]:
     """List all teams a user belongs to in an organization."""
     try:
         teams = await service.list_user_teams(target_user_id, organization_id)
@@ -462,7 +469,7 @@ async def remove_team_member(
 
 @router.get(
     "/{team_id}/members",
-    response_model=list[TeamMemberResponse],
+    response_model=List[TeamMemberResponse],
     summary="List Team Members",
     description="List all members of a team.",
 )
@@ -470,7 +477,7 @@ async def list_team_members(
     team_id: str = Path(..., description="Team ID"),
     user_id: str = Depends(get_current_user_id),
     service: TeamService = Depends(get_team_service),
-) -> list[TeamMemberResponse]:
+) -> List[TeamMemberResponse]:
     """List all members of a team."""
     try:
         members = await service.list_team_members(team_id)
@@ -494,7 +501,7 @@ async def list_team_members(
 
 @router.get(
     "/{team_id}/members/{target_user_id}/is-member",
-    response_model=dict[str, bool],
+    response_model=Dict[str, bool],
     summary="Check Team Membership",
     description="Check if user is member of team.",
 )
@@ -503,7 +510,7 @@ async def is_team_member(
     target_user_id: str = Path(..., description="User ID"),
     user_id: str = Depends(get_current_user_id),
     service: TeamService = Depends(get_team_service),
-) -> dict[str, bool]:
+) -> Dict[str, bool]:
     """Check if user is member of team."""
     try:
         is_member = await service.is_team_member(team_id, target_user_id)

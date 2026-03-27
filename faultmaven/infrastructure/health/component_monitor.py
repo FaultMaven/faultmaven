@@ -9,9 +9,9 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class HealthStatus(Enum):
@@ -30,12 +30,12 @@ class ComponentHealth:
     component_name: str
     status: HealthStatus
     response_time_ms: float
-    last_error: str | None = None
+    last_error: Optional[str] = None
     uptime_seconds: float = 0.0
     sla_current: float = 100.0
-    metadata: dict[str, Any] = field(default_factory=dict)
-    dependencies: list[str] = field(default_factory=list)
-    last_check: datetime = field(default_factory=lambda: datetime.now(UTC))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    dependencies: List[str] = field(default_factory=list)
+    last_check: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     error_count_24h: int = 0
     success_count_24h: int = 0
 
@@ -45,9 +45,9 @@ class DependencyMapping:
     """Maps component dependencies and criticality."""
 
     component: str
-    critical_dependencies: list[str] = field(default_factory=list)
-    optional_dependencies: list[str] = field(default_factory=list)
-    dependent_components: list[str] = field(default_factory=list)
+    critical_dependencies: List[str] = field(default_factory=list)
+    optional_dependencies: List[str] = field(default_factory=list)
+    dependent_components: List[str] = field(default_factory=list)
 
 
 class ComponentHealthMonitor:
@@ -56,10 +56,10 @@ class ComponentHealthMonitor:
     def __init__(self):
         """Initialize component health monitor."""
         self.logger = logging.getLogger(__name__)
-        self.component_health: dict[str, ComponentHealth] = {}
-        self.dependency_map: dict[str, DependencyMapping] = {}
-        self.health_history: dict[str, list[tuple[datetime, HealthStatus, float]]] = {}
-        self.sla_thresholds: dict[str, dict[str, float]] = {}
+        self.component_health: Dict[str, ComponentHealth] = {}
+        self.dependency_map: Dict[str, DependencyMapping] = {}
+        self.health_history: Dict[str, List[Tuple[datetime, HealthStatus, float]]] = {}
+        self.sla_thresholds: Dict[str, Dict[str, float]] = {}
         self._initialize_default_components()
 
     def _initialize_default_components(self) -> None:
@@ -117,8 +117,8 @@ class ComponentHealthMonitor:
     def register_component(
         self,
         component_name: str,
-        dependencies: list[str] | None = None,
-        sla_thresholds: dict[str, float] | None = None,
+        dependencies: Optional[List[str]] = None,
+        sla_thresholds: Optional[Dict[str, float]] = None,
     ) -> None:
         """Register a component for health monitoring.
 
@@ -180,7 +180,7 @@ class ComponentHealthMonitor:
             component_health.status = health_result["status"]
             component_health.response_time_ms = response_time
             component_health.last_error = health_result.get("error")
-            component_health.last_check = datetime.now(UTC)
+            component_health.last_check = datetime.now(timezone.utc)
             component_health.metadata.update(health_result.get("metadata", {}))
 
             # Update success/error counts
@@ -209,12 +209,12 @@ class ComponentHealthMonitor:
             component_health.status = HealthStatus.UNHEALTHY
             component_health.response_time_ms = (time.time() - start_time) * 1000
             component_health.last_error = str(e)
-            component_health.last_check = datetime.now(UTC)
+            component_health.last_check = datetime.now(timezone.utc)
             component_health.error_count_24h += 1
 
             return component_health
 
-    async def _perform_health_check(self, component_name: str) -> dict[str, Any]:
+    async def _perform_health_check(self, component_name: str) -> Dict[str, Any]:
         """Perform actual health check for a component.
 
         Args:
@@ -243,7 +243,7 @@ class ComponentHealthMonitor:
         else:
             return await self._generic_health_check(component_name)
 
-    async def _check_database_health(self) -> dict[str, Any]:
+    async def _check_database_health(self) -> Dict[str, Any]:
         """Check database health."""
         try:
             # In a real implementation, this would check actual database connectivity
@@ -261,7 +261,7 @@ class ComponentHealthMonitor:
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
-    async def _check_llm_provider_health(self) -> dict[str, Any]:
+    async def _check_llm_provider_health(self) -> Dict[str, Any]:
         """Check LLM provider health."""
         try:
             # Check if LLM providers are responsive
@@ -287,7 +287,7 @@ class ComponentHealthMonitor:
                 },
             }
 
-    async def _check_knowledge_base_health(self) -> dict[str, Any]:
+    async def _check_knowledge_base_health(self) -> Dict[str, Any]:
         """Check knowledge base health."""
         try:
             await asyncio.sleep(0.02)  # Simulate KB query
@@ -303,7 +303,7 @@ class ComponentHealthMonitor:
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
-    async def _check_session_store_health(self) -> dict[str, Any]:
+    async def _check_session_store_health(self) -> Dict[str, Any]:
         """Check session store health."""
         try:
             await asyncio.sleep(0.005)  # Simulate Redis operation
@@ -319,7 +319,7 @@ class ComponentHealthMonitor:
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
-    async def _check_vector_store_health(self) -> dict[str, Any]:
+    async def _check_vector_store_health(self) -> Dict[str, Any]:
         """Check vector store health."""
         try:
             await asyncio.sleep(0.03)  # Simulate vector search
@@ -335,7 +335,7 @@ class ComponentHealthMonitor:
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
-    async def _check_redis_health(self) -> dict[str, Any]:
+    async def _check_redis_health(self) -> Dict[str, Any]:
         """Check Redis health."""
         try:
             await asyncio.sleep(0.001)  # Simulate Redis ping
@@ -351,7 +351,7 @@ class ComponentHealthMonitor:
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
-    async def _check_sanitizer_health(self) -> dict[str, Any]:
+    async def _check_sanitizer_health(self) -> Dict[str, Any]:
         """Check data sanitizer health."""
         try:
             await asyncio.sleep(0.01)  # Simulate sanitization check
@@ -363,7 +363,7 @@ class ComponentHealthMonitor:
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e)}
 
-    async def _check_tracer_health(self) -> dict[str, Any]:
+    async def _check_tracer_health(self) -> Dict[str, Any]:
         """Check tracer health."""
         try:
             await asyncio.sleep(0.005)  # Simulate trace operation
@@ -383,7 +383,7 @@ class ComponentHealthMonitor:
                 "metadata": {"tracing_enabled": False, "fallback_mode": True},
             }
 
-    async def _generic_health_check(self, component_name: str) -> dict[str, Any]:
+    async def _generic_health_check(self, component_name: str) -> Dict[str, Any]:
         """Generic health check for unknown components."""
         try:
             # Basic connectivity/availability check
@@ -393,7 +393,7 @@ class ComponentHealthMonitor:
                 "status": HealthStatus.HEALTHY,
                 "metadata": {
                     "type": "generic",
-                    "last_check": datetime.now(UTC).isoformat(),
+                    "last_check": datetime.now(timezone.utc).isoformat(),
                 },
             }
         except Exception as e:
@@ -405,7 +405,7 @@ class ComponentHealthMonitor:
             return 100.0
 
         # Calculate SLA based on last 24 hours
-        cutoff_time = datetime.now(UTC) - timedelta(hours=24)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
         recent_history = [
             (timestamp, status, response_time)
             for timestamp, status, response_time in self.health_history[component_name]
@@ -445,18 +445,18 @@ class ComponentHealthMonitor:
 
         # Add new record
         self.health_history[component_name].append(
-            (datetime.now(UTC), status, response_time)
+            (datetime.now(timezone.utc), status, response_time)
         )
 
         # Keep only last 24 hours of history
-        cutoff_time = datetime.now(UTC) - timedelta(hours=24)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
         self.health_history[component_name] = [
             record
             for record in self.health_history[component_name]
             if record[0] >= cutoff_time
         ]
 
-    async def check_all_components(self) -> dict[str, ComponentHealth]:
+    async def check_all_components(self) -> Dict[str, ComponentHealth]:
         """Check health of all registered components.
 
         Returns:
@@ -487,7 +487,7 @@ class ComponentHealthMonitor:
 
         return health_results
 
-    def get_dependency_map(self) -> dict[str, list[str]]:
+    def get_dependency_map(self) -> Dict[str, List[str]]:
         """Get dependency mapping for all components.
 
         Returns:
@@ -498,7 +498,7 @@ class ComponentHealthMonitor:
             for component, mapping in self.dependency_map.items()
         }
 
-    def get_critical_path_dependencies(self) -> dict[str, list[str]]:
+    def get_critical_path_dependencies(self) -> Dict[str, List[str]]:
         """Get critical path dependencies for all components.
 
         Returns:
@@ -509,7 +509,7 @@ class ComponentHealthMonitor:
             for component, mapping in self.dependency_map.items()
         }
 
-    def get_overall_health_status(self) -> tuple[HealthStatus, dict[str, Any]]:
+    def get_overall_health_status(self) -> Tuple[HealthStatus, Dict[str, Any]]:
         """Get overall system health status based on all components.
 
         Returns:
@@ -567,7 +567,7 @@ class ComponentHealthMonitor:
 
         return overall_status, summary
 
-    def get_component_metrics(self, component_name: str) -> dict[str, Any]:
+    def get_component_metrics(self, component_name: str) -> Dict[str, Any]:
         """Get detailed metrics for a specific component.
 
         Args:

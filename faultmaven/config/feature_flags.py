@@ -4,6 +4,9 @@ This module contains only active feature flags. Migration-related flags
 have been removed as the refactored architecture is now the default.
 """
 
+import os
+from typing import Any, Dict, Optional
+
 
 class FeatureFlagManager:
     """Manages feature flags with settings-based configuration."""
@@ -40,7 +43,7 @@ class FeatureFlagManager:
         """Enable detailed tracing."""
         return self._detailed_tracing
 
-    def get_active_flags(self) -> dict[str, bool]:
+    def get_active_flags(self) -> Dict[str, bool]:
         """Get all currently active feature flags."""
         return {
             "experimental_features": self.experimental_features,

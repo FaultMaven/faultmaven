@@ -11,7 +11,7 @@ Two adapters:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Dict
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
@@ -44,7 +44,7 @@ class KBToolAdapter(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> dict[str, Any]:
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -61,7 +61,7 @@ class KBToolAdapter(AgentTool):
 
     async def execute_with_context(
         self,
-        params: dict[str, Any],
+        params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         question = params.get("question", "").strip()
@@ -110,7 +110,7 @@ class CaseEvidenceQAAdapter(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> dict[str, Any]:
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -128,7 +128,7 @@ class CaseEvidenceQAAdapter(AgentTool):
 
     async def execute_with_context(
         self,
-        params: dict[str, Any],
+        params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         question = params.get("question", "").strip()

@@ -20,10 +20,10 @@ import asyncio
 import importlib
 import logging
 import sys
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 # Available jobs registry
-AVAILABLE_JOBS: dict[str, str] = {
+AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
     "knowledge_indexing": "faultmaven.jobs.knowledge_indexing_job",
     "storage_cleanup": "faultmaven.modules.agent.jobs.storage_cleanup",
@@ -40,7 +40,7 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
-def list_available_jobs() -> list[dict[str, str]]:
+def list_available_jobs() -> List[Dict[str, str]]:
     """Get list of available jobs with descriptions."""
     jobs = []
     for job_name, module_path in AVAILABLE_JOBS.items():
@@ -57,7 +57,7 @@ async def run_job(
     job_name: str,
     verbose: bool = False,
     **kwargs: Any,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Run a job by name.
 
     Args:
@@ -121,7 +121,7 @@ async def run_job(
         return {"status": "failed", "error": str(e)}
 
 
-def main(args: list[str] | None = None) -> int:
+def main(args: Optional[List[str]] = None) -> int:
     """CLI entry point.
 
     Args:
@@ -183,7 +183,7 @@ Examples:
         return 1
 
     # Build kwargs from parsed args
-    kwargs: dict[str, Any] = {}
+    kwargs: Dict[str, Any] = {}
     if parsed_args.organization_id:
         kwargs["organization_id"] = parsed_args.organization_id
 

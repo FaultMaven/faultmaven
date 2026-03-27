@@ -10,7 +10,7 @@ Covers new fields: EvidenceSummary.collected_at_turn, EvidenceSummary.category,
 uploaded_files_count on Investigating and Resolved responses.
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -103,7 +103,7 @@ def _make_resolved_case(**overrides) -> Case:
     """
     case = _make_investigating_case()
     # Set all terminal fields atomically to bypass cross-field validators
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     object.__setattr__(case, "resolved_at", now)
     object.__setattr__(case, "closed_at", now)
     object.__setattr__(case, "closure_reason", "resolved")
@@ -119,7 +119,7 @@ def _make_closed_case(**overrides) -> Case:
     Uses object.__setattr__ to bypass Pydantic's bidirectional validators.
     """
     case = _make_investigating_case()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     object.__setattr__(case, "closed_at", now)
     object.__setattr__(case, "closure_reason", "closed_by_user")
     object.__setattr__(case, "status", CaseStatus.CLOSED)
@@ -470,7 +470,7 @@ class TestTransformResolved:
                 solution_type=SolutionType.CONFIG_CHANGE,
                 title="Fix DNS config",
                 immediate_action="Reverted upstream DNS TTL",
-                applied_at=datetime.now(UTC),
+                applied_at=datetime.now(timezone.utc),
             )
         )
 
@@ -599,7 +599,7 @@ class TestSerialization:
             evidence_id="ev_test",
             type="log_file",
             summary="Test",
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             relevance_score=0.5,
         )
 

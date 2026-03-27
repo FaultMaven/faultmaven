@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
+from faultmaven.modules.knowledge.domain.services.document_parser import (
+    DocumentParser,
+)
 
 
 @pytest.fixture

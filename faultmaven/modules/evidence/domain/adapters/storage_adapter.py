@@ -5,6 +5,7 @@ Handles file upload, download, and deletion with proper path management.
 """
 
 import logging
+from typing import Optional
 from uuid import uuid4
 
 from fastapi import UploadFile
@@ -31,7 +32,7 @@ class EvidenceStorageAdapter:
     def __init__(
         self,
         file_storage: FileStorageService,
-        base_url: str | None = None,
+        base_url: Optional[str] = None,
     ):
         """Initialize storage adapter.
 
@@ -108,7 +109,7 @@ class EvidenceStorageAdapter:
         # Relative URL if no base URL configured
         return f"/api/v1/evidence/file/{storage_path}"
 
-    async def get_file_content(self, storage_path: str) -> bytes | None:
+    async def get_file_content(self, storage_path: str) -> Optional[bytes]:
         """Retrieve file content for download.
 
         Args:

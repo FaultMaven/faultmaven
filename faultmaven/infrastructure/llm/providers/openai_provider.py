@@ -4,7 +4,9 @@ OpenAI provider implementation.
 This module implements the OpenAI LLM provider for GPT models.
 """
 
-from typing import Any
+import asyncio
+import json
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
@@ -13,7 +15,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ToolCall
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -27,12 +29,12 @@ class OpenAIProvider(BaseLLMProvider):
         """Check if OpenAI provider is properly configured"""
         return bool(self.config.api_key and self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> list[str]:
+    def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
 
     def get_structured_output_capability(
-        self, model: str | None = None
+        self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for OpenAI models.
@@ -68,11 +70,11 @@ class OpenAIProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: str | None = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate response using OpenAI API
@@ -185,7 +187,7 @@ class OpenAIProvider(BaseLLMProvider):
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
                     )
-        except TimeoutError:
+        except asyncio.TimeoutError:
             raise LLMException(
                 f"OpenAI API request timed out after {self.config.timeout}s "
                 f"(model: {effective_model})"

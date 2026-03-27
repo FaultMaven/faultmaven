@@ -9,7 +9,6 @@ Tests cover:
 
 import threading
 import time
-from datetime import UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -190,7 +189,7 @@ class TestModelLoadInfo:
 
         info = ModelLoadInfo(
             model_name="BAAI/bge-m3",
-            loaded_at=datetime.now(UTC),
+            loaded_at=datetime.now(timezone.utc),
             load_time_seconds=2.5,
             load_triggered_by="startup",
         )
@@ -208,7 +207,7 @@ class TestModelLoadInfo:
 
         info = ModelLoadInfo(
             model_name="BAAI/bge-m3",
-            loaded_at=datetime.now(UTC),
+            loaded_at=datetime.now(timezone.utc),
             load_time_seconds=0.1,
             load_triggered_by="lazy",
             error="Model not found",

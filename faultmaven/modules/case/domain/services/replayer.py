@@ -7,7 +7,7 @@ This module provides the CaseReplayer service, responsible for:
 This service is Read-Only and does not modify existing cases.
 """
 
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from faultmaven.modules.case.domain.models import Case
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
@@ -56,7 +56,7 @@ class CaseReplayer:
 
     async def diff_turns(
         self, case_id: str, turn_a: int, turn_b: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         Compute the semantic difference between two turns of a case.
 

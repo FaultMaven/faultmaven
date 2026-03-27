@@ -20,7 +20,7 @@ Pattern:
         return request.app.state.session_service
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Depends, HTTPException, Request
 
@@ -38,6 +38,7 @@ from ...services.preprocessing import PreprocessingService
 # Type hints for lazy imports
 if TYPE_CHECKING:
     from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
+    from ...services import DataService, SessionService
 
 
 # Service Dependencies (Composition Root pattern - access via app.state)
@@ -79,7 +80,7 @@ async def get_planning_service(request: Request):
     return request.app.state.planning_service
 
 
-async def get_case_service(request: Request) -> ICaseService | None:
+async def get_case_service(request: Request) -> Optional[ICaseService]:
     """Get CaseService instance from app.state (Composition Root)"""
     return getattr(request.app.state, "case_service", None)
 
@@ -107,7 +108,7 @@ async def get_investigation_orchestrator(request: Request):
 # TD-001: get_report_store removed - reports now accessed via get_case_repository()
 
 
-async def get_case_repository(request: Request) -> Any | None:
+async def get_case_repository(request: Request) -> Optional[Any]:
     """Get CaseRepository instance from app.extra (TD-001: use for report persistence)"""
     try:
         container = request.app.extra.get("di_container")
@@ -119,7 +120,7 @@ async def get_case_repository(request: Request) -> Any | None:
         return None
 
 
-async def get_tenant_provider(request: Request) -> TenantProvider | None:
+async def get_tenant_provider(request: Request) -> Optional[TenantProvider]:
     """Get TenantProvider instance from app.state (TASK-023/024).
 
     Returns TenantProvider for multi-tenant isolation in API endpoints.
@@ -179,7 +180,7 @@ async def get_case_vector_store(request: Request):
 # Authentication Dependencies
 
 
-async def get_session_id(request: Request) -> str | None:
+async def get_session_id(request: Request) -> Optional[str]:
     """
     Extract session ID from request headers
 
@@ -196,7 +197,7 @@ async def get_session_id(request: Request) -> str | None:
     return session_id
 
 
-async def get_user_id(request: Request) -> str | None:
+async def get_user_id(request: Request) -> Optional[str]:
     """
     Extract user ID from validated session
 
@@ -304,9 +305,9 @@ async def get_current_session(
 
 
 async def get_optional_session(
-    session_id: str | None = None,
+    session_id: Optional[str] = None,
     session_service=Depends(get_session_service),
-) -> SessionContext | None:
+) -> Optional[SessionContext]:
     """
     Get optional session if ID provided
 
@@ -347,7 +348,7 @@ async def get_request_metadata(request: Request) -> dict:
 # Authentication Dependencies (placeholder for future implementation)
 
 
-async def get_current_user(request: Request) -> dict | None:
+async def get_current_user(request: Request) -> Optional[dict]:
     """
     Get current authenticated user
 
@@ -371,7 +372,7 @@ async def get_current_user(request: Request) -> dict | None:
 
 async def check_rate_limit(
     request: Request,
-    user: dict | None = Depends(get_current_user),
+    user: Optional[dict] = Depends(get_current_user),
 ) -> bool:
     """
     Check rate limits
@@ -463,7 +464,7 @@ async def check_service_health(request: Request) -> dict:
 # Job Service Dependencies
 
 
-async def get_job_service(request: Request) -> IJobService | None:
+async def get_job_service(request: Request) -> Optional[IJobService]:
     """Get JobService instance from app.state (Composition Root)"""
     return getattr(request.app.state, "job_service", None)
 

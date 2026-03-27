@@ -21,13 +21,14 @@ Design Principles:
 """
 
 import logging
-from typing import Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 def preprocess_logs(
-    insights: dict[str, Any], raw_content: str, max_chars: int = 8000
+    insights: Dict[str, Any], raw_content: str, max_chars: int = 8000
 ) -> str:
     """
     Format log analysis insights into LLM-digestible summary.
@@ -227,7 +228,7 @@ def preprocess_logs(
 
 
 def preprocess_metrics(
-    insights: dict[str, Any], raw_content: str, max_chars: int = 6000
+    insights: Dict[str, Any], raw_content: str, max_chars: int = 6000
 ) -> str:
     """
     Format metrics analysis insights into LLM-digestible summary.
@@ -266,7 +267,7 @@ def preprocess_metrics(
 
 
 def preprocess_errors(
-    insights: dict[str, Any], raw_content: str, max_chars: int = 5000
+    insights: Dict[str, Any], raw_content: str, max_chars: int = 5000
 ) -> str:
     """
     Format error/stack trace analysis insights into LLM-digestible summary.
@@ -302,7 +303,7 @@ def preprocess_errors(
 
 
 def preprocess_config(
-    insights: dict[str, Any], raw_content: str, max_chars: int = 6000
+    insights: Dict[str, Any], raw_content: str, max_chars: int = 6000
 ) -> str:
     """
     Format configuration file analysis insights into LLM-digestible summary.

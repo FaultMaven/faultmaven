@@ -11,7 +11,7 @@ This is a safety net for collections that weren't properly deleted when cases cl
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import FaultMavenSettings
 
@@ -22,7 +22,7 @@ async def run(
     settings: FaultMavenSettings,
     container: Any,
     **kwargs: Any,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Run case cleanup job.
 
     This is the standalone job entrypoint. It can be invoked via CLI
@@ -42,7 +42,7 @@ async def run(
     """
     logger.info("Starting case cleanup job")
 
-    result: dict[str, Any] = {
+    result: Dict[str, Any] = {
         "job": "case_cleanup",
         "status": "completed",
         "deleted_count": 0,

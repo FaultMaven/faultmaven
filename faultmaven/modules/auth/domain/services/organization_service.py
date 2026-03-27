@@ -15,10 +15,10 @@ Core Responsibilities:
 
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.organization import (
     AuditCategory,
@@ -38,8 +38,8 @@ class OrganizationService:
     def __init__(
         self,
         organization_repository: IOrganizationRepository,
-        audit_repository: Any | None = None,
-        settings: Any | None = None,
+        audit_repository: Optional[Any] = None,
+        settings: Optional[Any] = None,
     ):
         """
         Initialize the Organization Service.
@@ -59,7 +59,7 @@ class OrganizationService:
         name: str,
         slug: str,
         creator_user_id: str,
-        description: str | None = None,
+        description: Optional[str] = None,
         plan_tier: OrgPlanTier = OrgPlanTier.FREE,
     ) -> Organization:
         """
@@ -91,7 +91,7 @@ class OrganizationService:
 
         # Create organization
         organization_id = f"org_{uuid.uuid4().hex[:17]}"
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Set max members based on plan
         max_members = {
@@ -138,12 +138,12 @@ class OrganizationService:
         return created_org
 
     @trace("org_service_get_organization")
-    async def get_organization(self, organization_id: str) -> Organization | None:
+    async def get_organization(self, organization_id: str) -> Optional[Organization]:
         """Get organization by ID."""
         return await self.repository.get_organization(organization_id)
 
     @trace("org_service_get_organization_by_slug")
-    async def get_organization_by_slug(self, slug: str) -> Organization | None:
+    async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug."""
         return await self.repository.get_organization_by_slug(slug)
 
@@ -152,9 +152,9 @@ class OrganizationService:
         self,
         organization_id: str,
         user_id: str,
-        name: str | None = None,
-        description: str | None = None,
-        settings: dict[str, Any] | None = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        settings: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Update organization details.
@@ -387,19 +387,21 @@ class OrganizationService:
         return success
 
     @trace("org_service_list_user_organizations")
-    async def list_user_organizations(self, user_id: str) -> list[Organization]:
+    async def list_user_organizations(self, user_id: str) -> List[Organization]:
         """List all organizations a user belongs to."""
         return await self.repository.list_user_organizations(user_id)
 
     @trace("org_service_list_organization_members")
     async def list_organization_members(
         self, organization_id: str
-    ) -> list[OrganizationMember]:
+    ) -> List[OrganizationMember]:
         """List all members of an organization."""
         return await self.repository.list_organization_members(organization_id)
 
     @trace("org_service_get_member_role")
-    async def get_member_role(self, organization_id: str, user_id: str) -> str | None:
+    async def get_member_role(
+        self, organization_id: str, user_id: str
+    ) -> Optional[str]:
         """Get user's role in organization."""
         return await self.repository.get_member_role(organization_id, user_id)
 

@@ -7,10 +7,10 @@ and integration with the monitoring framework.
 
 import logging
 import time
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
-from fastapi import Request
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from faultmaven.utils.serialization import to_json_compatible
@@ -62,7 +62,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         """
         # Start timing
         start_time = time.time()
-        start_timestamp = datetime.now(UTC)
+        start_timestamp = datetime.now(timezone.utc)
 
         # Generate unique request ID for correlation
         request_id = f"req_{int(start_time * 1000000)}"
@@ -328,7 +328,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             self.logger.error(f"Failed to record performance metrics: {e}")
 
-    def get_middleware_statistics(self) -> dict[str, Any]:
+    def get_middleware_statistics(self) -> Dict[str, Any]:
         """Get middleware performance statistics.
 
         Returns:
@@ -366,7 +366,7 @@ class PerformanceMetricsEndpoint:
         self.middleware = middleware
         self.logger = logging.getLogger(__name__)
 
-    async def get_performance_metrics(self) -> dict[str, Any]:
+    async def get_performance_metrics(self) -> Dict[str, Any]:
         """Get comprehensive performance metrics.
 
         Returns:
@@ -389,7 +389,7 @@ class PerformanceMetricsEndpoint:
             alert_stats = alert_manager.get_alert_statistics()
 
             return {
-                "timestamp": to_json_compatible(datetime.now(UTC)),
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "middleware": middleware_stats,
                 "metrics_collector": metrics_summary,
                 "dashboard": dashboard_data,
@@ -401,12 +401,12 @@ class PerformanceMetricsEndpoint:
             self.logger.error(f"Failed to get performance metrics: {e}")
             return {
                 "error": f"Failed to get performance metrics: {e}",
-                "timestamp": to_json_compatible(datetime.now(UTC)),
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             }
 
     async def get_real_time_metrics(
         self, time_window_minutes: int = 5
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get real-time performance metrics.
 
         Args:
@@ -420,7 +420,7 @@ class PerformanceMetricsEndpoint:
             active_alerts = alert_manager.get_active_alerts()
 
             return {
-                "timestamp": to_json_compatible(datetime.now(UTC)),
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "time_window_minutes": time_window_minutes,
                 "dashboard": dashboard_data,
                 "active_alerts": [
@@ -441,5 +441,5 @@ class PerformanceMetricsEndpoint:
             self.logger.error(f"Failed to get real-time metrics: {e}")
             return {
                 "error": f"Failed to get real-time metrics: {e}",
-                "timestamp": to_json_compatible(datetime.now(UTC)),
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             }

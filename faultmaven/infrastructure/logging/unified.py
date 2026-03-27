@@ -6,16 +6,21 @@ infrastructure to provide consistent, deduplicated logging across all applicatio
 layers with performance tracking and error cascade prevention.
 """
 
+import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict, Iterator, Optional, Union
+
+import structlog
 
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import (
+    ErrorContext,
     LoggingCoordinator,
+    PerformanceTracker,
+    RequestContext,
     request_context,
 )
 
@@ -56,7 +61,7 @@ class UnifiedLogger:
         self,
         operation: str,
         direction: str,
-        data: dict[str, Any] | None = None,
+        data: Optional[Dict[str, Any]] = None,
         **extra_fields,
     ) -> None:
         """
@@ -116,7 +121,7 @@ class UnifiedLogger:
     @asynccontextmanager
     async def operation(
         self, operation_name: str, **context_fields
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[Dict[str, Any]]:
         """
         Context manager for unified operation logging with timing and error handling.
 
@@ -147,7 +152,7 @@ class UnifiedLogger:
         operation_context = {
             "operation": operation_name,
             "layer": self.layer,
-            "start_time": datetime.now(UTC).isoformat(),
+            "start_time": datetime.now(timezone.utc).isoformat(),
             **context_fields,
         }
 
@@ -238,7 +243,7 @@ class UnifiedLogger:
             # Update context with final timing
             operation_context.update(
                 {
-                    "end_time": datetime.now(UTC).isoformat(),
+                    "end_time": datetime.now(timezone.utc).isoformat(),
                     "duration_seconds": duration,
                     "performance_violation": performance_violation,
                     "threshold_seconds": threshold,
@@ -270,7 +275,7 @@ class UnifiedLogger:
     @contextmanager
     def operation_sync(
         self, operation_name: str, **context_fields
-    ) -> Iterator[dict[str, Any]]:
+    ) -> Iterator[Dict[str, Any]]:
         """
         Synchronous version of operation context manager.
 
@@ -291,7 +296,7 @@ class UnifiedLogger:
         operation_context = {
             "operation": operation_name,
             "layer": self.layer,
-            "start_time": datetime.now(UTC).isoformat(),
+            "start_time": datetime.now(timezone.utc).isoformat(),
             **context_fields,
         }
 
@@ -382,7 +387,7 @@ class UnifiedLogger:
             # Update context with final timing
             operation_context.update(
                 {
-                    "end_time": datetime.now(UTC).isoformat(),
+                    "end_time": datetime.now(timezone.utc).isoformat(),
                     "duration_seconds": duration,
                     "performance_violation": performance_violation,
                     "threshold_seconds": threshold,
@@ -414,9 +419,9 @@ class UnifiedLogger:
     def log_metric(
         self,
         metric_name: str,
-        value: int | float,
+        value: Union[int, float],
         unit: str = "count",
-        tags: dict[str, str] | None = None,
+        tags: Optional[Dict[str, str]] = None,
         **extra_fields,
     ) -> None:
         """
@@ -475,7 +480,7 @@ class UnifiedLogger:
         event_type: str,
         event_name: str,
         severity: str = "info",
-        data: dict[str, Any] | None = None,
+        data: Optional[Dict[str, Any]] = None,
         **extra_fields,
     ) -> None:
         """
@@ -540,7 +545,7 @@ class UnifiedLogger:
         self.logger.warning(message, layer=self.layer, **extra_fields)
 
     def error(
-        self, message: str, error: Exception | None = None, **extra_fields
+        self, message: str, error: Optional[Exception] = None, **extra_fields
     ) -> None:
         """Log error message with cascade prevention."""
         error_data = {"layer": self.layer, **extra_fields}
@@ -561,7 +566,7 @@ class UnifiedLogger:
             self.logger.error(message, **error_data)
 
     def critical(
-        self, message: str, error: Exception | None = None, **extra_fields
+        self, message: str, error: Optional[Exception] = None, **extra_fields
     ) -> None:
         """Log critical message with cascade prevention."""
         error_data = {"layer": self.layer, **extra_fields}
@@ -583,7 +588,7 @@ class UnifiedLogger:
 
 
 # Global logger instances cache to avoid recreating loggers
-_logger_instances: dict[str, UnifiedLogger] = {}
+_logger_instances: Dict[str, UnifiedLogger] = {}
 
 
 def get_unified_logger(name: str, layer: str) -> UnifiedLogger:

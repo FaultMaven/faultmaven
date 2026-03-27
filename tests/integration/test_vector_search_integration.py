@@ -11,7 +11,7 @@ Tests cover:
 
 import shutil
 import tempfile
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,7 +56,7 @@ def mock_embedding_service():
     service.model = "text-embedding-3-small"
     service.dimensions = EMBEDDING_DIMENSIONS
 
-    def create_deterministic_embedding(text: str) -> list[float]:
+    def create_deterministic_embedding(text: str) -> List[float]:
         """Create embedding based on text hash for consistency."""
         import hashlib
 
@@ -132,8 +132,8 @@ def create_knowledge_item(
         item_type=item_type,
         category=category,
         is_published=True,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
 

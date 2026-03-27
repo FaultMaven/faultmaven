@@ -24,11 +24,12 @@ Security Notes:
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from faultmaven.api.v1.auth_dependencies import (
     check_auth_services_health,
@@ -39,15 +40,19 @@ from faultmaven.api.v1.auth_dependencies import (
 )
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.config.settings import AuthMode, get_settings
+from faultmaven.container import container
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.api_auth import (
+    AuthenticationRequiredError,
+    AuthError,
     AuthTokenResponse,
     DevLoginRequest,
     LogoutResponse,
+    TokenValidationError,
     UserInfoResponse,
     UserProfile,
 )
-from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.auth import DevUser, TokenStatus
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
@@ -121,7 +126,7 @@ class OAuthConfigResponse(BaseModel):
     authorize_url: str
     token_url: str
     client_id: str
-    scopes: list[str]
+    scopes: List[str]
 
 
 class AuthConfigResponse(BaseModel):
@@ -132,10 +137,10 @@ class AuthConfigResponse(BaseModel):
     """
 
     auth_mode: str
-    login_endpoint: str | None = None
-    register_endpoint: str | None = None
+    login_endpoint: Optional[str] = None
+    register_endpoint: Optional[str] = None
     supports_registration: bool
-    oauth: OAuthConfigResponse | None = None
+    oauth: Optional[OAuthConfigResponse] = None
 
 
 @router.get("/config", response_model=AuthConfigResponse)
@@ -775,7 +780,7 @@ async def auth_health_check():
 
         # Add timestamp
         health_status["authentication"]["timestamp"] = to_json_compatible(
-            datetime.now(UTC)
+            datetime.now(timezone.utc)
         )
 
         return health_status["authentication"]
@@ -784,7 +789,7 @@ async def auth_health_check():
         logger.error(f"Auth health check failed: {e}")
         return {
             "status": "unhealthy",
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "error": str(e),
         }
 

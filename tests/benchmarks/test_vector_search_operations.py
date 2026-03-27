@@ -22,7 +22,7 @@ import shutil
 import statistics
 import tempfile
 import time
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
@@ -52,7 +52,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 # =============================================================================
 
 
-def create_embedding(value: float = 0.1) -> list[float]:
+def create_embedding(value: float = 0.1) -> List[float]:
     """Create test embedding vector."""
     return [value] * EMBEDDING_DIMENSIONS
 
@@ -70,15 +70,15 @@ def create_knowledge_item(
         item_type=KnowledgeItemType.FAQ,
         category="general",
         is_published=True,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
 
 class BenchmarkResult:
     """Container for benchmark results."""
 
-    def __init__(self, name: str, times: list[float], target_p95_ms: float):
+    def __init__(self, name: str, times: List[float], target_p95_ms: float):
         self.name = name
         self.times = times
         self.target_p95_ms = target_p95_ms

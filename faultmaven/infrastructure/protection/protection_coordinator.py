@@ -3,16 +3,19 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.models.behavioral import (
     AnomalyResult,
+    BehaviorAnalysisResult,
+    BehaviorProfile,
     BehaviorScore,
     ClientProfile,
     ProtectionDecision,
     ReputationEvent,
     ReputationLevel,
+    ReputationScore,
     RiskLevel,
 )
 from faultmaven.models.interfaces import ISessionStore
@@ -69,7 +72,7 @@ class ProtectionCoordinator:
     def __init__(
         self,
         config: ProtectionConfig = None,
-        session_store: ISessionStore | None = None,
+        session_store: Optional[ISessionStore] = None,
     ):
         self.config = config or ProtectionConfig()
         self.session_store = session_store
@@ -79,11 +82,11 @@ class ProtectionCoordinator:
         self.behavioral_analyzer = None
         self.anomaly_detector = None
         self.reputation_engine = None
-        self.circuit_breakers: dict[str, SmartCircuitBreaker] = {}
+        self.circuit_breakers: Dict[str, SmartCircuitBreaker] = {}
 
         # System state
         self.system_metrics = SystemMetrics()
-        self.active_protections: dict[str, Any] = {}
+        self.active_protections: Dict[str, Any] = {}
         self.protection_statistics = {
             "requests_analyzed": 0,
             "anomalies_detected": 0,
@@ -94,14 +97,14 @@ class ProtectionCoordinator:
         }
 
         # Background tasks
-        self._monitoring_task: asyncio.Task | None = None
-        self._cleanup_task: asyncio.Task | None = None
+        self._monitoring_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
 
         # Client profiles cache
-        self._client_profiles: dict[str, ClientProfile] = {}
+        self._client_profiles: Dict[str, ClientProfile] = {}
         self._profile_cache_ttl = timedelta(minutes=30)
-        self._profile_timestamps: dict[str, datetime] = {}
+        self._profile_timestamps: Dict[str, datetime] = {}
 
     async def initialize(self):
         """Initialize all intelligent protection components"""
@@ -168,7 +171,9 @@ class ProtectionCoordinator:
 
                 # Update client profile with behavior
                 if client_profile.behavior_profile:
-                    client_profile.behavior_profile.last_updated = datetime.now(UTC)
+                    client_profile.behavior_profile.last_updated = datetime.now(
+                        timezone.utc
+                    )
                     client_profile.behavior_profile.current_risk_level = (
                         behavior_score.risk_level
                     )
@@ -197,14 +202,14 @@ class ProtectionCoordinator:
                 reputation_level = client_profile.reputation_score.reputation_level
                 if reputation_level == ReputationLevel.BLOCKED:
                     return ProtectionDecision(
-                        decision_id=f"rep_block_{session_id}_{int(datetime.now(UTC).timestamp())}",
+                        decision_id=f"rep_block_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
                         session_id=session_id,
                         allow_request=False,
                         applied_restrictions=["reputation_block"],
                         risk_assessment=RiskLevel.CRITICAL,
                         confidence=0.9,
                         explanation="Client reputation is blocked",
-                        decision_timestamp=datetime.now(UTC),
+                        decision_timestamp=datetime.now(timezone.utc),
                     )
                 elif reputation_level == ReputationLevel.RESTRICTED:
                     reputation_factor = 0.3
@@ -239,13 +244,13 @@ class ProtectionCoordinator:
             self.logger.error(f"Error in intelligent protection request analysis: {e}")
             # Return safe default decision
             return ProtectionDecision(
-                decision_id=f"error_{session_id}_{int(datetime.now(UTC).timestamp())}",
+                decision_id=f"error_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
                 session_id=session_id,
                 allow_request=True,
                 risk_assessment=RiskLevel.MEDIUM,
                 confidence=0.0,
                 explanation="Error in protection analysis, defaulting to allow",
-                decision_timestamp=datetime.now(UTC),
+                decision_timestamp=datetime.now(timezone.utc),
             )
 
     async def process_response(
@@ -294,7 +299,7 @@ class ProtectionCoordinator:
         except Exception as e:
             self.logger.error(f"Error processing response: {e}")
 
-    async def get_client_risk_assessment(self, session_id: str) -> dict[str, Any]:
+    async def get_client_risk_assessment(self, session_id: str) -> Dict[str, Any]:
         """Get comprehensive risk assessment for a client"""
         try:
             client_profile = await self._get_client_profile(session_id)
@@ -376,7 +381,7 @@ class ProtectionCoordinator:
                 "confidence": 0.0,
             }
 
-    async def get_system_status(self) -> dict[str, Any]:
+    async def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status"""
         try:
             status = {
@@ -473,11 +478,14 @@ class ProtectionCoordinator:
         # Check cache first
         if session_id in self._client_profiles:
             timestamp = self._profile_timestamps.get(session_id)
-            if timestamp and datetime.now(UTC) - timestamp < self._profile_cache_ttl:
+            if (
+                timestamp
+                and datetime.now(timezone.utc) - timestamp < self._profile_cache_ttl
+            ):
                 return self._client_profiles[session_id]
 
         # Create or load profile
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Load behavior profile if available
         behavior_profile = None
@@ -532,7 +540,7 @@ class ProtectionCoordinator:
                 session_id=client_profile.client_id,
                 endpoint=endpoint,
                 method=request_data.get("method", "GET"),
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 payload_size=request_data.get("payload_size", 0),
             )
 
@@ -543,32 +551,32 @@ class ProtectionCoordinator:
                 self.protection_statistics["circuit_breaker_actions"] += 1
 
                 return ProtectionDecision(
-                    decision_id=f"cb_{endpoint}_{client_profile.client_id}_{int(datetime.now(UTC).timestamp())}",
+                    decision_id=f"cb_{endpoint}_{client_profile.client_id}_{int(datetime.now(timezone.utc).timestamp())}",
                     session_id=client_profile.client_id,
                     allow_request=decision.action.value == "allow",
                     applied_restrictions=[f"circuit_breaker_{decision.action.value}"],
                     risk_assessment=RiskLevel.HIGH,
                     confidence=decision.confidence,
                     explanation=f"Circuit breaker {decision.action.value}: {decision.reason}",
-                    decision_timestamp=datetime.now(UTC),
+                    decision_timestamp=datetime.now(timezone.utc),
                 )
 
         # Default: allow through circuit breakers
         return ProtectionDecision(
-            decision_id=f"cb_allow_{client_profile.client_id}_{int(datetime.now(UTC).timestamp())}",
+            decision_id=f"cb_allow_{client_profile.client_id}_{int(datetime.now(timezone.utc).timestamp())}",
             session_id=client_profile.client_id,
             allow_request=True,
             risk_assessment=RiskLevel.LOW,
             confidence=1.0,
             explanation="Circuit breaker check passed",
-            decision_timestamp=datetime.now(UTC),
+            decision_timestamp=datetime.now(timezone.utc),
         )
 
     async def _make_final_decision(
         self,
         session_id: str,
-        behavior_score: BehaviorScore | None,
-        anomaly_results: list[AnomalyResult],
+        behavior_score: Optional[BehaviorScore],
+        anomaly_results: List[AnomalyResult],
         client_profile: ClientProfile,
         reputation_factor: float,
         request_data: dict,
@@ -649,7 +657,7 @@ class ProtectionCoordinator:
             explanation = "Normal operation - all protection checks passed"
 
         return ProtectionDecision(
-            decision_id=f"final_{session_id}_{int(datetime.now(UTC).timestamp())}",
+            decision_id=f"final_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
             session_id=session_id,
             allow_request=allow_request,
             applied_restrictions=applied_restrictions,
@@ -657,14 +665,14 @@ class ProtectionCoordinator:
             risk_assessment=risk_level,
             confidence=min(confidence, 1.0),
             explanation=explanation,
-            decision_timestamp=datetime.now(UTC),
+            decision_timestamp=datetime.now(timezone.utc),
         )
 
     async def _update_client_profile(
         self, client_profile: ClientProfile, decision: ProtectionDecision
     ):
         """Update client profile based on protection decision"""
-        client_profile.last_activity = datetime.now(UTC)
+        client_profile.last_activity = datetime.now(timezone.utc)
         client_profile.current_risk_level = decision.risk_assessment
 
         # Update monitoring flags based on decision
@@ -692,7 +700,7 @@ class ProtectionCoordinator:
             event = ReputationEvent(
                 event_type="error_generation",
                 impact=-5,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 session_id=session_id,
                 description=f"Generated server error: {status_code}",
                 metadata={"status_code": status_code, "response_time": response_time},
@@ -702,7 +710,7 @@ class ProtectionCoordinator:
             event = ReputationEvent(
                 event_type="client_error",
                 impact=-2,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 session_id=session_id,
                 description=f"Client error: {status_code}",
                 metadata={"status_code": status_code},
@@ -712,7 +720,7 @@ class ProtectionCoordinator:
             event = ReputationEvent(
                 event_type="good_behavior",
                 impact=1,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 session_id=session_id,
                 description="Fast, successful response",
                 metadata={"response_time": response_time},
@@ -742,7 +750,7 @@ class ProtectionCoordinator:
 
         # Create feedback
         feedback = ModelFeedback(
-            prediction_id=f"{session_id}_{int(datetime.now(UTC).timestamp())}",
+            prediction_id=f"{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
             actual_outcome=outcome,
             confidence=0.7,  # Medium confidence in this simple heuristic
         )
@@ -823,7 +831,7 @@ class ProtectionCoordinator:
     async def _cleanup_client_profiles(self):
         """Clean up old client profiles from cache"""
         cutoff_time = (
-            datetime.now(UTC) - self._profile_cache_ttl * 2
+            datetime.now(timezone.utc) - self._profile_cache_ttl * 2
         )  # Double TTL for cleanup
 
         to_remove = []
@@ -864,7 +872,7 @@ class ProtectionCoordinator:
             memory_usage=60.0,  # Placeholder
             active_connections=active_requests,
             error_rate=error_rate,
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
         )
 
     async def _on_circuit_state_change(self, old_state, new_state):

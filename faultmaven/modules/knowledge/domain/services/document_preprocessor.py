@@ -10,9 +10,10 @@ Stages:
 """
 
 import logging
+import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 import tiktoken
 
@@ -23,7 +24,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     RedactionReport,
     TriageResult,
 )
-from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
+from faultmaven.modules.knowledge.domain.services.document_parser import (
+    DocumentParser,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +150,7 @@ def redact_sensitive_content(text: str) -> tuple[str, RedactionReport]:
 
 def extract_source_metadata(
     file_path: Path, content_type: str, extracted_text: str
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Stage 5: Capture provenance metadata from source file."""
     stat = file_path.stat()
     word_count = len(extracted_text.split())
@@ -202,7 +205,7 @@ _FILE_SIGNATURES = {
 }
 
 
-def validate_file_integrity(file_path: Path, content_type: str) -> str | None:
+def validate_file_integrity(file_path: Path, content_type: str) -> Optional[str]:
     """Check file is non-zero and magic bytes match claimed type.
 
     Returns error message if invalid, None if OK.
@@ -480,7 +483,7 @@ class DocumentPreprocessor:
             is_existing_runbook=is_existing_runbook,
         )
 
-    async def _run_content_triage(self, text: str) -> TriageResult | None:
+    async def _run_content_triage(self, text: str) -> Optional[TriageResult]:
         """Stage 6: Send first 2K tokens to classifier to determine if actionable."""
         if not self._llm_router or not self._settings:
             return None

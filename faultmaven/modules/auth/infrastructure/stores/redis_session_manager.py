@@ -7,8 +7,8 @@ and provides session lifecycle management operations expected by the SessionServ
 
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
@@ -24,10 +24,10 @@ class RedisSessionManager:
         self.session_store = session_store
         self.logger = logging.getLogger(__name__)
 
-    async def create_session(self, user_id: str | None = None) -> SessionContext:
+    async def create_session(self, user_id: Optional[str] = None) -> SessionContext:
         """Create a new session"""
         session_id = str(uuid.uuid4())
-        created_at = datetime.now(UTC)
+        created_at = datetime.now(timezone.utc)
 
         session_data = {
             "session_id": session_id,
@@ -51,7 +51,7 @@ class RedisSessionManager:
 
     async def get_session(
         self, session_id: str, validate: bool = True
-    ) -> SessionContext | None:
+    ) -> Optional[SessionContext]:
         """Get session by ID"""
         session_data = await self.session_store.get(session_id)
         if not session_data:
@@ -69,7 +69,7 @@ class RedisSessionManager:
             metadata=session_data.get("metadata", {}),
         )
 
-    async def update_session(self, session_id: str, updates: dict[str, Any]) -> bool:
+    async def update_session(self, session_id: str, updates: Dict[str, Any]) -> bool:
         """Update session with new data"""
         session_data = await self.session_store.get(session_id)
         if not session_data:
@@ -77,7 +77,7 @@ class RedisSessionManager:
 
         # Update the session data
         session_data.update(updates)
-        session_data["last_activity"] = to_json_compatible(datetime.now(UTC))
+        session_data["last_activity"] = to_json_compatible(datetime.now(timezone.utc))
 
         # Save back to Redis
         await self.session_store.set(session_id, session_data)
@@ -97,7 +97,9 @@ class RedisSessionManager:
             session_id, {}
         )  # This updates last_activity automatically
 
-    async def list_sessions(self, user_id: str | None = None) -> list[SessionContext]:
+    async def list_sessions(
+        self, user_id: Optional[str] = None
+    ) -> List[SessionContext]:
         """List sessions, optionally filtered by user_id"""
         # Note: This is a simplified implementation. In production, you'd want
         # to maintain separate indexes for efficient querying
@@ -110,17 +112,17 @@ class RedisSessionManager:
         )
         return sessions
 
-    async def get_all_sessions(self) -> list[SessionContext]:
+    async def get_all_sessions(self) -> List[SessionContext]:
         """Get all sessions"""
         return await self.list_sessions()
 
-    async def get_session_stats(self) -> dict[str, Any]:
+    async def get_session_stats(self) -> Dict[str, Any]:
         """Get session statistics"""
         # Basic stats - in production you'd maintain counters
         return {
             "total_sessions": 0,  # Would need Redis counters or indexing
             "active_sessions": 0,
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
 
     async def cleanup_session_data(self, session_id: str) -> bool:

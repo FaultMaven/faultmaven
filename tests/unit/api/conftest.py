@@ -3,7 +3,7 @@
 Minimal test fixtures that can handle missing dependencies gracefully.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, Mock
 
@@ -618,8 +618,8 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     "tags": ["database", "connection", "timeout", "pool"],
                     "description": "Guide for database connection issues",
                     "content": "Database connection troubleshooting includes checking pool configuration...",
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "updated_at": datetime.now(UTC).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                     "status": "completed",
                     "metadata": {
                         "title": "Database Connection Troubleshooting Guide",
@@ -648,7 +648,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
 
             async def mock_knowledge_service():
                 import uuid
-                from datetime import datetime
+                from datetime import datetime, timezone
                 from unittest.mock import Mock
 
                 mock_service = Mock()
@@ -686,8 +686,8 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         ),
                         "description": description,
                         "content": content,
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "updated_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
                         "status": "completed",
                         "metadata": {
                             "title": title,
@@ -708,8 +708,8 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         "job_id": job_id,
                         "document_id": document_id,
                         "status": "completed",
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "completed_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
                         "processing_results": {
                             "chunks_created": 5,
                             "embeddings_generated": 5,
@@ -823,7 +823,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     doc = test_documents.get(document_id)
                     if doc:
                         doc.update(updates)
-                        doc["updated_at"] = datetime.now(UTC).isoformat()
+                        doc["updated_at"] = datetime.now(timezone.utc).isoformat()
                         return doc
                     return None
 
@@ -844,7 +844,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         if doc_id in test_documents:
                             test_documents[doc_id].update(updates)
                             test_documents[doc_id]["updated_at"] = datetime.now(
-                                UTC
+                                timezone.utc
                             ).isoformat()
                             updated_count += 1
                     return {"success": True, "updated_count": updated_count}
@@ -910,7 +910,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
             async def _record_session_query_operation(
                 session_id, query, investigation_id, context=None, confidence_score=0.0
             ):
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 session = _persistent_test_sessions.get(session_id)
                 if session:
@@ -920,17 +920,17 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         "query": query,
                         "context": context or {},
                         "confidence_score": confidence_score,
-                        "timestamp": datetime.now(UTC).isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     session.case_history.append(investigation_record)
-                    session.last_activity = datetime.now(UTC)
+                    session.last_activity = datetime.now(timezone.utc)
                     return True
                 return False
 
             async def _record_session_data_upload_operation(
                 session_id, data_id, filename, file_size=0, metadata=None
             ):
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 session = _persistent_test_sessions.get(session_id)
                 if session:
@@ -945,31 +945,31 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         "filename": filename,
                         "file_size": file_size,
                         "metadata": metadata or {},
-                        "timestamp": datetime.now(UTC).isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     session.case_history.append(upload_record)
-                    session.last_activity = datetime.now(UTC)
+                    session.last_activity = datetime.now(timezone.utc)
                     return True
                 return False
 
             async def _record_session_heartbeat_operation(session_id):
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 session = _persistent_test_sessions.get(session_id)
                 if session:
                     # Add heartbeat to investigation history for counting
                     heartbeat_record = {
                         "action": "heartbeat",
-                        "timestamp": datetime.now(UTC).isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     session.case_history.append(heartbeat_record)
-                    session.last_activity = datetime.now(UTC)
+                    session.last_activity = datetime.now(timezone.utc)
                     return True
                 return False
 
             async def mock_session_service():
                 import uuid
-                from datetime import datetime
+                from datetime import datetime, timezone
                 from unittest.mock import Mock
 
                 from faultmaven.models import SessionContext
@@ -986,8 +986,8 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     session = SessionContext(
                         session_id=session_id,
                         user_id=user_id or "test_user",
-                        created_at=datetime.now(UTC),
-                        last_activity=datetime.now(UTC),
+                        created_at=datetime.now(timezone.utc),
+                        last_activity=datetime.now(timezone.utc),
                         data_uploads=[],
                         case_history=[],
                         agent_state={
@@ -1084,10 +1084,10 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "query": query,
                             "context": context or {},
                             "confidence_score": confidence_score,
-                            "timestamp": datetime.now(UTC).isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                         session.case_history.append(investigation_record)
-                        session.last_activity = datetime.now(UTC)
+                        session.last_activity = datetime.now(timezone.utc)
                         return True
                     return False
 
@@ -1113,10 +1113,10 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "filename": filename,
                             "file_size": file_size,
                             "metadata": metadata or {},
-                            "timestamp": datetime.now(UTC).isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                         session.case_history.append(upload_record)
-                        session.last_activity = datetime.now(UTC)
+                        session.last_activity = datetime.now(timezone.utc)
                         return True
                     return False
 
@@ -1125,7 +1125,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     await _record_session_heartbeat_operation(session_id)
                     return {
                         "status": "updated",
-                        "last_activity": datetime.now(UTC).isoformat(),
+                        "last_activity": datetime.now(timezone.utc).isoformat(),
                         "session_id": session_id,
                     }
 
@@ -1210,7 +1210,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     session = test_sessions.get(session_id)
                     if session:
                         session.case_history.append(record)
-                        session.last_activity = datetime.now(UTC)
+                        session.last_activity = datetime.now(timezone.utc)
                         return True
                     return False
 
@@ -1309,10 +1309,10 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
         """Provide response validation utilities."""
 
         class ResponseValidator:
-            def assert_valid_response(self, data: dict[str, Any]):
+            def assert_valid_response(self, data: Dict[str, Any]):
                 assert isinstance(data, dict)
 
-            def assert_valid_upload_response(self, data: dict[str, Any]):
+            def assert_valid_upload_response(self, data: Dict[str, Any]):
                 """Validate data upload response structure."""
                 assert isinstance(data, dict)
                 required_fields = [
@@ -1329,7 +1329,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 assert isinstance(data["insights"], dict)
                 assert "processing_time_ms" in data["insights"]
 
-            def assert_valid_troubleshooting_response(self, data: dict[str, Any]):
+            def assert_valid_troubleshooting_response(self, data: Dict[str, Any]):
                 """Validate troubleshooting response structure."""
                 assert isinstance(data, dict)
                 required_fields = [
@@ -1348,7 +1348,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 assert isinstance(data["recommendations"], list)
                 assert 0.0 <= data["confidence_score"] <= 1.0
 
-            def assert_valid_session_response(self, data: dict[str, Any]):
+            def assert_valid_session_response(self, data: Dict[str, Any]):
                 """Validate session response structure."""
                 assert isinstance(data, dict)
                 required_fields = ["session_id", "created_at"]

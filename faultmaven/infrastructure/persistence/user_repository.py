@@ -8,9 +8,9 @@ Adapters:
 - PostgreSQLUserRepository: Production (SQLAlchemy ORM)
 """
 
-import builtins
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -35,7 +35,7 @@ class User(BaseModel):
     # ============================================================
     # Authentication
     # ============================================================
-    hashed_password: str | None = Field(
+    hashed_password: Optional[str] = Field(
         None, description="Bcrypt password hash (NULL for SSO-only users)"
     )
     is_active: bool = Field(True, description="Account active status")
@@ -46,7 +46,7 @@ class User(BaseModel):
     display_name: str = Field(
         ..., min_length=1, max_length=200, description="Display name"
     )
-    avatar_url: str | None = Field(
+    avatar_url: Optional[str] = Field(
         None, max_length=500, description="Profile picture URL"
     )
     timezone: str = Field("UTC", max_length=50, description="User timezone")
@@ -56,17 +56,17 @@ class User(BaseModel):
     # Email Verification
     # ============================================================
     is_email_verified: bool = Field(False, description="Email verification status")
-    email_verified_at: datetime | None = Field(
+    email_verified_at: Optional[datetime] = Field(
         None, description="When email was verified"
     )
 
     # ============================================================
     # SSO Integration
     # ============================================================
-    sso_provider: str | None = Field(
+    sso_provider: Optional[str] = Field(
         None, max_length=50, description="SSO provider (google, okta, azure)"
     )
-    sso_provider_id: str | None = Field(
+    sso_provider_id: Optional[str] = Field(
         None, max_length=255, description="External user ID from SSO provider"
     )
 
@@ -75,22 +75,22 @@ class User(BaseModel):
     # ============================================================
     created_at: datetime = Field(..., description="Account creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
-    last_login_at: datetime | None = Field(None, description="Last successful login")
-    last_password_change_at: datetime | None = Field(
+    last_login_at: Optional[datetime] = Field(None, description="Last successful login")
+    last_password_change_at: Optional[datetime] = Field(
         None, description="Last password change"
     )
 
     # ============================================================
     # Soft Delete
     # ============================================================
-    deleted_at: datetime | None = Field(
+    deleted_at: Optional[datetime] = Field(
         None, description="Soft delete timestamp (NULL = active)"
     )
 
     # ============================================================
     # Authorization (Simplified for InMemory/Redis)
     # ============================================================
-    roles: list[str] = Field(
+    roles: List[str] = Field(
         default_factory=list, description="User roles (development only)"
     )
 
@@ -109,22 +109,22 @@ class UserRepository(ABC):
         pass
 
     @abstractmethod
-    async def get(self, user_id: str) -> User | None:
+    async def get(self, user_id: str) -> Optional[User]:
         """Retrieve user by ID."""
         pass
 
     @abstractmethod
-    async def get_by_username(self, username: str) -> User | None:
+    async def get_by_username(self, username: str) -> Optional[User]:
         """Retrieve user by username."""
         pass
 
     @abstractmethod
-    async def get_by_email(self, email: str) -> User | None:
+    async def get_by_email(self, email: str) -> Optional[User]:
         """Retrieve user by email."""
         pass
 
     @abstractmethod
-    async def list(self, limit: int = 50, offset: int = 0) -> tuple[list[User], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         pass
 
@@ -133,8 +133,8 @@ class UserRepository(ABC):
         self,
         limit: int = 50,
         offset: int = 0,
-        is_active: bool | None = None,
-    ) -> tuple[builtins.list[User], int]:
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
         """List users with pagination and optional active filter."""
         pass
 
@@ -164,37 +164,37 @@ class InMemoryUserRepository(UserRepository):
 
     def __init__(self):
         """Initialize empty in-memory store."""
-        self._users: dict[str, User] = {}
-        self._username_index: dict[str, str] = {}
-        self._email_index: dict[str, str] = {}
+        self._users: Dict[str, User] = {}
+        self._username_index: Dict[str, str] = {}
+        self._email_index: Dict[str, str] = {}
 
     async def save(self, user: User) -> User:
         """Save user to memory."""
-        user.updated_at = datetime.now(UTC)
+        user.updated_at = datetime.now(timezone.utc)
         self._users[user.user_id] = user.model_copy(deep=True)
         self._username_index[user.username.lower()] = user.user_id
         self._email_index[user.email.lower()] = user.user_id
         return user
 
-    async def get(self, user_id: str) -> User | None:
+    async def get(self, user_id: str) -> Optional[User]:
         """Get user from memory."""
         return self._users.get(user_id)
 
-    async def get_by_username(self, username: str) -> User | None:
+    async def get_by_username(self, username: str) -> Optional[User]:
         """Get user by username."""
         user_id = self._username_index.get(username.lower())
         if user_id:
             return self._users.get(user_id)
         return None
 
-    async def get_by_email(self, email: str) -> User | None:
+    async def get_by_email(self, email: str) -> Optional[User]:
         """Get user by email."""
         user_id = self._email_index.get(email.lower())
         if user_id:
             return self._users.get(user_id)
         return None
 
-    async def list(self, limit: int = 50, offset: int = 0) -> tuple[list[User], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         all_users = list(self._users.values())
         all_users.sort(key=lambda u: u.created_at, reverse=True)
@@ -206,8 +206,8 @@ class InMemoryUserRepository(UserRepository):
         self,
         limit: int = 50,
         offset: int = 0,
-        is_active: bool | None = None,
-    ) -> tuple[builtins.list[User], int]:
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
         """List users with pagination and optional active filter."""
         all_users = list(self._users.values())
         if is_active is not None:
@@ -336,7 +336,7 @@ class PostgreSQLUserRepository(UserRepository):
 
         from faultmaven.infrastructure.persistence.models import UserModel
 
-        user.updated_at = datetime.now(UTC)
+        user.updated_at = datetime.now(timezone.utc)
         values = self._domain_to_dict(user)
 
         # Use SQLAlchemy insert with on_conflict_do_update for upsert
@@ -351,7 +351,7 @@ class PostgreSQLUserRepository(UserRepository):
         await self.db.commit()
         return user
 
-    async def get(self, user_id: str) -> User | None:
+    async def get(self, user_id: str) -> Optional[User]:
         """Retrieve user by ID."""
         from sqlalchemy import select
 
@@ -362,7 +362,7 @@ class PostgreSQLUserRepository(UserRepository):
         model = result.scalar_one_or_none()
         return self._model_to_domain(model) if model else None
 
-    async def get_by_username(self, username: str) -> User | None:
+    async def get_by_username(self, username: str) -> Optional[User]:
         """Retrieve user by username (case-insensitive)."""
         from sqlalchemy import func, select
 
@@ -375,7 +375,7 @@ class PostgreSQLUserRepository(UserRepository):
         model = result.scalar_one_or_none()
         return self._model_to_domain(model) if model else None
 
-    async def get_by_email(self, email: str) -> User | None:
+    async def get_by_email(self, email: str) -> Optional[User]:
         """Retrieve user by email (case-insensitive)."""
         from sqlalchemy import func, select
 
@@ -386,7 +386,7 @@ class PostgreSQLUserRepository(UserRepository):
         model = result.scalar_one_or_none()
         return self._model_to_domain(model) if model else None
 
-    async def list(self, limit: int = 50, offset: int = 0) -> tuple[list[User], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         from sqlalchemy import func, select
 
@@ -411,8 +411,8 @@ class PostgreSQLUserRepository(UserRepository):
         self,
         limit: int = 50,
         offset: int = 0,
-        is_active: bool | None = None,
-    ) -> tuple[builtins.list[User], int]:
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
         """List users with pagination and optional active filter."""
         from sqlalchemy import func, select
 

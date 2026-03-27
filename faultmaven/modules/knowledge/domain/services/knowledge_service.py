@@ -21,13 +21,16 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import time
-from collections import defaultdict
-from datetime import UTC, datetime
-from typing import Any
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
@@ -65,15 +68,15 @@ class KnowledgeService:
         knowledge_ingester: IKnowledgeIngester,
         sanitizer: ISanitizer,
         tracer: ITracer,
-        vector_store: IVectorStore | None = None,
-        redis_client: object | None = None,
-        settings: Any | None = None,
-        memory_service: (
-            IMemoryService | None
-        ) = None,  # Enhanced: Memory service for context
-        llm_provider: (
-            ILLMProvider | None
-        ) = None,  # Enhanced: LLM for intelligent processing
+        vector_store: Optional[IVectorStore] = None,
+        redis_client: Optional[object] = None,
+        settings: Optional[Any] = None,
+        memory_service: Optional[
+            IMemoryService
+        ] = None,  # Enhanced: Memory service for context
+        llm_provider: Optional[
+            ILLMProvider
+        ] = None,  # Enhanced: LLM for intelligent processing
     ):
         """
         Initialize with interface dependencies for better testability
@@ -115,9 +118,9 @@ class KnowledgeService:
             self._enhanced_mode = False
 
         # Advanced knowledge caching and optimization
-        self._query_cache: dict[str, Any] = {}  # Result caching
-        self._user_patterns: dict[str, dict[str, Any]] = {}  # User behavior patterns
-        self._frequent_query_cache: dict[str, Any] = {}  # High-frequency query cache
+        self._query_cache: Dict[str, Any] = {}  # Result caching
+        self._user_patterns: Dict[str, Dict[str, Any]] = {}  # User behavior patterns
+        self._frequent_query_cache: Dict[str, Any] = {}  # High-frequency query cache
 
         self._document_counter = 0
 
@@ -134,8 +137,8 @@ class KnowledgeService:
         title: str,
         content: str,
         document_type: str,
-        tags: list[str] | None = None,
-        source_url: str | None = None,
+        tags: Optional[List[str]] = None,
+        source_url: Optional[str] = None,
     ) -> KnowledgeBaseDocument:
         """
         Ingest document using interface dependencies
@@ -172,7 +175,7 @@ class KnowledgeService:
                 "tags": tags or [],
                 "source_url": source_url,
                 "document_type": document_type,
-                "created_at": to_json_compatible(datetime.now(UTC)),
+                "created_at": to_json_compatible(datetime.now(timezone.utc)),
             }
 
             try:
@@ -211,8 +214,8 @@ class KnowledgeService:
                     document_type=document_type,
                     tags=tags or [],
                     source_url=source_url,
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
                 )
             except Exception as model_error:
                 raise RuntimeError(
@@ -227,8 +230,8 @@ class KnowledgeService:
             return document
 
     async def search_knowledge(
-        self, query: str, limit: int = 10, filters: dict[str, Any] | None = None
-    ) -> list[SearchResult]:
+        self, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
+    ) -> List[SearchResult]:
         """
         Search knowledge base using interface dependencies
 
@@ -296,10 +299,10 @@ class KnowledgeService:
         query: str,
         session_id: str,
         reasoning_type: str = "diagnostic",
-        context: dict[str, Any] | None = None,
-        user_profile: dict[str, Any] | None = None,
+        context: Optional[Dict[str, Any]] = None,
+        user_profile: Optional[Dict[str, Any]] = None,
         limit: int = 10,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Search knowledge base with full reasoning and memory context
 
         This method provides the main interface for enhanced knowledge search,
@@ -493,8 +496,8 @@ class KnowledgeService:
         document_id: str,
         session_id: str,
         exploration_depth: int = 2,
-        context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Discover related knowledge using semantic exploration
 
         Args:
@@ -584,9 +587,9 @@ class KnowledgeService:
         self,
         reasoning_type: str,
         session_id: str,
-        topic_focus: str | None = None,
-        user_profile: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        topic_focus: Optional[str] = None,
+        user_profile: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Curate knowledge specifically for a reasoning workflow
 
         Args:
@@ -792,9 +795,9 @@ class KnowledgeService:
     async def update_document(
         self,
         document_id: str,
-        title: str | None = None,
-        content: str | None = None,
-        tags: list[str] | None = None,
+        title: Optional[str] = None,
+        content: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> KnowledgeBaseDocument:
         """
         Update document using interface dependencies
@@ -837,7 +840,7 @@ class KnowledgeService:
             if not update_data:
                 raise ValueError("At least one field must be provided for update")
 
-            metadata["updated_at"] = to_json_compatible(datetime.now(UTC))
+            metadata["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
 
             try:
                 # Update via interface
@@ -855,9 +858,9 @@ class KnowledgeService:
                         content=update_data.get("content", ""),
                         document_type="updated",
                         tags=tags or [],
-                        updated_at=datetime.now(UTC),
+                        updated_at=datetime.now(timezone.utc),
                         created_at=datetime.now(
-                            UTC
+                            timezone.utc
                         ),  # Would normally fetch from storage
                     )
                 except Exception as model_error:
@@ -882,7 +885,7 @@ class KnowledgeService:
                 logger.error(f"Failed to update document {document_id}: {e}")
                 raise RuntimeError(f"Document update failed: {str(e)}") from e
 
-    async def delete_document(self, document_id: str) -> dict[str, Any]:
+    async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """
         Archive (soft-delete) a document.
 
@@ -907,9 +910,9 @@ class KnowledgeService:
                 raise ValueError("Document ID cannot be empty")
 
             try:
-                from datetime import datetime
+                from datetime import datetime, timezone
 
-                archived_at = datetime.now(UTC).isoformat()
+                archived_at = datetime.now(timezone.utc).isoformat()
 
                 try:
                     import json as _json
@@ -965,7 +968,7 @@ class KnowledgeService:
                 logger.error(f"Failed to archive document {document_id}: {e}")
                 raise RuntimeError(f"Document archive failed: {str(e)}") from e
 
-    async def get_document_statistics(self) -> dict[str, Any]:
+    async def get_document_statistics(self) -> Dict[str, Any]:
         """
         Get knowledge base statistics
 
@@ -978,8 +981,8 @@ class KnowledgeService:
 
                 # Compute stats from Redis metadata store
                 ids = await self._redis.smembers(self._kb_docs_set)
-                documents_by_type: dict[str, int] = {}
-                tag_counts: dict[str, int] = {}
+                documents_by_type: Dict[str, int] = {}
+                tag_counts: Dict[str, int] = {}
                 total_documents = 0
 
                 for did in ids or []:
@@ -1008,7 +1011,7 @@ class KnowledgeService:
                     "total_documents": total_documents,
                     "documents_by_type": documents_by_type,
                     "most_used_tags": most_used_tags,
-                    "last_updated": to_json_compatible(datetime.now(UTC)),
+                    "last_updated": to_json_compatible(datetime.now(timezone.utc)),
                     "vector_store_enabled": self._vector_store is not None,
                 }
             except Exception as e:
@@ -1026,7 +1029,9 @@ class KnowledgeService:
         Returns:
             Unique document identifier
         """
-        content = f"{title}:{document_type}:{to_json_compatible(datetime.now(UTC))}"
+        content = (
+            f"{title}:{document_type}:{to_json_compatible(datetime.now(timezone.utc))}"
+        )
         hash_object = hashlib.sha256(content.encode("utf-8"))
         return f"kb_{hash_object.hexdigest()[:16]}"
 
@@ -1091,7 +1096,7 @@ class KnowledgeService:
             await self._vector_store.add_documents([doc_dict])
             # INFO: file-level event + embedding count (1 per upload in current flow)
             logger.info(
-                "Indexed document into vector store",
+                f"Indexed document into vector store",
                 extra={
                     "document_id": document.document_id,
                     "title": document.title,
@@ -1127,14 +1132,14 @@ class KnowledgeService:
         content: str,
         title: str,
         document_type: str,
-        tags: list[str] | None = None,
-        source_url: str | None = None,
-        category: str | None = None,
-        description: str | None = None,
+        tags: Optional[List[str]] = None,
+        source_url: Optional[str] = None,
+        category: Optional[str] = None,
+        description: Optional[str] = None,
         scope: str = "global",
-        owner_id: str | None = None,
-        team_id: str | None = None,
-    ) -> dict[str, Any]:
+        owner_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Upload document - API-compatible wrapper that stores documents"""
         try:
             # Generate unique document ID
@@ -1143,7 +1148,7 @@ class KnowledgeService:
             job_id = f"job_{document_id}"
 
             # Create document object
-            created_at = datetime.now(UTC)
+            created_at = datetime.now(timezone.utc)
             document_data = {
                 "document_id": document_id,
                 "title": title,
@@ -1252,12 +1257,12 @@ class KnowledgeService:
 
     async def list_documents(
         self,
-        document_type: str | None = None,
-        tags: list[str] | None = None,
+        document_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
         limit: int = 50,
         offset: int = 0,
-        user: Any | None = None,
-    ) -> dict[str, Any]:
+        user: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """List documents from ChromaDB (persistent) with RBAC filtering.
 
         ChromaDB is the source of truth for document listing. Redis is used
@@ -1292,7 +1297,7 @@ class KnowledgeService:
 
             # Deduplicate by document_id (chunked docs may have multiple entries)
             seen_ids: set = set()
-            all_documents: list[dict[str, Any]] = []
+            all_documents: List[Dict[str, Any]] = []
             for raw in raw_docs:
                 meta = raw.get("metadata", {})
                 doc_id = raw.get("id", meta.get("document_id", ""))
@@ -1372,7 +1377,7 @@ class KnowledgeService:
                 "error": str(e),
             }
 
-    async def get_document(self, document_id: str) -> dict[str, Any] | None:
+    async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific document by ID from ChromaDB (persistent store)."""
         try:
             if not document_id:
@@ -1430,7 +1435,7 @@ class KnowledgeService:
         document_id: str,
         query: str,
         max_lines: int = 5,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Get semantically relevant snippet from a document.
 
         Uses vector similarity to find the most relevant chunk of the document
@@ -1541,7 +1546,7 @@ class KnowledgeService:
             logger.error(f"Failed to get semantic snippet for {document_id}: {e}")
             return None
 
-    async def get_job_status(self, job_id: str) -> dict[str, Any] | None:
+    async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get processing job status from Redis."""
         try:
             import json as _json
@@ -1559,20 +1564,20 @@ class KnowledgeService:
     async def search_documents(
         self,
         query: str,
-        document_type: str | None = None,
-        category: str | None = None,
-        tags: list[str] | None = None,
+        document_type: Optional[str] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
         limit: int = 10,
-        similarity_threshold: float | None = None,
-        rank_by: str | None = None,
-        user: Any | None = None,
-    ) -> dict[str, Any]:
+        similarity_threshold: Optional[float] = None,
+        rank_by: Optional[str] = None,
+        user: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """Search documents with filtering by category, document_type, and tags"""
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
 
         try:
             # Get all documents from Redis
-            all_documents: list[dict[str, Any]] = []
+            all_documents: List[Dict[str, Any]] = []
             try:
                 import json as _json
 
@@ -1589,7 +1594,7 @@ class KnowledgeService:
                     ]
                 )
                 logger.info(
-                    "KB list: base candidate count",
+                    f"KB list: base candidate count",
                     extra={"count": len(candidate_ids)},
                 )
                 if document_type:
@@ -1632,7 +1637,7 @@ class KnowledgeService:
                             else tag_ids
                         )
                 logger.info(
-                    "KB list: filtered candidate count",
+                    f"KB list: filtered candidate count",
                     extra={"count": len(candidate_ids)},
                 )
                 for did in list(candidate_ids):
@@ -1645,7 +1650,7 @@ class KnowledgeService:
                         except Exception:
                             continue
                 logger.info(
-                    "KB list: loaded documents",
+                    f"KB list: loaded documents",
                     extra={"count": len(all_documents)},
                 )
             except Exception as e:
@@ -1770,7 +1775,7 @@ class KnowledgeService:
 
     async def update_document_metadata(
         self, document_id: str, **kwargs
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Update document metadata - API-compatible method"""
         try:
             import json as _json
@@ -1802,7 +1807,7 @@ class KnowledgeService:
                 document["metadata"]["version"] = kwargs["version"]
 
             # Update timestamp
-            document["updated_at"] = to_json_compatible(datetime.now(UTC))
+            document["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
 
             # Persist updated document and maintain indexes
             try:
@@ -1876,8 +1881,8 @@ class KnowledgeService:
             raise
 
     async def bulk_update_documents(
-        self, document_ids: list[str], updates: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, document_ids: List[str], updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Bulk update document metadata"""
         updated_count = 0
         errors = []
@@ -1904,7 +1909,7 @@ class KnowledgeService:
             "errors": errors if errors else [],
         }
 
-    async def bulk_delete_documents(self, document_ids: list[str]) -> dict[str, Any]:
+    async def bulk_delete_documents(self, document_ids: List[str]) -> Dict[str, Any]:
         """Bulk delete documents"""
         deleted_count = 0
         errors = []
@@ -1933,7 +1938,7 @@ class KnowledgeService:
             "errors": errors if errors else [],
         }
 
-    async def get_knowledge_stats(self) -> dict[str, Any]:
+    async def get_knowledge_stats(self) -> Dict[str, Any]:
         """Get knowledge base statistics - API compatible method"""
         base_stats = await self.get_document_statistics()
 
@@ -1947,7 +1952,7 @@ class KnowledgeService:
             "last_updated": base_stats.get("last_updated"),
         }
 
-    async def get_search_analytics(self) -> dict[str, Any]:
+    async def get_search_analytics(self) -> Dict[str, Any]:
         """Get search analytics"""
         return {
             "popular_queries": [],
@@ -1977,7 +1982,7 @@ class KnowledgeService:
             )
 
     def _generate_optimized_cache_key(
-        self, query: str, reasoning_type: str, context: dict[str, Any] | None
+        self, query: str, reasoning_type: str, context: Optional[Dict[str, Any]]
     ) -> str:
         """Generate optimized cache key for search results"""
         key_components = [
@@ -1990,7 +1995,7 @@ class KnowledgeService:
         key_string = "|".join(key_components)
         return hashlib.sha256(key_string.encode()).hexdigest()[:16]
 
-    async def _check_optimized_cache(self, cache_key: str) -> dict[str, Any] | None:
+    async def _check_optimized_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """Check optimized multi-level cache for results"""
 
         # Check frequent query cache first (hot cache)
@@ -2020,7 +2025,7 @@ class KnowledgeService:
         return None
 
     async def _cache_search_results_optimized(
-        self, cache_key: str, results: dict[str, Any]
+        self, cache_key: str, results: Dict[str, Any]
     ) -> None:
         """Cache search results with optimization"""
         cache_entry = {"data": results, "cached_at": time.time(), "access_count": 1}
@@ -2097,8 +2102,8 @@ class KnowledgeService:
         )()
 
     async def _process_and_enhance_results_parallel(
-        self, retrieval_result: Any, retrieval_context: Any | None, limit: int
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        self, retrieval_result: Any, retrieval_context: Optional[Any], limit: int
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Process and enhance results using parallel optimization"""
 
         documents = getattr(retrieval_result, "documents", [])
@@ -2153,9 +2158,9 @@ class KnowledgeService:
     async def _update_user_patterns(
         self,
         session_id: str,
-        user_profile: dict[str, Any],
-        retrieval_context: Any | None,
-        curated_results: dict[str, Any],
+        user_profile: Dict[str, Any],
+        retrieval_context: Optional[Any],
+        curated_results: Dict[str, Any],
     ) -> None:
         """Update user patterns for future optimization"""
 
@@ -2220,7 +2225,7 @@ class KnowledgeService:
             current_avg_relevance * (count - 1) + confidence_score
         ) / count
 
-    async def _get_document_by_id(self, document_id: str) -> dict[str, Any] | None:
+    async def _get_document_by_id(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Get document by ID from vector store or storage"""
 
         if self._vector_store:
@@ -2243,7 +2248,7 @@ class KnowledgeService:
 
         return None
 
-    async def _extract_key_concepts(self, document: dict[str, Any]) -> list[str]:
+    async def _extract_key_concepts(self, document: Dict[str, Any]) -> List[str]:
         """Extract key concepts from a document"""
 
         content = document.get("content", "")
@@ -2316,7 +2321,7 @@ class KnowledgeService:
         return [concept for concept, _ in sorted_concepts[:10]]
 
     def _calculate_reasoning_alignment_score(
-        self, item: dict[str, Any], reasoning_type: str
+        self, item: Dict[str, Any], reasoning_type: str
     ) -> float:
         """Calculate how well an item aligns with a reasoning type"""
 

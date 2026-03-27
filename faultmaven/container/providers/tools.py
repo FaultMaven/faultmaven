@@ -9,7 +9,7 @@ This module contains factory functions for tool creation:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, List
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -36,13 +36,13 @@ def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
 def create_registry_tools(
     ingester: Any | None,
     settings: FaultMavenSettings,
-) -> list[Any]:
+) -> List[Any]:
     """Create tools (no decorator/registry side effects).
 
     We intentionally avoid any self-registration decorators or global registries.
     Tools should be constructed explicitly with their required dependencies.
     """
-    tools: list[Any] = []
+    tools: List[Any] = []
 
     # Knowledge base tools require the ingester. If it is unavailable, skip.
     if ingester is not None:

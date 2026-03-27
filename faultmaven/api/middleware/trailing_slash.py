@@ -7,8 +7,9 @@ the 307 redirects that violate the API specification.
 
 import logging
 
-from fastapi import Request
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
 
 logger = logging.getLogger(__name__)
 

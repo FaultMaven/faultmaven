@@ -7,8 +7,9 @@ Design: Framework-agnostic domain model for business logic and testing.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+from typing import Dict, List, Optional
 
 
 class HypothesisStatus(str, Enum):
@@ -62,15 +63,15 @@ class Hypothesis:
     description: str
     confidence: float
     status: HypothesisStatus
-    evidence_supporting: list[str]
-    evidence_against: list[str]
+    evidence_supporting: List[str]
+    evidence_against: List[str]
     created_by: str
     created_at: datetime
     updated_at: datetime
-    updated_by: str | None = None
-    validation_result: str | None = None
-    validation_timestamp: datetime | None = None
-    metadata: dict = field(default_factory=dict)
+    updated_by: Optional[str] = None
+    validation_result: Optional[str] = None
+    validation_timestamp: Optional[datetime] = None
+    metadata: Dict = field(default_factory=dict)
 
     def __post_init__(self):
         """Validate hypothesis after initialization."""
@@ -91,7 +92,7 @@ class Hypothesis:
             raise ValueError("Description must not exceed 5000 characters")
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Hypothesis":
+    def from_dict(cls, data: Dict) -> "Hypothesis":
         """Create Hypothesis from dictionary.
 
         Args:
@@ -121,7 +122,7 @@ class Hypothesis:
             metadata=data.get("metadata", {}),
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict:
         """Convert Hypothesis to dictionary.
 
         Returns:

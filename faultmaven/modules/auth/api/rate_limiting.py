@@ -14,6 +14,8 @@ Rate limits:
 import logging
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Dict, Tuple
 
 from fastapi import HTTPException, Request, status
 
@@ -29,7 +31,7 @@ class OAuthRateLimiter:
 
     def __init__(self):
         # Store: {(ip, endpoint): [(timestamp1, timestamp2, ...)]}
-        self._requests: dict[tuple[str, str], list[float]] = defaultdict(list)
+        self._requests: Dict[Tuple[str, str], list[float]] = defaultdict(list)
 
         # Rate limits per endpoint (requests per minute)
         self._limits = {

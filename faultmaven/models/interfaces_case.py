@@ -5,7 +5,9 @@ following FaultMaven's interface-based dependency injection pattern.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import Case, ParticipantRole
 
@@ -13,6 +15,7 @@ from .api import CaseMessagesResponse
 from .api_models import (
     CaseListFilter,
     CaseMessage,
+    CaseParticipant,
     CaseSearchRequest,
     CaseSummary,
 )
@@ -38,7 +41,7 @@ class ICaseStore(ABC):
         pass
 
     @abstractmethod
-    async def get_case(self, case_id: str) -> Case | None:
+    async def get_case(self, case_id: str) -> Optional[Case]:
         """Retrieve a case by ID.
 
         Args:
@@ -50,7 +53,7 @@ class ICaseStore(ABC):
         pass
 
     @abstractmethod
-    async def update_case(self, case_id: str, updates: dict[str, Any]) -> bool:
+    async def update_case(self, case_id: str, updates: Dict[str, Any]) -> bool:
         """Update case data.
 
         Args:
@@ -76,8 +79,8 @@ class ICaseStore(ABC):
 
     @abstractmethod
     async def list_cases(
-        self, filters: CaseListFilter | None = None
-    ) -> list[CaseSummary]:
+        self, filters: Optional[CaseListFilter] = None
+    ) -> List[CaseSummary]:
         """List cases with optional filtering.
 
         Args:
@@ -91,7 +94,7 @@ class ICaseStore(ABC):
     @abstractmethod
     async def search_cases(
         self, search_request: CaseSearchRequest
-    ) -> list[CaseSummary]:
+    ) -> List[CaseSummary]:
         """Search cases by content.
 
         Args:
@@ -118,7 +121,7 @@ class ICaseStore(ABC):
     @abstractmethod
     async def get_case_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> list[CaseMessage]:
+    ) -> List[CaseMessage]:
         """Get messages for a case.
 
         Args:
@@ -154,8 +157,8 @@ class ICaseStore(ABC):
 
     @abstractmethod
     async def get_user_cases(
-        self, user_id: str, filters: CaseListFilter | None = None
-    ) -> list[CaseSummary]:
+        self, user_id: str, filters: Optional[CaseListFilter] = None
+    ) -> List[CaseSummary]:
         """Get cases for a specific user.
 
         Args:
@@ -173,7 +176,7 @@ class ICaseStore(ABC):
         case_id: str,
         user_id: str,
         role: ParticipantRole,
-        added_by: str | None = None,
+        added_by: Optional[str] = None,
     ) -> bool:
         """Add a participant to a case.
 
@@ -203,7 +206,7 @@ class ICaseStore(ABC):
 
     @abstractmethod
     async def update_case_activity(
-        self, case_id: str, session_id: str | None = None
+        self, case_id: str, session_id: Optional[str] = None
     ) -> bool:
         """Update case last activity timestamp.
 
@@ -229,7 +232,7 @@ class ICaseStore(ABC):
         pass
 
     @abstractmethod
-    async def get_case_analytics(self, case_id: str) -> dict[str, Any]:
+    async def get_case_analytics(self, case_id: str) -> Dict[str, Any]:
         """Get analytics data for a case.
 
         Args:
@@ -252,10 +255,10 @@ class ICaseService(ABC):
     async def create_case(
         self,
         title: str,
-        description: str | None = None,
-        owner_id: str | None = None,
-        session_id: str | None = None,
-        initial_message: str | None = None,
+        description: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        initial_message: Optional[str] = None,
     ) -> Case:
         """Create a new troubleshooting case.
 
@@ -272,7 +275,9 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
-    async def get_case(self, case_id: str, user_id: str | None = None) -> Case | None:
+    async def get_case(
+        self, case_id: str, user_id: Optional[str] = None
+    ) -> Optional[Case]:
         """Get a case with optional access control.
 
         Args:
@@ -286,7 +291,7 @@ class ICaseService(ABC):
 
     @abstractmethod
     async def update_case(
-        self, case_id: str, updates: dict[str, Any], user_id: str | None = None
+        self, case_id: str, updates: Dict[str, Any], user_id: Optional[str] = None
     ) -> bool:
         """Update case with access control.
 
@@ -302,7 +307,7 @@ class ICaseService(ABC):
 
     @abstractmethod
     async def add_message_to_case(
-        self, case_id: str, message: CaseMessage, session_id: str | None = None
+        self, case_id: str, message: CaseMessage, session_id: Optional[str] = None
     ) -> bool:
         """Add a message to a case conversation.
 
@@ -320,9 +325,9 @@ class ICaseService(ABC):
     async def get_or_create_case_for_session(
         self,
         session_id: str,
-        user_id: str | None = None,
+        user_id: Optional[str] = None,
         force_new: bool = False,
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> str:
         """Get existing case for session or create new one.
 
@@ -377,7 +382,9 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
-    async def hard_delete_case(self, case_id: str, user_id: str | None = None) -> bool:
+    async def hard_delete_case(
+        self, case_id: str, user_id: Optional[str] = None
+    ) -> bool:
         """Permanently delete a case and all associated data.
 
         This method performs a hard delete of the case, removing:
@@ -401,8 +408,8 @@ class ICaseService(ABC):
 
     @abstractmethod
     async def list_user_cases(
-        self, user_id: str, filters: CaseListFilter | None = None
-    ) -> list[CaseSummary]:
+        self, user_id: str, filters: Optional[CaseListFilter] = None
+    ) -> List[CaseSummary]:
         """List cases for a user.
 
         Args:
@@ -416,8 +423,8 @@ class ICaseService(ABC):
 
     @abstractmethod
     async def search_cases(
-        self, search_request: CaseSearchRequest, user_id: str | None = None
-    ) -> list[CaseSummary]:
+        self, search_request: CaseSearchRequest, user_id: Optional[str] = None
+    ) -> List[CaseSummary]:
         """Search cases with access control.
 
         Args:
@@ -430,7 +437,7 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
-    async def get_case_analytics(self, case_id: str) -> dict[str, Any]:
+    async def get_case_analytics(self, case_id: str) -> Dict[str, Any]:
         """Get case analytics and metrics.
 
         Args:
@@ -509,7 +516,7 @@ class ICaseNotificationService(ABC):
 
     @abstractmethod
     async def notify_case_updated(
-        self, case_id: str, update_type: str, updated_by: str | None = None
+        self, case_id: str, update_type: str, updated_by: Optional[str] = None
     ) -> bool:
         """Notify participants about case updates.
 
@@ -545,7 +552,7 @@ class ICaseIntegrationService(ABC):
     """
 
     @abstractmethod
-    async def export_case(self, case_id: str, format_type: str) -> dict[str, Any]:
+    async def export_case(self, case_id: str, format_type: str) -> Dict[str, Any]:
         """Export case data in specified format.
 
         Args:
@@ -572,7 +579,7 @@ class ICaseIntegrationService(ABC):
     @abstractmethod
     async def list_cases_by_session(
         self, session_id: str, limit: int, offset: int
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """List cases associated with a session.
 
         Args:
@@ -600,7 +607,7 @@ class ICaseIntegrationService(ABC):
     @abstractmethod
     async def check_idempotency_key(
         self, idempotency_key: str
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Check if an idempotency key has been used before.
 
         Args:
@@ -616,8 +623,8 @@ class ICaseIntegrationService(ABC):
         self,
         idempotency_key: str,
         status_code: int,
-        content: dict[str, Any],
-        headers: dict[str, str],
+        content: Dict[str, Any],
+        headers: Dict[str, str],
     ) -> bool:
         """Store result for an idempotency key.
 
@@ -634,8 +641,8 @@ class ICaseIntegrationService(ABC):
 
     @abstractmethod
     async def create_external_ticket(
-        self, case_id: str, system: str, ticket_data: dict[str, Any]
-    ) -> str | None:
+        self, case_id: str, system: str, ticket_data: Dict[str, Any]
+    ) -> Optional[str]:
         """Create ticket in external system.
 
         Args:

@@ -12,7 +12,7 @@ Run with:
 """
 
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -40,9 +40,9 @@ class TestSessionOperationPerformance:
         session = Session(
             session_id=str(uuid4()),
             user_id="benchmark-user-001",
-            created_at=datetime.now(UTC),
-            last_accessed=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            created_at=datetime.now(timezone.utc),
+            last_accessed=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             metadata={"source": "benchmark", "device": "test"},
         )
 
@@ -71,9 +71,9 @@ class TestSessionOperationPerformance:
         session = Session(
             session_id=session_id,
             user_id="benchmark-user-001",
-            created_at=datetime.now(UTC),
-            last_accessed=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            created_at=datetime.now(timezone.utc),
+            last_accessed=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         await session_repository.create_session(session)
 
@@ -104,9 +104,9 @@ class TestSessionOperationPerformance:
             Session(
                 session_id=str(uuid4()),
                 user_id=f"benchmark-user-{i:04d}",
-                created_at=datetime.now(UTC),
-                last_accessed=datetime.now(UTC),
-                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                created_at=datetime.now(timezone.utc),
+                last_accessed=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
             for i in range(num_sessions)
         ]
@@ -141,9 +141,9 @@ class TestSessionOperationPerformance:
             session = Session(
                 session_id=str(uuid4()),
                 user_id=user_id,
-                created_at=datetime.now(UTC),
-                last_accessed=datetime.now(UTC),
-                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                created_at=datetime.now(timezone.utc),
+                last_accessed=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             )
             await session_repository.create_session(session)
 
@@ -175,9 +175,9 @@ class TestSessionOperationPerformance:
         session = Session(
             session_id=session_id,
             user_id="benchmark-user-001",
-            created_at=datetime.now(UTC),
-            last_accessed=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            created_at=datetime.now(timezone.utc),
+            last_accessed=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         await session_repository.create_session(session)
 
@@ -204,7 +204,7 @@ class TestSessionOperationPerformance:
         """
         # Setup - Create expired sessions
         num_sessions = 500
-        expired_time = datetime.now(UTC) - timedelta(hours=2)
+        expired_time = datetime.now(timezone.utc) - timedelta(hours=2)
 
         for i in range(num_sessions):
             session = Session(
@@ -249,8 +249,8 @@ class TestSessionOperationPerformance:
         session = Session(
             session_id=session_id,
             user_id="benchmark-user-001",
-            created_at=datetime.now(UTC),
-            last_accessed=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            last_accessed=datetime.now(timezone.utc),
         )
         await session_repository.create_session(session)
 

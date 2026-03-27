@@ -9,7 +9,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 # Import structured output capability system
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -25,7 +25,7 @@ class ToolCall:
 
     id: str
     type: str  # "function"
-    function: dict[str, Any]  # {"name": "...", "arguments": "..."}
+    function: Dict[str, Any]  # {"name": "...", "arguments": "..."}
 
 
 @dataclass
@@ -47,8 +47,8 @@ class NormalizedResponse:
     provider: str
     model: str
     content: str = ""
-    tool_calls: list[ToolCall] = None
-    usage: dict[str, int] = None
+    tool_calls: List[ToolCall] = None
+    usage: Dict[str, int] = None
     response_time_ms: int = 0
     cached: bool = False
     raw_response: Any = None
@@ -160,9 +160,9 @@ class LLMResponse:
     tokens_used: int
     response_time_ms: int
     cached: bool = False
-    tool_calls: list[ToolCall] | None = None  # Function calling support
-    sanitized_prompt: str | None = None  # PII-sanitized prompt for telemetry
-    raw_prompt: str | None = None  # Raw prompt (local debugging only)
+    tool_calls: Optional[List[ToolCall]] = None  # Function calling support
+    sanitized_prompt: Optional[str] = None  # PII-sanitized prompt for telemetry
+    raw_prompt: Optional[str] = None  # Raw prompt (local debugging only)
 
 
 @dataclass
@@ -170,12 +170,12 @@ class ProviderConfig:
     """Configuration for an LLM provider"""
 
     name: str
-    api_key: str | None = None
-    base_url: str | None = None
-    models: list[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    models: List[str] = None
     max_retries: int = 3
     timeout: int = 30
-    default_model: str | None = None
+    default_model: Optional[str] = None
     confidence_score: float = 0.8
 
     def __post_init__(self):
@@ -203,11 +203,11 @@ class BaseLLMProvider(ABC):
     async def generate(
         self,
         prompt: str,
-        model: str | None = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -231,7 +231,7 @@ class BaseLLMProvider(ABC):
         pass
 
     @abstractmethod
-    def get_supported_models(self) -> list[str]:
+    def get_supported_models(self) -> List[str]:
         """Get list of models supported by this provider"""
         pass
 
@@ -256,7 +256,7 @@ class BaseLLMProvider(ABC):
 
         return content
 
-    def get_effective_model(self, requested_model: str | None = None) -> str:
+    def get_effective_model(self, requested_model: Optional[str] = None) -> str:
         """Get the model to use, with fallback logic"""
         if requested_model and requested_model in self.config.models:
             return requested_model
@@ -269,7 +269,7 @@ class BaseLLMProvider(ABC):
 
         raise ValueError(f"No valid model available for provider {self.provider_name}")
 
-    def supports_tool_calling(self, model: str | None = None) -> bool:
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Whether this provider/model supports function calling (tools API).
 
         Default returns True since most providers support OpenAI-compatible
@@ -284,7 +284,7 @@ class BaseLLMProvider(ABC):
         return True
 
     def get_structured_output_capability(
-        self, model: str | None = None
+        self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
         """
         Get the structured output capability for this provider/model.
@@ -334,7 +334,7 @@ class BaseLLMProvider(ABC):
         return StructuredOutputCapability.BEST_EFFORT
 
     def get_structured_output_strategy(
-        self, schema: dict[str, Any], model: str | None = None
+        self, schema: Dict[str, Any], model: Optional[str] = None
     ) -> StructuredOutputStrategy:
         """
         Get the appropriate structured output strategy for this provider/model.

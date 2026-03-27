@@ -49,17 +49,17 @@ async def demote_from_admin(username: str):
     print(f"   Current roles: {user.roles}")
 
     # Check if user is admin
-    if "admin" not in user.roles:
+    if 'admin' not in user.roles:
         print(f"\n⚠️  User '{username}' is not an admin!")
         return True
 
     # Remove admin role
     print(f"\nRemoving 'admin' role from user '{username}'...")
-    user.roles = [role for role in user.roles if role != "admin"]
+    user.roles = [role for role in user.roles if role != 'admin']
 
     # Ensure user still has 'user' role
-    if "user" not in user.roles:
-        user.roles.append("user")
+    if 'user' not in user.roles:
+        user.roles.append('user')
 
     # Update user
     try:

@@ -15,19 +15,23 @@ Core Responsibilities:
 - Case analytics and metrics
 """
 
+import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.models.api_models import (
+    CaseCreateRequest,
     CaseListFilter,
     CaseMessage,
+    CaseParticipant,
     CaseSearchRequest,
     CaseSummary,
+    CaseUpdateRequest,
 )
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.interfaces_case import ICaseService
@@ -45,11 +49,11 @@ class CaseService(ICaseService):
     def __init__(
         self,
         case_repository: CaseRepository,
-        session_store: ISessionStore | None = None,
-        case_vector_store: Any | None = None,
-        settings: Any | None = None,
+        session_store: Optional[ISessionStore] = None,
+        case_vector_store: Optional[Any] = None,
+        settings: Optional[Any] = None,
         max_cases_per_user: int = 100,
-        tenant_provider: TenantProvider | None = None,
+        tenant_provider: Optional[TenantProvider] = None,
     ):
         """
         Initialize the Case Service
@@ -79,11 +83,11 @@ class CaseService(ICaseService):
     @trace("case_service_create_case")
     async def create_case(
         self,
-        title: str | None = None,
-        description: str | None = None,
-        owner_id: str | None = None,
-        session_id: str | None = None,
-        initial_message: str | None = None,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        initial_message: Optional[str] = None,
     ) -> Case:
         """
         Create a new troubleshooting case
@@ -127,7 +131,7 @@ class CaseService(ICaseService):
             if not title or not title.strip():
                 # Format: Case-YYMMDD-N (e.g., Case-260128-1)
                 # Sequence counter resets daily via key expiration/change
-                now = datetime.now(UTC)
+                now = datetime.now(timezone.utc)
                 date_str = now.strftime("%y%m%d")  # YYMMDD (Year-safe)
 
                 # 1. Get Redis Counter (Atomic, High Performance)
@@ -205,7 +209,7 @@ class CaseService(ICaseService):
                     "author_id": owner_id.strip(),
                     "role": "user",
                     "content": initial_message.strip(),
-                    "created_at": datetime.now(UTC).isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                     "turn_number": 1,
                     "metadata": {},
                 }
@@ -236,7 +240,9 @@ class CaseService(ICaseService):
             raise ServiceException(f"Case creation failed: {str(e)}") from e
 
     @trace("case_service_get_case")
-    async def get_case(self, case_id: str, user_id: str | None = None) -> Case | None:
+    async def get_case(
+        self, case_id: str, user_id: Optional[str] = None
+    ) -> Optional[Case]:
         """
         Get a case with optional access control
 
@@ -271,7 +277,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_update_case")
     async def update_case(
-        self, case_id: str, updates: dict[str, Any], user_id: str | None = None
+        self, case_id: str, updates: Dict[str, Any], user_id: Optional[str] = None
     ) -> bool:
         """
         Update case with access control
@@ -317,7 +323,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_add_message")
     async def add_message_to_case(
-        self, case_id: str, message: CaseMessage, session_id: str | None = None
+        self, case_id: str, message: CaseMessage, session_id: Optional[str] = None
     ) -> bool:
         """
         Add a message to a case conversation
@@ -414,9 +420,9 @@ class CaseService(ICaseService):
     async def get_or_create_case_for_session(
         self,
         session_id: str,
-        user_id: str | None = None,
+        user_id: Optional[str] = None,
         force_new: bool = False,
-        title: str | None = None,
+        title: Optional[str] = None,
     ) -> str:
         """
         Get existing case for session or create new one
@@ -617,7 +623,9 @@ class CaseService(ICaseService):
             return False
 
     @trace("case_service_hard_delete_case")
-    async def hard_delete_case(self, case_id: str, user_id: str | None = None) -> bool:
+    async def hard_delete_case(
+        self, case_id: str, user_id: Optional[str] = None
+    ) -> bool:
         """
         Permanently delete a case and all associated data
 
@@ -697,8 +705,8 @@ class CaseService(ICaseService):
 
     @trace("case_service_list_user_cases")
     async def list_user_cases(
-        self, user_id: str, filters: CaseListFilter | None = None
-    ) -> list[CaseSummary]:
+        self, user_id: str, filters: Optional[CaseListFilter] = None
+    ) -> List[CaseSummary]:
         """
         List cases for a user
 
@@ -766,8 +774,8 @@ class CaseService(ICaseService):
 
     @trace("case_service_search_cases")
     async def search_cases(
-        self, search_request: CaseSearchRequest, user_id: str | None = None
-    ) -> list[CaseSummary]:
+        self, search_request: CaseSearchRequest, user_id: Optional[str] = None
+    ) -> List[CaseSummary]:
         """
         Search cases with access control
 
@@ -798,7 +806,7 @@ class CaseService(ICaseService):
             return []
 
     @trace("case_service_get_analytics")
-    async def get_case_analytics(self, case_id: str) -> dict[str, Any]:
+    async def get_case_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Get case analytics and metrics
 
@@ -842,7 +850,7 @@ class CaseService(ICaseService):
     @trace("case_service_list_cases_by_session")
     async def list_cases_by_session(
         self, session_id: str, limit: int = 50, offset: int = 0
-    ) -> list[Case]:
+    ) -> List[Case]:
         """
         List cases owned by the user authenticated via session.
 
@@ -919,7 +927,7 @@ class CaseService(ICaseService):
             logger.error(f"Failed to count cases for session {session_id}: {e}")
             return 0
 
-    async def get_case_health_status(self) -> dict[str, Any]:
+    async def get_case_health_status(self) -> Dict[str, Any]:
         """
         Get case service health status and metrics
 
@@ -945,7 +953,7 @@ class CaseService(ICaseService):
     @trace("case_service_get_case_messages")
     async def get_case_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> list[CaseMessage]:
+    ) -> List[CaseMessage]:
         """
         Get messages for a case with pagination (FIXED IMPLEMENTATION)
 
@@ -1001,7 +1009,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_add_case_query")
     async def add_case_query(
-        self, case_id: str, query_text: str, user_id: str | None = None
+        self, case_id: str, query_text: str, user_id: Optional[str] = None
     ) -> bool:
         """
         Add a user query to case conversation
@@ -1030,7 +1038,7 @@ class CaseService(ICaseService):
                 role="user",
                 # Note: message_type relies on dynamic assignment or fallback in add_message_to_case
                 content=query_text.strip(),
-                created_at=datetime.now(UTC),
+                created_at=datetime.now(timezone.utc),
                 author_id=user_id,
                 metadata={},
             )
@@ -1054,7 +1062,7 @@ class CaseService(ICaseService):
     @trace("case_service_list_case_queries")
     async def list_case_queries(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
         List user queries for a case
 
@@ -1146,7 +1154,7 @@ class CaseService(ICaseService):
 
     @trace("case_service_count_user_cases")
     async def count_user_cases(
-        self, user_id: str, filters: CaseListFilter | None = None
+        self, user_id: str, filters: Optional[CaseListFilter] = None
     ) -> int:
         """
         Count total cases for a user
@@ -1181,7 +1189,7 @@ class CaseService(ICaseService):
     @trace("case_service_get_query_result")
     async def get_query_result(
         self, case_id: str, query_id: str
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """
         Get result for a specific query
 
@@ -1254,7 +1262,7 @@ class CaseService(ICaseService):
     @trace("case_service_check_idempotency_key")
     async def check_idempotency_key(
         self, idempotency_key: str
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """
         Check if an idempotency key has been used before
 
@@ -1289,8 +1297,8 @@ class CaseService(ICaseService):
         self,
         idempotency_key: str,
         status_code: int,
-        content: dict[str, Any],
-        headers: dict[str, str],
+        content: Dict[str, Any],
+        headers: Dict[str, str],
     ) -> bool:
         """
         Store result for an idempotency key
@@ -1597,7 +1605,7 @@ class CaseService(ICaseService):
         return success
 
     @trace("case_service_get_case_participants")
-    async def get_case_participants(self, case_id: str) -> list[dict[str, Any]]:
+    async def get_case_participants(self, case_id: str) -> List[Dict[str, Any]]:
         """
         Get all participants for a case.
 

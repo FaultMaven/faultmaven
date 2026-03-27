@@ -5,8 +5,8 @@ Works in conjunction with ChromaDBVectorStore for vector embeddings.
 """
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,7 +85,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         logger.info(f"Created KB document: {doc.doc_id} ({doc.title})")
         return doc
 
-    async def get_document(self, doc_id: str) -> KBDocument | None:
+    async def get_document(self, doc_id: str) -> Optional[KBDocument]:
         """Get KB document by ID."""
         query = text(
             """
@@ -110,7 +110,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         """Update KB document metadata."""
         import json
 
-        doc.updated_at = datetime.now(UTC)
+        doc.updated_at = datetime.now(timezone.utc)
 
         query = text(
             """
@@ -156,7 +156,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
         )
 
         result = await self.db.execute(
-            query, {"doc_id": doc_id, "deleted_at": datetime.now(UTC)}
+            query, {"doc_id": doc_id, "deleted_at": datetime.now(timezone.utc)}
         )
         await self.db.commit()
 
@@ -164,7 +164,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def list_user_documents(
         self, user_id: str, include_shared: bool = False
-    ) -> list[KBDocument]:
+    ) -> List[KBDocument]:
         """List KB documents owned by user."""
         if include_shared:
             query = text(
@@ -201,18 +201,18 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
         return [self._row_to_document(row) for row in rows]
 
-    async def list_accessible_documents(self, user_id: str) -> list[KBDocument]:
+    async def list_accessible_documents(self, user_id: str) -> List[KBDocument]:
         """List all KB documents user can access (own + shared with them)."""
         return await self.list_user_documents(user_id, include_shared=True)
 
     async def search_documents(
         self,
         query: str,
-        user_id: str | None = None,
-        document_type: KBDocumentType | None = None,
-        tags: list[str] | None = None,
+        user_id: Optional[str] = None,
+        document_type: Optional[KBDocumentType] = None,
+        tags: Optional[List[str]] = None,
         limit: int = 20,
-    ) -> list[KBDocument]:
+    ) -> List[KBDocument]:
         """Search KB documents by text."""
         # Simplified search - full-text search on title and description
         sql_query = text(
@@ -362,7 +362,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
                 "organization_id": organization_id,
                 "permission": permission.value,
                 "shared_by": shared_by,
-                "shared_at": datetime.now(UTC),
+                "shared_at": datetime.now(timezone.utc),
             },
         )
         await self.db.commit()
@@ -388,7 +388,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
         return result.rowcount > 0
 
-    async def list_document_shares(self, doc_id: str) -> dict[str, Any]:
+    async def list_document_shares(self, doc_id: str) -> Dict[str, Any]:
         """List all shares for a document."""
         # Get user shares
         user_query = text(
@@ -444,7 +444,7 @@ class PostgreSQLKBDocumentRepository(IKBDocumentRepository):
 
     async def get_user_document_permission(
         self, user_id: str, doc_id: str
-    ) -> KBSharePermission | None:
+    ) -> Optional[KBSharePermission]:
         """Get user's permission level for document."""
         query = text(
             """

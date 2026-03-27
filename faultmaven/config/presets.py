@@ -27,7 +27,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +47,18 @@ class PresetDefinition:
 
     name: str
     description: str
-    defaults: dict[str, Any]
-    required_overrides: dict[str, set[str]] = field(
+    defaults: Dict[str, Any]
+    required_overrides: Dict[str, Set[str]] = field(
         default_factory=dict
     )  # provider -> required keys
-    optional_dependencies: list[str] = field(default_factory=list)
+    optional_dependencies: List[str] = field(default_factory=list)
 
 
 # =============================================================================
 # PRESET DEFINITIONS
 # =============================================================================
 
-PRESETS: dict[str, PresetDefinition] = {
+PRESETS: Dict[str, PresetDefinition] = {
     PresetName.LOCAL: PresetDefinition(
         name="local",
         description="Zero-config for local development. Uses in-memory storage, "
@@ -219,7 +219,7 @@ PRESETS[PresetName.MINIMAL] = PRESETS[PresetName.LOCAL]
 # =============================================================================
 
 
-def get_current_preset_name() -> str | None:
+def get_current_preset_name() -> Optional[str]:
     """Get the currently configured preset name from environment."""
     preset_name = os.getenv("CONFIG_PRESET", "").lower().strip()
     if not preset_name:
@@ -227,7 +227,7 @@ def get_current_preset_name() -> str | None:
     return preset_name
 
 
-def get_preset(preset_name: str) -> PresetDefinition | None:
+def get_preset(preset_name: str) -> Optional[PresetDefinition]:
     """Get a preset definition by name."""
     try:
         preset_enum = PresetName(preset_name.lower())
@@ -239,7 +239,7 @@ def get_preset(preset_name: str) -> PresetDefinition | None:
         return None
 
 
-def get_preset_defaults(preset_name: str | None = None) -> dict[str, str]:
+def get_preset_defaults(preset_name: Optional[str] = None) -> Dict[str, str]:
     """
     Get default values from a preset.
 
@@ -301,7 +301,7 @@ def apply_preset_defaults():
     logger.info(f"Applied {applied_count} defaults from preset '{preset.name}'")
 
 
-def validate_preset_requirements() -> list[str]:
+def validate_preset_requirements() -> List[str]:
     """
     Validate that required overrides are present for the current preset and provider.
 
@@ -335,7 +335,7 @@ def validate_preset_requirements() -> list[str]:
     return errors
 
 
-def get_preset_info(preset_name: str | None = None) -> dict[str, Any]:
+def get_preset_info(preset_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Get information about a preset for display/documentation.
 
@@ -374,7 +374,7 @@ def get_preset_info(preset_name: str | None = None) -> dict[str, Any]:
     }
 
 
-def list_available_presets() -> list[dict[str, Any]]:
+def list_available_presets() -> List[Dict[str, Any]]:
     """List all available presets with their descriptions."""
     return [
         {
@@ -392,7 +392,7 @@ def list_available_presets() -> list[dict[str, Any]]:
 # =============================================================================
 
 
-def detect_zero_config_preset() -> str | None:
+def detect_zero_config_preset() -> Optional[str]:
     """
     Detect the best preset for zero-config startup.
 

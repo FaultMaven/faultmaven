@@ -19,6 +19,7 @@ Design Reference: Phase 3, Week 14-15 - DI Container Implementation
 """
 
 import logging
+from typing import Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.core.container import ServiceContainer

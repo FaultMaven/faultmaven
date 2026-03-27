@@ -17,8 +17,7 @@ Architecture Integration:
 import hashlib
 import json
 import logging
-from datetime import UTC
-from typing import Any
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import Request, Response
@@ -108,7 +107,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         hash_suffix = hashlib.sha256(combined.encode()).hexdigest()[:16]
         return f"{self.key_prefix}{idempotency_key}:{hash_suffix}"
 
-    async def _get_cached_response(self, cache_key: str) -> dict[str, Any] | None:
+    async def _get_cached_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """Retrieve cached response from Redis."""
         try:
             cached_data = await self.redis_client.get(cache_key)
@@ -153,7 +152,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(f"Error caching response: {e}")
 
-    def _create_response_from_cache(self, cached_data: dict[str, Any]) -> Response:
+    def _create_response_from_cache(self, cached_data: Dict[str, Any]) -> Response:
         """Create FastAPI response from cached data."""
         headers = cached_data.get("headers", {})
 
@@ -193,11 +192,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
     def _get_timestamp(self) -> str:
         """Get ISO timestamp for caching."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         from faultmaven.utils.serialization import to_json_compatible
 
-        return to_json_compatible(datetime.now(UTC))
+        return to_json_compatible(datetime.now(timezone.utc))
 
 
 def create_idempotency_middleware(

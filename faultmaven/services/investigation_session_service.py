@@ -17,15 +17,15 @@ This complements the APICaseService (TASK-011) by providing session-specific
 workflow management for investigation activities.
 """
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import IVectorStore
 
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -142,9 +142,9 @@ class APIInvestigationSessionService(BaseService):
         case_id: str,
         organization_id: str,
         user_id: str,
-        session_goal: str | None = None,
-        token_budget_limit: int | None = None,
-        metadata: dict[str, Any] | None = None,
+        session_goal: Optional[str] = None,
+        token_budget_limit: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> InvestigationSession:
         """Create a new investigation session.
 
@@ -214,7 +214,7 @@ class APIInvestigationSessionService(BaseService):
                 )
 
             # Create new session
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             session = InvestigationSession(
                 session_id=f"session_{uuid4().hex[:12]}",
                 case_id=case_id,
@@ -253,7 +253,7 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
-    ) -> InvestigationSession | None:
+    ) -> Optional[InvestigationSession]:
         """Get session by ID with authorization check.
 
         Verifies organization owns the parent case.
@@ -306,7 +306,7 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
-        updates: dict[str, Any],
+        updates: Dict[str, Any],
     ) -> InvestigationSession:
         """Update session with authorization check.
 
@@ -372,7 +372,7 @@ class APIInvestigationSessionService(BaseService):
                     session.metadata = value
 
             # Update timestamp
-            session.updated_at = datetime.now(UTC)
+            session.updated_at = datetime.now(timezone.utc)
 
             # Save updated session
             saved_session = await self.session_repo.update(session)
@@ -673,7 +673,7 @@ class APIInvestigationSessionService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-    ) -> InvestigationSession | None:
+    ) -> Optional[InvestigationSession]:
         """Get the currently active session for a case.
 
         Args:
@@ -717,10 +717,10 @@ class APIInvestigationSessionService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-        status: SessionStatus | None = None,
+        status: Optional[SessionStatus] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[InvestigationSession]:
+    ) -> List[InvestigationSession]:
         """List sessions for a case with filters.
 
         Args:
@@ -778,7 +778,7 @@ class APIInvestigationSessionService(BaseService):
         session_id: str,
         organization_id: str,
         include_tool_calls: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Get session with related agent executions.
 
         Args:
@@ -802,7 +802,7 @@ class APIInvestigationSessionService(BaseService):
             if not session:
                 return None
 
-            result: dict[str, Any] = {
+            result: Dict[str, Any] = {
                 "session": session,
             }
 
@@ -935,7 +935,7 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Check if session has exceeded token budget.
 
         Args:
@@ -1002,7 +1002,7 @@ class APIInvestigationSessionService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get session statistics for a case.
 
         Returns:
@@ -1027,10 +1027,10 @@ class APIInvestigationSessionService(BaseService):
             sessions = await self.session_repo.list_by_case_id(case_id)
 
             # Calculate statistics
-            by_status: dict[str, int] = {}
+            by_status: Dict[str, int] = {}
             total_token_usage = 0
             total_agent_executions = 0
-            durations: list[int] = []
+            durations: List[int] = []
 
             for session in sessions:
                 # Count by status
@@ -1060,7 +1060,7 @@ class APIInvestigationSessionService(BaseService):
                 "avg_session_duration_ms": avg_session_duration_ms,
                 "case_id": case_id,
                 "organization_id": organization_id,
-                "computed_at": datetime.now(UTC).isoformat(),
+                "computed_at": datetime.now(timezone.utc).isoformat(),
             }
 
             self.log_operation(

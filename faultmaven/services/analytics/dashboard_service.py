@@ -25,13 +25,14 @@ Performance Targets:
 
 import asyncio
 import json
+import logging
 import statistics
 import threading
-from collections import deque
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.caching.intelligent_cache import IntelligentCache
@@ -51,7 +52,7 @@ class PerformanceTrend:
     current_value: float
     previous_value: float
     change_percentage: float
-    data_points: list[float]
+    data_points: List[float]
     timeframe_hours: int
 
 
@@ -67,10 +68,10 @@ class ServiceHealthMetrics:
     response_time_p95: float
     throughput: float
     cache_hit_rate: float
-    resource_utilization: dict[str, float]
-    trends: list[PerformanceTrend]
-    alerts: list[dict[str, Any]]
-    recommendations: list[dict[str, Any]]
+    resource_utilization: Dict[str, float]
+    trends: List[PerformanceTrend]
+    alerts: List[Dict[str, Any]]
+    recommendations: List[Dict[str, Any]]
 
 
 @dataclass
@@ -80,11 +81,11 @@ class UserAnalytics:
     total_users: int
     active_users_24h: int
     avg_session_duration: float
-    popular_operations: list[tuple[str, int]]
+    popular_operations: List[Tuple[str, int]]
     user_satisfaction_score: float
     conversion_rate: float  # Successful troubleshooting rate
     retention_rate: float
-    usage_patterns: dict[str, Any]
+    usage_patterns: Dict[str, Any]
 
 
 @dataclass
@@ -96,9 +97,9 @@ class WorkflowAnalytics:
     success_rate: float
     avg_completion_time: float
     avg_steps_per_workflow: float
-    most_effective_phases: list[tuple[str, float]]
-    common_failure_points: list[dict[str, Any]]
-    optimization_opportunities: list[dict[str, Any]]
+    most_effective_phases: List[Tuple[str, float]]
+    common_failure_points: List[Dict[str, Any]]
+    optimization_opportunities: List[Dict[str, Any]]
 
 
 class AnalyticsDashboardService(BaseService):
@@ -120,9 +121,9 @@ class AnalyticsDashboardService(BaseService):
 
     def __init__(
         self,
-        metrics_collector: MetricsCollector | None = None,
-        intelligent_cache: IntelligentCache | None = None,
-        tracer: ITracer | None = None,
+        metrics_collector: Optional[MetricsCollector] = None,
+        intelligent_cache: Optional[IntelligentCache] = None,
+        tracer: Optional[ITracer] = None,
     ):
         """Initialize Analytics Dashboard Service
 
@@ -138,13 +139,13 @@ class AnalyticsDashboardService(BaseService):
         self._tracer = tracer
 
         # Analytics data storage
-        self._analytics_cache: dict[str, Any] = {}
+        self._analytics_cache: Dict[str, Any] = {}
         self._cache_lock = threading.RLock()
 
         # Performance tracking
-        self._service_metrics: dict[str, ServiceHealthMetrics] = {}
-        self._user_analytics: UserAnalytics | None = None
-        self._workflow_analytics: WorkflowAnalytics | None = None
+        self._service_metrics: Dict[str, ServiceHealthMetrics] = {}
+        self._user_analytics: Optional[UserAnalytics] = None
+        self._workflow_analytics: Optional[WorkflowAnalytics] = None
 
         # Real-time data streams
         self._real_time_metrics: deque = deque(maxlen=1000)
@@ -211,7 +212,7 @@ class AnalyticsDashboardService(BaseService):
         time_range_hours: int = 24,
         include_trends: bool = True,
         include_alerts: bool = True,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get comprehensive system overview dashboard
 
         Args:
@@ -242,7 +243,7 @@ class AnalyticsDashboardService(BaseService):
 
     async def _generate_system_overview(
         self, time_range_hours: int, include_trends: bool, include_alerts: bool
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Generate system overview dashboard data"""
 
         # Get performance data from metrics collector
@@ -271,7 +272,7 @@ class AnalyticsDashboardService(BaseService):
 
         # Build dashboard data
         dashboard = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_range_hours": time_range_hours,
             "system_health": {
                 "overall_score": overall_health_score,
@@ -329,7 +330,7 @@ class AnalyticsDashboardService(BaseService):
         service_name: str,
         time_range_hours: int = 24,
         include_detailed_metrics: bool = True,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get detailed performance dashboard for a specific service
 
         Args:
@@ -368,7 +369,7 @@ class AnalyticsDashboardService(BaseService):
 
     async def _generate_service_dashboard(
         self, service_name: str, time_range_hours: int, include_detailed_metrics: bool
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Generate detailed service performance dashboard"""
 
         # Get service performance summary
@@ -392,7 +393,7 @@ class AnalyticsDashboardService(BaseService):
 
         # Build service dashboard
         dashboard = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "service_name": service_name,
             "time_range_hours": time_range_hours,
             "health_summary": {
@@ -431,7 +432,7 @@ class AnalyticsDashboardService(BaseService):
         time_range_hours: int = 168,  # 7 days default
         include_behavior_patterns: bool = True,
         include_satisfaction_metrics: bool = True,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get comprehensive user analytics dashboard
 
         Args:
@@ -462,7 +463,7 @@ class AnalyticsDashboardService(BaseService):
         time_range_hours: int,
         include_behavior_patterns: bool,
         include_satisfaction_metrics: bool,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Generate user analytics dashboard data"""
 
         # Get user metrics from various sources
@@ -470,7 +471,7 @@ class AnalyticsDashboardService(BaseService):
         user_engagement = await self._get_user_engagement_metrics(time_range_hours)
 
         dashboard = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_range_hours": time_range_hours,
             "user_overview": {
                 "total_users": user_sessions.get("total_unique_users", 0),
@@ -513,7 +514,7 @@ class AnalyticsDashboardService(BaseService):
         time_range_hours: int = 168,  # 7 days default
         include_phase_analysis: bool = True,
         include_optimization_insights: bool = True,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get comprehensive workflow analytics dashboard
 
         Args:
@@ -544,14 +545,14 @@ class AnalyticsDashboardService(BaseService):
         time_range_hours: int,
         include_phase_analysis: bool,
         include_optimization_insights: bool,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Generate workflow analytics dashboard data"""
 
         # Get workflow metrics
         workflow_metrics = await self._get_workflow_metrics(time_range_hours)
 
         dashboard = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_range_hours": time_range_hours,
             "workflow_overview": {
                 "total_workflows": workflow_metrics.get("total_workflows", 0),
@@ -595,8 +596,8 @@ class AnalyticsDashboardService(BaseService):
         return dashboard
 
     async def execute_custom_analytics_query(
-        self, query_config: dict[str, Any], cache_results: bool = True
-    ) -> dict[str, Any]:
+        self, query_config: Dict[str, Any], cache_results: bool = True
+    ) -> Dict[str, Any]:
         """Execute custom analytics query with flexible parameters
 
         Args:
@@ -623,7 +624,7 @@ class AnalyticsDashboardService(BaseService):
             if cache_results and query_hash in self._query_cache:
                 cache_entry = self._query_cache[query_hash]
                 if (
-                    datetime.now(UTC) - cache_entry["timestamp"]
+                    datetime.now(timezone.utc) - cache_entry["timestamp"]
                 ).total_seconds() < self._query_cache_ttl:
                     return cache_entry["results"]
 
@@ -637,7 +638,7 @@ class AnalyticsDashboardService(BaseService):
             # Cache results if enabled
             if cache_results:
                 self._query_cache[query_hash] = {
-                    "timestamp": datetime.now(UTC),
+                    "timestamp": datetime.now(timezone.utc),
                     "results": results,
                 }
 
@@ -648,8 +649,8 @@ class AnalyticsDashboardService(BaseService):
             raise ServiceException(f"Custom query execution failed: {str(e)}")
 
     async def _execute_custom_query(
-        self, query_config: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, query_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute custom analytics query logic"""
 
         # Extract query parameters
@@ -662,7 +663,7 @@ class AnalyticsDashboardService(BaseService):
 
         # Build query results
         results = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "query_config": query_config,
             "data": {},
             "summary": {},
@@ -710,7 +711,7 @@ class AnalyticsDashboardService(BaseService):
 
     async def _aggregate_service_health_metrics(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Aggregate health metrics across all services"""
         services = [
             "memory_service",
@@ -741,7 +742,7 @@ class AnalyticsDashboardService(BaseService):
 
         return aggregated_metrics
 
-    def _calculate_overall_health_score(self, service_health: dict[str, Any]) -> float:
+    def _calculate_overall_health_score(self, service_health: Dict[str, Any]) -> float:
         """Calculate overall system health score"""
         if not service_health:
             return 0.0
@@ -769,18 +770,18 @@ class AnalyticsDashboardService(BaseService):
         return 99.5
 
     def _calculate_aggregate_error_rate(
-        self, system_performance: dict[str, Any]
+        self, system_performance: Dict[str, Any]
     ) -> float:
         """Calculate aggregate error rate across all services"""
         # Placeholder implementation
         return 0.02  # 2% error rate
 
-    def _calculate_avg_response_time(self, system_performance: dict[str, Any]) -> float:
+    def _calculate_avg_response_time(self, system_performance: Dict[str, Any]) -> float:
         """Calculate average response time across all services"""
         # Placeholder implementation
         return 250.0  # 250ms average response time
 
-    def _calculate_cache_efficiency(self, cache_performance: dict[str, Any]) -> float:
+    def _calculate_cache_efficiency(self, cache_performance: Dict[str, Any]) -> float:
         """Calculate cache efficiency score"""
         overall_hit_rate = cache_performance.get("overall", {}).get("hit_rate", 0.0)
         # Normalize to 0-100 scale
@@ -788,7 +789,7 @@ class AnalyticsDashboardService(BaseService):
 
     async def _get_user_analytics_summary(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get user analytics summary"""
         return {
             "total_users": 1250,
@@ -800,7 +801,7 @@ class AnalyticsDashboardService(BaseService):
 
     async def _get_workflow_analytics_summary(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get workflow analytics summary"""
         return {
             "total_workflows": 450,
@@ -810,7 +811,7 @@ class AnalyticsDashboardService(BaseService):
             "efficiency_score": 0.82,
         }
 
-    def _get_resource_utilization_summary(self) -> dict[str, Any]:
+    def _get_resource_utilization_summary(self) -> Dict[str, Any]:
         """Get system resource utilization summary"""
         return {
             "cpu_utilization": 45.2,
@@ -821,16 +822,16 @@ class AnalyticsDashboardService(BaseService):
 
     async def _get_performance_trends(
         self, time_range_hours: int
-    ) -> list[PerformanceTrend]:
+    ) -> List[PerformanceTrend]:
         """Get performance trends for the specified time range"""
         # Placeholder implementation - would analyze actual trend data
         return []
 
-    async def _get_active_alerts(self) -> list[dict[str, Any]]:
+    async def _get_active_alerts(self) -> List[Dict[str, Any]]:
         """Get currently active alerts"""
         return list(self._alert_stream)
 
-    async def _get_alert_summary(self, time_range_hours: int) -> dict[str, Any]:
+    async def _get_alert_summary(self, time_range_hours: int) -> Dict[str, Any]:
         """Get alert summary for time range"""
         return {
             "total_alerts": 15,
@@ -840,7 +841,7 @@ class AnalyticsDashboardService(BaseService):
             "resolved_alerts": 12,
         }
 
-    async def _get_optimization_recommendations(self) -> list[dict[str, Any]]:
+    async def _get_optimization_recommendations(self) -> List[Dict[str, Any]]:
         """Get system optimization recommendations"""
         recommendations = []
 
@@ -850,7 +851,7 @@ class AnalyticsDashboardService(BaseService):
 
         return recommendations[:10]  # Top 10 recommendations
 
-    def _generate_query_hash(self, query_config: dict[str, Any]) -> str:
+    def _generate_query_hash(self, query_config: Dict[str, Any]) -> str:
         """Generate hash for query caching"""
         import hashlib
 
@@ -858,22 +859,22 @@ class AnalyticsDashboardService(BaseService):
         return hashlib.md5(query_str.encode()).hexdigest()
 
     def _apply_query_filters(
-        self, data: dict[str, Any], filters: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, data: Dict[str, Any], filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Apply filters to query data"""
         # Placeholder implementation - would apply actual filters
         return data
 
     def _apply_query_aggregation(
-        self, data: dict[str, Any], metrics: list[str], aggregation: str
-    ) -> dict[str, Any]:
+        self, data: Dict[str, Any], metrics: List[str], aggregation: str
+    ) -> Dict[str, Any]:
         """Apply aggregation to query data"""
         # Placeholder implementation - would apply actual aggregations
         return data
 
     def _generate_query_summary(
-        self, data: dict[str, Any], metrics: list[str]
-    ) -> dict[str, Any]:
+        self, data: Dict[str, Any], metrics: List[str]
+    ) -> Dict[str, Any]:
         """Generate summary statistics for query results"""
         return {
             "total_data_points": len(data),
@@ -948,96 +949,96 @@ class AnalyticsDashboardService(BaseService):
 
     async def _get_service_health_metrics(
         self, service_name: str, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
     async def _get_operation_analytics(
         self, service_name: str, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
     def _calculate_service_error_rate(
-        self, service_performance: dict[str, Any]
+        self, service_performance: Dict[str, Any]
     ) -> float:
         return 0.01
 
     def _calculate_service_avg_response_time(
-        self, service_performance: dict[str, Any]
+        self, service_performance: Dict[str, Any]
     ) -> float:
         return 200.0
 
     async def _get_service_trends(
         self, service_name: str, time_range_hours: int
-    ) -> list[PerformanceTrend]:
+    ) -> List[PerformanceTrend]:
         return []
 
-    async def _get_service_resource_usage(self, service_name: str) -> dict[str, Any]:
+    async def _get_service_resource_usage(self, service_name: str) -> Dict[str, Any]:
         return {}
 
-    async def _get_performance_distribution(self, service_name: str) -> dict[str, Any]:
+    async def _get_performance_distribution(self, service_name: str) -> Dict[str, Any]:
         return {}
 
-    async def _get_user_session_metrics(self, time_range_hours: int) -> dict[str, Any]:
+    async def _get_user_session_metrics(self, time_range_hours: int) -> Dict[str, Any]:
         return {}
 
     async def _get_user_engagement_metrics(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
-    def _calculate_user_growth_rate(self, user_sessions: dict[str, Any]) -> float:
+    def _calculate_user_growth_rate(self, user_sessions: Dict[str, Any]) -> float:
         return 0.15
 
-    async def _get_usage_patterns(self, time_range_hours: int) -> dict[str, Any]:
+    async def _get_usage_patterns(self, time_range_hours: int) -> Dict[str, Any]:
         return {}
 
     async def _get_popular_features(
         self, time_range_hours: int
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         return []
 
     async def _get_geographic_distribution(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
     async def _get_user_behavior_patterns(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
     async def _get_user_satisfaction_metrics(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
-    async def _get_workflow_metrics(self, time_range_hours: int) -> dict[str, Any]:
+    async def _get_workflow_metrics(self, time_range_hours: int) -> Dict[str, Any]:
         return {}
 
-    def _calculate_workflow_efficiency(self, workflow_metrics: dict[str, Any]) -> float:
+    def _calculate_workflow_efficiency(self, workflow_metrics: Dict[str, Any]) -> float:
         return 0.82
 
     async def _get_common_workflow_patterns(
         self, time_range_hours: int
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         return []
 
     async def _get_workflow_failure_analysis(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
     async def _get_workflow_phase_analysis(
         self, time_range_hours: int
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         return {}
 
     async def _get_workflow_optimization_insights(
         self, time_range_hours: int
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         return []
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """Check health of analytics dashboard service"""
         base_health = await super().health_check()
 

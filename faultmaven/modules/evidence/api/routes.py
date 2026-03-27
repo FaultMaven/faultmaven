@@ -11,6 +11,7 @@ Implements 7 evidence endpoints from microservices architecture:
 """
 
 import logging
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import (
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
 
-async def get_evidence_service(request: Request) -> EvidenceService | None:
+async def get_evidence_service(request: Request) -> Optional[EvidenceService]:
     """Get evidence service from app.state (Composition Root).
 
     Returns:
@@ -51,9 +52,9 @@ async def get_evidence_service(request: Request) -> EvidenceService | None:
 @router.post("", response_model=EvidenceArtifact, status_code=status.HTTP_201_CREATED)
 async def upload_evidence(
     file: UploadFile = File(...),
-    description: str | None = Form(None),
-    tags: str | None = Form(None),  # Comma-separated
-    case_id: UUID | None = Form(None),
+    description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),  # Comma-separated
+    case_id: Optional[UUID] = Form(None),
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
 ) -> EvidenceArtifact:
@@ -85,12 +86,12 @@ async def upload_evidence(
 
 # NOTE: /case/{case_id} must be defined BEFORE /{evidence_id} routes
 # to avoid FastAPI matching "case" as an evidence_id
-@router.get("/case/{case_id}", response_model=list[EvidenceArtifact])
+@router.get("/case/{case_id}", response_model=List[EvidenceArtifact])
 async def get_evidence_for_case(
     case_id: UUID,
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> list[EvidenceArtifact]:
+) -> List[EvidenceArtifact]:
     """Get all evidence linked to a specific case.
 
     Args:
@@ -110,7 +111,7 @@ async def get_evidence_for_case(
 async def get_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService | None = Depends(get_evidence_service),
+    service: Optional[EvidenceService] = Depends(get_evidence_service),
 ) -> EvidenceArtifact:
     """Get evidence details by ID.
 
@@ -143,7 +144,7 @@ async def get_evidence(
 async def download_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService | None = Depends(get_evidence_service),
+    service: Optional[EvidenceService] = Depends(get_evidence_service),
 ):
     """Download evidence file.
 
@@ -178,7 +179,7 @@ async def download_evidence(
 async def delete_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService | None = Depends(get_evidence_service),
+    service: Optional[EvidenceService] = Depends(get_evidence_service),
 ):
     """Delete evidence file and record.
 
@@ -203,17 +204,17 @@ async def delete_evidence(
         )
 
 
-@router.get("", response_model=list[EvidenceArtifact])
+@router.get("", response_model=List[EvidenceArtifact])
 async def list_evidence(
-    case_id: UUID | None = None,
-    uploaded_by: UUID | None = None,
-    tags: str | None = None,  # Comma-separated
-    filename_contains: str | None = None,
+    case_id: Optional[UUID] = None,
+    uploaded_by: Optional[UUID] = None,
+    tags: Optional[str] = None,  # Comma-separated
+    filename_contains: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> list[EvidenceArtifact]:
+) -> List[EvidenceArtifact]:
     """List evidence with optional filters.
 
     Args:

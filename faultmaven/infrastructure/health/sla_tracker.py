@@ -6,10 +6,11 @@ with configurable thresholds and alerting capabilities.
 """
 
 import logging
+import statistics
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class SLAStatus(Enum):
@@ -33,9 +34,9 @@ class SLAMetrics:
     error_rate_percentage: float
     throughput_per_minute: float
     status: SLAStatus
-    last_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     breaches_24h: int = 0
-    time_to_recovery_minutes: float | None = None
+    time_to_recovery_minutes: Optional[float] = None
 
 
 @dataclass
@@ -60,8 +61,8 @@ class SLABreach:
     threshold_value: float
     actual_value: float
     breach_start: datetime
-    breach_end: datetime | None = None
-    duration_minutes: float | None = None
+    breach_end: Optional[datetime] = None
+    duration_minutes: Optional[float] = None
     severity: str = "medium"  # "low", "medium", "high", "critical"
 
 
@@ -71,11 +72,11 @@ class SLATracker:
     def __init__(self):
         """Initialize SLA tracker."""
         self.logger = logging.getLogger(__name__)
-        self.component_thresholds: dict[str, SLAThresholds] = {}
-        self.component_metrics: dict[str, SLAMetrics] = {}
-        self.sla_history: dict[str, list[tuple[datetime, SLAMetrics]]] = {}
-        self.active_breaches: dict[str, list[SLABreach]] = {}
-        self.breach_history: list[SLABreach] = []
+        self.component_thresholds: Dict[str, SLAThresholds] = {}
+        self.component_metrics: Dict[str, SLAMetrics] = {}
+        self.sla_history: Dict[str, List[Tuple[datetime, SLAMetrics]]] = {}
+        self.active_breaches: Dict[str, List[SLABreach]] = {}
+        self.breach_history: List[SLABreach] = []
         self._initialize_default_thresholds()
 
     def _initialize_default_thresholds(self) -> None:
@@ -143,7 +144,7 @@ class SLATracker:
         component_name: str,
         response_time_ms: float,
         success: bool,
-        timestamp: datetime | None = None,
+        timestamp: Optional[datetime] = None,
     ) -> None:
         """Record metrics for a single request.
 
@@ -154,7 +155,7 @@ class SLATracker:
             timestamp: When the request occurred (defaults to now)
         """
         if timestamp is None:
-            timestamp = datetime.now(UTC)
+            timestamp = datetime.now(timezone.utc)
 
         # Initialize component metrics if not exists
         if component_name not in self.component_metrics:
@@ -397,10 +398,10 @@ class SLATracker:
             self.sla_history[component_name] = []
 
         # Add new record
-        self.sla_history[component_name].append((datetime.now(UTC), metrics))
+        self.sla_history[component_name].append((datetime.now(timezone.utc), metrics))
 
         # Keep only last 7 days of history
-        cutoff_time = datetime.now(UTC) - timedelta(days=7)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=7)
         self.sla_history[component_name] = [
             record
             for record in self.sla_history[component_name]
@@ -413,7 +414,7 @@ class SLATracker:
             return
 
         thresholds = self.component_thresholds[component_name]
-        current_time = datetime.now(UTC)
+        current_time = datetime.now(timezone.utc)
 
         # Initialize active breaches for component if not exists
         if component_name not in self.active_breaches:
@@ -528,7 +529,7 @@ class SLATracker:
         else:
             return "low"
 
-    def get_sla_summary(self, time_window_hours: int = 24) -> dict[str, Any]:
+    def get_sla_summary(self, time_window_hours: int = 24) -> Dict[str, Any]:
         """Get SLA summary for all components.
 
         Args:
@@ -591,7 +592,7 @@ class SLATracker:
 
         return summary
 
-    def get_component_sla_details(self, component_name: str) -> dict[str, Any]:
+    def get_component_sla_details(self, component_name: str) -> Dict[str, Any]:
         """Get detailed SLA information for a specific component.
 
         Args:
@@ -621,7 +622,7 @@ class SLATracker:
             }
             for breach in self.breach_history
             if breach.component_name == component_name
-            and breach.breach_start >= datetime.now(UTC) - timedelta(days=7)
+            and breach.breach_start >= datetime.now(timezone.utc) - timedelta(days=7)
         ]
 
         # Get active breaches
@@ -633,7 +634,7 @@ class SLATracker:
                 "threshold_value": breach.threshold_value,
                 "actual_value": breach.actual_value,
                 "duration_minutes": (
-                    datetime.now(UTC) - breach.breach_start
+                    datetime.now(timezone.utc) - breach.breach_start
                 ).total_seconds()
                 / 60,
             }

@@ -7,9 +7,9 @@ Design Reference: Source Verification Badges Feature
 """
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, Optional
 
 
 class SuggestionStatus(str, Enum):
@@ -116,15 +116,15 @@ class KnowledgeSuggestion:
 
     # Extraction metadata
     extracted_by: str = ""
-    extracted_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    extracted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     include_messages: bool = True
     include_evidence: bool = True
 
     # PII scanning (HITL requirement per refinement #2)
     pii_scan_status: PIIScanStatus = PIIScanStatus.NOT_SCANNED
-    pii_scan_result: dict[str, Any] | None = None
-    pii_remediated_by: str | None = None
-    pii_remediated_at: datetime | None = None
+    pii_scan_result: Optional[Dict[str, Any]] = None
+    pii_remediated_by: Optional[str] = None
+    pii_remediated_at: Optional[datetime] = None
 
     # Lineage (for Review Inbox)
     source_case_title: str = ""
@@ -132,18 +132,18 @@ class KnowledgeSuggestion:
     evidence_count: int = 0
 
     # Review metadata
-    reviewed_by: str | None = None
-    reviewed_at: datetime | None = None
-    review_notes: str | None = None
-    rejection_reason: str | None = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    review_notes: Optional[str] = None
+    rejection_reason: Optional[str] = None
 
     # Final document link (bidirectional lineage per refinement #4)
-    knowledge_item_id: str | None = None
+    knowledge_item_id: Optional[str] = None
 
     # Timestamps
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    metadata: dict[str, Any] | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         """Validate suggestion data."""
@@ -203,7 +203,7 @@ class KnowledgeSuggestion:
         self,
         reviewed_by: str,
         knowledge_item_id: str,
-        review_notes: str | None = None,
+        review_notes: Optional[str] = None,
     ) -> None:
         """Approve the suggestion and link to created knowledge item.
 
@@ -217,7 +217,7 @@ class KnowledgeSuggestion:
 
         self.status = SuggestionStatus.APPROVED
         self.reviewed_by = reviewed_by
-        self.reviewed_at = datetime.now(UTC)
+        self.reviewed_at = datetime.now(timezone.utc)
         self.review_notes = review_notes
         self.knowledge_item_id = knowledge_item_id
         self.touch()
@@ -226,7 +226,7 @@ class KnowledgeSuggestion:
         self,
         reviewed_by: str,
         rejection_reason: str,
-        review_notes: str | None = None,
+        review_notes: Optional[str] = None,
     ) -> None:
         """Reject the suggestion.
 
@@ -237,7 +237,7 @@ class KnowledgeSuggestion:
         """
         self.status = SuggestionStatus.REJECTED
         self.reviewed_by = reviewed_by
-        self.reviewed_at = datetime.now(UTC)
+        self.reviewed_at = datetime.now(timezone.utc)
         self.rejection_reason = rejection_reason
         self.review_notes = review_notes
         self.touch()
@@ -245,7 +245,7 @@ class KnowledgeSuggestion:
     def mark_pii_scan_complete(
         self,
         status: PIIScanStatus,
-        result: dict[str, Any] | None = None,
+        result: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Mark PII scan as complete.
 
@@ -268,7 +268,7 @@ class KnowledgeSuggestion:
 
         self.pii_scan_status = PIIScanStatus.REMEDIATED
         self.pii_remediated_by = remediated_by
-        self.pii_remediated_at = datetime.now(UTC)
+        self.pii_remediated_at = datetime.now(timezone.utc)
         self.touch()
 
     def update_content(self, title: str, content: str) -> None:
@@ -287,7 +287,7 @@ class KnowledgeSuggestion:
 
     def touch(self) -> None:
         """Update the updated_at timestamp to current time."""
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
     def get_content_preview(self, max_chars: int = 200) -> str:
         """Get a preview of the content for list views.

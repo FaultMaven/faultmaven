@@ -30,6 +30,7 @@ Usage:
 """
 
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ class OAuthMetricsRecorder:
             logger.debug("OAuth metrics recorder initialized in no-op mode")
 
     def record_authorization_request(
-        self, client_id: str, success: bool, error_code: str | None = None
+        self, client_id: str, success: bool, error_code: Optional[str] = None
     ) -> None:
         """Record OAuth authorization code request.
 
@@ -237,7 +238,7 @@ class OAuthMetricsRecorder:
         client_id: str,
         duration_seconds: float,
         success: bool,
-        error_code: str | None = None,
+        error_code: Optional[str] = None,
     ) -> None:
         """Record OAuth token exchange operation.
 
@@ -275,7 +276,7 @@ class OAuthMetricsRecorder:
             logger.error(f"Failed to record token exchange metric: {e}")
 
     def record_token_refresh(
-        self, client_id: str, success: bool, error_code: str | None = None
+        self, client_id: str, success: bool, error_code: Optional[str] = None
     ) -> None:
         """Record OAuth token refresh operation.
 

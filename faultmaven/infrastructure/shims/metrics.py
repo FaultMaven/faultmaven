@@ -23,7 +23,7 @@ Usage:
 
 import logging
 import os
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class NoOpMetric:
         """No-op observe."""
         pass
 
-    def info(self, value: dict[str, str], *args: Any, **kwargs: Any) -> None:
+    def info(self, value: Dict[str, str], *args: Any, **kwargs: Any) -> None:
         """No-op info."""
         pass
 
@@ -108,7 +108,7 @@ class NoOpContextManager:
 def Counter(
     name: str,
     documentation: str,
-    labelnames: list[str] | None = None,
+    labelnames: Optional[List[str]] = None,
     namespace: str = "",
     subsystem: str = "",
     unit: str = "",
@@ -164,8 +164,8 @@ def Counter(
 def Histogram(
     name: str,
     documentation: str,
-    labelnames: list[str] | None = None,
-    buckets: list[float] | None = None,
+    labelnames: Optional[List[str]] = None,
+    buckets: Optional[List[float]] = None,
     namespace: str = "",
     subsystem: str = "",
     unit: str = "",
@@ -225,7 +225,7 @@ def Histogram(
 def Gauge(
     name: str,
     documentation: str,
-    labelnames: list[str] | None = None,
+    labelnames: Optional[List[str]] = None,
     namespace: str = "",
     subsystem: str = "",
     unit: str = "",
@@ -283,7 +283,7 @@ def Gauge(
 def Summary(
     name: str,
     documentation: str,
-    labelnames: list[str] | None = None,
+    labelnames: Optional[List[str]] = None,
     namespace: str = "",
     subsystem: str = "",
     unit: str = "",
@@ -339,7 +339,7 @@ def Summary(
 def Info(
     name: str,
     documentation: str,
-    labelnames: list[str] | None = None,
+    labelnames: Optional[List[str]] = None,
     namespace: str = "",
     subsystem: str = "",
     registry: Any = None,

@@ -15,7 +15,7 @@ Run with:
 """
 
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -59,7 +59,7 @@ def create_sample_session(
         status=status,
         session_goal=session_goal or "Benchmark investigation session",
         token_budget_limit=token_budget_limit,
-        started_at=started_at or datetime.now(UTC),
+        started_at=started_at or datetime.now(timezone.utc),
     )
 
 

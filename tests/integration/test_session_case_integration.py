@@ -15,8 +15,8 @@ Requirements:
 """
 
 import os
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -128,7 +128,7 @@ async def test_session_case_lifecycle(
     session = Session(
         session_id=str(uuid4()),
         user_id="lifecycle-test-user",
-        expires_at=datetime.now(UTC) + timedelta(hours=24),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
         metadata={"source": "integration_test"},
     )
     created_session = await session_repository.create_session(session)
@@ -289,7 +289,7 @@ async def test_session_expiry_workflow(
     expired_session = Session(
         session_id=str(uuid4()),
         user_id="expiry-test-user",
-        expires_at=datetime.now(UTC) - timedelta(hours=1),
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
     )
     await session_repository.create_session(expired_session)
 
@@ -305,7 +305,7 @@ async def test_session_expiry_workflow(
     active_session = Session(
         session_id=str(uuid4()),
         user_id="expiry-test-user",
-        expires_at=datetime.now(UTC) + timedelta(hours=24),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
     )
     await session_repository.create_session(active_session)
 
@@ -520,7 +520,7 @@ async def test_case_status_updates_with_session(
     # Need to re-save with session to maintain linkage
     # RESOLVED status requires resolved_at, closed_at timestamps, and closure_reason
     # Use model_copy to update all fields atomically (avoids validation ordering issues)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     case = case.model_copy(
         update={
             "status": CaseStatus.RESOLVED,

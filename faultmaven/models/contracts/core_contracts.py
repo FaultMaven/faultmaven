@@ -11,9 +11,9 @@ Design Principles:
 - Standardized error handling patterns
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, validator
@@ -129,19 +129,23 @@ class Evidence(BaseModel):
     source_type: str = Field(description="Source type (kb, pattern, playbook)")
     snippet: str = Field(description="Relevant text snippet or summary")
     score: float = Field(ge=0.0, le=1.0, description="Relevance score (0.0-1.0)")
-    url: str | None = Field(default=None, description="Optional URL for full content")
+    url: Optional[str] = Field(
+        default=None, description="Optional URL for full content"
+    )
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Evidence retrieval timestamp",
     )
-    provenance: dict[str, Any] = Field(
+    provenance: Dict[str, Any] = Field(
         default_factory=dict, description="Provenance metadata (adapter, version, etc.)"
     )
 
     # Additional metadata for explainability
-    rank: int | None = Field(default=None, description="Ranking position")
-    confidence: float | None = Field(default=None, description="Source confidence")
-    recency_boost: float | None = Field(default=None, description="Recency adjustment")
+    rank: Optional[int] = Field(default=None, description="Ranking position")
+    confidence: Optional[float] = Field(default=None, description="Source confidence")
+    recency_boost: Optional[float] = Field(
+        default=None, description="Recency adjustment"
+    )
 
 
 class TurnContext(BaseModel):
@@ -154,7 +158,7 @@ class TurnContext(BaseModel):
     query: str = Field(
         min_length=1, max_length=10000, description="User query or problem description"
     )
-    context: dict[str, Any] = Field(
+    context: Dict[str, Any] = Field(
         default_factory=dict,
         description="Additional context (environment, user profile, etc.)",
     )
@@ -163,14 +167,14 @@ class TurnContext(BaseModel):
     )
 
     # Metadata for routing and processing
-    user_id: str | None = Field(default=None, description="User identifier")
+    user_id: Optional[str] = Field(default=None, description="User identifier")
     priority: str = Field(default="normal", description="Priority level")
-    metadata: dict[str, Any] = Field(
+    metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata"
     )
 
     # Conversation context
-    conversation_history: list[dict[str, Any]] = Field(
+    conversation_history: List[Dict[str, Any]] = Field(
         default_factory=list, description="Recent conversation turns for context"
     )
 
@@ -195,16 +199,16 @@ class DecisionRecord(BaseModel):
     turn: int = Field(ge=1, description="Turn number in session")
 
     # Decision details
-    selected_agents: list[str] = Field(description="Agents selected for this turn")
+    selected_agents: List[str] = Field(description="Agents selected for this turn")
     routing_rationale: str = Field(description="Explanation of agent selection")
 
     # Feature vector for confidence scoring
-    features: dict[str, float] = Field(
+    features: Dict[str, float] = Field(
         default_factory=dict, description="Features used for confidence calculation"
     )
 
     # Confidence information
-    confidence: dict[str, Any] = Field(
+    confidence: Dict[str, Any] = Field(
         default_factory=dict, description="Confidence scoring results"
     )
 
@@ -214,36 +218,36 @@ class DecisionRecord(BaseModel):
 
     # Performance metrics
     latency_ms: int = Field(ge=0, description="Total turn processing time")
-    agent_latencies: dict[str, int] = Field(
+    agent_latencies: Dict[str, int] = Field(
         default_factory=dict, description="Per-agent execution times"
     )
 
     # Results and outcomes
-    agent_results: dict[str, Any] = Field(
+    agent_results: Dict[str, Any] = Field(
         default_factory=dict, description="Results from each selected agent"
     )
     final_response: str = Field(description="Final response to user")
 
     # Telemetry fields
-    sanitized_prompt: str | None = Field(
+    sanitized_prompt: Optional[str] = Field(
         default=None, description="PII-sanitized prompt for telemetry"
     )
-    raw_prompt: str | None = Field(
+    raw_prompt: Optional[str] = Field(
         default=None, description="Raw prompt (local debugging only)"
     )
 
     # Status and error handling
     status: str = Field(default="completed", description="Turn completion status")
-    errors: list[dict[str, Any]] = Field(
+    errors: List[Dict[str, Any]] = Field(
         default_factory=list, description="Any errors encountered during processing"
     )
 
     # Timestamps
     started_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Turn start timestamp",
     )
-    completed_at: datetime | None = Field(
+    completed_at: Optional[datetime] = Field(
         default=None, description="Turn completion timestamp"
     )
 
@@ -260,10 +264,10 @@ class RetrievalRequest(BaseModel):
     """Request for unified retrieval service."""
 
     query: str = Field(min_length=1, max_length=1000, description="Search query text")
-    context: list[str] = Field(
+    context: List[str] = Field(
         default_factory=list, description="Additional context for query understanding"
     )
-    filters: dict[str, Any] = Field(
+    filters: Dict[str, Any] = Field(
         default_factory=dict, description="Filtering criteria (product, category, etc.)"
     )
     max_results: int = Field(
@@ -271,10 +275,10 @@ class RetrievalRequest(BaseModel):
     )
 
     # Source preferences
-    enabled_sources: list[str] = Field(
+    enabled_sources: List[str] = Field(
         default=["kb", "pattern", "playbook"], description="Enabled retrieval sources"
     )
-    source_weights: dict[str, float] = Field(
+    source_weights: Dict[str, float] = Field(
         default_factory=dict, description="Source-specific weights for ranking"
     )
 
@@ -299,7 +303,7 @@ class RetrievalRequest(BaseModel):
 class RetrievalResponse(BaseModel):
     """Response from unified retrieval service."""
 
-    evidence: list[Evidence] = Field(
+    evidence: List[Evidence] = Field(
         description="List of evidence items ranked by relevance"
     )
     total_found: int = Field(
@@ -308,7 +312,7 @@ class RetrievalResponse(BaseModel):
 
     # Performance metrics
     elapsed_ms: int = Field(ge=0, description="Total retrieval time in milliseconds")
-    source_latencies: dict[str, int] = Field(
+    source_latencies: Dict[str, int] = Field(
         default_factory=dict, description="Per-source retrieval times"
     )
 
@@ -316,7 +320,7 @@ class RetrievalResponse(BaseModel):
     cache_hit: bool = Field(
         default=False, description="Whether result was served from cache"
     )
-    cache_key: str | None = Field(
+    cache_key: Optional[str] = Field(
         default=None, description="Cache key for result caching"
     )
 
@@ -327,7 +331,7 @@ class RetrievalResponse(BaseModel):
         le=1.0,
         description="Average relevance score of returned evidence",
     )
-    source_distribution: dict[str, int] = Field(
+    source_distribution: Dict[str, int] = Field(
         default_factory=dict, description="Distribution of results across sources"
     )
 
@@ -335,10 +339,10 @@ class RetrievalResponse(BaseModel):
 class ConfidenceRequest(BaseModel):
     """Request for global confidence scoring."""
 
-    features: dict[str, float] = Field(
+    features: Dict[str, float] = Field(
         description="Feature vector for confidence calculation"
     )
-    context: dict[str, Any] = Field(
+    context: Dict[str, Any] = Field(
         default_factory=dict, description="Additional context for scoring"
     )
 
@@ -393,21 +397,21 @@ class ConfidenceResponse(BaseModel):
     calibration_method: str = Field(description="Calibration method (Platt/Isotonic)")
 
     # Recommended actions based on confidence band
-    recommended_actions: list[str] = Field(
+    recommended_actions: List[str] = Field(
         default_factory=list,
         description="Recommended actions based on confidence level",
     )
 
     # Feature importance for explainability
-    feature_contributions: dict[str, float] = Field(
+    feature_contributions: Dict[str, float] = Field(
         default_factory=dict, description="Contribution of each feature to final score"
     )
 
     # Quality metrics
-    calibration_error: float | None = Field(
+    calibration_error: Optional[float] = Field(
         default=None, description="Expected calibration error for this model"
     )
-    uncertainty: float | None = Field(
+    uncertainty: Optional[float] = Field(
         default=None, description="Model uncertainty estimate"
     )
 
@@ -424,10 +428,10 @@ class PolicyEvaluation(BaseModel):
 
     # Risk assessment
     risk_level: RiskLevel = Field(description="Assessed risk level")
-    risk_factors: list[str] = Field(
+    risk_factors: List[str] = Field(
         default_factory=list, description="Identified risk factors"
     )
-    potential_impacts: list[str] = Field(
+    potential_impacts: List[str] = Field(
         default_factory=list, description="Potential negative impacts"
     )
 
@@ -436,24 +440,24 @@ class PolicyEvaluation(BaseModel):
     requires_confirmation: bool = Field(
         default=False, description="Whether user confirmation is required"
     )
-    required_role: str | None = Field(
+    required_role: Optional[str] = Field(
         default=None, description="Minimum role required for approval"
     )
 
     # Confirmation details (if required)
-    confirmation_payload: dict[str, Any] | None = Field(
+    confirmation_payload: Optional[Dict[str, Any]] = Field(
         default=None, description="Structured confirmation request details"
     )
     rationale: str = Field(description="Explanation for policy decision")
-    rollback_procedure: str | None = Field(
+    rollback_procedure: Optional[str] = Field(
         default=None, description="Steps to undo the action if needed"
     )
-    monitoring_steps: list[str] | None = Field(
+    monitoring_steps: Optional[List[str]] = Field(
         default=None, description="Steps to monitor action success"
     )
 
     # Compliance
-    compliance_checks: dict[str, bool] = Field(
+    compliance_checks: Dict[str, bool] = Field(
         default_factory=dict, description="Results of compliance validation"
     )
 
@@ -470,18 +474,18 @@ class LoopCheckRequest(BaseModel):
     """Request for loop detection analysis."""
 
     session_id: str = Field(description="Session identifier")
-    history: list[str] = Field(
+    history: List[str] = Field(
         min_items=1, max_length=10, description="Recent query history for analysis"
     )
-    confidence_history: list[float] = Field(
+    confidence_history: List[float] = Field(
         min_items=1, description="Confidence scores for recent turns"
     )
 
     # Additional signals
-    response_history: list[str] | None = Field(
+    response_history: Optional[List[str]] = Field(
         default=None, description="Recent response history for pattern detection"
     )
-    metadata: dict[str, Any] = Field(
+    metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata for detection"
     )
 
@@ -503,34 +507,34 @@ class LoopCheckResponse(BaseModel):
     )
 
     # Detection details
-    detected_patterns: list[str] = Field(
+    detected_patterns: List[str] = Field(
         default_factory=list, description="Types of patterns detected"
     )
-    detection_reasons: list[str] = Field(
+    detection_reasons: List[str] = Field(
         default_factory=list, description="Specific reasons for detection"
     )
 
     # Signals that triggered detection
-    signal_scores: dict[str, float] = Field(
+    signal_scores: Dict[str, float] = Field(
         default_factory=dict, description="Individual signal detection scores"
     )
 
     # Recovery recommendations
-    recommended_recovery: RecoveryAction | None = Field(
+    recommended_recovery: Optional[RecoveryAction] = Field(
         default=None, description="Recommended recovery action"
     )
-    recovery_suggestions: list[str] = Field(
+    recovery_suggestions: List[str] = Field(
         default_factory=list, description="Specific recovery suggestions"
     )
 
     # Analysis metrics
-    similarity_scores: list[float] = Field(
+    similarity_scores: List[float] = Field(
         default_factory=list, description="Query similarity scores"
     )
-    confidence_slope: float | None = Field(
+    confidence_slope: Optional[float] = Field(
         default=None, description="Confidence trend slope"
     )
-    novelty_score: float | None = Field(
+    novelty_score: Optional[float] = Field(
         default=None, description="Query novelty assessment"
     )
 
@@ -553,10 +557,10 @@ class GatewayResult(BaseModel):
     )
 
     # Extracted information
-    extracted_assumptions: list[dict[str, Any]] = Field(
+    extracted_assumptions: List[Dict[str, Any]] = Field(
         default_factory=list, description="Extracted implicit assumptions"
     )
-    context_enrichments: dict[str, Any] = Field(
+    context_enrichments: Dict[str, Any] = Field(
         default_factory=dict, description="Context enrichments from metadata"
     )
 
@@ -565,12 +569,12 @@ class GatewayResult(BaseModel):
         default=False, description="Whether PII was detected and redacted"
     )
     redaction_count: int = Field(default=0, description="Number of items redacted")
-    security_flags: list[str] = Field(
+    security_flags: List[str] = Field(
         default_factory=list, description="Security-related flags or warnings"
     )
 
     # Processing recommendations
-    routing_suggestions: list[str] = Field(
+    routing_suggestions: List[str] = Field(
         default_factory=list, description="Suggested agents for routing"
     )
     processing_priority: str = Field(

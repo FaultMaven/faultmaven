@@ -6,7 +6,7 @@ No LLM calls required - pure parsing and statistical analysis.
 """
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -15,7 +15,7 @@ from faultmaven.services.preprocessing.extractors.utils import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class ProfilingDataExtractor:
@@ -149,7 +149,7 @@ class ProfilingDataExtractor:
     ) -> str:
         """Generate natural language summary for cProfile data"""
         lines = [
-            "Profiling Analysis (cProfile format)",
+            f"Profiling Analysis (cProfile format)",
             f"- Total functions analyzed: {len(functions)}",
             f"- Total execution time: {total_time:.2f}s",
             f"- Performance hotspots identified: {len(hotspots)}",
@@ -173,7 +173,7 @@ class ProfilingDataExtractor:
                         f"   ⚠️  CRITICAL: This function consumes {pct:.1f}% of execution time"
                     )
                 elif pct > 15:
-                    lines.append("   ⚡ Significant optimization opportunity")
+                    lines.append(f"   ⚡ Significant optimization opportunity")
 
                 lines.append("")
 
@@ -234,7 +234,7 @@ class ProfilingDataExtractor:
 
         # Generate summary
         lines = [
-            "Profiling Analysis (Flame Graph format)",
+            f"Profiling Analysis (Flame Graph format)",
             f"- Total stacks analyzed: {len(stacks)}",
             f"- Total samples: {total_samples}",
             "",

@@ -13,9 +13,9 @@ Design Reference: TASK-007 Agent Execution Repository Pattern
 """
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 
 class ExecutionStatus(str, Enum):
@@ -70,15 +70,15 @@ class AgentToolCall:
     tool_call_id: str
     execution_id: str
     tool_name: str
-    tool_input: dict[str, Any] | None = None
-    tool_output: dict[str, Any] | None = None
+    tool_input: Optional[Dict[str, Any]] = None
+    tool_output: Optional[Dict[str, Any]] = None
     status: str = "pending"  # pending, running, success, failed
-    error_message: str | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    duration_ms: int | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
         """Validate tool call data."""
@@ -99,23 +99,23 @@ class AgentToolCall:
     def mark_started(self) -> None:
         """Mark tool call as started."""
         self.status = "running"
-        self.started_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
+        self.started_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
 
-    def mark_success(self, output: dict[str, Any]) -> None:
+    def mark_success(self, output: Dict[str, Any]) -> None:
         """Mark tool call as successful."""
         self.status = "success"
         self.tool_output = output
-        self.completed_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
+        self.completed_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
         self._calculate_duration()
 
     def mark_failed(self, error_message: str) -> None:
         """Mark tool call as failed."""
         self.status = "failed"
         self.error_message = error_message
-        self.completed_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
+        self.completed_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
         self._calculate_duration()
 
     def _calculate_duration(self) -> None:
@@ -171,17 +171,17 @@ class AgentExecution:
     agent_type: AgentType
     agent_model: str
     status: ExecutionStatus = ExecutionStatus.QUEUED
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    execution_duration_ms: int | None = None
-    prompt: str | None = None
-    response: str | None = None
-    error_message: str | None = None
-    token_usage: dict[str, int] | None = None
-    tool_calls: list[AgentToolCall] = field(default_factory=list)
-    metadata: dict[str, Any] | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    execution_duration_ms: Optional[int] = None
+    prompt: Optional[str] = None
+    response: Optional[str] = None
+    error_message: Optional[str] = None
+    token_usage: Optional[Dict[str, int]] = None
+    tool_calls: List[AgentToolCall] = field(default_factory=list)
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
         """Validate agent execution data."""
@@ -214,37 +214,37 @@ class AgentExecution:
     def mark_started(self) -> None:
         """Mark execution as started."""
         self.status = ExecutionStatus.RUNNING
-        self.started_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
+        self.started_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
 
     def mark_completed(self, response: str) -> None:
         """Mark execution as successfully completed."""
         self.status = ExecutionStatus.COMPLETED
-        self.completed_at = datetime.now(UTC)
+        self.completed_at = datetime.now(timezone.utc)
         self.response = response
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
         self._calculate_duration()
 
     def mark_failed(self, error_message: str) -> None:
         """Mark execution as failed."""
         self.status = ExecutionStatus.FAILED
-        self.completed_at = datetime.now(UTC)
+        self.completed_at = datetime.now(timezone.utc)
         self.error_message = error_message
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
         self._calculate_duration()
 
     def mark_cancelled(self) -> None:
         """Mark execution as cancelled."""
         self.status = ExecutionStatus.CANCELLED
-        self.completed_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
+        self.completed_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
         self._calculate_duration()
 
     def mark_timeout(self) -> None:
         """Mark execution as timed out."""
         self.status = ExecutionStatus.TIMEOUT
-        self.completed_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
+        self.completed_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
         self._calculate_duration()
 
     def _calculate_duration(self) -> None:
@@ -256,7 +256,7 @@ class AgentExecution:
     def add_tool_call(self, tool_call: AgentToolCall) -> None:
         """Add a tool call to this execution."""
         self.tool_calls.append(tool_call)
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
     def get_total_tokens(self) -> int:
         """Get total token usage."""
@@ -280,7 +280,7 @@ class AgentExecution:
         self,
         prompt_tokens: int,
         completion_tokens: int,
-        total_tokens: int | None = None,
+        total_tokens: Optional[int] = None,
     ) -> None:
         """Set token usage statistics."""
         self.token_usage = {
@@ -288,13 +288,13 @@ class AgentExecution:
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens or (prompt_tokens + completion_tokens),
         }
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
-    def get_failed_tool_calls(self) -> list[AgentToolCall]:
+    def get_failed_tool_calls(self) -> List[AgentToolCall]:
         """Get list of failed tool calls."""
         return [tc for tc in self.tool_calls if tc.status == "failed"]
 
-    def get_successful_tool_calls(self) -> list[AgentToolCall]:
+    def get_successful_tool_calls(self) -> List[AgentToolCall]:
         """Get list of successful tool calls."""
         return [tc for tc in self.tool_calls if tc.status == "success"]
 
@@ -312,7 +312,7 @@ class AgentExecution:
 
     def touch(self) -> None:
         """Update the updated_at timestamp to current time."""
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
 
     def __repr__(self) -> str:
         return (

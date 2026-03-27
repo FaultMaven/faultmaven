@@ -10,8 +10,8 @@ Usage:
 
 import hashlib
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from faultmaven.modules.case.contracts import CaseCheckpoint
 
@@ -29,8 +29,8 @@ class CheckpointService:
         self,
         case: Any,
         trigger: str = "turn_complete",
-        metadata: dict[str, Any] | None = None,
-    ) -> CaseCheckpoint | None:
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[CaseCheckpoint]:
         """
         Create an immutable snapshot of the case.
 
@@ -61,7 +61,7 @@ class CheckpointService:
                 case_snapshot=case_snapshot,
                 snapshot_hash=snapshot_hash,
                 trigger=trigger,
-                created_at=datetime.now(UTC),
+                created_at=datetime.now(timezone.utc),
                 metadata=metadata or {},
             )
 

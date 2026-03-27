@@ -8,7 +8,7 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 
 import base64
 import logging
-from typing import Any
+from typing import Any, Dict, Optional
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
@@ -65,7 +65,7 @@ class ReadFileTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> dict[str, Any]:
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -93,7 +93,7 @@ class ReadFileTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: dict[str, Any],
+        params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Read an evidence file's contents.
@@ -196,7 +196,7 @@ class ReadFileTool(AgentTool):
         file_data: bytes,
         filename: str,
         mime_type: str,
-        max_lines: int | None = None,
+        max_lines: Optional[int] = None,
         offset: int = 0,
     ) -> str:
         """Process file content based on type.
@@ -285,7 +285,7 @@ class ReadFileTool(AgentTool):
     def _process_text_file(
         self,
         file_data: bytes,
-        max_lines: int | None = None,
+        max_lines: Optional[int] = None,
         offset: int = 0,
     ) -> str:
         """Process text file content with optional line limits."""

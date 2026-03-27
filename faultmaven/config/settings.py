@@ -11,9 +11,11 @@ ARCHITECTURAL PRINCIPLES:
 - Frontend compatibility validation built-in
 """
 
+import logging
 import os
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Type, Union
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -123,7 +125,7 @@ class ServerSettings(BaseSettings):
     skip_service_checks: bool = Field(default=False)
 
     # Testing configuration
-    pytest_current_test: str | None = Field(default=None)
+    pytest_current_test: Optional[str] = Field(default=None)
 
     # Scheduler configuration - opt-in for single-process convenience mode
     # When True, starts APScheduler in-process during app startup.
@@ -152,36 +154,36 @@ class LLMSettings(BaseSettings):
     provider: LLMProvider = Field(
         default=LLMProvider.FIREWORKS, validation_alias="CHAT_PROVIDER"
     )
-    multimodal_provider: LLMProvider | None = Field(default=None)
-    synthesis_provider: LLMProvider | None = Field(default=None)
-    classifier_provider: LLMProvider | None = Field(default=None)
-    code_provider: LLMProvider | None = Field(default=None)
-    da_provider: LLMProvider | None = Field(default=None)
-    knowledge_provider: LLMProvider | None = Field(default=None)
+    multimodal_provider: Optional[LLMProvider] = Field(default=None)
+    synthesis_provider: Optional[LLMProvider] = Field(default=None)
+    classifier_provider: Optional[LLMProvider] = Field(default=None)
+    code_provider: Optional[LLMProvider] = Field(default=None)
+    da_provider: Optional[LLMProvider] = Field(default=None)
+    knowledge_provider: Optional[LLMProvider] = Field(default=None)
 
     # API Keys (SecretStr for security)
-    openai_api_key: SecretStr | None = Field(
+    openai_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="OPENAI_API_KEY"
     )
-    anthropic_api_key: SecretStr | None = Field(
+    anthropic_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="ANTHROPIC_API_KEY"
     )
-    fireworks_api_key: SecretStr | None = Field(
+    fireworks_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="FIREWORKS_API_KEY"
     )
-    cohere_api_key: SecretStr | None = Field(
+    cohere_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="COHERE_API_KEY"
     )
-    gemini_api_key: SecretStr | None = Field(
+    gemini_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="GEMINI_API_KEY"
     )
-    huggingface_api_key: SecretStr | None = Field(
+    huggingface_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="HUGGINGFACE_API_KEY"
     )
-    openrouter_api_key: SecretStr | None = Field(
+    openrouter_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="OPENROUTER_API_KEY"
     )
-    groq_api_key: SecretStr | None = Field(
+    groq_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="GROQ_API_KEY"
     )
 
@@ -191,76 +193,76 @@ class LLMSettings(BaseSettings):
     # e.g., OPENAI_CODE_MODEL=gpt-4o for code, while OPENAI_MODEL=gpt-4o-mini for everything else.
 
     # OpenAI
-    openai_chat_model: str | None = Field(default=None)
-    openai_multimodal_model: str | None = Field(default=None)
-    openai_synthesis_model: str | None = Field(default=None)
-    openai_classifier_model: str | None = Field(default=None)
-    openai_code_model: str | None = Field(default=None)
-    openai_da_model: str | None = Field(default=None)
-    openai_knowledge_model: str | None = Field(default=None)
+    openai_chat_model: Optional[str] = Field(default=None)
+    openai_multimodal_model: Optional[str] = Field(default=None)
+    openai_synthesis_model: Optional[str] = Field(default=None)
+    openai_classifier_model: Optional[str] = Field(default=None)
+    openai_code_model: Optional[str] = Field(default=None)
+    openai_da_model: Optional[str] = Field(default=None)
+    openai_knowledge_model: Optional[str] = Field(default=None)
 
     # Anthropic
-    anthropic_chat_model: str | None = Field(default=None)
-    anthropic_multimodal_model: str | None = Field(default=None)
-    anthropic_synthesis_model: str | None = Field(default=None)
-    anthropic_classifier_model: str | None = Field(default=None)
-    anthropic_code_model: str | None = Field(default=None)
-    anthropic_da_model: str | None = Field(default=None)
-    anthropic_knowledge_model: str | None = Field(default=None)
+    anthropic_chat_model: Optional[str] = Field(default=None)
+    anthropic_multimodal_model: Optional[str] = Field(default=None)
+    anthropic_synthesis_model: Optional[str] = Field(default=None)
+    anthropic_classifier_model: Optional[str] = Field(default=None)
+    anthropic_code_model: Optional[str] = Field(default=None)
+    anthropic_da_model: Optional[str] = Field(default=None)
+    anthropic_knowledge_model: Optional[str] = Field(default=None)
 
     # Fireworks
-    fireworks_chat_model: str | None = Field(default=None)
-    fireworks_multimodal_model: str | None = Field(default=None)
-    fireworks_synthesis_model: str | None = Field(default=None)
-    fireworks_classifier_model: str | None = Field(default=None)
-    fireworks_code_model: str | None = Field(default=None)
-    fireworks_da_model: str | None = Field(default=None)
-    fireworks_knowledge_model: str | None = Field(default=None)
+    fireworks_chat_model: Optional[str] = Field(default=None)
+    fireworks_multimodal_model: Optional[str] = Field(default=None)
+    fireworks_synthesis_model: Optional[str] = Field(default=None)
+    fireworks_classifier_model: Optional[str] = Field(default=None)
+    fireworks_code_model: Optional[str] = Field(default=None)
+    fireworks_da_model: Optional[str] = Field(default=None)
+    fireworks_knowledge_model: Optional[str] = Field(default=None)
 
     # Google Gemini
-    gemini_chat_model: str | None = Field(default=None)
-    gemini_multimodal_model: str | None = Field(default=None)
-    gemini_synthesis_model: str | None = Field(default=None)
-    gemini_classifier_model: str | None = Field(default=None)
-    gemini_code_model: str | None = Field(default=None)
-    gemini_da_model: str | None = Field(default=None)
-    gemini_knowledge_model: str | None = Field(default=None)
+    gemini_chat_model: Optional[str] = Field(default=None)
+    gemini_multimodal_model: Optional[str] = Field(default=None)
+    gemini_synthesis_model: Optional[str] = Field(default=None)
+    gemini_classifier_model: Optional[str] = Field(default=None)
+    gemini_code_model: Optional[str] = Field(default=None)
+    gemini_da_model: Optional[str] = Field(default=None)
+    gemini_knowledge_model: Optional[str] = Field(default=None)
 
     # Cohere
-    cohere_chat_model: str | None = Field(default=None)
-    cohere_multimodal_model: str | None = Field(default=None)
-    cohere_synthesis_model: str | None = Field(default=None)
-    cohere_classifier_model: str | None = Field(default=None)
-    cohere_code_model: str | None = Field(default=None)
-    cohere_da_model: str | None = Field(default=None)
-    cohere_knowledge_model: str | None = Field(default=None)
+    cohere_chat_model: Optional[str] = Field(default=None)
+    cohere_multimodal_model: Optional[str] = Field(default=None)
+    cohere_synthesis_model: Optional[str] = Field(default=None)
+    cohere_classifier_model: Optional[str] = Field(default=None)
+    cohere_code_model: Optional[str] = Field(default=None)
+    cohere_da_model: Optional[str] = Field(default=None)
+    cohere_knowledge_model: Optional[str] = Field(default=None)
 
     # HuggingFace
-    huggingface_chat_model: str | None = Field(default=None)
-    huggingface_multimodal_model: str | None = Field(default=None)
-    huggingface_synthesis_model: str | None = Field(default=None)
-    huggingface_classifier_model: str | None = Field(default=None)
-    huggingface_code_model: str | None = Field(default=None)
-    huggingface_da_model: str | None = Field(default=None)
-    huggingface_knowledge_model: str | None = Field(default=None)
+    huggingface_chat_model: Optional[str] = Field(default=None)
+    huggingface_multimodal_model: Optional[str] = Field(default=None)
+    huggingface_synthesis_model: Optional[str] = Field(default=None)
+    huggingface_classifier_model: Optional[str] = Field(default=None)
+    huggingface_code_model: Optional[str] = Field(default=None)
+    huggingface_da_model: Optional[str] = Field(default=None)
+    huggingface_knowledge_model: Optional[str] = Field(default=None)
 
     # OpenRouter
-    openrouter_chat_model: str | None = Field(default=None)
-    openrouter_multimodal_model: str | None = Field(default=None)
-    openrouter_synthesis_model: str | None = Field(default=None)
-    openrouter_classifier_model: str | None = Field(default=None)
-    openrouter_code_model: str | None = Field(default=None)
-    openrouter_da_model: str | None = Field(default=None)
-    openrouter_knowledge_model: str | None = Field(default=None)
+    openrouter_chat_model: Optional[str] = Field(default=None)
+    openrouter_multimodal_model: Optional[str] = Field(default=None)
+    openrouter_synthesis_model: Optional[str] = Field(default=None)
+    openrouter_classifier_model: Optional[str] = Field(default=None)
+    openrouter_code_model: Optional[str] = Field(default=None)
+    openrouter_da_model: Optional[str] = Field(default=None)
+    openrouter_knowledge_model: Optional[str] = Field(default=None)
 
     # Groq
-    groq_chat_model: str | None = Field(default=None)
-    groq_multimodal_model: str | None = Field(default=None)
-    groq_synthesis_model: str | None = Field(default=None)
-    groq_classifier_model: str | None = Field(default=None)
-    groq_code_model: str | None = Field(default=None)
-    groq_da_model: str | None = Field(default=None)
-    groq_knowledge_model: str | None = Field(default=None)
+    groq_chat_model: Optional[str] = Field(default=None)
+    groq_multimodal_model: Optional[str] = Field(default=None)
+    groq_synthesis_model: Optional[str] = Field(default=None)
+    groq_classifier_model: Optional[str] = Field(default=None)
+    groq_code_model: Optional[str] = Field(default=None)
+    groq_da_model: Optional[str] = Field(default=None)
+    groq_knowledge_model: Optional[str] = Field(default=None)
 
     # Model configuration
     openai_model: str = Field(default="gpt-4o")
@@ -274,8 +276,8 @@ class LLMSettings(BaseSettings):
     openrouter_model: str = Field(default="openrouter-default")
 
     # Local provider configuration
-    local_url: str | None = Field(default=None, validation_alias="LOCAL_LLM_URL")
-    local_model: str | None = Field(default=None, validation_alias="LOCAL_LLM_MODEL")
+    local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
+    local_model: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_MODEL")
 
     # Base URLs for each provider
     openai_base_url: str = Field(
@@ -346,7 +348,7 @@ class LLMSettings(BaseSettings):
             )
         return v
 
-    def get_api_key(self) -> str | None:
+    def get_api_key(self) -> Optional[str]:
         """Get API key for current provider"""
         key_map = {
             LLMProvider.OPENAI: self.openai_api_key,
@@ -370,7 +372,7 @@ class LLMSettings(BaseSettings):
         """Get multimodal provider (falls back to chat provider if not set)"""
         return self.multimodal_provider or self.provider
 
-    def get_multimodal_api_key(self) -> str | None:
+    def get_multimodal_api_key(self) -> Optional[str]:
         """Get API key for multimodal provider"""
         provider = self.get_multimodal_provider()
         key_map = {
@@ -449,7 +451,7 @@ class LLMSettings(BaseSettings):
             return self.local_model or ""
 
         # Base model per provider (the single source of truth from .env)
-        base_models: dict[LLMProvider, str] = {
+        base_models: Dict[LLMProvider, str] = {
             LLMProvider.OPENAI: self.openai_model,
             LLMProvider.ANTHROPIC: self.anthropic_model,
             LLMProvider.FIREWORKS: self.fireworks_model,
@@ -480,7 +482,7 @@ class LLMSettings(BaseSettings):
         }
         return url_map.get(provider, "")
 
-    def get_synthesis_api_key(self) -> str | None:
+    def get_synthesis_api_key(self) -> Optional[str]:
         """Get API key for synthesis provider"""
         provider = self.get_synthesis_provider()
         key_map = {
@@ -544,8 +546,8 @@ class DatabaseSettings(BaseSettings):
     redis_host: str = Field(default="faultmaven-redis-master")
     redis_port: int = Field(default=6379)
     redis_db: int = Field(default=0)
-    redis_password: SecretStr | None = Field(default=None)
-    redis_url: str | None = Field(default=None)
+    redis_password: Optional[SecretStr] = Field(default=None)
+    redis_url: Optional[str] = Field(default=None)
 
     model_config = {
         "env_file": ".env",
@@ -560,10 +562,10 @@ class DatabaseSettings(BaseSettings):
     chromadb_host: str = Field(default="chromadb.faultmaven.local")
     chromadb_port: int = Field(default=30080)
     chromadb_url: str = Field(default="http://chromadb.faultmaven.local:30080")
-    chromadb_api_key: SecretStr | None = Field(default=None)
+    chromadb_api_key: Optional[SecretStr] = Field(default=None)
 
     # ChromaDB Extended Configuration (merged from EnhancedDatabaseSettings)
-    chromadb_auth_token: SecretStr | None = Field(default=None)
+    chromadb_auth_token: Optional[SecretStr] = Field(default=None)
     chromadb_collection: str = Field(default="faultmaven_kb")
     chromadb_persist_dir: str = Field(default="./data/chroma")
 
@@ -575,7 +577,7 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     # Pinecone Configuration (Optional Vector Backend)
     # ============================================
-    pinecone_api_key: SecretStr | None = Field(
+    pinecone_api_key: Optional[SecretStr] = Field(
         default=None,
         description="Pinecone API key (required if VECTOR_BACKEND=pinecone)",
     )
@@ -605,14 +607,14 @@ class DatabaseSettings(BaseSettings):
     auth_db_port: int = Field(default=30432)
     auth_db_name: str = Field(default="auth_db")
     auth_db_user: str = Field(default="auth_service")
-    auth_db_password: SecretStr | None = Field(default=None)
+    auth_db_password: Optional[SecretStr] = Field(default=None)
 
     # PostgreSQL - Cases Database (for case data)
     cases_db_host: str = Field(default="postgres.faultmaven.local")
     cases_db_port: int = Field(default=30432)
     cases_db_name: str = Field(default="cases_db")
     cases_db_user: str = Field(default="case_service")
-    cases_db_password: SecretStr | None = Field(default=None)
+    cases_db_password: Optional[SecretStr] = Field(default=None)
 
     @property
     def auth_db_url(self) -> str:
@@ -717,12 +719,12 @@ class SecuritySettings(BaseSettings):
     # JWT configuration (RS256 for production-ready asymmetric encryption)
     # For development/testing, HS256 with jwt_secret_key is also supported
     jwt_algorithm: str = Field(default="RS256")
-    jwt_private_key_path: str | None = Field(default=None)
-    jwt_public_key_path: str | None = Field(default=None)
-    jwt_private_key: SecretStr | None = Field(default=None)
-    jwt_public_key: str | None = Field(default=None)
+    jwt_private_key_path: Optional[str] = Field(default=None)
+    jwt_public_key_path: Optional[str] = Field(default=None)
+    jwt_private_key: Optional[SecretStr] = Field(default=None)
+    jwt_public_key: Optional[str] = Field(default=None)
     # HS256 fallback secret key (for development/testing when RSA keys are not configured)
-    jwt_secret_key: SecretStr | None = Field(
+    jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured.",
     )
@@ -742,10 +744,10 @@ class SecuritySettings(BaseSettings):
 
     # CORS configuration
     cors_allow_credentials: bool = Field(default=True)
-    cors_allow_origins: list[str] = Field(
+    cors_allow_origins: List[str] = Field(
         default=["http://localhost:3333", "chrome-extension://*", "moz-extension://*"],
     )
-    cors_expose_headers: list[str] = Field(
+    cors_expose_headers: List[str] = Field(
         default=[
             "Location",
             "X-Total-Count",
@@ -846,13 +848,13 @@ class AuthSettings(BaseSettings):
     )
 
     # Allowed OAuth clients (extension IDs)
-    oauth_allowed_clients: list[str] = Field(
+    oauth_allowed_clients: List[str] = Field(
         default=["faultmaven-copilot"],
         description="Allowed OAuth client IDs",
     )
 
     # OAuth redirect URI patterns (regex)
-    oauth_redirect_uri_patterns: list[str] = Field(
+    oauth_redirect_uri_patterns: List[str] = Field(
         default=[
             r"^chrome-extension://[a-z]{32}/callback\.html$",
             r"^moz-extension://[a-f0-9-]{36}/callback\.html$",
@@ -953,8 +955,8 @@ class ProtectionSettings(BaseSettings):
 
     # PII Protection Settings
     min_score_threshold: float = Field(default=0.85)
-    supported_languages: list[str] = Field(default=["en"])
-    entities_to_protect: list[str] = Field(
+    supported_languages: List[str] = Field(default=["en"])
+    entities_to_protect: List[str] = Field(
         default=[
             "CREDIT_CARD",
             "CRYPTO",
@@ -1003,14 +1005,14 @@ class ObservabilitySettings(BaseSettings):
 
     # Core Opik configuration
     opik_project_name: str = Field(default="faultmaven")
-    opik_url_override: str | None = Field(default=None)
+    opik_url_override: Optional[str] = Field(default=None)
     opik_use_local: bool = Field(default=False)
     opik_local_url: str = Field(default="http://localhost:5173")
     opik_local_host: str = Field(default="opik-api.faultmaven.local")
 
     # Opik API and tracking controls (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    opik_api_key: SecretStr | None = Field(default=None)
+    opik_api_key: Optional[SecretStr] = Field(default=None)
     opik_enabled: bool = Field(default=False)
     opik_track_disable: bool = Field(default=True)
     opik_track_users: str = Field(default="")
@@ -1026,11 +1028,11 @@ class ObservabilitySettings(BaseSettings):
     prometheus_enabled: bool = Field(default=False)
     prometheus_pushgateway_url: str = Field(default="http://localhost:9091")
     generic_apm_enabled: bool = Field(default=False)
-    generic_apm_url: str | None = Field(default=None)
-    generic_apm_api_key: SecretStr | None = Field(default=None)
+    generic_apm_url: Optional[str] = Field(default=None)
+    generic_apm_api_key: Optional[SecretStr] = Field(default=None)
 
     # Workspace integration (merged from WorkspaceSettings)
-    comet_workspace: str | None = Field(default=None)
+    comet_workspace: Optional[str] = Field(default=None)
     instance_id: str = Field(default="localhost:8090")
 
     # Performance monitoring (merged from EnhancedObservabilitySettings)
@@ -1104,7 +1106,7 @@ class UploadSettings(BaseSettings):
         default=10,
         description="Maximum file size for uploads (also used as document processing limit)",
     )
-    allowed_mime_types: list[str] = Field(
+    allowed_mime_types: List[str] = Field(
         default=[
             "text/plain",
             "text/csv",
@@ -1124,8 +1126,8 @@ class KnowledgeSettings(BaseSettings):
     """Knowledge base and search configuration"""
 
     enable_web_search: bool = Field(default=True)
-    serp_api_key: SecretStr | None = Field(default=None)
-    tavily_api_key: SecretStr | None = Field(default=None)
+    serp_api_key: Optional[SecretStr] = Field(default=None)
+    tavily_api_key: Optional[SecretStr] = Field(default=None)
 
     # Search limits
     max_search_results: int = Field(
@@ -1433,7 +1435,7 @@ class ToolsSettings(BaseSettings):
     """Tools and external service configuration"""
 
     # Web search configuration
-    web_search_api_key: SecretStr | None = Field(default=None)
+    web_search_api_key: Optional[SecretStr] = Field(default=None)
     web_search_api_endpoint: str = Field(
         default="https://www.googleapis.com/customsearch/v1",
     )
@@ -1456,9 +1458,9 @@ class ToolsSettings(BaseSettings):
 class AlertingSettings(BaseSettings):
     """Email and webhook alerting configuration"""
 
-    alert_from_email: str | None = Field(default=None)
+    alert_from_email: Optional[str] = Field(default=None)
     alert_to_emails: str = Field(default="")
-    alert_webhook_url: str | None = Field(default=None)
+    alert_webhook_url: Optional[str] = Field(default=None)
 
     # SMTP Configuration
     smtp_host: str = Field(default="localhost")
@@ -1470,7 +1472,7 @@ class AlertingSettings(BaseSettings):
 class WorkspaceSettings(BaseSettings):
     """Workspace and collaboration settings (comet_workspace moved to ObservabilitySettings)"""
 
-    comet_api_key: SecretStr | None = Field(default=None)
+    comet_api_key: Optional[SecretStr] = Field(default=None)
 
     # Feature toggles for experimental features
     enable_experimental_features: bool = Field(default=False)
@@ -1676,7 +1678,7 @@ class AgentSettings(BaseSettings):
     )
 
     # Token budget defaults
-    default_session_token_budget: int | None = Field(
+    default_session_token_budget: Optional[int] = Field(
         default=None,
         description="Default token budget for new sessions (None = unlimited)",
     )
@@ -1784,7 +1786,7 @@ class EvidenceStorageSettings(BaseSettings):
     )
 
     # Allowed MIME types (empty list = allow all)
-    allowed_evidence_mime_types: list[str] = Field(
+    allowed_evidence_mime_types: List[str] = Field(
         default=[],
         description="Allowed MIME types for evidence files (empty = allow all)",
     )
@@ -1799,7 +1801,7 @@ class EvidenceStorageSettings(BaseSettings):
 
     # Cloud storage configuration (S3)
     # These settings are used when STORAGE_BACKEND=s3
-    s3_bucket_name: str | None = Field(
+    s3_bucket_name: Optional[str] = Field(
         default=None,
         description="S3 bucket name for evidence storage (required if STORAGE_BACKEND=s3)",
     )
@@ -1811,7 +1813,7 @@ class EvidenceStorageSettings(BaseSettings):
         default="evidence/",
         description="Key prefix for S3 object keys",
     )
-    s3_endpoint_url: str | None = Field(
+    s3_endpoint_url: Optional[str] = Field(
         default=None,
         description="Custom S3 endpoint URL (for S3-compatible services like MinIO)",
     )
@@ -1899,7 +1901,7 @@ class FaultMavenSettings(BaseSettings):
         return self.evidence_storage.max_evidence_file_size
 
     @property
-    def allowed_evidence_mime_types(self) -> list[str]:
+    def allowed_evidence_mime_types(self) -> List[str]:
         """Get allowed evidence MIME types."""
         return self.evidence_storage.allowed_evidence_mime_types
 
@@ -1912,7 +1914,7 @@ class FaultMavenSettings(BaseSettings):
         "extra": "ignore",  # Allow extra environment variables
     }
 
-    def get_cors_config(self) -> dict[str, Any]:
+    def get_cors_config(self) -> Dict[str, Any]:
         """
         Generate FastAPI CORS configuration.
         Critical for frontend compatibility.
@@ -1925,7 +1927,7 @@ class FaultMavenSettings(BaseSettings):
             "expose_headers": self.security.cors_expose_headers,
         }
 
-    def validate_frontend_compatibility(self) -> dict[str, Any]:
+    def validate_frontend_compatibility(self) -> Dict[str, Any]:
         """
         Validate configuration for frontend compatibility.
 
@@ -2003,12 +2005,13 @@ class FaultMavenSettings(BaseSettings):
         """Check if running in production mode"""
         return self.server.environment == Environment.PRODUCTION
 
-    def get_active_preset(self) -> str | None:
+    def get_active_preset(self) -> Optional[str]:
         """Get the name of the currently active configuration preset."""
+        import os
 
         return os.getenv("CONFIG_PRESET")
 
-    def get_configuration_summary(self) -> dict[str, Any]:
+    def get_configuration_summary(self) -> Dict[str, Any]:
         """Get a summary of the current configuration for debugging/display."""
         from .presets import get_preset_info
 
@@ -2032,7 +2035,7 @@ class FaultMavenSettings(BaseSettings):
 # SINGLETON MANAGEMENT
 # =============================================================================
 
-_settings_instance: FaultMavenSettings | None = None
+_settings_instance: Optional[FaultMavenSettings] = None
 
 
 def get_settings() -> FaultMavenSettings:

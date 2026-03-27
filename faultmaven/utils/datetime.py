@@ -8,7 +8,7 @@ Key Functions:
 - parse_utc_timestamp(): Parse UTC timestamp string to datetime object
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 
 def utc_timestamp() -> str:
@@ -23,7 +23,7 @@ def utc_timestamp() -> str:
     """
     # Direct implementation to avoid circular dependency
     # For UTC timezone-aware datetime, format as: YYYY-MM-DDTHH:MM:SS.ffffffZ
-    dt = datetime.now(UTC)
+    dt = datetime.now(timezone.utc)
     return dt.replace(tzinfo=None).isoformat() + "Z"
 
 
@@ -51,9 +51,9 @@ def parse_utc_timestamp(timestamp_str: str) -> datetime:
         # Remove 'Z' suffix and parse
         # This also handles corrupted '+00:00Z' format by stripping Z, leaving valid '+00:00'
         dt = datetime.fromisoformat(timestamp_str[:-1])
-        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
     else:
         # Parse ISO format (handles +00:00 automatically)
         dt = datetime.fromisoformat(timestamp_str)
         # If naive, assume UTC
-        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt

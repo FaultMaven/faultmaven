@@ -8,8 +8,8 @@ for different types of failures across architectural layers.
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from ..exceptions import RecoveryResult
 
@@ -19,7 +19,7 @@ class RecoveryStrategy(ABC):
 
     @abstractmethod
     async def execute(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute the recovery strategy.
 
@@ -78,7 +78,7 @@ class RetryRecoveryStrategy(RecoveryStrategy):
         return "retry"
 
     async def execute(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute retry recovery strategy with exponential backoff."""
         operation = context.get("operation")
@@ -154,7 +154,7 @@ class CircuitBreakerRecoveryStrategy(RecoveryStrategy):
         """
         self.failure_threshold = failure_threshold
         self.timeout = timeout
-        self.circuit_states: dict[str, dict[str, Any]] = {}
+        self.circuit_states: Dict[str, Dict[str, Any]] = {}
         self.logger = logging.getLogger(__name__)
 
     @property
@@ -162,7 +162,7 @@ class CircuitBreakerRecoveryStrategy(RecoveryStrategy):
         return "circuit_breaker"
 
     async def execute(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute circuit breaker recovery strategy."""
         service = context.get("service", "unknown")
@@ -179,7 +179,7 @@ class CircuitBreakerRecoveryStrategy(RecoveryStrategy):
             }
 
         circuit = self.circuit_states[circuit_key]
-        current_time = datetime.now(UTC)
+        current_time = datetime.now(timezone.utc)
 
         # Increment failure count
         circuit["failure_count"] += 1
@@ -226,7 +226,7 @@ class CircuitBreakerRecoveryStrategy(RecoveryStrategy):
         """Circuit breaker is applicable for service and infrastructure layers."""
         return layer in ["service", "infrastructure"]
 
-    def get_circuit_status(self, service: str, layer: str) -> dict[str, Any]:
+    def get_circuit_status(self, service: str, layer: str) -> Dict[str, Any]:
         """Get current status of a circuit breaker."""
         circuit_key = f"{layer}.{service}"
         return self.circuit_states.get(
@@ -251,7 +251,7 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         return "fallback"
 
     async def execute(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute fallback recovery strategy."""
         service = context.get("service", "unknown")
@@ -283,7 +283,7 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         return type(error).__name__ not in critical_errors
 
     async def _fallback_llm_response(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> bool:
         """Provide fallback LLM response when primary provider fails."""
         self.logger.info("Using fallback LLM response")
@@ -304,7 +304,7 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         return True
 
     async def _fallback_knowledge_response(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> bool:
         """Provide fallback knowledge base response."""
         self.logger.info("Using fallback knowledge base response")
@@ -325,7 +325,7 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         return True
 
     async def _fallback_session_operation(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> bool:
         """Provide fallback session handling."""
         operation = context.get("operation", "unknown")
@@ -333,9 +333,9 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         if operation in ["create", "get"]:
             # Create temporary in-memory session
             context["fallback_session"] = {
-                "session_id": f"temp_{datetime.now(UTC).timestamp()}",
+                "session_id": f"temp_{datetime.now(timezone.utc).timestamp()}",
                 "temporary": True,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
             return True
 
@@ -343,7 +343,7 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         return False
 
     async def _fallback_data_operation(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> bool:
         """Provide fallback data processing."""
         operation = context.get("operation", "unknown")
@@ -360,7 +360,7 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         return False
 
     async def _generic_fallback(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> bool:
         """Generic fallback for unknown services."""
         self.logger.info("Using generic fallback strategy")
@@ -373,16 +373,16 @@ class RecoveryManager:
 
     def __init__(self):
         """Initialize recovery manager with available strategies."""
-        self.strategies: dict[str, RecoveryStrategy] = {
+        self.strategies: Dict[str, RecoveryStrategy] = {
             "retry": RetryRecoveryStrategy(),
             "circuit_breaker": CircuitBreakerRecoveryStrategy(),
             "fallback": FallbackRecoveryStrategy(),
         }
         self.logger = logging.getLogger(__name__)
-        self.recovery_history: list[dict[str, Any]] = []
+        self.recovery_history: List[Dict[str, Any]] = []
 
     async def execute_recovery(
-        self, strategy_name: str, error: Exception, context: dict[str, Any]
+        self, strategy_name: str, error: Exception, context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute a named recovery strategy.
 
@@ -408,7 +408,7 @@ class RecoveryManager:
             )
             return RecoveryResult.NOT_ATTEMPTED
 
-        start_time = datetime.now(UTC)
+        start_time = datetime.now(timezone.utc)
 
         try:
             result = await strategy.execute(error, context)
@@ -421,7 +421,7 @@ class RecoveryManager:
                 "result": result.value,
                 "timestamp": start_time.isoformat(),
                 "duration_ms": int(
-                    (datetime.now(UTC) - start_time).total_seconds() * 1000
+                    (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
                 ),
                 "context": {
                     k: v
@@ -448,7 +448,7 @@ class RecoveryManager:
             return RecoveryResult.FAILED
 
     async def execute_recovery_chain(
-        self, strategy_names: list[str], error: Exception, context: dict[str, Any]
+        self, strategy_names: List[str], error: Exception, context: Dict[str, Any]
     ) -> RecoveryResult:
         """Execute multiple recovery strategies in sequence until one succeeds.
 
@@ -472,7 +472,7 @@ class RecoveryManager:
         # If we had any partial successes, return that; otherwise failed
         return getattr(self, "partial_result", RecoveryResult.FAILED)
 
-    def get_strategy(self, strategy_name: str) -> RecoveryStrategy | None:
+    def get_strategy(self, strategy_name: str) -> Optional[RecoveryStrategy]:
         """Get a specific recovery strategy instance."""
         return self.strategies.get(strategy_name)
 
@@ -481,7 +481,7 @@ class RecoveryManager:
         self.strategies[name] = strategy
         self.logger.info(f"Added custom recovery strategy: {name}")
 
-    def get_recovery_analytics(self) -> dict[str, Any]:
+    def get_recovery_analytics(self) -> Dict[str, Any]:
         """Get analytics about recovery attempts."""
         if not self.recovery_history:
             return {

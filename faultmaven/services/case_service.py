@@ -17,23 +17,25 @@ This is distinct from the domain CaseService (faultmaven/services/domain/case_se
 which handles internal case operations and conversation management.
 """
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import IVectorStore
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
     NotFoundError,
+    RepositoryError,
     ServiceError,
     ValidationException,
 )
+from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
@@ -69,7 +71,7 @@ class APICaseService(BaseService):
         self,
         case_repo: ICaseRepository,
         session_repo: InvestigationSessionRepository,
-        tenant_provider: TenantProvider | None = None,
+        tenant_provider: Optional[TenantProvider] = None,
     ):
         """Initialize API case service.
 
@@ -90,12 +92,12 @@ class APICaseService(BaseService):
     async def create_case(
         self,
         user_id: str,
-        organization_id: str | None = None,
+        organization_id: Optional[str] = None,
         title: str = "",
         description: str = "",
-        severity: CaseSeverity | None = None,
-        metadata: dict[str, Any] | None = None,
-        current_user: Any | None = None,
+        severity: Optional[CaseSeverity] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        current_user: Optional[Any] = None,
     ) -> Case:
         """Create a new case.
 
@@ -194,7 +196,7 @@ class APICaseService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-    ) -> Case | None:
+    ) -> Optional[Case]:
         """Get case by ID with organization check.
 
         Args:
@@ -237,7 +239,7 @@ class APICaseService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-        updates: dict[str, Any],
+        updates: Dict[str, Any],
     ) -> Case:
         """Update case with authorization check.
 
@@ -330,7 +332,7 @@ class APICaseService(BaseService):
                     pass
 
             # Update timestamp
-            case.updated_at = datetime.now(UTC)
+            case.updated_at = datetime.now(timezone.utc)
 
             # Save updated case
             saved_case = await self.case_repo.save(case)
@@ -420,15 +422,15 @@ class APICaseService(BaseService):
 
     async def list_cases(
         self,
-        organization_id: str | None = None,
-        user_id: str | None = None,
-        status: CaseStatus | None = None,
-        severity: CaseSeverity | None = None,
-        assigned_to: str | None = None,
+        organization_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        status: Optional[CaseStatus] = None,
+        severity: Optional[CaseSeverity] = None,
+        assigned_to: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
-        current_user: Any | None = None,
-    ) -> list[Case]:
+        current_user: Optional[Any] = None,
+    ) -> List[Case]:
         """List cases for organization with filters.
 
         Deployment-neutral implementation using TenantProvider (TASK-023):
@@ -519,7 +521,7 @@ class APICaseService(BaseService):
         include_sessions: bool = True,
         include_evidence: bool = True,
         include_executions: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Get case with related entities.
 
         Args:
@@ -547,7 +549,7 @@ class APICaseService(BaseService):
             return None
 
         try:
-            result: dict[str, Any] = {
+            result: Dict[str, Any] = {
                 "case": case,
             }
 
@@ -635,7 +637,7 @@ class APICaseService(BaseService):
         try:
             # Update case with new assignee (storing in metadata for now)
             # In future, might add assigned_to field to Case model
-            case.updated_at = datetime.now(UTC)
+            case.updated_at = datetime.now(timezone.utc)
 
             saved_case = await self.case_repo.save(case)
 
@@ -699,7 +701,7 @@ class APICaseService(BaseService):
             # Update case to closed status
             # Use model_copy to update all fields atomically to satisfy Pydantic validators
             # which require both status=RESOLVED and timestamps to be set together
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             updated_case = case.model_copy(
                 update={
                     "status": CaseStatus.RESOLVED,
@@ -733,7 +735,7 @@ class APICaseService(BaseService):
     async def get_case_statistics(
         self,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get case statistics for organization.
 
         Returns:
@@ -755,9 +757,9 @@ class APICaseService(BaseService):
             )
 
             # Calculate statistics
-            by_status: dict[str, int] = {}
-            by_severity: dict[str, int] = {}
-            resolution_times: list[float] = []
+            by_status: Dict[str, int] = {}
+            by_severity: Dict[str, int] = {}
+            resolution_times: List[float] = []
             unassigned_count = 0
 
             for case in cases:
@@ -800,7 +802,7 @@ class APICaseService(BaseService):
                 ),
                 "unassigned_count": unassigned_count,
                 "organization_id": organization_id,
-                "computed_at": datetime.now(UTC).isoformat(),
+                "computed_at": datetime.now(timezone.utc).isoformat(),
             }
 
             self.log_operation(
@@ -833,7 +835,7 @@ class APICaseService(BaseService):
         organization_id: str,
         query: str,
         limit: int = 20,
-    ) -> list[Case]:
+    ) -> List[Case]:
         """Search cases within organization.
 
         Args:

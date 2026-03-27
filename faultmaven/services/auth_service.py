@@ -14,9 +14,9 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
 
@@ -24,13 +24,13 @@ import jwt
 from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
-from faultmaven.exceptions import ServiceError
+from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser, TokenClaims, TokenPair
 from faultmaven.models.rbac import get_permissions_for_roles
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +70,9 @@ class AuthService:
 
     def __init__(
         self,
-        redis_client: Redis | None = None,
-        private_key: str | None = None,
-        public_key: str | None = None,
+        redis_client: Optional[Redis] = None,
+        private_key: Optional[str] = None,
+        public_key: Optional[str] = None,
     ):
         """Initialize AuthService.
 
@@ -225,8 +225,8 @@ class AuthService:
         user_id: str,
         organization_id: str,
         email: str,
-        roles: list[str],
-        permissions: list[str] | None = None,
+        roles: List[str],
+        permissions: Optional[List[str]] = None,
     ) -> str:
         """Generate JWT access token.
 
@@ -246,7 +246,7 @@ class AuthService:
         if permissions is None:
             permissions = [p.value for p in get_permissions_for_roles(roles)]
 
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         expire = now + timedelta(minutes=self._access_token_expire_minutes)
 
         claims = TokenClaims(
@@ -285,7 +285,7 @@ class AuthService:
         Raises:
             ServiceError: If token generation fails
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         expire = now + timedelta(days=self._refresh_token_expire_days)
 
         claims = {
@@ -306,8 +306,8 @@ class AuthService:
         user_id: str,
         organization_id: str,
         email: str,
-        roles: list[str],
-        permissions: list[str] | None = None,
+        roles: List[str],
+        permissions: Optional[List[str]] = None,
     ) -> TokenPair:
         """Generate both access and refresh tokens.
 
@@ -345,7 +345,7 @@ class AuthService:
         self,
         token: str,
         token_type: str = "access",
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Verify and decode JWT token.
 
         Performs full validation:
@@ -430,7 +430,7 @@ class AuthService:
         self,
         token: str,
         token_type: str = "access",
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Verify token and check revocation status.
 
         Extends verify_token with Redis revocation list check.
@@ -459,8 +459,8 @@ class AuthService:
     async def refresh_access_token(
         self,
         refresh_token: str,
-        user_loader: callable | None = None,
-    ) -> tuple[str, str]:
+        user_loader: Optional[callable] = None,
+    ) -> Tuple[str, str]:
         """Exchange refresh token for new access + refresh tokens.
 
         Token rotation: old refresh token is revoked after successful refresh.
@@ -537,7 +537,7 @@ class AuthService:
         """
         try:
             # Calculate TTL from expiration
-            now = int(datetime.now(UTC).timestamp())
+            now = int(datetime.now(timezone.utc).timestamp())
             ttl = max(expiration - now, 0)
 
             if ttl > 0:
@@ -590,7 +590,7 @@ class AuthService:
             # Fail open for availability, but log for monitoring
             return False
 
-    def _encode_token(self, claims: dict[str, Any]) -> str:
+    def _encode_token(self, claims: Dict[str, Any]) -> str:
         """Encode claims into JWT token.
 
         Args:

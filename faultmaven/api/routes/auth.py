@@ -19,8 +19,8 @@ Design Reference:
 """
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
@@ -28,9 +28,11 @@ from pydantic import BaseModel, EmailStr, Field
 from faultmaven.api.middleware.auth import (
     get_auth_service,
     get_current_user,
+    get_current_user_optional,
 )
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.models.auth import AuthenticatedUser, TokenPair
+from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.services.auth_service import (
     AuthenticationError,
     AuthService,
@@ -75,7 +77,7 @@ class RefreshTokenRequest(BaseModel):
 class LogoutRequest(BaseModel):
     """Logout request with optional refresh token."""
 
-    refresh_token: str | None = Field(
+    refresh_token: Optional[str] = Field(
         None, description="Refresh token to revoke (optional)"
     )
 
@@ -90,13 +92,17 @@ class TokenVerifyResponse(BaseModel):
     """Token verification response."""
 
     valid: bool = Field(..., description="Whether token is valid")
-    user_id: str | None = Field(None, description="User ID from token")
-    organization_id: str | None = Field(None, description="Organization ID from token")
-    email: str | None = Field(None, description="User email from token")
-    roles: list[str] | None = Field(None, description="User roles")
-    permissions: list[str] | None = Field(None, description="User permissions")
-    expires_at: str | None = Field(None, description="Token expiration time (ISO 8601)")
-    error: str | None = Field(None, description="Error message if invalid")
+    user_id: Optional[str] = Field(None, description="User ID from token")
+    organization_id: Optional[str] = Field(
+        None, description="Organization ID from token"
+    )
+    email: Optional[str] = Field(None, description="User email from token")
+    roles: Optional[List[str]] = Field(None, description="User roles")
+    permissions: Optional[List[str]] = Field(None, description="User permissions")
+    expires_at: Optional[str] = Field(
+        None, description="Token expiration time (ISO 8601)"
+    )
+    error: Optional[str] = Field(None, description="Error message if invalid")
 
 
 # TASK-018: New request/response models
@@ -124,7 +130,7 @@ class UserResponse(BaseModel):
     is_verified: bool = Field(..., description="Whether email is verified")
     created_at: str = Field(..., description="Account creation timestamp (ISO 8601)")
     updated_at: str = Field(..., description="Last update timestamp (ISO 8601)")
-    last_login_at: str | None = Field(
+    last_login_at: Optional[str] = Field(
         None, description="Last login timestamp (ISO 8601)"
     )
 
@@ -188,7 +194,9 @@ async def get_user_service(request: Request):
 # ============================================================
 
 
-async def _dev_validate_credentials(email: str, password: str) -> dict[str, Any] | None:
+async def _dev_validate_credentials(
+    email: str, password: str
+) -> Optional[Dict[str, Any]]:
     """Development-only credential validation (development fallback).
 
     For development, accepts any password for known test users.
@@ -230,7 +238,7 @@ async def _dev_validate_credentials(email: str, password: str) -> dict[str, Any]
     return None
 
 
-async def _dev_load_user(user_id: str) -> tuple | None:
+async def _dev_load_user(user_id: str) -> Optional[tuple]:
     """Development-only user loader for token refresh.
 
     Args:
@@ -662,7 +670,7 @@ async def refresh_token(
 async def logout(
     request: LogoutRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    authorization: str | None = Header(None, alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> None:
     """Revoke user tokens (logout).
@@ -766,7 +774,7 @@ async def verify_token(
 
         # Format expiration time
         exp_timestamp = claims.get("exp", 0)
-        expires_at = datetime.fromtimestamp(exp_timestamp, tz=UTC).isoformat()
+        expires_at = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).isoformat()
 
         return TokenVerifyResponse(
             valid=True,
@@ -791,10 +799,10 @@ async def verify_token(
         )
 
 
-@router.get("/me", response_model=dict[str, Any])
+@router.get("/me", response_model=Dict[str, Any])
 async def get_current_user_info(
     current_user: AuthenticatedUser = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Get current authenticated user info.
 
     Returns the authenticated user's information from the JWT token.

@@ -8,14 +8,18 @@ This eliminates the need for multiple API calls to assemble UI state.
 """
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
 from faultmaven.modules.case.domain.models import (
     CaseStatus,
+    ConfidenceLevel,
     HypothesisStatus,
     InvestigationStage,
+)
+from faultmaven.modules.case.domain.services.case_action_manager import (
+    CaseActionManager,
 )
 
 # ============================================================
@@ -54,7 +58,7 @@ class InquiryQuestion(BaseModel):
         default=False, description="Whether user answered this question"
     )
 
-    answer: str | None = Field(
+    answer: Optional[str] = Field(
         default=None, description="User's answer if provided", max_length=2000
     )
 
@@ -79,12 +83,12 @@ class InvestigationProgressSummary(BaseModel):
     from current_stage if needed.
     """
 
-    completed_indicators: list[str] = Field(
+    completed_indicators: List[str] = Field(
         default_factory=list,
         description="Completed progress indicators (e.g. symptom_verified, scope_assessed)",
     )
 
-    completed_stage_gates: list[str] = Field(
+    completed_stage_gates: List[str] = Field(
         default_factory=list,
         description="Completed stage-gate milestones (e.g. mitigation_accepted, solution_verified)",
     )
@@ -155,7 +159,7 @@ class EvidenceSummary(BaseModel):
         max_length=50,
     )
 
-    source_filename: str | None = Field(
+    source_filename: Optional[str] = Field(
         default=None,
         description="Original filename of the source file, if evidence originated from an attachment.",
         max_length=255,
@@ -220,7 +224,7 @@ class ResolutionSummary(BaseModel):
 
     evidence_collected: int = Field(ge=0, description="Total evidence items collected")
 
-    key_insights: list[str] = Field(
+    key_insights: List[str] = Field(
         default_factory=list, description="Key learnings from this investigation"
     )
 
@@ -238,7 +242,7 @@ class ReportAvailability(BaseModel):
         max_length=50,
     )
 
-    reason: str | None = Field(
+    reason: Optional[str] = Field(
         default=None,
         description="Reason for status (e.g., why recommended)",
         max_length=500,
@@ -248,7 +252,7 @@ class ReportAvailability(BaseModel):
 class InquiryResponseData(BaseModel):
     """Nested inquiry data for INQUIRY phase response."""
 
-    proposed_problem_statement: str | None = Field(
+    proposed_problem_statement: Optional[str] = Field(
         default=None,
         description="Agent's formalized problem statement (if ready)",
         max_length=1000,
@@ -269,7 +273,7 @@ class InquiryResponseData(BaseModel):
         description="Number of conversation turns during inquiry phase",
     )
 
-    problem_confirmation: dict | None = Field(
+    problem_confirmation: Optional[Dict] = Field(
         default=None, description="Problem type and severity guess"
     )
 
@@ -277,13 +281,13 @@ class InquiryResponseData(BaseModel):
 class InvestigationStrategyData(BaseModel):
     """Investigation strategy details for INVESTIGATING phase."""
 
-    approach: str | None = Field(
+    approach: Optional[str] = Field(
         default=None,
         description="Investigation approach description (e.g., 'Speed priority - rapid mitigation')",
         max_length=500,
     )
 
-    next_steps: list[str] | None = Field(
+    next_steps: Optional[List[str]] = Field(
         default=None, description="Recommended next steps in investigation"
     )
 
@@ -291,15 +295,15 @@ class InvestigationStrategyData(BaseModel):
 class TemporalStateData(BaseModel):
     """Temporal information about problem occurrence."""
 
-    started_at: datetime | None = Field(
+    started_at: Optional[datetime] = Field(
         default=None, description="When the problem started"
     )
 
-    last_occurrence_at: datetime | None = Field(
+    last_occurrence_at: Optional[datetime] = Field(
         default=None, description="Most recent occurrence of the problem"
     )
 
-    state: str | None = Field(
+    state: Optional[str] = Field(
         default=None,
         description="Temporal state: ongoing | historical | intermittent",
         max_length=50,
@@ -309,17 +313,17 @@ class TemporalStateData(BaseModel):
 class ImpactData(BaseModel):
     """Impact assessment for problem scope."""
 
-    affected_services: list[str] | None = Field(
+    affected_services: Optional[List[str]] = Field(
         default=None, description="List of affected services"
     )
 
-    affected_users: str | None = Field(
+    affected_users: Optional[str] = Field(
         default=None,
         description="User impact description (e.g., 'All users in US region')",
         max_length=500,
     )
 
-    affected_regions: list[str] | None = Field(
+    affected_regions: Optional[List[str]] = Field(
         default=None, description="List of affected geographical regions"
     )
 
@@ -327,27 +331,27 @@ class ImpactData(BaseModel):
 class ProblemVerificationData(BaseModel):
     """Problem verification details for INVESTIGATING phase."""
 
-    urgency_level: str | None = Field(
+    urgency_level: Optional[str] = Field(
         default=None,
         description="Urgency: critical | high | medium | low | unknown",
         max_length=50,
     )
 
-    severity: str | None = Field(
+    severity: Optional[str] = Field(
         default=None,
         description="Severity: critical | high | medium | low",
         max_length=50,
     )
 
-    temporal_state: TemporalStateData | None = Field(
+    temporal_state: Optional[TemporalStateData] = Field(
         default=None, description="When the problem occurred and its temporal pattern"
     )
 
-    impact: ImpactData | None = Field(
+    impact: Optional[ImpactData] = Field(
         default=None, description="Scope of impact (services, users, regions)"
     )
 
-    user_impact: str | None = Field(
+    user_impact: Optional[str] = Field(
         default=None, description="Human-readable user impact summary", max_length=1000
     )
 
@@ -382,7 +386,7 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     uploaded_files_count: int = Field(ge=0, description="Total files uploaded")
 
-    valid_next_states: list[str] = Field(
+    valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
     )
@@ -418,7 +422,7 @@ class CaseUIResponse_Investigating(BaseModel):
 
     uploaded_files_count: int = Field(default=0, description="Number of uploaded files")
 
-    valid_next_states: list[str] = Field(
+    valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
     )
@@ -426,7 +430,7 @@ class CaseUIResponse_Investigating(BaseModel):
     # ============================================================
     # Investigation-Specific Fields
     # ============================================================
-    working_conclusion: WorkingConclusionSummary | None = Field(
+    working_conclusion: Optional[WorkingConclusionSummary] = Field(
         default=None, description="Agent's current understanding of the problem"
     )
 
@@ -434,15 +438,15 @@ class CaseUIResponse_Investigating(BaseModel):
         description="Milestone-based progress tracking"
     )
 
-    active_hypotheses: list[HypothesisSummary] = Field(
+    active_hypotheses: List[HypothesisSummary] = Field(
         default_factory=list, description="Hypotheses currently being tested"
     )
 
-    latest_evidence: list[EvidenceSummary] = Field(
+    latest_evidence: List[EvidenceSummary] = Field(
         default_factory=list, description="Most recent evidence collected (last 5)"
     )
 
-    next_actions: list[str] = Field(
+    next_actions: List[str] = Field(
         default_factory=list, description="Suggested next steps for investigation"
     )
 
@@ -463,11 +467,11 @@ class CaseUIResponse_Investigating(BaseModel):
     # ============================================================
     # Additional Investigation Data (from BACKEND_REMAINING_WORK)
     # ============================================================
-    investigation_strategy: InvestigationStrategyData | None = Field(
+    investigation_strategy: Optional[InvestigationStrategyData] = Field(
         default=None, description="Investigation strategy with approach and next steps"
     )
 
-    problem_verification: ProblemVerificationData | None = Field(
+    problem_verification: Optional[ProblemVerificationData] = Field(
         default=None,
         description="Problem verification details (urgency, severity, impact)",
     )
@@ -499,7 +503,7 @@ class CaseUIResponse_Resolved(BaseModel):
 
     uploaded_files_count: int = Field(default=0, description="Number of uploaded files")
 
-    valid_next_states: list[str] = Field(
+    valid_next_states: List[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
     )
@@ -521,7 +525,7 @@ class CaseUIResponse_Resolved(BaseModel):
         description="Overall resolution metrics and insights"
     )
 
-    reports_available: list[ReportAvailability] = Field(
+    reports_available: List[ReportAvailability] = Field(
         default_factory=list,
         description="Available reports (incident report, post-mortem, runbook)",
     )
@@ -532,7 +536,9 @@ class CaseUIResponse_Resolved(BaseModel):
 # ============================================================
 
 CaseUIResponse = Annotated[
-    CaseUIResponse_Inquiry | CaseUIResponse_Investigating | CaseUIResponse_Resolved,
+    Union[
+        CaseUIResponse_Inquiry, CaseUIResponse_Investigating, CaseUIResponse_Resolved
+    ],
     Field(discriminator="status"),
 ]
 """
@@ -610,7 +616,7 @@ class UploadedFileMetadata(BaseModel):
         description="AI analysis status"
     )
 
-    ai_insights_summary: str | None = Field(
+    ai_insights_summary: Optional[str] = Field(
         default=None,
         description="Brief AI analysis summary (if completed)",
         max_length=500,
@@ -619,11 +625,11 @@ class UploadedFileMetadata(BaseModel):
     # ============================================================
     # Relationships
     # ============================================================
-    related_milestone_ids: list[str] = Field(
+    related_milestone_ids: List[str] = Field(
         default_factory=list, description="Milestones this file helped complete"
     )
 
-    related_hypothesis_ids: list[str] = Field(
+    related_hypothesis_ids: List[str] = Field(
         default_factory=list, description="Hypotheses this file supports/refutes"
     )
 
@@ -635,11 +641,11 @@ class AIInsights(BaseModel):
         description="Overall summary of file analysis", max_length=2000
     )
 
-    key_findings: list[str] = Field(
+    key_findings: List[str] = Field(
         default_factory=list, description="Key findings extracted from file"
     )
 
-    anomalies_detected: list[str] = Field(
+    anomalies_detected: List[str] = Field(
         default_factory=list, description="Anomalies or issues detected"
     )
 
@@ -672,18 +678,18 @@ class UploadedFileDetailsResponse(BaseModel):
         description="AI analysis status"
     )
 
-    ai_insights: AIInsights | None = Field(
+    ai_insights: Optional[AIInsights] = Field(
         default=None, description="Detailed AI analysis results (if completed)"
     )
 
     # ============================================================
     # Relationships
     # ============================================================
-    related_milestones: list[FileToMilestoneRelationship] = Field(
+    related_milestones: List[FileToMilestoneRelationship] = Field(
         default_factory=list, description="Milestones this file helped complete"
     )
 
-    related_hypotheses: list[FileToHypothesisRelationship] = Field(
+    related_hypotheses: List[FileToHypothesisRelationship] = Field(
         default_factory=list, description="Hypotheses this file supports/refutes"
     )
 
@@ -693,7 +699,7 @@ class UploadedFilesListResponse(BaseModel):
 
     case_id: str = Field(description="Case identifier")
 
-    files: list[UploadedFileMetadata] = Field(
+    files: List[UploadedFileMetadata] = Field(
         default_factory=list, description="List of uploaded files with metadata"
     )
 

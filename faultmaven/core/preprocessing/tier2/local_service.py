@@ -10,7 +10,7 @@ Design Reference:
 
 import logging
 import time
-from typing import Any
+from typing import Any, List
 
 from faultmaven.core.preprocessing.models import (
     AnalysisContext,
@@ -72,7 +72,7 @@ class LocalTier2Service(ITier2AnalysisService):
             tokens_used = getattr(response, "tokens_used", 0)
         except Exception as e:
             logger.error(f"Local LLM analysis failed: {e}")
-            answer = "LLM analysis failed. Raw excerpts below:\n\n" + "\n---\n".join(
+            answer = f"LLM analysis failed. Raw excerpts below:\n\n" + "\n---\n".join(
                 s["text"][:500] for s in relevant_sections
             )
 
@@ -103,7 +103,7 @@ class LocalTier2Service(ITier2AnalysisService):
         except Exception:
             return False
 
-    def _find_relevant_sections(self, content: str, query: str) -> list[dict]:
+    def _find_relevant_sections(self, content: str, query: str) -> List[dict]:
         """Keyword/regex search to find sections relevant to the query."""
         lines = content.split("\n")
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
@@ -125,7 +125,7 @@ class LocalTier2Service(ITier2AnalysisService):
         return self._merge_overlapping(matches)[: self.max_excerpts]
 
     @staticmethod
-    def _merge_overlapping(matches: list[dict]) -> list[dict]:
+    def _merge_overlapping(matches: List[dict]) -> List[dict]:
         """Deduplicate overlapping windows."""
         if not matches:
             return []
@@ -148,7 +148,7 @@ class LocalTier2Service(ITier2AnalysisService):
     @staticmethod
     def _build_analysis_prompt(
         query: str,
-        sections: list[dict],
+        sections: List[dict],
         context: AnalysisContext,
         data_type: UnifiedDataType,
     ) -> str:

@@ -9,7 +9,7 @@ import asyncio
 import random
 import socket
 import time
-from typing import Any
+from typing import Any, Dict, List
 
 import httpx
 import uvicorn
@@ -76,7 +76,7 @@ class MockLLMServer:
         """Setup mock API routes."""
 
         @self.app.post("/chat/completions")
-        async def chat_completions(request: dict[str, Any]):
+        async def chat_completions(request: Dict[str, Any]):
             """Mock OpenAI-compatible chat completions endpoint."""
             messages = request.get("messages", [])
             model = request.get("model", "unknown")
@@ -131,7 +131,7 @@ class MockLLMServer:
             )
 
         @self.app.post("/api/generate")
-        async def ollama_generate(request: dict[str, Any]):
+        async def ollama_generate(request: Dict[str, Any]):
             """Mock Ollama generate endpoint."""
             prompt = request.get("prompt", "")
             model = request.get("model", "llama2")
@@ -215,7 +215,7 @@ class MockLLMServer:
                 # Give the server a moment to shut down gracefully
                 try:
                     await asyncio.wait_for(self.server_task, timeout=2.0)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     # If it doesn't stop gracefully, cancel it
                     self.server_task.cancel()
                     try:
@@ -342,7 +342,7 @@ class MockWebSearchServer:
             )
 
         @self.app.post("/search")
-        async def tavily_search(request: dict[str, Any]):
+        async def tavily_search(request: Dict[str, Any]):
             """Mock Tavily search API."""
             query = request.get("query", "")
             max_results = request.get("max_results", 5)
@@ -385,7 +385,7 @@ class MockWebSearchServer:
 
     def _find_search_results(
         self, query: str, max_results: int
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """Find relevant search results based on query."""
         query_lower = query.lower()
 
@@ -471,7 +471,7 @@ class MockWebSearchServer:
                 # Give the server a moment to shut down gracefully
                 try:
                     await asyncio.wait_for(self.server_task, timeout=2.0)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     # If it doesn't stop gracefully, cancel it
                     self.server_task.cancel()
                     try:
@@ -545,7 +545,7 @@ class MockServerManager:
         """Get base URL for mock web search server."""
         return f"http://127.0.0.1:{self.web_search_server.port}"
 
-    def get_ports(self) -> dict[str, int]:
+    def get_ports(self) -> Dict[str, int]:
         """Get port information for all servers."""
         return {
             "llm": self.llm_server.port,

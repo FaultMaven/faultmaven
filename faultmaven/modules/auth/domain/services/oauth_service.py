@@ -8,7 +8,8 @@ import hashlib
 import logging
 import secrets
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.contracts import (
@@ -151,7 +152,7 @@ class OAuthServiceImpl(IOAuthService):
         code = self._generate_code()
 
         # Calculate expiry time
-        expires_at = datetime.now(UTC) + timedelta(
+        expires_at = datetime.now(timezone.utc) + timedelta(
             seconds=self.settings.oauth_code_expiry_seconds
         )
 
@@ -265,7 +266,7 @@ class OAuthServiceImpl(IOAuthService):
             )
 
         # Check if code expired
-        if datetime.now(UTC) > code_data.expires_at:
+        if datetime.now(timezone.utc) > code_data.expires_at:
             logger.warning(
                 "OAuth token exchange failed: code expired",
                 extra={
@@ -505,7 +506,7 @@ class OAuthServiceImpl(IOAuthService):
             username=user.username,
         )
 
-    async def validate_token(self, token: str) -> str | None:
+    async def validate_token(self, token: str) -> Optional[str]:
         """Validate access token and return user_id.
 
         Args:

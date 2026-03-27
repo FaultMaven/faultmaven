@@ -23,7 +23,6 @@ Performance Targets:
 """
 
 import asyncio
-import builtins
 import hashlib
 import json
 import logging
@@ -31,12 +30,12 @@ import pickle
 import statistics
 import threading
 import time
-from collections import defaultdict
-from collections.abc import Callable
+import weakref
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
@@ -52,9 +51,9 @@ class CacheEntry:
     last_accessed: datetime
     access_count: int = 0
     size_bytes: int = 0
-    ttl_seconds: int | None = None
-    tags: set[str] = field(default_factory=set)
-    semantic_hash: str | None = None
+    ttl_seconds: Optional[int] = None
+    tags: Set[str] = field(default_factory=set)
+    semantic_hash: Optional[str] = None
     priority_score: float = 1.0
 
 
@@ -69,7 +68,7 @@ class CacheStats:
     entry_count: int = 0
     hit_rate: float = 0.0
     avg_access_time: float = 0.0
-    last_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -77,10 +76,10 @@ class AccessPattern:
     """Cache access pattern for analysis"""
 
     key_pattern: str
-    access_times: list[datetime]
+    access_times: List[datetime]
     access_frequency: float
-    seasonal_pattern: dict[str, float]  # hour -> frequency
-    user_distribution: dict[str, int]  # user_hash -> count
+    seasonal_pattern: Dict[str, float]  # hour -> frequency
+    user_distribution: Dict[str, int]  # user_hash -> count
     effectiveness_score: float
     recommended_ttl: int
     cache_tier: str
@@ -89,11 +88,11 @@ class AccessPattern:
 class CacheAnalytics:
     """Cache usage analytics and pattern detection"""
 
-    def __init__(self, metrics_collector: MetricsCollector | None = None):
+    def __init__(self, metrics_collector: Optional[MetricsCollector] = None):
         self.metrics_collector = metrics_collector
-        self.access_patterns: dict[str, AccessPattern] = {}
-        self.user_patterns: dict[str, dict[str, Any]] = defaultdict(dict)
-        self.temporal_patterns: dict[str, list[datetime]] = defaultdict(list)
+        self.access_patterns: Dict[str, AccessPattern] = {}
+        self.user_patterns: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        self.temporal_patterns: Dict[str, List[datetime]] = defaultdict(list)
         self._analytics_lock = threading.RLock()
         self.logger = logging.getLogger(__name__)
 
@@ -102,8 +101,8 @@ class CacheAnalytics:
         key: str,
         hit: bool,
         access_time: float,
-        user_id: str | None = None,
-        context: dict[str, Any] | None = None,
+        user_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record cache access for pattern analysis"""
         with self._analytics_lock:
@@ -129,7 +128,7 @@ class CacheAnalytics:
                 )
 
             pattern = self.access_patterns[key_pattern]
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             pattern.access_times.append(now)
 
             # Update user distribution
@@ -175,7 +174,7 @@ class CacheAnalytics:
                     key_pattern
                 ][-500:]
 
-    def get_optimization_recommendations(self) -> list[dict[str, Any]]:
+    def get_optimization_recommendations(self) -> List[Dict[str, Any]]:
         """Get cache optimization recommendations based on usage patterns"""
         recommendations = []
 
@@ -275,7 +274,7 @@ class CacheAnalytics:
         # Strong seasonal pattern if max is >3x min
         return max_val > 3 * min_val
 
-    def _get_peak_hours(self, pattern: AccessPattern) -> list[int]:
+    def _get_peak_hours(self, pattern: AccessPattern) -> List[int]:
         """Get peak usage hours from seasonal pattern"""
         if not pattern.seasonal_pattern:
             return []
@@ -330,8 +329,8 @@ class IntelligentCache(BaseExternalClient):
         l1_ttl_seconds: int = 300,  # 5 minutes
         l2_ttl_seconds: int = 3600,  # 1 hour
         l3_ttl_seconds: int = 86400,  # 24 hours
-        metrics_collector: MetricsCollector | None = None,
-        redis_client: Any | None = None,
+        metrics_collector: Optional[MetricsCollector] = None,
+        redis_client: Optional[Any] = None,
         enable_analytics: bool = True,
     ):
         """Initialize intelligent cache system
@@ -360,7 +359,7 @@ class IntelligentCache(BaseExternalClient):
         self._l3_ttl_seconds = l3_ttl_seconds
 
         # L1 Cache (in-memory)
-        self._l1_cache: dict[str, CacheEntry] = {}
+        self._l1_cache: Dict[str, CacheEntry] = {}
         self._l1_lock = threading.RLock()
         self._l1_stats = CacheStats()
 
@@ -383,11 +382,11 @@ class IntelligentCache(BaseExternalClient):
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cache")
 
         # Cache optimization
-        self._optimization_rules: list[Callable] = []
+        self._optimization_rules: List[Callable] = []
         self._setup_optimization_rules()
 
         # Precomputed cache warming data
-        self._warming_candidates: dict[str, dict[str, Any]] = {}
+        self._warming_candidates: Dict[str, Dict[str, Any]] = {}
         self._warming_lock = threading.RLock()
 
         self.logger.info("IntelligentCache initialized with multi-tier architecture")
@@ -415,9 +414,9 @@ class IntelligentCache(BaseExternalClient):
     async def get(
         self,
         key: str,
-        context: dict[str, Any] | None = None,
-        user_id: str | None = None,
-    ) -> tuple[Any, bool]:
+        context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+    ) -> Tuple[Any, bool]:
         """Get value from cache with intelligent tier selection
 
         Args:
@@ -481,10 +480,10 @@ class IntelligentCache(BaseExternalClient):
         self,
         key: str,
         value: Any,
-        ttl_seconds: int | None = None,
-        context: dict[str, Any] | None = None,
+        ttl_seconds: Optional[int] = None,
+        context: Optional[Dict[str, Any]] = None,
         cache_tier: str = "auto",
-        tags: set[str] | None = None,
+        tags: Optional[Set[str]] = None,
     ) -> bool:
         """Set value in cache with intelligent tier placement
 
@@ -533,7 +532,7 @@ class IntelligentCache(BaseExternalClient):
             self.logger.error(f"Cache set error for key {key}: {e}")
             return False
 
-    async def delete(self, key: str, context: dict[str, Any] | None = None) -> bool:
+    async def delete(self, key: str, context: Optional[Dict[str, Any]] = None) -> bool:
         """Delete key from all cache tiers"""
         try:
             cache_key = self._generate_cache_key(key, context)
@@ -573,11 +572,11 @@ class IntelligentCache(BaseExternalClient):
             self.logger.error(f"Cache pattern clear error for pattern {pattern}: {e}")
             return 0
 
-    async def get_cache_statistics(self) -> dict[str, Any]:
+    async def get_cache_statistics(self) -> Dict[str, Any]:
         """Get comprehensive cache statistics and analytics"""
         try:
             stats = {
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "l1_cache": {
                     "hits": self._l1_stats.hits,
                     "misses": self._l1_stats.misses,
@@ -634,7 +633,7 @@ class IntelligentCache(BaseExternalClient):
             self.logger.error(f"Error getting cache statistics: {e}")
             return {"error": str(e)}
 
-    async def warm_cache(self, warming_data: dict[str, Any]) -> dict[str, Any]:
+    async def warm_cache(self, warming_data: Dict[str, Any]) -> Dict[str, Any]:
         """Warm cache with predicted data
 
         Args:
@@ -668,7 +667,7 @@ class IntelligentCache(BaseExternalClient):
         return results
 
     def _generate_cache_key(
-        self, key: str, context: dict[str, Any] | None = None
+        self, key: str, context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Generate cache key with optional context"""
         if not context:
@@ -681,7 +680,7 @@ class IntelligentCache(BaseExternalClient):
         return f"{key}:{context_hash}"
 
     def _get_recommended_ttl(
-        self, cache_key: str, context: dict[str, Any] | None = None
+        self, cache_key: str, context: Optional[Dict[str, Any]] = None
     ) -> int:
         """Get recommended TTL based on usage patterns"""
         if not self._analytics:
@@ -695,7 +694,7 @@ class IntelligentCache(BaseExternalClient):
         return self._l1_ttl_seconds
 
     def _determine_optimal_tier(
-        self, cache_key: str, value: Any, context: dict[str, Any] | None = None
+        self, cache_key: str, value: Any, context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Determine optimal cache tier for a key-value pair"""
         # Size-based decisions
@@ -726,7 +725,7 @@ class IntelligentCache(BaseExternalClient):
 
         return "L1"  # Default to L1
 
-    async def _get_from_l1(self, cache_key: str) -> tuple[Any, bool]:
+    async def _get_from_l1(self, cache_key: str) -> Tuple[Any, bool]:
         """Get value from L1 cache"""
         with self._l1_lock:
             if cache_key in self._l1_cache:
@@ -734,7 +733,9 @@ class IntelligentCache(BaseExternalClient):
 
                 # Check TTL
                 if entry.ttl_seconds:
-                    age = (datetime.now(UTC) - entry.created_at).total_seconds()
+                    age = (
+                        datetime.now(timezone.utc) - entry.created_at
+                    ).total_seconds()
                     if age > entry.ttl_seconds:
                         del self._l1_cache[cache_key]
                         self._l1_stats.misses += 1
@@ -742,7 +743,7 @@ class IntelligentCache(BaseExternalClient):
                         return None, False
 
                 # Update access metadata
-                entry.last_accessed = datetime.now(UTC)
+                entry.last_accessed = datetime.now(timezone.utc)
                 entry.access_count += 1
 
                 self._l1_stats.hits += 1
@@ -758,8 +759,8 @@ class IntelligentCache(BaseExternalClient):
         cache_key: str,
         value: Any,
         ttl_seconds: int,
-        context: dict[str, Any] | None = None,
-        tags: builtins.set[str] | None = None,
+        context: Optional[Dict[str, Any]] = None,
+        tags: Optional[Set[str]] = None,
     ) -> bool:
         """Set value in L1 cache"""
         try:
@@ -778,8 +779,8 @@ class IntelligentCache(BaseExternalClient):
                 entry = CacheEntry(
                     key=cache_key,
                     value=value,
-                    created_at=datetime.now(UTC),
-                    last_accessed=datetime.now(UTC),
+                    created_at=datetime.now(timezone.utc),
+                    last_accessed=datetime.now(timezone.utc),
                     size_bytes=size_bytes,
                     ttl_seconds=ttl_seconds,
                     tags=tags or set(),
@@ -793,7 +794,7 @@ class IntelligentCache(BaseExternalClient):
             self.logger.error(f"Error setting L1 cache: {e}")
             return False
 
-    async def _get_from_l2(self, cache_key: str) -> tuple[Any, bool]:
+    async def _get_from_l2(self, cache_key: str) -> Tuple[Any, bool]:
         """Get value from L2 cache (Redis)"""
         try:
             # This would be implemented with actual Redis operations
@@ -822,8 +823,8 @@ class IntelligentCache(BaseExternalClient):
         cache_key: str,
         value: Any,
         ttl_seconds: int,
-        context: dict[str, Any] | None = None,
-        tags: builtins.set[str] | None = None,
+        context: Optional[Dict[str, Any]] = None,
+        tags: Optional[Set[str]] = None,
     ) -> bool:
         """Set value in L2 cache (Redis)"""
         try:
@@ -841,7 +842,7 @@ class IntelligentCache(BaseExternalClient):
             self.logger.error(f"Error setting L2 cache: {e}")
             return False
 
-    async def _get_from_l3(self, cache_key: str) -> tuple[Any, bool]:
+    async def _get_from_l3(self, cache_key: str) -> Tuple[Any, bool]:
         """Get value from L3 cache (persistent storage)"""
         # Placeholder for L3 cache implementation
         self._l3_stats.misses += 1
@@ -853,8 +854,8 @@ class IntelligentCache(BaseExternalClient):
         cache_key: str,
         value: Any,
         ttl_seconds: int,
-        context: dict[str, Any] | None = None,
-        tags: builtins.set[str] | None = None,
+        context: Optional[Dict[str, Any]] = None,
+        tags: Optional[Set[str]] = None,
     ) -> bool:
         """Set value in L3 cache (persistent storage)"""
         # Placeholder for L3 cache implementation
@@ -909,7 +910,7 @@ class IntelligentCache(BaseExternalClient):
 
     def _calculate_eviction_score(self, entry: CacheEntry) -> float:
         """Calculate eviction score for cache entry (lower = more likely to evict)"""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Time-based factors
         age_seconds = (now - entry.created_at).total_seconds()
@@ -937,8 +938,8 @@ class IntelligentCache(BaseExternalClient):
         cache_key: str,
         hit: bool,
         access_time: float,
-        user_id: str | None,
-        context: dict[str, Any] | None,
+        user_id: Optional[str],
+        context: Optional[Dict[str, Any]],
     ) -> None:
         """Record cache access for analytics"""
         if self._analytics:
@@ -962,7 +963,7 @@ class IntelligentCache(BaseExternalClient):
         total = stats.hits + stats.misses
         if total > 0:
             stats.hit_rate = stats.hits / total
-        stats.last_updated = datetime.now(UTC)
+        stats.last_updated = datetime.now(timezone.utc)
 
     def _setup_optimization_rules(self) -> None:
         """Setup cache optimization rules"""
@@ -975,7 +976,7 @@ class IntelligentCache(BaseExternalClient):
 
     def _rule_promote_frequent_access(
         self, key_pattern: str, pattern: AccessPattern
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Rule: Promote frequently accessed items to L1"""
         if pattern.access_frequency > 5 and pattern.cache_tier != "L1":
             return {
@@ -987,7 +988,7 @@ class IntelligentCache(BaseExternalClient):
 
     def _rule_demote_large_unused(
         self, key_pattern: str, pattern: AccessPattern
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Rule: Demote large, infrequently accessed items"""
         # This would check actual entry sizes in implementation
         if pattern.access_frequency < 0.1:
@@ -1000,11 +1001,11 @@ class IntelligentCache(BaseExternalClient):
 
     def _rule_seasonal_warming(
         self, key_pattern: str, pattern: AccessPattern
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Rule: Pre-warm cache based on seasonal patterns"""
         if self._analytics._has_strong_seasonal_pattern(pattern):
             peak_hours = self._analytics._get_peak_hours(pattern)
-            current_hour = datetime.now(UTC).hour
+            current_hour = datetime.now(timezone.utc).hour
 
             if current_hour in peak_hours:
                 return {
@@ -1016,7 +1017,7 @@ class IntelligentCache(BaseExternalClient):
 
     def _rule_user_pattern_optimization(
         self, key_pattern: str, pattern: AccessPattern
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Rule: Optimize based on user access patterns"""
         if len(pattern.user_distribution) > 20:
             return {
@@ -1026,7 +1027,7 @@ class IntelligentCache(BaseExternalClient):
             }
         return {}
 
-    def _get_top_access_patterns(self) -> list[dict[str, Any]]:
+    def _get_top_access_patterns(self) -> List[Dict[str, Any]]:
         """Get top access patterns for analytics"""
         if not self._analytics:
             return []
@@ -1092,7 +1093,7 @@ class IntelligentCache(BaseExternalClient):
 
                 if self._analytics:
                     # Clean up old access patterns
-                    cutoff = datetime.now(UTC) - timedelta(hours=24)
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
                     for pattern in self._analytics.access_patterns.values():
                         pattern.access_times = [
@@ -1102,7 +1103,7 @@ class IntelligentCache(BaseExternalClient):
             except Exception as e:
                 self.logger.error(f"Error in analytics processor: {e}")
 
-    async def _apply_optimization(self, optimization: dict[str, Any]):
+    async def _apply_optimization(self, optimization: Dict[str, Any]):
         """Apply cache optimization action"""
         action = optimization.get("action")
 
@@ -1119,7 +1120,7 @@ class IntelligentCache(BaseExternalClient):
             # Implementation would move entries to shared tier
             pass
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """Check health of intelligent cache system"""
         base_health = await super().health_check()
 

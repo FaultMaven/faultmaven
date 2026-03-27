@@ -9,8 +9,8 @@ and FakeRedis (local deployment) — the client is injected via DI.
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Union
 
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
@@ -36,7 +36,7 @@ class RedisSessionStore(ISessionStore):
         self.default_ttl = 1800  # 30 minutes default
         self.prefix = "session:"
 
-    async def get(self, key: str) -> dict | None:
+    async def get(self, key: str) -> Optional[Dict]:
         """Get session data by key."""
         try:
             full_key = f"{self.prefix}{key}"
@@ -52,14 +52,18 @@ class RedisSessionStore(ISessionStore):
             logger.error(f"Redis get operation failed for key {key}: {e}")
             raise ConnectionError(f"Redis operation failed: {e}")
 
-    async def set(self, key: str, value: dict | Any, ttl: int | None = None) -> None:
+    async def set(
+        self, key: str, value: Union[Dict, Any], ttl: Optional[int] = None
+    ) -> None:
         """Set session data with optional TTL."""
         try:
             full_key = f"{self.prefix}{key}"
 
             if isinstance(value, dict):
                 if "last_activity" not in value:
-                    value["last_activity"] = to_json_compatible(datetime.now(UTC))
+                    value["last_activity"] = to_json_compatible(
+                        datetime.now(timezone.utc)
+                    )
                 value = to_json_compatible(value)
                 serialized = json.dumps(value)
             else:
@@ -83,13 +87,15 @@ class RedisSessionStore(ISessionStore):
         full_key = f"{self.prefix}{key}"
         return await self.redis_client.exists(full_key) > 0
 
-    async def extend_ttl(self, key: str, ttl: int | None = None) -> bool:
+    async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
         """Extend session TTL."""
         full_key = f"{self.prefix}{key}"
         ttl = ttl if ttl is not None else self.default_ttl
         return await self.redis_client.expire(full_key, ttl)
 
-    async def find_by_user_and_client(self, user_id: str, client_id: str) -> str | None:
+    async def find_by_user_and_client(
+        self, user_id: str, client_id: str
+    ) -> Optional[str]:
         """Find session ID by user_id and client_id combination."""
         try:
             client_index_key = f"client_index:{user_id}:{client_id}"
@@ -134,7 +140,7 @@ class RedisSessionStore(ISessionStore):
                 f"client {client_id}: {e}"
             )
 
-    async def increment_counter(self, key: str, ttl: int | None = None) -> int:
+    async def increment_counter(self, key: str, ttl: Optional[int] = None) -> int:
         """Increment an atomic counter."""
         try:
             full_key = f"{self.prefix}{key}"
@@ -150,10 +156,10 @@ class RedisSessionStore(ISessionStore):
 
     # High-level session management methods
 
-    async def create_session(self, user_id: str | None = None) -> SessionContext:
+    async def create_session(self, user_id: Optional[str] = None) -> SessionContext:
         """Create a new session."""
         session_id = str(uuid.uuid4())
-        created_at = datetime.now(UTC)
+        created_at = datetime.now(timezone.utc)
 
         session_data = {
             "session_id": session_id,
@@ -179,7 +185,7 @@ class RedisSessionStore(ISessionStore):
 
     async def get_session(
         self, session_id: str, validate: bool = True
-    ) -> SessionContext | None:
+    ) -> Optional[SessionContext]:
         """Get session by ID."""
         session_data = await self.get(session_id)
         if not session_data:
@@ -225,14 +231,14 @@ class RedisSessionStore(ISessionStore):
         }
         await self.set(session.session_id, session_data)
 
-    async def update_session(self, session_id: str, updates: dict[str, Any]) -> bool:
+    async def update_session(self, session_id: str, updates: Dict[str, Any]) -> bool:
         """Update session with new data."""
         session_data = await self.get(session_id)
         if not session_data:
             return False
 
         session_data.update(updates)
-        session_data["last_activity"] = to_json_compatible(datetime.now(UTC))
+        session_data["last_activity"] = to_json_compatible(datetime.now(timezone.utc))
 
         await self.set(session_id, session_data)
         return True
@@ -249,7 +255,9 @@ class RedisSessionStore(ISessionStore):
         """Update last activity timestamp."""
         return await self.update_session(session_id, {})
 
-    async def list_sessions(self, user_id: str | None = None) -> list[SessionContext]:
+    async def list_sessions(
+        self, user_id: Optional[str] = None
+    ) -> List[SessionContext]:
         """List sessions, optionally filtered by user_id."""
         # Note: Listing all sessions requires SCAN, which is expensive.
         # This is a simplified implementation.
@@ -258,16 +266,16 @@ class RedisSessionStore(ISessionStore):
         )
         return []
 
-    async def get_all_sessions(self) -> list[SessionContext]:
+    async def get_all_sessions(self) -> List[SessionContext]:
         """Get all sessions."""
         return await self.list_sessions()
 
-    async def get_session_stats(self) -> dict[str, Any]:
+    async def get_session_stats(self) -> Dict[str, Any]:
         """Get session statistics."""
         return {
             "total_sessions": 0,
             "active_sessions": 0,
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
 
     async def cleanup_session_data(self, session_id: str) -> bool:

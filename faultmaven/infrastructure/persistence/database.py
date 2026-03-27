@@ -22,8 +22,8 @@ Usage:
 """
 
 import logging
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from faultmaven.infrastructure.persistence.models import Base
 
@@ -73,11 +73,11 @@ def is_postgresql(database_url: str) -> bool:
 # Engine Configuration
 # ============================================================
 
-_engine: AsyncEngine | None = None
-_session_factory: async_sessionmaker[AsyncSession] | None = None
+_engine: Optional[AsyncEngine] = None
+_session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
 
-def get_engine(database_url: str | None = None) -> AsyncEngine:
+def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
     """
     Get or create the async SQLAlchemy engine.
 
@@ -130,7 +130,7 @@ def get_engine(database_url: str | None = None) -> AsyncEngine:
 
 
 def get_session_factory(
-    database_url: str | None = None,
+    database_url: Optional[str] = None,
 ) -> async_sessionmaker[AsyncSession]:
     """
     Get or create the async session factory.
@@ -165,7 +165,7 @@ def get_session_factory(
 
 @asynccontextmanager
 async def get_db_session(
-    database_url: str | None = None,
+    database_url: Optional[str] = None,
 ) -> AsyncGenerator[AsyncSession, None]:
     """
     Get an async database session with proper lifecycle management.
@@ -206,7 +206,7 @@ async def get_db_session(
 # ============================================================
 
 
-async def init_database(database_url: str | None = None) -> None:
+async def init_database(database_url: Optional[str] = None) -> None:
     """
     Initialize database tables.
 
@@ -222,7 +222,7 @@ async def init_database(database_url: str | None = None) -> None:
     logger.info("Database tables initialized")
 
 
-async def drop_database(database_url: str | None = None) -> None:
+async def drop_database(database_url: Optional[str] = None) -> None:
     """
     Drop all database tables.
 
@@ -273,7 +273,7 @@ def reset_engine() -> None:
 # ============================================================
 
 
-async def check_database_health(database_url: str | None = None) -> dict:
+async def check_database_health(database_url: Optional[str] = None) -> dict:
     """
     Check database connection health.
 

@@ -8,7 +8,8 @@ for each case status. They enable:
 4. Explicit milestone and evidence tracking
 """
 
-from typing import Literal
+from datetime import datetime
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,46 +25,46 @@ class MilestoneUpdates(BaseModel):
     All fields are optional - LLM only sets what changed/completed.
     """
 
-    symptom_verified: bool | None = Field(
+    symptom_verified: Optional[bool] = Field(
         default=None, description="Symptom confirmed with concrete evidence"
     )
 
-    scope_assessed: bool | None = Field(
+    scope_assessed: Optional[bool] = Field(
         default=None, description="Scope determined (affected users/services/regions)"
     )
 
-    timeline_established: bool | None = Field(
+    timeline_established: Optional[bool] = Field(
         default=None, description="Timeline determined (when started, when noticed)"
     )
 
-    changes_identified: bool | None = Field(
+    changes_identified: Optional[bool] = Field(
         default=None, description="Recent changes identified (deployments, configs)"
     )
 
-    root_cause_identified: bool | None = Field(
+    root_cause_identified: Optional[bool] = Field(
         default=None, description="Root cause determined"
     )
 
-    solution_proposed: bool | None = Field(
+    solution_proposed: Optional[bool] = Field(
         default=None, description="Solution or mitigation proposed"
     )
 
     # Stage-gate milestones (set by LLM when it detects user compliance)
-    mitigation_accepted: bool | None = Field(
+    mitigation_accepted: Optional[bool] = Field(
         default=None,
         description="User submitted results of executing proposed mitigation",
     )
 
-    mitigation_verified: bool | None = Field(
+    mitigation_verified: Optional[bool] = Field(
         default=None, description="User confirmed mitigation stabilized the situation"
     )
 
-    solution_accepted: bool | None = Field(
+    solution_accepted: Optional[bool] = Field(
         default=None,
         description="User submitted results of executing proposed solution",
     )
 
-    solution_verified: bool | None = Field(
+    solution_verified: Optional[bool] = Field(
         default=None, description="Solution effectiveness verified"
     )
 
@@ -89,7 +90,7 @@ class EvidenceToAdd(BaseModel):
         default="text", description="Format of the content"
     )
 
-    summary: str | None = Field(
+    summary: Optional[str] = Field(
         default=None,
         description="Brief summary of evidence (500 chars max)",
         max_length=500,
@@ -153,7 +154,7 @@ class WorkingConclusionUpdate(BaseModel):
         ge=0.0, le=1.0, description="Confidence in this understanding (0.0-1.0)"
     )
 
-    key_uncertainties: list[str] = Field(
+    key_uncertainties: List[str] = Field(
         default_factory=list, description="What is still unknown or uncertain"
     )
 
@@ -170,23 +171,23 @@ class InquiryStateUpdate(BaseModel):
     Focuses on problem formalization and decision to investigate.
     """
 
-    initial_symptoms: list[str] = Field(
+    initial_symptoms: List[str] = Field(
         default_factory=list,
         description="Symptoms identified from conversation",
         max_length=10,
     )
 
-    proposed_problem_statement: str | None = Field(
+    proposed_problem_statement: Optional[str] = Field(
         default=None,
         description="Formalized problem statement for user confirmation",
         max_length=1000,
     )
 
-    urgency_level: Literal["critical", "high", "medium", "low", "unknown"] | None = (
+    urgency_level: Optional[Literal["critical", "high", "medium", "low", "unknown"]] = (
         Field(default=None, description="Detected urgency level")
     )
 
-    problem_type: str | None = Field(
+    problem_type: Optional[str] = Field(
         default=None,
         description="Type of problem (error, performance, availability, etc.)",
         max_length=100,
@@ -212,7 +213,7 @@ class InquiryResponse(BaseModel):
 
     state_update: InquiryStateUpdate = Field(description="State changes for this turn")
 
-    suggested_action: str | None = Field(
+    suggested_action: Optional[str] = Field(
         default=None, description="What user should do next", max_length=500
     )
 
@@ -233,41 +234,41 @@ class InvestigationStateUpdate(BaseModel):
         default_factory=MilestoneUpdates, description="Milestone completion flags"
     )
 
-    evidence_to_add: list[EvidenceToAdd] = Field(
+    evidence_to_add: List[EvidenceToAdd] = Field(
         default_factory=list,
         description="Evidence to add from this turn",
         max_length=10,
     )
 
-    hypotheses_to_add: list[HypothesisToAdd] = Field(
+    hypotheses_to_add: List[HypothesisToAdd] = Field(
         default_factory=list,
         description="Hypotheses to generate (optional, systematic investigation)",
         max_length=5,
     )
 
-    evidence_requests: list[EvidenceRequestToAdd] = Field(
+    evidence_requests: List[EvidenceRequestToAdd] = Field(
         default_factory=list,
         description="Requests for additional evidence from user",
         max_length=5,
     )
 
-    mentioned_request_ids: list[str] = Field(
+    mentioned_request_ids: List[str] = Field(
         default_factory=list,
         description="Evidence request IDs agent mentioned this turn (for mention_count tracking)",
         max_length=20,
     )
 
-    working_conclusion: WorkingConclusionUpdate | None = Field(
+    working_conclusion: Optional[WorkingConclusionUpdate] = Field(
         default=None, description="Updated understanding of the problem"
     )
 
-    root_cause_description: str | None = Field(
+    root_cause_description: Optional[str] = Field(
         default=None,
         description="Root cause explanation (when root_cause_identified=True)",
         max_length=1000,
     )
 
-    solution_description: str | None = Field(
+    solution_description: Optional[str] = Field(
         default=None,
         description="Proposed solution (when solution_proposed=True)",
         max_length=2000,
@@ -290,13 +291,13 @@ class InvestigationResponse(BaseModel):
         description="State changes for this turn"
     )
 
-    next_actions: list[str] = Field(
+    next_actions: List[str] = Field(
         default_factory=list,
         description="Suggested next steps for investigation",
         max_length=5,
     )
 
-    agent_status: str | None = Field(
+    agent_status: Optional[str] = Field(
         default=None,
         description="What agent is currently doing/thinking",
         max_length=500,
@@ -331,23 +332,23 @@ class TerminalStateUpdate(BaseModel):
     Focus on documentation and lessons learned.
     """
 
-    resolution_summary: str | None = Field(
+    resolution_summary: Optional[str] = Field(
         default=None, description="Summary of how case was resolved", max_length=2000
     )
 
-    lessons_learned: list[str] = Field(
+    lessons_learned: List[str] = Field(
         default_factory=list,
         description="Key takeaways from this investigation",
         max_length=10,
     )
 
-    prevention_measures: list[str] = Field(
+    prevention_measures: List[str] = Field(
         default_factory=list,
         description="How to prevent this in the future",
         max_length=10,
     )
 
-    documents_generated: list[DocumentToGenerate] = Field(
+    documents_generated: List[DocumentToGenerate] = Field(
         default_factory=list, description="Documentation artifacts", max_length=5
     )
 
@@ -365,12 +366,16 @@ class TerminalResponse(BaseModel):
 
     state_update: TerminalStateUpdate = Field(description="State changes for this turn")
 
-    closure_reason: (
+    closure_reason: Optional[
         Literal[
-            "resolved", "abandoned", "escalated", "inquiry_only", "duplicate", "other"
+            "resolved",
+            "abandoned",
+            "escalated",
+            "inquiry_only",
+            "duplicate",
+            "other",
         ]
-        | None
-    ) = Field(default=None, description="Why case was closed")
+    ] = Field(default=None, description="Why case was closed")
 
 
 # ============================================================

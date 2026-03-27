@@ -7,7 +7,9 @@ Cohere provides Command-R models optimized for RAG, tool use, and enterprise app
 API Reference: https://docs.cohere.com/reference/chat
 """
 
-from typing import Any
+import asyncio
+import json
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
@@ -16,7 +18,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ToolCall
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
 
 class CohereProvider(BaseLLMProvider):
@@ -37,12 +39,12 @@ class CohereProvider(BaseLLMProvider):
         """Check if Cohere provider is properly configured"""
         return bool(self.config.api_key and self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> list[str]:
+    def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
 
     def get_structured_output_capability(
-        self, model: str | None = None
+        self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for Cohere models.
@@ -62,11 +64,11 @@ class CohereProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: str | None = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate response using Cohere v2 Chat API
@@ -213,7 +215,7 @@ class CohereProvider(BaseLLMProvider):
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
                     )
-        except TimeoutError:
+        except asyncio.TimeoutError:
             raise LLMException(
                 f"Cohere API request timed out after {self.config.timeout}s "
                 f"(model: {effective_model})"
