@@ -912,20 +912,12 @@ class KnowledgeService:
             try:
                 from datetime import datetime, timezone
 
-                # Verify document exists in ChromaDB (source of truth) or Redis
+                # Verify document exists in ChromaDB (source of truth)
                 doc_exists = False
 
                 if self._vector_store and hasattr(self._vector_store, "get_document"):
                     chroma_doc = await self._vector_store.get_document(document_id)
                     if chroma_doc:
-                        doc_exists = True
-
-                if not doc_exists and self._redis:
-                    import json as _json
-
-                    doc_key = self._kb_doc_key.format(document_id=document_id)
-                    raw = await self._redis.hget(doc_key, "data")
-                    if raw:
                         doc_exists = True
 
                 if not doc_exists:
