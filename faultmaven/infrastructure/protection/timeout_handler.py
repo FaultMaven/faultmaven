@@ -6,12 +6,14 @@ and resource exhaustion.
 """
 
 import asyncio
+import builtins
 import logging
 import time
+from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Dict, Optional, TypeVar
+from datetime import UTC, datetime
+from typing import Any, Optional, TypeVar
 
 from ...models.protection import TimeoutConfig, TimeoutError
 
@@ -53,7 +55,7 @@ class TimeoutHandler:
         self.logger = logging.getLogger(__name__)
 
         # Active timeout contexts
-        self._active_contexts: Dict[str, TimeoutContext] = {}
+        self._active_contexts: dict[str, TimeoutContext] = {}
 
         # Timeout statistics
         self._timeout_stats = {
@@ -72,8 +74,8 @@ class TimeoutHandler:
     async def timeout_context(
         self,
         operation_name: str,
-        timeout_duration: Optional[float] = None,
-        parent_context: Optional[TimeoutContext] = None,
+        timeout_duration: float | None = None,
+        parent_context: TimeoutContext | None = None,
     ):
         """
         Create a timeout context for an operation
@@ -122,7 +124,7 @@ class TimeoutHandler:
                 f"Completed operation: {operation_name}, " f"duration={duration:.3f}s"
             )
 
-        except asyncio.TimeoutError:
+        except builtins.TimeoutError:
             # Record timeout
             duration = context.elapsed()
             self._record_operation_stats(operation_name, duration, True)
@@ -145,8 +147,8 @@ class TimeoutHandler:
         self,
         coro: Coroutine[Any, Any, T],
         operation_name: str,
-        timeout_duration: Optional[float] = None,
-        parent_context: Optional[TimeoutContext] = None,
+        timeout_duration: float | None = None,
+        parent_context: TimeoutContext | None = None,
     ) -> T:
         """
         Execute a coroutine with timeout protection
@@ -169,7 +171,7 @@ class TimeoutHandler:
         ) as context:
             try:
                 return await asyncio.wait_for(coro, timeout=context.timeout_duration)
-            except asyncio.TimeoutError:
+            except builtins.TimeoutError:
                 # Re-raise as our custom TimeoutError
                 raise TimeoutError(
                     operation=operation_name, timeout_duration=context.timeout_duration
@@ -185,7 +187,7 @@ class TimeoutHandler:
         self,
         coro: Coroutine[Any, Any, T],
         phase_name: str,
-        parent_context: Optional[TimeoutContext] = None,
+        parent_context: TimeoutContext | None = None,
     ) -> T:
         """Execute agent phase with phase timeout"""
         return await self.with_timeout(
@@ -195,7 +197,7 @@ class TimeoutHandler:
     async def with_llm_timeout(
         self,
         coro: Coroutine[Any, Any, T],
-        parent_context: Optional[TimeoutContext] = None,
+        parent_context: TimeoutContext | None = None,
     ) -> T:
         """Execute LLM call with LLM timeout"""
         return await self.with_timeout(
@@ -298,7 +300,7 @@ class TimeoutHandler:
         if duration > op_stats["max_duration"]:
             op_stats["max_duration"] = duration
 
-    def get_active_operations(self) -> Dict[str, Dict[str, Any]]:
+    def get_active_operations(self) -> dict[str, dict[str, Any]]:
         """Get information about currently active operations"""
 
         active_ops = {}
@@ -311,14 +313,14 @@ class TimeoutHandler:
                 "remaining": context.remaining(),
                 "timeout_duration": context.timeout_duration,
                 "start_time": datetime.fromtimestamp(
-                    context.start_time, tz=timezone.utc
+                    context.start_time, tz=UTC
                 ).isoformat(),
                 "has_parent": context.parent_context is not None,
             }
 
         return active_ops
 
-    def get_timeout_statistics(self) -> Dict[str, Any]:
+    def get_timeout_statistics(self) -> dict[str, Any]:
         """Get comprehensive timeout statistics"""
 
         stats = self._timeout_stats.copy()
@@ -348,7 +350,7 @@ class TimeoutHandler:
 
         return stats
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Perform health check on timeout system"""
 
         health_status = {"healthy": True, "issues": [], "warnings": []}

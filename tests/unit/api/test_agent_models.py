@@ -8,7 +8,7 @@ Tests:
 - from_domain conversion methods
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -222,7 +222,7 @@ class TestAgentExecutionResponse:
 
     def test_valid_execution_response(self):
         """Test valid execution response."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = AgentExecutionResponse(
             execution_id="exec-123",
             status="completed",
@@ -240,7 +240,7 @@ class TestAgentExecutionResponse:
 
     def test_execution_response_with_tool_calls(self):
         """Test execution response with tool calls."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         tool_call = ToolCallResponse(
             tool_call_id="tc-123",
             tool_name="read_file",
@@ -262,7 +262,7 @@ class TestAgentExecutionResponse:
 
     def test_execution_response_optional_completed_at(self):
         """Test execution response with optional completed_at."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = AgentExecutionResponse(
             execution_id="exec-123",
             status="running",
@@ -280,9 +280,9 @@ class TestAgentExecutionResponse:
         execution.status = ExecutionStatus.COMPLETED
         execution.response = "The root cause is..."
         execution.get_total_tokens.return_value = 450
-        execution.started_at = datetime.now(timezone.utc)
-        execution.completed_at = datetime.now(timezone.utc)
-        execution.created_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
+        execution.completed_at = datetime.now(UTC)
+        execution.created_at = datetime.now(UTC)
         execution.tool_calls = []
 
         response = AgentExecutionResponse.from_domain(execution)
@@ -299,9 +299,9 @@ class TestAgentExecutionResponse:
         execution.status = ExecutionStatus.RUNNING
         execution.response = None
         execution.get_total_tokens.return_value = 0
-        execution.started_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
         execution.completed_at = None
-        execution.created_at = datetime.now(timezone.utc)
+        execution.created_at = datetime.now(UTC)
         execution.tool_calls = []
 
         response = AgentExecutionResponse.from_domain(execution)
@@ -324,9 +324,9 @@ class TestAgentExecutionResponse:
         execution.status = ExecutionStatus.COMPLETED
         execution.response = "Analysis complete"
         execution.get_total_tokens.return_value = 300
-        execution.started_at = datetime.now(timezone.utc)
-        execution.completed_at = datetime.now(timezone.utc)
-        execution.created_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
+        execution.completed_at = datetime.now(UTC)
+        execution.created_at = datetime.now(UTC)
         execution.tool_calls = [tool_call]
 
         response = AgentExecutionResponse.from_domain(execution)
@@ -341,9 +341,9 @@ class TestAgentExecutionResponse:
         execution.status = "completed"  # String instead of enum
         execution.response = "Done"
         execution.get_total_tokens.return_value = 100
-        execution.started_at = datetime.now(timezone.utc)
-        execution.completed_at = datetime.now(timezone.utc)
-        execution.created_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
+        execution.completed_at = datetime.now(UTC)
+        execution.created_at = datetime.now(UTC)
         execution.tool_calls = []
 
         response = AgentExecutionResponse.from_domain(execution)
@@ -352,7 +352,7 @@ class TestAgentExecutionResponse:
 
     def test_from_domain_uses_created_at_fallback(self):
         """Test from_domain uses created_at when started_at is None."""
-        created = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        created = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 
         execution = MagicMock()
         execution.execution_id = "exec-123"
@@ -375,9 +375,9 @@ class TestAgentExecutionResponse:
         execution.status = ExecutionStatus.COMPLETED
         execution.response = "Done"
         execution.get_total_tokens.return_value = 100
-        execution.started_at = datetime.now(timezone.utc)
-        execution.completed_at = datetime.now(timezone.utc)
-        execution.created_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
+        execution.completed_at = datetime.now(UTC)
+        execution.created_at = datetime.now(UTC)
         execution.tool_calls = None
 
         response = AgentExecutionResponse.from_domain(execution)
@@ -475,7 +475,7 @@ class TestModelEdgeCases:
 
     def test_response_serialization(self):
         """Test response can be serialized to JSON."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         response = AgentExecutionResponse(
             execution_id="exec-123",
             status="completed",

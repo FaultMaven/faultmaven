@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from uuid import uuid4
 
 # Configure logging
@@ -47,9 +47,9 @@ async def test_intent_routing():
         title="Test Case",
         description="Test Description",
         status=CaseStatus.INQUIRY,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        last_activity_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
         current_turn=1,
         message_count=0,
         current_stage="inquiry",

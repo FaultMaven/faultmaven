@@ -193,7 +193,7 @@ class TestTurnThreshold:
             messages.append(
                 {
                     "role": "agent",
-                    "content": f"Let me help investigate that issue",
+                    "content": "Let me help investigate that issue",
                 }
             )
 

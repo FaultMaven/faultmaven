@@ -16,15 +16,14 @@ Architecture Integration:
 - Supports async operation tracking
 """
 
-import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
-from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.exceptions import ServiceException
 from faultmaven.models.api import JobStatus
 from faultmaven.models.interfaces import IJobService
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -55,8 +54,8 @@ class JobService(IJobService):
     async def create_job(
         self,
         job_type: str,
-        payload: Dict[str, Any] = None,
-        ttl_seconds: Optional[int] = None,
+        payload: dict[str, Any] = None,
+        ttl_seconds: int | None = None,
     ) -> str:
         """Create a new job with initial status."""
         job_id = f"job_{uuid4().hex[:12]}"
@@ -69,8 +68,8 @@ class JobService(IJobService):
             "progress": 0,
             "result": None,
             "error": None,
-            "created_at": to_json_compatible(datetime.now(timezone.utc)),
-            "updated_at": to_json_compatible(datetime.now(timezone.utc)),
+            "created_at": to_json_compatible(datetime.now(UTC)),
+            "updated_at": to_json_compatible(datetime.now(UTC)),
             "ttl_seconds": ttl_seconds or self.default_ttl,
         }
 
@@ -87,7 +86,7 @@ class JobService(IJobService):
 
         return job_id
 
-    async def get_job(self, job_id: str) -> Optional[JobStatus]:
+    async def get_job(self, job_id: str) -> JobStatus | None:
         """Retrieve job status by ID."""
         try:
             job_data_str = await self.redis_client.get(f"{self.job_prefix}{job_id}")
@@ -114,9 +113,9 @@ class JobService(IJobService):
         self,
         job_id: str,
         status: JobStatusEnum,
-        progress: Optional[int] = None,
-        result: Optional[Dict[str, Any]] = None,
-        error: Optional[str] = None,
+        progress: int | None = None,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
     ) -> bool:
         """Update job status and metadata."""
         try:
@@ -130,7 +129,7 @@ class JobService(IJobService):
 
             # Update fields
             job_data["status"] = status.value
-            job_data["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
+            job_data["updated_at"] = to_json_compatible(datetime.now(UTC))
 
             if progress is not None:
                 job_data["progress"] = progress
@@ -159,7 +158,7 @@ class JobService(IJobService):
         return await self.update_job_status(job_id, JobStatusEnum.RUNNING, progress=0)
 
     async def complete_job(
-        self, job_id: str, result: Dict[str, Any], progress: int = 100
+        self, job_id: str, result: dict[str, Any], progress: int = 100
     ) -> bool:
         """Mark job as completed with results."""
         return await self.update_job_status(
@@ -182,7 +181,7 @@ class JobService(IJobService):
 
             # Check for jobs that should be cleaned up manually (completed > 1 hour ago)
             cleaned_count = 0
-            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
+            cutoff_time = datetime.now(UTC) - timedelta(hours=1)
 
             for key in job_keys[:batch_size]:  # Process in batches
                 try:
@@ -214,10 +213,10 @@ class JobService(IJobService):
 
     async def list_jobs(
         self,
-        status_filter: Optional[JobStatusEnum] = None,
+        status_filter: JobStatusEnum | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[JobStatus]:
+    ) -> list[JobStatus]:
         """List jobs with optional filtering."""
         try:
             job_keys = await self.redis_client.keys(f"{self.job_prefix}*")

@@ -108,11 +108,11 @@ class StateManager:
         user_id: str
     ) -> Optional[InvestigationState]:
         """Retrieve investigation state for session.
-        
+
         Args:
             session_id: Session identifier
             user_id: User ID for ownership verification
-            
+
         Raises:
             UnauthorizedError: If user_id doesn't match session owner
         """
@@ -133,7 +133,7 @@ class StateManager:
         llm_provider = None
     ) -> bool:
         """Initialize new investigation session.
-        
+
         Args:
             session_id: Unique session identifier
             case_id: Case ID that this investigation belongs to
@@ -620,7 +620,7 @@ async def restore_or_create_session(
     refresh_token_valid: bool
 ) -> SessionResponse:
     """Restore session from backup or create new one.
-    
+
     Flow:
     1. If Redis session exists → return it
     2. If Redis session expired but PostgreSQL backup exists → restore it
@@ -632,12 +632,12 @@ async def restore_or_create_session(
         state = await self.redis.get(f"inv:state:{session_id}")
         if state:
             return SessionResponse(session_id=session_id, session_resumed=True)
-    
+
     # Check PostgreSQL backup (only if user has valid refresh token)
     if refresh_token_valid:
         backup = await self.db.query(
-            """SELECT session_id, final_state FROM investigations 
-               WHERE user_id = $1 AND client_id = $2 
+            """SELECT session_id, final_state FROM investigations
+               WHERE user_id = $1 AND client_id = $2
                AND outcome = 'in_progress'
                ORDER BY created_at DESC LIMIT 1""",
             user_id, client_id
@@ -645,16 +645,16 @@ async def restore_or_create_session(
         if backup:
             # Restore state to Redis
             await self.redis.set(
-                f"inv:state:{backup.session_id}", 
-                backup.final_state, 
+                f"inv:state:{backup.session_id}",
+                backup.final_state,
                 ex=3600
             )
             return SessionResponse(
-                session_id=backup.session_id, 
+                session_id=backup.session_id,
                 session_resumed=True,
                 message="Investigation restored from backup"
             )
-    
+
     # Create new session
     return await self.create_session(...)
 ```
@@ -698,17 +698,17 @@ async def update_investigation_state(
     ttl: int = 3600
 ) -> bool:
     """Update state with optimistic locking.
-    
+
     Raises:
         ConcurrencyError: If version mismatch (state was modified)
     """
     key = f"inv:state:{session_id}"
-    
+
     # Atomic check-and-set using Redis WATCH/MULTI
     async with self.redis.pipeline(transaction=True) as pipe:
         await pipe.watch(key)
         current_json = await pipe.get(key)
-        
+
         if current_json:
             current = InvestigationState.parse_raw(current_json)
             if current.version != expected_version:
@@ -717,12 +717,12 @@ async def update_investigation_state(
                     f"State modified: expected version {expected_version}, "
                     f"found {current.version}"
                 )
-        
+
         state.version = expected_version + 1
         pipe.multi()
         await pipe.set(key, state.json(), ex=ttl)
         await pipe.execute()
-    
+
     return True
 ```
 
@@ -803,13 +803,13 @@ async def create_session(
     user_id: Optional[str] = None
 ) -> SessionResponse:
     """Create new session or resume existing session based on client_id.
-    
+
     Features:
     - If client_id provided: Resume existing session for (user_id, client_id)
     - If no client_id: Create completely new session
     - Multi-session support: Multiple concurrent sessions per user
     - Session resumption: Same client can resume across browser restarts
-    
+
     Returns:
         SessionResponse with session_resumed flag
     """
@@ -819,7 +819,7 @@ async def create_session(
             user_id=user_id,
             client_id=request.client_id
         )
-        
+
         if existing_session_id:
             # Resume existing session
             session = await self.store.get_session(existing_session_id)
@@ -829,10 +829,10 @@ async def create_session(
                     session_resumed=True,
                     message="Session resumed successfully"
                 )
-    
+
     # Create new session
     session_id = str(uuid.uuid4())
-    
+
     # Store client mapping if client_id provided
     if request.client_id:
         await self.store.store_client_session_mapping(
@@ -840,7 +840,7 @@ async def create_session(
             client_id=request.client_id,
             session_id=session_id
         )
-    
+
     return SessionResponse(
         session_id=session_id,
         session_resumed=False,
@@ -853,7 +853,7 @@ async def create_session(
 ```python
 class ISessionStore(ABC):
     """Session storage interface with client-based indexing"""
-    
+
     @abstractmethod
     async def store_client_session_mapping(
         self,
@@ -862,7 +862,7 @@ class ISessionStore(ABC):
         session_id: str
     ) -> bool:
         """Store (user_id, client_id) → session_id mapping"""
-    
+
     @abstractmethod
     async def get_session_by_client(
         self,
@@ -870,7 +870,7 @@ class ISessionStore(ABC):
         client_id: str
     ) -> Optional[str]:
         """Retrieve session_id for (user_id, client_id)"""
-    
+
     @abstractmethod
     async def cleanup_client_session_mapping(
         self,
@@ -923,41 +923,41 @@ async def cleanup_inactive_sessions(
     max_age_minutes: Optional[int] = None
 ) -> int:
     """Clean up sessions that have exceeded their TTL.
-    
+
     Multi-Session Implementation:
     - Handles multiple sessions per user concurrently
     - Cleans up client-session mappings atomically
     - Preserves active sessions while removing expired ones
     - Maintains (user_id, client_id) → session_id index integrity
-    
+
     Args:
         max_age_minutes: Maximum session age (default: SESSION_TIMEOUT_MINUTES)
-        
+
     Returns:
         Number of sessions successfully cleaned up
     """
     if max_age_minutes is None:
         max_age_minutes = self.config.SESSION_TIMEOUT_MINUTES
-    
+
     cutoff_time = datetime.utcnow() - timedelta(minutes=max_age_minutes)
-    
+
     # Get all sessions
     all_sessions = await self.store.list_all_sessions()
-    
+
     cleaned_count = 0
     for session in all_sessions:
         if session.last_updated < cutoff_time:
             # Clean up investigation state
             await self.delete_investigation_state(session.session_id)
-            
+
             # Clean up client mapping
             await self.store.cleanup_client_session_mapping(session.session_id)
-            
+
             # Delete session
             await self.store.delete_session(session.session_id)
-            
+
             cleaned_count += 1
-    
+
     logger.info(f"Cleaned up {cleaned_count} expired sessions")
     return cleaned_count
 ```
@@ -970,7 +970,7 @@ async def start_cleanup_scheduler(
     interval_minutes: int = 15
 ) -> None:
     """Start background task for periodic session cleanup.
-    
+
     Args:
         interval_minutes: Cleanup interval (default: 15 minutes)
     """
@@ -981,9 +981,9 @@ async def start_cleanup_scheduler(
                 logger.info(f"Cleanup cycle: {cleaned} sessions removed")
             except Exception as e:
                 logger.error(f"Cleanup error: {e}")
-            
+
             await asyncio.sleep(interval_minutes * 60)
-    
+
     self.scheduler_running = True
     self.scheduler_task = asyncio.create_task(cleanup_loop())
     logger.info(f"Cleanup scheduler started (interval: {interval_minutes}m)")
@@ -1005,7 +1005,7 @@ async def stop_cleanup_scheduler(self) -> None:
 ```python
 def get_session_metrics(self) -> Dict[str, Union[int, float]]:
     """Get comprehensive session metrics for monitoring.
-    
+
     Returns:
         - active_sessions: Current active session count
         - expired_sessions: Sessions awaiting cleanup
@@ -1054,7 +1054,7 @@ CLIENT_ID_TTL_HOURS = int(os.getenv("CLIENT_ID_TTL_HOURS", "24"))
 async def health_check():
     """Enhanced health check including session metrics."""
     session_metrics = session_service.get_session_metrics()
-    
+
     return {
         "status": "healthy",
         "services": {

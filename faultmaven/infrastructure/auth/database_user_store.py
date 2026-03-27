@@ -9,8 +9,7 @@ It adapts between DevUser (authentication model) and User (repository model).
 
 import logging
 import re
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 
 from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -72,14 +71,14 @@ class DatabaseUserStore:
             sso_provider=None,
             sso_provider_id=None,
             created_at=dev_user.created_at,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
             last_login_at=None,
             last_password_change_at=None,
             deleted_at=None,
             roles=dev_user.roles if dev_user.roles else ["user"],
         )
 
-    async def get_user(self, user_id: str) -> Optional[DevUser]:
+    async def get_user(self, user_id: str) -> DevUser | None:
         """Get user by ID
 
         Args:
@@ -102,7 +101,7 @@ class DatabaseUserStore:
             logger.error(f"Failed to get user {user_id}: {e}")
             return None
 
-    async def get_user_by_username(self, username: str) -> Optional[DevUser]:
+    async def get_user_by_username(self, username: str) -> DevUser | None:
         """Get user by username
 
         Args:
@@ -125,7 +124,7 @@ class DatabaseUserStore:
             logger.error(f"Failed to get user by username {username}: {e}")
             return None
 
-    async def get_user_by_email(self, email: str) -> Optional[DevUser]:
+    async def get_user_by_email(self, email: str) -> DevUser | None:
         """Get user by email address
 
         Args:
@@ -197,7 +196,7 @@ class DatabaseUserStore:
             import uuid
 
             user_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             # Create User model for repository
             user = User(
@@ -253,7 +252,7 @@ class DatabaseUserStore:
 
             # Convert DevUser to User and update
             updated_user = self._devuser_to_user(user)
-            updated_user.updated_at = datetime.now(timezone.utc)
+            updated_user.updated_at = datetime.now(UTC)
 
             saved_user = await self.user_repository.update(updated_user)
             return self._user_to_devuser(saved_user)
@@ -277,7 +276,7 @@ class DatabaseUserStore:
             logger.error(f"Failed to delete user {user_id}: {e}")
             return False
 
-    async def list_users(self, limit: int = 100, offset: int = 0) -> List[DevUser]:
+    async def list_users(self, limit: int = 100, offset: int = 0) -> list[DevUser]:
         """List users with pagination
 
         Args:
@@ -326,7 +325,7 @@ class DatabaseUserStore:
         return display if display else username
 
     # OAuth service compatibility adapter
-    async def get(self, user_id: str) -> Optional[DevUser]:
+    async def get(self, user_id: str) -> DevUser | None:
         """Get user by ID (OAuth service compatibility)
 
         This method provides compatibility with the OAuth service which expects

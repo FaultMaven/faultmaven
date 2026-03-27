@@ -13,7 +13,7 @@ Coverage Target: 90%+
 
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,7 +83,7 @@ def auth_service_with_redis(mock_settings, mock_redis):
 
 
 @pytest.fixture
-def sample_user_data() -> Dict[str, Any]:
+def sample_user_data() -> dict[str, Any]:
     """Sample user data for token generation."""
     return {
         "user_id": "user-123",
@@ -186,7 +186,7 @@ class TestTokenGeneration:
 
         claims = auth_service.verify_token(token, token_type="access")
 
-        now = int(datetime.now(timezone.utc).timestamp())
+        now = int(datetime.now(UTC).timestamp())
         exp = claims["exp"]
 
         # Should expire roughly 15 minutes from now (with some tolerance)
@@ -235,7 +235,7 @@ class TestTokenGeneration:
 
         claims = auth_service.verify_token(token, token_type="refresh")
 
-        now = int(datetime.now(timezone.utc).timestamp())
+        now = int(datetime.now(UTC).timestamp())
         exp = claims["exp"]
 
         # Should expire roughly 7 days from now
@@ -348,7 +348,7 @@ class TestTokenVerification:
     def test_verify_raises_on_expired_token(self, auth_service, mock_settings):
         """verify_token raises AuthenticationError on expired token."""
         # Create an already-expired token
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_claims = {
             "sub": "user-123",
             "organization_id": "org-456",
@@ -379,10 +379,8 @@ class TestTokenVerification:
             "organization_id": "org-456",
             "iss": "faultmaven-api",
             "aud": "faultmaven-app",
-            "iat": int(datetime.now(timezone.utc).timestamp()),
-            "exp": int(
-                (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
-            ),
+            "iat": int(datetime.now(UTC).timestamp()),
+            "exp": int((datetime.now(UTC) + timedelta(minutes=15)).timestamp()),
             "jti": str(uuid.uuid4()),
             "token_type": "access",
         }
@@ -442,10 +440,8 @@ class TestTokenVerification:
         incomplete_claims = {
             "iss": "faultmaven-api",
             "aud": "faultmaven-app",
-            "iat": int(datetime.now(timezone.utc).timestamp()),
-            "exp": int(
-                (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
-            ),
+            "iat": int(datetime.now(UTC).timestamp()),
+            "exp": int((datetime.now(UTC) + timedelta(minutes=15)).timestamp()),
         }
 
         incomplete_token = auth_service._encode_token(incomplete_claims)
@@ -601,7 +597,7 @@ class TestTokenRefresh:
     ):
         """Expired refresh token raises AuthenticationError."""
         # Create expired refresh token
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_claims = {
             "sub": sample_user_data["user_id"],
             "organization_id": sample_user_data["organization_id"],
@@ -679,7 +675,7 @@ class TestTokenRevocation:
     ):
         """revoke_token adds jti to Redis revocation list."""
         jti = str(uuid.uuid4())
-        exp = int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp())
+        exp = int((datetime.now(UTC) + timedelta(minutes=15)).timestamp())
 
         await auth_service_with_redis.revoke_token(jti, exp)
 
@@ -694,7 +690,7 @@ class TestTokenRevocation:
     ):
         """revoke_token sets TTL matching token expiration."""
         jti = str(uuid.uuid4())
-        now = int(datetime.now(timezone.utc).timestamp())
+        now = int(datetime.now(UTC).timestamp())
         exp = now + 600  # 10 minutes from now
 
         await auth_service_with_redis.revoke_token(jti, exp)
@@ -1393,7 +1389,7 @@ class TestTokenVerificationEdgeCases:
         )
 
         # Create token with wrong issuer
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         wrong_issuer_claims = {
             "sub": "user-123",
             "organization_id": "org-456",
@@ -1459,7 +1455,7 @@ class TestTokenVerificationEdgeCases:
         )
 
         # Create token with wrong audience
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         wrong_audience_claims = {
             "sub": "user-123",
             "organization_id": "org-456",

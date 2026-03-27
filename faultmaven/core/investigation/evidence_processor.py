@@ -19,7 +19,6 @@ Reference: workflow-design-review.md Issue A
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 from faultmaven.modules.case.contracts import Case, EvidenceCategory
 
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 # Minimum evidence citations expected per milestone for validation
-MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
+MILESTONE_EVIDENCE_EXPECTATIONS: dict[str, dict] = {
     "symptom_verified": {
         "min_evidence": 1,
         "expected_categories": [EvidenceCategory.SYMPTOM_EVIDENCE],
@@ -82,19 +81,19 @@ class MilestoneValidationResult:
 
     milestone: str
     is_valid: bool
-    cited_evidence_ids: List[str]
+    cited_evidence_ids: list[str]
     cited_count: int
     expected_min: int
-    expected_categories: List[str]
-    actual_categories: List[str]
-    warnings: List[str] = field(default_factory=list)
+    expected_categories: list[str]
+    actual_categories: list[str]
+    warnings: list[str] = field(default_factory=list)
 
 
 def validate_milestone_claims(
     case: Case,
-    milestones_claimed: List[str],
-    reasoning: Optional[object] = None,
-) -> List[MilestoneValidationResult]:
+    milestones_claimed: list[str],
+    reasoning: object | None = None,
+) -> list[MilestoneValidationResult]:
     """
     Validate that LLM milestone claims are supported by evidence.
 
@@ -119,8 +118,8 @@ def validate_milestone_claims(
 
     # Build lookup of ALL evidence by category (not just cited)
     # This allows category-based validation for current-turn evidence
-    all_evidence_by_category: Dict[str, List[str]] = {}
-    current_turn_evidence_by_category: Dict[str, List[str]] = {}
+    all_evidence_by_category: dict[str, list[str]] = {}
+    current_turn_evidence_by_category: dict[str, list[str]] = {}
 
     for ev in case.evidence:
         cat = ev.category.value if ev.category else "unknown"
@@ -131,7 +130,7 @@ def validate_milestone_claims(
             current_turn_evidence_by_category.setdefault(cat, []).append(ev.evidence_id)
 
     # Extract cited turn numbers from reasoning (optional for historical references)
-    cited_turns: List[int] = []
+    cited_turns: list[int] = []
     if reasoning and hasattr(reasoning, "evidence_analyzed"):
         evidence_refs = reasoning.evidence_analyzed or []
         for ref in evidence_refs:

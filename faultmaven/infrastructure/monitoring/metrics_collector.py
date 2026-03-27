@@ -5,15 +5,15 @@ Collects and aggregates performance metrics from various components
 with configurable alerting thresholds and dashboard data endpoints.
 """
 
-import asyncio
 import logging
 import statistics
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 
 class MetricType(Enum):
@@ -34,8 +34,8 @@ class PerformanceMetrics:
     operation: str
     duration_ms: float
     success: bool
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: Dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -44,7 +44,7 @@ class MetricSample:
 
     value: float
     timestamp: datetime
-    tags: Dict[str, str] = field(default_factory=dict)
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -63,7 +63,7 @@ class AggregatedMetrics:
     p99_value: float
     start_time: datetime
     end_time: datetime
-    tags: Dict[str, str] = field(default_factory=dict)
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 class MetricsCollector:
@@ -81,21 +81,21 @@ class MetricsCollector:
         self.retention_hours = retention_hours
 
         # Storage for raw metrics
-        self.metrics: Dict[str, deque] = defaultdict(lambda: deque(maxlen=max_samples))
+        self.metrics: dict[str, deque] = defaultdict(lambda: deque(maxlen=max_samples))
 
         # Aggregated metrics cache
-        self.aggregated_cache: Dict[str, AggregatedMetrics] = {}
-        self.last_aggregation: Dict[str, datetime] = {}
+        self.aggregated_cache: dict[str, AggregatedMetrics] = {}
+        self.last_aggregation: dict[str, datetime] = {}
 
         # Alert thresholds
-        self.alert_thresholds: Dict[str, Dict[str, float]] = {}
-        self.alert_callbacks: List[Callable] = []
+        self.alert_thresholds: dict[str, dict[str, float]] = {}
+        self.alert_callbacks: list[Callable] = []
 
         # Performance tracking
-        self.start_times: Dict[str, float] = {}
+        self.start_times: dict[str, float] = {}
 
         # Dashboard data
-        self.dashboard_data: Dict[str, Any] = {}
+        self.dashboard_data: dict[str, Any] = {}
 
         self._initialize_default_thresholds()
 
@@ -141,8 +141,8 @@ class MetricsCollector:
         component: str,
         operation: str,
         success: bool = True,
-        metadata: Optional[Dict[str, Any]] = None,
-        tags: Optional[Dict[str, str]] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: dict[str, str] | None = None,
     ) -> float:
         """Stop timing an operation and record metrics.
 
@@ -182,8 +182,8 @@ class MetricsCollector:
         operation: str,
         duration_ms: float,
         success: bool = True,
-        metadata: Optional[Dict[str, Any]] = None,
-        tags: Optional[Dict[str, str]] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Record a performance metric.
 
@@ -196,7 +196,7 @@ class MetricsCollector:
             tags: Tags for the metric
         """
         metric = PerformanceMetrics(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             component=component,
             operation=operation,
             duration_ms=duration_ms,
@@ -227,7 +227,7 @@ class MetricsCollector:
         self,
         metric_name: str,
         value: float = 1.0,
-        tags: Optional[Dict[str, str]] = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Record a counter metric.
 
@@ -236,15 +236,13 @@ class MetricsCollector:
             value: Value to add to the counter
             tags: Tags for the metric
         """
-        sample = MetricSample(
-            value=value, timestamp=datetime.now(timezone.utc), tags=tags or {}
-        )
+        sample = MetricSample(value=value, timestamp=datetime.now(UTC), tags=tags or {})
 
         self.metrics[metric_name].append(sample)
         self.logger.debug(f"Recorded counter: {metric_name} += {value}")
 
     def record_gauge_metric(
-        self, metric_name: str, value: float, tags: Optional[Dict[str, str]] = None
+        self, metric_name: str, value: float, tags: dict[str, str] | None = None
     ) -> None:
         """Record a gauge metric.
 
@@ -253,9 +251,7 @@ class MetricsCollector:
             value: Current value of the gauge
             tags: Tags for the metric
         """
-        sample = MetricSample(
-            value=value, timestamp=datetime.now(timezone.utc), tags=tags or {}
-        )
+        sample = MetricSample(value=value, timestamp=datetime.now(UTC), tags=tags or {})
 
         # For gauges, we only keep the most recent values
         gauge_key = f"gauge.{metric_name}"
@@ -269,30 +265,28 @@ class MetricsCollector:
         self.logger.debug(f"Recorded gauge: {metric_name} = {value}")
 
     def _record_duration_metric(
-        self, metric_key: str, duration_ms: float, tags: Dict[str, str]
+        self, metric_key: str, duration_ms: float, tags: dict[str, str]
     ) -> None:
         """Record duration-specific metric."""
         duration_key = f"duration.{metric_key}"
-        sample = MetricSample(
-            value=duration_ms, timestamp=datetime.now(timezone.utc), tags=tags
-        )
+        sample = MetricSample(value=duration_ms, timestamp=datetime.now(UTC), tags=tags)
         self.metrics[duration_key].append(sample)
 
     def _record_success_metric(
-        self, metric_key: str, success: bool, tags: Dict[str, str]
+        self, metric_key: str, success: bool, tags: dict[str, str]
     ) -> None:
         """Record success/failure metric."""
         success_key = f"success.{metric_key}"
         sample = MetricSample(
             value=1.0 if success else 0.0,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             tags=tags,
         )
         self.metrics[success_key].append(sample)
 
     def _cleanup_old_metrics(self) -> None:
         """Remove metrics older than retention period."""
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=self.retention_hours)
+        cutoff_time = datetime.now(UTC) - timedelta(hours=self.retention_hours)
 
         for metric_name, samples in self.metrics.items():
             # Remove old samples
@@ -303,8 +297,8 @@ class MetricsCollector:
         self,
         metric_name: str,
         time_window_minutes: int = 60,
-        tags_filter: Optional[Dict[str, str]] = None,
-    ) -> Optional[AggregatedMetrics]:
+        tags_filter: dict[str, str] | None = None,
+    ) -> AggregatedMetrics | None:
         """Get aggregated metrics for a specific metric over a time window.
 
         Args:
@@ -323,13 +317,12 @@ class MetricsCollector:
         cache_time = self.last_aggregation.get(cache_key)
 
         if (
-            cache_time
-            and (datetime.now(timezone.utc) - cache_time).total_seconds() < 60
+            cache_time and (datetime.now(UTC) - cache_time).total_seconds() < 60
         ):  # 1-minute cache
             return self.aggregated_cache.get(cache_key)
 
         # Calculate aggregation
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         start_time = end_time - timedelta(minutes=time_window_minutes)
 
         # Filter samples by time window and tags
@@ -376,11 +369,11 @@ class MetricsCollector:
 
         # Cache result
         self.aggregated_cache[cache_key] = aggregated
-        self.last_aggregation[cache_key] = datetime.now(timezone.utc)
+        self.last_aggregation[cache_key] = datetime.now(UTC)
 
         return aggregated
 
-    def _percentile(self, values: List[float], percentile: float) -> float:
+    def _percentile(self, values: list[float], percentile: float) -> float:
         """Calculate percentile value."""
         if not values:
             return 0.0
@@ -452,7 +445,7 @@ class MetricsCollector:
         for alert in alerts:
             self._trigger_alert(alert)
 
-    def _trigger_alert(self, alert: Dict[str, Any]) -> None:
+    def _trigger_alert(self, alert: dict[str, Any]) -> None:
         """Trigger alert callbacks."""
         for callback in self.alert_callbacks:
             try:
@@ -462,7 +455,7 @@ class MetricsCollector:
 
         self.logger.warning(f"Performance alert: {alert}")
 
-    def add_alert_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+    def add_alert_callback(self, callback: Callable[[dict[str, Any]], None]) -> None:
         """Add alert callback function.
 
         Args:
@@ -488,7 +481,7 @@ class MetricsCollector:
             f"Set alert threshold: {metric_name}.{threshold_type} = {threshold_value}"
         )
 
-    def get_dashboard_data(self, time_window_minutes: int = 60) -> Dict[str, Any]:
+    def get_dashboard_data(self, time_window_minutes: int = 60) -> dict[str, Any]:
         """Get real-time performance data for dashboards.
 
         Args:
@@ -498,7 +491,7 @@ class MetricsCollector:
             Dashboard data structure
         """
         dashboard_data = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "time_window_minutes": time_window_minutes,
             "metrics": {},
             "alerts": [],
@@ -585,7 +578,7 @@ class MetricsCollector:
 
         return dashboard_data
 
-    def _get_recent_alerts(self) -> List[Dict[str, Any]]:
+    def _get_recent_alerts(self) -> list[dict[str, Any]]:
         """Get recent performance alerts."""
         # In a real implementation, this would fetch from an alert store
         # For now, simulate some alerts based on current metrics
@@ -603,14 +596,14 @@ class MetricsCollector:
                             "metric": metric_name,
                             "threshold_type": "p95_ms",
                             "severity": "medium",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(UTC).isoformat(),
                             "message": f"{metric_name} P95 response time ({aggregated.p95_value:.1f}ms) exceeds threshold ({thresholds['p95_ms']}ms)",
                         }
                     )
 
         return alerts[-10:]  # Return last 10 alerts
 
-    def get_metrics_summary(self) -> Dict[str, Any]:
+    def get_metrics_summary(self) -> dict[str, Any]:
         """Get summary of all collected metrics.
 
         Returns:

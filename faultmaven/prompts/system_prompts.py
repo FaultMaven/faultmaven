@@ -5,8 +5,6 @@ This module contains comprehensive system prompts that define FaultMaven's ident
 methodology, and troubleshooting approach following the five-phase SRE doctrine.
 """
 
-from typing import Dict
-
 # Neutral Identity (for non-troubleshooting interactions - 10 tokens)
 NEUTRAL_IDENTITY = """You are FaultMaven, an AI assistant."""
 
@@ -49,7 +47,7 @@ CONCISE_SYSTEM_PROMPT = BRIEF_PROMPT  # Tier 1
 
 
 # Prompt variants registry
-SYSTEM_PROMPT_VARIANTS: Dict[str, str] = {
+SYSTEM_PROMPT_VARIANTS: dict[str, str] = {
     "default": PRIMARY_SYSTEM_PROMPT,
     "primary": PRIMARY_SYSTEM_PROMPT,
     "concise": CONCISE_SYSTEM_PROMPT,

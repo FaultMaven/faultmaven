@@ -7,7 +7,7 @@ No LLM calls required - pure markdown/text parsing.
 """
 
 import re
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -16,7 +16,7 @@ from faultmaven.services.preprocessing.extractors.utils import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 
 class DocumentationExtractor:
@@ -303,7 +303,7 @@ class DocumentationExtractor:
         lines = [
             f"Documentation: {title}",
             "",
-            f"📄 Document Overview:",
+            "📄 Document Overview:",
             f"  - Total sections: {len(sections)}",
             f"  - Code blocks: {len(code_blocks)}",
             "",

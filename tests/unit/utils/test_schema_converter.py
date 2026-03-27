@@ -28,7 +28,7 @@ class OptionalFieldModel(BaseModel):
     """Model with optional fields"""
 
     required_field: str
-    optional_field: Optional[str] = None
+    optional_field: str | None = None
     default_field: str = "default_value"
 
 
@@ -37,7 +37,7 @@ class NestedModel(BaseModel):
 
     id: str
     metadata: dict = Field(default_factory=dict)
-    tags: List[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class ComplexModel(BaseModel):
@@ -47,8 +47,8 @@ class ComplexModel(BaseModel):
     int_field: int = Field(default=42, description="An integer field")
     float_field: float = Field(..., description="A float field")
     bool_field: bool = Field(default=False, description="A boolean field")
-    list_field: List[str] = Field(default_factory=list, description="A list field")
-    optional_field: Optional[int] = Field(None, description="An optional field")
+    list_field: list[str] = Field(default_factory=list, description="A list field")
+    optional_field: int | None = Field(None, description="An optional field")
 
 
 class TestPydanticToOpenAIFunction:
@@ -204,8 +204,8 @@ class TestEdgeCases:
         """Test model where all fields are optional"""
 
         class AllOptionalModel(BaseModel):
-            field1: Optional[str] = None
-            field2: Optional[int] = None
+            field1: str | None = None
+            field2: int | None = None
 
         result = pydantic_to_openai_function(AllOptionalModel)
 
@@ -217,7 +217,7 @@ class TestEdgeCases:
         from typing import Union
 
         class UnionModel(BaseModel):
-            value: Union[str, int]
+            value: str | int
 
         result = pydantic_to_openai_function(UnionModel)
 
@@ -232,7 +232,7 @@ class TestEdgeCases:
             value: int
 
         class ContainerModel(BaseModel):
-            items: List[ItemModel]
+            items: list[ItemModel]
 
         result = pydantic_to_openai_function(ContainerModel)
 
@@ -340,7 +340,7 @@ class TestCreateResponseFormatJsonSchema:
 
         class OuterModel(BaseModel):
             inner: InnerModel
-            items: List[str]
+            items: list[str]
 
         result = create_response_format_json_schema(OuterModel)
         schema = result["json_schema"]["schema"]
@@ -394,10 +394,10 @@ class TestCreateResponseFormatJsonSchema:
 
         class ComplexResponse(BaseModel):
             required_str: str
-            optional_str: Optional[str] = None
+            optional_str: str | None = None
             required_int: int
-            optional_int: Optional[int] = None
-            list_field: List[str] = Field(default_factory=list)
+            optional_int: int | None = None
+            list_field: list[str] = Field(default_factory=list)
             status: Literal["active", "inactive"]
 
         result = create_response_format_json_schema(ComplexResponse)

@@ -10,7 +10,7 @@ They handle:
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,23 +31,23 @@ class CaseCreateRequest(BaseModel):
     This ensures security and prevents user_id spoofing.
     """
 
-    title: Optional[str] = Field(
+    title: str | None = Field(
         default=None,
         description="Case title (optional, auto-generated if not provided)",
         max_length=200,
     )
 
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default="", description="Initial problem description", max_length=2000
     )
 
-    initial_message: Optional[str] = Field(
+    initial_message: str | None = Field(
         default=None,
         description="First user message (for INQUIRY phase)",
         max_length=4000,
     )
 
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session ID for authentication and case association (restored from old implementation)",
     )
@@ -59,15 +59,13 @@ class CaseCreateRequest(BaseModel):
 class CaseUpdateRequest(BaseModel):
     """Request to update an existing case."""
 
-    title: Optional[str] = Field(
-        default=None, description="Updated title", max_length=200
-    )
+    title: str | None = Field(default=None, description="Updated title", max_length=200)
 
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default=None, description="Updated description", max_length=2000
     )
 
-    status: Optional[CaseStatus] = Field(
+    status: CaseStatus | None = Field(
         default=None, description="Updated status (admin only)"
     )
 
@@ -87,11 +85,11 @@ class CaseSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
-    resolved_at: Optional[datetime]
-    closed_at: Optional[datetime]
+    resolved_at: datetime | None
+    closed_at: datetime | None
     user_id: str
     organization_id: str
-    closure_reason: Optional[str]
+    closure_reason: str | None
 
     # Progress indicators
     current_turn: int
@@ -106,7 +104,7 @@ class CaseSummary(BaseModel):
     is_terminal: bool
 
     # Status transitions
-    valid_next_states: List[str] = Field(
+    valid_next_states: list[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
     )
@@ -150,21 +148,21 @@ class CaseDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
-    resolved_at: Optional[datetime]
-    closed_at: Optional[datetime]
+    resolved_at: datetime | None
+    closed_at: datetime | None
 
     user_id: str
     organization_id: str
-    closure_reason: Optional[str]
+    closure_reason: str | None
 
     # Progress
     current_turn: int
     turns_without_progress: int
-    current_stage: Optional[InvestigationStage]
+    current_stage: InvestigationStage | None
 
     # Milestones
-    milestones_completed: List[str]
-    pending_milestones: List[str]
+    milestones_completed: list[str]
+    pending_milestones: list[str]
 
     # Counts
     evidence_count: int
@@ -178,7 +176,7 @@ class CaseDetail(BaseModel):
     escalated: bool
 
     # Status transitions
-    valid_next_states: List[str] = Field(
+    valid_next_states: list[str] = Field(
         default_factory=list,
         description="Allowed status transitions from current state for user-initiated changes",
     )
@@ -228,21 +226,21 @@ class CaseDetail(BaseModel):
 class CaseListFilter(BaseModel):
     """Filter criteria for listing cases."""
 
-    user_id: Optional[str] = Field(default=None, description="Filter by user ID")
+    user_id: str | None = Field(default=None, description="Filter by user ID")
 
-    organization_id: Optional[str] = Field(
+    organization_id: str | None = Field(
         default=None, description="Filter by organization ID"
     )
 
-    status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
+    status: CaseStatus | None = Field(default=None, description="Filter by status")
 
-    is_stuck: Optional[bool] = Field(default=None, description="Filter stuck cases")
+    is_stuck: bool | None = Field(default=None, description="Filter stuck cases")
 
-    created_after: Optional[datetime] = Field(
+    created_after: datetime | None = Field(
         default=None, description="Cases created after this date"
     )
 
-    created_before: Optional[datetime] = Field(
+    created_before: datetime | None = Field(
         default=None, description="Cases created before this date"
     )
 
@@ -265,7 +263,7 @@ class CaseListFilter(BaseModel):
 class CaseListResponse(BaseModel):
     """Response for case listing."""
 
-    cases: List[CaseSummary]
+    cases: list[CaseSummary]
     total_count: int
     limit: int
     offset: int
@@ -273,7 +271,7 @@ class CaseListResponse(BaseModel):
 
     @classmethod
     def from_cases(
-        cls, cases: List[Case], total_count: int, limit: int, offset: int
+        cls, cases: list[Case], total_count: int, limit: int, offset: int
     ) -> "CaseListResponse":
         """Convert list of Cases to API response."""
         return cls(
@@ -295,13 +293,13 @@ class CaseSearchRequest(BaseModel):
 
     query: str = Field(description="Search query", min_length=1, max_length=500)
 
-    user_id: Optional[str] = Field(default=None, description="Limit to user's cases")
+    user_id: str | None = Field(default=None, description="Limit to user's cases")
 
-    organization_id: Optional[str] = Field(
+    organization_id: str | None = Field(
         default=None, description="Limit to organization's cases"
     )
 
-    status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
+    status: CaseStatus | None = Field(default=None, description="Filter by status")
 
     limit: int = Field(default=20, ge=1, le=100, description="Maximum results")
 
@@ -309,13 +307,13 @@ class CaseSearchRequest(BaseModel):
 class CaseSearchResponse(BaseModel):
     """Response for case search."""
 
-    cases: List[CaseSummary]
+    cases: list[CaseSummary]
     total_count: int
     query: str
 
     @classmethod
     def from_cases(
-        cls, cases: List[Case], total_count: int, query: str
+        cls, cases: list[Case], total_count: int, query: str
     ) -> "CaseSearchResponse":
         """Convert search results to API response."""
         return cls(
@@ -360,27 +358,27 @@ class QueryIntent(BaseModel):
     )
 
     # Additional intent-specific fields (vary by type)
-    from_status: Optional[CaseStatus] = Field(
+    from_status: CaseStatus | None = Field(
         default=None, description="For status_transition: source status (validation)"
     )
-    to_status: Optional[CaseStatus] = Field(
+    to_status: CaseStatus | None = Field(
         default=None,
         description="For status_transition: target status (REQUIRED for status_transition)",
     )
-    user_confirmed: Optional[bool] = Field(
+    user_confirmed: bool | None = Field(
         default=None,
         description="User explicitly confirmed action via UI button/dialog",
     )
-    hypothesis_id: Optional[str] = Field(
+    hypothesis_id: str | None = Field(
         default=None, description="For hypothesis_action: target hypothesis ID"
     )
-    action: Optional[str] = Field(
+    action: str | None = Field(
         default=None, description="Action to perform: validate | refute | retire"
     )
-    evidence_id: Optional[str] = Field(
+    evidence_id: str | None = Field(
         default=None, description="For evidence_request: target evidence ID"
     )
-    confirmation_value: Optional[bool] = Field(
+    confirmation_value: bool | None = Field(
         default=None, description="For confirmation: yes/no value"
     )
 
@@ -433,9 +431,9 @@ class SuggestedActionResponse(BaseModel):
     label: str
     type: str  # "COOPERATIVE" | "EVIDENCE" | "FREE_SPEECH"
     payload: str
-    body: Optional[str] = None
-    cooperative_action: Optional[str] = None  # "query_submit" | "command_copy"
-    hints: Optional[List[str]] = None  # FREE_SPEECH: short framework tags
+    body: str | None = None
+    cooperative_action: str | None = None  # "query_submit" | "command_copy"
+    hints: list[str] | None = None  # FREE_SPEECH: short framework tags
 
 
 class TurnResponse(BaseModel):
@@ -443,12 +441,12 @@ class TurnResponse(BaseModel):
 
     agent_response: str
     turn_number: int
-    milestones_completed: List[str]
+    milestones_completed: list[str]
     case_status: CaseStatus
     progress_made: bool
     is_stuck: bool
-    attachments_processed: List[AttachmentResult] = Field(default_factory=list)
-    suggested_actions: List[SuggestedActionResponse] = Field(default_factory=list)
+    attachments_processed: list[AttachmentResult] = Field(default_factory=list)
+    suggested_actions: list[SuggestedActionResponse] = Field(default_factory=list)
 
 
 # ============================================================
@@ -472,21 +470,21 @@ class CaseMessage(BaseModel):
     )
 
     # Optional fields
-    author_id: Optional[str] = Field(None, description="User who created the message")
-    token_count: Optional[int] = Field(None, description="Number of tokens in content")
-    metadata: Dict[str, Any] = Field(
+    author_id: str | None = Field(None, description="User who created the message")
+    token_count: int | None = Field(None, description="Number of tokens in content")
+    metadata: dict[str, Any] = Field(
         default_factory=dict, description="Sources, tools used, etc."
     )
 
     # Legacy/extension fields
-    attachments: Optional[List[dict]] = None
+    attachments: list[dict] | None = None
 
 
 class CaseConversationResponse(BaseModel):
     """Conversation history for a case."""
 
     case_id: str
-    messages: List[CaseMessage]
+    messages: list[CaseMessage]
     total_messages: int
 
 
@@ -521,7 +519,7 @@ class CaseMetrics(BaseModel):
 
     case_id: str
     total_turns: int
-    time_to_resolution_minutes: Optional[int]
+    time_to_resolution_minutes: int | None
     evidence_collected: int
     hypotheses_tested: int
     milestones_completed: int
@@ -536,7 +534,7 @@ class OrganizationCaseMetrics(BaseModel):
     active_cases: int
     resolved_cases: int
     stuck_cases: int
-    avg_resolution_time_minutes: Optional[float]
+    avg_resolution_time_minutes: float | None
 
 
 # ============================================================
@@ -559,17 +557,16 @@ class UploadedFileMetadata(BaseModel):
     analysis_status: str = Field(
         description="pending | processing | completed | failed"
     )
-    summary: Optional[str] = Field(
+    summary: str | None = Field(
         default=None, description="AI-generated summary (1-2 sentences)"
     )
-    source_metadata: Optional[dict] = Field(
+    source_metadata: dict | None = Field(
         default=None, description="Source origin metadata (e.g. page capture URL)"
     )
 
     @classmethod
     def from_uploaded_file(cls, uploaded_file) -> "UploadedFileMetadata":
         """Convert UploadedFile model to UploadedFileMetadata."""
-        from faultmaven.modules.case.contracts import UploadedFile
 
         # Calculate human-readable size
         size_bytes = uploaded_file.size_bytes
@@ -596,7 +593,6 @@ class UploadedFileMetadata(BaseModel):
     @classmethod
     def from_evidence(cls, evidence) -> "UploadedFileMetadata":
         """Convert Evidence model to UploadedFileMetadata (legacy - should use from_uploaded_file)."""
-        from faultmaven.models.case import Evidence
 
         # Calculate human-readable size
         size_bytes = evidence.content_size_bytes
@@ -642,18 +638,18 @@ class TimelineEvent(BaseModel):
 class FileAnalysis(BaseModel):
     """Detailed AI analysis of file."""
 
-    key_findings: List[str] = Field(default_factory=list)
-    timeline_events: List[TimelineEvent] = Field(default_factory=list)
-    relevance: Optional[str] = None
+    key_findings: list[str] = Field(default_factory=list)
+    timeline_events: list[TimelineEvent] = Field(default_factory=list)
+    relevance: str | None = None
 
 
 class UploadedFileDetails(UploadedFileMetadata):
     """Detailed file information including analysis."""
 
-    full_analysis: Optional[FileAnalysis] = Field(
+    full_analysis: FileAnalysis | None = Field(
         default=None, description="Detailed AI analysis"
     )
-    hypothesis_relationships: Optional[List[HypothesisRelationship]] = Field(
+    hypothesis_relationships: list[HypothesisRelationship] | None = Field(
         default=None,
         description="How this file relates to hypotheses (investigating phase only)",
     )
@@ -682,7 +678,7 @@ class UploadedFileDetails(UploadedFileMetadata):
 
     @classmethod
     def from_evidence(
-        cls, evidence, case_id: str, hypotheses: Optional[dict] = None
+        cls, evidence, case_id: str, hypotheses: dict | None = None
     ) -> "UploadedFileDetails":
         """Convert Evidence to UploadedFileDetails with full analysis (INVESTIGATING phase)."""
         # Start with base metadata
@@ -726,7 +722,7 @@ class UploadedFileDetails(UploadedFileMetadata):
 class UploadedFilesList(BaseModel):
     """Paginated list of uploaded files."""
 
-    files: List[UploadedFileMetadata]
+    files: list[UploadedFileMetadata]
     total_count: int = Field(description="Total number of files")
     limit: int
     offset: int
@@ -747,10 +743,10 @@ class DerivedEvidenceSummary(BaseModel):
     )
     collected_at_turn: int
     source_type: str = Field(description="LOGS | METRICS | TRACES | etc.")
-    content_hash: Optional[str] = None
-    preprocessing_method: Optional[str] = None
-    primary_purpose: Optional[str] = None
-    related_hypothesis_ids: List[str] = Field(default_factory=list)
+    content_hash: str | None = None
+    preprocessing_method: str | None = None
+    primary_purpose: str | None = None
+    related_hypothesis_ids: list[str] = Field(default_factory=list)
 
 
 class UploadedFileDetailsResponse(BaseModel):
@@ -764,10 +760,10 @@ class UploadedFileDetailsResponse(BaseModel):
     uploaded_at: datetime
     source_type: str
     data_type: str
-    summary: Optional[str] = None
+    summary: str | None = None
 
     # Evidence linkage
-    derived_evidence: List[DerivedEvidenceSummary] = Field(default_factory=list)
+    derived_evidence: list[DerivedEvidenceSummary] = Field(default_factory=list)
     evidence_count: int = Field(ge=0)
 
 
@@ -776,7 +772,7 @@ class UploadedFilesListResponse(BaseModel):
 
     case_id: str
     total_count: int
-    files: List[UploadedFileMetadata]
+    files: list[UploadedFileMetadata]
 
 
 class SourceFileReference(BaseModel):
@@ -809,15 +805,15 @@ class EvidenceDetailsResponse(BaseModel):
     collected_by: str
 
     # Source file linkage
-    source_file: Optional[SourceFileReference] = Field(
+    source_file: SourceFileReference | None = Field(
         None,
         description="Source file this evidence was derived from (null if from user input)",
     )
 
     # Hypothesis linkage
-    related_hypotheses: List[RelatedHypothesis] = Field(default_factory=list)
+    related_hypotheses: list[RelatedHypothesis] = Field(default_factory=list)
 
     # Content
     preprocessed_content: str
     content_size_bytes: int
-    analysis: Optional[str] = None
+    analysis: str | None = None

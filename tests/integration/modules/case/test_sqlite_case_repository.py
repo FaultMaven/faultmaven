@@ -16,7 +16,7 @@ Key validations:
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -348,8 +348,8 @@ class TestSQLiteCaseRepository:
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         # This should NOT raise:
@@ -397,8 +397,8 @@ class TestSQLiteCaseRepository:
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
 
         await repo.save(test_case)
@@ -447,8 +447,8 @@ class TestSQLiteCaseRepository:
                 inquiry=InquiryData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
             await repo.save(case)
 
@@ -489,8 +489,8 @@ class TestSQLiteCaseRepository:
                 inquiry=InquiryData(),
                 documentation=DocumentationData(),
                 progress=InvestigationProgress(),
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
             await repo.save(case)
 
@@ -525,8 +525,8 @@ class TestSQLiteCaseRepository:
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         await repo.save(case)
 
@@ -574,8 +574,8 @@ class TestSQLiteCaseRepository:
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         await repo.save(case)
 
@@ -612,8 +612,8 @@ class TestSQLiteCaseRepository:
             inquiry=InquiryData(),
             documentation=DocumentationData(),
             progress=InvestigationProgress(),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         await repo.save(case)
 
@@ -674,7 +674,7 @@ class TestSQLiteCaseRepository:
 
         # Create HypothesisEvidenceLink objects with datetime fields
         # This is what was failing before - the analyzed_at datetime couldn't be JSON serialized
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         earlier = now - timedelta(minutes=10)
 
         evidence_link_1 = HypothesisEvidenceLink(

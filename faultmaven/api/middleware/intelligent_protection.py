@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -32,9 +33,9 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: ASGIApp,
-        coordinator: Optional[Any] = None,
-        config: Optional[Any] = None,
-        session_store: Optional[ISessionStore] = None,
+        coordinator: Any | None = None,
+        config: Any | None = None,
+        session_store: ISessionStore | None = None,
         enabled: bool = True,
     ):
         super().__init__(app)
@@ -54,7 +55,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
                 "ProtectionCoordinator must be provided via dependency injection. "
                 "Ensure the DI container is properly initialized."
             )
-        self.initialization_task: Optional[asyncio.Task] = None
+        self.initialization_task: asyncio.Task | None = None
         self.initialized = False
 
         # Performance tracking
@@ -140,7 +141,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             self.initialized = True
             self.logger.info("Phase 2 Protection Coordinator initialized successfully")
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.logger.error("Phase 2 Protection initialization timed out")
             self.enabled = False  # Disable on initialization failure
         except Exception as e:
@@ -151,7 +152,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         """Check if path should skip protection analysis"""
         return any(skip_path in path for skip_path in self.skip_paths)
 
-    async def _extract_session_id(self, request: Request) -> Optional[str]:
+    async def _extract_session_id(self, request: Request) -> str | None:
         """Extract session ID from request"""
         # Try header first
         session_id = request.headers.get("X-Session-ID")
@@ -193,12 +194,12 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
 
         return f"client_{client_id}"
 
-    async def _prepare_request_data(self, request: Request) -> Dict[str, Any]:
+    async def _prepare_request_data(self, request: Request) -> dict[str, Any]:
         """Prepare request data for protection analysis"""
         request_data = {
             "endpoint": request.url.path,
             "method": request.method,
-            "timestamp": datetime.now(timezone.utc),
+            "timestamp": datetime.now(UTC),
             "client_ip": request.client.host if request.client else "unknown",
             "user_agent": request.headers.get("user-agent", ""),
             "content_type": request.headers.get("content-type", ""),
@@ -220,7 +221,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         return request_data
 
     async def _analyze_request(
-        self, session_id: str, request_data: Dict[str, Any]
+        self, session_id: str, request_data: dict[str, Any]
     ) -> ProtectionDecision:
         """Analyze request using Phase 2 coordinator"""
         try:
@@ -229,13 +230,13 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             if not self.coordinator or not self.initialized:
                 # Fallback decision if coordinator not available
                 return ProtectionDecision(
-                    decision_id=f"fallback_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
+                    decision_id=f"fallback_{session_id}_{int(datetime.now(UTC).timestamp())}",
                     session_id=session_id,
                     allow_request=True,
                     risk_assessment=RiskLevel.LOW,
                     confidence=0.0,
                     explanation="Phase 2 coordinator not available, allowing request",
-                    decision_timestamp=datetime.now(timezone.utc),
+                    decision_timestamp=datetime.now(UTC),
                 )
 
             # Use Phase 2 coordinator for analysis
@@ -248,13 +249,13 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             self.logger.error(f"Error in Phase 2 request analysis: {e}")
             # Safe fallback
             return ProtectionDecision(
-                decision_id=f"error_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
+                decision_id=f"error_{session_id}_{int(datetime.now(UTC).timestamp())}",
                 session_id=session_id,
                 allow_request=True,
                 risk_assessment=RiskLevel.MEDIUM,
                 confidence=0.0,
                 explanation=f"Analysis error, allowing request: {str(e)}",
-                decision_timestamp=datetime.now(timezone.utc),
+                decision_timestamp=datetime.now(UTC),
             )
 
     async def _create_protection_response(
@@ -319,7 +320,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         return response
 
     async def _process_response(
-        self, session_id: str, request_data: Dict[str, Any], response: Response
+        self, session_id: str, request_data: dict[str, Any], response: Response
     ):
         """Process response for learning and adaptation"""
         try:
@@ -330,7 +331,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             response_data = {
                 "status_code": response.status_code,
                 "response_time": 0.0,  # Will be calculated by the caller
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
             }
 
             # Add error type for failed responses
@@ -381,7 +382,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
                 f"(threshold: {self.max_processing_time}ms)"
             )
 
-    async def get_middleware_status(self) -> Dict[str, Any]:
+    async def get_middleware_status(self) -> dict[str, Any]:
         """Get middleware status for monitoring"""
         coordinator_status = {}
         if self.coordinator and self.initialized:

@@ -12,7 +12,7 @@ Design Reference:
 
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from faultmaven.core.preprocessing.models import (
     AnalysisContext,
@@ -30,15 +30,15 @@ class ExternalTier2Client(ITier2AnalysisService):
     def __init__(
         self,
         base_url: str,
-        api_key: Optional[str] = None,
-        storage_service: Optional[Any] = None,
+        api_key: str | None = None,
+        storage_service: Any | None = None,
         timeout_seconds: int = 30,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.storage_service = storage_service
         self.timeout_seconds = timeout_seconds
-        self._staged_files: Dict[str, str] = {}
+        self._staged_files: dict[str, str] = {}
 
     async def analyze(
         self,

@@ -6,11 +6,10 @@ PII scanning, and the review workflow (approve/reject).
 Design Reference: Source Verification Badges Feature
 """
 
-import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
@@ -61,10 +60,10 @@ Format as Markdown with these sections:
 
     def __init__(
         self,
-        case_repository: Optional[Any] = None,
-        knowledge_service: Optional[Any] = None,
-        sanitizer: Optional[Any] = None,
-        llm_provider: Optional[Any] = None,
+        case_repository: Any | None = None,
+        knowledge_service: Any | None = None,
+        sanitizer: Any | None = None,
+        llm_provider: Any | None = None,
     ):
         """Initialize the suggestion service.
 
@@ -81,7 +80,7 @@ Format as Markdown with these sections:
         self._llm_provider = llm_provider
 
         # In-memory store for suggestions (production would use DB)
-        self._suggestions_store: Dict[str, KnowledgeSuggestion] = {}
+        self._suggestions_store: dict[str, KnowledgeSuggestion] = {}
 
     async def extract_knowledge_from_case(
         self,
@@ -90,7 +89,7 @@ Format as Markdown with these sections:
         extracted_by: str,
         include_messages: bool = True,
         include_evidence: bool = True,
-        title_suggestion: Optional[str] = None,
+        title_suggestion: str | None = None,
     ) -> KnowledgeSuggestion:
         """Extract knowledge from a case into a suggestion.
 
@@ -180,7 +179,7 @@ Format as Markdown with these sections:
             suggested_content=suggested_content,
             suggested_type="troubleshooting_guide",
             extracted_by=extracted_by,
-            extracted_at=datetime.now(timezone.utc),
+            extracted_at=datetime.now(UTC),
             include_messages=include_messages,
             include_evidence=include_evidence,
             pii_scan_status=PIIScanStatus.NOT_SCANNED,
@@ -321,7 +320,7 @@ Format as Markdown with these sections:
                 result={"pii_detected": False, "note": "No sanitizer configured"},
             )
 
-    async def get_suggestion(self, suggestion_id: str) -> Optional[KnowledgeSuggestion]:
+    async def get_suggestion(self, suggestion_id: str) -> KnowledgeSuggestion | None:
         """Get a suggestion by ID.
 
         Args:
@@ -334,11 +333,11 @@ Format as Markdown with these sections:
 
     async def list_suggestions(
         self,
-        organization_id: Optional[str] = None,
-        status: Optional[str] = None,
+        organization_id: str | None = None,
+        status: str | None = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """List suggestions with optional filtering.
 
         Args:
@@ -380,8 +379,8 @@ Format as Markdown with these sections:
         self,
         suggestion_id: str,
         reviewed_by: str,
-        review_notes: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        review_notes: str | None = None,
+    ) -> dict[str, Any] | None:
         """Approve a suggestion and create a knowledge item.
 
         Args:
@@ -453,7 +452,7 @@ Format as Markdown with these sections:
         suggestion_id: str,
         reviewed_by: str,
         rejection_reason: str,
-        review_notes: Optional[str] = None,
+        review_notes: str | None = None,
     ) -> bool:
         """Reject a suggestion.
 
@@ -482,10 +481,10 @@ Format as Markdown with these sections:
     async def update_suggestion(
         self,
         suggestion_id: str,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        suggested_type: Optional[str] = None,
-    ) -> Optional[KnowledgeSuggestion]:
+        title: str | None = None,
+        content: str | None = None,
+        suggested_type: str | None = None,
+    ) -> KnowledgeSuggestion | None:
         """Update a suggestion's content.
 
         Args:
@@ -520,7 +519,7 @@ Format as Markdown with these sections:
         self,
         suggestion_id: str,
         remediated_by: str,
-    ) -> Optional[KnowledgeSuggestion]:
+    ) -> KnowledgeSuggestion | None:
         """Mark PII as remediated after manual review.
 
         Args:
@@ -540,7 +539,7 @@ Format as Markdown with these sections:
 
     def to_api_response(
         self, suggestion: KnowledgeSuggestion, include_content: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Convert suggestion to API response format.
 
         Args:

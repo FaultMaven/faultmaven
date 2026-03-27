@@ -15,15 +15,10 @@ Key Responsibilities:
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.container import container
-from faultmaven.infrastructure.caching.intelligent_cache import IntelligentCache
-from faultmaven.infrastructure.monitoring.sla_monitor import SLAMonitor
-from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
-from faultmaven.services.analytics.dashboard_service import AnalyticsDashboardService
-from faultmaven.services.performance_optimization import PerformanceOptimizationService
 
 
 class PerformanceMonitoringStartup:
@@ -39,13 +34,13 @@ class PerformanceMonitoringStartup:
             "background_tasks_started": 0,
         }
 
-    async def initialize_performance_monitoring(self) -> Dict[str, Any]:
+    async def initialize_performance_monitoring(self) -> dict[str, Any]:
         """Initialize all performance monitoring and optimization services
 
         Returns:
             Initialization status and metrics
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         self.logger.info("Starting performance monitoring system initialization")
 
         try:
@@ -84,7 +79,7 @@ class PerformanceMonitoringStartup:
             await self._start_sla_monitor(di_container, initialization_status)
 
             # Calculate final metrics
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(UTC)
             self.startup_metrics["startup_time"] = (
                 end_time - start_time
             ).total_seconds()
@@ -128,7 +123,7 @@ class PerformanceMonitoringStartup:
                 "startup_metrics": self.startup_metrics,
             }
 
-    async def _start_metrics_collector(self, di_container, status: Dict[str, Any]):
+    async def _start_metrics_collector(self, di_container, status: dict[str, Any]):
         """Start metrics collector background processing"""
         try:
             self.logger.info("Initializing Metrics Collector...")
@@ -139,7 +134,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["metrics_collector"] = {
                     "status": "started",
                     "background_tasks": True,
-                    "startup_time": datetime.now(timezone.utc).isoformat(),
+                    "startup_time": datetime.now(UTC).isoformat(),
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -168,7 +163,7 @@ class PerformanceMonitoringStartup:
                 f"Metrics Collector: {str(e)}"
             )
 
-    async def _start_intelligent_cache(self, di_container, status: Dict[str, Any]):
+    async def _start_intelligent_cache(self, di_container, status: dict[str, Any]):
         """Start intelligent cache background processing"""
         try:
             self.logger.info("Initializing Intelligent Cache...")
@@ -179,7 +174,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["intelligent_cache"] = {
                     "status": "started",
                     "background_tasks": True,
-                    "startup_time": datetime.now(timezone.utc).isoformat(),
+                    "startup_time": datetime.now(UTC).isoformat(),
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -209,7 +204,7 @@ class PerformanceMonitoringStartup:
             )
 
     async def _start_analytics_dashboard_service(
-        self, di_container, status: Dict[str, Any]
+        self, di_container, status: dict[str, Any]
     ):
         """Start analytics dashboard service background processing"""
         try:
@@ -221,7 +216,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["analytics_dashboard_service"] = {
                     "status": "started",
                     "background_tasks": True,
-                    "startup_time": datetime.now(timezone.utc).isoformat(),
+                    "startup_time": datetime.now(UTC).isoformat(),
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -251,7 +246,7 @@ class PerformanceMonitoringStartup:
             )
 
     async def _start_performance_optimization_service(
-        self, di_container, status: Dict[str, Any]
+        self, di_container, status: dict[str, Any]
     ):
         """Start performance optimization service background processing"""
         try:
@@ -265,7 +260,7 @@ class PerformanceMonitoringStartup:
                     "background_tasks": True,
                     "auto_optimization_enabled": optimization_service._enable_auto_optimization,
                     "aggressiveness": optimization_service._optimization_aggressiveness,
-                    "startup_time": datetime.now(timezone.utc).isoformat(),
+                    "startup_time": datetime.now(UTC).isoformat(),
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -294,7 +289,7 @@ class PerformanceMonitoringStartup:
                 f"Performance Optimization Service: {str(e)}"
             )
 
-    async def _start_sla_monitor(self, di_container, status: Dict[str, Any]):
+    async def _start_sla_monitor(self, di_container, status: dict[str, Any]):
         """Start SLA monitor"""
         try:
             self.logger.info("Initializing SLA Monitor...")
@@ -307,7 +302,7 @@ class PerformanceMonitoringStartup:
                     "background_tasks": True,
                     "total_slas": len(sla_monitor._sla_definitions),
                     "alert_channels": len(sla_monitor._alert_channels),
-                    "startup_time": datetime.now(timezone.utc).isoformat(),
+                    "startup_time": datetime.now(UTC).isoformat(),
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -329,13 +324,13 @@ class PerformanceMonitoringStartup:
             status["services"]["sla_monitor"] = {"status": "failed", "error": str(e)}
             self.startup_metrics["startup_errors"].append(f"SLA Monitor: {str(e)}")
 
-    async def shutdown_performance_monitoring(self) -> Dict[str, Any]:
+    async def shutdown_performance_monitoring(self) -> dict[str, Any]:
         """Gracefully shutdown all performance monitoring services
 
         Returns:
             Shutdown status and metrics
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         self.logger.info("Starting performance monitoring system shutdown")
 
         shutdown_status = {
@@ -358,7 +353,7 @@ class PerformanceMonitoringStartup:
             await self._shutdown_intelligent_cache(di_container, shutdown_status)
             await self._shutdown_metrics_collector(di_container, shutdown_status)
 
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(UTC)
             shutdown_status.update(
                 {
                     "completed_at": end_time.isoformat(),
@@ -377,7 +372,7 @@ class PerformanceMonitoringStartup:
             shutdown_status["error"] = str(e)
             return shutdown_status
 
-    async def _shutdown_sla_monitor(self, di_container, status: Dict[str, Any]):
+    async def _shutdown_sla_monitor(self, di_container, status: dict[str, Any]):
         """Shutdown SLA monitor"""
         try:
             sla_monitor = di_container.get_sla_monitor()
@@ -390,7 +385,7 @@ class PerformanceMonitoringStartup:
             status["services"]["sla_monitor"] = {"status": "error", "error": str(e)}
 
     async def _shutdown_performance_optimization_service(
-        self, di_container, status: Dict[str, Any]
+        self, di_container, status: dict[str, Any]
     ):
         """Shutdown performance optimization service"""
         try:
@@ -409,7 +404,7 @@ class PerformanceMonitoringStartup:
             }
 
     async def _shutdown_analytics_dashboard_service(
-        self, di_container, status: Dict[str, Any]
+        self, di_container, status: dict[str, Any]
     ):
         """Shutdown analytics dashboard service"""
         try:
@@ -427,7 +422,7 @@ class PerformanceMonitoringStartup:
                 "error": str(e),
             }
 
-    async def _shutdown_intelligent_cache(self, di_container, status: Dict[str, Any]):
+    async def _shutdown_intelligent_cache(self, di_container, status: dict[str, Any]):
         """Shutdown intelligent cache"""
         try:
             intelligent_cache = di_container.get_intelligent_cache()
@@ -442,7 +437,7 @@ class PerformanceMonitoringStartup:
                 "error": str(e),
             }
 
-    async def _shutdown_metrics_collector(self, di_container, status: Dict[str, Any]):
+    async def _shutdown_metrics_collector(self, di_container, status: dict[str, Any]):
         """Shutdown metrics collector"""
         try:
             metrics_collector = di_container.get_metrics_collector()
@@ -459,10 +454,10 @@ class PerformanceMonitoringStartup:
 
 
 # Global startup instance
-_startup_instance: Optional[PerformanceMonitoringStartup] = None
+_startup_instance: PerformanceMonitoringStartup | None = None
 
 
-async def initialize_performance_monitoring_system() -> Dict[str, Any]:
+async def initialize_performance_monitoring_system() -> dict[str, Any]:
     """Initialize the performance monitoring system
 
     Returns:
@@ -476,7 +471,7 @@ async def initialize_performance_monitoring_system() -> Dict[str, Any]:
     return await _startup_instance.initialize_performance_monitoring()
 
 
-async def shutdown_performance_monitoring_system() -> Dict[str, Any]:
+async def shutdown_performance_monitoring_system() -> dict[str, Any]:
     """Shutdown the performance monitoring system
 
     Returns:
@@ -489,7 +484,7 @@ async def shutdown_performance_monitoring_system() -> Dict[str, Any]:
     return {"overall_status": "no_services_running"}
 
 
-def get_startup_metrics() -> Dict[str, Any]:
+def get_startup_metrics() -> dict[str, Any]:
     """Get current startup metrics
 
     Returns:

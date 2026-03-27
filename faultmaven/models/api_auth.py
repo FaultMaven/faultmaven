@@ -14,8 +14,6 @@ Key Components:
 """
 
 import re
-from datetime import datetime
-from typing import List, Optional
 
 from pydantic import BaseModel, Field, validator
 
@@ -34,12 +32,12 @@ class DevLoginRequest(BaseModel):
         description="Username or email address (3-50 chars)",
         example="developer@example.com",
     )
-    email: Optional[str] = Field(
+    email: str | None = Field(
         None,
         description="Optional email address (will auto-generate if not provided)",
         example="john.doe@faultmaven.local",
     )
-    display_name: Optional[str] = Field(
+    display_name: str | None = Field(
         None,
         max_length=100,
         description="Optional display name (will auto-generate if not provided)",
@@ -103,7 +101,7 @@ class UserProfile(BaseModel):
         example="2025-01-15T10:00:00Z",
     )
     is_dev_user: bool = Field(default=True, description="Development user flag")
-    roles: List[str] = Field(
+    roles: list[str] = Field(
         default=["user"],
         description="User roles for access control (e.g., ['user'], ['user', 'admin'])",
         example=["user", "admin"],
@@ -203,7 +201,7 @@ class AuthError(BaseModel):
         description="Human-readable error description",
         example="The request is missing a required parameter",
     )
-    correlation_id: Optional[str] = Field(
+    correlation_id: str | None = Field(
         None, description="Request correlation ID for debugging"
     )
 
@@ -248,7 +246,7 @@ class UserInfoResponse(UserProfile):
     Includes additional metadata for the current user.
     """
 
-    last_login: Optional[str] = Field(
+    last_login: str | None = Field(
         None,
         description="Last login timestamp (ISO format)",
         example="2025-01-15T14:30:00Z",

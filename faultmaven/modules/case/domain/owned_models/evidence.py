@@ -9,9 +9,9 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -96,13 +96,13 @@ class EvidenceArtifact:
     mime_type: str
     file_size: int
     storage_backend: StorageBackend = StorageBackend.LOCAL_FILESYSTEM
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    metadata: Optional[Dict[str, Any]] = None
-    description: Optional[str] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] | None = None
+    description: str | None = None
     is_primary: bool = False
-    tags: List[str] = field(default_factory=list)
-    linked_case_ids: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    linked_case_ids: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Validate evidence artifact data."""
@@ -184,7 +184,7 @@ class EvidenceArtifact:
 
     def touch(self) -> None:
         """Update the updated_at timestamp to current time."""
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def __repr__(self) -> str:
         return (
@@ -205,9 +205,9 @@ class EvidenceUploadRequest(BaseModel):
 
     filename: str
     content_type: str
-    description: Optional[str] = None
-    tags: List[str] = PydanticField(default_factory=list)
-    case_id: Optional[UUID] = None  # Auto-link to case if provided
+    description: str | None = None
+    tags: list[str] = PydanticField(default_factory=list)
+    case_id: UUID | None = None  # Auto-link to case if provided
 
 
 class EvidenceLinkRequest(BaseModel):
@@ -219,10 +219,10 @@ class EvidenceLinkRequest(BaseModel):
 class EvidenceListFilter(BaseModel):
     """Filters for listing evidence."""
 
-    case_id: Optional[str] = None
-    uploaded_by: Optional[UUID] = None
-    tags: Optional[List[str]] = None
-    filename_contains: Optional[str] = None
+    case_id: str | None = None
+    uploaded_by: UUID | None = None
+    tags: list[str] | None = None
+    filename_contains: str | None = None
     limit: int = PydanticField(default=50, le=10000)
     offset: int = PydanticField(default=0, ge=0)
 
@@ -244,11 +244,11 @@ class EvidenceArtifactResponse(BaseModel):
     storage_backend: StorageBackend = StorageBackend.LOCAL_FILESYSTEM
     created_at: datetime
     updated_at: datetime
-    metadata: Dict[str, Any] = PydanticField(default_factory=dict)
-    description: Optional[str] = None
+    metadata: dict[str, Any] = PydanticField(default_factory=dict)
+    description: str | None = None
     is_primary: bool = False
-    tags: List[str] = PydanticField(default_factory=list)
-    linked_case_ids: List[str] = PydanticField(default_factory=list)
+    tags: list[str] = PydanticField(default_factory=list)
+    linked_case_ids: list[str] = PydanticField(default_factory=list)
 
     model_config = {
         "from_attributes": True,

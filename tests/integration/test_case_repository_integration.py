@@ -16,8 +16,8 @@ Requirements:
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -518,7 +518,7 @@ async def test_concurrent_message_addition(test_engine):
                     "message_id": f"msg_{uuid4().hex[:12]}",
                     "role": "user" if index % 2 == 0 else "assistant",
                     "content": f"Message {index}",
-                    "timestamp": datetime.now(timezone.utc),
+                    "timestamp": datetime.now(UTC),
                 },
             )
 

@@ -16,7 +16,7 @@ Note: As of TASK-020, JWT authentication is required. Legacy header authenticati
 (X-Organization-ID, X-User-ID) has been removed.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -49,17 +49,17 @@ def mock_session():
     mock.user_id = "user_789"
     mock.organization_id = "org_456"
     mock.status = SessionStatus.ACTIVE
-    mock.started_at = datetime.now(timezone.utc)
+    mock.started_at = datetime.now(UTC)
     mock.ended_at = None
-    mock.last_activity_at = datetime.now(timezone.utc)
+    mock.last_activity_at = datetime.now(UTC)
     mock.total_duration_ms = None
     mock.session_goal = "Investigate the issue"
     mock.findings_summary = None
     mock.total_token_usage = 1000
     mock.total_agent_executions = 5
     mock.token_budget_limit = 50000
-    mock.created_at = datetime.now(timezone.utc)
-    mock.updated_at = datetime.now(timezone.utc)
+    mock.created_at = datetime.now(UTC)
+    mock.updated_at = datetime.now(UTC)
     return mock
 
 

@@ -14,7 +14,6 @@ Design Reference: TASK-018 User Management Service
 """
 
 import logging
-from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, EmailStr, Field
@@ -38,8 +37,8 @@ router = APIRouter(prefix="/api/v1/users", tags=["Users"])
 class UserProfileUpdateRequest(BaseModel):
     """User profile update request."""
 
-    email: Optional[EmailStr] = Field(None, description="New email address")
-    full_name: Optional[str] = Field(
+    email: EmailStr | None = Field(None, description="New email address")
+    full_name: str | None = Field(
         None, min_length=1, max_length=200, description="New full name"
     )
 
@@ -47,7 +46,7 @@ class UserProfileUpdateRequest(BaseModel):
 class UserListResponse(BaseModel):
     """Paginated user list response."""
 
-    users: List[UserResponse] = Field(..., description="List of users")
+    users: list[UserResponse] = Field(..., description="List of users")
     total: int = Field(..., description="Total number of users")
     limit: int = Field(..., description="Page size")
     offset: int = Field(..., description="Page offset")
@@ -187,7 +186,7 @@ async def update_current_user_profile(
 async def list_users(
     limit: int = Query(50, ge=1, le=100, description="Maximum results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    is_active: bool | None = Query(None, description="Filter by active status"),
     current_user: AuthenticatedUser = Depends(require_admin),
 ) -> UserListResponse:
     """List users with pagination (admin only).

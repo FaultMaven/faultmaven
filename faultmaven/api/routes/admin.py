@@ -14,12 +14,11 @@ Design Reference: TASK-019 Admin User Management Endpoints
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 
-from faultmaven.api.middleware.auth import get_current_user, require_admin
+from faultmaven.api.middleware.auth import require_admin
 from faultmaven.api.models import (
     AdminUserListItem,
     AdminUserListResponse,
@@ -49,13 +48,13 @@ router = APIRouter(
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
     current_user: AuthenticatedUser = Depends(require_admin),
-    is_active: Optional[bool] = Query(
+    is_active: bool | None = Query(
         None, description="Filter by active/inactive status"
     ),
-    role: Optional[str] = Query(
+    role: str | None = Query(
         None, description="Filter by role (admin, member, viewer)"
     ),
-    search: Optional[str] = Query(
+    search: str | None = Query(
         None, description="Search email or full_name (case-insensitive)"
     ),
     limit: int = Query(50, le=100, ge=1, description="Max results per page"),
@@ -230,7 +229,7 @@ async def deactivate_user(
         return UserStatusResponse(
             user_id=updated_user.user_id,
             is_active=updated_user.is_active,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
             message="User deactivated successfully. All JWT tokens revoked.",
         )
 
@@ -280,7 +279,7 @@ async def activate_user(
         return UserStatusResponse(
             user_id=updated_user.user_id,
             is_active=updated_user.is_active,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
             message="User activated successfully.",
         )
 
@@ -337,7 +336,7 @@ async def assign_role(
         return RoleAssignmentResponse(
             user_id=updated_user.user_id,
             roles=updated_user.roles if updated_user.roles else [request.role],
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
             message=f"Role '{request.role}' assigned successfully. All JWT tokens revoked.",
         )
 
@@ -406,7 +405,7 @@ async def remove_role(
         return RoleAssignmentResponse(
             user_id=updated_user.user_id,
             roles=updated_user.roles if updated_user.roles else ["viewer"],
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
             message=f"Role '{role}' removed. User downgraded to 'viewer'. All JWT tokens revoked.",
         )
 

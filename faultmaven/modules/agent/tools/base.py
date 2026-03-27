@@ -10,7 +10,7 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from faultmaven.domain.events import Tool
 from faultmaven.models.interfaces import BaseTool, ToolResult
@@ -39,12 +39,12 @@ class ToolContext:
     case_id: str
     organization_id: str
     user_id: str
-    team_ids: List[str] = field(default_factory=list)
-    evidence_service: Optional[Any] = (
+    team_ids: list[str] = field(default_factory=list)
+    evidence_service: Any | None = (
         None  # APIEvidenceArtifactService (avoid import violation)
     )
-    execution_id: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    execution_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""
@@ -88,11 +88,11 @@ class AgentTool(BaseTool, ABC):
 
     @property
     @abstractmethod
-    def parameters_schema(self) -> Dict[str, Any]:
+    def parameters_schema(self) -> dict[str, Any]:
         """JSON Schema for tool parameters."""
         pass
 
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+    async def execute(self, params: dict[str, Any]) -> ToolResult:
         """Execute the tool with parameters (legacy interface).
 
         This method exists for compatibility with BaseTool.
@@ -108,7 +108,7 @@ class AgentTool(BaseTool, ABC):
     @abstractmethod
     async def execute_with_context(
         self,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Execute the tool with context.
@@ -122,7 +122,7 @@ class AgentTool(BaseTool, ABC):
         """
         pass
 
-    def get_schema(self) -> Dict[str, Any]:
+    def get_schema(self) -> dict[str, Any]:
         """Get the tool's schema for LLM function calling."""
         return {
             "name": self.name,
@@ -138,7 +138,7 @@ class AgentTool(BaseTool, ABC):
             parameters=self.parameters_schema,
         )
 
-    def validate_params(self, params: Dict[str, Any]) -> Optional[str]:
+    def validate_params(self, params: dict[str, Any]) -> str | None:
         """Validate parameters against schema.
 
         Returns error message if invalid, None if valid.
@@ -193,7 +193,7 @@ class AgentToolRegistry:
 
     def __init__(self) -> None:
         """Initialize the agent tool registry."""
-        self._tools: Dict[str, AgentTool] = {}
+        self._tools: dict[str, AgentTool] = {}
 
     def register(self, tool: AgentTool) -> None:
         """Register an agent tool.
@@ -209,7 +209,7 @@ class AgentToolRegistry:
         self._tools[tool.name] = tool
         logger.debug(f"Registered agent tool: {tool.name}")
 
-    def get(self, name: str) -> Optional[AgentTool]:
+    def get(self, name: str) -> AgentTool | None:
         """Get a tool by name.
 
         Args:
@@ -220,26 +220,26 @@ class AgentToolRegistry:
         """
         return self._tools.get(name)
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         """List all registered tool names."""
         return list(self._tools.keys())
 
-    def get_all_tools(self) -> List[AgentTool]:
+    def get_all_tools(self) -> list[AgentTool]:
         """Get all registered tools."""
         return list(self._tools.values())
 
-    def get_all_schemas(self) -> List[Dict[str, Any]]:
+    def get_all_schemas(self) -> list[dict[str, Any]]:
         """Get schemas for all registered tools."""
         return [tool.get_schema() for tool in self._tools.values()]
 
-    def get_all_domain_tools(self) -> List[Tool]:
+    def get_all_domain_tools(self) -> list[Tool]:
         """Get domain Tool objects for all registered tools."""
         return [tool.to_tool() for tool in self._tools.values()]
 
     async def execute_tool(
         self,
         tool_name: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Execute a tool by name.

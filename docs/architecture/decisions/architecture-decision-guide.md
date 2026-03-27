@@ -166,16 +166,16 @@ flowchart LR
 # deployment.yaml
 deployment:
   mode: 'monolith'  # or 'microservices' or 'hybrid'
-  
+
   services:
     orchestrator:
       mode: 'local'     # 'local' or 'remote'
       url: null         # only for remote mode
-    
+
     confidence:
       mode: 'local'
       url: null
-      
+
     retrieval:
       mode: 'remote'    # Can be mixed for hybrid deployments
       url: 'http://retrieval-service:8080'

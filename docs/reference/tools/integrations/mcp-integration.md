@@ -122,11 +122,11 @@ from faultmaven.tools.registry import register_tool
 class MCPClientTool(BaseTool):
     """
     Tool for connecting to external MCP servers.
-    
+
     This tool acts as an MCP client, allowing FaultMaven to use
     tools exposed by external MCP servers.
     """
-    
+
     def __init__(
         self,
         server_command: List[str],
@@ -136,7 +136,7 @@ class MCPClientTool(BaseTool):
     ):
         """
         Initialize MCP client tool.
-        
+
         Args:
             server_command: Command to start MCP server (e.g., ['npx', '-y', '@modelcontextprotocol/server-github'])
             server_env: Environment variables for server
@@ -150,29 +150,29 @@ class MCPClientTool(BaseTool):
         )
         self.sanitizer = sanitizer
         self._available_tools: Dict[str, MCPTool] = {}
-    
+
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute a tool on the MCP server.
-        
+
         Args:
             params: Dictionary containing:
                 - tool_name: Name of MCP tool to call
                 - arguments: Arguments to pass to the tool
-        
+
         Returns:
             ToolResult with tool execution result
         """
         try:
             tool_name = params.get('tool_name')
             arguments = params.get('arguments', {})
-            
+
             if not tool_name:
                 return ToolResult(
                     success=False,
                     error="Missing required parameter: tool_name"
                 )
-            
+
             # Sanitize arguments before sending to external server
             if self.sanitizer:
                 sanitized_args = {
@@ -181,58 +181,58 @@ class MCPClientTool(BaseTool):
                 }
             else:
                 sanitized_args = arguments
-            
+
             # Connect to MCP server and call tool
             async with ClientSession(*self.server_params) as session:
                 await session.initialize()
-                
+
                 # List available tools if not cached
                 if not self._available_tools:
                     tools_list = await session.list_tools()
                     self._available_tools = {
-                        tool.name: tool 
+                        tool.name: tool
                         for tool in tools_list.tools
                     }
-                
+
                 # Verify tool exists
                 if tool_name not in self._available_tools:
                     return ToolResult(
                         success=False,
                         error=f"Tool '{tool_name}' not found on MCP server. Available: {list(self._available_tools.keys())}"
                     )
-                
+
                 # Call the tool
                 result = await session.call_tool(
                     name=tool_name,
                     arguments=sanitized_args
                 )
-                
+
                 # Check for errors
                 if result.isError:
                     return ToolResult(
                         success=False,
                         error=f"MCP tool error: {result.content}"
                     )
-                
+
                 # Sanitize output before returning
                 sanitized_output = (
                     self.sanitizer.sanitize(str(result.content))
                     if self.sanitizer
                     else result.content
                 )
-                
+
                 return ToolResult(
                     success=True,
                     data=sanitized_output
                 )
-                
+
         except Exception as e:
             self.logger.error(f"MCP client tool failed: {e}")
             return ToolResult(
                 success=False,
                 error=f"MCP execution failed: {str(e)}"
             )
-    
+
     def get_schema(self) -> Dict[str, Any]:
         """Return schema for MCP client tool"""
         return {
@@ -253,7 +253,7 @@ class MCPClientTool(BaseTool):
                 "required": ["tool_name"]
             }
         }
-    
+
     async def list_available_tools(self) -> List[str]:
         """List available tools on the MCP server"""
         try:
@@ -273,7 +273,7 @@ Edit `faultmaven/config/settings.py`:
 ```python
 class ToolsSettings(BaseSettings):
     """Tools and external service configuration"""
-    
+
     # MCP Configuration
     mcp_enabled: bool = Field(default=False, env="MCP_ENABLED")
     mcp_server_command: str = Field(
@@ -304,11 +304,11 @@ Edit `faultmaven/container.py` to conditionally create MCP tool:
 def _create_tools(self) -> List[BaseTool]:
     """Create and return list of tools"""
     tools = []
-    
+
     # Existing tools
     tools.append(KnowledgeBaseTool(...))
     tools.append(WebSearchTool(...))
-    
+
     # MCP Client Tool (if enabled)
     if self._settings.tools.mcp_enabled:
         mcp_server_cmd = self._settings.tools.mcp_server_command.split(',')
@@ -319,7 +319,7 @@ def _create_tools(self) -> List[BaseTool]:
         )
         tools.append(mcp_tool)
         self.logger.info("✅ MCP Client Tool registered")
-    
+
     return tools
 ```
 
@@ -377,20 +377,20 @@ from faultmaven.models.interfaces import BaseTool
 class FaultMavenMCPServer:
     """
     MCP Server that exposes FaultMaven tools.
-    
+
     This allows external AI applications to use FaultMaven's
     troubleshooting tools via the Model Context Protocol.
     """
-    
+
     def __init__(self, tools: List[BaseTool]):
         self.logger = logging.getLogger(__name__)
         self.tools = {tool.get_schema()['name']: tool for tool in tools}
         self.server = Server("faultmaven-tools")
         self._register_handlers()
-    
+
     def _register_handlers(self):
         """Register MCP protocol handlers"""
-        
+
         @self.server.list_tools()
         async def list_tools() -> List[Tool]:
             """List available FaultMaven tools"""
@@ -402,18 +402,18 @@ class FaultMavenMCPServer:
                 )
                 for schema in [tool.get_schema() for tool in self.tools.values()]
             ]
-        
+
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict) -> List[TextContent]:
             """Execute a FaultMaven tool"""
             if name not in self.tools:
                 raise ValueError(f"Tool '{name}' not found")
-            
+
             tool = self.tools[name]
-            
+
             try:
                 result = await tool.execute(arguments)
-                
+
                 if result.success:
                     return [TextContent(
                         type="text",
@@ -421,15 +421,15 @@ class FaultMavenMCPServer:
                     )]
                 else:
                     raise RuntimeError(result.error)
-                    
+
             except Exception as e:
                 self.logger.error(f"Tool execution failed: {e}")
                 raise
-    
+
     async def run(self):
         """Run the MCP server"""
         from mcp.server.stdio import stdio_server
-        
+
         async with stdio_server() as (read_stream, write_stream):
             await self.server.run(
                 read_stream,
@@ -461,10 +461,10 @@ async def main():
     """Start FaultMaven MCP server"""
     # Initialize container
     container.initialize()
-    
+
     # Get tools
     tools = container.get_tools()
-    
+
     # Create and run MCP server
     server = FaultMavenMCPServer(tools)
     await server.run()
@@ -576,17 +576,17 @@ async def test_mcp_client_tool():
         server_command=['npx', '-y', '@modelcontextprotocol/server-filesystem'],
         server_env={'ALLOWED_DIRECTORIES': '/tmp'}
     )
-    
+
     # Test listing available tools
     tools = await tool.list_available_tools()
     assert 'read_file' in tools
-    
+
     # Test calling a tool
     result = await tool.execute({
         'tool_name': 'list_directory',
         'arguments': {'path': '/tmp'}
     })
-    
+
     assert result.success
     assert result.data is not None
 ```
@@ -639,11 +639,7 @@ result = await mcp_tool.execute({
 
 ---
 
-**Last Updated**: 2025-10-12  
-**Status**: 🔲 Not yet implemented (guide only)  
-**Version**: 1.0  
+**Last Updated**: 2025-10-12
+**Status**: 🔲 Not yet implemented (guide only)
+**Version**: 1.0
 **Maintainer**: Architecture Team
-
-
-
-

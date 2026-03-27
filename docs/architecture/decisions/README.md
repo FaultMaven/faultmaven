@@ -27,4 +27,3 @@ Each ADR should follow the standard format:
 ---
 
 **Last Updated**: 2025-10-11
-

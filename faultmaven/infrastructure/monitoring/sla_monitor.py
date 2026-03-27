@@ -24,18 +24,14 @@ SLA Categories:
 
 import asyncio
 import json
-import logging
-import smtplib
 import statistics
 import threading
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
@@ -57,8 +53,8 @@ class SLADefinition:
     critical_threshold: float
     measurement_window_minutes: int
     evaluation_frequency_seconds: int
-    alert_channels: List[str]  # "email", "slack", "webhook", "pagerduty"
-    escalation_rules: Dict[str, Any]
+    alert_channels: list[str]  # "email", "slack", "webhook", "pagerduty"
+    escalation_rules: dict[str, Any]
     enabled: bool = True
 
 
@@ -76,9 +72,9 @@ class SLAViolation:
     violation_percentage: float
     detection_time: datetime
     duration_seconds: float
-    affected_operations: List[str]
-    impact_assessment: Dict[str, Any]
-    resolution_time: Optional[datetime] = None
+    affected_operations: list[str]
+    impact_assessment: dict[str, Any]
+    resolution_time: datetime | None = None
     resolved: bool = False
 
 
@@ -89,7 +85,7 @@ class AlertChannel:
     channel_id: str
     channel_type: str  # "email", "slack", "webhook", "pagerduty"
     endpoint: str
-    credentials: Dict[str, Any]
+    credentials: dict[str, Any]
     rate_limit_per_hour: int
     enabled: bool = True
 
@@ -104,9 +100,9 @@ class SLAComplianceReport:
     violations_count: int
     mttr_seconds: float  # Mean Time To Recovery
     availability_percentage: float
-    performance_metrics: Dict[str, float]
-    trend_analysis: Dict[str, Any]
-    recommendations: List[str]
+    performance_metrics: dict[str, float]
+    trend_analysis: dict[str, Any]
+    recommendations: list[str]
 
 
 class SLAMonitor(BaseExternalClient):
@@ -129,9 +125,9 @@ class SLAMonitor(BaseExternalClient):
 
     def __init__(
         self,
-        metrics_collector: Optional[MetricsCollector] = None,
-        analytics_service: Optional[AnalyticsDashboardService] = None,
-        tracer: Optional[ITracer] = None,
+        metrics_collector: MetricsCollector | None = None,
+        analytics_service: AnalyticsDashboardService | None = None,
+        tracer: ITracer | None = None,
         alert_rate_limit_per_hour: int = 20,
     ):
         """Initialize SLA Monitor
@@ -156,23 +152,23 @@ class SLAMonitor(BaseExternalClient):
         self._alert_rate_limit = alert_rate_limit_per_hour
 
         # SLA definitions and configurations
-        self._sla_definitions: Dict[str, SLADefinition] = {}
-        self._alert_channels: Dict[str, AlertChannel] = {}
+        self._sla_definitions: dict[str, SLADefinition] = {}
+        self._alert_channels: dict[str, AlertChannel] = {}
 
         # Violation tracking
-        self._active_violations: Dict[str, SLAViolation] = {}
+        self._active_violations: dict[str, SLAViolation] = {}
         self._violation_history: deque = deque(maxlen=10000)
         self._violation_lock = threading.RLock()
 
         # Alert tracking and rate limiting
         self._alert_history: deque = deque(maxlen=5000)
-        self._alert_rate_tracker: Dict[str, deque] = defaultdict(
+        self._alert_rate_tracker: dict[str, deque] = defaultdict(
             lambda: deque(maxlen=100)
         )
         self._alert_lock = threading.RLock()
 
         # SLA compliance tracking
-        self._compliance_data: Dict[str, deque] = defaultdict(
+        self._compliance_data: dict[str, deque] = defaultdict(
             lambda: deque(maxlen=1440)
         )  # 24 hours
         self._compliance_lock = threading.RLock()
@@ -423,10 +419,10 @@ class SLAMonitor(BaseExternalClient):
 
     async def get_sla_status(
         self,
-        service_filter: Optional[str] = None,
+        service_filter: str | None = None,
         include_violations: bool = True,
         include_trends: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get current SLA status and compliance
 
         Args:
@@ -449,7 +445,7 @@ class SLAMonitor(BaseExternalClient):
 
             # Calculate current compliance
             sla_status = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "service_filter": service_filter,
                 "overall_compliance": await self._calculate_overall_compliance(
                     slas_to_check
@@ -514,7 +510,7 @@ class SLAMonitor(BaseExternalClient):
             self.logger.error(f"Failed to get SLA status: {e}")
             raise
 
-    async def create_custom_sla(self, sla_definition: Dict[str, Any]) -> str:
+    async def create_custom_sla(self, sla_definition: dict[str, Any]) -> str:
         """Create a custom SLA definition
 
         Args:
@@ -589,7 +585,7 @@ class SLAMonitor(BaseExternalClient):
         """
         try:
             reporting_period = timedelta(hours=reporting_period_hours)
-            cutoff_time = datetime.now(timezone.utc) - reporting_period
+            cutoff_time = datetime.now(UTC) - reporting_period
 
             # Get service SLAs
             service_slas = {
@@ -754,7 +750,7 @@ class SLAMonitor(BaseExternalClient):
                 violation = self._active_violations[violation_key]
                 violation.actual_value = current_value
                 violation.duration_seconds = (
-                    datetime.now(timezone.utc) - violation.detection_time
+                    datetime.now(UTC) - violation.detection_time
                 ).total_seconds()
                 violation.violation_percentage = self._calculate_violation_percentage(
                     sla, current_value
@@ -772,7 +768,7 @@ class SLAMonitor(BaseExternalClient):
                     violation_percentage=self._calculate_violation_percentage(
                         sla, current_value
                     ),
-                    detection_time=datetime.now(timezone.utc),
+                    detection_time=datetime.now(UTC),
                     duration_seconds=0,
                     affected_operations=await self._get_affected_operations(sla),
                     impact_assessment=await self._assess_violation_impact(
@@ -825,7 +821,7 @@ class SLAMonitor(BaseExternalClient):
             with self._alert_lock:
                 self._alert_history.append(
                     {
-                        "timestamp": datetime.now(timezone.utc),
+                        "timestamp": datetime.now(UTC),
                         "violation_id": violation.violation_id,
                         "sla_id": sla.sla_id,
                         "channels": sla.alert_channels,
@@ -839,7 +835,7 @@ class SLAMonitor(BaseExternalClient):
             self.logger.error(f"Failed to send violation alert: {e}")
 
     async def _send_alert_to_channel(
-        self, channel: AlertChannel, message: Dict[str, Any]
+        self, channel: AlertChannel, message: dict[str, Any]
     ):
         """Send alert to specific notification channel"""
         try:
@@ -859,7 +855,7 @@ class SLAMonitor(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to send alert to {channel.channel_id}: {e}")
 
-    async def _send_email_alert(self, channel: AlertChannel, message: Dict[str, Any]):
+    async def _send_email_alert(self, channel: AlertChannel, message: dict[str, Any]):
         """Send email alert"""
         try:
             # Prepare email
@@ -893,7 +889,7 @@ Please investigate and resolve this issue promptly.
         except Exception as e:
             self.logger.error(f"Failed to send email alert: {e}")
 
-    async def _send_slack_alert(self, channel: AlertChannel, message: Dict[str, Any]):
+    async def _send_slack_alert(self, channel: AlertChannel, message: dict[str, Any]):
         """Send Slack alert"""
         try:
             # Prepare Slack message
@@ -948,7 +944,7 @@ Please investigate and resolve this issue promptly.
         except Exception as e:
             self.logger.error(f"Failed to send Slack alert: {e}")
 
-    async def _send_webhook_alert(self, channel: AlertChannel, message: Dict[str, Any]):
+    async def _send_webhook_alert(self, channel: AlertChannel, message: dict[str, Any]):
         """Send webhook alert"""
         try:
             # This would be implemented with actual HTTP POST
@@ -958,7 +954,7 @@ Please investigate and resolve this issue promptly.
             self.logger.error(f"Failed to send webhook alert: {e}")
 
     async def _send_pagerduty_alert(
-        self, channel: AlertChannel, message: Dict[str, Any]
+        self, channel: AlertChannel, message: dict[str, Any]
     ):
         """Send PagerDuty alert"""
         try:
@@ -1064,9 +1060,9 @@ Please investigate and resolve this issue promptly.
 
         return 0.0
 
-    def _check_alert_rate_limit(self, channels: List[str]) -> bool:
+    def _check_alert_rate_limit(self, channels: list[str]) -> bool:
         """Check if alert rate limit allows sending"""
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
         hour_ago = current_time - timedelta(hours=1)
 
         for channel_id in channels:
@@ -1089,7 +1085,7 @@ Please investigate and resolve this issue promptly.
         return True
 
     async def _calculate_overall_compliance(
-        self, slas: Dict[str, SLADefinition]
+        self, slas: dict[str, SLADefinition]
     ) -> float:
         """Calculate overall SLA compliance percentage"""
         if not slas:
@@ -1109,7 +1105,7 @@ Please investigate and resolve this issue promptly.
 
         return statistics.mean(compliance_scores) if compliance_scores else 100.0
 
-    async def _calculate_sla_compliance(self, sla: SLADefinition) -> Dict[str, Any]:
+    async def _calculate_sla_compliance(self, sla: SLADefinition) -> dict[str, Any]:
         """Calculate compliance for a specific SLA"""
         try:
             current_value = await self._get_current_metric_value(sla)
@@ -1159,7 +1155,7 @@ Please investigate and resolve this issue promptly.
                 "error": str(e),
             }
 
-    def _serialize_violation(self, violation: SLAViolation) -> Dict[str, Any]:
+    def _serialize_violation(self, violation: SLAViolation) -> dict[str, Any]:
         """Serialize violation for API response"""
         return {
             "violation_id": violation.violation_id,
@@ -1181,8 +1177,8 @@ Please investigate and resolve this issue promptly.
         }
 
     def _generate_compliance_summary(
-        self, sla_details: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, sla_details: dict[str, Any]
+    ) -> dict[str, Any]:
         """Generate compliance summary from SLA details"""
         if not sla_details:
             return {}
@@ -1256,25 +1252,25 @@ Please investigate and resolve this issue promptly.
         """Record compliance data point"""
         pass
 
-    async def _get_affected_operations(self, sla: SLADefinition) -> List[str]:
+    async def _get_affected_operations(self, sla: SLADefinition) -> list[str]:
         """Get operations affected by SLA violation"""
         return []
 
     async def _assess_violation_impact(
         self, sla: SLADefinition, current_value: float
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Assess impact of SLA violation"""
         return {"estimated_affected_users": 100, "business_impact": "medium"}
 
     async def _generate_trend_analysis(
-        self, slas: Dict[str, SLADefinition]
-    ) -> Dict[str, Any]:
+        self, slas: dict[str, SLADefinition]
+    ) -> dict[str, Any]:
         """Generate trend analysis for SLAs"""
         return {"trends": "improving", "forecast": "stable"}
 
     async def _calculate_sla_compliance_for_period(
         self, sla: SLADefinition, period: timedelta
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Calculate SLA compliance for specific period"""
         return {"total_measurements": 100, "compliant_measurements": 95}
 
@@ -1284,22 +1280,22 @@ Please investigate and resolve this issue promptly.
 
     async def _get_service_performance_metrics(
         self, service: str, period: timedelta
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Get service performance metrics for period"""
         return {"avg_response_time": 150.0, "throughput": 120.0, "error_rate": 0.008}
 
     async def _generate_service_trend_analysis(
         self, service: str, period: timedelta
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate trend analysis for service"""
         return {"performance_trend": "stable", "capacity_outlook": "adequate"}
 
     def _generate_compliance_recommendations(
         self,
         service: str,
-        compliance_data: List[Dict[str, Any]],
-        violations: List[SLAViolation],
-    ) -> List[str]:
+        compliance_data: list[dict[str, Any]],
+        violations: list[SLAViolation],
+    ) -> list[str]:
         """Generate compliance improvement recommendations"""
         return [
             "Consider implementing caching to improve response times",
@@ -1307,7 +1303,7 @@ Please investigate and resolve this issue promptly.
             "Review error handling procedures to reduce error rates",
         ]
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check health of SLA monitor"""
         base_health = await super().health_check()
 

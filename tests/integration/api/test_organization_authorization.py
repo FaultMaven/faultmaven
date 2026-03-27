@@ -9,7 +9,7 @@ Tests role-based access control for organization endpoints:
 Coverage Target: 20-25 tests
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -114,7 +114,7 @@ def mock_api_service(sample_organization):
             "email": email,
             "full_name": "New User",
             "role": role,
-            "joined_at": datetime.now(timezone.utc),
+            "joined_at": datetime.now(UTC),
             "invitation_sent": True,
         }
 
@@ -139,8 +139,8 @@ def mock_api_service(sample_organization):
             "email": "member@example.com",
             "full_name": "Member User",
             "role": role,
-            "joined_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
+            "joined_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
 
     mock_service.update_member_role = AsyncMock(side_effect=mock_update_role)
@@ -167,7 +167,7 @@ def mock_api_service(sample_organization):
         return {
             "organization_id": organization_id,
             "settings": settings,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         }
 
     mock_service.update_organization_settings = AsyncMock(
@@ -287,7 +287,7 @@ def non_member_user():
 @pytest.fixture
 def sample_organization():
     """Create sample organization."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Organization(
         organization_id="org-123",
         name="Test Organization",

@@ -11,7 +11,7 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,18 +36,18 @@ class CaseCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=512)
     description: str = Field(..., min_length=1)
     severity: CaseSeverity
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
 
 class CaseUpdateRequest(BaseModel):
     """Request model for updating a case."""
 
-    title: Optional[str] = Field(None, min_length=1, max_length=512)
-    description: Optional[str] = Field(None, min_length=1)
-    severity: Optional[CaseSeverity] = None
-    status: Optional[CaseStatus] = None
-    assigned_to: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    title: str | None = Field(None, min_length=1, max_length=512)
+    description: str | None = Field(None, min_length=1)
+    severity: CaseSeverity | None = None
+    status: CaseStatus | None = None
+    assigned_to: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class CaseResponse(BaseModel):
@@ -60,19 +60,19 @@ class CaseResponse(BaseModel):
     description: str
     severity: CaseSeverity
     status: CaseStatus
-    progress: Optional[InvestigationProgress] = None
-    assigned_to: Optional[str] = None
+    progress: InvestigationProgress | None = None
+    assigned_to: str | None = None
     created_at: datetime
     updated_at: datetime
-    closed_at: Optional[datetime] = None
-    resolution: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    closed_at: datetime | None = None
+    resolution: str | None = None
+    metadata: dict[str, Any] | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
     def from_domain(
-        cls, case: Any, severity: Optional[CaseSeverity] = None
+        cls, case: Any, severity: CaseSeverity | None = None
     ) -> "CaseResponse":
         """Create CaseResponse from domain Case model.
 
@@ -122,7 +122,7 @@ class CaseResponse(BaseModel):
 class CaseListResponse(BaseModel):
     """Response model for case list."""
 
-    items: List[CaseResponse]
+    items: list[CaseResponse]
     total: int
     limit: int
     offset: int
@@ -136,17 +136,17 @@ class CaseListResponse(BaseModel):
 class SessionCreateRequest(BaseModel):
     """Request model for creating investigation session."""
 
-    session_goal: Optional[str] = None
-    token_budget_limit: Optional[int] = Field(None, ge=0)
-    metadata: Optional[Dict[str, Any]] = None
+    session_goal: str | None = None
+    token_budget_limit: int | None = Field(None, ge=0)
+    metadata: dict[str, Any] | None = None
 
 
 class SessionUpdateRequest(BaseModel):
     """Request model for updating session."""
 
-    session_goal: Optional[str] = None
-    token_budget_limit: Optional[int] = Field(None, ge=0)
-    metadata: Optional[Dict[str, Any]] = None
+    session_goal: str | None = None
+    token_budget_limit: int | None = Field(None, ge=0)
+    metadata: dict[str, Any] | None = None
 
 
 class SessionResponse(BaseModel):
@@ -158,14 +158,14 @@ class SessionResponse(BaseModel):
     organization_id: str
     status: SessionStatus
     started_at: datetime
-    ended_at: Optional[datetime] = None
+    ended_at: datetime | None = None
     last_activity_at: datetime
-    total_duration_ms: Optional[int] = None
-    session_goal: Optional[str] = None
-    findings_summary: Optional[str] = None
+    total_duration_ms: int | None = None
+    session_goal: str | None = None
+    findings_summary: str | None = None
     total_token_usage: int
     total_agent_executions: int
-    token_budget_limit: Optional[int] = None
+    token_budget_limit: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -204,7 +204,7 @@ class SessionResponse(BaseModel):
 class SessionListResponse(BaseModel):
     """Response model for session list."""
 
-    items: List[SessionResponse]
+    items: list[SessionResponse]
     total: int
     limit: int
     offset: int
@@ -223,17 +223,17 @@ class EvidenceUploadRequest(BaseModel):
     """
 
     evidence_type: EvidenceArtifactType
-    description: Optional[str] = None
+    description: str | None = None
     is_primary: bool = False
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
 
 class EvidenceUpdateRequest(BaseModel):
     """Request model for updating evidence."""
 
-    description: Optional[str] = None
-    is_primary: Optional[bool] = None
-    metadata: Optional[Dict[str, Any]] = None
+    description: str | None = None
+    is_primary: bool | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class EvidenceResponse(BaseModel):
@@ -247,7 +247,7 @@ class EvidenceResponse(BaseModel):
     evidence_type: EvidenceArtifactType
     mime_type: str
     file_size: int
-    description: Optional[str] = None
+    description: str | None = None
     is_primary: bool
     created_at: datetime
     updated_at: datetime
@@ -283,7 +283,7 @@ class EvidenceResponse(BaseModel):
 class EvidenceListResponse(BaseModel):
     """Response model for evidence list."""
 
-    items: List[EvidenceResponse]
+    items: list[EvidenceResponse]
     total: int
     limit: int
     offset: int
@@ -298,7 +298,7 @@ class ErrorResponse(BaseModel):
     """Standard error response."""
 
     error: str
-    detail: Optional[str] = None
+    detail: str | None = None
     status_code: int
 
 
@@ -306,9 +306,9 @@ class ValidationErrorResponse(BaseModel):
     """Validation error response with field-level details."""
 
     error: str = "Validation Error"
-    detail: Optional[str] = None
+    detail: str | None = None
     status_code: int = 400
-    errors: Optional[List[Dict[str, Any]]] = None
+    errors: list[dict[str, Any]] | None = None
 
 
 # ============================================================
@@ -354,8 +354,8 @@ class ToolCallResponse(BaseModel):
 
     tool_call_id: str
     tool_name: str
-    arguments: Dict[str, Any]
-    result: Optional[str] = None
+    arguments: dict[str, Any]
+    result: str | None = None
     status: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -390,8 +390,8 @@ class AgentExecutionResponse(BaseModel):
     agent_response: str
     tokens_used: int
     started_at: datetime
-    completed_at: Optional[datetime] = None
-    tool_calls: List[ToolCallResponse] = []
+    completed_at: datetime | None = None
+    tool_calls: list[ToolCallResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -437,7 +437,7 @@ class ExecutionEventSSE(BaseModel):
         ...,
         description="Event type: started, thinking, tool_call, tool_result, response, error, completed",
     )
-    data: Dict[str, Any] = Field(
+    data: dict[str, Any] = Field(
         default_factory=dict,
         description="Event data payload",
     )
@@ -513,10 +513,10 @@ class AdminUserListItem(BaseModel):
     organization_id: str
     email: str
     full_name: str
-    roles: List[str]
+    roles: list[str]
     is_active: bool
     is_verified: bool
-    last_login_at: Optional[datetime] = None
+    last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -526,7 +526,7 @@ class AdminUserListItem(BaseModel):
 class AdminUserListResponse(BaseModel):
     """Admin user list response with pagination."""
 
-    users: List[AdminUserListItem]
+    users: list[AdminUserListItem]
     total: int
     limit: int
     offset: int
@@ -539,14 +539,14 @@ class UserDetailResponse(BaseModel):
     organization_id: str
     email: str
     full_name: str
-    roles: List[str]
-    permissions: List[str]
+    roles: list[str]
+    permissions: list[str]
     is_active: bool
     is_verified: bool
-    last_login_at: Optional[datetime] = None
+    last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -574,7 +574,7 @@ class RoleAssignmentResponse(BaseModel):
     """Role assignment response."""
 
     user_id: str
-    roles: List[str]
+    roles: list[str]
     updated_at: datetime
     message: str
 
@@ -585,7 +585,7 @@ class OrganizationUserListItem(BaseModel):
     user_id: str
     email: str
     full_name: str
-    roles: List[str]
+    roles: list[str]
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
@@ -594,7 +594,7 @@ class OrganizationUserListItem(BaseModel):
 class OrganizationUserListResponse(BaseModel):
     """Organization user list response with pagination."""
 
-    users: List[OrganizationUserListItem]
+    users: list[OrganizationUserListItem]
     total: int
     limit: int
     offset: int
@@ -619,15 +619,15 @@ class LLMProviderDetail(BaseModel):
         default="not_configured",
         description="Provider lifecycle state: not_configured, configured, or active",
     )
-    models: List[str] = Field(default_factory=list)
-    selected_model: Optional[str] = Field(
+    models: list[str] = Field(default_factory=list)
+    selected_model: str | None = Field(
         None, description="Currently active model for this provider"
     )
-    available_models: List[str] = Field(
+    available_models: list[str] = Field(
         default_factory=list,
         description="Models the user can choose from for this provider",
     )
-    error_message: Optional[str] = None
+    error_message: str | None = None
     health: str = Field(
         default="unknown", description="HEALTHY, DEGRADED, UNHEALTHY, or UNKNOWN"
     )
@@ -643,8 +643,8 @@ class LLMConfigResponse(BaseModel):
     )
     primary_provider: str
     strict_mode: bool
-    fallback_chain: List[str]
-    providers: Dict[str, LLMProviderDetail]
+    fallback_chain: list[str]
+    providers: dict[str, LLMProviderDetail]
     timestamp: datetime
 
 
@@ -664,27 +664,25 @@ class LLMConnectionTestResponse(BaseModel):
     provider: str
     connected: bool
     response_time_ms: int = 0
-    error_message: Optional[str] = None
-    model_used: Optional[str] = None
+    error_message: str | None = None
+    model_used: str | None = None
     timestamp: datetime
 
 
 class LLMConfigUpdateRequest(BaseModel):
     """Request to update LLM configuration."""
 
-    primary_provider: Optional[str] = Field(
-        None, description="New primary provider name"
-    )
-    fallback_chain: Optional[List[str]] = Field(
+    primary_provider: str | None = Field(None, description="New primary provider name")
+    fallback_chain: list[str] | None = Field(
         None, description="New fallback chain order"
     )
-    provider_name: Optional[str] = Field(
+    provider_name: str | None = Field(
         None, description="Provider to update API key or model for"
     )
-    api_key: Optional[str] = Field(
+    api_key: str | None = Field(
         None, description="New API key value for the specified provider"
     )
-    model: Optional[str] = Field(
+    model: str | None = Field(
         None,
         description="Model to use for the specified provider (requires provider_name)",
     )
@@ -693,7 +691,7 @@ class LLMConfigUpdateRequest(BaseModel):
 class LLMConfigUpdateResponse(BaseModel):
     """Response after updating LLM configuration."""
 
-    updated_keys: List[str] = Field(description="Config keys that were updated")
+    updated_keys: list[str] = Field(description="Config keys that were updated")
     message: str
     timestamp: datetime
 
@@ -728,7 +726,7 @@ class EnvConfigStatusResponse(BaseModel):
     llm_provider: str = Field(description="Primary LLM provider name")
     pii_redaction_enabled: bool
     rate_limit_enabled: bool
-    features: Dict[str, FeatureStatus] = Field(
+    features: dict[str, FeatureStatus] = Field(
         default_factory=dict,
         description="Optional features and their configuration status",
     )

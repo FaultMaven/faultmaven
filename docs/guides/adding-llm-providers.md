@@ -50,7 +50,7 @@ CHAT_PROVIDER="fireworks"
 **Best for**: Highest quality responses, most reliable
 
 ```bash
-# Environment Configuration  
+# Environment Configuration
 OPENAI_API_KEY="sk-your_openai_key"
 OPENAI_MODEL="gpt-4o"
 CHAT_PROVIDER="openai"
@@ -80,7 +80,7 @@ CHAT_PROVIDER="anthropic"
 - `claude-3-haiku-20240307` (Fastest, most cost-effective)
 - `claude-3-opus-20240229` (Highest capability, most expensive)
 
-**Features**: 
+**Features**:
 - Exceptional reasoning and analysis capabilities
 - Large context windows (200K tokens)
 - Strong code understanding and generation
@@ -222,7 +222,7 @@ FaultMaven's provider system is built around a **centralized registry** that imp
 class ILLMProvider(ABC):
     @abstractmethod
     async def generate(self, prompt: str, **kwargs) -> LLMResponse: ...
-    
+
     @abstractmethod
     def is_available(self) -> bool: ...
 
@@ -230,7 +230,7 @@ class ILLMProvider(ABC):
 class ProviderRegistry:
     def __init__(self):
         self._initialize_from_environment()  # Auto-discovery
-        
+
 # Global Access
 registry = get_registry()  # Singleton instance
 
@@ -246,7 +246,7 @@ All providers are defined in a single `PROVIDER_SCHEMA` configuration:
 PROVIDER_SCHEMA = {
     "anthropic": {
         "api_key_var": "ANTHROPIC_API_KEY",
-        "model_var": "ANTHROPIC_MODEL", 
+        "model_var": "ANTHROPIC_MODEL",
         "default_model": "claude-3-5-sonnet-20241022",
         "provider_class": AnthropicProvider,  # Implements ILLMProvider
         "confidence_score": 0.85,
@@ -267,13 +267,13 @@ class ProviderRegistry:
     def _setup_fallback_chain(self, primary_provider: str):
         # Primary provider first
         chain = [primary_provider] if primary_provider in self._providers else []
-        
+
         # Add high-reliability fallbacks
         fallback_order = ["fireworks", "openai", "local"]
         for provider in fallback_order:
             if provider != primary_provider and provider in self._providers:
                 chain.append(provider)
-                
+
         self._fallback_chain = chain
 ```
 
@@ -324,7 +324,7 @@ for name, info in status.items():
     models = ", ".join(info['models'][:2])  # Show first 2 models
     confidence = info['confidence_score']
     in_chain = "⚡" if info['in_fallback_chain'] else "⏸️"
-    
+
     print(f"{availability} {name:<12} | Models: {models:<30} | Confidence: {confidence} | {in_chain}")
 ```
 
@@ -387,7 +387,7 @@ CHAT_PROVIDER="anthropic"  # Creates: anthropic → fireworks → openai → loc
 **Example Initialization Log**:
 ```
 ✅ Provider 'anthropic' initialized successfully
-✅ Provider 'fireworks' initialized successfully  
+✅ Provider 'fireworks' initialized successfully
 ✅ Provider 'openai' initialized successfully
 ❌ Provider 'gemini' not available (missing API key)
 ✅ Provider 'local' initialized successfully
@@ -406,7 +406,7 @@ registry = get_registry()
 # All configured providers
 print("Available:", registry.get_available_providers())
 
-# All possible providers (from schema)  
+# All possible providers (from schema)
 print("All options:", registry.get_all_provider_names())
 
 # Current fallback chain
@@ -426,7 +426,7 @@ Edit `faultmaven/infrastructure/llm/providers/registry.py` and add your provider
 ```python
 PROVIDER_SCHEMA = {
     # ... existing providers ...
-    
+
     # Example: Adding Together AI (OpenAI-compatible)
     "together": {
         "api_key_var": "TOGETHER_API_KEY",
@@ -439,11 +439,11 @@ PROVIDER_SCHEMA = {
         "timeout": 30,
         "confidence_score": 0.8
     },
-    
+
     # Example: Adding Cohere (needs custom provider class)
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
-        "model_var": "COHERE_MODEL", 
+        "model_var": "COHERE_MODEL",
         "base_url_var": "COHERE_API_BASE",
         "default_base_url": "https://api.cohere.ai/v1",
         "default_model": "command-r-plus",
@@ -476,7 +476,7 @@ OPENAI_API_KEY="sk_backup_key"     # Second fallback
 1. ✅ Auto-initializes on application start
 2. ✅ Integrates with dependency injection system
 3. ✅ Appears in health monitoring
-4. ✅ Participates in fallback chains  
+4. ✅ Participates in fallback chains
 5. ✅ Works with all existing FaultMaven features
 
 ## Custom Provider Implementation
@@ -497,11 +497,11 @@ class ILLMProvider(ABC):
     @abstractmethod
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """Generate response from LLM"""
-        
+
     @abstractmethod
     def is_available(self) -> bool:
         """Check if provider is properly configured"""
-        
+
     @abstractmethod
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
@@ -524,11 +524,11 @@ from .base import BaseLLMProvider, ProviderConfig
 
 class CohereProvider(BaseLLMProvider, ILLMProvider):
     """Cohere LLM provider implementing ILLMProvider interface"""
-    
+
     @property
     def provider_name(self) -> str:
         return "cohere"
-    
+
     def is_available(self) -> bool:
         """Interface method: Check if provider is properly configured"""
         return bool(
@@ -536,11 +536,11 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
             self.config.base_url and
             self.config.models
         )
-    
+
     def get_supported_models(self) -> List[str]:
         """Interface method: Get list of supported models"""
         return self.config.models.copy()
-    
+
     async def generate(
         self,
         prompt: str,
@@ -550,18 +550,18 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
         **kwargs
     ) -> LLMResponse:
         """Interface method: Generate response using Cohere API"""
-        
+
         self._start_timing()
-        
+
         # Get effective model
         effective_model = self.get_effective_model(model)
-        
+
         # Cohere-specific API format
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": effective_model,
             "prompt": prompt,  # Cohere uses 'prompt' not 'messages'
@@ -569,7 +569,7 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
             "temperature": temperature,
             **kwargs
         }
-        
+
         # Make API request
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -578,25 +578,25 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
-                
+
                 if response.status != 200:
                     error_text = await response.text()
                     raise Exception(
                         f"Cohere API error {response.status}: {error_text}"
                     )
-                
+
                 data = await response.json()
-                
+
                 # Extract Cohere response format
                 content = data["generations"][0]["text"]
                 content = self._validate_response_content(content)
-                
+
                 # Calculate usage metrics
                 tokens_used = data.get("meta", {}).get("billed_units", {}).get("input_tokens", 0)
                 tokens_used += data.get("meta", {}).get("billed_units", {}).get("output_tokens", 0)
-                
+
                 response_time = self._get_response_time_ms()
-                
+
                 return LLMResponse(
                     content=content,
                     confidence=self.config.confidence_score,
@@ -618,7 +618,7 @@ from .cohere_provider import CohereProvider
 # Add to centralized schema
 PROVIDER_SCHEMA = {
     # ... existing providers ...
-    
+
     "cohere": {
         "api_key_var": "COHERE_API_KEY",
         "model_var": "COHERE_MODEL",
@@ -640,7 +640,7 @@ PROVIDER_SCHEMA = {
 def _create_infrastructure_layer(self):
     # LLMRouter automatically includes all registry providers
     self.llm_provider: ILLMProvider = LLMRouter()
-    
+
 # Services receive providers through interface
 class AgentService:
     def __init__(self, llm_provider: ILLMProvider, ...):
@@ -740,9 +740,9 @@ def test_cohere_provider_implements_interface():
         base_url="https://api.cohere.ai/v1",
         models=["command-r-plus"]
     )
-    
+
     provider = CohereProvider(provider_config)
-    
+
     # Verify interface implementation
     assert isinstance(provider, ILLMProvider)
     assert hasattr(provider, 'generate')
@@ -788,11 +788,11 @@ class ILLMProvider(ABC):
     @abstractmethod
     async def generate(self, prompt: str, **kwargs) -> LLMResponse:
         """Generate response from LLM - REQUIRED"""
-        
-    @abstractmethod  
+
+    @abstractmethod
     def is_available(self) -> bool:
         """Check if provider is properly configured - REQUIRED"""
-        
+
     @abstractmethod
     def get_supported_models(self) -> List[str]:
         """Get list of supported models - REQUIRED"""
@@ -805,16 +805,16 @@ For consistency, inherit from `BaseLLMProvider` which provides common functional
 ```python
 class CustomProvider(BaseLLMProvider, ILLMProvider):
     """Custom provider implementing interface with base functionality"""
-    
+
     @property
     def provider_name(self) -> str:
         return "custom"  # Unique identifier
-    
+
     # Implement required interface methods
     def is_available(self) -> bool: ...
     def get_supported_models(self) -> List[str]: ...
     async def generate(self, prompt: str, **kwargs) -> LLMResponse: ...
-    
+
     # BaseLLMProvider provides:
     # - Timing utilities (_start_timing, _get_response_time_ms)
     # - Model selection (get_effective_model)
@@ -879,7 +879,7 @@ Many providers can reuse existing classes:
 - **Use**: `OpenAIProvider`
 
 - **Local servers**: Ollama, vLLM, Text Generation Inference
-- **Use**: `LocalProvider` 
+- **Use**: `LocalProvider`
 
 - **Custom APIs**: Anthropic, Cohere, AI21
 - **Need**: Custom provider class
@@ -892,7 +892,7 @@ Many providers can reuse existing classes:
 # Check overall system health
 curl http://localhost:8090/health/dependencies
 
-# Check provider registry status  
+# Check provider registry status
 python -c "
 from faultmaven.infrastructure.llm.providers.registry import get_registry
 from faultmaven.container import container
@@ -928,7 +928,7 @@ OPENROUTER_MODEL="anthropic/claude-3-sonnet"                      # provider/mod
 LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-dependent
 ```
 
-**Error**: `Model not found, inaccessible, and/or not deployed`  
+**Error**: `Model not found, inaccessible, and/or not deployed`
 **Fixes**:
 1. Check provider's model catalog/documentation
 2. Verify model name case sensitivity
@@ -937,14 +937,14 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
 
 ### Authentication Problems
 
-**Error**: `Invalid API key`, `401 Unauthorized`, or `403 Forbidden`  
+**Error**: `Invalid API key`, `401 Unauthorized`, or `403 Forbidden`
 **Fixes**:
 1. **Verify API Key**: Copy-paste carefully, check for extra spaces
 2. **Check Permissions**: Ensure key has LLM generation permissions
 3. **Validate Format**: Each provider has different key formats:
    ```bash
    OPENAI_API_KEY="sk-..."           # OpenAI format
-   ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic format  
+   ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic format
    FIREWORKS_API_KEY="fw_..."        # Fireworks format
    GEMINI_API_KEY="AIza..."          # Google format
    ```
@@ -953,7 +953,7 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
 
 ### Connection and Configuration Issues
 
-**Error**: `Connection refused`, `404 Not Found`, or `Timeout`  
+**Error**: `Connection refused`, `404 Not Found`, or `Timeout`
 **Fixes**:
 
 1. **Base URL Configuration**:
@@ -961,7 +961,7 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
    # Default URLs (usually correct)
    OPENAI_API_BASE="https://api.openai.com/v1"      # Default
    ANTHROPIC_API_BASE="https://api.anthropic.com/v1" # Default
-   
+
    # Custom URLs (for proxies, local servers)
    LOCAL_LLM_URL="http://localhost:11434"            # Ollama
    LOCAL_LLM_URL="http://192.168.0.47:5000"          # Custom server
@@ -976,9 +976,9 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
    ```bash
    # Check provider status via health endpoint
    curl http://localhost:8090/health/dependencies
-   
+
    # Look for provider availability
-   python -c "from faultmaven.infrastructure.llm.providers.registry import get_registry; 
+   python -c "from faultmaven.infrastructure.llm.providers.registry import get_registry;
    print(get_registry().get_provider_status())"
    ```
 
@@ -989,7 +989,7 @@ LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-depend
 
 ### Dependency Injection Issues
 
-**Error**: `Service not available` or `Container not initialized`  
+**Error**: `Service not available` or `Container not initialized`
 **Fixes**:
 1. Check container health: `container.health_check()`
 2. Verify interface implementation in custom providers

@@ -5,10 +5,9 @@ This module implements the Google Gemini LLM provider with multi-modal
 capabilities for text and image processing.
 """
 
-import asyncio
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
 import aiohttp
@@ -18,7 +17,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
+from .base import BaseLLMProvider, LLMResponse, ToolCall
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -32,12 +31,12 @@ class GeminiProvider(BaseLLMProvider):
         """Check if Gemini provider is properly configured"""
         return bool(self.config.api_key and self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> List[str]:
+    def get_supported_models(self) -> list[str]:
         """Get list of supported Gemini models"""
         return self.config.models.copy()
 
     def get_structured_output_capability(
-        self, model: Optional[str] = None
+        self, model: str | None = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for Gemini models.
@@ -65,7 +64,7 @@ class GeminiProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: Optional[str] = None,
+        model: str | None = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
         **kwargs,
@@ -212,7 +211,7 @@ class GeminiProvider(BaseLLMProvider):
                         )
 
                     response_data = await response.json()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise LLMException(
                 f"Gemini API request timed out after {self.config.timeout}s "
                 f"(model: {selected_model})"
@@ -392,7 +391,7 @@ class GeminiProvider(BaseLLMProvider):
         # Ensure confidence is within valid range
         return min(1.0, max(0.0, model_confidence))
 
-    def _convert_messages_to_gemini(self, messages: list) -> Dict[str, Any]:
+    def _convert_messages_to_gemini(self, messages: list) -> dict[str, Any]:
         """Convert OpenAI-format messages to Gemini API format.
 
         Handles:
@@ -404,8 +403,8 @@ class GeminiProvider(BaseLLMProvider):
         Returns:
             Dict with 'contents' list and optional 'system_instruction' string.
         """
-        system_parts: List[str] = []
-        contents: List[Dict[str, Any]] = []
+        system_parts: list[str] = []
+        contents: list[dict[str, Any]] = []
 
         for msg in messages:
             role = msg.get("role", "")
@@ -423,7 +422,7 @@ class GeminiProvider(BaseLLMProvider):
                 )
 
             elif role == "assistant":
-                parts: List[Dict[str, Any]] = []
+                parts: list[dict[str, Any]] = []
                 if content:
                     parts.append({"text": content})
 
@@ -476,7 +475,7 @@ class GeminiProvider(BaseLLMProvider):
                 else:
                     contents.append({"role": "function", "parts": [fn_response_part]})
 
-        result: Dict[str, Any] = {"contents": contents}
+        result: dict[str, Any] = {"contents": contents}
         if system_parts:
             result["system_instruction"] = "\n\n".join(system_parts)
 

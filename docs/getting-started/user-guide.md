@@ -33,7 +33,7 @@ Welcome to FaultMaven! This guide will help you get started with the AI-powered 
     ```bash
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     ```
-    
+
     You should see:
     ```
     NAMES               STATUS              PORTS
@@ -323,5 +323,5 @@ curl http://localhost:8090/health/dependencies
 
 ---
 
-**Last Updated**: 2025-10-12  
+**Last Updated**: 2025-10-12
 **Version**: 2.0

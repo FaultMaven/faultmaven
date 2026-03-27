@@ -1,13 +1,11 @@
 # File: faultmaven/infrastructure/protection/anomaly_detector.py
 
-import asyncio
-import json
 import logging
 import os
 import pickle
 from collections import deque
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import numpy as np
 
@@ -26,9 +24,7 @@ except ImportError:
 from faultmaven.models.behavioral import (
     AnomalyResult,
     AnomalyType,
-    BehaviorProfile,
     BehaviorVector,
-    TemporalAnomaly,
 )
 
 
@@ -39,13 +35,13 @@ class ModelFeedback:
         self.prediction_id = prediction_id
         self.actual_outcome = actual_outcome  # "true_positive", "false_positive", etc.
         self.confidence = confidence
-        self.timestamp = datetime.now(timezone.utc)
+        self.timestamp = datetime.now(UTC)
 
 
 class AnomalyExplanation:
     """Explanation for an anomaly detection"""
 
-    def __init__(self, features: Dict[str, float], thresholds: Dict[str, float]):
+    def __init__(self, features: dict[str, float], thresholds: dict[str, float]):
         self.features = features
         self.thresholds = thresholds
         self.contributing_features = []
@@ -79,7 +75,7 @@ class AnomalyDetectionSystem:
     """
 
     def __init__(
-        self, model_path: Optional[str] = None, enable_online_learning: bool = True
+        self, model_path: str | None = None, enable_online_learning: bool = True
     ):
         self.logger = logging.getLogger(__name__)
         self.model_path = model_path or "/tmp/faultmaven_ml_models"
@@ -168,7 +164,7 @@ class AnomalyDetectionSystem:
                 anomaly_types=anomaly_types,
                 pattern_anomalies={"overall": overall_score},
                 feature_contributions=self._calculate_feature_contributions(features),
-                detection_timestamp=datetime.now(timezone.utc),
+                detection_timestamp=datetime.now(UTC),
                 model_version="2.0",
                 model_confidence=behavior_vector.confidence,
                 detection_method="ensemble",
@@ -195,13 +191,13 @@ class AnomalyDetectionSystem:
                 session_id="error",
                 overall_score=0.0,
                 anomaly_types=[],
-                detection_timestamp=datetime.now(timezone.utc),
+                detection_timestamp=datetime.now(UTC),
                 model_version="2.0",
                 model_confidence=0.0,
                 detection_method="error_fallback",
             )
 
-    async def train_models(self, historical_data: List[Dict[str, Any]]):
+    async def train_models(self, historical_data: list[dict[str, Any]]):
         """
         Train models on historical behavioral data
 
@@ -261,7 +257,7 @@ class AnomalyDetectionSystem:
             # Save models
             await self._save_models()
 
-            self.last_training = datetime.now(timezone.utc)
+            self.last_training = datetime.now(UTC)
             self.logger.info("Model training completed successfully")
 
         except Exception as e:
@@ -345,7 +341,7 @@ class AnomalyDetectionSystem:
             self.logger.error(f"Error in isolation forest detection: {e}")
             return 0.0
 
-    async def _statistical_detection(self, features: Dict[str, float]) -> float:
+    async def _statistical_detection(self, features: dict[str, float]) -> float:
         """Statistical anomaly detection using feature statistics"""
         try:
             if not self.feature_stats:
@@ -373,7 +369,7 @@ class AnomalyDetectionSystem:
             self.logger.error(f"Error in statistical detection: {e}")
             return 0.0
 
-    async def _pattern_detection(self, features: Dict[str, float]) -> float:
+    async def _pattern_detection(self, features: dict[str, float]) -> float:
         """Pattern-based anomaly detection"""
         try:
             # Simple pattern-based rules
@@ -407,7 +403,7 @@ class AnomalyDetectionSystem:
             self.logger.error(f"Error in pattern detection: {e}")
             return 0.0
 
-    def _vectorize_features(self, features: Dict[str, float]) -> np.ndarray:
+    def _vectorize_features(self, features: dict[str, float]) -> np.ndarray:
         """Convert feature dictionary to numpy array"""
         # Define expected features in consistent order
         expected_features = [
@@ -431,7 +427,7 @@ class AnomalyDetectionSystem:
         return np.array(vector)
 
     def _generate_explanation(
-        self, features: Dict[str, float], anomaly_score: float
+        self, features: dict[str, float], anomaly_score: float
     ) -> AnomalyExplanation:
         """Generate human-readable explanation for anomaly"""
         explanation = AnomalyExplanation(features, self.adaptive_thresholds)
@@ -450,8 +446,8 @@ class AnomalyDetectionSystem:
         return explanation
 
     def _calculate_feature_contributions(
-        self, features: Dict[str, float]
-    ) -> Dict[str, float]:
+        self, features: dict[str, float]
+    ) -> dict[str, float]:
         """Calculate how much each feature contributes to anomaly detection"""
         contributions = {}
 
@@ -470,8 +466,8 @@ class AnomalyDetectionSystem:
         return contributions
 
     def _get_recommended_actions(
-        self, anomaly_score: float, anomaly_types: List[AnomalyType]
-    ) -> List[str]:
+        self, anomaly_score: float, anomaly_types: list[AnomalyType]
+    ) -> list[str]:
         """Get recommended actions based on anomaly detection"""
         actions = []
 
@@ -501,7 +497,7 @@ class AnomalyDetectionSystem:
         sample = {
             "features": feature_array,
             "anomaly_score": anomaly_score,
-            "timestamp": datetime.now(timezone.utc),
+            "timestamp": datetime.now(UTC),
         }
         self.training_buffer.append(sample)
 
@@ -510,7 +506,7 @@ class AnomalyDetectionSystem:
         # Retrain if enough time has passed
         if (
             self.last_training
-            and datetime.now(timezone.utc) - self.last_training < self.retrain_interval
+            and datetime.now(UTC) - self.last_training < self.retrain_interval
         ):
             return False
 
@@ -569,7 +565,7 @@ class AnomalyDetectionSystem:
         )
         self.scaler = StandardScaler()
 
-    def _update_feature_stats(self, historical_data: List[Dict[str, Any]]):
+    def _update_feature_stats(self, historical_data: list[dict[str, Any]]):
         """Update feature statistics for normalization"""
         feature_values = {}
 
@@ -665,7 +661,7 @@ class AnomalyDetectionSystem:
         except Exception as e:
             self.logger.error(f"Error loading models: {e}")
 
-    async def get_model_status(self) -> Dict[str, Any]:
+    async def get_model_status(self) -> dict[str, Any]:
         """Get current model status and metrics"""
         return {
             "ml_available": SKLEARN_AVAILABLE,

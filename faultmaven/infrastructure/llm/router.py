@@ -10,9 +10,8 @@ circuit breaker patterns for external LLM provider calls.
 """
 
 import functools
-import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
@@ -91,16 +90,16 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     @_opik_track_llm("llm_router_route")
     async def route(
         self,
-        prompt: Optional[str] = None,
-        model: Optional[str] = None,
+        prompt: str | None = None,
+        model: str | None = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        data_type: Optional[DataType] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = None,
-        response_format: Optional[Dict[str, Any]] = None,
-        messages: Optional[List[Dict[str, Any]]] = None,
-        case_id: Optional[str] = None,
+        data_type: DataType | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        response_format: dict[str, Any] | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        case_id: str | None = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -204,8 +203,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     def _update_opik_span(
         self,
         response: LLMResponse,
-        sanitized_prompt: Optional[str] = None,
-        sanitized_messages: Optional[List[Dict[str, Any]]] = None,
+        sanitized_prompt: str | None = None,
+        sanitized_messages: list[dict[str, Any]] | None = None,
         cached: bool = False,
     ) -> None:
         """Update the current Opik span with LLM call data.
@@ -253,7 +252,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         except Exception as e:
             self.logger.warning(f"Failed to update Opik span: {e}")
 
-    async def generate(self, prompt: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def generate(self, prompt: str | None = None, **kwargs) -> LLMResponse:
         """
         ILLMProvider interface implementation - delegates to route()
 
@@ -325,7 +324,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         """Get status of all providers"""
         return self.registry.get_provider_status()
 
-    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+    def supports_tool_calling(self, model: str | None = None) -> bool:
         """Check if the primary provider/model supports tool calling.
 
         Delegates to the primary provider in the fallback chain.
@@ -342,7 +341,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
         return primary_provider.supports_tool_calling(model)
 
-    def get_structured_output_capability(self, model: Optional[str] = None):
+    def get_structured_output_capability(self, model: str | None = None):
         """
         Get the structured output capability for the primary provider/model.
 
@@ -385,7 +384,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         return capability
 
     def get_structured_output_strategy(
-        self, schema: Dict[str, Any], model: Optional[str] = None
+        self, schema: dict[str, Any], model: str | None = None
     ):
         """
         Get the appropriate structured output strategy for the primary provider/model.
@@ -399,9 +398,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Returns:
             StructuredOutputStrategy with configuration
         """
-        from faultmaven.infrastructure.llm.structured_output_capability import (
-            StructuredOutputStrategy,
-        )
 
         # Ensure registry is initialized
         self.registry._ensure_initialized()

@@ -4,28 +4,14 @@ This module provides the repository pattern for Case domain model persistence.
 It abstracts database operations and provides clean interfaces for the service layer.
 """
 
-import json
+import builtins
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseAction,
     CaseStatus,
-    DocumentationData,
-    EscalationState,
-    Evidence,
-    Hypothesis,
-    InquiryData,
-    InvestigationProgress,
-    PathSelection,
-    ProblemVerification,
-    RootCauseConclusion,
-    Solution,
-    TurnProgress,
-    UploadedFile,
-    WorkingConclusion,
 )
 
 # ============================================================
@@ -59,7 +45,7 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def get(self, case_id: str) -> Optional[Case]:
+    async def get(self, case_id: str) -> Case | None:
         """
         Retrieve case by ID.
 
@@ -77,12 +63,12 @@ class CaseRepository(ABC):
     @abstractmethod
     async def list(
         self,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
+        status: CaseStatus | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[List[Case], int]:
+    ) -> tuple[list[Case], int]:
         """
         List cases with optional filters.
 
@@ -121,10 +107,10 @@ class CaseRepository(ABC):
     async def search(
         self,
         query: str,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 20,
-    ) -> tuple[List[Case], int]:
+    ) -> tuple[builtins.list[Case], int]:
         """
         Search cases by text query.
 
@@ -168,7 +154,7 @@ class CaseRepository(ABC):
     @abstractmethod
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> List[dict]:
+    ) -> builtins.list[dict]:
         """
         Get messages for a case with pagination.
 
@@ -205,7 +191,7 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """
         Compute analytics for a case.
 
@@ -279,7 +265,7 @@ class InMemoryCaseRepository(CaseRepository):
 
     def __init__(self):
         """Initialize empty in-memory store."""
-        self._cases: Dict[str, Case] = {}
+        self._cases: dict[str, Case] = {}
 
     async def save(self, case: Case) -> Case:
         """Save case to memory."""
@@ -291,18 +277,18 @@ class InMemoryCaseRepository(CaseRepository):
 
         return case
 
-    async def get(self, case_id: str) -> Optional[Case]:
+    async def get(self, case_id: str) -> Case | None:
         """Get case from memory."""
         return self._cases.get(case_id)
 
     async def list(
         self,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
-        status: Optional[CaseStatus] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
+        status: CaseStatus | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[List[Case], int]:
+    ) -> tuple[list[Case], int]:
         """List cases with filters."""
         # Filter cases
         filtered = list(self._cases.values())
@@ -336,10 +322,10 @@ class InMemoryCaseRepository(CaseRepository):
     async def search(
         self,
         query: str,
-        user_id: Optional[str] = None,
-        organization_id: Optional[str] = None,
+        user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 20,
-    ) -> tuple[List[Case], int]:
+    ) -> tuple[builtins.list[Case], int]:
         """Search cases by text query (simple substring match)."""
         query_lower = query.lower()
 
@@ -382,7 +368,6 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
         """Add message to case in memory."""
-        from datetime import timezone
 
         case = self._cases.get(case_id)
         if not case:
@@ -390,12 +375,12 @@ class InMemoryCaseRepository(CaseRepository):
 
         case.messages.append(message_dict)
         case.message_count += 1
-        case.last_activity_at = datetime.now(timezone.utc)
+        case.last_activity_at = datetime.now(UTC)
         return True
 
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> List[dict]:
+    ) -> builtins.list[dict]:
         """Get messages from case in memory."""
         case = self._cases.get(case_id)
         if not case:
@@ -405,16 +390,15 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update last activity timestamp in memory."""
-        from datetime import timezone
 
         case = self._cases.get(case_id)
         if not case:
             return False
 
-        case.last_activity_at = datetime.now(timezone.utc)
+        case.last_activity_at = datetime.now(UTC)
         return True
 
-    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for case in memory."""
         from faultmaven.utils.serialization import to_json_compatible
 
@@ -450,9 +434,9 @@ class InMemoryCaseRepository(CaseRepository):
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
         """Clean up expired cases from memory."""
-        from datetime import timedelta, timezone
+        from datetime import timedelta
 
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cutoff_date = datetime.now(UTC) - timedelta(days=max_age_days)
         deleted_count = 0
 
         # Collect case IDs to delete (avoid modifying dict during iteration)

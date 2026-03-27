@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -53,7 +52,7 @@ class UnifiedDataType(str, Enum):
 
 
 # Mapping from fine-grained internal types to unified types
-_DETAILED_TO_UNIFIED: Dict[DetailedDataType, UnifiedDataType] = {
+_DETAILED_TO_UNIFIED: dict[DetailedDataType, UnifiedDataType] = {
     DetailedDataType.LOGS_AND_ERRORS: UnifiedDataType.LOGS,
     DetailedDataType.ERROR_REPORT: UnifiedDataType.LOGS,
     DetailedDataType.TRACE_DATA: UnifiedDataType.LOGS,
@@ -95,7 +94,7 @@ class ExtractionResult(BaseModel):
         )
     )
     content: str = Field(description="Extracted structural index / processed content")
-    metadata: Dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Type-specific extraction metadata",
     )
@@ -106,7 +105,7 @@ class SanitizationResult(BaseModel):
 
     content: str = Field(description="Content with PII/secrets redacted")
     redactions_made: int = Field(default=0, description="Number of redactions applied")
-    redactions: List[tuple] = Field(
+    redactions: list[tuple] = Field(
         default_factory=list,
         description="List of (type, count) redaction details",
     )
@@ -120,19 +119,19 @@ class ErrorSummary(BaseModel):
     """Structured insights from log structural index."""
 
     total_errors: int
-    severity_distribution: Dict[str, int]
+    severity_distribution: dict[str, int]
     first_error_line: int
     last_error_line: int
     error_burst_detected: bool
-    unique_error_types: List[str]
+    unique_error_types: list[str]
 
 
 class AnomalySummary(BaseModel):
     """Structured insights from metrics statistical profile."""
 
     total_anomalies: int
-    metrics_analyzed: List[str]
-    anomaly_types: Dict[str, int]
+    metrics_analyzed: list[str]
+    anomaly_types: dict[str, int]
     most_anomalous_metric: str
     time_range: str
 
@@ -181,7 +180,7 @@ class PreprocessingResult(BaseModel):
     )
 
     # Raw File Storage
-    content_ref: Optional[str] = Field(
+    content_ref: str | None = Field(
         None, description="Reference to stored raw file (for Tier 2 access)"
     )
     content_size_bytes: int = Field(description="Size of raw file in bytes")
@@ -199,7 +198,7 @@ class PreprocessingResult(BaseModel):
         ge=0.0,
         description="Ratio of index size to raw size",
     )
-    extraction_metadata: Dict[str, Any] = Field(
+    extraction_metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Type-specific metadata (error counts, anomaly details, etc.)",
     )
@@ -226,17 +225,17 @@ class AnalysisContext(BaseModel):
     """Context passed to Tier 2 for better analysis."""
 
     case_id: str
-    case_summary: Optional[str] = None
-    active_hypotheses: Optional[List[str]] = None
-    investigation_stage: Optional[str] = None
+    case_summary: str | None = None
+    active_hypotheses: list[str] | None = None
+    investigation_stage: str | None = None
 
 
 class DataExcerpt(BaseModel):
     """A relevant section from the raw data supporting the analysis."""
 
     content: str
-    line_start: Optional[int] = None
-    line_end: Optional[int] = None
+    line_start: int | None = None
+    line_end: int | None = None
     relevance: float = 0.0
 
 
@@ -249,7 +248,7 @@ class DeepAnalysisResult(BaseModel):
     """
 
     answer: str = Field(description="LLM-generated analysis answering the query")
-    excerpts: List[DataExcerpt] = Field(
+    excerpts: list[DataExcerpt] = Field(
         default_factory=list,
         description="Relevant raw data sections with line numbers",
     )
@@ -271,7 +270,7 @@ class Chunk:
     """A chunk of structural index for vector DB storage."""
 
     text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # =============================================================================

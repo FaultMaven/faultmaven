@@ -17,9 +17,8 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 import os
 import re
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import aiofiles.os
@@ -29,7 +28,7 @@ from faultmaven.services.base import BaseService
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 
 class FileStorageService(BaseService):
@@ -56,7 +55,7 @@ class FileStorageService(BaseService):
         self,
         storage_root: str = "./data/evidence",
         max_file_size_bytes: int = 100 * 1024 * 1024,  # 100MB default
-        allowed_mime_types: Optional[List[str]] = None,
+        allowed_mime_types: list[str] | None = None,
     ):
         """Initialize file storage service.
 
@@ -84,7 +83,7 @@ class FileStorageService(BaseService):
         organization_id: str,
         case_id: str,
         mime_type: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Store file to filesystem.
 
         Generates path: {storage_root}/{organization_id}/{case_id}/{date}/{uuid}_{filename}
@@ -243,7 +242,7 @@ class FileStorageService(BaseService):
             self.log_error("delete_file", e, file_path=file_path)
             return False
 
-    async def get_file_info(self, file_path: str) -> Optional[Dict[str, Any]]:
+    async def get_file_info(self, file_path: str) -> dict[str, Any] | None:
         """Get file metadata without reading content.
 
         Args:
@@ -269,8 +268,8 @@ class FileStorageService(BaseService):
 
             info = {
                 "file_size": stat.st_size,
-                "modified_time": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                "created_time": datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc),
+                "modified_time": datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                "created_time": datetime.fromtimestamp(stat.st_ctime, tz=UTC),
                 "file_path": file_path,
             }
 
@@ -346,7 +345,7 @@ class FileStorageService(BaseService):
 
     def _generate_storage_path(
         self, organization_id: str, case_id: str, original_filename: str
-    ) -> Tuple[str, str]:
+    ) -> tuple[str, str]:
         """Generate storage path and stored filename.
 
         Path format: {organization_id}/{case_id}/{YYYY-MM-DD}/{uuid}_{filename}
@@ -369,7 +368,7 @@ class FileStorageService(BaseService):
         stored_filename = f"{file_uuid}_{safe_filename}"
 
         # Generate date folder
-        date_folder = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_folder = datetime.now(UTC).strftime("%Y-%m-%d")
 
         # Sanitize organization_id and case_id
         safe_org_id = self._sanitize_path_component(organization_id)
@@ -479,7 +478,7 @@ class FileStorageService(BaseService):
             )
             return False
 
-    async def get_storage_stats(self) -> Dict[str, Any]:
+    async def get_storage_stats(self) -> dict[str, Any]:
         """Get storage statistics.
 
         Returns:
@@ -517,7 +516,7 @@ class FileStorageService(BaseService):
                 "error": str(e),
             }
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Perform health check for the file storage service.
 
         Returns:

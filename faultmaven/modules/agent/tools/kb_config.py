@@ -8,7 +8,6 @@ Design Principle: Adding new KB type = create new config, zero changes to Docume
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class KBConfig(ABC):
@@ -28,7 +27,7 @@ class KBConfig(ABC):
     """
 
     @abstractmethod
-    def get_collection_name(self, scope_id: Optional[str]) -> str:
+    def get_collection_name(self, scope_id: str | None) -> str:
         """
         Get ChromaDB collection name for this KB type.
 

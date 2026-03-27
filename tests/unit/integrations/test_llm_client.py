@@ -7,7 +7,8 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 import os
-from typing import Any, AsyncGenerator, Dict, List
+from collections.abc import AsyncGenerator
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

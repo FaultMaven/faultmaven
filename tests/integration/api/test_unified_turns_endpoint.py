@@ -15,7 +15,7 @@ Design Reference:
 """
 
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -94,7 +94,7 @@ class TestTurnPayloadConstruction:
     def test_pasted_content_builds_attachment(self):
         """Pasted content is converted to Attachment with synthetic filename."""
         pasted = "ERROR: Connection timeout at 14:03:21\nERROR: Pool exhausted"
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         att = Attachment(
             content=pasted.encode("utf-8"),
             filename=f"pasted-content-{ts}.txt",

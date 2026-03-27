@@ -162,7 +162,8 @@ def main():
     print("=" * 70)
     print("INSTRUCTIONS")
     print("=" * 70)
-    print("""
+    print(
+        """
 1. Copy the JWT_PRIVATE_KEY and JWT_PUBLIC_KEY lines above
 2. Add them to your .env file in the FaultMaven root directory
 3. Set OAUTH_ENABLED=true in your .env file
@@ -188,7 +189,8 @@ SECURITY NOTES:
 - For production, store keys in a secure secret management system
 - Rotate keys periodically (implement key rotation strategy)
 - Consider using different keys for different environments
-""")
+"""
+    )
 
 
 if __name__ == "__main__":

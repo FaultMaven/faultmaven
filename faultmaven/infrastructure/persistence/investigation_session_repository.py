@@ -31,13 +31,11 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from faultmaven.infrastructure.persistence.models import InvestigationSessionModel
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
@@ -75,7 +73,7 @@ class InvestigationSessionRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_by_id(self, session_id: str) -> Optional[InvestigationSession]:
+    async def get_by_id(self, session_id: str) -> InvestigationSession | None:
         """Get session by ID.
 
         Args:
@@ -122,8 +120,8 @@ class InvestigationSessionRepository(ABC):
     async def list_by_case_id(
         self,
         case_id: str,
-        status: Optional[SessionStatus] = None,
-    ) -> List[InvestigationSession]:
+        status: SessionStatus | None = None,
+    ) -> list[InvestigationSession]:
         """List all sessions for a case, optionally filtered by status.
 
         Args:
@@ -136,7 +134,7 @@ class InvestigationSessionRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_active_session(self, case_id: str) -> Optional[InvestigationSession]:
+    async def get_active_session(self, case_id: str) -> InvestigationSession | None:
         """Get the currently active session for a case (if any).
 
         Args:
@@ -153,7 +151,7 @@ class InvestigationSessionRepository(ABC):
         user_id: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[InvestigationSession]:
+    ) -> list[InvestigationSession]:
         """List sessions by user (paginated).
 
         Args:
@@ -245,7 +243,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 f"Failed to create investigation session: {e}"
             ) from e
 
-    async def get_by_id(self, session_id: str) -> Optional[InvestigationSession]:
+    async def get_by_id(self, session_id: str) -> InvestigationSession | None:
         """Get session by ID."""
         try:
             stmt = select(InvestigationSessionModel).where(
@@ -268,7 +266,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
     async def update(self, session: InvestigationSession) -> InvestigationSession:
         """Update session status and fields."""
         try:
-            session.updated_at = datetime.now(timezone.utc)
+            session.updated_at = datetime.now(UTC)
 
             stmt = (
                 update(InvestigationSessionModel)
@@ -340,8 +338,8 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
     async def list_by_case_id(
         self,
         case_id: str,
-        status: Optional[SessionStatus] = None,
-    ) -> List[InvestigationSession]:
+        status: SessionStatus | None = None,
+    ) -> list[InvestigationSession]:
         """List all sessions for a case, optionally filtered by status."""
         try:
             # Build query conditions
@@ -368,7 +366,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 f"Failed to list sessions for case {case_id}: {e}"
             ) from e
 
-    async def get_active_session(self, case_id: str) -> Optional[InvestigationSession]:
+    async def get_active_session(self, case_id: str) -> InvestigationSession | None:
         """Get the currently active session for a case (if any)."""
         try:
             stmt = (
@@ -402,7 +400,7 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
         user_id: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[InvestigationSession]:
+    ) -> list[InvestigationSession]:
         """List sessions by user (paginated)."""
         try:
             stmt = (
@@ -474,12 +472,12 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
             updated_at=self._ensure_tz_aware(model.updated_at),
         )
 
-    def _ensure_tz_aware(self, dt: Optional[datetime]) -> Optional[datetime]:
+    def _ensure_tz_aware(self, dt: datetime | None) -> datetime | None:
         """Ensure datetime is timezone-aware (UTC if naive)."""
         if dt is None:
             return None
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=UTC)
         return dt
 
 
@@ -488,7 +486,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
 
     def __init__(self):
         """Initialize empty storage."""
-        self._sessions: Dict[str, InvestigationSession] = {}
+        self._sessions: dict[str, InvestigationSession] = {}
 
     # =========================================================================
     # CRUD Operations
@@ -505,7 +503,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         self._sessions[session.session_id] = deepcopy(session)
         return deepcopy(session)
 
-    async def get_by_id(self, session_id: str) -> Optional[InvestigationSession]:
+    async def get_by_id(self, session_id: str) -> InvestigationSession | None:
         """Get session by ID."""
         session = self._sessions.get(session_id)
         if session is None:
@@ -517,7 +515,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         if session.session_id not in self._sessions:
             raise ValueError(f"Investigation session {session.session_id} not found")
 
-        session.updated_at = datetime.now(timezone.utc)
+        session.updated_at = datetime.now(UTC)
         self._sessions[session.session_id] = deepcopy(session)
         return deepcopy(session)
 
@@ -535,8 +533,8 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
     async def list_by_case_id(
         self,
         case_id: str,
-        status: Optional[SessionStatus] = None,
-    ) -> List[InvestigationSession]:
+        status: SessionStatus | None = None,
+    ) -> list[InvestigationSession]:
         """List all sessions for a case, optionally filtered by status."""
         sessions = [s for s in self._sessions.values() if s.case_id == case_id]
 
@@ -548,7 +546,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
 
         return [deepcopy(s) for s in sessions]
 
-    async def get_active_session(self, case_id: str) -> Optional[InvestigationSession]:
+    async def get_active_session(self, case_id: str) -> InvestigationSession | None:
         """Get the currently active session for a case (if any)."""
         active_sessions = [
             s
@@ -568,7 +566,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         user_id: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[InvestigationSession]:
+    ) -> list[InvestigationSession]:
         """List sessions by user (paginated)."""
         sessions = [s for s in self._sessions.values() if s.user_id == user_id]
 

@@ -1,6 +1,3 @@
-from typing import Dict, List
-
-
 class ConfidenceAggregator:
     def __init__(self) -> None:
         self.weights = {
@@ -11,13 +8,13 @@ class ConfidenceAggregator:
             "evidence_count_norm": 0.1,
         }
 
-    def score(self, features: Dict[str, float]) -> float:
+    def score(self, features: dict[str, float]) -> float:
         val = 0.0
         for k, w in self.weights.items():
             val += w * float(features.get(k, 0.0))
         return max(0.0, min(1.0, val))
 
-    def get_band(self, score: float, history: List[float]) -> str:
+    def get_band(self, score: float, history: list[float]) -> str:
         # Simple hysteresis: need two consecutive below 0.5 to drop out of gray/high
         if score >= 0.8:
             return "high"

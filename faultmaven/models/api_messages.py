@@ -11,7 +11,7 @@ Design: Follows TASK-024 (Report Module) and TASK-026 (Hypothesis) API model pat
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,13 +26,13 @@ class MessageMetadata(BaseModel):
     execution_id: str = Field(
         ..., description="ID of the agent execution that created this message"
     )
-    token_usage: Optional[Dict[str, int]] = Field(
+    token_usage: dict[str, int] | None = Field(
         None, description="Token usage for assistant messages (input, output, total)"
     )
-    agent_type: Optional[str] = Field(
+    agent_type: str | None = Field(
         None, description="Type of agent that generated this message"
     )
-    tool_calls: List[str] = Field(
+    tool_calls: list[str] = Field(
         default_factory=list,
         description="List of tool names called during this execution",
     )
@@ -47,7 +47,7 @@ class MessageResponse(BaseModel):
     )
     content: str = Field(..., description="Message content")
     timestamp: datetime = Field(..., description="Message timestamp")
-    metadata: Optional[MessageMetadata] = Field(
+    metadata: MessageMetadata | None = Field(
         None, description="Additional message metadata"
     )
 
@@ -73,7 +73,7 @@ class PaginationInfo(BaseModel):
 
     limit: int = Field(..., description="Number of items requested")
     offset: int = Field(..., description="Offset from start of list")
-    next_offset: Optional[int] = Field(
+    next_offset: int | None = Field(
         None, description="Offset for next page, null if no more items"
     )
 
@@ -82,7 +82,7 @@ class MessageListResponse(BaseModel):
     """Response model for listing session messages."""
 
     session_id: str = Field(..., description="Session ID")
-    messages: List[MessageResponse] = Field(
+    messages: list[MessageResponse] = Field(
         default_factory=list, description="List of messages in chronological order"
     )
     total_count: int = Field(..., description="Total number of messages in the session")
@@ -130,7 +130,7 @@ class ChatRequest(BaseModel):
     """Request model for simplified agent chat."""
 
     case_id: str = Field(..., description="Case ID to chat about")
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         None, description="Existing session ID (auto-creates if null)"
     )
     message: str = Field(
@@ -139,11 +139,11 @@ class ChatRequest(BaseModel):
         max_length=10000,
         description="User message/prompt",
     )
-    agent_type: Optional[str] = Field(
+    agent_type: str | None = Field(
         default="investigator",
         description="Type of agent (investigator, debugger, researcher, validator, reporter)",
     )
-    stream: Optional[bool] = Field(default=True, description="Enable SSE streaming")
+    stream: bool | None = Field(default=True, description="Enable SSE streaming")
 
     class Config:
         json_schema_extra = {
@@ -173,10 +173,10 @@ class ChatResponse(BaseModel):
     execution_id: str = Field(..., description="Agent execution ID")
     session_id: str = Field(..., description="Session ID (may be newly created)")
     message: ChatMessageResponse = Field(..., description="Assistant's message")
-    token_usage: Dict[str, int] = Field(
+    token_usage: dict[str, int] = Field(
         default_factory=dict, description="Token usage (input, output, total)"
     )
-    tool_calls: List[str] = Field(
+    tool_calls: list[str] = Field(
         default_factory=list, description="List of tools called during execution"
     )
     duration_ms: int = Field(..., description="Execution duration in milliseconds")

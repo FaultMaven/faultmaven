@@ -5,10 +5,7 @@ This module implements the Hugging Face Inference API provider for
 accessing open-source models and specialized models.
 """
 
-import asyncio
-import json
 import time
-from typing import List, Optional
 
 import aiohttp
 
@@ -17,7 +14,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse
 
 
 class HuggingFaceProvider(BaseLLMProvider):
@@ -31,16 +28,16 @@ class HuggingFaceProvider(BaseLLMProvider):
         """Check if Hugging Face provider is properly configured"""
         return bool(self.config.api_key and self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> List[str]:
+    def get_supported_models(self) -> list[str]:
         """Get list of supported Hugging Face models"""
         return self.config.models.copy()
 
-    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+    def supports_tool_calling(self, model: str | None = None) -> bool:
         """HuggingFace Inference API does not support tool calling."""
         return False
 
     def get_structured_output_capability(
-        self, model: Optional[str] = None
+        self, model: str | None = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for Hugging Face models.
@@ -60,7 +57,7 @@ class HuggingFaceProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: Optional[str] = None,
+        model: str | None = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
         **kwargs,
@@ -148,7 +145,7 @@ class HuggingFaceProvider(BaseLLMProvider):
                         )
 
                     response_data = await response.json()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise LLMException(
                 f"HuggingFace API request timed out after {self.config.timeout}s "
                 f"(model: {selected_model})"

@@ -18,8 +18,8 @@ workflow management for investigation activities.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from faultmaven.exceptions import (
@@ -148,9 +148,9 @@ class APIInvestigationSessionService:
         case_id: str,
         organization_id: str,
         user_id: str,
-        session_goal: Optional[str] = None,
-        token_budget_limit: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        session_goal: str | None = None,
+        token_budget_limit: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> InvestigationSession:
         """Create a new investigation session.
 
@@ -217,7 +217,7 @@ class APIInvestigationSessionService:
                 )
 
             # Create new session
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             session = InvestigationSession(
                 session_id=f"session_{uuid4().hex[:12]}",
                 case_id=case_id.strip(),
@@ -255,7 +255,7 @@ class APIInvestigationSessionService:
         self,
         session_id: str,
         organization_id: str,
-    ) -> Optional[InvestigationSession]:
+    ) -> InvestigationSession | None:
         """Get session by ID with authorization check.
 
         Verifies organization owns the parent case.
@@ -307,7 +307,7 @@ class APIInvestigationSessionService:
         self,
         session_id: str,
         organization_id: str,
-        updates: Dict[str, Any],
+        updates: dict[str, Any],
     ) -> InvestigationSession:
         """Update session with authorization check.
 
@@ -371,7 +371,7 @@ class APIInvestigationSessionService:
                     session.metadata = value
 
             # Update timestamp
-            session.updated_at = datetime.now(timezone.utc)
+            session.updated_at = datetime.now(UTC)
 
             # Save updated session
             saved_session = await self.session_repo.update(session)
@@ -641,7 +641,7 @@ class APIInvestigationSessionService:
         self,
         case_id: str,
         organization_id: str,
-    ) -> Optional[InvestigationSession]:
+    ) -> InvestigationSession | None:
         """Get the currently active session for a case.
 
         Args:
@@ -679,10 +679,10 @@ class APIInvestigationSessionService:
         self,
         case_id: str,
         organization_id: str,
-        status: Optional[SessionStatus] = None,
+        status: SessionStatus | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[InvestigationSession]:
+    ) -> list[InvestigationSession]:
         """List sessions for a case with filters.
 
         Args:
@@ -742,7 +742,7 @@ class APIInvestigationSessionService:
         session_id: str,
         organization_id: str,
         include_tool_calls: bool = False,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Get session with related agent executions.
 
         Args:
@@ -768,7 +768,7 @@ class APIInvestigationSessionService:
             if not session:
                 return None
 
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "session": session,
             }
 
@@ -895,7 +895,7 @@ class APIInvestigationSessionService:
         self,
         session_id: str,
         organization_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Check if session has exceeded token budget.
 
         Args:
@@ -958,7 +958,7 @@ class APIInvestigationSessionService:
         self,
         case_id: str,
         organization_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get session statistics for a case.
 
         Returns:
@@ -982,10 +982,10 @@ class APIInvestigationSessionService:
             sessions = await self.session_repo.list_by_case_id(case_id)
 
             # Calculate statistics
-            by_status: Dict[str, int] = {}
+            by_status: dict[str, int] = {}
             total_token_usage = 0
             total_agent_executions = 0
-            durations: List[int] = []
+            durations: list[int] = []
 
             for session in sessions:
                 # Count by status
@@ -1015,7 +1015,7 @@ class APIInvestigationSessionService:
                 "avg_session_duration_ms": avg_session_duration_ms,
                 "case_id": case_id,
                 "organization_id": organization_id,
-                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "computed_at": datetime.now(UTC).isoformat(),
             }
 
             logger.info(

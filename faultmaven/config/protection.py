@@ -6,12 +6,10 @@ variables with sensible defaults.
 """
 
 import os
-from datetime import timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ..models.protection import (
     DeduplicationConfig,
-    LimitType,
     ProtectionSettings,
     RateLimitConfig,
     TimeoutConfig,
@@ -291,7 +289,7 @@ def get_production_protection_settings() -> ProtectionSettings:
     )
 
 
-def validate_protection_settings(settings: ProtectionSettings) -> Dict[str, Any]:
+def validate_protection_settings(settings: ProtectionSettings) -> dict[str, Any]:
     """
     Validate protection settings and return validation report
 

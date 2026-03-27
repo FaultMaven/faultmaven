@@ -151,7 +151,7 @@ The FaultMaven Improved Logging Strategy is a comprehensive solution that elimin
 **Before**: Multiple middleware components logging the same request events
 ```
 INFO  Request started: POST /api/v1/sessions/abc/query  # From middleware 1
-INFO  Processing request: POST /api/v1/sessions/abc/query  # From middleware 2  
+INFO  Processing request: POST /api/v1/sessions/abc/query  # From middleware 2
 INFO  Request received: POST /api/v1/sessions/abc/query  # From middleware 3
 ```
 
@@ -159,7 +159,7 @@ INFO  Request received: POST /api/v1/sessions/abc/query  # From middleware 3
 ```json
 {
   "timestamp": "2024-01-15T10:30:45.123Z",
-  "level": "INFO", 
+  "level": "INFO",
   "message": "Request started: POST /api/v1/sessions/abc/query",
   "correlation_id": "req_12345",
   "session_id": "abc",
@@ -203,7 +203,7 @@ The logging system is deeply integrated with the FaultMaven AI agent:
 ```python
 # Agent phase tracking
 context.agent_phase = "define_blast_radius"
-logger.info("Agent phase started", 
+logger.info("Agent phase started",
            agent_phase="define_blast_radius",
            investigation_id="inv_123")
 ```
@@ -352,7 +352,7 @@ The structured logging format enables easy integration with:
   }
 }
 
-// Error cascade prevention effectiveness  
+// Error cascade prevention effectiveness
 {
   "query": "level:ERROR",
   "aggregations": {

@@ -12,7 +12,7 @@ import csv
 import io
 import json
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -22,7 +22,7 @@ from faultmaven.services.preprocessing.extractors.utils import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 try:
     from prometheus_client.parser import text_string_to_metric_families
@@ -405,7 +405,7 @@ class MetricsAndPerformanceExtractor:
                 counts = col_values[header[i]]
                 counts[val] = counts.get(val, 0) + 1
 
-        out = [f"=== CSV STRUCTURE SUMMARY ===\n"]
+        out = ["=== CSV STRUCTURE SUMMARY ===\n"]
         out.append(f"Rows: {total_rows} (valid: {valid_rows})")
         out.append(f"Columns ({len(header)}): {', '.join(header)}\n")
 

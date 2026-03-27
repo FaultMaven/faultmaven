@@ -32,7 +32,7 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0                      # Run all tests without services"
-    echo "  $0 -s                   # Run all tests with live services"  
+    echo "  $0 -s                   # Run all tests with live services"
     echo "  $0 -v -c               # Run with verbose output and coverage"
     echo "  $0 -t test_error_propagation_logging  # Run specific test"
     echo ""
@@ -106,21 +106,21 @@ fi
 # Check for required services if not skipping
 if [[ "$SKIP_SERVICES" == false ]]; then
     echo -e "${YELLOW}Checking for required services...${NC}"
-    
+
     # Check for backend API
     if ! curl -s http://localhost:8090/health >/dev/null 2>&1; then
         echo -e "${RED}Error: Backend API not running at http://localhost:8090${NC}"
         echo -e "${YELLOW}Start services with: docker-compose up -d${NC}"
         exit 1
     fi
-    
+
     # Check for Redis
     if ! redis-cli -h localhost -p 6379 ping >/dev/null 2>&1; then
         echo -e "${RED}Error: Redis not running at localhost:6379${NC}"
         echo -e "${YELLOW}Start services with: docker-compose up -d${NC}"
         exit 1
     fi
-    
+
     echo -e "${GREEN}All services are available${NC}"
 else
     echo -e "${YELLOW}Skipping service checks (SKIP_SERVICE_CHECKS=$SKIP_SERVICES)${NC}"

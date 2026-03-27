@@ -14,8 +14,8 @@ Design Reference:
 
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
 
@@ -43,7 +43,7 @@ def chunk_structural_index(
     structural_index: str,
     max_chunk_tokens: int = 500,
     overlap_tokens: int = 50,
-) -> List[Chunk]:
+) -> list[Chunk]:
     """
     Split a Tier 1 structural index into chunks for vector DB storage.
 
@@ -131,7 +131,7 @@ async def store_in_vector_db_background(
     evidence_id: str,
     structural_index: str,
     data_type: UnifiedDataType,
-    metadata: Dict[str, Any],
+    metadata: dict[str, Any],
     case_vector_store: Any,
     max_chunk_tokens: int = 500,
     overlap_tokens: int = 50,
@@ -179,7 +179,7 @@ async def store_in_vector_db_background(
                 "section": chunk.metadata.get("section", ""),
                 "chunk_index": i,
                 "total_chunks": len(chunks),
-                "upload_timestamp": datetime.now(timezone.utc).isoformat(),
+                "upload_timestamp": datetime.now(UTC).isoformat(),
                 "extraction_version": EXTRACTION_VERSION,
             }
             # Add any scalar metadata from the caller

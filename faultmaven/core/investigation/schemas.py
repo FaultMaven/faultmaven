@@ -33,13 +33,12 @@ Applied to 23 list fields across all schemas (see git blame for specific changes
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
-    ConfidenceLevel,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
@@ -62,7 +61,7 @@ class Attachment:
     content: bytes
     filename: str
     content_type: str
-    source_metadata: Optional[Dict[str, Any]] = None
+    source_metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -75,8 +74,8 @@ class TurnPayload:
     system query is injected.
     """
 
-    query: Optional[str] = None
-    attachments: List[Attachment] = field(default_factory=list)
+    query: str | None = None
+    attachments: list[Attachment] = field(default_factory=list)
     intent: Optional["QueryIntent"] = None
 
     @property
@@ -111,15 +110,15 @@ class InternalReasoning(BaseModel):
     Reference: Prompt Engineering Guide Section 13
     """
 
-    evidence_analyzed: Optional[List[str]] = Field(
+    evidence_analyzed: list[str] | None = Field(
         default_factory=list,
         description="Evidence IDs that were considered in this turn",
     )
-    conclusions: Optional[List[ReasoningConclusion]] = Field(
+    conclusions: list[ReasoningConclusion] | None = Field(
         default_factory=list,
         description="Step-by-step reasoning from evidence to conclusions",
     )
-    milestone_justifications: Dict[str, Any] = Field(
+    milestone_justifications: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "
@@ -129,7 +128,7 @@ class InternalReasoning(BaseModel):
             "DO NOT leave empty {} when completing milestones - validation will reject."
         ),
     )
-    uncertainties: Optional[List[str]] = Field(
+    uncertainties: list[str] | None = Field(
         default_factory=list,
         description="What remains unclear or uncertain after this analysis",
     )
@@ -140,7 +139,7 @@ class ProblemConfirmation(BaseModel):
 
     problem_type: Literal["error", "slowness", "unavailability", "data_issue", "other"]
     severity_guess: Literal["critical", "high", "medium", "low", "unknown"]
-    preliminary_guidance: Optional[str] = None
+    preliminary_guidance: str | None = None
 
 
 class PreliminaryUrgency(BaseModel):
@@ -157,7 +156,7 @@ class PreliminaryUrgency(BaseModel):
         ),
     )
     impact_assessment: str
-    mitigation_hint: Optional[str] = None
+    mitigation_hint: str | None = None
 
 
 class KnowledgeMatch(BaseModel):
@@ -166,7 +165,7 @@ class KnowledgeMatch(BaseModel):
     match_type: Literal["past_case", "runbook", "documentation"]
     match_likelihood: float = Field(ge=0.0, le=1.0)
     match_summary: str
-    suggested_solution: Optional[str] = None
+    suggested_solution: str | None = None
 
 
 class KnowledgeResolution(BaseModel):
@@ -195,14 +194,14 @@ class MilestoneUpdates(BaseModel):
     """
 
     # Progress indicators (LLM-settable, non-stage-driving)
-    symptom_verified: Optional[bool] = None
-    scope_assessed: Optional[bool] = None
-    timeline_established: Optional[bool] = None
-    changes_identified: Optional[bool] = None
-    root_cause_identified: Optional[bool] = None
-    root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
+    symptom_verified: bool | None = None
+    scope_assessed: bool | None = None
+    timeline_established: bool | None = None
+    changes_identified: bool | None = None
+    root_cause_identified: bool | None = None
+    root_cause_likelihood: float | None = Field(None, ge=0.0, le=1.0)
     # solution_proposed removed (3F) — set programmatically at ProposedAction creation
-    root_cause_method: Optional[str] = Field(
+    root_cause_method: str | None = Field(
         None,
         description="direct_analysis | hypothesis_validation | correlation | other",
     )
@@ -210,19 +209,19 @@ class MilestoneUpdates(BaseModel):
     # Stage-gate milestones (LLM-settable, drive stage transitions)
     # The LLM sets these when it detects user compliance with a pending
     # ProposedAction — the user's action is the trigger, the LLM recognizes it.
-    mitigation_accepted: Optional[bool] = None
-    mitigation_verified: Optional[bool] = None
-    solution_accepted: Optional[bool] = None
+    mitigation_accepted: bool | None = None
+    mitigation_verified: bool | None = None
+    solution_accepted: bool | None = None
 
 
 class ProblemVerificationUpdate(BaseModel):
     """Updates to problem verification data."""
 
-    symptom_correction: Optional[str] = None
-    scope_impact: Optional[str] = None
-    timeline_start: Optional[str] = None
-    timeline_duration: Optional[str] = None
-    changes_list: Optional[List[str]] = Field(default_factory=list)
+    symptom_correction: str | None = None
+    scope_impact: str | None = None
+    timeline_start: str | None = None
+    timeline_duration: str | None = None
+    changes_list: list[str] | None = Field(default_factory=list)
 
 
 class EvidenceToAdd(BaseModel):
@@ -249,7 +248,7 @@ class EvidenceToAdd(BaseModel):
     """
 
     summary: str
-    content_ref: Optional[str] = Field(
+    content_ref: str | None = Field(
         default=None,
         description="Content reference or snippet. If file, use 'file:FILENAME'. Optional if summary is self-contained.",
     )
@@ -282,7 +281,7 @@ class EvidenceToAdd(BaseModel):
             return json.dumps(v, indent=2)
         return v
 
-    advances_milestones: Optional[List[str]] = Field(
+    advances_milestones: list[str] | None = Field(
         default=None,
         description=(
             "OPTIONAL: Override system-inferred milestone attribution. "
@@ -341,9 +340,9 @@ class HypothesisToAdd(BaseModel):
 class HypothesisUpdate(BaseModel):
     """Update to existing hypothesis."""
 
-    likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
-    status: Optional[HypothesisStatus] = None
-    reason: Optional[str] = None
+    likelihood: float | None = Field(None, ge=0.0, le=1.0)
+    status: HypothesisStatus | None = None
+    reason: str | None = None
 
     @field_validator("status", mode="before")
     @classmethod
@@ -408,10 +407,10 @@ class WorkingConclusionUpdate(BaseModel):
     when the agent doesn't yet have enough information to form a theory.
     """
 
-    summary: Optional[str] = None
-    likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
-    next_steps: Optional[List[str]] = Field(default_factory=list)
-    blockers: Optional[List[str]] = Field(default_factory=list)
+    summary: str | None = None
+    likelihood: float | None = Field(None, ge=0.0, le=1.0)
+    next_steps: list[str] | None = Field(default_factory=list)
+    blockers: list[str] | None = Field(default_factory=list)
 
 
 class BlockerType(str, Enum):
@@ -440,7 +439,7 @@ class EvidenceQualityIssue(BaseModel):
         description="blocking=cannot proceed, limiting=reduced confidence, minor=note only"
     )
     description: str = Field(description="What's wrong with this evidence")
-    workaround: Optional[str] = Field(
+    workaround: str | None = Field(
         None, description="How to work around this issue if possible"
     )
 
@@ -459,7 +458,7 @@ class MissingCriticalData(BaseModel):
     what_was_expected: str = Field(description="What data was expected")
     what_was_found: str = Field(description="What was actually found")
     impact: str = Field(description="How this blocks investigation progress")
-    suggested_alternatives: Optional[List[str]] = Field(
+    suggested_alternatives: list[str] | None = Field(
         default_factory=list,
         description="Alternative data sources or approaches user could try",
     )
@@ -485,7 +484,7 @@ class ProposedTransition(BaseModel):
     summary: str = Field(
         description="Summary presented to user for confirmation (e.g., problem statement, root cause, solution applied)"
     )
-    evidence_ids: Optional[List[str]] = Field(
+    evidence_ids: list[str] | None = Field(
         default_factory=list,
         description="Evidence IDs supporting this transition proposal",
     )
@@ -496,7 +495,7 @@ class RootCauseConclusionUpdate(BaseModel):
 
     root_cause: str
     mechanism: str
-    evidence_ids: List[str]
+    evidence_ids: list[str]
     likelihood: float = Field(ge=0.0, le=1.0)
 
 
@@ -507,7 +506,7 @@ class SolutionToAdd(BaseModel):
     solution_type: SolutionType
     estimated_impact: str
     risks: str
-    commands: Optional[List[str]] = Field(
+    commands: list[str] | None = Field(
         default_factory=list,
         description="Specific commands for the user to execute",
     )
@@ -539,19 +538,19 @@ class SuggestedFollowUp(BaseModel):
             "FREE_SPEECH: the question text shown to the user"
         )
     )
-    body: Optional[str] = Field(
+    body: str | None = Field(
         default=None,
         description="Reasoning text shown on card (why the user should take this action)",
     )
 
     # COOPERATIVE fields
-    cooperative_action: Optional[Literal["query_submit", "command_copy"]] = Field(
+    cooperative_action: Literal["query_submit", "command_copy"] | None = Field(
         default=None,
         description="query_submit = auto-submit as user message; command_copy = copy to clipboard",
     )
 
     # FREE_SPEECH fields
-    hints: Optional[List[str]] = Field(
+    hints: list[str] | None = Field(
         default=None,
         description="Short framework tags guiding what aspects the user should address (e.g., 'symptoms', 'timeline', 'affected services')",
     )
@@ -561,7 +560,7 @@ class BaseInteractionResponse(BaseModel):
     """Base class for all agent responses."""
 
     agent_response: str = Field(description="Natural language response to the user.")
-    suggested_follow_ups: Optional[List[SuggestedFollowUp]] = Field(
+    suggested_follow_ups: list[SuggestedFollowUp] | None = Field(
         default=None,
         description="2-4 contextual follow-up actions the user can take. Each should be specific to the current investigation state.",
     )
@@ -571,11 +570,11 @@ class InquiryResponse(BaseInteractionResponse):
     """Response schema for INQUIRY status."""
 
     class InquiryStateUpdate(BaseModel):
-        problem_confirmation: Optional[ProblemConfirmation] = None
-        proposed_problem_statement: Optional[str] = None
-        preliminary_urgency: Optional[PreliminaryUrgency] = None
-        knowledge_match: Optional[KnowledgeMatch] = None
-        knowledge_resolution: Optional[KnowledgeResolution] = None
+        problem_confirmation: ProblemConfirmation | None = None
+        proposed_problem_statement: str | None = None
+        preliminary_urgency: PreliminaryUrgency | None = None
+        knowledge_match: KnowledgeMatch | None = None
+        knowledge_resolution: KnowledgeResolution | None = None
         user_confirmed_investigation: bool = Field(
             default=False,
             description=(
@@ -588,7 +587,7 @@ class InquiryResponse(BaseInteractionResponse):
                 "(answer the question first), or message is unrelated."
             ),
         )
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(
+        evidence_to_add: list[EvidenceToAdd] | None = Field(
             default_factory=list,
             description="Evidence to create from agent findings during this turn",
         )
@@ -600,8 +599,8 @@ class TerminalResponse(BaseInteractionResponse):
     """Response schema for RESOLVED/CLOSED status."""
 
     class TerminalStateUpdate(BaseModel):
-        final_summary_update: Optional[str] = None
-        documentation_links: Optional[List[str]] = Field(default_factory=list)
+        final_summary_update: str | None = None
+        documentation_links: list[str] | None = Field(default_factory=list)
 
     state_updates: TerminalStateUpdate
 
@@ -615,28 +614,28 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
     """Schema for DIAGNOSIS stage — covers symptom verification, hypothesis work, and solution proposal."""
 
     class DiagnosisStateUpdate(BaseModel):
-        milestones: Optional[MilestoneUpdates] = None
-        verification_updates: Optional[ProblemVerificationUpdate] = None
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
-        hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
-        hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
+        milestones: MilestoneUpdates | None = None
+        verification_updates: ProblemVerificationUpdate | None = None
+        evidence_to_add: list[EvidenceToAdd] | None = Field(default_factory=list)
+        hypotheses_to_add: list[HypothesisToAdd] | None = Field(default_factory=list)
+        hypotheses_to_update: dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypothesis_evidence_links: list[HypothesisEvidenceLinkToAdd] | None = Field(
             default_factory=list
         )
-        solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
-        working_conclusion: Optional[WorkingConclusionUpdate] = None
-        root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
-        missing_critical_data: Optional[MissingCriticalData] = Field(
+        solutions_to_add: list[SolutionToAdd] | None = Field(default_factory=list)
+        working_conclusion: WorkingConclusionUpdate | None = None
+        root_cause_conclusion: RootCauseConclusionUpdate | None = None
+        missing_critical_data: MissingCriticalData | None = Field(
             None,
             description="Proactive blocker detection. Flags data quality issues via system feedback.",
         )
-        evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
+        evidence_quality_issues: list[EvidenceQualityIssue] | None = Field(
             default_factory=list,
             description="Quality issues with evidence that may limit investigation.",
         )
         outcome: TurnOutcome
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    internal_reasoning: InternalReasoning | None = Field(
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
@@ -647,22 +646,22 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
     """Schema for MITIGATION stage — applying and verifying temporary fix."""
 
     class MitigationStateUpdate(BaseModel):
-        milestones: Optional[MilestoneUpdates] = None
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
-        solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
-        solution_feedback: Optional[str] = None
-        working_conclusion: Optional[WorkingConclusionUpdate] = None
-        missing_critical_data: Optional[MissingCriticalData] = Field(
+        milestones: MilestoneUpdates | None = None
+        evidence_to_add: list[EvidenceToAdd] | None = Field(default_factory=list)
+        solutions_to_add: list[SolutionToAdd] | None = Field(default_factory=list)
+        solution_feedback: str | None = None
+        working_conclusion: WorkingConclusionUpdate | None = None
+        missing_critical_data: MissingCriticalData | None = Field(
             None,
             description="Proactive blocker detection. Flags data quality issues via system feedback.",
         )
-        evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
+        evidence_quality_issues: list[EvidenceQualityIssue] | None = Field(
             default_factory=list,
             description="Quality issues with evidence that may limit investigation.",
         )
         outcome: TurnOutcome
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    internal_reasoning: InternalReasoning | None = Field(
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
@@ -673,18 +672,18 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
     """Schema for TREATMENT stage — verifying fix, extended diagnosis if fix fails."""
 
     class TreatmentStateUpdate(BaseModel):
-        milestones: Optional[MilestoneUpdates] = None
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
-        hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
-        hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
+        milestones: MilestoneUpdates | None = None
+        evidence_to_add: list[EvidenceToAdd] | None = Field(default_factory=list)
+        hypotheses_to_add: list[HypothesisToAdd] | None = Field(default_factory=list)
+        hypotheses_to_update: dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypothesis_evidence_links: list[HypothesisEvidenceLinkToAdd] | None = Field(
             default_factory=list
         )
-        solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
-        solution_feedback: Optional[str] = None
-        working_conclusion: Optional[WorkingConclusionUpdate] = None
-        root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
-        proposed_transition: Optional[ProposedTransition] = Field(
+        solutions_to_add: list[SolutionToAdd] | None = Field(default_factory=list)
+        solution_feedback: str | None = None
+        working_conclusion: WorkingConclusionUpdate | None = None
+        root_cause_conclusion: RootCauseConclusionUpdate | None = None
+        proposed_transition: ProposedTransition | None = Field(
             None,
             description=(
                 "Propose a terminal transition (RESOLVED/CLOSED) for user confirmation. "
@@ -693,7 +692,7 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
         )
         outcome: TurnOutcome
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    internal_reasoning: InternalReasoning | None = Field(
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
@@ -704,26 +703,26 @@ class InvestigationResponse_General(BaseInteractionResponse):
     """Fallback 'Full' schema if stage is ambiguous or degraded."""
 
     class GeneralStateUpdate(BaseModel):
-        milestones: Optional[MilestoneUpdates] = None
-        verification_updates: Optional[ProblemVerificationUpdate] = None
-        evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
-        hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Dict[str, HypothesisUpdate] = Field(default_factory=dict)
-        hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
+        milestones: MilestoneUpdates | None = None
+        verification_updates: ProblemVerificationUpdate | None = None
+        evidence_to_add: list[EvidenceToAdd] | None = Field(default_factory=list)
+        hypotheses_to_add: list[HypothesisToAdd] | None = Field(default_factory=list)
+        hypotheses_to_update: dict[str, HypothesisUpdate] = Field(default_factory=dict)
+        hypothesis_evidence_links: list[HypothesisEvidenceLinkToAdd] | None = Field(
             default_factory=list
         )
-        solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
-        working_conclusion: Optional[WorkingConclusionUpdate] = None
-        root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
-        missing_critical_data: Optional[MissingCriticalData] = Field(
+        solutions_to_add: list[SolutionToAdd] | None = Field(default_factory=list)
+        working_conclusion: WorkingConclusionUpdate | None = None
+        root_cause_conclusion: RootCauseConclusionUpdate | None = None
+        missing_critical_data: MissingCriticalData | None = Field(
             None,
             description="Proactive blocker detection. Flags data quality issues via system feedback.",
         )
-        evidence_quality_issues: Optional[List[EvidenceQualityIssue]] = Field(
+        evidence_quality_issues: list[EvidenceQualityIssue] | None = Field(
             default_factory=list,
             description="Quality issues with evidence that may limit investigation.",
         )
-        proposed_transition: Optional[ProposedTransition] = Field(
+        proposed_transition: ProposedTransition | None = Field(
             None,
             description=(
                 "Propose a terminal transition (RESOLVED/CLOSED) for user confirmation. "
@@ -732,14 +731,14 @@ class InvestigationResponse_General(BaseInteractionResponse):
         )
         outcome: TurnOutcome
 
-    internal_reasoning: Optional[InternalReasoning] = Field(
+    internal_reasoning: InternalReasoning | None = Field(
         None,
         description="REQUIRED when completing milestones, otherwise optional. Justification BEFORE state changes.",
     )
     state_updates: GeneralStateUpdate
 
 
-def get_schema_for_stage(stage: Optional[InvestigationStage]) -> Any:
+def get_schema_for_stage(stage: InvestigationStage | None) -> Any:
     """Factory to get the appropriate Pydantic model for the current stage."""
     if stage == InvestigationStage.DIAGNOSIS:
         return InvestigationResponse_Diagnosis

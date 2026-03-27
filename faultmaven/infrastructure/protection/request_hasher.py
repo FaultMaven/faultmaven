@@ -6,15 +6,10 @@ with normalization and security features.
 """
 
 import hashlib
-import hmac
 import json
 import logging
 import re
-import time
-from typing import Any, Dict, List, Optional, Set
-from urllib.parse import parse_qs, urlencode
-
-from ...models.protection import DeduplicationConfig
+from typing import Any
 
 
 class RequestHasher:
@@ -34,7 +29,7 @@ class RequestHasher:
         self.logger = logging.getLogger(__name__)
 
         # Fields to exclude from hashing (to normalize requests)
-        self.excluded_fields: Set[str] = {
+        self.excluded_fields: set[str] = {
             # Timestamps
             "timestamp",
             "created_at",
@@ -98,9 +93,9 @@ class RequestHasher:
         session_id: str,
         endpoint: str,
         method: str = "POST",
-        body: Optional[str] = None,
-        query_params: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        body: str | None = None,
+        query_params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> str:
         """
         Generate a secure hash for request deduplication
@@ -164,7 +159,7 @@ class RequestHasher:
 
         return endpoint
 
-    def _normalize_body(self, body: Optional[str]) -> str:
+    def _normalize_body(self, body: str | None) -> str:
         """Normalize request body content"""
         if not body:
             return ""
@@ -225,7 +220,7 @@ class RequestHasher:
 
         return normalized
 
-    def _normalize_params(self, params: Optional[Dict[str, Any]]) -> str:
+    def _normalize_params(self, params: dict[str, Any] | None) -> str:
         """Normalize query parameters"""
         if not params:
             return ""
@@ -252,7 +247,7 @@ class RequestHasher:
         # Convert to string representation
         return json.dumps(normalized_params, sort_keys=True, separators=(",", ":"))
 
-    def _normalize_headers(self, headers: Optional[Dict[str, str]]) -> str:
+    def _normalize_headers(self, headers: dict[str, str] | None) -> str:
         """Normalize relevant headers"""
         if not headers:
             return ""
@@ -286,7 +281,7 @@ class RequestHasher:
         ).hex()
 
     def hash_title_generation_request(
-        self, session_id: str, conversation_context: Optional[str] = None
+        self, session_id: str, conversation_context: str | None = None
     ) -> str:
         """
         Specialized hash for title generation requests
@@ -329,7 +324,7 @@ class RequestHasher:
         except ValueError:
             return False
 
-    def get_hash_stats(self) -> Dict[str, Any]:
+    def get_hash_stats(self) -> dict[str, Any]:
         """Get statistics about hashing operations"""
         return {
             "excluded_fields_count": len(self.excluded_fields),

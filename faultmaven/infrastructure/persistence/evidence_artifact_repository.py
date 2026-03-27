@@ -30,8 +30,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -73,7 +72,7 @@ class EvidenceArtifactRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_evidence(self, evidence_id: str) -> Optional[EvidenceArtifact]:
+    async def get_evidence(self, evidence_id: str) -> EvidenceArtifact | None:
         """Get evidence artifact by ID.
 
         Args:
@@ -88,10 +87,10 @@ class EvidenceArtifactRepository(ABC):
     async def list_evidence_by_case(
         self,
         case_id: str,
-        evidence_type: Optional[EvidenceArtifactType] = None,
+        evidence_type: EvidenceArtifactType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List[EvidenceArtifact], int]:
+    ) -> tuple[list[EvidenceArtifact], int]:
         """List evidence artifacts for a case.
 
         Args:
@@ -134,7 +133,7 @@ class EvidenceArtifactRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_primary_evidence(self, case_id: str) -> Optional[EvidenceArtifact]:
+    async def get_primary_evidence(self, case_id: str) -> EvidenceArtifact | None:
         """Get primary/featured evidence artifact for case.
 
         Args:
@@ -239,7 +238,7 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
                 f"Failed to create evidence artifact: {e}"
             ) from e
 
-    async def get_evidence(self, evidence_id: str) -> Optional[EvidenceArtifact]:
+    async def get_evidence(self, evidence_id: str) -> EvidenceArtifact | None:
         """Get evidence artifact by ID."""
         try:
             stmt = select(EvidenceArtifactModel).where(
@@ -262,10 +261,10 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
     async def list_evidence_by_case(
         self,
         case_id: str,
-        evidence_type: Optional[EvidenceArtifactType] = None,
+        evidence_type: EvidenceArtifactType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List[EvidenceArtifact], int]:
+    ) -> tuple[list[EvidenceArtifact], int]:
         """List evidence artifacts for a case."""
         try:
             # Build query conditions
@@ -311,7 +310,7 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
     async def update_evidence(self, evidence: EvidenceArtifact) -> EvidenceArtifact:
         """Update existing evidence artifact."""
         try:
-            evidence.updated_at = datetime.now(timezone.utc)
+            evidence.updated_at = datetime.now(UTC)
 
             stmt = (
                 update(EvidenceArtifactModel)
@@ -367,7 +366,7 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
                 f"Failed to delete evidence artifact {evidence_id}: {e}"
             ) from e
 
-    async def get_primary_evidence(self, case_id: str) -> Optional[EvidenceArtifact]:
+    async def get_primary_evidence(self, case_id: str) -> EvidenceArtifact | None:
         """Get primary/featured evidence artifact for case."""
         try:
             stmt = select(EvidenceArtifactModel).where(
@@ -427,7 +426,7 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
                         EvidenceArtifactModel.case_id == case_id,
                     )
                 )
-                .values(is_primary=True, updated_at=datetime.now(timezone.utc))
+                .values(is_primary=True, updated_at=datetime.now(UTC))
                 .execution_options(synchronize_session=False)
             )
 
@@ -491,12 +490,12 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
             is_primary=model.is_primary,
         )
 
-    def _ensure_tz_aware(self, dt: Optional[datetime]) -> Optional[datetime]:
+    def _ensure_tz_aware(self, dt: datetime | None) -> datetime | None:
         """Ensure datetime is timezone-aware (UTC if naive)."""
         if dt is None:
             return None
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=UTC)
         return dt
 
 
@@ -505,7 +504,7 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
 
     def __init__(self):
         """Initialize empty evidence artifact storage."""
-        self._evidence: Dict[str, EvidenceArtifact] = {}
+        self._evidence: dict[str, EvidenceArtifact] = {}
 
     async def create_evidence(self, evidence: EvidenceArtifact) -> EvidenceArtifact:
         """Create new evidence artifact record in memory."""
@@ -515,7 +514,7 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
         self._evidence[evidence.evidence_id] = deepcopy(evidence)
         return deepcopy(evidence)
 
-    async def get_evidence(self, evidence_id: str) -> Optional[EvidenceArtifact]:
+    async def get_evidence(self, evidence_id: str) -> EvidenceArtifact | None:
         """Get evidence artifact by ID."""
         evidence = self._evidence.get(evidence_id)
         return deepcopy(evidence) if evidence else None
@@ -523,10 +522,10 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
     async def list_evidence_by_case(
         self,
         case_id: str,
-        evidence_type: Optional[EvidenceArtifactType] = None,
+        evidence_type: EvidenceArtifactType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Tuple[List[EvidenceArtifact], int]:
+    ) -> tuple[list[EvidenceArtifact], int]:
         """List evidence artifacts for a case."""
         # Filter by case
         evidence_list = [e for e in self._evidence.values() if e.case_id == case_id]
@@ -552,7 +551,7 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
         if evidence.evidence_id not in self._evidence:
             raise ValueError(f"Evidence artifact {evidence.evidence_id} not found")
 
-        evidence.updated_at = datetime.now(timezone.utc)
+        evidence.updated_at = datetime.now(UTC)
         self._evidence[evidence.evidence_id] = deepcopy(evidence)
         return deepcopy(evidence)
 
@@ -563,7 +562,7 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
             return True
         return False
 
-    async def get_primary_evidence(self, case_id: str) -> Optional[EvidenceArtifact]:
+    async def get_primary_evidence(self, case_id: str) -> EvidenceArtifact | None:
         """Get primary/featured evidence artifact for case."""
         for evidence in self._evidence.values():
             if evidence.case_id == case_id and evidence.is_primary:
@@ -588,7 +587,7 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
 
         # Set new primary
         self._evidence[evidence_id].is_primary = True
-        self._evidence[evidence_id].updated_at = datetime.now(timezone.utc)
+        self._evidence[evidence_id].updated_at = datetime.now(UTC)
 
         return True
 

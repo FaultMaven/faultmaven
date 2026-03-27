@@ -13,9 +13,8 @@ Key Components:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
 
 from faultmaven.utils.datetime import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
@@ -121,7 +120,7 @@ class AuthToken:
     token_hash: str
     expires_at: datetime
     created_at: datetime
-    last_used_at: Optional[datetime] = None
+    last_used_at: datetime | None = None
     is_revoked: bool = False
 
     def to_dict(self) -> dict:
@@ -158,7 +157,7 @@ class AuthToken:
     @property
     def is_expired(self) -> bool:
         """Check if token is expired"""
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     @property
     def is_valid(self) -> bool:
@@ -180,8 +179,8 @@ class TokenValidationResult:
     """
 
     status: TokenStatus
-    user: Optional[DevUser] = None
-    error_message: Optional[str] = None
+    user: DevUser | None = None
+    error_message: str | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -220,7 +219,7 @@ class AuthenticatedUser:
     email: str
     roles: list[str]
     permissions: list[str]
-    token_jti: Optional[str] = None
+    token_jti: str | None = None
 
     def has_permission(self, permission: str) -> bool:
         """Check if user has a specific permission.

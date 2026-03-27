@@ -13,7 +13,6 @@ Usage:
 
 import logging
 import os
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +60,10 @@ class PIIRedactor:
     def __init__(self) -> None:
         """Initialize PII redactor."""
         self.pii_enabled = _is_pii_redaction_enabled()
-        self._analyzer: Optional[object] = None
-        self._anonymizer: Optional[object] = None
+        self._analyzer: object | None = None
+        self._anonymizer: object | None = None
         self.active = False
-        self._initialization_error: Optional[str] = None
+        self._initialization_error: str | None = None
 
         if PRESIDIO_AVAILABLE and self.pii_enabled:
             try:
@@ -87,7 +86,7 @@ class PIIRedactor:
             logger.debug(f"PII redaction disabled ({', '.join(reason)})")
 
     def redact(
-        self, text: str, entities: Optional[List[str]] = None, language: str = "en"
+        self, text: str, entities: list[str] | None = None, language: str = "en"
     ) -> str:
         """
         Redact PII from text.

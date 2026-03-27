@@ -21,7 +21,7 @@ Usage:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from openai import (
     APIConnectionError,
@@ -92,7 +92,7 @@ class EmbeddingService:
         self.max_text_length = max_text_length
         self._total_tokens = 0
 
-    async def generate_embedding(self, text: str) -> List[float]:
+    async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding for text.
 
         Args:
@@ -109,9 +109,9 @@ class EmbeddingService:
         self._validate_text(text)
         return await self._generate_embedding_impl(text)
 
-    async def _generate_embedding_impl(self, text: str) -> List[float]:
+    async def _generate_embedding_impl(self, text: str) -> list[float]:
         """Internal implementation of embedding generation with retries."""
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
             try:
@@ -196,9 +196,9 @@ class EmbeddingService:
 
     async def generate_embeddings_batch(
         self,
-        texts: List[str],
+        texts: list[str],
         batch_size: int = 100,
-    ) -> List[List[float]]:
+    ) -> list[list[float]]:
         """Generate embeddings for multiple texts in batches.
 
         Args:
@@ -218,14 +218,14 @@ class EmbeddingService:
 
     async def _generate_embeddings_batch_impl(
         self,
-        texts: List[str],
+        texts: list[str],
         batch_size: int,
-    ) -> List[List[float]]:
+    ) -> list[list[float]]:
         """Internal implementation of batch embedding generation."""
         if not texts:
             return []
 
-        all_embeddings: List[List[float]] = []
+        all_embeddings: list[list[float]] = []
 
         # Process in batches
         for i in range(0, len(texts), batch_size):
@@ -237,9 +237,9 @@ class EmbeddingService:
 
         return all_embeddings
 
-    async def _process_batch(self, batch: List[str]) -> List[List[float]]:
+    async def _process_batch(self, batch: list[str]) -> list[list[float]]:
         """Process a single batch of texts."""
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
             try:
@@ -365,7 +365,7 @@ class EmbeddingService:
                 },
             )
 
-    def _validate_texts(self, texts: List[str]) -> None:
+    def _validate_texts(self, texts: list[str]) -> None:
         """Validate a list of texts for batch embedding.
 
         Args:
@@ -401,7 +401,7 @@ class EmbeddingService:
         """Reset the token counter to zero."""
         self._total_tokens = 0
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get service statistics.
 
         Returns:
@@ -415,7 +415,7 @@ class EmbeddingService:
             "retry_delay": self.retry_delay,
         }
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Perform health check for the embedding service.
 
         Returns:

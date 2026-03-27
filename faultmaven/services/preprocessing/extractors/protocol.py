@@ -10,7 +10,7 @@ All extractors must implement:
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 
 @runtime_checkable

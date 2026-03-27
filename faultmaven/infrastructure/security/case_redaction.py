@@ -20,8 +20,7 @@ Usage:
 
 import json
 import logging
-import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +61,8 @@ class CaseRedactionContext:
         self._redis_key = f"{self.REDIS_KEY_PREFIX}:{case_id}"
 
         # Bidirectional mapping state
-        self._forward: Dict[str, Dict[str, str]] = {}  # type → {value → placeholder}
-        self._reverse: Dict[str, str] = {}  # placeholder → original value
+        self._forward: dict[str, dict[str, str]] = {}  # type → {value → placeholder}
+        self._reverse: dict[str, str] = {}  # placeholder → original value
         self._dirty = False  # Track whether save is needed
         self._loaded = False
 

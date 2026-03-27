@@ -18,8 +18,7 @@ Design Reference: docs/architecture/document-generation-and-closure-design.md
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
@@ -39,14 +38,10 @@ from faultmaven.models.interfaces_case import ICaseService
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.contracts import (
-    CaseClosureRequest,
-    CaseClosureResponse,
     CaseReport,
     ICaseRepository,
     ReportGenerationRequest,
     ReportGenerationResponse,
-    ReportRecommendation,
-    ReportStatus,
     ReportType,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
@@ -79,7 +74,7 @@ class ReportResponse(BaseModel):
     is_current: bool
     version: int
     linked_to_closure: bool
-    metadata: Optional[dict] = None
+    metadata: dict | None = None
 
     @classmethod
     def from_domain(cls, report: CaseReport) -> "ReportResponse":
@@ -104,7 +99,7 @@ class ReportResponse(BaseModel):
 class ReportListResponse(BaseModel):
     """API response for list of reports."""
 
-    reports: List[ReportResponse]
+    reports: list[ReportResponse]
     total: int
     case_id: str
 
@@ -112,10 +107,8 @@ class ReportListResponse(BaseModel):
 class ReportUpdateRequest(BaseModel):
     """Request model for updating a report."""
 
-    title: Optional[str] = Field(None, min_length=10, max_length=200)
-    content: Optional[str] = Field(
-        None, description="Updated report content in markdown"
-    )
+    title: str | None = Field(None, min_length=10, max_length=200)
+    content: str | None = Field(None, description="Updated report content in markdown")
 
 
 class ReportVersionResponse(BaseModel):
@@ -132,14 +125,14 @@ class ReportVersionResponse(BaseModel):
 class ReportVersionListResponse(BaseModel):
     """List of report versions."""
 
-    versions: List[ReportVersionResponse]
+    versions: list[ReportVersionResponse]
     total: int
 
 
 class LinkCaseRequest(BaseModel):
     """Request to link report to case closure."""
 
-    closure_note: Optional[str] = Field(None, max_length=500)
+    closure_note: str | None = Field(None, max_length=500)
 
 
 class LinkCaseResponse(BaseModel):
@@ -156,7 +149,7 @@ class ReportRecommendationResponse(BaseModel):
     """API response for report recommendations."""
 
     case_id: str
-    available_for_generation: List[str]
+    available_for_generation: list[str]
     runbook_recommendation: dict
 
 
@@ -166,7 +159,7 @@ class ReportRecommendationResponse(BaseModel):
 
 
 def check_case_repository_available(
-    case_repository: Optional[ICaseRepository],
+    case_repository: ICaseRepository | None,
 ) -> ICaseRepository:
     """Check if case repository is available and raise appropriate error if not."""
     if case_repository is None:
@@ -177,7 +170,7 @@ def check_case_repository_available(
     return case_repository
 
 
-def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
+def check_case_service_available(case_service: ICaseService | None) -> ICaseService:
     """Check if case service is available."""
     if case_service is None:
         raise HTTPException(status_code=503, detail="Case service unavailable")
@@ -185,7 +178,7 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
 
 
 def check_tenant_provider_available(
-    tenant_provider: Optional[TenantProvider],
+    tenant_provider: TenantProvider | None,
 ) -> TenantProvider:
     """Check if tenant provider is available."""
     if tenant_provider is None:
@@ -196,7 +189,7 @@ def check_tenant_provider_available(
 async def validate_organization_access(
     tenant_provider: TenantProvider,
     current_user: UserDTO,
-    case_organization_id: Optional[str] = None,
+    case_organization_id: str | None = None,
 ) -> None:
     """Validate user has access to the organization context.
 
@@ -255,8 +248,8 @@ async def generate_report(
     request: ReportGenerationRequest,
     case_id: str = Query(..., description="Case ID to generate reports for"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_service: ICaseService | None = Depends(get_case_service),
     generation_service=Depends(get_report_generation_service),
 ) -> ReportGenerationResponse:
     """Generate reports for a case.
@@ -288,7 +281,7 @@ async def generate_report(
         await validate_organization_access(tenant_provider, current_user)
 
     logger.info(
-        f"Generating reports for case",
+        "Generating reports for case",
         extra={
             "case_id": case_id,
             "user_id": current_user.user_id,
@@ -320,7 +313,7 @@ async def generate_report(
         )
 
         logger.info(
-            f"Reports generated successfully",
+            "Reports generated successfully",
             extra={"case_id": case_id, "report_count": len(response.reports)},
         )
 
@@ -346,8 +339,8 @@ async def generate_report(
 async def get_report_recommendations(
     case_id: str = Path(..., description="Case ID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_service: ICaseService | None = Depends(get_case_service),
     rec_service=Depends(get_report_recommendation_service),
 ) -> ReportRecommendationResponse:
     """Get report generation recommendations.
@@ -433,9 +426,9 @@ async def get_report_recommendations(
 async def get_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_repository: ICaseRepository | None = Depends(get_case_repository),
+    case_service: ICaseService | None = Depends(get_case_service),
 ) -> ReportResponse:
     """Get report by ID.
 
@@ -458,7 +451,7 @@ async def get_report(
     case_repository = check_case_repository_available(case_repository)
 
     logger.info(
-        f"Getting report",
+        "Getting report",
         extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
@@ -498,9 +491,9 @@ async def update_report(
     report_id: str = Path(..., description="Report UUID"),
     request: ReportUpdateRequest = Body(...),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_repository: ICaseRepository | None = Depends(get_case_repository),
+    case_service: ICaseService | None = Depends(get_case_service),
 ) -> ReportResponse:
     """Update existing report.
 
@@ -530,7 +523,7 @@ async def update_report(
     case_repository = check_case_repository_available(case_repository)
 
     logger.info(
-        f"Updating report",
+        "Updating report",
         extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
@@ -559,7 +552,7 @@ async def update_report(
         # Create updated report (new version)
         # Note: When creating a new version via update, generated_at is set to current time
         # updated_at will be set by repository's update_report method
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         generated_at_str = to_json_compatible(now)
         updated_report = CaseReport(
             report_id=existing_report.report_id,
@@ -582,7 +575,7 @@ async def update_report(
         updated_report = await case_repository.update_report(updated_report)
 
         logger.info(
-            f"Report updated",
+            "Report updated",
             extra={"report_id": report_id, "new_version": updated_report.version},
         )
 
@@ -607,9 +600,9 @@ async def update_report(
 async def delete_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_repository: ICaseRepository | None = Depends(get_case_repository),
+    case_service: ICaseService | None = Depends(get_case_service),
 ) -> None:
     """Delete report.
 
@@ -633,7 +626,7 @@ async def delete_report(
     case_repository = check_case_repository_available(case_repository)
 
     logger.info(
-        f"Deleting report",
+        "Deleting report",
         extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
@@ -666,7 +659,7 @@ async def delete_report(
             raise HTTPException(status_code=500, detail="Failed to delete report")
 
         logger.info(
-            f"Report deleted successfully",
+            "Report deleted successfully",
             extra={"report_id": report_id, "case_id": report.case_id},
         )
 
@@ -691,11 +684,11 @@ async def list_reports_for_case(
     include_history: bool = Query(
         False, description="Include all versions or only current"
     ),
-    report_type: Optional[str] = Query(None, description="Filter by report type"),
+    report_type: str | None = Query(None, description="Filter by report type"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_repository: ICaseRepository | None = Depends(get_case_repository),
+    case_service: ICaseService | None = Depends(get_case_service),
 ) -> ReportListResponse:
     """List all reports for a case.
 
@@ -727,7 +720,7 @@ async def list_reports_for_case(
             )
 
     logger.info(
-        f"Listing reports for case",
+        "Listing reports for case",
         extra={
             "case_id": case_id,
             "user_id": current_user.user_id,
@@ -775,9 +768,9 @@ async def list_reports_for_case(
 async def get_report_versions(
     report_id: str = Path(..., description="Report UUID"),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_repository: ICaseRepository | None = Depends(get_case_repository),
+    case_service: ICaseService | None = Depends(get_case_service),
 ) -> ReportVersionListResponse:
     """Get version history for a report.
 
@@ -801,7 +794,7 @@ async def get_report_versions(
     case_repository = check_case_repository_available(case_repository)
 
     logger.info(
-        f"Getting report versions",
+        "Getting report versions",
         extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
@@ -864,9 +857,9 @@ async def link_report_to_case_closure(
     report_id: str = Path(..., description="Report UUID"),
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
     current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_repository: Optional[ICaseRepository] = Depends(get_case_repository),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
+    tenant_provider: TenantProvider | None = Depends(get_tenant_provider),
+    case_repository: ICaseRepository | None = Depends(get_case_repository),
+    case_service: ICaseService | None = Depends(get_case_service),
 ) -> LinkCaseResponse:
     """Link report to case closure.
 
@@ -896,7 +889,7 @@ async def link_report_to_case_closure(
     case_service = check_case_service_available(case_service)
 
     logger.info(
-        f"Linking report to case closure",
+        "Linking report to case closure",
         extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
@@ -933,10 +926,10 @@ async def link_report_to_case_closure(
             r.linked_to_closure = True
             await case_repository.update_report(r)
 
-        linked_at = to_json_compatible(datetime.now(timezone.utc))
+        linked_at = to_json_compatible(datetime.now(UTC))
 
         logger.info(
-            f"Reports linked to case closure",
+            "Reports linked to case closure",
             extra={"case_id": report.case_id, "report_count": len(report_ids)},
         )
 

@@ -5,8 +5,7 @@ This module implements the Fireworks AI LLM provider for high-performance
 inference with open-source models.
 """
 
-import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 
@@ -15,7 +14,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse
 
 
 class FireworksProvider(BaseLLMProvider):
@@ -29,11 +28,11 @@ class FireworksProvider(BaseLLMProvider):
         """Check if Fireworks provider is properly configured"""
         return bool(self.config.api_key and self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> List[str]:
+    def get_supported_models(self) -> list[str]:
         """Get list of supported models"""
         return self.config.models.copy()
 
-    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
+    def supports_tool_calling(self, model: str | None = None) -> bool:
         """Check if the model supports OpenAI-compatible tool calling on Fireworks.
 
         Returns True for all models. Earlier versions blocked DeepSeek models
@@ -45,7 +44,7 @@ class FireworksProvider(BaseLLMProvider):
         return True
 
     def get_structured_output_capability(
-        self, model: Optional[str] = None
+        self, model: str | None = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for Fireworks AI models.
@@ -65,12 +64,12 @@ class FireworksProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: Optional[str] = None,
+        model: str | None = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = None,
-        messages: Optional[List[Dict[str, Any]]] = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate response using Fireworks AI with optional function calling"""
@@ -168,7 +167,7 @@ class FireworksProvider(BaseLLMProvider):
                         response_time_ms=response_time,
                         tool_calls=tool_calls,
                     )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise LLMException(
                 f"Fireworks API request timed out after {self.config.timeout}s "
                 f"(model: {effective_model})"

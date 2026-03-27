@@ -4,14 +4,12 @@ Handles evidence upload, linking, retrieval, and deletion.
 """
 
 import logging
-from typing import List, Optional, Tuple, Union
 from uuid import UUID
 
 from fastapi import UploadFile
 
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
-    EvidenceLinkRequest,
     EvidenceListFilter,
 )
 
@@ -35,9 +33,9 @@ class EvidenceService:
         self,
         file: UploadFile,
         uploaded_by: UUID,
-        description: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        case_id: Optional[UUID] = None,
+        description: str | None = None,
+        tags: list[str] | None = None,
+        case_id: UUID | None = None,
     ) -> EvidenceArtifact:
         """Upload evidence file.
 
@@ -72,9 +70,7 @@ class EvidenceService:
         logger.info(f"Evidence {evidence.evidence_id} uploaded: {file.filename}")
         return evidence
 
-    async def get_evidence(
-        self, evidence_id: Union[str, UUID]
-    ) -> Optional[EvidenceArtifact]:
+    async def get_evidence(self, evidence_id: str | UUID) -> EvidenceArtifact | None:
         """Get evidence by ID.
 
         Args:
@@ -87,7 +83,7 @@ class EvidenceService:
 
     async def list_evidence(
         self, filters: EvidenceListFilter
-    ) -> tuple[List[EvidenceArtifact], int]:
+    ) -> tuple[list[EvidenceArtifact], int]:
         """List evidence with filters.
 
         Args:
@@ -98,7 +94,7 @@ class EvidenceService:
         """
         return await self.case_repository.list_standalone_evidence(filters)
 
-    async def delete_evidence(self, evidence_id: Union[str, UUID]) -> bool:
+    async def delete_evidence(self, evidence_id: str | UUID) -> bool:
         """Delete evidence file and record.
 
         Args:
@@ -123,7 +119,7 @@ class EvidenceService:
         return deleted
 
     async def link_to_case(
-        self, evidence_id: Union[str, UUID], case_id: Union[str, UUID]
+        self, evidence_id: str | UUID, case_id: str | UUID
     ) -> EvidenceArtifact:
         """Link evidence to a case.
 
@@ -146,7 +142,7 @@ class EvidenceService:
         logger.info(f"Evidence {evidence_id} linked to case {case_id}")
         return evidence
 
-    async def get_file_url(self, evidence_id: Union[str, UUID]) -> Optional[str]:
+    async def get_file_url(self, evidence_id: str | UUID) -> str | None:
         """Get download URL for evidence file.
 
         Args:
@@ -162,8 +158,8 @@ class EvidenceService:
         return await self.storage.get_download_url(evidence.file_path)
 
     async def download_evidence(
-        self, evidence_id: Union[str, UUID]
-    ) -> Optional[Tuple[bytes, str, str]]:
+        self, evidence_id: str | UUID
+    ) -> tuple[bytes, str, str] | None:
         """Download evidence file content.
 
         Args:
@@ -188,7 +184,7 @@ class EvidenceService:
         evidence_type=None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[EvidenceArtifact]:
+    ) -> list[EvidenceArtifact]:
         """List evidence linked to a case.
 
         Args:

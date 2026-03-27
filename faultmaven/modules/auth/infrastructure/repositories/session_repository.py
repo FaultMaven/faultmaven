@@ -29,8 +29,7 @@ Usage:
 import json
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,12 +55,12 @@ class SessionRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_session(self, session_id: str) -> Optional[Session]:
+    async def get_session(self, session_id: str) -> Session | None:
         """Retrieve session by ID."""
         pass
 
     @abstractmethod
-    async def get_sessions_by_user(self, user_id: str) -> List[Session]:
+    async def get_sessions_by_user(self, user_id: str) -> list[Session]:
         """Retrieve all sessions for a user."""
         pass
 
@@ -71,7 +70,7 @@ class SessionRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_session_metadata(self, session_id: str, metadata: Dict) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: dict) -> bool:
         """Update session metadata."""
         pass
 
@@ -135,7 +134,7 @@ class DatabaseSessionRepository(SessionRepository):
             logger.error(f"Failed to create session: {e}")
             raise SessionRepositoryException(f"Failed to create session: {e}") from e
 
-    async def get_session(self, session_id: str) -> Optional[Session]:
+    async def get_session(self, session_id: str) -> Session | None:
         """
         Retrieve session by ID.
 
@@ -164,7 +163,7 @@ class DatabaseSessionRepository(SessionRepository):
                 f"Failed to get session {session_id}: {e}"
             ) from e
 
-    async def get_sessions_by_user(self, user_id: str) -> List[Session]:
+    async def get_sessions_by_user(self, user_id: str) -> list[Session]:
         """
         Retrieve all sessions for a user.
 
@@ -211,7 +210,7 @@ class DatabaseSessionRepository(SessionRepository):
             stmt = (
                 update(SessionModel)
                 .where(SessionModel.session_id == session_id)
-                .values(last_accessed=datetime.now(timezone.utc))
+                .values(last_accessed=datetime.now(UTC))
             )
             result = await self.db.execute(stmt)
             await self.db.commit()
@@ -230,7 +229,7 @@ class DatabaseSessionRepository(SessionRepository):
                 f"Failed to update last_accessed for session {session_id}: {e}"
             ) from e
 
-    async def update_session_metadata(self, session_id: str, metadata: Dict) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: dict) -> bool:
         """
         Update session metadata.
 
@@ -250,7 +249,7 @@ class DatabaseSessionRepository(SessionRepository):
                 .where(SessionModel.session_id == session_id)
                 .values(
                     session_metadata=json.dumps(metadata),
-                    last_accessed=datetime.now(timezone.utc),
+                    last_accessed=datetime.now(UTC),
                 )
             )
             result = await self.db.execute(stmt)
@@ -315,7 +314,7 @@ class DatabaseSessionRepository(SessionRepository):
             SessionRepositoryException: If cleanup fails
         """
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             stmt = delete(SessionModel).where(
                 and_(SessionModel.expires_at.isnot(None), SessionModel.expires_at < now)
             )
@@ -355,12 +354,12 @@ class DatabaseSessionRepository(SessionRepository):
             metadata=metadata,
         )
 
-    def _ensure_tz_aware(self, dt: Optional[datetime]) -> Optional[datetime]:
+    def _ensure_tz_aware(self, dt: datetime | None) -> datetime | None:
         """Ensure datetime is timezone-aware (UTC if naive)."""
         if dt is None:
             return None
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=UTC)
         return dt
 
 
@@ -369,18 +368,18 @@ class InMemorySessionRepository(SessionRepository):
 
     def __init__(self):
         """Initialize empty session storage."""
-        self._sessions: Dict[str, Session] = {}
+        self._sessions: dict[str, Session] = {}
 
     async def create_session(self, session: Session) -> Session:
         """Create a new session in memory."""
         self._sessions[session.session_id] = session
         return session
 
-    async def get_session(self, session_id: str) -> Optional[Session]:
+    async def get_session(self, session_id: str) -> Session | None:
         """Retrieve session by ID."""
         return self._sessions.get(session_id)
 
-    async def get_sessions_by_user(self, user_id: str) -> List[Session]:
+    async def get_sessions_by_user(self, user_id: str) -> list[Session]:
         """Retrieve all sessions for a user."""
         return [s for s in self._sessions.values() if s.user_id == user_id]
 
@@ -392,7 +391,7 @@ class InMemorySessionRepository(SessionRepository):
             return True
         return False
 
-    async def update_session_metadata(self, session_id: str, metadata: Dict) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: dict) -> bool:
         """Update session metadata."""
         session = self._sessions.get(session_id)
         if session:
@@ -410,7 +409,7 @@ class InMemorySessionRepository(SessionRepository):
 
     async def cleanup_expired_sessions(self) -> int:
         """Delete expired sessions from memory."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_ids = [
             sid
             for sid, s in self._sessions.items()

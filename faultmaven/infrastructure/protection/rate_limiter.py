@@ -9,8 +9,7 @@ import asyncio
 import logging
 import random
 import time
-from datetime import datetime, timezone
-from typing import Dict, Optional
+from datetime import UTC, datetime
 
 from ...models.protection import (
     LimitType,
@@ -44,7 +43,7 @@ class RedisRateLimiter:
         self._redis = None
 
         # Rate limit configurations
-        self._configs: Dict[str, RateLimitConfig] = {}
+        self._configs: dict[str, RateLimitConfig] = {}
 
         # Penalty tracking
         self._penalty_multipliers = {
@@ -74,7 +73,7 @@ class RedisRateLimiter:
             except Exception:
                 pass
 
-    def configure_limits(self, limits: Dict[str, RateLimitConfig]) -> None:
+    def configure_limits(self, limits: dict[str, RateLimitConfig]) -> None:
         """Configure rate limits."""
         self._configs = limits.copy()
         self.logger.info(f"Configured {len(limits)} rate limit types")
@@ -174,9 +173,7 @@ class RedisRateLimiter:
                 current_count=current_count,
                 limit=limit,
                 retry_after=retry_after,
-                reset_time=datetime.fromtimestamp(
-                    current_time + config.window, tz=timezone.utc
-                ),
+                reset_time=datetime.fromtimestamp(current_time + config.window, tz=UTC),
             )
 
         return RateLimitResult(
@@ -184,9 +181,7 @@ class RedisRateLimiter:
             limit_type=limit_type,
             current_count=current_count,
             limit=limit,
-            reset_time=datetime.fromtimestamp(
-                current_time + config.window, tz=timezone.utc
-            ),
+            reset_time=datetime.fromtimestamp(current_time + config.window, tz=UTC),
         )
 
     def _calculate_retry_after(self, key: str, base_window: int) -> int:
@@ -222,7 +217,7 @@ class RedisRateLimiter:
 
     async def get_rate_limit_status(
         self, key: str, limit_type: LimitType
-    ) -> Optional[RateLimitState]:
+    ) -> RateLimitState | None:
         """Get current rate limit status without incrementing."""
         config = self._configs.get(limit_type.value)
         if not config:
@@ -243,9 +238,7 @@ class RedisRateLimiter:
                 current_count=current_count,
                 limit=config.requests,
                 window=config.window,
-                reset_time=datetime.fromtimestamp(
-                    current_time + config.window, tz=timezone.utc
-                ),
+                reset_time=datetime.fromtimestamp(current_time + config.window, tz=UTC),
             )
         except Exception as e:
             self.logger.error(f"Failed to get rate limit status: {e}")
@@ -268,7 +261,7 @@ class RedisRateLimiter:
 
         return False
 
-    async def health_check(self) -> Dict[str, any]:
+    async def health_check(self) -> dict[str, any]:
         """Perform health check and return status."""
         status = {
             "redis_healthy": self._redis is not None,

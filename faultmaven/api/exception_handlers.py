@@ -13,7 +13,7 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 import logging
-from typing import Callable, Type
+from collections.abc import Callable
 
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
@@ -191,7 +191,7 @@ async def service_error_handler(
     )
 
 
-def get_exception_handlers() -> dict[Type[Exception], Callable]:
+def get_exception_handlers() -> dict[type[Exception], Callable]:
     """Get all exception handlers as a dictionary.
 
     Returns:

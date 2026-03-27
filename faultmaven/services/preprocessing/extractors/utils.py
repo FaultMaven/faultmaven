@@ -9,11 +9,11 @@ Provides:
 """
 
 import re
-from datetime import UTC, datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 # Token budget: approximate maximum output size for any extractor.
 # Individual extractors may set lower budgets but should never exceed this.

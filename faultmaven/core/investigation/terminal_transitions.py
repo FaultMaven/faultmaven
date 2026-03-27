@@ -24,7 +24,7 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 
 import logging
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
 
 from faultmaven.modules.case.contracts import Case, CaseAction, CaseStatus
 
@@ -36,7 +36,7 @@ def propose_transition(
     to_status: str,
     reason: str,
     summary: str,
-    evidence_ids: Optional[list] = None,
+    evidence_ids: list | None = None,
 ) -> None:
     """
     Store a pending transition proposal on the case.

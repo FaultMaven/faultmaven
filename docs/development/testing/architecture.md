@@ -1,7 +1,7 @@
 # Comprehensive Architecture Testing Guide
 
-**Document Type**: Architecture Testing Guide  
-**Last Updated**: August 2025  
+**Document Type**: Architecture Testing Guide
+**Last Updated**: August 2025
 **Context**: Post-Architecture Overhaul - Clean Architecture with Dependency Injection
 
 ## Overview
@@ -34,7 +34,7 @@ All tests use the FaultMaven dependency injection container for:
 
 ### 1. Settings System Testing (`test_settings_system_comprehensive.py`)
 
-**Coverage**: 37+ tests across 10 test classes  
+**Coverage**: 37+ tests across 10 test classes
 **Focus**: Complete replacement of legacy configuration system
 
 #### Test Classes Overview
@@ -81,9 +81,9 @@ def clean_env():
     for key in list(os.environ.keys()):
         if any(prefix in key for prefix in ['CHAT_', 'REDIS_', 'CHROMADB_']):
             del os.environ[key]
-    
+
     yield
-    
+
     # Restore original environment
     os.environ.clear()
     os.environ.update(original_env)
@@ -98,7 +98,7 @@ def test_production_configuration(clean_env):
         'REDIS_HOST': '192.168.0.111',
         'REDIS_PORT': '30379'
     }
-    
+
     with patch.dict(os.environ, production_env):
         settings = get_settings()
         assert settings.environment == Environment.PRODUCTION
@@ -109,7 +109,7 @@ def test_production_configuration(clean_env):
 
 ### 2. LLM Registry Testing (`test_llm_registry_comprehensive.py`)
 
-**Coverage**: 37+ tests across 7 test classes  
+**Coverage**: 37+ tests across 7 test classes
 **Focus**: Centralized 7-provider management with fallback chains
 
 #### Test Classes Overview
@@ -150,7 +150,7 @@ def test_provider_fallback_chain():
     """Test multi-provider fallback behavior."""
     registry = get_provider_registry()
     registry.reset()  # Clean state
-    
+
     # Configure multiple providers
     with patch.dict(os.environ, {
         'CHAT_PROVIDER': 'openai',
@@ -161,12 +161,12 @@ def test_provider_fallback_chain():
         # Test primary provider selection
         primary = registry.get_primary_provider()
         assert primary.name == 'openai'
-        
+
         # Test fallback chain
         fallback_chain = registry.get_fallback_chain()
         assert len(fallback_chain) >= 2
         assert 'fireworks' in [p.name for p in fallback_chain]
-        
+
         # Test provider availability
         available = registry.get_available_providers()
         assert len(available) == 3  # openai, fireworks, anthropic
@@ -174,7 +174,7 @@ def test_provider_fallback_chain():
 
 ### 3. Container Integration Testing (`test_container_integration_comprehensive.py`)
 
-**Coverage**: 38+ tests across 9 test classes  
+**Coverage**: 38+ tests across 9 test classes
 **Focus**: Complete dependency injection container system
 
 #### Test Classes Overview
@@ -209,27 +209,27 @@ class TestInterfaceResolutionAndInjection:
 def test_service_lifecycle_management():
     """Test complete service lifecycle through container."""
     from faultmaven.container import container
-    
+
     # Reset for clean state
     container.reset()
     assert container._agent_service is None
-    
+
     # Test lazy initialization
     agent_service_1 = container.get_agent_service()
     assert agent_service_1 is not None
     assert container._agent_service is agent_service_1
-    
+
     # Test singleton behavior
     agent_service_2 = container.get_agent_service()
     assert agent_service_2 is agent_service_1  # Same instance
-    
+
     # Test dependency injection
     llm_provider = container.get_llm_provider()
     sanitizer = container.get_sanitizer()
-    
+
     assert llm_provider is not None
     assert sanitizer is not None
-    
+
     # Test container reset cleanup
     container.reset()
     assert container._agent_service is None
@@ -238,7 +238,7 @@ def test_service_lifecycle_management():
 
 ### 4. Architecture Workflow Testing (`test_new_architecture_workflows.py`)
 
-**Coverage**: 18+ tests across 5 test classes  
+**Coverage**: 18+ tests across 5 test classes
 **Focus**: End-to-end integration workflows
 
 #### Test Classes Overview
@@ -275,38 +275,38 @@ async def test_complete_troubleshooting_workflow():
     """Test complete workflow through all architectural layers."""
     from faultmaven.container import container
     from faultmaven.config.settings import get_settings
-    
+
     # Reset for clean state
     container.reset()
-    
+
     # Test configuration layer
     test_env = {
         'CHAT_PROVIDER': 'fireworks',
         'FIREWORKS_API_KEY': 'test-key',
         'REDIS_HOST': 'localhost'
     }
-    
+
     with patch.dict(os.environ, test_env):
         # Validate settings layer
         settings = get_settings()
         assert settings.llm.provider == LLMProvider.FIREWORKS
-        
+
         # Validate container initialization
         agent_service = container.get_agent_service()
         assert agent_service is not None
-        
+
         # Test service layer operation
         result = await agent_service.process_query(
             "Server returning 500 errors consistently",
             "workflow-test-session"
         )
-        
+
         # Validate complete workflow results
         assert result.session_id == "workflow-test-session"
         assert len(result.response) > 100
-        assert any(keyword in result.response.lower() 
+        assert any(keyword in result.response.lower()
                   for keyword in ['server', '500', 'error'])
-        
+
         # Validate context propagation
         assert hasattr(result, 'metadata')
         assert result.metadata is not None
@@ -323,10 +323,10 @@ async def test_complete_troubleshooting_workflow():
 async def test_api_endpoint_with_container(async_client):
     """Test API endpoint using container-injected services."""
     from faultmaven.container import container
-    
+
     # Ensure clean container state
     container.reset()
-    
+
     # Test API endpoint
     response = await async_client.post(
         "/agent/query",
@@ -335,7 +335,7 @@ async def test_api_endpoint_with_container(async_client):
             "session_id": "api-test-session"
         }
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert data["session_id"] == "api-test-session"
@@ -352,28 +352,28 @@ async def test_service_with_mock_dependencies():
     """Test service layer with properly mocked dependencies."""
     from faultmaven.container import container
     from faultmaven.models.interfaces import ILLMProvider, ISanitizer
-    
+
     # Reset container and inject mocks
     container.reset()
-    
+
     # Create interface-compliant mocks
     mock_llm = Mock(spec=ILLMProvider)
     mock_llm.generate_response = AsyncMock(return_value="Mock response")
-    
+
     mock_sanitizer = Mock(spec=ISanitizer)
     mock_sanitizer.sanitize = Mock(return_value="sanitized query")
-    
+
     # Inject mocks through container
     container._llm_provider = mock_llm
     container._sanitizer = mock_sanitizer
-    
+
     # Test service operation
     agent_service = container.get_agent_service()
     result = await agent_service.process_query(
-        "Test query", 
+        "Test query",
         "service-test-session"
     )
-    
+
     # Validate service behavior
     assert result.session_id == "service-test-session"
     mock_sanitizer.sanitize.assert_called_once()
@@ -388,13 +388,13 @@ async def test_service_with_mock_dependencies():
 def test_core_domain_logic():
     """Test core domain logic without external dependencies."""
     from faultmaven.core.processing.classifier import DataClassifier
-    
+
     classifier = DataClassifier()
-    
+
     # Test with realistic data
     system_log = "2024-08-28 ERROR: Database connection timeout"
     result = classifier.classify(system_log)
-    
+
     assert result == DataType.SYSTEM_LOGS
     assert classifier.confidence_score > 0.8
 ```
@@ -408,9 +408,9 @@ def test_core_domain_logic():
 async def test_infrastructure_with_fallback():
     """Test infrastructure layer with fallback behavior."""
     from faultmaven.infrastructure.llm.router import LLMRouter
-    
+
     router = LLMRouter()
-    
+
     # Test with realistic provider configuration
     with patch.dict(os.environ, {
         'CHAT_PROVIDER': 'openai',
@@ -420,9 +420,9 @@ async def test_infrastructure_with_fallback():
         # Test primary provider
         response = await router.route("Test query")
         assert len(response) > 50
-        
+
         # Test fallback behavior (simulate primary failure)
-        with patch.object(router.primary_provider, 'generate_response', 
+        with patch.object(router.primary_provider, 'generate_response',
                          side_effect=Exception("Primary failed")):
             fallback_response = await router.route("Test query")
             assert len(fallback_response) > 50  # Fallback worked
@@ -438,26 +438,26 @@ async def test_error_propagation_across_layers():
     """Test error handling and recovery across all layers."""
     from faultmaven.container import container
     from faultmaven.models.interfaces import ILLMProvider
-    
+
     container.reset()
-    
+
     # Create mock that raises exception
     mock_llm = Mock(spec=ILLMProvider)
     mock_llm.generate_response = AsyncMock(
         side_effect=Exception("LLM service unavailable")
     )
-    
+
     container._llm_provider = mock_llm
-    
+
     # Test error propagation through service layer
     agent_service = container.get_agent_service()
-    
+
     with pytest.raises(Exception) as exc_info:
         await agent_service.process_query("Test", "error-session")
-    
+
     # Validate proper error handling
     assert "LLM service unavailable" in str(exc_info.value)
-    
+
     # Test graceful degradation if implemented
     # (Service should handle errors gracefully in production)
 ```
@@ -469,16 +469,16 @@ def test_container_performance_overhead():
     """Test container performance and resource usage."""
     from faultmaven.container import container
     import time
-    
+
     # Measure container reset performance
     start_time = time.time()
     for _ in range(100):
         container.reset()
         agent_service = container.get_agent_service()
         assert agent_service is not None
-    
+
     elapsed_time = time.time() - start_time
-    
+
     # Container operations should be fast
     assert elapsed_time < 1.0  # Less than 1 second for 100 operations
     assert elapsed_time / 100 < 0.01  # Less than 10ms per operation
@@ -492,13 +492,13 @@ def test_container_performance_overhead():
 async def test_external_service_integration():
     """Test integration with external services when available."""
     from faultmaven.container import container
-    
+
     # Skip if external services not available
     if os.getenv('SKIP_SERVICE_CHECKS', 'false').lower() == 'true':
         pytest.skip("External service checks disabled")
-    
+
     container.reset()
-    
+
     # Test with real external services if available
     try:
         agent_service = container.get_agent_service()
@@ -506,10 +506,10 @@ async def test_external_service_integration():
             "Simple test query",
             "external-integration-session"
         )
-        
+
         assert result.session_id == "external-integration-session"
         assert len(result.response) > 20
-        
+
     except Exception as e:
         # Log but don't fail if external services unavailable
         pytest.skip(f"External services unavailable: {e}")
@@ -571,16 +571,16 @@ def mock_container_dependencies():
     """Provide common mock dependencies for container testing."""
     from faultmaven.container import container
     from faultmaven.models.interfaces import ILLMProvider, ISanitizer
-    
+
     mock_llm = Mock(spec=ILLMProvider)
     mock_llm.generate_response = AsyncMock(return_value="Mock response")
-    
+
     mock_sanitizer = Mock(spec=ISanitizer)
     mock_sanitizer.sanitize = Mock(return_value="sanitized")
-    
+
     container._llm_provider = mock_llm
     container._sanitizer = mock_sanitizer
-    
+
     return {
         'llm_provider': mock_llm,
         'sanitizer': mock_sanitizer

@@ -8,9 +8,9 @@ Design Reference: TASK-009 Knowledge Item Repository Pattern
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # OpenAI text-embedding-3-small produces 1536-dimensional vectors
 EMBEDDING_DIMENSIONS = 1536
@@ -85,47 +85,47 @@ class KnowledgeItem:
     content: str
     item_type: KnowledgeItemType
     scope: str = "global"
-    owner_id: Optional[str] = None
-    team_id: Optional[str] = None
+    owner_id: str | None = None
+    team_id: str | None = None
 
     # Categorization
-    category: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
+    category: str | None = None
+    tags: list[str] = field(default_factory=list)
 
     # Vector search
     embedding_model: str = "text-embedding-3-small"
-    embedding_vector: Optional[List[float]] = None
+    embedding_vector: list[float] | None = None
     embedding_version: int = 1
 
     # Metadata
-    source_url: Optional[str] = None
-    author: Optional[str] = None
+    source_url: str | None = None
+    author: str | None = None
     language: str = "en"
 
     # Verification status
     verification_level: int = (
         0  # VerificationLevel enum value (0=experimental, 1=community, 2=admin_verified)
     )
-    verification_reason: Optional[str] = (
+    verification_reason: str | None = (
         None  # Why this level? (e.g., "Reviewed by admin on 2026-01-15")
     )
-    verified_by: Optional[str] = None  # User ID who verified
-    verified_at: Optional[datetime] = None  # When verification occurred
+    verified_by: str | None = None  # User ID who verified
+    verified_at: datetime | None = None  # When verification occurred
 
     # Lineage tracking (for suggestions that became knowledge items)
-    source_suggestion_id: Optional[str] = None  # Link back to original suggestion
+    source_suggestion_id: str | None = None  # Link back to original suggestion
 
     # Usage tracking
     view_count: int = 0
     helpful_count: int = 0
     not_helpful_count: int = 0
-    last_retrieved_at: Optional[datetime] = None
+    last_retrieved_at: datetime | None = None
 
     # Lifecycle
     is_published: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Validate knowledge item data."""
@@ -189,7 +189,7 @@ class KnowledgeItem:
         Increments view_count and updates last_retrieved_at timestamp.
         """
         self.view_count += 1
-        self.last_retrieved_at = datetime.now(timezone.utc)
+        self.last_retrieved_at = datetime.now(UTC)
         self.touch()
 
     def mark_helpful(self) -> None:
@@ -250,7 +250,7 @@ class KnowledgeItem:
         self.verification_level = level
         self.verification_reason = reason
         self.verified_by = verified_by
-        self.verified_at = datetime.now(timezone.utc)
+        self.verified_at = datetime.now(UTC)
         self.touch()
 
     def is_verified(self) -> bool:
@@ -293,7 +293,7 @@ class KnowledgeItem:
 
     def set_embedding(
         self,
-        vector: List[float],
+        vector: list[float],
         model: str = "text-embedding-3-small",
         version: int = 1,
     ) -> None:
@@ -363,7 +363,7 @@ class KnowledgeItem:
         """
         return tag in self.tags
 
-    def has_any_tags(self, tags: List[str]) -> bool:
+    def has_any_tags(self, tags: list[str]) -> bool:
         """Check if item has any of the specified tags.
 
         Args:
@@ -374,7 +374,7 @@ class KnowledgeItem:
         """
         return any(tag in self.tags for tag in tags)
 
-    def has_all_tags(self, tags: List[str]) -> bool:
+    def has_all_tags(self, tags: list[str]) -> bool:
         """Check if item has all of the specified tags.
 
         Args:
@@ -405,7 +405,7 @@ class KnowledgeItem:
 
     def touch(self) -> None:
         """Update the updated_at timestamp to current time."""
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def __repr__(self) -> str:
         return (

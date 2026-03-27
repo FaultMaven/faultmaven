@@ -19,12 +19,12 @@ Performance Overhead Target: < 2ms per monitored operation
 
 import asyncio
 import functools
-import inspect
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.models.interfaces import ITracer
@@ -40,8 +40,8 @@ class PerformanceMonitor:
 
     def __init__(
         self,
-        metrics_collector: Optional[MetricsCollector] = None,
-        tracer: Optional[ITracer] = None,
+        metrics_collector: MetricsCollector | None = None,
+        tracer: ITracer | None = None,
         enable_user_patterns: bool = True,
         enable_cache_monitoring: bool = True,
     ):
@@ -136,7 +136,7 @@ class PerformanceMonitor:
             },
         }
 
-    def get_service_config(self, service_name: str) -> Dict[str, Any]:
+    def get_service_config(self, service_name: str) -> dict[str, Any]:
         """Get configuration for a specific service"""
         return self._service_configs.get(
             service_name,
@@ -145,12 +145,12 @@ class PerformanceMonitor:
 
 
 # Global performance monitor instance
-_performance_monitor: Optional[PerformanceMonitor] = None
+_performance_monitor: PerformanceMonitor | None = None
 
 
 def initialize_performance_monitoring(
-    metrics_collector: Optional[MetricsCollector] = None,
-    tracer: Optional[ITracer] = None,
+    metrics_collector: MetricsCollector | None = None,
+    tracer: ITracer | None = None,
     enable_user_patterns: bool = True,
     enable_cache_monitoring: bool = True,
 ) -> PerformanceMonitor:
@@ -175,18 +175,18 @@ def initialize_performance_monitoring(
     return _performance_monitor
 
 
-def get_performance_monitor() -> Optional[PerformanceMonitor]:
+def get_performance_monitor() -> PerformanceMonitor | None:
     """Get the global performance monitor instance"""
     return _performance_monitor
 
 
 def monitor_service_operation(
     service: str,
-    operation: Optional[str] = None,
+    operation: str | None = None,
     include_args: bool = False,
     include_result: bool = False,
     track_user_patterns: bool = False,
-    cache_key_extractor: Optional[Callable] = None,
+    cache_key_extractor: Callable | None = None,
 ):
     """Decorator for comprehensive service operation monitoring
 
@@ -494,7 +494,7 @@ def monitor_service_operation(
     return decorator
 
 
-def monitor_memory_service(operation: Optional[str] = None):
+def monitor_memory_service(operation: str | None = None):
     """Decorator specifically for memory service operations"""
     return monitor_service_operation(
         service="memory_service",
@@ -504,7 +504,7 @@ def monitor_memory_service(operation: Optional[str] = None):
     )
 
 
-def monitor_planning_service(operation: Optional[str] = None):
+def monitor_planning_service(operation: str | None = None):
     """Decorator specifically for planning service operations"""
     return monitor_service_operation(
         service="planning_service",
@@ -515,7 +515,7 @@ def monitor_planning_service(operation: Optional[str] = None):
 
 
 def monitor_knowledge_service(
-    operation: Optional[str] = None, cache_key_extractor: Optional[Callable] = None
+    operation: str | None = None, cache_key_extractor: Callable | None = None
 ):
     """Decorator specifically for knowledge service operations"""
     return monitor_service_operation(
@@ -528,7 +528,7 @@ def monitor_knowledge_service(
     )
 
 
-def monitor_orchestration_service(operation: Optional[str] = None):
+def monitor_orchestration_service(operation: str | None = None):
     """Decorator specifically for orchestration service operations"""
     return monitor_service_operation(
         service="orchestration_service",
@@ -540,7 +540,7 @@ def monitor_orchestration_service(operation: Optional[str] = None):
 
 
 def monitor_agent_service(
-    operation: Optional[str] = None, cache_key_extractor: Optional[Callable] = None
+    operation: str | None = None, cache_key_extractor: Callable | None = None
 ):
     """Decorator specifically for agent service operations"""
     return monitor_service_operation(
@@ -552,7 +552,7 @@ def monitor_agent_service(
     )
 
 
-def monitor_enhanced_agent_service(operation: Optional[str] = None):
+def monitor_enhanced_agent_service(operation: str | None = None):
     """Decorator specifically for enhanced agent service operations"""
     return monitor_service_operation(
         service="enhanced_agent_service",
@@ -600,7 +600,7 @@ def measure_workflow_step(
             ),
         }
 
-    except Exception as e:
+    except Exception:
         success = False
         raise
 
@@ -654,7 +654,7 @@ async def measure_async_workflow_step(
         knowledge_items_retrieved = step_context["knowledge_items_retrieved"]
         confidence_score = step_context["confidence_score"]
 
-    except Exception as e:
+    except Exception:
         success = False
         raise
 
@@ -799,7 +799,7 @@ def track_cache_performance(
     return decorator
 
 
-def _sanitize_args_metadata(args: tuple, kwargs: dict) -> Dict[str, Any]:
+def _sanitize_args_metadata(args: tuple, kwargs: dict) -> dict[str, Any]:
     """Sanitize argument metadata for logging"""
     metadata = {
         "arg_count": len(args),
@@ -822,7 +822,7 @@ def _sanitize_args_metadata(args: tuple, kwargs: dict) -> Dict[str, Any]:
     return metadata
 
 
-def _sanitize_result_metadata(result: Any) -> Dict[str, Any]:
+def _sanitize_result_metadata(result: Any) -> dict[str, Any]:
     """Sanitize result metadata for logging"""
     if result is None:
         return {"type": "none"}
@@ -858,7 +858,7 @@ def _track_user_interaction_pattern(
             "service": service,
             "operation": operation,
             "execution_time_ms": execution_time,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Extract operation-specific patterns
@@ -931,7 +931,7 @@ def _track_error_pattern(
             "execution_time_ms": execution_time,
             "error_type": type(error).__name__,
             "error_message": str(error)[:100],  # Truncated for privacy
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         monitor._metrics_collector.record_user_pattern(
@@ -949,7 +949,7 @@ def _track_error_pattern(
 # Performance monitoring utilities
 
 
-def get_service_performance_thresholds(service: str) -> Dict[str, Dict[str, int]]:
+def get_service_performance_thresholds(service: str) -> dict[str, dict[str, int]]:
     """Get performance thresholds for a specific service"""
     monitor = get_performance_monitor()
     if monitor:
@@ -963,7 +963,7 @@ def is_performance_monitoring_enabled() -> bool:
     return monitor is not None and monitor._metrics_collector is not None
 
 
-def get_monitoring_overhead_estimate() -> Dict[str, float]:
+def get_monitoring_overhead_estimate() -> dict[str, float]:
     """Get estimated monitoring overhead"""
     return {
         "per_operation_ms": 1.5,  # Estimated overhead per monitored operation

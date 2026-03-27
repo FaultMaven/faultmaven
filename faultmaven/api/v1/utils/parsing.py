@@ -1,11 +1,9 @@
 """API utility functions."""
 
-from typing import List, Optional, Union
-
 
 def parse_comma_separated_tags(
-    tags_input: Optional[Union[str, List[str]]] = None,
-) -> List[str]:
+    tags_input: str | list[str] | None = None,
+) -> list[str]:
     """Parse comma-separated tags into a list of strings."""
     if not tags_input:
         return []
@@ -20,13 +18,13 @@ def parse_comma_separated_tags(
 
 
 def parse_comma_separated_strings(
-    input_value: Optional[Union[str, List[str]]] = None,
-) -> List[str]:
+    input_value: str | list[str] | None = None,
+) -> list[str]:
     """Generic function to parse comma-separated strings into arrays."""
     return parse_comma_separated_tags(input_value)
 
 
-def ensure_list_field(field_value: Optional[Union[str, List]] = None) -> List:
+def ensure_list_field(field_value: str | list | None = None) -> list:
     """Ensure a field is always returned as a list."""
     if not field_value:
         return []
@@ -37,7 +35,7 @@ def ensure_list_field(field_value: Optional[Union[str, List]] = None) -> List:
     if isinstance(field_value, str):
         return (
             [field_value.strip()]
-            if not "," in field_value
+            if "," not in field_value
             else parse_comma_separated_tags(field_value)
         )
 
@@ -45,8 +43,8 @@ def ensure_list_field(field_value: Optional[Union[str, List]] = None) -> List:
 
 
 def normalize_tags_field(
-    tags_value: Optional[Union[str, List[str]]] = None,
-) -> List[str]:
+    tags_value: str | list[str] | None = None,
+) -> list[str]:
     """Normalize tags field to ensure API contract compliance (List[str]).
 
     Handles legacy data where tags might be stored as strings instead of arrays.

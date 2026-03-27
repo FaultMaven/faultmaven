@@ -13,19 +13,20 @@ Usage:
 """
 
 import asyncio
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from faultmaven.infrastructure.auth.user_store import DevUserStore
-from faultmaven.infrastructure.auth.token_manager import DevTokenManager
-from faultmaven.models.auth import DevUser
-from faultmaven.container import container
 from datetime import datetime, timezone
+
+from faultmaven.container import container
+from faultmaven.infrastructure.auth.token_manager import DevTokenManager
+from faultmaven.infrastructure.auth.user_store import DevUserStore
+from faultmaven.models.auth import DevUser
 
 
 async def main():
@@ -60,10 +61,10 @@ async def main():
             regular_user = await user_store.create_user(
                 username="test_regular_user",
                 email="regular@test.com",
-                display_name="Regular User"
+                display_name="Regular User",
             )
             # Set roles to just 'user'
-            regular_user.roles = ['user']
+            regular_user.roles = ["user"]
             await user_store.update_user(regular_user)
             print(f"   Created user: {regular_user.user_id}")
 
@@ -72,7 +73,7 @@ async def main():
         print(f"   Roles: {regular_user.roles}")
 
         # Verify roles
-        if regular_user.roles != ['user']:
+        if regular_user.roles != ["user"]:
             print(f"   ⚠️  Warning: Expected roles ['user'], got {regular_user.roles}")
         else:
             print("   ✅ Regular user has correct roles")
@@ -93,16 +94,16 @@ async def main():
             admin_user = await user_store.create_user(
                 username="test_admin_user",
                 email="admin@test.com",
-                display_name="Admin User"
+                display_name="Admin User",
             )
             # Set roles to both 'user' and 'admin'
-            admin_user.roles = ['user', 'admin']
+            admin_user.roles = ["user", "admin"]
             await user_store.update_user(admin_user)
             print(f"   Created user: {admin_user.user_id}")
 
         # Ensure admin has both roles
-        if 'admin' not in admin_user.roles:
-            admin_user.roles = ['user', 'admin']
+        if "admin" not in admin_user.roles:
+            admin_user.roles = ["user", "admin"]
             await user_store.update_user(admin_user)
 
         print(f"   Username: {admin_user.username}")
@@ -110,8 +111,8 @@ async def main():
         print(f"   Roles: {admin_user.roles}")
 
         # Verify roles
-        if 'admin' not in admin_user.roles:
-            print(f"   ❌ Error: Admin user should have 'admin' role")
+        if "admin" not in admin_user.roles:
+            print("   ❌ Error: Admin user should have 'admin' role")
             return False
         else:
             print("   ✅ Admin user has admin role")
@@ -141,15 +142,23 @@ async def main():
         admin_validation = await token_manager.validate_token(admin_token)
 
         if not regular_validation.is_valid:
-            print(f"   ❌ Regular user token validation failed: {regular_validation.error_message}")
+            print(
+                f"   ❌ Regular user token validation failed: {regular_validation.error_message}"
+            )
             return False
 
         if not admin_validation.is_valid:
-            print(f"   ❌ Admin user token validation failed: {admin_validation.error_message}")
+            print(
+                f"   ❌ Admin user token validation failed: {admin_validation.error_message}"
+            )
             return False
 
-        print(f"   Regular user validated: {regular_validation.user.username} (roles: {regular_validation.user.roles})")
-        print(f"   Admin user validated: {admin_validation.user.username} (roles: {admin_validation.user.roles})")
+        print(
+            f"   Regular user validated: {regular_validation.user.username} (roles: {regular_validation.user.roles})"
+        )
+        print(
+            f"   Admin user validated: {admin_validation.user.username} (roles: {admin_validation.user.roles})"
+        )
         print("   ✅ Tokens validated successfully")
 
     except Exception as e:
@@ -163,12 +172,12 @@ async def main():
     from faultmaven.api.v1.role_dependencies import check_user_has_role
 
     # Test regular user
-    regular_has_user_role = check_user_has_role(regular_user, 'user')
-    regular_has_admin_role = check_user_has_role(regular_user, 'admin')
+    regular_has_user_role = check_user_has_role(regular_user, "user")
+    regular_has_admin_role = check_user_has_role(regular_user, "admin")
 
     # Test admin user
-    admin_has_user_role = check_user_has_role(admin_user, 'user')
-    admin_has_admin_role = check_user_has_role(admin_user, 'admin')
+    admin_has_user_role = check_user_has_role(admin_user, "user")
+    admin_has_admin_role = check_user_has_role(admin_user, "admin")
 
     print(f"   Regular user has 'user' role: {regular_has_user_role}")
     print(f"   Regular user has 'admin' role: {regular_has_admin_role}")
@@ -220,28 +229,28 @@ async def main():
         print("2. Test API endpoints with these tokens:")
         print()
         print("   # Login as regular user (should return roles: ['user'])")
-        print(f"   curl -X POST http://localhost:8090/api/v1/auth/dev-login \\")
-        print(f"     -H 'Content-Type: application/json' \\")
-        print(f"     -d '{{\"username\": \"test_regular_user\"}}'")
+        print("   curl -X POST http://localhost:8090/api/v1/auth/dev-login \\")
+        print("     -H 'Content-Type: application/json' \\")
+        print('     -d \'{"username": "test_regular_user"}\'')
         print()
         print("   # Login as admin user (should return roles: ['user', 'admin'])")
-        print(f"   curl -X POST http://localhost:8090/api/v1/auth/dev-login \\")
-        print(f"     -H 'Content-Type: application/json' \\")
-        print(f"     -d '{{\"username\": \"test_admin_user\"}}'")
+        print("   curl -X POST http://localhost:8090/api/v1/auth/dev-login \\")
+        print("     -H 'Content-Type: application/json' \\")
+        print('     -d \'{"username": "test_admin_user"}\'')
         print()
         print("   # Try to upload as regular user (should get 403)")
-        print(f"   curl -X POST http://localhost:8090/api/v1/knowledge/documents \\")
+        print("   curl -X POST http://localhost:8090/api/v1/knowledge/documents \\")
         print(f"     -H 'Authorization: Bearer {regular_token}' \\")
-        print(f"     -F 'file=@test.txt' \\")
-        print(f"     -F 'title=Test Doc' \\")
-        print(f"     -F 'document_type=reference'")
+        print("     -F 'file=@test.txt' \\")
+        print("     -F 'title=Test Doc' \\")
+        print("     -F 'document_type=reference'")
         print()
         print("   # Try to upload as admin user (should succeed)")
-        print(f"   curl -X POST http://localhost:8090/api/v1/knowledge/documents \\")
+        print("   curl -X POST http://localhost:8090/api/v1/knowledge/documents \\")
         print(f"     -H 'Authorization: Bearer {admin_token}' \\")
-        print(f"     -F 'file=@test.txt' \\")
-        print(f"     -F 'title=Test Doc' \\")
-        print(f"     -F 'document_type=reference'")
+        print("     -F 'file=@test.txt' \\")
+        print("     -F 'title=Test Doc' \\")
+        print("     -F 'document_type=reference'")
 
         return True
     else:

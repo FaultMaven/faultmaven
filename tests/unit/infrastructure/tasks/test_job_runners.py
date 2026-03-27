@@ -10,7 +10,7 @@ Tests cover:
 import asyncio
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -73,7 +73,7 @@ class TestInMemoryJobRunner:
         def task():
             executed["done"] = True
 
-        run_at = datetime.now(timezone.utc) + timedelta(seconds=0.1)
+        run_at = datetime.now(UTC) + timedelta(seconds=0.1)
         job_id = runner.schedule_once(task_func=task, run_at=run_at, job_id="test_once")
 
         assert job_id == "test_once"
@@ -165,7 +165,7 @@ class TestInMemoryJobRunner:
             await asyncio.sleep(0.05)
             executed["done"] = True
 
-        run_at = datetime.now(timezone.utc) + timedelta(seconds=0.1)
+        run_at = datetime.now(UTC) + timedelta(seconds=0.1)
         runner.schedule_once(task_func=async_task, run_at=run_at)
 
         # Wait for job to execute

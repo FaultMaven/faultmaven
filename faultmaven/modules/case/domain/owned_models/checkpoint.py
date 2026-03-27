@@ -5,7 +5,7 @@ Used for time-travel debugging, drift detection, and undo functionality.
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ class CaseCheckpoint(BaseModel):
     )
     case_id: str = Field(..., description="ID of the case being checkpointed")
     turn_number: int = Field(..., description="Turn number this checkpoint represents")
-    case_snapshot: Dict[str, Any] = Field(
+    case_snapshot: dict[str, Any] = Field(
         ..., description="Full serialized state of the case"
     )
     snapshot_hash: str = Field(
@@ -33,7 +33,7 @@ class CaseCheckpoint(BaseModel):
         description="Event that triggered the checkpoint (e.g., 'turn_complete', 'pre_case_action')",
     )
     created_at: datetime = Field(..., description="When the checkpoint was created")
-    metadata: Dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional context metadata"
     )
 

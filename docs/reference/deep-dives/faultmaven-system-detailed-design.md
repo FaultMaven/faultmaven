@@ -25,7 +25,7 @@ graph TB
         API_CLIENT[API Clients]
         CURL[CLI Tools]
     end
-    
+
     subgraph "API Layer"
         CORS[CORS Middleware]
         LOG[Logging Middleware]
@@ -34,14 +34,14 @@ graph TB
         ROUTE[FastAPI Routers]
         DEP[Dependencies]
     end
-    
+
     subgraph "Service Layer"
         AS[Agent Service]
         DS[Data Service]
         KS[Knowledge Service]
         SS[Session Service]
     end
-    
+
     subgraph "Agentic Framework"
         AWE[Business Logic & Workflow Engine]
         ASM[State & Session Manager]
@@ -51,13 +51,13 @@ graph TB
         ARS[Response Synthesizer]
         AEM[Error Handling & Fallback Manager]
     end
-    
+
     subgraph "Adaptive Dual-Loop Framework"
         LIFECYCLE[7-Phase Lifecycle<br/>Strategic Outer Loop]
         OODA[OODA Cycles<br/>Tactical Inner Loop]
         ADAPTIVE[Adaptive Intensity<br/>Controller]
     end
-    
+
     subgraph "Core Domain"
         AGENT[AI Agent Core]
         PROC[Data Processing]
@@ -67,7 +67,7 @@ graph TB
         LOG_ANALYZER[Log Analyzer]
         PROMPT[Prompt Engine]
     end
-    
+
     subgraph "Infrastructure Layer"
         LLM[LLM Router]
         SEC[Security/PII]
@@ -78,7 +78,7 @@ graph TB
         ALERT[Alert Manager]
         CACHE[Memory Cache]
     end
-    
+
     subgraph "External Services"
         REDIS[(Redis<br/>Session Store)]
         CHROMA[(ChromaDB<br/>Vector Store)]
@@ -88,25 +88,25 @@ graph TB
         ANTHROPIC[Anthropic<br/>Claude Models]
         FIREWORKS[Fireworks AI<br/>Open Models]
     end
-    
+
     %% Client connections
     BE --> CORS
     API_CLIENT --> CORS
     CURL --> CORS
-    
+
     %% Middleware stack
     CORS --> LOG
     LOG --> PERF
     PERF --> OPIK
     OPIK --> ROUTE
     ROUTE --> DEP
-    
+
     %% Service routing
     DEP --> AS
     DEP --> DS
     DEP --> KS
     DEP --> SS
-    
+
     %% Core domain connections
     AS --> AGENT
     AS --> AWE
@@ -115,7 +115,7 @@ graph TB
     DS --> LOG_ANALYZER
     KS --> KB
     SS --> PERSIST
-    
+
     %% Agentic framework connections
     AWE --> ASM
     AWE --> ACE
@@ -124,17 +124,17 @@ graph TB
     AWE --> ARS
     AWE --> AEM
     ASM --> CACHE
-    
+
     %% Dual-Loop Framework integration
     AWE --> LIFECYCLE
     LIFECYCLE --> OODA
     OODA --> ADAPTIVE
     ADAPTIVE --> AWE
-    
+
     %% Agent tools
     AGENT --> TOOLS
     TOOLS --> KB
-    
+
     %% Infrastructure connections
     AS --> LLM
     AS --> OBS
@@ -148,7 +148,7 @@ graph TB
     ATB --> KB
     AGL --> SEC
     ARS --> LLM
-    
+
     %% External service connections
     LLM --> OPENAI
     LLM --> ANTHROPIC
@@ -158,14 +158,14 @@ graph TB
     PERSIST --> REDIS
     PERSIST --> CHROMA
     CACHE --> REDIS
-    
+
     %% Health and monitoring
     HEALTH --> REDIS
     HEALTH --> CHROMA
     HEALTH --> PRESIDIO
     HEALTH --> OPIK_SVC
     METRICS --> ALERT
-    
+
     %% Styling
     classDef external fill:#e1f5fe
     classDef api fill:#f3e5f5
@@ -174,7 +174,7 @@ graph TB
     classDef core fill:#fff3e0
     classDef infra fill:#fce4ec
     classDef storage fill:#f1f8e9
-    
+
     class BE,API_CLIENT,CURL external
     class CORS,LOG,PERF,OPIK,ROUTE,DEP api
     class AS,DS,KS,SS service
@@ -215,7 +215,7 @@ FaultMaven now implements a **dual-framework architecture** that combines strate
    - **Medium Complexity**: 3-5 OODA cycles (multi-step investigation)
    - **High Complexity**: 6+ OODA cycles (complex system issues)
 
-**Key Innovation**: 
+**Key Innovation**:
 - **Lifecycle determines WHAT** to focus on (mitigation vs RCA vs documentation)
 - **OODA determines HOW** to investigate (fast vs thorough, which steps active)
 
@@ -238,41 +238,41 @@ graph TB
         P5[["5. RESOLVE<br/>Implement Solution"]]
         P6[["6. VERIFY<br/>Confirm Resolution"]]
         P7[["7. DOCUMENT<br/>Capture Knowledge"]]
-        
+
         P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
     end
-    
+
     subgraph INNER["Inner Loop: Tactical OODA Cycles"]
         direction TB
         O["OBSERVE<br/>Gather Info 📊"]
         R["ORIENT<br/>Context 🧭"]
         D["DECIDE<br/>Action 💡"]
         A["ACT<br/>Execute ⚡"]
-        
+
         O --> R --> D --> A
         A -.->|Cycle Repeats| O
     end
-    
+
     subgraph ADAPTIVE["Adaptive Intensity Controller"]
         LOW["Low: 1-2 cycles"]
         MED["Medium: 3-5 cycles"]
         HIGH["High: 6+ cycles"]
     end
-    
+
     P2 -.->|OODA within phase| INNER
     P3 -.->|OODA within phase| INNER
     P4 -.->|OODA within phase| INNER
     P5 -.->|OODA within phase| INNER
     P6 -.->|OODA within phase| INNER
-    
+
     INNER -.->|Intensity| ADAPTIVE
-    
+
     style OUTER fill:#1e3a8a,stroke:#3b82f6,stroke-width:4px,color:#fff
     style INNER fill:#6b21a8,stroke:#a855f7,stroke-width:4px,color:#fff
     style ADAPTIVE fill:#064e3b,stroke:#10b981,stroke-width:3px,color:#fff
 ```
 
-**Documentation**: 
+**Documentation**:
 - Foundation: [`FaultMaven System Requirements v2.0 - OODA Framework`](../requirements/SYSTEM_REQUIREMENTS_V2.md)
 - Implementation: [`FaultMaven Adaptive Dual-Loop Framework - Implementation Design v2.0`](./ADAPTIVE_DUAL_LOOP_FRAMEWORK.md)
 
@@ -502,7 +502,7 @@ def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple")
 - **Performance Profiling**: Detailed timing analysis for optimization
 - **Request Correlation**: End-to-end request tracking across all layers
 
-### Service Layer  
+### Service Layer
 **Purpose**: Business logic orchestration and transaction management
 
 **Components**:
@@ -594,14 +594,14 @@ class InvestigationState:
     current_phase: int  # 1-7
     phase_name: str
     entry_phase: int
-    
+
     # OODA Engine Layer
     ooda_active: bool
     current_step: OODAStep
     current_iteration: int
     anomaly_frame: Optional[AnomalyFrame]
     hypotheses: List[Hypothesis]
-    
+
     # Memory Layer (Hierarchical)
     hot_memory: HotMemory    # Last 2 iterations
     warm_memory: WarmMemory  # Iterations 3-5, summarized
@@ -619,7 +619,7 @@ class InvestigationState:
 - **AI Agent Core**: Multi-phase troubleshooting reasoning engine integrated with dual-loop framework
 - **Data Processing**: Log analysis and insight extraction
 - **Knowledge Base**: RAG-enabled document retrieval with semantic search
-- **Agent Tools**: Knowledge search and web search capabilities  
+- **Agent Tools**: Knowledge search and web search capabilities
 - **Data Classifier**: Automatic file type and content detection
 - **Log Analyzer**: Structured log parsing and anomaly detection
 
@@ -678,7 +678,7 @@ graph TB
         EM[Episodic Memory<br/>Case History]
         OODA_MEM[OODA Memory<br/>Investigation State]
     end
-    
+
     subgraph "Memory Operations"
         CONSOLIDATE[Memory Consolidation]
         RETRIEVAL[Context-Aware Retrieval]
@@ -686,7 +686,7 @@ graph TB
         OPTIMIZATION[Memory Optimization]
         OODA_COMPRESS[OODA State Compression]
     end
-    
+
     subgraph "Integration Points"
         AGENT[AI Agent]
         PLANNER[Planning Engine]
@@ -695,24 +695,24 @@ graph TB
         LIFECYCLE[Lifecycle Manager]
         OODA_ENGINE[OODA Engine]
     end
-    
+
     WM --> CONSOLIDATE
     SM --> CONSOLIDATE
     UM --> CONSOLIDATE
     EM --> CONSOLIDATE
     OODA_MEM --> OODA_COMPRESS
-    
+
     CONSOLIDATE --> LEARNING
     LEARNING --> OPTIMIZATION
     OODA_COMPRESS --> OPTIMIZATION
-    
+
     OPTIMIZATION --> RETRIEVAL
     RETRIEVAL --> AGENT
     RETRIEVAL --> PLANNER
     RETRIEVAL --> PROMPT
     RETRIEVAL --> LIFECYCLE
     RETRIEVAL --> OODA_ENGINE
-    
+
     AGENT --> WM
     PLANNER --> WM
     PROMPT --> WM
@@ -756,14 +756,14 @@ graph TB
         PHASE[Phase Layer<br/>Lifecycle Context]
         OODA[OODA Layer<br/>Investigation Step]
     end
-    
+
     subgraph "Prompt Operations"
         ASSEMBLY[Dynamic Assembly]
         OPTIMIZATION[Quality Optimization]
         VERSIONING[Version Management]
         PERFORMANCE[Performance Tracking]
     end
-    
+
     subgraph "Integration"
         LLM[LLM Provider]
         MEMORY[Memory System]
@@ -771,7 +771,7 @@ graph TB
         QUALITY[Quality Metrics]
         LIFECYCLE[Lifecycle Manager]
     end
-    
+
     SYSTEM --> ASSEMBLY
     CONTEXT --> ASSEMBLY
     DOMAIN --> ASSEMBLY
@@ -780,14 +780,14 @@ graph TB
     ADAPTATION --> ASSEMBLY
     PHASE --> ASSEMBLY
     OODA --> ASSEMBLY
-    
+
     ASSEMBLY --> OPTIMIZATION
     OPTIMIZATION --> VERSIONING
     VERSIONING --> PERFORMANCE
-    
+
     PERFORMANCE --> QUALITY
     QUALITY --> OPTIMIZATION
-    
+
     ASSEMBLY --> LLM
     MEMORY --> CONTEXT
     PLANNING --> TASK
@@ -816,7 +816,7 @@ graph TB
         LIFECYCLE_PLAN[Lifecycle Phase Planning]
         OODA_PLAN[OODA Cycle Planning]
     end
-    
+
     subgraph "Planning Operations"
         DECOMPOSITION[Problem Decomposition]
         PRIORITIZATION[Component Prioritization]
@@ -825,7 +825,7 @@ graph TB
         PHASE_MAP[Phase Mapping]
         INTENSITY_SELECT[Intensity Selection]
     end
-    
+
     subgraph "Integration"
         AGENT[AI Agent]
         MEMORY[Memory System]
@@ -834,24 +834,24 @@ graph TB
         LIFECYCLE[Lifecycle Manager]
         ADAPTIVE[Adaptive Controller]
     end
-    
+
     ANALYSIS --> DECOMPOSITION
     DECOMPOSITION --> PRIORITIZATION
     PRIORITIZATION --> STRATEGY
-    
+
     STRATEGY --> IMPLEMENTATION
     IMPLEMENTATION --> RISK
     RISK --> SUCCESS
     SUCCESS --> RESOURCES
-    
+
     STRATEGY --> ALTERNATIVES
     IMPLEMENTATION --> CONTINGENCIES
-    
+
     ANALYSIS --> LIFECYCLE_PLAN
     LIFECYCLE_PLAN --> PHASE_MAP
     PHASE_MAP --> OODA_PLAN
     OODA_PLAN --> INTENSITY_SELECT
-    
+
     DECOMPOSITION --> AGENT
     PRIORITIZATION --> MEMORY
     ALTERNATIVES --> TOOLS
@@ -879,7 +879,7 @@ graph TB
         MEMORY[Memory Management]
         LIFECYCLE[Lifecycle Services]
     end
-    
+
     subgraph "Service Interfaces"
         IAGENT[IAgentService]
         IDATA[IDataService]
@@ -890,7 +890,7 @@ graph TB
         ILIFECYCLE[ILifecycleService]
         IOODA[IOODAService]
     end
-    
+
     subgraph "Infrastructure Interfaces"
         ILLM[ILLMProvider]
         ISAN[ISanitizer]
@@ -900,7 +900,7 @@ graph TB
         ICACHE[IMemoryCache]
         IOODA_STORE[IOODAStore]
     end
-    
+
     subgraph "Service Implementations"
         AGENT_IMPL[AgentService]
         DATA_IMPL[DataService]
@@ -911,7 +911,7 @@ graph TB
         LIFECYCLE_IMPL[LifecycleService]
         OODA_IMPL[OODAService]
     end
-    
+
     subgraph "Infrastructure Implementations"
         LLM_IMPL[LLMRouter]
         SAN_IMPL[DataSanitizer]
@@ -921,13 +921,13 @@ graph TB
         CACHE_IMPL[RedisMemoryCache]
         OODA_STORE_IMPL[RedisOODAStore]
     end
-    
+
     %% Container relationships
     CONT --> INIT
     CONT --> HEALTH
     CONT --> MEMORY
     CONT --> LIFECYCLE
-    
+
     %% Service interfaces
     CONT --> IAGENT
     CONT --> IDATA
@@ -937,7 +937,7 @@ graph TB
     CONT --> IPLANNING
     CONT --> ILIFECYCLE
     CONT --> IOODA
-    
+
     %% Infrastructure interfaces
     CONT --> ILLM
     CONT --> ISAN
@@ -946,7 +946,7 @@ graph TB
     CONT --> IVECTOR
     CONT --> ICACHE
     CONT --> IOODA_STORE
-    
+
     %% Implementation bindings
     IAGENT -.-> AGENT_IMPL
     IDATA -.-> DATA_IMPL
@@ -956,7 +956,7 @@ graph TB
     IPLANNING -.-> PLANNING_IMPL
     ILIFECYCLE -.-> LIFECYCLE_IMPL
     IOODA -.-> OODA_IMPL
-    
+
     ILLM -.-> LLM_IMPL
     ISAN -.-> SAN_IMPL
     ITRACE -.-> TRACE_IMPL
@@ -964,7 +964,7 @@ graph TB
     IVECTOR -.-> VECTOR_IMPL
     ICACHE -.-> CACHE_IMPL
     IOODA_STORE -.-> OODA_STORE_IMPL
-    
+
     %% Service dependencies
     AGENT_IMPL --> ILLM
     AGENT_IMPL --> ITRACE
@@ -979,11 +979,11 @@ graph TB
     PLANNING_IMPL --> ILLM
     LIFECYCLE_IMPL --> IOODA_STORE
     OODA_IMPL --> IOODA_STORE
-    
+
     classDef container fill:#e3f2fd
     classDef interface fill:#f3e5f5
     classDef implementation fill:#e8f5e8
-    
+
     class CONT,INIT,HEALTH,MEMORY,LIFECYCLE container
     class IAGENT,IDATA,IKNOWLEDGE,ISESSION,IMEMORY,IPLANNING,ILIFECYCLE,IOODA,ILLM,ISAN,ITRACE,ISTORE,IVECTOR,ICACHE,IOODA_STORE interface
     class AGENT_IMPL,DATA_IMPL,KNOWLEDGE_IMPL,SESSION_IMPL,MEMORY_IMPL,PLANNING_IMPL,LIFECYCLE_IMPL,OODA_IMPL,LLM_IMPL,SAN_IMPL,TRACE_IMPL,STORE_IMPL,VECTOR_IMPL,CACHE_IMPL,OODA_STORE_IMPL implementation
@@ -1004,23 +1004,23 @@ sequenceDiagram
     participant Core
     participant Infrastructure
     participant External
-    
+
     Client->>Middleware: HTTP Request
     Middleware->>Middleware: CORS + Logging + Performance
     Middleware->>Router: Processed Request
     Router->>Router: Route Matching + Validation
     Router->>Service: Business Method Call
-    
+
     %% Memory and Context Retrieval
     Service->>Memory: Retrieve Relevant Context
     Memory->>Memory: Semantic Search + OODA State Retrieval
     Memory-->>Service: Contextual Information + OODA Memory
-    
+
     %% Lifecycle Phase Determination
     Service->>Lifecycle: Determine Current Phase
     Lifecycle->>Lifecycle: Mode Detection (Consultant/Investigator)
     Lifecycle-->>Service: Phase Context + Mode
-    
+
     %% Strategic Planning with OODA
     Service->>Planning: Plan Response Strategy
     Planning->>OODA: Get OODA Intensity
@@ -1028,7 +1028,7 @@ sequenceDiagram
     OODA-->>Planning: Intensity Level
     Planning->>Planning: Problem Decomposition + OODA Planning
     Planning-->>Service: Strategic Plan with OODA Cycles
-    
+
     %% OODA Cycle Execution
     Service->>OODA: Execute OODA Cycle
     OODA->>OODA: Observe → Orient → Decide → Act
@@ -1039,7 +1039,7 @@ sequenceDiagram
     Infrastructure-->>Core: Processed Response
     Core-->>OODA: Domain Result
     OODA-->>Service: OODA Cycle Result
-    
+
     %% Iteration Check
     Service->>OODA: Check Progress
     alt More OODA Cycles Needed
@@ -1048,12 +1048,12 @@ sequenceDiagram
     else Investigation Complete
         OODA-->>Service: Investigation Complete
     end
-    
+
     %% Memory Consolidation
     Service->>Memory: Consolidate Insights
     Memory->>Memory: Extract Learnings + Compress OODA State
     Memory-->>Service: Consolidation Complete
-    
+
     %% Phase Transition Check
     Service->>Lifecycle: Check Phase Completion
     alt Phase Complete
@@ -1062,13 +1062,13 @@ sequenceDiagram
     else Phase In Progress
         Lifecycle-->>Service: Continue Current Phase
     end
-    
+
     Service->>Service: Transaction Completion
     Service-->>Router: Service Response
     Router-->>Middleware: HTTP Response
     Middleware->>Middleware: Response Logging + Metrics
     Middleware-->>Client: Final Response
-    
+
     Note over Middleware: Correlation ID tracking
     Note over Service: Error context propagation
     Note over Lifecycle: Phase + Mode management
@@ -1091,13 +1091,13 @@ graph TB
         CLIENT[Browser Extension/API Client]
         REQUEST[QueryRequest]
     end
-    
+
     subgraph "API Gateway"
         ENDPOINT[POST /api/v1/cases/{case_id}/queries]
         VALIDATION[Request Validation]
         ROUTING[Route to AgentService]
     end
-    
+
     subgraph "Service Processing"
         AGENT_SVC[AgentService.process_query]
         MEMORY[Memory Context Retrieval]
@@ -1109,7 +1109,7 @@ graph TB
         AI_PROCESSING[AI Agent Processing]
         RESPONSE_FORMAT[Response Formatting]
     end
-    
+
     subgraph "Dual-Loop Execution"
         PHASE_EXEC[Phase Execution]
         OODA_EXEC[OODA Cycle Execution]
@@ -1117,7 +1117,7 @@ graph TB
         HYPOTHESIS[Hypothesis Management]
         EVIDENCE[Evidence Tracking]
     end
-    
+
     subgraph "Response Construction"
         CONTENT[Content Generation]
         RESPONSE_TYPE[ResponseType Determination]
@@ -1127,19 +1127,19 @@ graph TB
         MEMORY_UPDATE[Memory Consolidation]
         OODA_STATE[OODA State Update]
     end
-    
+
     subgraph "v3.1.0 Response"
         SCHEMA_VER[schema_version: 3.1.0]
         AGENT_RESPONSE[AgentResponse]
         CLIENT_UPDATE[Client State Update]
     end
-    
+
     CLIENT --> REQUEST
     REQUEST --> ENDPOINT
     ENDPOINT --> VALIDATION
     VALIDATION --> ROUTING
     ROUTING --> AGENT_SVC
-    
+
     AGENT_SVC --> MEMORY
     AGENT_SVC --> LIFECYCLE
     AGENT_SVC --> OODA_CHECK
@@ -1147,14 +1147,14 @@ graph TB
     AGENT_SVC --> SANITIZE
     AGENT_SVC --> CASE_GEN
     AGENT_SVC --> AI_PROCESSING
-    
+
     AI_PROCESSING --> PHASE_EXEC
     PHASE_EXEC --> OODA_EXEC
     OODA_EXEC --> INTENSITY
     INTENSITY --> HYPOTHESIS
     HYPOTHESIS --> EVIDENCE
     EVIDENCE --> RESPONSE_FORMAT
-    
+
     RESPONSE_FORMAT --> CONTENT
     RESPONSE_FORMAT --> RESPONSE_TYPE
     RESPONSE_FORMAT --> VIEW_STATE
@@ -1162,7 +1162,7 @@ graph TB
     RESPONSE_FORMAT --> PLAN
     RESPONSE_FORMAT --> MEMORY_UPDATE
     RESPONSE_FORMAT --> OODA_STATE
-    
+
     CONTENT --> AGENT_RESPONSE
     RESPONSE_TYPE --> AGENT_RESPONSE
     VIEW_STATE --> AGENT_RESPONSE
@@ -1170,7 +1170,7 @@ graph TB
     PLAN --> AGENT_RESPONSE
     MEMORY_UPDATE --> AGENT_RESPONSE
     OODA_STATE --> AGENT_RESPONSE
-    
+
     AGENT_RESPONSE --> SCHEMA_VER
     SCHEMA_VER --> CLIENT_UPDATE
 ```
@@ -1186,31 +1186,31 @@ graph LR
         SESSION_ACTIVE[Active Session]
         SESSION_EXPIRE[Session Expiry]
     end
-    
+
     subgraph "Case Lifecycle"
         CASE_CREATE[Case Creation per Query]
         CASE_PROCESS[Investigation Processing]
         CASE_COMPLETE[Case Resolution]
         CASE_ARCHIVE[Case Archival]
     end
-    
+
     subgraph "Dual-Loop Integration"
         PHASE_TRACK[Phase Tracking]
         OODA_TRACK[OODA State Tracking]
         HYPOTHESIS_TRACK[Hypothesis Management]
         EVIDENCE_TRACK[Evidence Collection]
     end
-    
+
     subgraph "Memory Integration"
         MEMORY_CONSOLIDATE[Memory Consolidation]
         MEMORY_RETRIEVE[Context Retrieval]
         MEMORY_LEARN[Learning & Insights]
         OODA_COMPRESS[OODA State Compression]
     end
-    
+
     SESSION_CREATE --> SESSION_ACTIVE
     SESSION_ACTIVE --> SESSION_EXPIRE
-    
+
     SESSION_ACTIVE --> CASE_CREATE
     CASE_CREATE --> CASE_PROCESS
     CASE_PROCESS --> PHASE_TRACK
@@ -1219,7 +1219,7 @@ graph LR
     HYPOTHESIS_TRACK --> EVIDENCE_TRACK
     EVIDENCE_TRACK --> CASE_COMPLETE
     CASE_COMPLETE --> CASE_ARCHIVE
-    
+
     CASE_PROCESS --> MEMORY_CONSOLIDATE
     MEMORY_CONSOLIDATE --> MEMORY_LEARN
     MEMORY_LEARN --> OODA_COMPRESS
@@ -1252,30 +1252,30 @@ graph TD
     AGENT --> LIFECYCLE[Lifecycle Phase Check]
     AGENT --> OODA_CHECK[OODA State Check]
     AGENT --> PLANNING[Strategic Planning]
-    
+
     MEMORY --> INTENT_ANALYSIS[Intent Analysis]
     LIFECYCLE --> INTENT_ANALYSIS
     OODA_CHECK --> INTENT_ANALYSIS
     PLANNING --> INTENT_ANALYSIS
-    
+
     INTENT_ANALYSIS --> ANSWER{Direct Answer?}
     INTENT_ANALYSIS --> PLAN{Multi-step Solution?}
     INTENT_ANALYSIS --> CLARIFY{Need Info?}
     INTENT_ANALYSIS --> CONFIRM{Need Approval?}
     INTENT_ANALYSIS --> EVIDENCE{Request Evidence?}
-    
+
     ANSWER -->|Yes| ANSWER_RESP[ResponseType: ANSWER]
     PLAN -->|Yes| PLAN_RESP[ResponseType: PLAN_PROPOSAL]
     CLARIFY -->|Yes| CLARIFY_RESP[ResponseType: CLARIFICATION_REQUEST]
     CONFIRM -->|Yes| CONFIRM_RESP[ResponseType: CONFIRMATION_REQUEST]
     EVIDENCE -->|Yes| EVIDENCE_RESP[ResponseType: EVIDENCE_REQUEST]
-    
+
     ANSWER_RESP --> UI_RENDER[UI: Display Message]
     PLAN_RESP --> UI_STEPS[UI: Show Action Steps]
     CLARIFY_RESP --> UI_FORM[UI: Show Input Form]
     CONFIRM_RESP --> UI_DIALOG[UI: Show Confirmation]
     EVIDENCE_RESP --> UI_REQUEST[UI: Show Evidence Guidance]
-    
+
     ANSWER_RESP --> MEMORY_UPDATE[Memory Consolidation + OODA State]
     PLAN_RESP --> MEMORY_UPDATE
     CLARIFY_RESP --> MEMORY_UPDATE
@@ -1302,7 +1302,7 @@ graph TB
         MEMORY[Memory Insights]
         OODA_EVIDENCE[OODA Investigation Evidence]
     end
-    
+
     subgraph "Source Processing"
         EXTRACT[Evidence Extraction]
         SNIPPET[Snippet Generation]
@@ -1310,7 +1310,7 @@ graph TB
         RELEVANCE[Relevance Scoring]
         HYPOTHESIS_LINK[Hypothesis Linking]
     end
-    
+
     subgraph "Response Integration"
         SOURCE_ARRAY[Sources Array]
         TRUST_BUILD[User Trust Building]
@@ -1318,20 +1318,20 @@ graph TB
         MEMORY_UPDATE[Memory Learning]
         OODA_TRACKING[OODA Evidence Tracking]
     end
-    
+
     KB --> EXTRACT
     LOGS --> EXTRACT
     WEB --> EXTRACT
     METRICS --> EXTRACT
     MEMORY --> EXTRACT
     OODA_EVIDENCE --> EXTRACT
-    
+
     EXTRACT --> SNIPPET
     SNIPPET --> ATTRIBUTION
     ATTRIBUTION --> RELEVANCE
     RELEVANCE --> HYPOTHESIS_LINK
     HYPOTHESIS_LINK --> SOURCE_ARRAY
-    
+
     SOURCE_ARRAY --> TRUST_BUILD
     SOURCE_ARRAY --> VERIFICATION
     SOURCE_ARRAY --> MEMORY_UPDATE
@@ -1349,7 +1349,7 @@ graph TB
 ```json
 {
   "type": "ooda_investigation",
-  "name": "connection_pool_metrics", 
+  "name": "connection_pool_metrics",
   "snippet": "Connection pool at 45% utilization (expected >90% for exhaustion)",
   "relevance_score": 0.95,
   "confidence": 0.9,
@@ -1376,13 +1376,13 @@ graph TB
         LIFECYCLE_STATE[lifecycle_progress]
         OODA_STATE[ooda_progress]
     end
-    
+
     subgraph "State Synchronization"
         BACKEND_STATE[Backend State]
         VIEW_STATE[ViewState Snapshot]
         FRONTEND_SYNC[Frontend Synchronization]
     end
-    
+
     subgraph "Client Benefits"
         NO_EXTRA_CALLS[No Additional API Calls]
         CONSISTENT_UI[Consistent UI State]
@@ -1390,7 +1390,7 @@ graph TB
         INTELLIGENT_UI[Intelligent UI Adaptation]
         INVESTIGATION_VIZ[Investigation Visualization]
     end
-    
+
     SESSION_ID --> VIEW_STATE
     CASE_ID --> VIEW_STATE
     SUMMARY --> VIEW_STATE
@@ -1399,10 +1399,10 @@ graph TB
     PLANNING_STATE --> VIEW_STATE
     LIFECYCLE_STATE --> VIEW_STATE
     OODA_STATE --> VIEW_STATE
-    
+
     BACKEND_STATE --> VIEW_STATE
     VIEW_STATE --> FRONTEND_SYNC
-    
+
     FRONTEND_SYNC --> NO_EXTRA_CALLS
     FRONTEND_SYNC --> CONSISTENT_UI
     FRONTEND_SYNC --> CONTEXT_PRESERVATION
@@ -1426,14 +1426,14 @@ ViewState eliminates the need for separate API calls by providing:
   "session_id": "sess-abc123",
   "case_id": "case-xyz789",
   "investigation_mode": "active_incident",
-  
+
   "lifecycle_progress": {
     "current_phase": 4,
     "phase_name": "Diagnose",
     "entry_phase": 2,
     "phase_complete": false
   },
-  
+
   "ooda_progress": {
     "is_active": true,
     "current_step": "act",
@@ -1445,7 +1445,7 @@ ViewState eliminates the need for separate API calls by providing:
     "confidence_current": 0.65,
     "made_progress_last_iteration": true
   },
-  
+
   "evidence_status": {
     "requests_pending": 2,
     "requests_complete": 5,
@@ -1468,22 +1468,22 @@ sequenceDiagram
     participant PlanningService
     participant AIAgent
     participant Knowledge
-    
+
     Client->>API: POST /api/v1/cases/{case_id}/queries
     Note over Client,API: QueryRequest{session_id, query}
-    
+
     API->>AgentService: process_query(request)
-    
+
     %% Memory and Context Retrieval
     AgentService->>MemoryService: retrieve_relevant_context(session_id, query)
     MemoryService->>MemoryService: semantic_search + OODA_state_retrieval
     MemoryService-->>AgentService: contextual_information + OODA_memory
-    
+
     %% Lifecycle Phase Determination
     AgentService->>LifecycleManager: determine_current_phase(context)
     LifecycleManager->>LifecycleManager: mode_detection + phase_assessment
     LifecycleManager-->>AgentService: phase_context + mode
-    
+
     %% Strategic Planning with OODA
     AgentService->>PlanningService: plan_response_strategy(query, context, phase)
     PlanningService->>OODAEngine: get_ooda_intensity(complexity)
@@ -1491,24 +1491,24 @@ sequenceDiagram
     OODAEngine-->>PlanningService: intensity_level
     PlanningService->>PlanningService: problem_decomposition + OODA_planning
     PlanningService-->>AgentService: strategic_plan_with_OODA_cycles
-    
+
     AgentService->>AgentService: generate_case_id()
     AgentService->>AgentService: sanitize_query()
-    
+
     %% OODA Cycle Execution
     loop OODA Cycles (1 to N based on intensity)
         AgentService->>OODAEngine: execute_ooda_cycle(plan, iteration)
-        
+
         OODAEngine->>OODAEngine: OBSERVE - gather_evidence
         OODAEngine->>AIAgent: search_knowledge_base()
         AIAgent->>Knowledge: semantic_search()
         Knowledge-->>AIAgent: relevant_documents
         AIAgent-->>OODAEngine: evidence
-        
+
         OODAEngine->>OODAEngine: ORIENT - analyze_context
         OODAEngine->>OODAEngine: DECIDE - select_action/hypothesis
         OODAEngine->>OODAEngine: ACT - execute_test
-        
+
         OODAEngine->>OODAEngine: check_progress()
         alt Investigation Complete
             OODAEngine-->>AgentService: investigation_complete
@@ -1516,18 +1516,18 @@ sequenceDiagram
             OODAEngine-->>AgentService: continue_next_cycle
         end
     end
-    
+
     %% Response Construction
     AgentService->>AgentService: determine_response_type()
     AgentService->>AgentService: extract_sources_with_OODA_context()
     AgentService->>AgentService: create_view_state_with_dual_loop_tracking()
     AgentService->>AgentService: format_response()
-    
+
     %% Memory Consolidation with OODA State
     AgentService->>MemoryService: consolidate_insights(session_id, result, OODA_state)
     MemoryService->>MemoryService: extract_learnings + compress_OODA_state
     MemoryService-->>AgentService: consolidation_complete
-    
+
     %% Phase Transition Check
     AgentService->>LifecycleManager: check_phase_completion()
     alt Phase Complete
@@ -1536,13 +1536,13 @@ sequenceDiagram
     else Phase In Progress
         LifecycleManager-->>AgentService: continue_current_phase
     end
-    
+
     AgentService-->>API: AgentResponse
     Note over AgentService,API: v3.1.0 Schema with Dual-Loop State
-    
+
     API-->>Client: JSON Response
     Note over API,Client: {schema_version, content, response_type,<br/>view_state {lifecycle_progress, ooda_progress},<br/>sources, plan?}
-    
+
     Client->>Client: update_ui_based_on_response_type()
     Client->>Client: update_lifecycle_progress()
     Client->>Client: update_ooda_progress()
@@ -1562,7 +1562,7 @@ graph TB
         LIFECYCLE_VALIDATION[Lifecycle State Validation]
         OODA_VALIDATION[OODA State Validation]
     end
-    
+
     subgraph "Response Validation"
         RESP_MODEL[AgentResponse Model]
         PLAN_VALIDATION[Plan Consistency Check]
@@ -1570,7 +1570,7 @@ graph TB
         MEMORY_INTEGRITY[Memory Integration Check]
         DUAL_LOOP_INTEGRITY[Dual-Loop State Check]
     end
-    
+
     subgraph "Error Handling"
         VALIDATION_ERROR[ValidationException]
         ERROR_RESPONSE[ErrorResponse Model]
@@ -1578,7 +1578,7 @@ graph TB
         MEMORY_ERROR[Memory Processing Error]
         OODA_ERROR[OODA State Error]
     end
-    
+
     REQ_MODEL --> PYDANTIC
     PYDANTIC --> REQ_CHECKS
     REQ_CHECKS --> MEMORY_VALIDATION
@@ -1586,14 +1586,14 @@ graph TB
     LIFECYCLE_VALIDATION --> OODA_VALIDATION
     OODA_VALIDATION -->|Valid| RESP_MODEL
     OODA_VALIDATION -->|Invalid| VALIDATION_ERROR
-    
+
     RESP_MODEL --> PLAN_VALIDATION
     PLAN_VALIDATION --> SCHEMA_VERSION
     SCHEMA_VERSION --> MEMORY_INTEGRITY
     MEMORY_INTEGRITY --> DUAL_LOOP_INTEGRITY
     DUAL_LOOP_INTEGRITY -->|Valid| CLIENT_ERROR
     DUAL_LOOP_INTEGRITY -->|Invalid| ERROR_RESPONSE
-    
+
     VALIDATION_ERROR --> ERROR_RESPONSE
     ERROR_RESPONSE --> CLIENT_ERROR
     MEMORY_ERROR --> ERROR_RESPONSE
@@ -1627,7 +1627,7 @@ class ILifecycleService(ABC):
     @abstractmethod
     async def assess_intensity(self, complexity: ComplexityLevel) -> OODAIntensity:
         pass
-    
+
     @abstractmethod
     async def compress_state(self, state: OODAState) -> CompressedState:
         pass
@@ -1640,8 +1640,8 @@ High-level modules depend on abstractions, not concretions:
 # Service depends on interface, not implementation
 class AgentService:
     def __init__(
-        self, 
-        llm_provider: ILLMProvider, 
+        self,
+        llm_provider: ILLMProvider,
         tracer: ITracer,
         memory_service: IMemoryService,
         planning_service: IPlanningService,
@@ -1665,7 +1665,7 @@ async def get_session_info(session_id: str) -> SessionInfo
 async def get_lifecycle_phase(case_id: str) -> LifecyclePhase
 async def get_ooda_state(case_id: str) -> OODAState
 
-# Command - state-changing operation  
+# Command - state-changing operation
 async def create_session(metadata: dict) -> str
 async def transition_phase(case_id: str, new_phase: LifecyclePhase) -> bool
 async def execute_ooda_cycle(case_id: str, plan: OODAPlan) -> OODAResult
@@ -1877,7 +1877,7 @@ This section documents how each architectural component maps to specific Python 
 **API Routes & Dependencies**
 - **Routes**: `api/v1/routes/` - RESTful endpoint implementations
   - `case.py` - Case persistence and conversation management
-  - `data.py` - File upload and data processing endpoints  
+  - `data.py` - File upload and data processing endpoints
   - `knowledge.py` - Knowledge base operations and search
   - `session.py` - Session lifecycle management
   - `auth.py` - Authentication endpoints
@@ -2034,7 +2034,7 @@ This section documents how each architectural component maps to specific Python 
 
 **Interface Definitions** (`models/`)
 - **Core Interfaces**: `interfaces.py` - Service and infrastructure interfaces
-- **Case Interfaces**: `interfaces_case.py` - Case management interfaces  
+- **Case Interfaces**: `interfaces_case.py` - Case management interfaces
 - **Agentic Interfaces**: `agentic.py` - Agentic framework component interfaces
 - **Lifecycle Interfaces**: `lifecycle_interfaces.py` - Lifecycle and phase management interfaces (proposed)
 - **OODA Interfaces**: `ooda_interfaces.py` - OODA engine and state interfaces (proposed)
@@ -2188,16 +2188,16 @@ For complete implementation details, pattern definitions, API contract changes, 
 
 ---
 
-**Document Version**: 2.0  
-**Last Updated**: 2025-10-09  
+**Document Version**: 2.0
+**Last Updated**: 2025-10-09
 **Status**: Living Document - Updated with Adaptive Dual-Loop Framework integrationd
     async def determine_phase(self, context: QueryContext) -> LifecyclePhase:
         pass
-    
+
     @abstractmethod
     async def check_phase_completion(self, state: InvestigationState) -> bool:
         pass
-    
+
     @abstractmethod
     async def transition_phase(self, state: InvestigationState) -> LifecyclePhase:
         pass
@@ -2207,5 +2207,5 @@ class IOODAEngine(ABC):
     @abstractmethod
     async def execute_cycle(self, plan: OODAPlan, iteration: int) -> OODAResult:
         pass
-    
+
     @abstractmetho

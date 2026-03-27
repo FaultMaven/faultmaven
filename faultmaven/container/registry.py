@@ -6,9 +6,9 @@ enabling clear service lifecycle management.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, TypeVar
 
 from faultmaven.container.errors import CircularDependencyError, ServiceUnavailableError
 
@@ -99,7 +99,7 @@ class DependencyRegistry:
         info = self._services[name]
         info.instance = instance
         info.status = ServiceStatus.READY
-        info.initialized_at = datetime.now(timezone.utc)
+        info.initialized_at = datetime.now(UTC)
 
     def set_failed(self, name: str, error: str) -> None:
         """Mark a service as failed.

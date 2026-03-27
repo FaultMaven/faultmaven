@@ -11,8 +11,6 @@ from the user's identity and returns the most relevant results regardless
 of where they came from.
 """
 
-from typing import List, Optional
-
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
@@ -59,7 +57,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
         self,
         question: str,
         user_id: str,
-        team_ids: Optional[List[str]] = None,
+        team_ids: list[str] | None = None,
         k: int = 5,
     ) -> str:
         """
@@ -78,7 +76,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
         return await super()._arun(question, scope_id=None, k=k, filters=filters)
 
     @staticmethod
-    def _build_scope_filter(user_id: str, team_ids: List[str]) -> dict:
+    def _build_scope_filter(user_id: str, team_ids: list[str]) -> dict:
         """Build combined scope filter for all accessible KB content."""
         conditions = [{"scope": "global"}]
 

@@ -3,7 +3,7 @@
 Tests the InvestigationService which manages milestone-based troubleshooting workflow.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -552,9 +552,9 @@ class TestInvestigationServiceTransitionToInvestigating:
         # Set up inquiry data required for INVESTIGATING status
         sample_case.inquiry.proposed_problem_statement = "Test problem statement"
         sample_case.inquiry.problem_statement_confirmed = True
-        sample_case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
+        sample_case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
         sample_case.inquiry.decided_to_investigate = True
-        sample_case.inquiry.decision_made_at = datetime.now(timezone.utc)
+        sample_case.inquiry.decision_made_at = datetime.now(UTC)
 
         # Now set status to INVESTIGATING (all requirements are met)
         sample_case.status = CaseStatus.INVESTIGATING

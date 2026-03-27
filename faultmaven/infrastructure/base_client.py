@@ -9,11 +9,11 @@ comprehensive error handling.
 import asyncio
 import time
 from abc import ABC
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any, TypeVar
 
-from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
+from faultmaven.infrastructure.logging.unified import get_unified_logger
 
 # Type variable for generic return types
 T = TypeVar("T")
@@ -63,7 +63,7 @@ class CircuitBreaker:
         if self.state == "open":
             # Check if we should try half-open
             if self.last_failure_time and datetime.now(
-                timezone.utc
+                UTC
             ) - self.last_failure_time > timedelta(seconds=self.recovery_timeout):
                 self.state = "half-open"
                 return True
@@ -81,7 +81,7 @@ class CircuitBreaker:
         """Record failed execution."""
         if isinstance(exception, self.expected_exception):
             self.failure_count += 1
-            self.last_failure_time = datetime.now(timezone.utc)
+            self.last_failure_time = datetime.now(UTC)
 
             if self.failure_count >= self.failure_threshold:
                 self.state = "open"
@@ -165,13 +165,13 @@ class BaseExternalClient(ABC):
     async def call_external(
         self,
         operation_name: str,
-        call_func: Callable[..., Union[T, any]],
+        call_func: Callable[..., T | any],
         *args,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         retries: int = 0,
         retry_delay: float = 1.0,
-        validate_response: Optional[Callable[[T], bool]] = None,
-        transform_response: Optional[Callable[[T], T]] = None,
+        validate_response: Callable[[T], bool] | None = None,
+        transform_response: Callable[[T], T] | None = None,
         **kwargs,
     ) -> T:
         """
@@ -351,7 +351,7 @@ class BaseExternalClient(ABC):
                     # Success - record metrics and circuit breaker state
                     self.connection_metrics["successful_calls"] += 1
                     self.connection_metrics["last_success_time"] = datetime.now(
-                        timezone.utc
+                        UTC
                     ).isoformat()
 
                     if self.circuit_breaker:
@@ -402,14 +402,14 @@ class BaseExternalClient(ABC):
 
                     return result
 
-                except asyncio.TimeoutError as timeout_error:
+                except TimeoutError as timeout_error:
                     last_exception = timeout_error
                     ctx[f"timeout_attempt_{attempt}"] = True
 
                     # Don't retry on timeout - fail fast
                     self.connection_metrics["failed_calls"] += 1
                     self.connection_metrics["last_failure_time"] = datetime.now(
-                        timezone.utc
+                        UTC
                     ).isoformat()
 
                     if self.circuit_breaker:
@@ -439,7 +439,7 @@ class BaseExternalClient(ABC):
                     if getattr(call_error, "retryable", True) is False:
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
-                            timezone.utc
+                            UTC
                         ).isoformat()
 
                         if self.circuit_breaker:
@@ -472,7 +472,7 @@ class BaseExternalClient(ABC):
                         # Final failure
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
-                            timezone.utc
+                            UTC
                         ).isoformat()
 
                         if self.circuit_breaker:
@@ -521,8 +521,8 @@ class BaseExternalClient(ABC):
         *args,
         retries: int = 0,
         retry_delay: float = 1.0,
-        validate_response: Optional[Callable[[T], bool]] = None,
-        transform_response: Optional[Callable[[T], T]] = None,
+        validate_response: Callable[[T], bool] | None = None,
+        transform_response: Callable[[T], T] | None = None,
         **kwargs,
     ) -> T:
         """
@@ -654,7 +654,7 @@ class BaseExternalClient(ABC):
                     # Success - record metrics and circuit breaker state
                     self.connection_metrics["successful_calls"] += 1
                     self.connection_metrics["last_success_time"] = datetime.now(
-                        timezone.utc
+                        UTC
                     ).isoformat()
 
                     if self.circuit_breaker:
@@ -716,7 +716,7 @@ class BaseExternalClient(ABC):
                     if getattr(call_error, "retryable", True) is False:
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
-                            timezone.utc
+                            UTC
                         ).isoformat()
 
                         if self.circuit_breaker:
@@ -749,7 +749,7 @@ class BaseExternalClient(ABC):
                         # Final failure
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
-                            timezone.utc
+                            UTC
                         ).isoformat()
 
                         if self.circuit_breaker:
@@ -791,7 +791,7 @@ class BaseExternalClient(ABC):
             f"Unexpected error in external call to {self.service_name}.{operation_name}"
         )
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         Perform health check for the external service client.
 
@@ -805,7 +805,7 @@ class BaseExternalClient(ABC):
             "client": self.client_name,
             "service": self.service_name,
             "status": "unknown",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "layer": "infrastructure",
             "metrics": self.connection_metrics.copy(),
             "circuit_breaker": {

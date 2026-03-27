@@ -1,8 +1,8 @@
 # FaultMaven Case-Agent Integration Design Document
 
-**Version:** 1.0  
-**Date:** 2025-08-31  
-**Author:** Solutions Architect  
+**Version:** 1.0
+**Date:** 2025-08-31
+**Author:** Solutions Architect
 
 ## Executive Summary
 
@@ -11,7 +11,7 @@ This document outlines the technical design for integrating FaultMaven's case ma
 ### Objectives
 
 1. **Enable Real AI Processing**: Replace mock responses in case routes with actual AgentService functionality
-2. **Maintain Clean Architecture**: Preserve existing dependency injection patterns and interface-based design  
+2. **Maintain Clean Architecture**: Preserve existing dependency injection patterns and interface-based design
 3. **Ensure Case Persistence**: Maintain conversation continuity and case lifecycle management
 4. **Backward Compatibility**: Support smooth transition from deprecated agent routes to case routes
 5. **Production Readiness**: Include proper error handling, observability, and rollback procedures
@@ -59,12 +59,12 @@ graph TB
     C[Agent Routes] -->|Has| B
     D[submit_case_query] -.->|Mock Response| E[Template AgentResponse]
     F[case_query] -->|Missing Method| G[process_query_for_case]
-    
+
     B -->|Uses| H[ILLMProvider]
-    B -->|Uses| I[ISanitizer] 
+    B -->|Uses| I[ISanitizer]
     B -->|Uses| J[ITracer]
     B -->|Uses| K[List[BaseTool]]
-    
+
     L[ICaseService] -->|Persists| M[Case Messages]
     L -->|Manages| N[Case Lifecycle]
 ```
@@ -96,21 +96,21 @@ graph TB
 ```python
 class AgentService(BaseService):
     async def process_query_for_case(
-        self, 
-        case_id: str, 
+        self,
+        case_id: str,
         request: QueryRequest
     ) -> AgentResponse:
         """Process query in context of specific case with persistence"""
 ```
 
-### 2. Clean Architecture Preservation  
+### 2. Clean Architecture Preservation
 
 **Existing Pattern**: Interface-based dependency injection
 ```python
 def __init__(
     self,
     llm_provider: ILLMProvider,
-    tools: List[BaseTool], 
+    tools: List[BaseTool],
     tracer: ITracer,
     sanitizer: ISanitizer,
     session_service: Optional[Any] = None,
@@ -136,12 +136,12 @@ def __init__(
 ```python
 async def process_query_for_case(self, case_id: str, request: QueryRequest) -> AgentResponse:
     """Process query with case conversation context"""
-    
+
     # 1. Get conversation context from case
     conversation_context = ""
     if self._case_service:
         conversation_context = await self._case_service.get_case_conversation_context(case_id, limit=10)
-    
+
     # 2. Enhance query with context
     if conversation_context:
         enhanced_request = QueryRequest(
@@ -152,14 +152,14 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
         )
     else:
         enhanced_request = request
-    
+
     # 3. Process with existing logic
     response = await self.process_query(enhanced_request)
-    
+
     # 4. Persist user query and agent response to case
     if self._case_service:
         await self._persist_case_interaction(case_id, request.query, response.content)
-    
+
     return response
 ```
 
@@ -179,7 +179,7 @@ agent_response = {
 # Real AI processing
 from faultmaven.container import container
 
-agent_service = container.get_agent_service() 
+agent_service = container.get_agent_service()
 enhanced_request = QueryRequest(
     query=query_text,
     session_id=f"session_{case_id}",  # Generate session for case context
@@ -213,36 +213,36 @@ class AgentService(BaseService):
     ):
         # ... existing initialization
         self._case_service = case_service
-    
+
     async def process_query_for_case(
-        self, 
-        case_id: str, 
+        self,
+        case_id: str,
         request: QueryRequest
     ) -> AgentResponse:
         """Process query with case-specific context and persistence"""
-        
+
         # Validate case exists and is accessible
         if self._case_service:
             case = await self._case_service.get_case(case_id)
             if not case:
                 raise ValueError(f"Case {case_id} not found or not accessible")
-        
+
         # Get conversation history for context
         conversation_context = await self._get_case_conversation_context(case_id)
-        
+
         # Create enhanced request with conversation context
         enhanced_request = self._create_enhanced_request(request, conversation_context)
-        
-        # Process query using existing business logic  
+
+        # Process query using existing business logic
         with self._tracer.trace("process_case_query"):
             response = await self.process_query(enhanced_request)
-        
+
         # Persist interaction to case
         await self._persist_case_interaction(case_id, request, response)
-        
+
         # Update response with case-specific view state
         response.view_state.active_case.case_id = case_id
-        
+
         return response
 ```
 
@@ -252,7 +252,7 @@ async def _get_case_conversation_context(self, case_id: str) -> str:
     """Get formatted conversation context for case"""
     if not self._case_service:
         return ""
-    
+
     try:
         return await self._case_service.get_case_conversation_context(case_id, limit=5)
     except Exception as e:
@@ -272,15 +272,15 @@ def _create_enhanced_request(self, request: QueryRequest, context: str) -> Query
     return request
 
 async def _persist_case_interaction(
-    self, 
-    case_id: str, 
-    request: QueryRequest, 
+    self,
+    case_id: str,
+    request: QueryRequest,
     response: AgentResponse
 ) -> None:
     """Persist user query and agent response to case messages"""
     if not self._case_service:
         return
-    
+
     try:
         # Record user query
         user_message = CaseMessage(
@@ -291,8 +291,8 @@ async def _persist_case_interaction(
             metadata={"source": "case_agent_integration"}
         )
         await self._case_service.add_message_to_case(case_id, user_message)
-        
-        # Record agent response  
+
+        # Record agent response
         agent_message = CaseMessage(
             case_id=case_id,
             session_id=request.session_id,
@@ -304,9 +304,9 @@ async def _persist_case_interaction(
             }
         )
         await self._case_service.add_message_to_case(case_id, agent_message)
-        
+
         self.logger.debug(f"Persisted interaction for case {case_id}")
-        
+
     except Exception as e:
         self.logger.error(f"Failed to persist interaction for case {case_id}: {e}")
         # Don't fail the request if persistence fails
@@ -325,7 +325,7 @@ def get_agent_service(self) -> AgentService:
             llm_provider=self.get_llm_provider(),
             tools=self.get_tools(),
             tracer=self.get_tracer(),
-            sanitizer=self.get_sanitizer(), 
+            sanitizer=self.get_sanitizer(),
             session_service=self.get_session_service(),
             settings=self.settings,
             case_service=self.get_case_service()  # NEW
@@ -347,17 +347,17 @@ async def submit_case_query(
     user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ):
     """Submit query to case with real AI processing"""
-    
+
     # ... existing validation code ...
-    
+
     # NEW: Get agent service from container
     from faultmaven.container import container
     agent_service = container.get_agent_service()
-    
+
     if not agent_service:
         # Fallback to mock response if agent service unavailable
         return _generate_mock_response(case_id, query_text)
-    
+
     try:
         # Create QueryRequest for agent service
         query_request = QueryRequest(
@@ -366,10 +366,10 @@ async def submit_case_query(
             context={"case_id": case_id, "user_id": user_id},
             priority=body.get("priority", "medium")
         )
-        
+
         # Process with real AI agent
         agent_response = await agent_service.process_query_for_case(case_id, query_request)
-        
+
         # Convert AgentResponse to JSON response format
         response_data = {
             "schema_version": "3.1.0",
@@ -378,13 +378,13 @@ async def submit_case_query(
             "view_state": agent_response.view_state.dict(),
             "sources": [source.dict() for source in agent_response.sources] if agent_response.sources else []
         }
-        
+
         return JSONResponse(
             status_code=201,
             content=response_data,
             headers={"Location": f"/api/v1/cases/{case_id}/queries/{query_id}"}
         )
-        
+
     except Exception as e:
         self.logger.error(f"Agent processing failed for case {case_id}: {e}")
         # Fallback to mock response on agent failure
@@ -409,14 +409,14 @@ from faultmaven.models import QueryRequest, AgentResponse, ResponseType
 from faultmaven.models.case import CaseMessage, MessageType
 
 class TestAgentCaseIntegration:
-    
+
     @pytest.fixture
     async def agent_service_with_case_service(self):
         """Create AgentService with mocked case service"""
         mock_case_service = AsyncMock()
         mock_case_service.get_case.return_value = Mock(case_id="test-case")
         mock_case_service.get_case_conversation_context.return_value = "Previous: User asked about errors"
-        
+
         agent_service = AgentService(
             llm_provider=AsyncMock(),
             tools=[],
@@ -425,14 +425,14 @@ class TestAgentCaseIntegration:
             case_service=mock_case_service
         )
         return agent_service
-    
+
     async def test_process_query_for_case_with_context(self, agent_service_with_case_service):
         """Test query processing with conversation context"""
         request = QueryRequest(
             query="What's the root cause?",
             session_id="test-session"
         )
-        
+
         # Mock the base process_query method
         mock_response = AgentResponse(
             content="Based on previous context and your question...",
@@ -441,17 +441,17 @@ class TestAgentCaseIntegration:
             sources=[]
         )
         agent_service_with_case_service.process_query = AsyncMock(return_value=mock_response)
-        
+
         result = await agent_service_with_case_service.process_query_for_case("test-case", request)
-        
+
         # Verify conversation context was injected
         called_request = agent_service_with_case_service.process_query.call_args[0][0]
         assert "Previous: User asked about errors" in called_request.query
         assert "What's the root cause?" in called_request.query
-        
+
         # Verify case messages were persisted
         assert agent_service_with_case_service._case_service.add_message_to_case.call_count == 2
-    
+
     async def test_process_query_for_case_without_case_service(self):
         """Test graceful handling when case service not available"""
         agent_service = AgentService(
@@ -461,20 +461,20 @@ class TestAgentCaseIntegration:
             sanitizer=Mock(),
             case_service=None  # No case service
         )
-        
+
         request = QueryRequest(query="Test query", session_id="test-session")
-        
+
         # Should still work but without case-specific features
         mock_response = AgentResponse(
             content="Standard response",
-            response_type=ResponseType.ANSWER, 
+            response_type=ResponseType.ANSWER,
             view_state=Mock(),
             sources=[]
         )
         agent_service.process_query = AsyncMock(return_value=mock_response)
-        
+
         result = await agent_service.process_query_for_case("test-case", request)
-        
+
         assert result.content == "Standard response"
         # Should not attempt persistence when no case service
         assert not hasattr(agent_service, '_case_service') or agent_service._case_service is None
@@ -490,15 +490,15 @@ from httpx import AsyncClient
 from faultmaven.main import app
 
 class TestCaseAgentIntegration:
-    
+
     @pytest.fixture
     async def client(self):
         async with AsyncClient(app=app, base_url="http://test") as client:
             yield client
-    
+
     async def test_submit_case_query_with_real_ai(self, client):
         """Test full end-to-end case query with AI processing"""
-        
+
         # 1. Create a case
         case_response = await client.post("/api/v1/cases/", json={
             "title": "Test troubleshooting case",
@@ -508,34 +508,34 @@ class TestCaseAgentIntegration:
         assert case_response.status_code == 201
         case_data = case_response.json()
         case_id = case_data["case"]["case_id"]
-        
+
         # 2. Submit query to case
         query_response = await client.post(f"/api/v1/cases/{case_id}/queries", json={
             "query": "What could be causing these 500 errors?"
         })
-        
+
         assert query_response.status_code == 201
         response_data = query_response.json()
-        
+
         # Verify real AI response (not mock)
         assert response_data["schema_version"] == "3.1.0"
         assert "content" in response_data
         assert response_data["response_type"] in ["ANSWER", "CLARIFICATION_REQUEST", "PLAN_PROPOSAL"]
-        
+
         # Should not contain mock indicators
         assert "I've analyzed your query:" not in response_data["content"]
-        
+
         # 3. Verify conversation was persisted
         messages_response = await client.get(f"/api/v1/cases/{case_id}/messages")
         assert messages_response.status_code == 200
         messages = messages_response.json()
-        
+
         # Should have initial message + user query + agent response
         assert len(messages) >= 3
-        
+
         user_messages = [m for m in messages if m["role"] == "user"]
         agent_messages = [m for m in messages if m["role"] == "agent"]
-        
+
         assert len(user_messages) >= 2  # Initial + query
         assert len(agent_messages) >= 1  # Agent response
 ```
@@ -555,7 +555,7 @@ def get_agent_service(self) -> AgentService:
     case_service = None
     if ENABLE_CASE_AGENT_INTEGRATION:
         case_service = self.get_case_service()
-    
+
     return AgentService(
         # ... other dependencies
         case_service=case_service
@@ -564,7 +564,7 @@ def get_agent_service(self) -> AgentService:
 
 **Rollout Strategy**:
 1. **Stage 1**: Deploy with `ENABLE_CASE_AGENT_INTEGRATION=false` (mock responses)
-2. **Stage 2**: Enable for internal testing with `ENABLE_CASE_AGENT_INTEGRATION=true`  
+2. **Stage 2**: Enable for internal testing with `ENABLE_CASE_AGENT_INTEGRATION=true`
 3. **Stage 3**: Gradual rollout to production users
 4. **Stage 4**: Full production deployment
 
@@ -587,7 +587,7 @@ self.log_metric(
 self.log_metric(
     "case_query_processing_time",
     processing_time,
-    "seconds", 
+    "seconds",
     {"case_id": case_id}
 )
 ```
@@ -607,16 +607,16 @@ health_info["case_integration"] = {
 ```python
 async def process_query_for_case(self, case_id: str, request: QueryRequest) -> AgentResponse:
     """Process query with comprehensive error handling"""
-    
+
     try:
         # Primary path with case integration
         return await self._process_with_case_integration(case_id, request)
-        
+
     except CaseServiceError as e:
         self.logger.warning(f"Case service error, falling back to standard processing: {e}")
         # Fallback to standard processing without case context
         return await self.process_query(request)
-        
+
     except LLMProviderError as e:
         self.logger.error(f"LLM provider error: {e}")
         # Return error response with proper structure
@@ -626,7 +626,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
             view_state=await self._create_view_state(case_id, request.session_id),
             sources=[]
         )
-        
+
     except Exception as e:
         self.logger.error(f"Unexpected error in case query processing: {e}")
         # Last resort fallback
@@ -646,12 +646,12 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 - **Risk**: Breaking existing AgentService consumers
 - **Probability**: Low
 - **Impact**: High
-- **Mitigation**: 
+- **Mitigation**:
   - Add method as new functionality (no existing method changes)
   - Optional case_service dependency (maintains backward compatibility)
   - Comprehensive unit test coverage
 
-#### 2. **Case Route Behavior Change**  
+#### 2. **Case Route Behavior Change**
 - **Risk**: Frontend expecting mock responses breaks with real AI responses
 - **Probability**: Medium
 - **Impact**: High
@@ -662,7 +662,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 
 #### 3. **Performance Impact**
 - **Risk**: Adding conversation context increases response time
-- **Probability**: Medium 
+- **Probability**: Medium
 - **Impact**: Medium
 - **Mitigation**:
   - Limit conversation context to 5-10 recent messages
@@ -689,7 +689,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 #### 2. **Session ID Generation**
 - **Risk**: Inconsistent session IDs for case context
 - **Probability**: Low
-- **Impact**: Medium  
+- **Impact**: Medium
 - **Mitigation**: Standardized session ID format `case_session_{case_id}`
 
 ### Low-Risk Areas
@@ -706,7 +706,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 
 **1. Lead Backend Engineer** (Primary)
 - AgentService method implementation
-- Case route integration  
+- Case route integration
 - Error handling and fallback logic
 - Primary code reviewer
 
@@ -716,7 +716,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 - Monitoring and observability setup
 - Production rollout coordination
 
-**3. QA Engineer** (Validation) 
+**3. QA Engineer** (Validation)
 - Integration test design and execution
 - End-to-end workflow validation
 - Performance regression testing
@@ -736,7 +736,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 
 **Week 2: Integration Testing**
 - Backend Engineer: Integration fixes and optimization
-- QA Engineer: Execute comprehensive test suite  
+- QA Engineer: Execute comprehensive test suite
 - DevOps Engineer: Deployment pipeline preparation
 
 **Week 3: Production Preparation**
@@ -744,7 +744,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 - DevOps Engineer: Staged deployment execution
 - QA Engineer: Production smoke testing
 
-**Week 4: Rollout and Monitoring**  
+**Week 4: Rollout and Monitoring**
 - DevOps Engineer: Gradual feature rollout
 - Backend Engineer: Performance monitoring and optimization
 - QA Engineer: User acceptance validation
@@ -757,7 +757,7 @@ async def process_query_for_case(self, case_id: str, request: QueryRequest) -> A
 ```python
 # Test cases for new method
 test_process_query_for_case_success()
-test_process_query_for_case_with_context()  
+test_process_query_for_case_with_context()
 test_process_query_for_case_without_case_service()
 test_process_query_for_case_error_handling()
 test_conversation_context_injection()
@@ -788,12 +788,12 @@ test_submit_case_query_error_handling()
 # Ensure response format matches OpenAPI specification
 def test_case_query_response_contract():
     response = await submit_case_query(case_id, query_data)
-    
+
     # Verify schema compliance
     assert response.status_code in [201, 202]
     assert "schema_version" in response.json()
     assert response.json()["schema_version"] == "3.1.0"
-    
+
     # Verify required fields
     required_fields = ["content", "response_type", "view_state"]
     for field in required_fields:
@@ -815,7 +815,7 @@ def test_case_query_response_contract():
 **Code Quality Gates**:
 - [ ] Unit test coverage ≥ 85%
 - [ ] Integration tests passing
-- [ ] Security scan passed  
+- [ ] Security scan passed
 - [ ] Performance benchmarks met
 - [ ] API contract tests passing
 
@@ -830,14 +830,14 @@ def test_case_query_response_contract():
 
 #### Stage 1: Internal Deployment (Week 4, Day 1-2)
 - **Target**: Internal development environment
-- **Configuration**: `ENABLE_CASE_AGENT_INTEGRATION=true` 
-- **Validation**: 
+- **Configuration**: `ENABLE_CASE_AGENT_INTEGRATION=true`
+- **Validation**:
   - Smoke tests passing
   - Basic functionality verified
   - No performance regressions
 
 #### Stage 2: Staging Validation (Week 4, Day 3-4)
-- **Target**: Full staging environment  
+- **Target**: Full staging environment
 - **Configuration**: Production-like setup with integration enabled
 - **Validation**:
   - End-to-end workflow testing
@@ -848,8 +848,8 @@ def test_case_query_response_contract():
 #### Stage 3: Canary Production (Week 4, Day 5-7)
 - **Target**: 10% of production traffic
 - **Configuration**: Feature flag controlled rollout
-- **Monitoring**: 
-  - Real-time metrics monitoring  
+- **Monitoring**:
+  - Real-time metrics monitoring
   - Error rate tracking
   - Response time monitoring
   - User feedback collection
@@ -901,7 +901,7 @@ kubectl rollout undo deployment/faultmaven-backend
 
 **Performance Metrics**:
 - P95 response time: < 5 seconds
-- P99 response time: < 10 seconds  
+- P99 response time: < 10 seconds
 - API throughput: Maintain current levels
 - System resource usage: < 20% increase
 
@@ -924,7 +924,7 @@ kubectl rollout undo deployment/faultmaven-backend
   },
   "error_breakdown": {
     "llm_provider_errors": 0.1,
-    "case_service_errors": 0.3, 
+    "case_service_errors": 0.3,
     "validation_errors": 0.4,
     "unknown_errors": 0.0
   }
@@ -937,11 +937,11 @@ alerts:
   - name: CaseAgentIntegrationErrorRate
     condition: error_rate > 1%
     severity: critical
-    
-  - name: CaseAgentResponseTime  
+
+  - name: CaseAgentResponseTime
     condition: p95_response_time > 8000ms
     severity: warning
-    
+
   - name: CasePersistenceFailure
     condition: persistence_failure_rate > 2%
     severity: critical
@@ -956,7 +956,7 @@ alerts:
 - Day 3-4: Container integration and dependency injection
 - Day 5-7: Case route integration and basic testing
 
-**Week 2: Integration and Testing**  
+**Week 2: Integration and Testing**
 - Day 1-3: Comprehensive unit test development
 - Day 4-5: Integration test implementation
 - Day 6-7: Performance testing and optimization
@@ -970,7 +970,7 @@ alerts:
 
 **Week 4: Staged Rollout**
 - Day 1-2: Internal deployment and validation
-- Day 3-4: Staging validation and final testing  
+- Day 3-4: Staging validation and final testing
 - Day 5-7: Canary production deployment
 
 **Week 5: Full Production**
@@ -989,7 +989,7 @@ alerts:
 **Business Success**:
 - [ ] Case routes provide real AI responses
 - [ ] Frontend integration seamless
-- [ ] User experience improved  
+- [ ] User experience improved
 - [ ] Deprecated routes can be sunset
 
 **Operational Success**:
@@ -1005,7 +1005,7 @@ This integration design provides a comprehensive approach to connecting FaultMav
 Key success factors:
 1. **Backward Compatibility**: No breaking changes to existing systems
 2. **Graceful Degradation**: Fallback mechanisms for all failure scenarios
-3. **Performance Focused**: Optimization for conversation context injection  
+3. **Performance Focused**: Optimization for conversation context injection
 4. **Production Ready**: Comprehensive monitoring, alerting, and rollback procedures
 
 The implementation follows FaultMaven's clean architecture principles, leveraging existing dependency injection patterns while adding new functionality through the established interface-based approach.

@@ -6,8 +6,8 @@ Follows clean architecture principles by centralizing transformation logic
 and maintaining clear separation between persistence and presentation layers.
 """
 
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, Optional, Union
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from faultmaven.models.api import Case as CaseAPI
@@ -19,7 +19,7 @@ from faultmaven.utils.serialization import to_json_compatible
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
+    pass
 
 
 class CaseConverter:
@@ -47,7 +47,7 @@ class CaseConverter:
         # Safely extract priority (domain Case doesn't have this field)
         priority_value = "medium"  # Default
         if hasattr(case_entity, "priority"):
-            priority_attr = getattr(case_entity, "priority")
+            priority_attr = case_entity.priority
             if hasattr(priority_attr, "value"):
                 priority_value = priority_attr.value
             else:
@@ -70,7 +70,7 @@ class CaseConverter:
                     getattr(
                         case_entity,
                         "created_at",
-                        to_json_compatible(datetime.now(timezone.utc)),
+                        to_json_compatible(datetime.now(UTC)),
                     )
                 )
             ),
@@ -81,7 +81,7 @@ class CaseConverter:
                     getattr(
                         case_entity,
                         "updated_at",
-                        to_json_compatible(datetime.now(timezone.utc)),
+                        to_json_compatible(datetime.now(UTC)),
                     )
                 )
             ),
@@ -94,7 +94,7 @@ class CaseConverter:
 
     @staticmethod
     def summary_to_api(
-        case_summary: CaseSummary, request_session_id: Optional[str] = None
+        case_summary: CaseSummary, request_session_id: str | None = None
     ) -> CaseAPI:
         """
         Convert CaseSummary to API Case model.
@@ -137,8 +137,8 @@ class CaseConverter:
 
     @staticmethod
     def entities_to_api_list(
-        case_entities: List[Union[CaseEntity, CaseSummary]],
-    ) -> List[CaseAPI]:
+        case_entities: list[CaseEntity | CaseSummary],
+    ) -> list[CaseAPI]:
         """
         Convert list of Case entities or CaseSummary objects to API Case models.
 

@@ -3,7 +3,7 @@
 Tests the KnowledgeItem dataclass, validation, and helper methods.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -60,9 +60,9 @@ class TestKnowledgeItemCreation:
     def test_create_with_all_fields(self):
         """Test creating item with all fields populated."""
         embedding = create_valid_embedding()
-        created = datetime.now(timezone.utc) - timedelta(days=1)
-        updated = datetime.now(timezone.utc)
-        last_retrieved = datetime.now(timezone.utc)
+        created = datetime.now(UTC) - timedelta(days=1)
+        updated = datetime.now(UTC)
+        last_retrieved = datetime.now(UTC)
 
         item = KnowledgeItem(
             item_id="ki_test123",
@@ -693,7 +693,7 @@ class TestTouch:
 
         item.touch()
 
-        assert item.updated_at.tzinfo == timezone.utc
+        assert item.updated_at.tzinfo == UTC
 
 
 # ============================================================

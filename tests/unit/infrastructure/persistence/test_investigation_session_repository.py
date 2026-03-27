@@ -3,7 +3,7 @@
 Tests both InMemoryInvestigationSessionRepository and the repository interface.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -34,7 +34,7 @@ def create_sample_session(
         user_id=user_id,
         organization_id=organization_id,
         status=status,
-        started_at=started_at or datetime.now(timezone.utc),
+        started_at=started_at or datetime.now(UTC),
         total_token_usage=total_token_usage,
         total_agent_executions=total_agent_executions,
         session_goal=session_goal,
@@ -204,7 +204,7 @@ class TestInMemoryRepositoryUpdate:
 
         # Update all fields
         session.status = SessionStatus.COMPLETED
-        session.ended_at = datetime.now(timezone.utc)
+        session.ended_at = datetime.now(UTC)
         session.session_goal = "Final goal"
         session.findings_summary = "Found the issue"
         session.total_token_usage = 5000
@@ -312,7 +312,7 @@ class TestInMemoryRepositoryListByCaseId:
     async def test_list_by_case_id_ordered_by_started_at_desc(self, repository):
         """Test sessions are ordered by started_at descending."""
         case_id = generate_case_id()
-        base_time = datetime.now(timezone.utc)
+        base_time = datetime.now(UTC)
 
         s1 = create_sample_session(
             case_id=case_id, started_at=base_time - timedelta(hours=2)
@@ -397,7 +397,7 @@ class TestInMemoryRepositoryGetActiveSession:
     async def test_get_active_session_returns_most_recent(self, repository):
         """Test that most recent active session is returned when multiple exist."""
         case_id = generate_case_id()
-        base_time = datetime.now(timezone.utc)
+        base_time = datetime.now(UTC)
 
         older_active = create_sample_session(
             case_id=case_id,

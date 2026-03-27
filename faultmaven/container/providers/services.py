@@ -100,7 +100,7 @@ def create_milestone_engine(
         return None
 
 
-def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
+def _create_investigation_tools(container: BaseDIContainer) -> Any | None:
     """Create an AgentToolRegistry with investigation tools for MilestoneEngine.
 
     Registers tools that the LLM can call during the tool loop:

@@ -7,9 +7,8 @@ Design: Framework-agnostic domain model for business logic and testing.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Dict, List, Optional
 
 
 class SolutionStatus(str, Enum):
@@ -72,19 +71,19 @@ class Solution:
     organization_id: str
     title: str
     description: str
-    implementation_steps: List[str]
+    implementation_steps: list[str]
     status: SolutionStatus
     created_by: str
     created_at: datetime
     updated_at: datetime
-    hypothesis_id: Optional[str] = None
-    risk_level: Optional[RiskLevel] = None
-    estimated_effort: Optional[str] = None
-    updated_by: Optional[str] = None
-    implemented_at: Optional[datetime] = None
-    verification_result: Optional[str] = None
-    verification_timestamp: Optional[datetime] = None
-    metadata: Dict = field(default_factory=dict)
+    hypothesis_id: str | None = None
+    risk_level: RiskLevel | None = None
+    estimated_effort: str | None = None
+    updated_by: str | None = None
+    implemented_at: datetime | None = None
+    verification_result: str | None = None
+    verification_timestamp: datetime | None = None
+    metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
         """Validate solution after initialization."""
@@ -107,7 +106,7 @@ class Solution:
             raise ValueError("At least one implementation step is required")
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "Solution":
+    def from_dict(cls, data: dict) -> "Solution":
         """Create Solution from dictionary.
 
         Args:
@@ -145,7 +144,7 @@ class Solution:
             metadata=metadata,
         )
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """Convert Solution to dictionary.
 
         Returns:
@@ -203,8 +202,8 @@ class Solution:
     def mark_implemented(self) -> None:
         """Mark solution as implemented with timestamp."""
         self.status = SolutionStatus.IMPLEMENTED
-        self.implemented_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.implemented_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
 
     def mark_verified(self, verification_result: str) -> None:
         """Mark solution as verified with result.
@@ -217,5 +216,5 @@ class Solution:
 
         self.status = SolutionStatus.VERIFIED
         self.verification_result = verification_result
-        self.verification_timestamp = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+        self.verification_timestamp = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)

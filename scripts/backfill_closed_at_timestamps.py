@@ -31,20 +31,20 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 
-async def get_cases_missing_closed_at(session: AsyncSession) -> List[Dict[str, Any]]:
+async def get_cases_missing_closed_at(session: AsyncSession) -> list[dict[str, Any]]:
     """
     Find all closed/resolved cases missing closed_at in metadata.
 
@@ -56,7 +56,8 @@ async def get_cases_missing_closed_at(session: AsyncSession) -> List[Dict[str, A
     """
     # Query for closed/resolved cases
     # Check if metadata is NULL or doesn't contain closed_at
-    query = text("""
+    query = text(
+        """
         SELECT
             case_id,
             status,
@@ -69,7 +70,8 @@ async def get_cases_missing_closed_at(session: AsyncSession) -> List[Dict[str, A
             OR case_metadata::jsonb -> 'closed_at' IS NULL
         )
         ORDER BY updated_at ASC
-    """)
+    """
+    )
 
     result = await session.execute(query)
     rows = result.fetchall()
@@ -79,21 +81,20 @@ async def get_cases_missing_closed_at(session: AsyncSession) -> List[Dict[str, A
         # Parse JSONB metadata
         metadata = json.loads(row[3]) if row[3] else {}
 
-        cases.append({
-            "case_id": row[0],
-            "status": row[1],
-            "updated_at": row[2],
-            "metadata": metadata,
-        })
+        cases.append(
+            {
+                "case_id": row[0],
+                "status": row[1],
+                "updated_at": row[2],
+                "metadata": metadata,
+            }
+        )
 
     return cases
 
 
 async def backfill_case_closed_at(
-    session: AsyncSession,
-    case_id: str,
-    closed_at: datetime,
-    dry_run: bool = False
+    session: AsyncSession, case_id: str, closed_at: datetime, dry_run: bool = False
 ) -> bool:
     """
     Backfill closed_at timestamp for a single case.
@@ -112,18 +113,20 @@ async def backfill_case_closed_at(
 
     # Update metadata with closed_at timestamp
     # Use PostgreSQL JSONB operators to update nested field
-    query = text("""
+    query = text(
+        """
         UPDATE cases
         SET case_metadata = COALESCE(case_metadata, '{}'::jsonb) || jsonb_build_object('closed_at', :closed_at::text)
         WHERE case_id = :case_id
-    """)
+    """
+    )
 
     await session.execute(
         query,
         {
             "case_id": case_id,
             "closed_at": closed_at.isoformat(),
-        }
+        },
     )
 
     return True
@@ -189,7 +192,9 @@ async def main():
     try:
         database_url = get_database_url(args.database)
         engine = create_async_engine(database_url, echo=False)
-        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async_session = sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
 
         # Open audit log file
         log_path = Path(args.log_file)
@@ -197,7 +202,9 @@ async def main():
 
         try:
             async with async_session() as session:
-                print(f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}")
+                print(
+                    f"Checking database: {database_url.split('@')[-1] if '@' in database_url else database_url}"
+                )
                 if args.dry_run:
                     print("MODE: DRY-RUN (no actual changes will be made)")
                 print()
@@ -214,7 +221,7 @@ async def main():
                 print("=" * 80)
 
                 # Log header
-                timestamp = datetime.now(timezone.utc).isoformat()
+                timestamp = datetime.now(UTC).isoformat()
                 log_file.write(f"\n{'=' * 80}\n")
                 log_file.write(f"Backfill Run: {timestamp}\n")
                 log_file.write(f"Mode: {'DRY-RUN' if args.dry_run else 'APPLY'}\n")
@@ -250,9 +257,9 @@ async def main():
                     if success:
                         backfilled_count += 1
                         if not args.dry_run:
-                            print(f"  ✓ Backfilled")
+                            print("  ✓ Backfilled")
                         else:
-                            print(f"  [DRY-RUN] Would backfill")
+                            print("  [DRY-RUN] Would backfill")
 
                     print("-" * 80)
 
@@ -273,7 +280,9 @@ async def main():
                     print("\nNext steps:")
                     print("  1. Review audit log for backfilled cases")
                     print("  2. Run tests to verify cleanup behavior:")
-                    print("     pytest tests/unit/infrastructure/persistence/test_database_case_repository.py -v")
+                    print(
+                        "     pytest tests/unit/infrastructure/persistence/test_database_case_repository.py -v"
+                    )
                     return 0
 
         finally:
@@ -283,6 +292,7 @@ async def main():
     except Exception as e:
         print(f"\n✗ Error backfilling timestamps: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 2
 

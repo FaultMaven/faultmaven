@@ -366,7 +366,7 @@ cmd_start() {
         echo "Docker Compose output:"
         echo "$compose_output" | head -20
         echo ""
-        
+
         # Check for common errors
         if echo "$compose_output" | grep -qi "port.*already.*allocated\|address already in use"; then
             print_error "Port conflict detected"
@@ -388,7 +388,7 @@ cmd_start() {
     if docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'; then
         running_containers=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || echo "0")
     fi
-    
+
     if [ "$running_containers" -eq "0" ]; then
         echo ""
         print_error "Containers failed to start"

@@ -31,19 +31,16 @@ Core Design Principles:
 """
 
 import hashlib
-import json
 import logging
 import re
 import time
 from collections import defaultdict, deque
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
-from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces import IMemoryService
@@ -82,8 +79,8 @@ class Pattern:
     frequency: int
     last_seen: float
     success_rate: float
-    context_tags: List[str]
-    metadata: Dict[str, Any]
+    context_tags: list[str]
+    metadata: dict[str, Any]
 
 
 @dataclass
@@ -95,7 +92,7 @@ class LearningResult:
     patterns_removed: int
     learning_confidence: float
     processing_time_ms: float
-    errors: List[str]
+    errors: list[str]
 
 
 class PatternLearner:
@@ -108,13 +105,13 @@ class PatternLearner:
     provides quality assessment and pattern lifecycle management.
     """
 
-    def __init__(self, memory_service: Optional[IMemoryService] = None):
+    def __init__(self, memory_service: IMemoryService | None = None):
         self.logger = logging.getLogger(__name__)
         self._memory_service = memory_service
 
         # Pattern storage by type
-        self._patterns: Dict[PatternType, List[Pattern]] = defaultdict(list)
-        self._pattern_index: Dict[str, Pattern] = {}
+        self._patterns: dict[PatternType, list[Pattern]] = defaultdict(list)
+        self._pattern_index: dict[str, Pattern] = {}
 
         # Learning history and metrics
         self._learning_history = deque(maxlen=1000)
@@ -157,11 +154,11 @@ class PatternLearner:
     async def learn_from_feedback(
         self,
         content: str,
-        predicted_result: Dict[str, Any],
-        actual_result: Dict[str, Any],
-        user_feedback: Dict[str, Any],
+        predicted_result: dict[str, Any],
+        actual_result: dict[str, Any],
+        user_feedback: dict[str, Any],
         session_id: str,
-        context: Optional[Dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
     ) -> LearningResult:
         """
         Learn patterns from user feedback and correction
@@ -284,8 +281,8 @@ class PatternLearner:
         self,
         content: str,
         pattern_type: PatternType,
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Apply learned patterns to content for enhanced processing
 
@@ -360,7 +357,7 @@ class PatternLearner:
             self.logger.error(f"Pattern application failed: {e}")
             return {"matches": [], "confidence": 0.0, "patterns_applied": 0}
 
-    def get_pattern_statistics(self) -> Dict[str, Any]:
+    def get_pattern_statistics(self) -> dict[str, Any]:
         """
         Get comprehensive statistics about learned patterns
 
@@ -427,8 +424,8 @@ class PatternLearner:
         return stats
 
     async def _extract_learning_context(
-        self, session_id: str, context: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        self, session_id: str, context: dict[str, Any] | None
+    ) -> dict[str, Any]:
         """Extract learning context from memory and provided context"""
         learning_context = {
             "user_expertise": "unknown",
@@ -462,10 +459,10 @@ class PatternLearner:
     def _analyze_feedback(
         self,
         content: str,
-        predicted_result: Dict[str, Any],
-        actual_result: Dict[str, Any],
-        user_feedback: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        predicted_result: dict[str, Any],
+        actual_result: dict[str, Any],
+        user_feedback: dict[str, Any],
+    ) -> dict[str, Any]:
         """Analyze feedback to determine learning opportunities"""
         analysis = {
             "classification_correction": False,
@@ -519,9 +516,9 @@ class PatternLearner:
     async def _learn_classification_patterns(
         self,
         content: str,
-        feedback_analysis: Dict[str, Any],
-        learning_context: Dict[str, Any],
-    ) -> Dict[str, int]:
+        feedback_analysis: dict[str, Any],
+        learning_context: dict[str, Any],
+    ) -> dict[str, int]:
         """Learn patterns for improved classification"""
         learned = 0
         updated = 0
@@ -573,9 +570,9 @@ class PatternLearner:
     async def _learn_error_patterns(
         self,
         content: str,
-        feedback_analysis: Dict[str, Any],
-        learning_context: Dict[str, Any],
-    ) -> Dict[str, int]:
+        feedback_analysis: dict[str, Any],
+        learning_context: dict[str, Any],
+    ) -> dict[str, int]:
         """Learn patterns for error detection and classification"""
         learned = 0
         updated = 0
@@ -622,9 +619,9 @@ class PatternLearner:
     async def _learn_anomaly_patterns(
         self,
         content: str,
-        feedback_analysis: Dict[str, Any],
-        learning_context: Dict[str, Any],
-    ) -> Dict[str, int]:
+        feedback_analysis: dict[str, Any],
+        learning_context: dict[str, Any],
+    ) -> dict[str, int]:
         """Learn patterns for anomaly detection"""
         learned = 0
         updated = 0
@@ -636,9 +633,9 @@ class PatternLearner:
     async def _learn_security_patterns(
         self,
         content: str,
-        feedback_analysis: Dict[str, Any],
-        learning_context: Dict[str, Any],
-    ) -> Dict[str, int]:
+        feedback_analysis: dict[str, Any],
+        learning_context: dict[str, Any],
+    ) -> dict[str, int]:
         """Learn patterns for security issue detection"""
         learned = 0
         updated = 0
@@ -684,7 +681,7 @@ class PatternLearner:
 
     def _extract_classification_patterns(
         self, content: str, classification: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Extract patterns indicative of a specific classification"""
         patterns = []
 
@@ -756,8 +753,8 @@ class PatternLearner:
         return patterns[:5]  # Limit to 5 patterns
 
     def _extract_error_patterns(
-        self, content: str, error_info: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, content: str, error_info: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Extract patterns for error detection"""
         patterns = []
 
@@ -792,8 +789,8 @@ class PatternLearner:
         return patterns[:3]  # Limit to 3 patterns
 
     def _extract_security_patterns(
-        self, content: str, issue: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, content: str, issue: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Extract patterns for security issue detection"""
         patterns = []
 
@@ -894,7 +891,7 @@ class PatternLearner:
             if pattern_id in self._pattern_usage:
                 del self._pattern_usage[pattern_id]
 
-    def _cleanup_patterns(self) -> Dict[str, int]:
+    def _cleanup_patterns(self) -> dict[str, int]:
         """Remove low-quality patterns"""
         removed = 0
 
@@ -920,8 +917,8 @@ class PatternLearner:
         return {"removed": removed}
 
     def _filter_patterns_by_context(
-        self, patterns: List[Pattern], context: Optional[Dict[str, Any]]
-    ) -> List[Pattern]:
+        self, patterns: list[Pattern], context: dict[str, Any] | None
+    ) -> list[Pattern]:
         """Filter patterns based on context relevance"""
         if not context:
             return patterns
@@ -968,7 +965,7 @@ class PatternLearner:
         self,
         patterns_learned: int,
         patterns_updated: int,
-        feedback_analysis: Dict[str, Any],
+        feedback_analysis: dict[str, Any],
     ) -> float:
         """Calculate confidence in the learning process"""
         base_confidence = 0.5

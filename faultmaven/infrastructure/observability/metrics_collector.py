@@ -22,8 +22,6 @@ Performance Targets:
 """
 
 import asyncio
-import json
-import logging
 import statistics
 import threading
 import time
@@ -31,8 +29,8 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import ITracer
@@ -47,8 +45,8 @@ class MetricData:
     operation: str
     value: float
     unit: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: Dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -57,9 +55,9 @@ class PerformanceSnapshot:
 
     timestamp: datetime
     service: str
-    metrics: Dict[str, Any]
-    alerts: List[str] = field(default_factory=list)
-    recommendations: List[str] = field(default_factory=list)
+    metrics: dict[str, Any]
+    alerts: list[str] = field(default_factory=list)
+    recommendations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -67,12 +65,12 @@ class ServicePerformanceProfile:
     """Performance profile for a specific service"""
 
     service_name: str
-    operation_metrics: Dict[
-        str, Dict[str, float]
+    operation_metrics: dict[
+        str, dict[str, float]
     ]  # operation -> {avg, p95, p99, count}
-    error_rates: Dict[str, float]  # operation -> error_rate
-    resource_utilization: Dict[str, float]  # memory, cpu, etc.
-    optimization_opportunities: List[str]
+    error_rates: dict[str, float]  # operation -> error_rate
+    resource_utilization: dict[str, float]  # memory, cpu, etc.
+    optimization_opportunities: list[str]
     last_updated: datetime
 
 
@@ -92,7 +90,7 @@ class MetricsCollector(BaseExternalClient):
 
     def __init__(
         self,
-        tracer: Optional[ITracer] = None,
+        tracer: ITracer | None = None,
         buffer_size: int = 10000,
         flush_interval: int = 60,
         analytics_window: int = 300,  # 5 minutes
@@ -123,11 +121,11 @@ class MetricsCollector(BaseExternalClient):
         self._buffer_lock = threading.RLock()
 
         # Service performance profiles
-        self._service_profiles: Dict[str, ServicePerformanceProfile] = {}
+        self._service_profiles: dict[str, ServicePerformanceProfile] = {}
         self._profile_lock = threading.RLock()
 
         # Real-time analytics data
-        self._analytics_data: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
+        self._analytics_data: dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
         self._analytics_lock = threading.RLock()
 
         # Performance thresholds and SLAs
@@ -178,7 +176,7 @@ class MetricsCollector(BaseExternalClient):
         self._background_tasks_running = False
 
         # Performance alerts
-        self._active_alerts: Set[str] = set()
+        self._active_alerts: set[str] = set()
         self._alert_history: deque = deque(maxlen=1000)
 
         self.logger.info(
@@ -211,8 +209,8 @@ class MetricsCollector(BaseExternalClient):
         operation: str,
         value: float,
         unit: str = "milliseconds",
-        metadata: Optional[Dict[str, Any]] = None,
-        tags: Optional[Dict[str, str]] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         """Record a performance metric
 
@@ -226,7 +224,7 @@ class MetricsCollector(BaseExternalClient):
         """
         try:
             metric = MetricData(
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 service=service,
                 operation=operation,
                 value=value,
@@ -252,8 +250,8 @@ class MetricsCollector(BaseExternalClient):
         self,
         service: str,
         operation: str,
-        metadata: Optional[Dict[str, Any]] = None,
-        tags: Optional[Dict[str, str]] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: dict[str, str] | None = None,
     ):
         """Context manager for measuring operation duration
 
@@ -298,8 +296,8 @@ class MetricsCollector(BaseExternalClient):
         service: str,
         cache_key: str,
         event_type: str,  # "hit", "miss", "set", "evict"
-        retrieval_time_ms: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        retrieval_time_ms: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Record cache performance event
 
@@ -364,8 +362,8 @@ class MetricsCollector(BaseExternalClient):
         session_id: str,
         user_id: str,
         pattern_type: str,  # "query", "workflow", "preference"
-        pattern_data: Dict[str, Any],
-        effectiveness_score: Optional[float] = None,
+        pattern_data: dict[str, Any],
+        effectiveness_score: float | None = None,
     ) -> None:
         """Record user interaction pattern for analysis
 
@@ -412,8 +410,8 @@ class MetricsCollector(BaseExternalClient):
         success: bool,
         findings_count: int,
         knowledge_items_retrieved: int,
-        confidence_score: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        confidence_score: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Record comprehensive workflow execution metrics
 
@@ -482,7 +480,7 @@ class MetricsCollector(BaseExternalClient):
 
     async def get_service_performance_summary(
         self, service: str, time_window_minutes: int = 60
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get performance summary for a specific service
 
         Args:
@@ -493,9 +491,7 @@ class MetricsCollector(BaseExternalClient):
             Performance summary with metrics, trends, and recommendations
         """
         try:
-            cutoff_time = datetime.now(timezone.utc) - timedelta(
-                minutes=time_window_minutes
-            )
+            cutoff_time = datetime.now(UTC) - timedelta(minutes=time_window_minutes)
 
             # Filter metrics for service and time window
             relevant_metrics = []
@@ -598,7 +594,7 @@ class MetricsCollector(BaseExternalClient):
                 "alerts": alerts,
                 "recommendations": recommendations,
                 "cache_performance": cache_stats,
-                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "analysis_timestamp": datetime.now(UTC).isoformat(),
             }
 
             # Update service profile
@@ -610,7 +606,7 @@ class MetricsCollector(BaseExternalClient):
             self.logger.error(f"Failed to get service performance summary: {e}")
             return {"service": service, "status": "error", "error": str(e)}
 
-    async def get_system_performance_dashboard(self) -> Dict[str, Any]:
+    async def get_system_performance_dashboard(self) -> dict[str, Any]:
         """Get comprehensive system performance dashboard
 
         Returns:
@@ -618,7 +614,7 @@ class MetricsCollector(BaseExternalClient):
         """
         try:
             dashboard_data = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "system_status": "healthy",
                 "services": {},
                 "cross_service_metrics": {},
@@ -702,14 +698,14 @@ class MetricsCollector(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to generate performance dashboard: {e}")
             return {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "status": "error",
                 "error": str(e),
             }
 
     async def get_optimization_recommendations(
-        self, service: Optional[str] = None, priority: str = "high"
-    ) -> Dict[str, Any]:
+        self, service: str | None = None, priority: str = "high"
+    ) -> dict[str, Any]:
         """Get performance optimization recommendations
 
         Args:
@@ -721,7 +717,7 @@ class MetricsCollector(BaseExternalClient):
         """
         try:
             recommendations = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "priority": priority,
                 "service_filter": service,
                 "recommendations": [],
@@ -762,7 +758,7 @@ class MetricsCollector(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to get optimization recommendations: {e}")
             return {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "error": str(e),
                 "recommendations": [],
             }
@@ -866,8 +862,8 @@ class MetricsCollector(BaseExternalClient):
         ]
 
     def _generate_operation_recommendations(
-        self, service: str, operation: str, stats: Dict[str, Any]
-    ) -> List[str]:
+        self, service: str, operation: str, stats: dict[str, Any]
+    ) -> list[str]:
         """Generate recommendations for a specific operation"""
         recommendations = []
 
@@ -885,7 +881,7 @@ class MetricsCollector(BaseExternalClient):
         return recommendations
 
     def _calculate_service_health_score(
-        self, service: str, operation_stats: Dict[str, Dict[str, Any]]
+        self, service: str, operation_stats: dict[str, dict[str, Any]]
     ) -> float:
         """Calculate overall health score for a service (0.0 - 1.0)"""
         if not operation_stats:
@@ -916,7 +912,7 @@ class MetricsCollector(BaseExternalClient):
         return statistics.mean(scores) if scores else 0.0
 
     async def _update_service_profile(
-        self, service: str, performance_summary: Dict[str, Any]
+        self, service: str, performance_summary: dict[str, Any]
     ) -> None:
         """Update service performance profile"""
         try:
@@ -947,7 +943,7 @@ class MetricsCollector(BaseExternalClient):
                     optimization_opportunities=performance_summary.get(
                         "recommendations", []
                     ),
-                    last_updated=datetime.now(timezone.utc),
+                    last_updated=datetime.now(UTC),
                 )
 
                 self._service_profiles[service] = profile
@@ -955,7 +951,7 @@ class MetricsCollector(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to update service profile for {service}: {e}")
 
-    async def _analyze_cross_service_performance(self) -> Dict[str, Any]:
+    async def _analyze_cross_service_performance(self) -> dict[str, Any]:
         """Analyze performance correlations across services"""
         # Placeholder for cross-service analysis
         return {
@@ -964,7 +960,7 @@ class MetricsCollector(BaseExternalClient):
             "cascade_effects": [],
         }
 
-    async def _analyze_performance_trends(self) -> Dict[str, Any]:
+    async def _analyze_performance_trends(self) -> dict[str, Any]:
         """Analyze performance trends over time"""
         # Placeholder for trend analysis
         return {
@@ -974,7 +970,7 @@ class MetricsCollector(BaseExternalClient):
             "prediction_intervals": {},
         }
 
-    async def _generate_system_recommendations(self) -> List[Dict[str, Any]]:
+    async def _generate_system_recommendations(self) -> list[dict[str, Any]]:
         """Generate system-wide optimization recommendations"""
         # Placeholder for system recommendations
         return [
@@ -990,7 +986,7 @@ class MetricsCollector(BaseExternalClient):
 
     async def _analyze_service_for_optimizations(
         self, profile: ServicePerformanceProfile
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Analyze service profile for optimization opportunities"""
         recommendations = []
 
@@ -1061,7 +1057,7 @@ class MetricsCollector(BaseExternalClient):
             except Exception as e:
                 self.logger.error(f"Error in performance monitor: {e}")
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check health of metrics collector"""
         base_health = await super().health_check()
 

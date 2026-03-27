@@ -11,7 +11,7 @@ Tests user management business logic:
 Coverage Target: 90%+
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,7 +52,7 @@ def mock_user_repo():
 # The production code now uses RepositoryUser; tests historically used a DevUser-like
 # constructor. Keep test call sites unchanged by providing a local factory.
 def DevUser(**kwargs) -> RepositoryUser:
-    created_at = kwargs.get("created_at") or datetime.now(timezone.utc)
+    created_at = kwargs.get("created_at") or datetime.now(UTC)
     roles = kwargs.get("roles", [])
     if roles is None:
         roles = ["admin"]
@@ -92,7 +92,7 @@ def user_service(mock_user_repo, mock_auth_service):
 @pytest.fixture
 def sample_users():
     """Create sample users for testing."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return [
         RepositoryUser(
             user_id="user-1",
@@ -366,13 +366,13 @@ class TestListUsers:
         self, user_service, mock_user_repo
     ):
         """Results sorted by created_at DESC (newest first)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_user = DevUser(
             user_id="old",
             username="old",
             email="old@example.com",
             display_name="Old",
-            created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2020, 1, 1, tzinfo=UTC),
             is_active=True,
             roles=["member"],
         )
@@ -381,7 +381,7 @@ class TestListUsers:
             username="new",
             email="new@example.com",
             display_name="New",
-            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2024, 1, 1, tzinfo=UTC),
             is_active=True,
             roles=["member"],
         )
@@ -1103,7 +1103,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_user_with_none_roles(self, user_service, mock_user_repo):
         """Handles user with empty roles list (defaults to ['member'] in service)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # RepositoryUser requires roles to be a list (not None). Empty list [] is falsy, so service defaults to ['member'] when filtering
         # But RepositoryUser might reject empty list, so use ['member'] directly
         user_with_member_role = DevUser(

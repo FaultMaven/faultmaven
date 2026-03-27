@@ -5,7 +5,7 @@ Tests the API service layer for organization management.
 Coverage Target: 30-40 tests
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -86,7 +86,7 @@ def api_service(mock_organization_service, mock_user_service, mock_auth_service)
 @pytest.fixture
 def sample_organization():
     """Create sample organization."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Organization(
         organization_id="org-123",
         name="Test Organization",
@@ -103,7 +103,7 @@ def sample_organization():
 @pytest.fixture
 def sample_members():
     """Create sample organization members."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return [
         OrganizationMember(
             user_id="user-owner",

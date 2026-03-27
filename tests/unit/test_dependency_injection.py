@@ -268,7 +268,7 @@ def test_error_handling_in_container():
                 # Simulate service creation that might fail
                 self._create_services()
                 self._initialized = True
-            except Exception as e:
+            except Exception:
                 # Handle gracefully - create fallback services
                 self._create_fallback_services()
                 self._initialized = True

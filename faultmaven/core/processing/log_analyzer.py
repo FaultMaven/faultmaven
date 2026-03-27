@@ -37,8 +37,8 @@ import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -59,22 +59,22 @@ from faultmaven.models.interfaces import (
 class EnhancedProcessingResult:
     """Enhanced processing result with context and learning information"""
 
-    insights: Dict[str, Any]
-    anomalies: List[Dict[str, Any]]
-    recommendations: List[str]
+    insights: dict[str, Any]
+    anomalies: list[dict[str, Any]]
+    recommendations: list[str]
     confidence_score: float
     context_relevance: float
     memory_enhanced: bool
-    security_flags: List[str]
-    learned_patterns: List[str]
+    security_flags: list[str]
+    learned_patterns: list[str]
     processing_time_ms: float
-    pattern_matches: List[str]
+    pattern_matches: list[str]
 
 
 class EnhancedLogProcessor(ILogProcessor):
     """Memory-aware log processor with pattern learning and context understanding"""
 
-    def __init__(self, memory_service: Optional[IMemoryService] = None):
+    def __init__(self, memory_service: IMemoryService | None = None):
         self.logger = logging.getLogger(__name__)
         self._memory_service = memory_service
 
@@ -208,8 +208,8 @@ class EnhancedLogProcessor(ILogProcessor):
         self,
         content: str,
         session_id: str,
-        data_type: Optional[DataType] = None,
-        context: Optional[Dict[str, Any]] = None,
+        data_type: DataType | None = None,
+        context: dict[str, Any] | None = None,
     ) -> EnhancedProcessingResult:
         """
         Memory-aware log processing with conversation context integration
@@ -282,7 +282,7 @@ class EnhancedLogProcessor(ILogProcessor):
         return result
 
     async def _process_with_memory_context(
-        self, content: str, context: Dict[str, Any], start_time: float
+        self, content: str, context: dict[str, Any], start_time: float
     ) -> EnhancedProcessingResult:
         """
         Perform log processing enhanced with memory context
@@ -387,7 +387,7 @@ class EnhancedLogProcessor(ILogProcessor):
                 pattern_matches=[],
             )
 
-    def _detect_log_security_issues(self, content: str) -> List[str]:
+    def _detect_log_security_issues(self, content: str) -> list[str]:
         """
         Detect potential security and PII issues in log content
 
@@ -412,8 +412,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return flags
 
     def _extract_log_context_insights(
-        self, memory_context: Optional[ConversationContext], content: str
-    ) -> Dict[str, Any]:
+        self, memory_context: ConversationContext | None, content: str
+    ) -> dict[str, Any]:
         """
         Extract log processing insights from memory context
 
@@ -527,7 +527,7 @@ class EnhancedLogProcessor(ILogProcessor):
         return insights
 
     def _parse_logs_with_context(
-        self, content: str, context: Dict[str, Any]
+        self, content: str, context: dict[str, Any]
     ) -> pd.DataFrame:
         """
         Parse log content with context-aware pattern recognition
@@ -562,8 +562,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return pd.DataFrame(parsed_entries)
 
     def _parse_log_line_with_context(
-        self, line: str, line_num: int, context_insights: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+        self, line: str, line_num: int, context_insights: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """
         Parse a single log line with context awareness
 
@@ -672,7 +672,7 @@ class EnhancedLogProcessor(ILogProcessor):
         return entry
 
     def _calculate_line_context_relevance(
-        self, line: str, context_insights: Dict[str, Any]
+        self, line: str, context_insights: dict[str, Any]
     ) -> float:
         """
         Calculate context relevance for a single log line
@@ -754,8 +754,8 @@ class EnhancedLogProcessor(ILogProcessor):
             self._metrics[metric_name] = (current_avg * (count - 1) + new_value) / count
 
     def _extract_memory_aware_insights(
-        self, df: pd.DataFrame, context_insights: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, df: pd.DataFrame, context_insights: dict[str, Any]
+    ) -> dict[str, Any]:
         """Extract insights enhanced with memory context"""
         # Use the standard extraction but enhance with context
         insights = self._extract_basic_insights(df, context_insights)
@@ -773,8 +773,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return insights
 
     def _detect_context_aware_anomalies(
-        self, df: pd.DataFrame, context_insights: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, df: pd.DataFrame, context_insights: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Detect anomalies with context awareness"""
         # Use the standard detection but enhance with context
         anomalies = self._detect_anomalies(df)
@@ -796,8 +796,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return anomalies
 
     def _apply_learned_anomaly_patterns(
-        self, df: pd.DataFrame, context: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, df: pd.DataFrame, context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Apply learned patterns for anomaly detection"""
         anomalies = []
 
@@ -807,11 +807,11 @@ class EnhancedLogProcessor(ILogProcessor):
 
     def _generate_memory_aware_recommendations(
         self,
-        insights: Dict[str, Any],
-        anomalies: List[Dict[str, Any]],
-        context_insights: Dict[str, Any],
-        memory_context: Optional[ConversationContext],
-    ) -> List[str]:
+        insights: dict[str, Any],
+        anomalies: list[dict[str, Any]],
+        context_insights: dict[str, Any],
+        memory_context: ConversationContext | None,
+    ) -> list[str]:
         """Generate recommendations enhanced with memory context"""
         # Use the standard generation but enhance with context
         recommendations = self._generate_recommendations(
@@ -834,9 +834,9 @@ class EnhancedLogProcessor(ILogProcessor):
     def _calculate_processing_confidence(
         self,
         df: pd.DataFrame,
-        insights: Dict[str, Any],
-        anomalies: List[Dict[str, Any]],
-        context_insights: Dict[str, Any],
+        insights: dict[str, Any],
+        anomalies: list[dict[str, Any]],
+        context_insights: dict[str, Any],
     ) -> float:
         """Calculate confidence score for processing"""
         # Use the standard calculation but enhance with context
@@ -851,9 +851,9 @@ class EnhancedLogProcessor(ILogProcessor):
 
     def _calculate_log_context_relevance(
         self,
-        insights: Dict[str, Any],
-        context_insights: Dict[str, Any],
-        memory_context: Optional[ConversationContext],
+        insights: dict[str, Any],
+        context_insights: dict[str, Any],
+        memory_context: ConversationContext | None,
     ) -> float:
         """Calculate context relevance for log processing"""
         if not memory_context:
@@ -879,8 +879,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return min(1.0, relevance)
 
     def _get_contributing_log_patterns(
-        self, content: str, insights: Dict[str, Any]
-    ) -> List[str]:
+        self, content: str, insights: dict[str, Any]
+    ) -> list[str]:
         """Get patterns that contributed to the processing"""
         patterns = []
 
@@ -898,8 +898,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return patterns
 
     def _get_pattern_matches(
-        self, content: str, context_insights: Dict[str, Any]
-    ) -> List[str]:
+        self, content: str, context_insights: dict[str, Any]
+    ) -> list[str]:
         """Get pattern matches for transparency"""
         matches = []
 
@@ -913,10 +913,10 @@ class EnhancedLogProcessor(ILogProcessor):
 
     # Standard methods used by enhanced processing
     def _extract_basic_insights(
-        self, df: pd.DataFrame, agent_state: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, df: pd.DataFrame, agent_state: dict[str, Any]
+    ) -> dict[str, Any]:
         """Extract basic insights from parsed log data with context awareness"""
-        insights: Dict[str, Any] = {
+        insights: dict[str, Any] = {
             "total_entries": len(df),
             "time_range": None,
             "log_level_distribution": {},
@@ -1023,7 +1023,7 @@ class EnhancedLogProcessor(ILogProcessor):
 
         return insights
 
-    def _detect_anomalies(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    def _detect_anomalies(self, df: pd.DataFrame) -> list[dict[str, Any]]:
         """Detect anomalies in log data"""
         anomalies = []
 
@@ -1085,10 +1085,10 @@ class EnhancedLogProcessor(ILogProcessor):
 
     def _generate_recommendations(
         self,
-        insights: Dict[str, Any],
-        anomalies: List[Dict[str, Any]],
-        agent_state: Dict[str, Any],
-    ) -> List[str]:
+        insights: dict[str, Any],
+        anomalies: list[dict[str, Any]],
+        agent_state: dict[str, Any],
+    ) -> list[str]:
         """Generate recommendations based on insights and anomalies"""
         recommendations = []
 
@@ -1119,8 +1119,8 @@ class EnhancedLogProcessor(ILogProcessor):
     def _calculate_confidence(
         self,
         df: pd.DataFrame,
-        insights: Dict[str, Any],
-        anomalies: List[Dict[str, Any]],
+        insights: dict[str, Any],
+        anomalies: list[dict[str, Any]],
     ) -> float:
         """Calculate confidence score for the analysis"""
         confidence = 0.5  # Base confidence
@@ -1146,8 +1146,8 @@ class EnhancedLogProcessor(ILogProcessor):
         return min(1.0, max(0.0, confidence))
 
     async def process(
-        self, content: str, data_type: Optional[DataType] = None
-    ) -> Dict[str, Any]:
+        self, content: str, data_type: DataType | None = None
+    ) -> dict[str, Any]:
         """Process logs and return extracted insights (ILogProcessor contract).
 
         This is implemented on the enhanced processor for direct use via the
@@ -1204,8 +1204,8 @@ class LogProcessor(ILogProcessor):
 
     @trace("log_processor_process")
     async def process(
-        self, content: str, data_type: Optional[DataType] = None
-    ) -> Dict[str, Any]:
+        self, content: str, data_type: DataType | None = None
+    ) -> dict[str, Any]:
         """
         Process log content and extract insights (interface-compliant method)
 
@@ -1265,7 +1265,7 @@ class LogProcessor(ILogProcessor):
         Returns:
             DataInsightsResponse with extracted insights
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         try:
             # Parse logs into structured format
@@ -1298,7 +1298,7 @@ class LogProcessor(ILogProcessor):
 
             # Calculate processing time
             processing_time = int(
-                (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
+                (datetime.now(UTC) - start_time).total_seconds() * 1000
             )
 
             return DataInsightsResponse(
@@ -1346,7 +1346,7 @@ class LogProcessor(ILogProcessor):
 
         return pd.DataFrame(parsed_entries)
 
-    def _parse_log_line(self, line: str, line_num: int) -> Optional[Dict[str, Any]]:
+    def _parse_log_line(self, line: str, line_num: int) -> dict[str, Any] | None:
         """
         Parse a single log line
 
@@ -1427,7 +1427,7 @@ class LogProcessor(ILogProcessor):
 
     def _extract_basic_insights(
         self, df: pd.DataFrame, agent_state: AgentState
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Extract basic insights from parsed log data with context awareness
 
@@ -1438,7 +1438,7 @@ class LogProcessor(ILogProcessor):
         Returns:
             Dictionary of insights
         """
-        insights: Dict[str, Any] = {
+        insights: dict[str, Any] = {
             "total_entries": len(df),
             "time_range": None,
             "log_level_distribution": {},
@@ -1589,7 +1589,7 @@ class LogProcessor(ILogProcessor):
 
         return insights
 
-    def _detect_anomalies(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    def _detect_anomalies(self, df: pd.DataFrame) -> list[dict[str, Any]]:
         """
         Detect anomalies in log data
 
@@ -1683,10 +1683,10 @@ class LogProcessor(ILogProcessor):
 
     def _generate_recommendations(
         self,
-        insights: Dict[str, Any],
-        anomalies: List[Dict[str, Any]],
+        insights: dict[str, Any],
+        anomalies: list[dict[str, Any]],
         agent_state: AgentState,
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Generate context-aware recommendations based on insights, anomalies, and agent state
 
@@ -1834,8 +1834,8 @@ class LogProcessor(ILogProcessor):
     def _calculate_confidence(
         self,
         df: pd.DataFrame,
-        insights: Dict[str, Any],
-        anomalies: List[Dict[str, Any]],
+        insights: dict[str, Any],
+        anomalies: list[dict[str, Any]],
     ) -> float:
         """
         Calculate confidence score for the analysis

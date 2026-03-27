@@ -1,16 +1,16 @@
 # File: faultmaven/models/api.py
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import for type annotations (avoid circular imports)
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
+    pass
 
 # Import evidence-centric models
 from faultmaven.models.llm_schemas import EvidenceRequestToAdd as EvidenceRequest
@@ -108,16 +108,12 @@ class Source(BaseModel):
 
     type: SourceType
     content: str
-    confidence: Optional[float] = None
-    metadata: Optional[Dict[str, Any]] = None
+    confidence: float | None = None
+    metadata: dict[str, Any] | None = None
 
     # Verification status for trust badges
-    verification_status: Optional[Literal["verified", "community", "experimental"]] = (
-        None
-    )
-    verification_reason: Optional[str] = (
-        None  # Tooltip text (e.g., "Reviewed by admin")
-    )
+    verification_status: Literal["verified", "community", "experimental"] | None = None
+    verification_reason: str | None = None  # Tooltip text (e.g., "Reviewed by admin")
 
 
 class PlanStep(BaseModel):
@@ -135,8 +131,8 @@ class UploadedData(BaseModel):
     size_bytes: int
     upload_timestamp: str  # UTC ISO 8601 format
     processing_status: ProcessingStatus
-    processing_summary: Optional[str] = None
-    likelihood: Optional[float] = None
+    processing_summary: str | None = None
+    likelihood: float | None = None
 
 
 class AvailableAction(BaseModel):
@@ -154,7 +150,7 @@ class ProgressIndicator(BaseModel):
     phase: str
     status: Literal["pending", "in_progress", "completed", "failed"]
     description: str
-    percentage: Optional[int] = None
+    percentage: int | None = None
 
 
 class ViewState(BaseModel):
@@ -166,21 +162,21 @@ class ViewState(BaseModel):
     session_id: str  # Current authentication session
     user: "User"  # User context for authentication
     active_case: Optional["Case"] = None  # Currently active case
-    cases: List["Case"] = Field(default_factory=list)  # All user's cases
-    messages: List[Dict[str, Any]] = Field(
+    cases: list["Case"] = Field(default_factory=list)  # All user's cases
+    messages: list[dict[str, Any]] = Field(
         default_factory=list
     )  # Messages for active case
-    uploaded_data: List[UploadedData] = Field(
+    uploaded_data: list[UploadedData] = Field(
         default_factory=list
     )  # Data for active case
     show_case_selector: bool = True  # UI hint: show case selector
     show_data_upload: bool = True  # UI hint: show data upload option
-    loading_state: Optional[str] = None  # Optional loading message
-    memory_context: Optional[Dict[str, Any]] = None  # Agent memory context
-    planning_state: Optional[Dict[str, Any]] = None  # Agent planning state
+    loading_state: str | None = None  # Optional loading message
+    memory_context: dict[str, Any] | None = None  # Agent memory context
+    planning_state: dict[str, Any] | None = None  # Agent planning state
 
     # Investigation Progress
-    investigation_progress: Optional[Dict[str, Any]] = Field(
+    investigation_progress: dict[str, Any] | None = Field(
         default=None,
         description="Investigation progress (milestones, evidence, hypotheses)",
     )
@@ -203,22 +199,20 @@ class QueryRequest(BaseModel):
         max_length=200000,
         description="User query or machine data (max 200KB)",
     )
-    context: Optional[Dict[str, Any]] = None
-    priority: Optional[Literal["low", "normal", "medium", "high", "critical"]] = (
-        "normal"
-    )
+    context: dict[str, Any] | None = None
+    priority: Literal["low", "normal", "medium", "high", "critical"] | None = "normal"
     timestamp: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
+        default_factory=lambda: to_json_compatible(datetime.now(UTC))
     )
 
     # v3.2 enhancements for machine data support
-    query_type: Optional[Literal["question", "machine_data"]] = (
+    query_type: Literal["question", "machine_data"] | None = (
         None  # Hint from UI about content type
     )
-    content_type: Optional[DataType] = (
+    content_type: DataType | None = (
         None  # Optional data type hint (if UI knows it's logs, metrics, etc.)
     )
-    is_raw_content: Optional[bool] = (
+    is_raw_content: bool | None = (
         False  # True if copy&paste machine data, False if typed question
     )
 
@@ -234,15 +228,15 @@ class AgentResponse(BaseModel):
     content: str
     response_type: ResponseType
     session_id: str  # Current authentication session
-    case_id: Optional[str] = None
-    likelihood: Optional[float] = None
-    sources: List[Source] = Field(default_factory=list)
-    next_action_hint: Optional[str] = None
-    view_state: Optional[ViewState] = None
-    plan: Optional[List[PlanStep]] = None
+    case_id: str | None = None
+    likelihood: float | None = None
+    sources: list[Source] = Field(default_factory=list)
+    next_action_hint: str | None = None
+    view_state: ViewState | None = None
+    plan: list[PlanStep] | None = None
 
     # EVIDENCE-CENTRIC FIELDS (v3.1.0)
-    evidence_requests: List[EvidenceRequest] = Field(
+    evidence_requests: list[EvidenceRequest] = Field(
         default_factory=list, description="Active evidence requests for this turn"
     )
     investigation_mode: InvestigationStrategy = Field(
@@ -278,9 +272,9 @@ class TitleGenerateRequest(BaseModel):
     """Request payload for conversation title generation."""
 
     session_id: str
-    context: Optional[Dict[str, Any]] = None
+    context: dict[str, Any] | None = None
     # Optional guardrail for word count (accepts null for default)
-    max_words: Optional[int] = 8
+    max_words: int | None = 8
 
 
 class TitleResponse(BaseModel):
@@ -308,8 +302,8 @@ class ErrorDetail(BaseModel):
 
     code: str  # General error code or SessionErrorCode value
     message: str
-    session_id: Optional[str] = None  # Session context for session-related errors
-    timeout_info: Optional[Dict[str, Any]] = None  # Additional timeout information
+    session_id: str | None = None  # Session context for session-related errors
+    timeout_info: dict[str, Any] | None = None  # Additional timeout information
 
 
 class ErrorResponse(BaseModel):
@@ -325,8 +319,8 @@ class ErrorResponse(BaseModel):
 class SessionRequest(BaseModel):
     """Request payload for creating a new session."""
 
-    user_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
+    user_id: str | None = None
+    context: dict[str, Any] | None = None
 
 
 class SessionResponse(BaseModel):
@@ -334,13 +328,13 @@ class SessionResponse(BaseModel):
 
     schema_version: Literal["3.1.0"] = "3.1.0"
     session_id: str
-    user_id: Optional[str] = None
-    client_id: Optional[str] = None  # Client/device identifier for session resumption
+    user_id: str | None = None
+    client_id: str | None = None  # Client/device identifier for session resumption
     status: AuthSessionStatus = AuthSessionStatus.ACTIVE
     created_at: str  # UTC ISO 8601 format
-    expires_at: Optional[str] = None  # UTC ISO 8601 format - optional for compliance
-    metadata: Optional[Dict[str, Any]] = None
-    session_resumed: Optional[bool] = (
+    expires_at: str | None = None  # UTC ISO 8601 format - optional for compliance
+    metadata: dict[str, Any] | None = None
+    session_resumed: bool | None = (
         None  # Indicates if this was an existing session resumed
     )
 
@@ -350,16 +344,16 @@ class Case(BaseModel):
 
     case_id: str  # Match frontend expectations
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     status: Literal["inquiry", "investigating", "resolved", "closed"] = (
         "inquiry"  # Valid CaseStatus values
     )
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     created_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
+        default_factory=lambda: to_json_compatible(datetime.now(UTC))
     )
     updated_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
+        default_factory=lambda: to_json_compatible(datetime.now(UTC))
     )
     message_count: int = 0
     owner_id: str  # Case owner user ID - REQUIRED per spec (no session binding)
@@ -369,9 +363,9 @@ class CaseRequest(BaseModel):
     """Request payload for creating a new case."""
 
     title: str
-    initial_query: Optional[str] = None
+    initial_query: str | None = None
     priority: Literal["low", "medium", "high", "critical"] = "medium"
-    context: Optional[Dict[str, Any]] = None
+    context: dict[str, Any] | None = None
 
 
 class CaseResponse(BaseModel):
@@ -385,14 +379,14 @@ class CaseListResponse(BaseModel):
     """Response payload for listing cases."""
 
     schema_version: Literal["3.1.0"] = "3.1.0"
-    cases: List[Case]
+    cases: list[Case]
 
 
 class SessionCasesResponse(BaseModel):
     """Response payload for session cases list."""
 
     schema_version: Literal["3.1.0"] = "3.1.0"
-    cases: List[Case]
+    cases: list[Case]
     total: int
 
 
@@ -406,9 +400,9 @@ class User(BaseModel):
     email: str
     name: str
     created_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
+        default_factory=lambda: to_json_compatible(datetime.now(UTC))
     )
-    last_login: Optional[str] = None
+    last_login: str | None = None
 
 
 class DevLoginRequest(BaseModel):
@@ -428,9 +422,9 @@ class AuthResponse(BaseModel):
 class DataUploadRequest(BaseModel):
     """Request payload for data upload (multipart form data)."""
 
-    description: Optional[str] = None
-    expected_type: Optional[DataType] = None
-    context: Optional[Dict[str, Any]] = None
+    description: str | None = None
+    expected_type: DataType | None = None
+    context: dict[str, Any] | None = None
 
 
 # --- API Compliance Response Models ---
@@ -443,26 +437,26 @@ class KnowledgeBaseDocument(BaseModel):
     title: str
     content: str
     document_type: str
-    category: Optional[str] = None
+    category: str | None = None
     status: str = "processed"
-    tags: List[str] = Field(default_factory=list)
-    source_url: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    source_url: str | None = None
     scope: str = "global"
-    owner_id: Optional[str] = None
-    team_id: Optional[str] = None
+    owner_id: str | None = None
+    team_id: str | None = None
     created_at: str
     updated_at: str
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
     # Verification status (0=experimental, 1=community, 2=admin_verified)
     verification_level: int = 0
-    verification_status: Optional[Literal["verified", "community", "experimental"]] = (
+    verification_status: Literal["verified", "community", "experimental"] | None = (
         "experimental"
     )
-    verification_reason: Optional[str] = None
+    verification_reason: str | None = None
 
     # Lineage tracking
-    source_suggestion_id: Optional[str] = None  # Link to originating suggestion
+    source_suggestion_id: str | None = None  # Link to originating suggestion
 
 
 class DocumentSnippetResponse(BaseModel):
@@ -474,7 +468,7 @@ class DocumentSnippetResponse(BaseModel):
     document_id: str
     title: str
     snippet: str
-    line_range: Optional[tuple[int, int]] = None  # (start, end) line numbers
+    line_range: tuple[int, int] | None = None  # (start, end) line numbers
     total_lines: int
     document_type: str
     verification_status: Literal["verified", "community", "experimental"] = (
@@ -483,7 +477,7 @@ class DocumentSnippetResponse(BaseModel):
     verification_level: int = 0
 
     # Semantic context (when query_string is provided)
-    relevance_score: Optional[float] = None  # How relevant is this snippet to the query
+    relevance_score: float | None = None  # How relevant is this snippet to the query
 
 
 # --- Knowledge Suggestion Models ---
@@ -541,32 +535,32 @@ class KnowledgeSuggestionDetail(BaseModel):
     pii_scan_status: Literal[
         "not_scanned", "scanning", "clean", "pii_detected", "remediated", "scan_failed"
     ]
-    pii_scan_result: Optional[Dict[str, Any]] = None
-    pii_remediated_by: Optional[str] = None
-    pii_remediated_at: Optional[str] = None
+    pii_scan_result: dict[str, Any] | None = None
+    pii_remediated_by: str | None = None
+    pii_remediated_at: str | None = None
 
     # Lineage
     lineage: SuggestionLineage
 
     # Review
-    reviewed_by: Optional[str] = None
-    reviewed_at: Optional[str] = None
-    review_notes: Optional[str] = None
-    rejection_reason: Optional[str] = None
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+    review_notes: str | None = None
+    rejection_reason: str | None = None
 
     # Bidirectional link
-    knowledge_item_id: Optional[str] = None
+    knowledge_item_id: str | None = None
 
     # Timestamps
     created_at: str
     updated_at: str
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
 
 class SuggestionListResponse(BaseModel):
     """Paginated list of knowledge suggestions."""
 
-    suggestions: List[KnowledgeSuggestionSummary]
+    suggestions: list[KnowledgeSuggestionSummary]
     total_count: int
     limit: int
     offset: int
@@ -577,7 +571,7 @@ class KnowledgeExtractionRequest(BaseModel):
 
     include_messages: bool = True
     include_evidence: bool = True
-    title_suggestion: Optional[str] = None
+    title_suggestion: str | None = None
 
 
 class KnowledgeExtractionResponse(BaseModel):
@@ -589,29 +583,29 @@ class KnowledgeExtractionResponse(BaseModel):
     suggested_title: str
     suggested_content: str
     pii_scan_status: str
-    extracted_from: Dict[str, Any]  # case_title, message_count, evidence_count
+    extracted_from: dict[str, Any]  # case_title, message_count, evidence_count
     created_at: str
 
 
 class SuggestionApproveRequest(BaseModel):
     """Request body for approving a suggestion."""
 
-    review_notes: Optional[str] = None
+    review_notes: str | None = None
 
 
 class SuggestionRejectRequest(BaseModel):
     """Request body for rejecting a suggestion."""
 
     rejection_reason: str
-    review_notes: Optional[str] = None
+    review_notes: str | None = None
 
 
 class SuggestionUpdateRequest(BaseModel):
     """Request body for updating a suggestion's content."""
 
-    title: Optional[str] = None
-    content: Optional[str] = None
-    suggested_type: Optional[str] = None
+    title: str | None = None
+    content: str | None = None
+    suggested_type: str | None = None
 
 
 class StandardErrorResponse(BaseModel):
@@ -628,9 +622,9 @@ class JobStatus(BaseModel):
 
     job_id: str
     status: Literal["pending", "running", "completed", "failed"]
-    progress: Optional[int] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    progress: int | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
     created_at: str
     updated_at: str
 
@@ -643,19 +637,17 @@ class QueryJobStatus(BaseModel):
     status: Literal[
         "pending", "processing", "running", "completed", "failed", "cancelled"
     ]
-    progress_percentage: Optional[int] = Field(
+    progress_percentage: int | None = Field(
         None, ge=0, le=100, description="Processing progress percentage"
     )
-    started_at: Optional[str] = Field(None, description="Job start time (UTC ISO 8601)")
+    started_at: str | None = Field(None, description="Job start time (UTC ISO 8601)")
     last_updated_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
+        default_factory=lambda: to_json_compatible(datetime.now(UTC))
     )
-    error: Optional[Dict[str, Any]] = Field(
+    error: dict[str, Any] | None = Field(
         None, description="Error details if status is failed"
     )
-    result: Optional[AgentResponse] = Field(
-        None, description="Final result if completed"
-    )
+    result: AgentResponse | None = Field(None, description="Final result if completed")
 
 
 class CaseQuerySummary(BaseModel):
@@ -668,7 +660,7 @@ class CaseQuerySummary(BaseModel):
     ]
     created_at: str
     last_updated_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc))
+        default_factory=lambda: to_json_compatible(datetime.now(UTC))
     )
 
 
@@ -677,17 +669,17 @@ class CaseSummary(BaseModel):
 
     case_id: str
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     status: str
     priority: str
     created_at: str
     updated_at: str
-    owner_id: Optional[str] = None
-    message_count: Optional[int] = Field(
+    owner_id: str | None = None
+    message_count: int | None = Field(
         None, description="Number of messages/queries in case"
     )
-    last_activity_at: Optional[str] = Field(None, description="Last activity timestamp")
-    session_id: Optional[str] = None
+    last_activity_at: str | None = Field(None, description="Last activity timestamp")
+    session_id: str | None = None
 
 
 class Message(BaseModel):
@@ -707,9 +699,9 @@ class Message(BaseModel):
     )
 
     # Optional fields
-    author_id: Optional[str] = Field(None, description="User who created the message")
-    token_count: Optional[int] = Field(None, description="Number of tokens in content")
-    metadata: Optional[Dict[str, Any]] = Field(
+    author_id: str | None = Field(None, description="User who created the message")
+    token_count: int | None = Field(None, description="Number of tokens in content")
+    metadata: dict[str, Any] | None = Field(
         None, description="Sources, tools used, etc."
     )
 
@@ -721,7 +713,7 @@ class MessageRetrievalDebugInfo(BaseModel):
     redis_operation_time_ms: float = Field(
         ..., description="Time taken for Redis operation"
     )
-    storage_errors: List[str] = Field(
+    storage_errors: list[str] = Field(
         default_factory=list, description="Any storage-related errors encountered"
     )
     message_parsing_errors: int = Field(
@@ -732,7 +724,7 @@ class MessageRetrievalDebugInfo(BaseModel):
 class CaseMessagesResponse(BaseModel):
     """Enhanced response model for case message retrieval with debugging support."""
 
-    messages: List[Message] = Field(..., description="Array of conversation messages")
+    messages: list[Message] = Field(..., description="Array of conversation messages")
     total_count: int = Field(..., description="Total number of messages in the case")
     retrieved_count: int = Field(
         ..., description="Number of messages successfully retrieved"
@@ -740,10 +732,10 @@ class CaseMessagesResponse(BaseModel):
     has_more: bool = Field(
         ..., description="Whether more messages are available for pagination"
     )
-    next_offset: Optional[int] = Field(
+    next_offset: int | None = Field(
         None, description="Offset for next page (null if no more pages)"
     )
-    debug_info: Optional[MessageRetrievalDebugInfo] = Field(
+    debug_info: MessageRetrievalDebugInfo | None = Field(
         None, description="Debug information (only when include_debug=true)"
     )
 
@@ -770,10 +762,10 @@ class SimpleAgentResponse(BaseModel):
     response_type: ResponseType
     content: str
     session_id: str
-    case_id: Optional[str] = None
-    likelihood: Optional[float] = None
-    sources: List[Dict[str, Any]] = Field(default_factory=list)
-    next_action_hint: Optional[str] = None
+    case_id: str | None = None
+    likelihood: float | None = None
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    next_action_hint: str | None = None
 
 
 # --- Data Preprocessing Models ---
@@ -783,7 +775,7 @@ class SourceMetadata(BaseModel):
     """Metadata about data source origin, used for classification boosting."""
 
     source_type: Literal["file_upload", "text_paste", "page_capture"]
-    source_url: Optional[str] = Field(None, description="URL if from page capture")
+    source_url: str | None = Field(None, description="URL if from page capture")
 
 
 class ClassificationResult(BaseModel):
@@ -810,10 +802,10 @@ class ClassificationResult(BaseModel):
         default=False,
         description="True if confidence below threshold, triggers user fallback modal",
     )
-    suggested_types: Optional[List[DataType]] = Field(
+    suggested_types: list[DataType] | None = Field(
         None, description="Suggested data types for ambiguous cases (user fallback)"
     )
-    source_type: Optional[str] = Field(
+    source_type: str | None = Field(
         None,
         description="Origin of the content: page_capture, user_paste, file_upload. "
         "Propagated from Attachment.source_metadata when available.",
@@ -887,18 +879,18 @@ class PreprocessedData(BaseModel):
     processed_size: int = Field(..., description="Processed content size in characters")
 
     # Security flags
-    security_flags: List[str] = Field(
+    security_flags: list[str] = Field(
         default_factory=list,
         description="Security issues detected (pii_detected, secrets_found, etc.)",
     )
 
     # Source information (optional)
-    source_metadata: Optional[SourceMetadata] = Field(
+    source_metadata: SourceMetadata | None = Field(
         None, description="Metadata about data source (file, text paste, page capture)"
     )
 
     # Structured insights (optional) - for advanced features like timeline extraction
-    insights: Optional[Dict[str, Any]] = Field(
+    insights: dict[str, Any] | None = Field(
         None,
         description="Structured insights extracted during preprocessing (errors, anomalies, metrics, etc.)",
     )

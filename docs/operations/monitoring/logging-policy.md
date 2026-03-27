@@ -64,5 +64,3 @@ except Exception as e:
 
 ## Redaction
 - Strip or hash PII/session identifiers; avoid storing raw user content in logs
-
-

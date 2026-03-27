@@ -12,8 +12,8 @@ Coverage:
         --cov-report=term-missing
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -70,9 +70,9 @@ def sample_session() -> Session:
         session_id=str(uuid4()),
         user_id="test-user-001",
         organization_id="00000000-0000-0000-0000-000000000001",  # Default org for single-tenant
-        created_at=datetime.now(timezone.utc),
-        last_accessed=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        created_at=datetime.now(UTC),
+        last_accessed=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
         metadata={"source": "web", "device": "desktop"},
     )
 
@@ -83,8 +83,8 @@ def sample_session_no_expiry() -> Session:
     return Session(
         session_id=str(uuid4()),
         user_id="test-user-002",
-        created_at=datetime.now(timezone.utc),
-        last_accessed=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        last_accessed=datetime.now(UTC),
         expires_at=None,
         metadata=None,
     )
@@ -358,7 +358,7 @@ async def test_cleanup_expired_sessions(repository: DatabaseSessionRepository):
     expired_session = Session(
         session_id=str(uuid4()),
         user_id="test-user-expired",
-        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
     )
     await repository.create_session(expired_session)
 
@@ -366,7 +366,7 @@ async def test_cleanup_expired_sessions(repository: DatabaseSessionRepository):
     active_session = Session(
         session_id=str(uuid4()),
         user_id="test-user-active",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
     await repository.create_session(active_session)
 
@@ -407,7 +407,7 @@ async def test_cleanup_expired_sessions_none_expired(
     session = Session(
         session_id=str(uuid4()),
         user_id="test-user",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
     await repository.create_session(session)
 
@@ -426,14 +426,14 @@ async def test_session_expiry_check():
     expired_session = Session(
         session_id=str(uuid4()),
         user_id="test-user",
-        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
     )
 
     # Create active session
     active_session = Session(
         session_id=str(uuid4()),
         user_id="test-user",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
 
     # Create no-expiry session
@@ -539,7 +539,7 @@ async def test_inmemory_repository_cleanup_expired():
     expired = Session(
         session_id=str(uuid4()),
         user_id="test-user",
-        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
     )
     await repo.create_session(expired)
 
@@ -547,7 +547,7 @@ async def test_inmemory_repository_cleanup_expired():
     active = Session(
         session_id=str(uuid4()),
         user_id="test-user",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
     await repo.create_session(active)
 

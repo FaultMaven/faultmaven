@@ -6,11 +6,10 @@ when FaultMaven is configured to use local LLM providers.
 """
 
 import asyncio
-import logging
 import os
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import aiohttp
 
@@ -23,7 +22,7 @@ class LocalLLMServiceManager:
     """Manages local LLM service lifecycle"""
 
     def __init__(
-        self, base_url: str = "http://localhost:8080", script_path: Optional[str] = None
+        self, base_url: str = "http://localhost:8080", script_path: str | None = None
     ):
         self.base_url = base_url
         self.script_path = script_path or self._get_default_script_path()
@@ -67,7 +66,7 @@ class LocalLLMServiceManager:
             return False
 
     def _run_script_command(
-        self, command: str, model_name: Optional[str] = None
+        self, command: str, model_name: str | None = None
     ) -> subprocess.CompletedProcess:
         """Run a command using the local LLM service script"""
         if not os.path.exists(self.script_path):
@@ -158,7 +157,7 @@ class LocalLLMServiceManager:
             )
             return False
 
-    def get_service_status(self) -> Dict[str, Any]:
+    def get_service_status(self) -> dict[str, Any]:
         """Get the current status of the local LLM service"""
         try:
             result = self._run_script_command("status")
@@ -225,7 +224,7 @@ class LocalLLMServiceManager:
             logger.info("Local LLM service is not running, starting with correct model")
             return await self.start_service(model_name)
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Comprehensive health check of the local LLM service"""
         health_info = {
             "service_running": False,
@@ -258,7 +257,7 @@ class LocalLLMServiceManager:
 
 
 # Global instance for easy access
-_local_llm_manager: Optional[LocalLLMServiceManager] = None
+_local_llm_manager: LocalLLMServiceManager | None = None
 
 
 def get_local_llm_manager(

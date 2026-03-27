@@ -3,7 +3,7 @@
 Tests stagnation detection and recovery for investigation engine.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -66,7 +66,7 @@ def create_turn(turn_number: int, progress_made: bool = False, actions: list = N
     """Helper to create turn progress records."""
     return TurnProgress(
         turn_number=turn_number,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         milestones_completed=[],
         evidence_added=[],
         hypotheses_generated=[],

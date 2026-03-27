@@ -13,8 +13,8 @@ Design Reference: TASK-021 Organization Management API Endpoints
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any
 
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -65,8 +65,8 @@ class APIOrganizationService(BaseService):
     def __init__(
         self,
         organization_service: OrganizationService,
-        user_service: Optional[UserService] = None,
-        auth_service: Optional[AuthService] = None,
+        user_service: UserService | None = None,
+        auth_service: AuthService | None = None,
     ):
         """Initialize API organization service.
 
@@ -89,7 +89,7 @@ class APIOrganizationService(BaseService):
         name: str,
         slug: str,
         creator_user_id: str,
-        description: Optional[str] = None,
+        description: str | None = None,
         plan_tier: str = "free",
     ) -> Organization:
         """Create organization and add creator as owner.
@@ -168,7 +168,7 @@ class APIOrganizationService(BaseService):
         user_id: str,
         limit: int = 20,
         offset: int = 0,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int]:
         """List organizations user is a member of.
 
         Args:
@@ -223,8 +223,8 @@ class APIOrganizationService(BaseService):
         self,
         organization_id: str,
         user_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> Organization:
         """Update organization (owner only).
 
@@ -315,10 +315,10 @@ class APIOrganizationService(BaseService):
         self,
         organization_id: str,
         user_id: str,
-        role_filter: Optional[str] = None,
+        role_filter: str | None = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int]:
         """List all members of an organization.
 
         Args:
@@ -374,7 +374,7 @@ class APIOrganizationService(BaseService):
         requesting_user_id: str,
         email: str,
         role: str = "member",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add member to organization (owner/admin only).
 
         Args:
@@ -458,7 +458,7 @@ class APIOrganizationService(BaseService):
             "email": email,
             "full_name": target_user.get("full_name", ""),
             "role": role,
-            "joined_at": datetime.now(timezone.utc),
+            "joined_at": datetime.now(UTC),
             "invitation_sent": True,
         }
 
@@ -531,7 +531,7 @@ class APIOrganizationService(BaseService):
         requesting_user_id: str,
         target_user_id: str,
         role: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update member's role (owner only).
 
         Args:
@@ -609,15 +609,15 @@ class APIOrganizationService(BaseService):
             "email": user_info.get("email", ""),
             "full_name": user_info.get("full_name", ""),
             "role": role,
-            "joined_at": member.joined_at if member else datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
+            "joined_at": member.joined_at if member else datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
 
     async def get_member(
         self,
         organization_id: str,
         user_id: str,
-    ) -> Optional[OrganizationMember]:
+    ) -> OrganizationMember | None:
         """Get organization member record.
 
         Args:
@@ -640,7 +640,7 @@ class APIOrganizationService(BaseService):
         self,
         organization_id: str,
         user_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Get organization settings.
 
         Args:
@@ -695,8 +695,8 @@ class APIOrganizationService(BaseService):
         self,
         organization_id: str,
         user_id: str,
-        settings: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
         """Update organization settings (owner only).
 
         Args:
@@ -739,7 +739,7 @@ class APIOrganizationService(BaseService):
         return {
             "organization_id": organization_id,
             "settings": updated_settings,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         }
 
     # ============================================================
@@ -822,7 +822,7 @@ class APIOrganizationService(BaseService):
         }
         return role_map.get(role_name, ROLE_MEMBER)
 
-    async def _get_user_info(self, user_id: str) -> Dict[str, Any]:
+    async def _get_user_info(self, user_id: str) -> dict[str, Any]:
         """Get user info by ID."""
         if self.user_service:
             user = await self.user_service.get_user(user_id)
@@ -834,7 +834,7 @@ class APIOrganizationService(BaseService):
                 }
         return {"user_id": user_id, "email": "", "full_name": ""}
 
-    async def _get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+    async def _get_user_by_email(self, email: str) -> dict[str, Any] | None:
         """Get user info by email."""
         if self.user_service:
             user = await self.user_service.get_user_by_email(email)
@@ -846,7 +846,7 @@ class APIOrganizationService(BaseService):
                 }
         return None
 
-    def _get_plan_features(self, plan_tier: OrgPlanTier) -> Dict[str, bool]:
+    def _get_plan_features(self, plan_tier: OrgPlanTier) -> dict[str, bool]:
         """Get features available for plan tier."""
         base_features = {
             "knowledge_base": True,
@@ -882,7 +882,7 @@ class APIOrganizationService(BaseService):
         }
         return storage_map.get(plan_tier, 10)
 
-    def _validate_settings(self, settings: Dict[str, Any]) -> None:
+    def _validate_settings(self, settings: dict[str, Any]) -> None:
         """Validate settings values.
 
         Raises:

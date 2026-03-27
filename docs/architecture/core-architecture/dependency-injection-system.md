@@ -1,6 +1,6 @@
 # Enhanced Dependency Injection System Architecture
 
-**Document Type**: Architecture Deep-dive  
+**Document Type**: Architecture Deep-dive
 **Last Updated**: August 2025
 
 ## Overview
@@ -16,13 +16,13 @@ The `DIContainer` class follows the singleton pattern to ensure consistent depen
 ```python
 class DIContainer:
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
         if not self._initialized:
             self._create_intelligence_layer()  # New intelligence services
@@ -53,12 +53,12 @@ def _create_intelligence_layer(self):
         vector_store=self._get_vector_store(),
         redis_store=self._get_redis_store()
     )
-    
+
     # Strategic Planning System
     self.planning_service: IPlanningService = PlanningService(
         llm_provider=self._get_llm_provider()
     )
-    
+
     # Advanced Prompt Engine
     self.prompt_engine: IPromptEngine = AdvancedPromptEngine(
         llm_provider=self._get_llm_provider(),
@@ -78,13 +78,13 @@ def _create_intelligence_layer(self):
 def _create_infrastructure_layer(self):
     # LLM Provider with multi-provider support and memory integration
     self.llm_provider: ILLMProvider = LLMRouter()
-    
+
     # Data sanitization for PII protection
     self.sanitizer: ISanitizer = DataSanitizer()
-    
+
     # Distributed tracing
     self.tracer: ITracer = OpikTracer()
-    
+
     # Core processing interfaces with context awareness
     self.data_classifier = EnhancedDataClassifier(
         memory_service=self.memory_service
@@ -113,15 +113,15 @@ def _create_tools_layer(self):
         ),
         planning_service=self.planning_service
     )
-    
+
     # Web search capability with planning integration
     web_search_tool = EnhancedWebSearchTool(
         planning_service=self.planning_service
     )
-    
+
     # Create tools list with error handling
     self.tools: List[BaseTool] = [
-        tool for tool in [knowledge_base_tool, web_search_tool] 
+        tool for tool in [knowledge_base_tool, web_search_tool]
         if tool is not None
     ]
 ```
@@ -146,7 +146,7 @@ def _create_service_layer(self):
         tracer=self.tracer,               # Interface injection
         sanitizer=self.sanitizer          # Interface injection
     )
-    
+
     # Data Service - Enhanced with memory integration
     self.data_service = EnhancedDataService(
         data_classifier=self.data_classifier,
@@ -154,13 +154,13 @@ def _create_service_layer(self):
         sanitizer=self.sanitizer,
         memory_service=self.memory_service  # New memory dependency
     )
-    
+
     # Knowledge Service - Enhanced with memory integration
     self.knowledge_service = EnhancedKnowledgeService(
         vector_store=self._get_vector_store(),
         memory_service=self.memory_service  # New memory dependency
     )
-    
+
     # Session Service - Enhanced with memory preservation
     self.session_service = EnhancedSessionService(
         session_store=self._get_session_store(),
@@ -187,7 +187,7 @@ def get_agent_service(self) -> AgentService:
         # Ensure intelligence layer is initialized first
         if not hasattr(self, 'memory_service'):
             self._create_intelligence_layer()
-        
+
         # Create agent service with pure agentic framework
         self.agent_service = AgentService(
             llm_provider=self.llm_provider,
@@ -195,7 +195,7 @@ def get_agent_service(self) -> AgentService:
             tracer=self.tracer,
             sanitizer=self.sanitizer
         )
-    
+
     return self.agent_service
 ```
 
@@ -209,13 +209,13 @@ def _get_vector_store(self) -> IVectorStore:
     if not hasattr(self, '_vector_store'):
         # Create base vector store
         base_store = ChromaDBVectorStore()
-        
+
         # Wrap with memory enhancement
         self._vector_store = MemoryEnhancedVectorStore(
             base_store=base_store,
             memory_service=self.memory_service
         )
-    
+
     return self._vector_store
 
 def _get_redis_store(self) -> ISessionStore:
@@ -223,13 +223,13 @@ def _get_redis_store(self) -> ISessionStore:
     if not hasattr(self, '_redis_store'):
         # Create base Redis store
         base_store = RedisSessionStore()
-        
+
         # Wrap with memory preservation
         self._redis_store = MemoryPreservingSessionStore(
             base_store=base_store,
             memory_service=self.memory_service
         )
-    
+
     return self._redis_store
 ```
 
@@ -254,36 +254,36 @@ class AgentService:
         self._tracer = tracer
         self._sanitizer = sanitizer
         # Agentic framework components are internally managed
-    
+
     async def process_query(self, request: QueryRequest) -> AgentResponse:
         # Get memory context
         context = await self._memory.retrieve_context(
-            request.session_id, 
+            request.session_id,
             request.query
         )
-        
+
         # Plan response strategy
         strategy = await self._planning.plan_response_strategy(
-            request.query, 
+            request.query,
             context
         )
-        
+
         # Generate optimized prompt
         prompt = await self._prompt_engine.assemble_prompt(
             question=request.query,
             response_type=ResponseType.ANSWER,
             context=context
         )
-        
+
         # Execute with intelligence
         result = await self._llm.generate_with_context(prompt, context)
-        
+
         # Consolidate insights
         await self._memory.consolidate_insights(
-            request.session_id, 
+            request.session_id,
             result
         )
-        
+
         return result
 ```
 
@@ -307,26 +307,26 @@ class EnhancedDataService:
         self._sanitizer = sanitizer
         self._memory = memory_service
         self._planning = planning_service    # Store planning service
-    
+
     async def process_data(self, data: bytes, filename: str, session_id: str) -> ProcessedData:
         # Get processing context
         context = await self._memory.retrieve_context(session_id, "data_processing")
-        
+
         # Plan processing strategy
         strategy = await self._planning.plan_processing_strategy(
-            filename, 
+            filename,
             context
         )
-        
+
         # Execute with strategic guidance
         result = await self._execute_with_strategy(data, filename, strategy)
-        
+
         # Learn from processing
         await self._memory.consolidate_insights(
-            session_id, 
+            session_id,
             {"processing_result": result, "strategy_used": strategy}
         )
-        
+
         return result
 ```
 
@@ -344,22 +344,22 @@ def get_health_status(self) -> Dict[str, Any]:
         "timestamp": datetime.utcnow().isoformat(),
         "components": {}
     }
-    
+
     # Check infrastructure components
     health["components"]["infrastructure"] = self._check_infrastructure_health()
-    
+
     # Check intelligence components (new)
     health["components"]["intelligence"] = self._check_intelligence_health()
-    
+
     # Check service components
     health["components"]["services"] = self._check_service_health()
-    
+
     # Determine overall status
     if any(comp.get("status") == "degraded" for comp in health["components"].values()):
         health["status"] = "degraded"
     elif any(comp.get("status") == "unhealthy" for comp in health["components"].values()):
         health["status"] = "unhealthy"
-    
+
     return health
 
 def _check_intelligence_health(self) -> Dict[str, Any]:
@@ -368,34 +368,34 @@ def _check_intelligence_health(self) -> Dict[str, Any]:
         "status": "healthy",
         "services": {}
     }
-    
+
     # Check memory service
     try:
         memory_health = await self.memory_service.get_health_status()
         intelligence_health["services"]["memory"] = memory_health
     except Exception as e:
         intelligence_health["services"]["memory"] = {"status": "unhealthy", "error": str(e)}
-    
+
     # Check planning service
     try:
         planning_health = await self.planning_service.get_health_status()
         intelligence_health["services"]["planning"] = planning_health
     except Exception as e:
         intelligence_health["services"]["planning"] = {"status": "unhealthy", "error": str(e)}
-    
+
     # Check prompt engine
     try:
         prompt_health = await self.prompt_engine.get_health_status()
         intelligence_health["services"]["prompt_engine"] = prompt_health
     except Exception as e:
         intelligence_health["services"]["prompt_engine"] = {"status": "unhealthy", "error": str(e)}
-    
+
     # Determine intelligence status
     if any(svc.get("status") == "unhealthy" for svc in intelligence_health["services"].values()):
         intelligence_health["status"] = "unhealthy"
     elif any(svc.get("status") == "degraded" for svc in intelligence_health["services"].values()):
         intelligence_health["status"] = "degraded"
-    
+
     return intelligence_health
 ```
 
@@ -436,7 +436,7 @@ def _create_intelligence_layer(self):
         self.planning_service = MockPlanningService()
         self.prompt_engine = MockPromptEngine()
         return
-    
+
     # Create real intelligence services
     if self._should_enable_memory():
         self.memory_service = MemoryService(
@@ -445,14 +445,14 @@ def _create_intelligence_layer(self):
         )
     else:
         self.memory_service = MockMemoryService()
-    
+
     if self._should_enable_planning():
         self.planning_service = PlanningService(
             llm_provider=self._get_llm_provider()
         )
     else:
         self.planning_service = MockPlanningService()
-    
+
     if self._should_enable_advanced_prompting():
         self.prompt_engine = AdvancedPromptEngine(
             llm_provider=self._get_llm_provider(),
@@ -471,7 +471,7 @@ The container provides mock implementations for testing:
 ```python
 class MockMemoryService(IMemoryService):
     """Mock memory service for testing"""
-    
+
     def __init__(self):
         self._mock_context = ConversationContext(
             working_memory=[],
@@ -479,23 +479,23 @@ class MockMemoryService(IMemoryService):
             user_profile=MockUserProfile()
         )
         self._consolidated_insights = []
-    
+
     async def retrieve_context(self, session_id: str, query: str) -> ConversationContext:
         return self._mock_context
-    
+
     async def consolidate_insights(self, session_id: str, result: dict) -> bool:
         self._consolidated_insights.append({
             'session_id': session_id,
             'result': result
         })
         return True
-    
+
     def get_consolidated_insights(self) -> List[Dict]:
         return self._consolidated_insights
 
 class MockPlanningService(IPlanningService):
     """Mock planning service for testing"""
-    
+
     def __init__(self):
         self._mock_strategy = StrategicPlan(
             plan_components=[
@@ -503,16 +503,16 @@ class MockPlanningService(IPlanningService):
                 PlanComponent(phase="solution", actions=["generate_solution"])
             ]
         )
-    
+
     async def plan_response_strategy(self, query: str, context: dict) -> StrategicPlan:
         return self._mock_strategy
 
 class MockPromptEngine(IPromptEngine):
     """Mock prompt engine for testing"""
-    
+
     async def assemble_prompt(self, question: str, response_type: ResponseType, context: dict) -> str:
         return f"Mock prompt for {response_type}: {question}"
-    
+
     async def optimize_prompt(self, prompt: str, context: dict) -> str:
         return f"Optimized: {prompt}"
 ```
@@ -529,39 +529,39 @@ class TestDIContainerIntelligence:
         container = DIContainer()
         container._reset()
         return container
-    
+
     async def test_intelligence_services_initialized(self, container):
         # Enable intelligence features
         os.environ['ENABLE_INTELLIGENT_FEATURES'] = 'true'
-        
+
         # Initialize container
         container.initialize()
-        
+
         # Verify intelligence services exist
         assert container.memory_service is not None
         assert container.planning_service is not None
         assert container.prompt_engine is not None
-        
+
         # Verify they implement correct interfaces
         assert isinstance(container.memory_service, IMemoryService)
         assert isinstance(container.planning_service, IPlanningService)
         assert isinstance(container.prompt_engine, IPromptEngine)
-    
+
     async def test_agent_service_with_intelligence(self, container):
         # Enable intelligence features
         os.environ['ENABLE_INTELLIGENT_FEATURES'] = 'true'
-        
+
         # Initialize container
         container.initialize()
-        
+
         # Get agent service
         agent_service = container.get_agent_service()
-        
+
         # Verify it has intelligence dependencies
         assert hasattr(agent_service, '_memory')
         assert hasattr(agent_service, '_planning')
         assert hasattr(agent_service, '_prompt_engine')
-        
+
         # Verify dependencies are properly injected
         assert agent_service._memory is container.memory_service
         assert agent_service._planning is container.planning_service
@@ -588,7 +588,7 @@ def _create_intelligence_layer(self):
     except Exception as e:
         logger.warning(f"Failed to initialize memory service: {e}")
         self.memory_service = MockMemoryService()
-    
+
     try:
         if self._should_enable_planning():
             self.planning_service = PlanningService(
@@ -599,7 +599,7 @@ def _create_intelligence_layer(self):
     except Exception as e:
         logger.warning(f"Failed to initialize planning service: {e}")
         self.planning_service = MockPlanningService()
-    
+
     try:
         if self._should_enable_advanced_prompting():
             self.prompt_engine = AdvancedPromptEngine(
@@ -792,22 +792,22 @@ def _get_memory_service(self) -> IMemoryService:
     """Get memory service with caching"""
     if not hasattr(self, '_memory_service_cache'):
         self._memory_service_cache = {}
-    
+
     cache_key = f"memory_service_{id(self)}"
     if cache_key not in self._memory_service_cache:
         self._memory_service_cache[cache_key] = self._create_memory_service()
-    
+
     return self._memory_service_cache[cache_key]
 
 def _get_planning_service(self) -> IPlanningService:
     """Get planning service with caching"""
     if not hasattr(self, '_planning_service_cache'):
         self._planning_service_cache = {}
-    
+
     cache_key = f"planning_service_{id(self)}"
     if cache_key not in self._planning_service_cache:
         self._planning_service_cache[cache_key] = self._create_planning_service()
-    
+
     return self._planning_service_cache[cache_key]
 ```
 

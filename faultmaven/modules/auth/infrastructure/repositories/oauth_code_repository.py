@@ -7,8 +7,7 @@ Three implementations of IOAuthCodeRepository:
 """
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Dict, Optional
+from datetime import UTC, datetime
 
 from faultmaven.modules.auth.contracts import IOAuthCodeRepository, OAuthCodeDTO
 
@@ -21,19 +20,19 @@ class InMemoryOAuthCodeRepository(IOAuthCodeRepository):
     """
 
     def __init__(self):
-        self._codes: Dict[str, OAuthCodeDTO] = {}
+        self._codes: dict[str, OAuthCodeDTO] = {}
         self._lock = asyncio.Lock()
 
     async def save_code(self, code_data: OAuthCodeDTO) -> None:
         async with self._lock:
             self._codes[code_data.code] = code_data
 
-    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+    async def get_code(self, code: str) -> OAuthCodeDTO | None:
         async with self._lock:
             code_data = self._codes.get(code)
             if not code_data:
                 return None
-            if datetime.now(timezone.utc) > code_data.expires_at:
+            if datetime.now(UTC) > code_data.expires_at:
                 del self._codes[code]
                 return None
             return code_data
@@ -53,7 +52,7 @@ class InMemoryOAuthCodeRepository(IOAuthCodeRepository):
 
     async def delete_expired_codes(self) -> int:
         async with self._lock:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             expired_codes = [
                 code
                 for code, code_data in self._codes.items()
@@ -91,12 +90,12 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
                 "used": code_data.used,
             }
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ttl = int((code_data.expires_at - now).total_seconds())
         if ttl > 0:
             await self.redis.setex(key, ttl, value)
 
-    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+    async def get_code(self, code: str) -> OAuthCodeDTO | None:
         import json
 
         key = self._make_key(code)
@@ -153,7 +152,7 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
             session.add(model)
             await session.commit()
 
-    async def get_code(self, code: str) -> Optional[OAuthCodeDTO]:
+    async def get_code(self, code: str) -> OAuthCodeDTO | None:
         from sqlalchemy import select
 
         from faultmaven.infrastructure.persistence.models import (
@@ -161,7 +160,7 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         )
 
         async with self.session_factory() as session:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             stmt = select(OAuthAuthorizationCodeModel).where(
                 OAuthAuthorizationCodeModel.code == code,
                 OAuthAuthorizationCodeModel.expires_at > now,
@@ -205,7 +204,7 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         )
 
         async with self.session_factory() as session:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             stmt = delete(OAuthAuthorizationCodeModel).where(
                 OAuthAuthorizationCodeModel.expires_at <= now
             )

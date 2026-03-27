@@ -28,7 +28,7 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
 
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -47,7 +47,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 # Module-level test service for backward compatibility with tests
 # This allows unit tests to set a mock service without going through FastAPI DI
-_test_auth_service: Optional[AuthService] = None
+_test_auth_service: AuthService | None = None
 
 
 async def get_auth_service(request: Request) -> AuthService:
@@ -81,7 +81,7 @@ async def get_auth_service(request: Request) -> AuthService:
 
 
 def set_auth_service(
-    service: Optional[AuthService], request: Optional[Request] = None
+    service: AuthService | None, request: Request | None = None
 ) -> None:
     """Set the AuthService instance (for testing/DI).
 
@@ -108,8 +108,8 @@ def set_auth_service(
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    authorization: str | None = Header(None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedUser:
     """Extract and verify JWT from Authorization header.
@@ -178,10 +178,10 @@ async def get_current_user(
 
 
 async def get_current_user_optional(
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    authorization: str | None = Header(None, alias="Authorization"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),
-) -> Optional[AuthenticatedUser]:
+) -> AuthenticatedUser | None:
     """Get current user if authenticated, or None if not.
 
     Use this for endpoints that work both authenticated and unauthenticated.
@@ -388,9 +388,9 @@ async def require_admin(
 
 
 def _extract_token(
-    authorization: Optional[str],
-    credentials: Optional[HTTPAuthorizationCredentials],
-) -> Optional[str]:
+    authorization: str | None,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str | None:
     """Extract JWT token from authorization header or credentials.
 
     Supports both:

@@ -16,13 +16,10 @@ Key Features:
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from faultmaven.exceptions import KnowledgeBaseException
-from faultmaven.models import SearchResult
 from faultmaven.models.interfaces import (
-    ConversationContext,
     IMemoryService,
     IVectorStore,
 )
@@ -34,12 +31,12 @@ class RetrievalContext:
 
     session_id: str
     query: str
-    user_profile: Optional[Dict[str, Any]] = None
+    user_profile: dict[str, Any] | None = None
     reasoning_type: str = "diagnostic"
-    memory_insights: List[Dict[str, Any]] = None
-    domain_context: Dict[str, Any] = None
+    memory_insights: list[dict[str, Any]] = None
+    domain_context: dict[str, Any] = None
     urgency_level: str = "medium"
-    technical_constraints: List[str] = None
+    technical_constraints: list[str] = None
 
     def __post_init__(self):
         if self.memory_insights is None:
@@ -54,14 +51,14 @@ class RetrievalContext:
 class RetrievalResult:
     """Result from advanced knowledge retrieval"""
 
-    documents: List[Dict[str, Any]]
+    documents: list[dict[str, Any]]
     enhanced_query: str
     retrieval_strategy: str
     confidence_score: float
-    reasoning_insights: List[str]
-    search_expansion_paths: List[str]
+    reasoning_insights: list[str]
+    search_expansion_paths: list[str]
     contextual_relevance: float
-    knowledge_gaps: List[str]
+    knowledge_gaps: list[str]
 
 
 class AdvancedKnowledgeRetrieval:
@@ -88,8 +85,8 @@ class AdvancedKnowledgeRetrieval:
 
     def __init__(
         self,
-        vector_store: Optional[IVectorStore] = None,
-        memory_service: Optional[IMemoryService] = None,
+        vector_store: IVectorStore | None = None,
+        memory_service: IMemoryService | None = None,
     ):
         """Initialize Advanced Knowledge Retrieval system
 
@@ -238,7 +235,7 @@ class AdvancedKnowledgeRetrieval:
 
     async def _enhance_query_with_context(
         self, context: RetrievalContext
-    ) -> Tuple[str, List[str]]:
+    ) -> tuple[str, list[str]]:
         """Enhance query using memory insights and reasoning context"""
         enhancement_insights = []
         query_parts = [context.query]
@@ -391,7 +388,7 @@ class AdvancedKnowledgeRetrieval:
 
     async def _execute_multi_stage_retrieval(
         self, enhanced_query: str, context: RetrievalContext, strategy: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Execute multi-stage retrieval using the selected strategy"""
 
         if not self._vector_store:
@@ -446,7 +443,7 @@ class AdvancedKnowledgeRetrieval:
 
     async def _expand_search_with_synonyms(
         self, query: str, additional_docs_needed: int
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Expand search using synonym and related term expansion"""
 
         if not self._vector_store:
@@ -494,10 +491,10 @@ class AdvancedKnowledgeRetrieval:
 
     async def _apply_semantic_clustering(
         self,
-        documents: List[Dict[str, Any]],
+        documents: list[dict[str, Any]],
         enhanced_query: str,
         context: RetrievalContext,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Apply semantic clustering to group related documents"""
 
         if len(documents) < 3:  # Not enough for meaningful clustering
@@ -560,7 +557,7 @@ class AdvancedKnowledgeRetrieval:
             self._logger.error(f"Semantic clustering failed: {e}")
             return documents  # Return original documents if clustering fails
 
-    def _extract_primary_topic(self, content: str, metadata: Dict[str, Any]) -> str:
+    def _extract_primary_topic(self, content: str, metadata: dict[str, Any]) -> str:
         """Extract primary topic from document content and metadata"""
 
         # Check metadata for explicit topic information
@@ -599,8 +596,8 @@ class AdvancedKnowledgeRetrieval:
         return "general"
 
     async def _identify_knowledge_gaps(
-        self, documents: List[Dict[str, Any]], context: RetrievalContext
-    ) -> Tuple[List[str], List[str]]:
+        self, documents: list[dict[str, Any]], context: RetrievalContext
+    ) -> tuple[list[str], list[str]]:
         """Identify knowledge gaps and suggest search expansion paths"""
 
         knowledge_gaps = []
@@ -697,8 +694,8 @@ class AdvancedKnowledgeRetrieval:
             return [], []
 
     def _calculate_retrieval_confidence(
-        self, documents: List[Dict[str, Any]], context: RetrievalContext, strategy: str
-    ) -> Tuple[float, float]:
+        self, documents: list[dict[str, Any]], context: RetrievalContext, strategy: str
+    ) -> tuple[float, float]:
         """Calculate overall retrieval confidence and contextual relevance"""
 
         if not documents:
@@ -740,7 +737,7 @@ class AdvancedKnowledgeRetrieval:
         return final_confidence, contextual_relevance
 
     def _calculate_contextual_relevance(
-        self, documents: List[Dict[str, Any]], context: RetrievalContext
+        self, documents: list[dict[str, Any]], context: RetrievalContext
     ) -> float:
         """Calculate how well documents match the specific context"""
 
@@ -856,7 +853,7 @@ class AdvancedKnowledgeRetrieval:
                 current_avg_relevance * (total_retrievals - 1) + confidence_score
             ) / total_retrievals
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check health of advanced knowledge retrieval system"""
 
         health_info = {

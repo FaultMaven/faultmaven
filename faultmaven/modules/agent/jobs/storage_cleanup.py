@@ -21,7 +21,7 @@ Scheduling:
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from faultmaven.container import container
 from faultmaven.infrastructure.storage.base import IFileStorageBackend, StoredFile
@@ -41,7 +41,7 @@ async def cleanup_orphaned_files(
     ttl_hours: int = DEFAULT_TTL_HOURS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     dry_run: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Delete orphaned files uploaded >TTL hours ago with no evidence record.
 
@@ -215,7 +215,7 @@ async def cleanup_orphaned_files(
 async def _list_evidence_files(
     storage_backend: IFileStorageBackend,
     prefix: str,
-) -> List[StoredFile]:
+) -> list[StoredFile]:
     """
     List all files in evidence storage with prefix.
 
@@ -223,7 +223,7 @@ async def _list_evidence_files(
     implement pagination using list_objects_v2 with continuation tokens
     to handle buckets with >1000 files.
     """
-    files: List[StoredFile] = []
+    files: list[StoredFile] = []
 
     try:
         # For filesystem backend, list directory
@@ -247,12 +247,11 @@ async def _list_evidence_files(
 
 async def _list_filesystem_files(
     storage_backend: IFileStorageBackend, prefix: str
-) -> List[StoredFile]:
+) -> list[StoredFile]:
     """List files from filesystem storage backend."""
-    import os
     from pathlib import Path
 
-    files: List[StoredFile] = []
+    files: list[StoredFile] = []
 
     try:
         # Get storage root from backend
@@ -285,13 +284,13 @@ async def _list_filesystem_files(
 
 async def _list_s3_files(
     storage_backend: IFileStorageBackend, prefix: str
-) -> List[StoredFile]:
+) -> list[StoredFile]:
     """
     List files from S3 storage backend.
 
     Note: For production, implement pagination to handle large buckets.
     """
-    files: List[StoredFile] = []
+    files: list[StoredFile] = []
 
     try:
         # S3 backend should have a method to list objects
@@ -370,7 +369,7 @@ async def run(
     batch_size: int = DEFAULT_BATCH_SIZE,
     dry_run: bool = False,
     **kwargs: Any,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Job runner entry point for CLI execution.
 

@@ -20,7 +20,7 @@ Architecture:
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class StructuredOutputCapability(Enum):
@@ -87,10 +87,10 @@ class StructuredOutputStrategy:
     include_schema_in_prompt: bool
 
     # response_format value to send (if applicable)
-    response_format: Optional[Dict[str, Any]]
+    response_format: dict[str, Any] | None
 
     # Additional provider-specific configuration
-    extra_config: Dict[str, Any] = None
+    extra_config: dict[str, Any] = None
 
     def __post_init__(self):
         if self.extra_config is None:
@@ -98,7 +98,7 @@ class StructuredOutputStrategy:
 
 
 def create_strategy_for_capability(
-    capability: StructuredOutputCapability, schema: Dict[str, Any]
+    capability: StructuredOutputCapability, schema: dict[str, Any]
 ) -> StructuredOutputStrategy:
     """
     Create appropriate strategy based on capability level.

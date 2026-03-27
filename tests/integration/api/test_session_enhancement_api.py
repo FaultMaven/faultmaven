@@ -9,7 +9,7 @@ These endpoints provide microservices parity with fm-session-service while
 maintaining the monolith's spec-compliant architecture (sessions are auth-only).
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -30,7 +30,7 @@ def mock_user():
         username="testuser",
         email="test@example.com",
         display_name="Test User",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
 
 
@@ -41,8 +41,8 @@ def sample_session():
         session_id="session_abc123",
         user_id="test_user_123",
         client_id="client_xyz",
-        created_at=datetime.now(timezone.utc),
-        last_activity=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        last_activity=datetime.now(UTC),
         metadata={
             "session_type": "troubleshooting",
             "timeout_minutes": 180,
@@ -100,7 +100,7 @@ def test_update_session_success(client, mock_session_service, sample_session):
         user_id=sample_session.user_id,
         client_id=sample_session.client_id,
         created_at=sample_session.created_at,
-        last_activity=datetime.now(timezone.utc),
+        last_activity=datetime.now(UTC),
         metadata={
             "session_type": "troubleshooting",
             "timeout_minutes": 240,  # Updated
@@ -148,8 +148,8 @@ def test_update_session_unauthorized(
         session_id="session_abc123",
         user_id="different_user",
         client_id="client_xyz",
-        created_at=datetime.now(timezone.utc),
-        last_activity=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        last_activity=datetime.now(UTC),
         metadata={"status": "active"},
     )
     mock_session_service.get_session.return_value = other_user_session
@@ -178,8 +178,8 @@ def test_search_sessions_success(client, mock_session_service, sample_session):
             session_id="session_def456",
             user_id="test_user_123",
             client_id="client_abc",
-            created_at=datetime.now(timezone.utc),
-            last_activity=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            last_activity=datetime.now(UTC),
             metadata={"status": "active", "session_type": "troubleshooting"},
         ),
     ]
@@ -280,8 +280,8 @@ def test_archive_session_unauthorized(client, mock_session_service, mock_user):
         session_id="session_abc123",
         user_id="different_user",
         client_id="client_xyz",
-        created_at=datetime.now(timezone.utc),
-        last_activity=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        last_activity=datetime.now(UTC),
         metadata={"status": "active"},
     )
     mock_session_service.get_session.return_value = other_user_session

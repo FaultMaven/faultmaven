@@ -21,8 +21,8 @@ Usage:
 """
 
 import json
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Union
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 
@@ -60,9 +60,7 @@ def to_json_compatible(obj: Any) -> Any:
     if isinstance(obj, datetime):
         if obj.tzinfo is not None:
             # Timezone-aware: use 'Z' for UTC, otherwise include offset
-            if obj.tzinfo == timezone.utc or obj.utcoffset() == timezone.utc.utcoffset(
-                None
-            ):
+            if obj.tzinfo == UTC or obj.utcoffset() == UTC.utcoffset(None):
                 # UTC timezone: use 'Z' suffix for clean ISO 8601 format
                 return obj.replace(tzinfo=None).isoformat() + "Z"
             else:
@@ -131,7 +129,7 @@ def safe_json_dumps(obj: Any, **kwargs) -> str:
     return json.dumps(serializable, **kwargs)
 
 
-def prepare_for_pydantic(data: Dict[str, Any]) -> Dict[str, Any]:
+def prepare_for_pydantic(data: dict[str, Any]) -> dict[str, Any]:
     """Prepare data for Pydantic model instantiation.
 
     Converts ISO datetime strings back to datetime objects for Pydantic parsing.
@@ -180,7 +178,7 @@ def prepare_for_pydantic(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # Convenience functions for common patterns
-def serialize_pydantic_model(model: Any) -> Dict[str, Any]:
+def serialize_pydantic_model(model: Any) -> dict[str, Any]:
     """Serialize a Pydantic model to JSON-compatible dict.
 
     Args:

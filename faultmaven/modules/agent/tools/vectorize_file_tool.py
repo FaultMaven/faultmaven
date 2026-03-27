@@ -8,7 +8,7 @@ Design Reference: docs/architecture/data-processing/README.md
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces import ToolResult
@@ -55,7 +55,7 @@ class VectorizeFileTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> Dict[str, Any]:
+    def parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -69,7 +69,7 @@ class VectorizeFileTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Execute vectorization."""

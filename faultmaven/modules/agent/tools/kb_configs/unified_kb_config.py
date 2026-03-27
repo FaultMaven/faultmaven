@@ -5,8 +5,6 @@ KB-specific configuration for the unified KB tool that searches all scopes.
 Combines the best of global (educational) and user (procedural) approaches.
 """
 
-from typing import Optional
-
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
@@ -18,7 +16,7 @@ class UnifiedKBConfig(KBConfig):
     Results may come from global, personal, or team runbooks.
     """
 
-    def get_collection_name(self, scope_id: Optional[str]) -> str:
+    def get_collection_name(self, scope_id: str | None) -> str:
         """Single KB collection for all scopes."""
         return "faultmaven_kb"
 

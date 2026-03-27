@@ -757,7 +757,7 @@ CREATE TABLE case_checkpoints (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     metadata JSONB DEFAULT '{}'::jsonb,
 
-    CONSTRAINT case_checkpoints_hash_not_empty 
+    CONSTRAINT case_checkpoints_hash_not_empty
         CHECK (LENGTH(TRIM(snapshot_hash)) > 0)
 );
 
