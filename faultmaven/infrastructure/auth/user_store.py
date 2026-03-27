@@ -19,19 +19,16 @@ Storage Schema:
 - user:email:{email} -> {user_id}
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
+
+from redis import Redis
 
 from faultmaven.models.auth import DevUser
-
-if TYPE_CHECKING:
-    from redis import Redis
 
 logger = logging.getLogger(__name__)
 

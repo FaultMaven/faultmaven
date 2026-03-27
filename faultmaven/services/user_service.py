@@ -15,8 +15,6 @@ This service provides:
 Design Reference: TASK-018 User Management Service, TASK-019 Admin User Management
 """
 
-from __future__ import annotations
-
 import logging
 import re
 import uuid
@@ -25,13 +23,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
 
+# Redis is always available (real Redis or FakeRedis via DI)
+from redis.asyncio import Redis
+
 from faultmaven.config.settings import get_settings
 
 # Interface imports for clean architecture compliance
-# Redis type is for DI signatures only — the actual client is injected at runtime
 if TYPE_CHECKING:
-    from redis.asyncio import Redis
-
     from faultmaven.models.interfaces import IVectorStore
 
 from faultmaven.exceptions import (
