@@ -29,9 +29,11 @@ Design: Follows TASK-024 service layer patterns with repository abstraction.
 
 import logging
 from decimal import Decimal
-from typing import Any
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from faultmaven.exceptions import (
+    AuthorizationError,
     ConflictError,
     NotFoundError,
     ValidationException,
@@ -78,9 +80,9 @@ class InvestigationOrchestrator:
         description: str,
         created_by: str,
         confidence: float = 0.5,
-        supporting_evidence_ids: list[str] | None = None,
-        metadata: dict | None = None,
-    ) -> dict[str, Any]:
+        supporting_evidence_ids: Optional[List[str]] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
         """
         Create new investigation hypothesis with validation.
 
@@ -157,8 +159,8 @@ class InvestigationOrchestrator:
         organization_id: str,
         new_status: str,
         updated_by: str,
-        confidence: float | None = None,
-    ) -> dict[str, Any]:
+        confidence: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Update hypothesis status with confidence-based validation.
 
@@ -258,7 +260,7 @@ class InvestigationOrchestrator:
         solution_id: str,
         hypothesis_id: str,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         Link solution to validated hypothesis.
 
@@ -330,7 +332,7 @@ class InvestigationOrchestrator:
         self,
         case_id: str,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         Get investigation progress summary for a case.
 
@@ -414,7 +416,7 @@ class InvestigationOrchestrator:
         self,
         hypothesis_id: str,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         Get hypothesis by ID with organization isolation.
 
@@ -442,10 +444,10 @@ class InvestigationOrchestrator:
         self,
         case_id: str,
         organization_id: str,
-        status: str | None = None,
+        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
         List hypotheses for a case with optional filtering.
 
@@ -490,13 +492,13 @@ class InvestigationOrchestrator:
         hypothesis_id: str,
         organization_id: str,
         updated_by: str,
-        title: str | None = None,
-        description: str | None = None,
-        confidence: float | None = None,
-        status: str | None = None,
-        evidence_supporting: list[str] | None = None,
-        evidence_against: list[str] | None = None,
-    ) -> dict[str, Any]:
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        confidence: Optional[float] = None,
+        status: Optional[str] = None,
+        evidence_supporting: Optional[List[str]] = None,
+        evidence_against: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Update hypothesis fields with validation.
 
@@ -672,12 +674,12 @@ class InvestigationOrchestrator:
         title: str,
         description: str,
         created_by: str,
-        hypothesis_id: str | None = None,
-        implementation_steps: list[str] | None = None,
-        risk_level: str | None = None,
-        estimated_effort: str | None = None,
-        metadata: dict | None = None,
-    ) -> dict[str, Any]:
+        hypothesis_id: Optional[str] = None,
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
         """
         Create new solution with optional hypothesis linking.
 
@@ -789,7 +791,7 @@ class InvestigationOrchestrator:
         self,
         solution_id: str,
         organization_id: str,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         Get solution by ID with organization isolation.
 
@@ -817,10 +819,10 @@ class InvestigationOrchestrator:
         self,
         case_id: str,
         organization_id: str,
-        status: str | None = None,
+        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
         List solutions for a case with optional filtering.
 

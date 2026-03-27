@@ -8,9 +8,11 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from abc import ABC
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
     from faultmaven.modules.knowledge.domain.models.suggestion import (
         KnowledgeSuggestion,
     )
@@ -24,7 +26,7 @@ if TYPE_CHECKING:
 class IKnowledgeService(Protocol):
     """Service interface for Knowledge business logic."""
 
-    async def search(self, query: str, k: int = 5) -> list[dict]:
+    async def search(self, query: str, k: int = 5) -> List[dict]:
         """Perform semantic search on knowledge base."""
         ...
 
@@ -36,13 +38,13 @@ class IKnowledgeService(Protocol):
         """Delete a document from the knowledge base."""
         ...
 
-    async def get_document(self, document_id: str) -> dict[str, Any] | None:
+    async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific document by ID."""
         ...
 
     async def get_semantic_snippet(
         self, document_id: str, query: str, max_lines: int = 5
-    ) -> dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Get semantically relevant snippet from a document."""
         ...
 
@@ -50,7 +52,7 @@ class IKnowledgeService(Protocol):
 class IKnowledgeQuery(Protocol):
     """Read-only knowledge query interface."""
 
-    async def search(self, query: str, k: int = 5) -> list[dict]:
+    async def search(self, query: str, k: int = 5) -> List[dict]:
         """Perform semantic search (read-only)."""
         ...
 
@@ -65,19 +67,19 @@ class IConversionService(Protocol):
         original_filename: str,
         scope: str,
         user_id: str,
-        organization_id: str | None = None,
-        team_id: str | None = None,
+        organization_id: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> Any:
         """Convert a document to one or more runbook drafts."""
         ...
 
-    async def get_conversion(self, conversion_id: str, user_id: str) -> Any | None:
+    async def get_conversion(self, conversion_id: str, user_id: str) -> Optional[Any]:
         """Get conversion job details."""
         ...
 
     async def verify_draft(
         self, conversion_id: str, draft_id: str, user_id: str, username: str
-    ) -> Any | None:
+    ) -> Optional[Any]:
         """Promote draft to verified status."""
         ...
 
@@ -92,7 +94,7 @@ class ISuggestionService(Protocol):
         extracted_by: str,
         include_messages: bool = True,
         include_evidence: bool = True,
-        title_suggestion: str | None = None,
+        title_suggestion: Optional[str] = None,
     ) -> "KnowledgeSuggestion":
         """Extract knowledge from a case into a suggestion."""
         ...
@@ -105,11 +107,11 @@ class ISuggestionService(Protocol):
 
     async def list_suggestions(
         self,
-        organization_id: str | None = None,
-        status: str | None = None,
+        organization_id: Optional[str] = None,
+        status: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """List suggestions with filtering."""
         ...
 
@@ -117,8 +119,8 @@ class ISuggestionService(Protocol):
         self,
         suggestion_id: str,
         reviewed_by: str,
-        review_notes: str | None = None,
-    ) -> dict[str, Any] | None:
+        review_notes: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Approve a suggestion and create a knowledge item."""
         ...
 
@@ -127,7 +129,7 @@ class ISuggestionService(Protocol):
         suggestion_id: str,
         reviewed_by: str,
         rejection_reason: str,
-        review_notes: str | None = None,
+        review_notes: Optional[str] = None,
     ) -> bool:
         """Reject a suggestion."""
         ...
@@ -139,6 +141,14 @@ class ISuggestionService(Protocol):
 
 
 # Re-export enums for external use
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    KnowledgeItemType,
+    VerificationLevel,
+)
+from faultmaven.modules.knowledge.domain.models.suggestion import (
+    PIIScanStatus,
+    SuggestionStatus,
+)
 
 # ============================================================
 # Note: Knowledge module uses infrastructure/vector/ for vector store

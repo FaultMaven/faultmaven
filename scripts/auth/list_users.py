@@ -9,16 +9,16 @@ Usage:
 """
 
 import asyncio
-import os
 import sys
+import os
 from pathlib import Path
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-
 from faultmaven.container import container
+from datetime import datetime
 
 
 async def main():
@@ -50,7 +50,7 @@ async def main():
         print("  1. Use the registration endpoint:")
         print("     curl -X POST http://localhost:8090/api/v1/auth/dev-register \\")
         print("       -H 'Content-Type: application/json' \\")
-        print('       -d \'{"username": "myuser"}\'')
+        print("       -d '{\"username\": \"myuser\"}'")
         print()
         print("  2. Or use the create_user.py script:")
         print("     python scripts/auth/create_user.py")
@@ -61,21 +61,19 @@ async def main():
     print("-" * 100)
 
     for idx, user in enumerate(users, 1):
-        roles_str = ", ".join(user.roles if user.roles else ["none"])
-        is_admin = "admin" in (user.roles or [])
+        roles_str = ', '.join(user.roles if user.roles else ['none'])
+        is_admin = 'admin' in (user.roles or [])
 
         # Add visual indicator for admins
         admin_indicator = "👑 " if is_admin else "   "
 
-        print(
-            f"{admin_indicator}{idx:<4} {user.username:<20} {user.email:<30} {roles_str:<20} {user.user_id}"
-        )
+        print(f"{admin_indicator}{idx:<4} {user.username:<20} {user.email:<30} {roles_str:<20} {user.user_id}")
 
     print("\n" + "=" * 80)
     print(f"Total: {total_count} user(s)")
 
     # Count admins
-    admin_count = sum(1 for u in users if "admin" in (u.roles or []))
+    admin_count = sum(1 for u in users if 'admin' in (u.roles or []))
     regular_count = total_count - admin_count
 
     print(f"  Admins: {admin_count}")

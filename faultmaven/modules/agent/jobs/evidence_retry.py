@@ -17,9 +17,10 @@ Key Features:
 """
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from faultmaven.container import container
@@ -57,7 +58,7 @@ async def retry_evidence_analysis(
     retry_count: int = 0,
     max_retries: int = DEFAULT_LLM_MAX_RETRIES,
     base_delay: int = DEFAULT_LLM_BASE_DELAY,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Background job to retry failed LLM analysis with exponential backoff.
 
@@ -157,7 +158,7 @@ async def retry_evidence_analysis(
             return {"status": "error", "error": "Case not found"}
 
         # Retry LLM analysis with longer timeout for retries
-        logger.info("Attempting LLM analysis (timeout: 60s)")
+        logger.info(f"Attempting LLM analysis (timeout: 60s)")
 
         # TODO: Replace with actual LLM analysis call when Phase 4 is complete
         # For now, this is a placeholder that would call the evidence classification
@@ -203,7 +204,7 @@ async def retry_evidence_analysis(
             "retry_count": retry_count + 1,
         }
 
-    except TimeoutError as e:
+    except asyncio.TimeoutError as e:
         logger.warning(f"LLM timeout on retry {retry_count + 1} for {content_ref}: {e}")
 
         # Schedule next retry with exponential backoff
@@ -277,13 +278,13 @@ async def retry_evidence_analysis(
 
 async def retry_evidence_creation(
     case_id: str,
-    llm_result: dict[str, Any],
+    llm_result: Dict[str, Any],
     content_ref: str,
     content_hash: str,
     retry_count: int = 0,
     max_retries: int = DEFAULT_DB_MAX_RETRIES,
     base_delay: int = DEFAULT_DB_BASE_DELAY,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Retry database insert with exponential backoff, preserving LLM work.
 
@@ -491,7 +492,7 @@ async def _create_rejected_evidence(
     content_ref: str,
     content_hash: str,
     reason: str,
-    metadata: dict[str, Any] | None = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Evidence:
     """Create REJECTED evidence for failed analysis attempts."""
     case_repository = container.get_case_repository()
@@ -521,7 +522,7 @@ async def _create_rejected_evidence(
     return evidence
 
 
-async def _find_evidence_by_hash(case_id: str, content_hash: str) -> Evidence | None:
+async def _find_evidence_by_hash(case_id: str, content_hash: str) -> Optional[Evidence]:
     """Find evidence by content hash for idempotency check."""
     case_repository = container.get_case_repository()
 
@@ -544,7 +545,7 @@ async def _analyze_evidence_with_llm(
     content_ref: str,
     user_message: str,
     timeout: int = 60,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Analyze evidence using LLM with timeout.
 
@@ -571,7 +572,7 @@ async def _create_evidence_from_llm_result(
     case_id: str,
     content_ref: str,
     content_hash: str,
-    llm_result: dict[str, Any],
+    llm_result: Dict[str, Any],
     case: Case,
 ) -> Evidence:
     """Create evidence record from LLM analysis result."""

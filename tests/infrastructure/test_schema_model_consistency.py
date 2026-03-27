@@ -75,7 +75,7 @@ def db_path():
     os.unlink(tmp_path)
 
 
-def get_database_columns(db_path: str, table_name: str) -> dict[str, dict]:
+def get_database_columns(db_path: str, table_name: str) -> Dict[str, Dict]:
     """Get actual columns from database schema.
 
     Args:
@@ -103,7 +103,7 @@ def get_database_columns(db_path: str, table_name: str) -> dict[str, dict]:
     }
 
 
-def get_model_columns(model_class) -> dict[str, dict]:
+def get_model_columns(model_class) -> Dict[str, Dict]:
     """Get expected columns from SQLAlchemy model.
 
     Args:
@@ -132,8 +132,8 @@ def get_model_columns(model_class) -> dict[str, dict]:
 
 
 def compare_schemas(
-    db_columns: dict[str, dict], model_columns: dict[str, dict], table_name: str
-) -> tuple[set[str], set[str], list[str]]:
+    db_columns: Dict[str, Dict], model_columns: Dict[str, Dict], table_name: str
+) -> tuple[Set[str], Set[str], list[str]]:
     """Compare database schema with model schema.
 
     Args:
@@ -211,7 +211,7 @@ class TestSchemaModelConsistency:
         # Check type/nullable mismatches
         if mismatches:
             pytest.fail(
-                "solutions table has schema mismatches:\n" + "\n".join(mismatches)
+                f"solutions table has schema mismatches:\n" + "\n".join(mismatches)
             )
 
     def test_hypotheses_table_consistency(self, db_path):
@@ -247,7 +247,7 @@ class TestSchemaModelConsistency:
 
         if mismatches:
             pytest.fail(
-                "hypotheses table has schema mismatches:\n" + "\n".join(mismatches)
+                f"hypotheses table has schema mismatches:\n" + "\n".join(mismatches)
             )
 
     def test_case_messages_table_consistency(self, db_path):
@@ -280,7 +280,7 @@ class TestSchemaModelConsistency:
 
         if mismatches:
             pytest.fail(
-                "case_messages table has schema mismatches:\n" + "\n".join(mismatches)
+                f"case_messages table has schema mismatches:\n" + "\n".join(mismatches)
             )
 
     def test_all_critical_tables_exist(self, db_path):

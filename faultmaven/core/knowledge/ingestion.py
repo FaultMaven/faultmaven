@@ -29,7 +29,7 @@ Core Design Principles:
 import logging
 import os
 import uuid
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import chromadb
 import pandas as pd
@@ -152,12 +152,12 @@ class KnowledgeIngester:
         file_path: str,
         title: str,
         document_type: str = "troubleshooting_guide",
-        tags: list[str] | None = None,
-        source_url: str | None = None,
-        document_id: str | None = None,
+        tags: Optional[List[str]] = None,
+        source_url: Optional[str] = None,
+        document_id: Optional[str] = None,
         scope: str = "global",
-        owner_id: str | None = None,
-        team_id: str | None = None,
+        owner_id: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> str:
         """
         Ingest a document into the knowledge base (background task)
@@ -237,11 +237,11 @@ class KnowledgeIngester:
     async def _extract_text_txt(self, file_path: str) -> str:
         """Extract text from plain text files"""
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 return f.read()
         except UnicodeDecodeError:
             # Try with different encoding
-            with open(file_path, encoding="latin-1") as f:
+            with open(file_path, "r", encoding="latin-1") as f:
                 return f.read()
 
     async def _extract_text_pdf(self, file_path: str) -> str:
@@ -281,7 +281,7 @@ class KnowledgeIngester:
     async def _extract_text_json(self, file_path: str) -> str:
         """Extract text from JSON files"""
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 import json
 
                 data = json.load(f)
@@ -293,7 +293,7 @@ class KnowledgeIngester:
     async def _extract_text_yaml(self, file_path: str) -> str:
         """Extract text from YAML files"""
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 import yaml
 
                 data = yaml.safe_load(f)
@@ -352,7 +352,7 @@ class KnowledgeIngester:
 
     def _split_content(
         self, content: str, chunk_size: int = 1000, overlap: int = 200
-    ) -> list[str]:
+    ) -> List[str]:
         """
         Split content into overlapping chunks
 
@@ -396,8 +396,8 @@ class KnowledgeIngester:
         self,
         query: str,
         n_results: int = 5,
-        filter_metadata: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+        filter_metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Search the knowledge base
 
@@ -495,7 +495,7 @@ class KnowledgeIngester:
             self.logger.error(f"Failed to delete document {document_id}: {e}")
             return False
 
-    def get_collection_stats(self) -> dict[str, Any]:
+    def get_collection_stats(self) -> Dict[str, Any]:
         """
         Get statistics about the knowledge base collection
 
@@ -571,7 +571,7 @@ class KnowledgeIngester:
             self.logger.error(f"Failed to ingest document {document.title}: {e}")
             raise
 
-    async def get_job_status(self, job_id: str) -> dict[str, Any] | None:
+    async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """
         Get the status of an ingestion job
 
@@ -597,11 +597,11 @@ class KnowledgeIngester:
 
     async def list_documents(
         self,
-        document_type: str | None = None,
-        tags: list[str] | None = None,
+        document_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[KnowledgeBaseDocument]:
+    ) -> List[KnowledgeBaseDocument]:
         """
         List documents in the knowledge base
 
@@ -662,7 +662,7 @@ class KnowledgeIngester:
             self.logger.error(f"Failed to list documents: {e}")
             return []
 
-    async def get_document(self, document_id: str) -> KnowledgeBaseDocument | None:
+    async def get_document(self, document_id: str) -> Optional[KnowledgeBaseDocument]:
         """
         Get a specific document by ID
 
@@ -708,10 +708,10 @@ class KnowledgeIngester:
     async def search_documents(
         self,
         query: str,
-        document_type: str | None = None,
-        tags: list[str] | None = None,
+        document_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
         limit: int = 10,
-    ) -> list[dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         """
         Search documents and return results with scores
 

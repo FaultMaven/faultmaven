@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator
 
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -15,19 +15,19 @@ class VectorMetadata(BaseModel):
     and coerces non-primitive values to strings.
     """
 
-    title: str | None = None
-    document_type: str | None = None
-    tags: list[str] = []
-    source_url: str | None = None
-    scope: str | None = None
-    owner_id: str | None = None
-    team_id: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    title: Optional[str] = None
+    document_type: Optional[str] = None
+    tags: List[str] = []
+    source_url: Optional[str] = None
+    scope: Optional[str] = None
+    owner_id: Optional[str] = None
+    team_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     @field_validator("tags", mode="before")
     @classmethod
-    def _coerce_tags(cls, v: Any) -> list[str]:
+    def _coerce_tags(cls, v: Any) -> List[str]:
         if v is None:
             return []
         if isinstance(v, str):
@@ -46,13 +46,13 @@ class VectorMetadata(BaseModel):
         mode="before",
     )
     @classmethod
-    def _coerce_str(cls, v: Any) -> str | None:
+    def _coerce_str(cls, v: Any) -> Optional[str]:
         if v is None:
             return None
         return str(v)
 
-    def to_chroma_metadata(self) -> dict[str, Any]:
-        data: dict[str, Any] = {}
+    def to_chroma_metadata(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {}
         if self.title:
             data["title"] = self.title
         if self.document_type:

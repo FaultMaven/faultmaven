@@ -11,9 +11,9 @@ Version: 2.0 (Updated with intelligent recommendations)
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -52,23 +52,23 @@ class RunbookMetadata(BaseModel):
     source: RunbookSource = Field(..., description="Origin of runbook")
 
     # For incident-driven runbooks
-    case_context: dict[str, Any] | None = Field(
+    case_context: Optional[Dict[str, Any]] = Field(
         None, description="Case investigation context (incident-driven only)"
     )
 
     # For document-driven runbooks
-    document_title: str | None = Field(
+    document_title: Optional[str] = Field(
         None, description="Source document title (document-driven only)"
     )
-    original_document_id: str | None = Field(
+    original_document_id: Optional[str] = Field(
         None, description="Reference to uploaded document (document-driven only)"
     )
 
     # Common metadata
     domain: str = Field(..., description="Technology domain for filtering")
-    tags: list[str] = Field(default_factory=list, description="Classification tags")
-    llm_model: str | None = Field(None, description="LLM model used for generation")
-    embedding_model: str | None = Field(
+    tags: List[str] = Field(default_factory=list, description="Classification tags")
+    llm_model: Optional[str] = Field(None, description="LLM model used for generation")
+    embedding_model: Optional[str] = Field(
         None, description="Embedding model for vector search"
     )
 
@@ -97,7 +97,7 @@ class CaseReport(BaseModel):
     format: Literal["markdown"] = Field(default="markdown", description="Report format")
     generation_status: ReportStatus = Field(..., description="Generation status")
     generated_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(UTC)),
+        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)),
         description="ISO 8601 timestamp",
     )
     generation_time_ms: int = Field(
@@ -108,7 +108,7 @@ class CaseReport(BaseModel):
     )
     version: int = Field(default=1, ge=1, le=5, description="Version number")
     linked_to_closure: bool = Field(default=False, description="Linked to case closure")
-    metadata: RunbookMetadata | None = Field(
+    metadata: Optional[RunbookMetadata] = Field(
         None, description="Runbook-specific metadata"
     )
 
@@ -140,10 +140,10 @@ class RunbookRecommendation(BaseModel):
             "- generate: Low/no similarity (<70%), recommend generating new runbook"
         ),
     )
-    existing_runbook: CaseReport | None = Field(
+    existing_runbook: Optional[CaseReport] = Field(
         None, description="Existing similar runbook (if found)"
     )
-    similarity_score: float | None = Field(
+    similarity_score: Optional[float] = Field(
         None, ge=0.0, le=1.0, description="Semantic similarity score (0.0-1.0)"
     )
     reason: str = Field(
@@ -155,7 +155,7 @@ class ReportRecommendation(BaseModel):
     """Intelligent recommendations for report generation"""
 
     case_id: str = Field(..., description="Case identifier")
-    available_for_generation: list[ReportType] = Field(
+    available_for_generation: List[ReportType] = Field(
         ...,
         description=(
             "Report types available for generation.\n"
@@ -171,7 +171,7 @@ class ReportRecommendation(BaseModel):
 class ReportGenerationRequest(BaseModel):
     """Request to generate case documentation reports"""
 
-    report_types: list[ReportType] = Field(
+    report_types: List[ReportType] = Field(
         ..., min_length=1, max_length=3, description="Types of reports to generate"
     )
 
@@ -180,7 +180,7 @@ class ReportGenerationResponse(BaseModel):
     """Response after generating reports"""
 
     case_id: str = Field(..., description="Case identifier")
-    reports: list[CaseReport] = Field(..., description="Generated reports")
+    reports: List[CaseReport] = Field(..., description="Generated reports")
     remaining_regenerations: int = Field(
         ...,
         ge=0,
@@ -192,7 +192,7 @@ class ReportGenerationResponse(BaseModel):
 class CaseClosureRequest(BaseModel):
     """Request to close a case"""
 
-    closure_note: str | None = Field(
+    closure_note: Optional[str] = Field(
         None, max_length=500, description="Optional closure note"
     )
 
@@ -202,7 +202,7 @@ class CaseClosureResponse(BaseModel):
 
     case_id: str = Field(..., description="Case identifier")
     closed_at: str = Field(..., description="Closure timestamp (ISO 8601)")
-    archived_reports: list[CaseReport] = Field(
+    archived_reports: List[CaseReport] = Field(
         ..., description="Reports linked to closure"
     )
     download_available_until: str = Field(

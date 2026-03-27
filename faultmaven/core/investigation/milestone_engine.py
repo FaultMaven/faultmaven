@@ -29,14 +29,14 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 # Module initialization
 logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
+from faultmaven.core.investigation.llm_error_handler import ErrorAction, LLMErrorHandler
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
@@ -47,12 +47,14 @@ from faultmaven.core.investigation.schemas import (
 from faultmaven.core.investigation.stagnation_detector import (
     StagnationBreaker,
     StagnationDetector,
+    StagnationType,
 )
 from faultmaven.core.investigation.state_validator import (
     StateValidator,
     ValidationSeverity,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
+    ProgressMetrics,
     calculate_progress_metrics,
     generate_working_conclusion,
 )
@@ -3855,7 +3857,7 @@ class MilestoneEngine:
             # Don't confirm a transition that was just proposed in this same turn
             if metadata.get("transition_proposed_this_turn", False):
                 logger.info(
-                    "Skipping confirmation check - transition was just proposed this turn"
+                    f"Skipping confirmation check - transition was just proposed this turn"
                 )
             else:
                 from faultmaven.core.investigation.terminal_transitions import (

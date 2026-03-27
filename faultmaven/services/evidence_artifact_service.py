@@ -15,15 +15,15 @@ Architecture:
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -150,9 +150,9 @@ class APIEvidenceArtifactService(BaseService):
         original_filename: str,
         mime_type: str,
         evidence_type: EvidenceArtifactType,
-        description: str | None = None,
+        description: Optional[str] = None,
         is_primary: bool = False,
-        metadata: dict[str, Any] | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> EvidenceArtifact:
         """Upload evidence artifact for a case.
 
@@ -213,7 +213,7 @@ class APIEvidenceArtifactService(BaseService):
 
             # Step 4: Create evidence artifact
             evidence_id = f"evd_{uuid4().hex[:12]}"
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
 
             evidence = EvidenceArtifact(
                 evidence_id=evidence_id,
@@ -287,7 +287,7 @@ class APIEvidenceArtifactService(BaseService):
 
     async def get_evidence(
         self, evidence_id: str, organization_id: str
-    ) -> EvidenceArtifact | None:
+    ) -> Optional[EvidenceArtifact]:
         """Get evidence artifact by ID with authorization.
 
         Verifies organization owns the parent case.
@@ -332,7 +332,7 @@ class APIEvidenceArtifactService(BaseService):
 
     async def download_evidence(
         self, evidence_id: str, organization_id: str
-    ) -> tuple[bytes, str, str]:
+    ) -> Tuple[bytes, str, str]:
         """Download evidence artifact file.
 
         Args:
@@ -375,7 +375,7 @@ class APIEvidenceArtifactService(BaseService):
             raise ServiceError(f"Failed to download evidence: {e}")
 
     async def update_evidence(
-        self, evidence_id: str, organization_id: str, updates: dict[str, Any]
+        self, evidence_id: str, organization_id: str, updates: Dict[str, Any]
     ) -> EvidenceArtifact:
         """Update evidence artifact metadata.
 
@@ -447,7 +447,7 @@ class APIEvidenceArtifactService(BaseService):
                 )
 
             # Update timestamp
-            evidence.updated_at = datetime.now(UTC)
+            evidence.updated_at = datetime.now(timezone.utc)
 
             # Save updated evidence (if not just is_primary update handled by set_primary_evidence)
             if "is_primary" not in applied_updates or len(applied_updates) > 1:
@@ -550,10 +550,10 @@ class APIEvidenceArtifactService(BaseService):
         self,
         case_id: str,
         organization_id: str,
-        evidence_type: EvidenceArtifactType | None = None,
+        evidence_type: Optional[EvidenceArtifactType] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[EvidenceArtifact]:
+    ) -> List[EvidenceArtifact]:
         """List evidence artifacts for a case.
 
         Args:
@@ -674,7 +674,7 @@ class APIEvidenceArtifactService(BaseService):
 
     async def get_primary_evidence(
         self, case_id: str, organization_id: str
-    ) -> EvidenceArtifact | None:
+    ) -> Optional[EvidenceArtifact]:
         """Get primary evidence artifact for a case.
 
         Args:
@@ -727,7 +727,7 @@ class APIEvidenceArtifactService(BaseService):
 
     async def get_evidence_statistics(
         self, case_id: str, organization_id: str
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Get evidence statistics for a case.
 
         Returns:
@@ -754,7 +754,7 @@ class APIEvidenceArtifactService(BaseService):
             )
 
             # Calculate statistics
-            by_type: dict[str, int] = {}
+            by_type: Dict[str, int] = {}
             total_file_size_bytes = 0
             primary_evidence_id = None
 
@@ -778,7 +778,7 @@ class APIEvidenceArtifactService(BaseService):
                 "total_file_size_bytes": total_file_size_bytes,
                 "total_file_size_mb": total_file_size_bytes / (1024 * 1024),
                 "primary_evidence_id": primary_evidence_id,
-                "computed_at": datetime.now(UTC).isoformat(),
+                "computed_at": datetime.now(timezone.utc).isoformat(),
             }
 
             self.log_operation(
@@ -873,7 +873,7 @@ class APIEvidenceArtifactService(BaseService):
     # Health Check
     # ============================================================
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """Perform health check for the evidence artifact service.
 
         Returns:

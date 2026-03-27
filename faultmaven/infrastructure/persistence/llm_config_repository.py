@@ -5,7 +5,8 @@ Overrides stored here take precedence over environment variables.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
@@ -25,7 +26,7 @@ async def get_all_overrides() -> dict[str, str]:
         return {row.key: row.value for row in result}
 
 
-async def get_override(key: str) -> str | None:
+async def get_override(key: str) -> Optional[str]:
     """Read a single config override value."""
     async with get_db_session() as session:
         result = await session.execute(
@@ -37,10 +38,10 @@ async def get_override(key: str) -> str | None:
         return row
 
 
-async def set_override(key: str, value: str, user_id: str | None = None) -> None:
+async def set_override(key: str, value: str, user_id: Optional[str] = None) -> None:
     """Set a config override (upsert — insert or update)."""
     async with get_db_session() as session:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Use SQLite-compatible upsert
         stmt = sqlite_upsert(LLMConfigOverrideModel).values(
@@ -62,10 +63,12 @@ async def set_override(key: str, value: str, user_id: str | None = None) -> None
         logger.info(f"LLM config override set: {key} (by {user_id or 'system'})")
 
 
-async def set_overrides(overrides: dict[str, str], user_id: str | None = None) -> None:
+async def set_overrides(
+    overrides: dict[str, str], user_id: Optional[str] = None
+) -> None:
     """Set multiple config overrides atomically."""
     async with get_db_session() as session:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         for key, value in overrides.items():
             stmt = sqlite_upsert(LLMConfigOverrideModel).values(

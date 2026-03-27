@@ -15,6 +15,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Dict, List, Optional, Type, Union
 
 from faultmaven.exceptions import ModelLoadingException
 
@@ -250,13 +251,13 @@ class ProviderRegistry:
                 settings = None
 
         self.settings = settings
-        self._providers: dict[str, BaseLLMProvider] = {}
-        self._fallback_chain: list[str] = []
+        self._providers: Dict[str, BaseLLMProvider] = {}
+        self._fallback_chain: List[str] = []
         self._initialized = False
 
         # Provider health tracking (stateful routing)
-        self._provider_states: dict[str, ProviderState] = {}
-        self._sticky_provider: str | None = None  # last known good provider
+        self._provider_states: Dict[str, ProviderState] = {}
+        self._sticky_provider: Optional[str] = None  # last known good provider
         self._routing_initialized = False  # Track if we've logged routing config
 
         # Don't initialize immediately - wait for first use
@@ -341,8 +342,8 @@ class ProviderRegistry:
         self._setup_fallback_chain(primary_provider)
 
     def _create_provider_config(
-        self, provider_name: str, schema: dict
-    ) -> ProviderConfig | None:
+        self, provider_name: str, schema: Dict
+    ) -> Optional[ProviderConfig]:
         """Create provider configuration from schema and settings.
 
         Note: This method requires settings to be available. All configuration
@@ -436,12 +437,12 @@ class ProviderRegistry:
         if provider_name == "local":
             if not model:
                 self.logger.warning(
-                    "❌ Local provider requires LOCAL_LLM_MODEL in settings"
+                    f"❌ Local provider requires LOCAL_LLM_MODEL in settings"
                 )
                 return None
             if not base_url:
                 self.logger.warning(
-                    "❌ Local provider requires LOCAL_LLM_URL in settings"
+                    f"❌ Local provider requires LOCAL_LLM_URL in settings"
                 )
                 return None
 
@@ -519,17 +520,17 @@ class ProviderRegistry:
         else:
             self.logger.info(f"Provider fallback chain: {' -> '.join(chain)}")
 
-    def register_provider(self, name: str, provider_class: type[BaseLLMProvider]):
+    def register_provider(self, name: str, provider_class: Type[BaseLLMProvider]):
         """Register a custom provider class"""
         self._provider_classes[name] = provider_class
         self.logger.info(f"Registered custom provider class: {name}")
 
-    def get_provider(self, name: str) -> BaseLLMProvider | None:
+    def get_provider(self, name: str) -> Optional[BaseLLMProvider]:
         """Get a specific provider by name"""
         self._ensure_initialized()
         return self._providers.get(name)
 
-    def create_provider_for_test(self, name: str) -> BaseLLMProvider | None:
+    def create_provider_for_test(self, name: str) -> Optional[BaseLLMProvider]:
         """Create a temporary provider instance for connection testing.
 
         Unlike get_provider(), this works even in strict mode by initializing
@@ -551,22 +552,22 @@ class ProviderRegistry:
             self.logger.warning(f"Failed to create test provider '{name}': {e}")
             return None
 
-    def get_available_providers(self) -> list[str]:
+    def get_available_providers(self) -> List[str]:
         """Get list of available provider names"""
         self._ensure_initialized()
         return list(self._providers.keys())
 
-    def get_all_provider_names(self) -> list[str]:
+    def get_all_provider_names(self) -> List[str]:
         """Get list of all provider names defined in schema"""
         self._ensure_initialized()
         return list(PROVIDER_SCHEMA.keys())
 
-    def get_fallback_chain(self) -> list[str]:
+    def get_fallback_chain(self) -> List[str]:
         """Get the current fallback chain"""
         self._ensure_initialized()
         return self._fallback_chain.copy()
 
-    def _get_routing_order(self) -> list[str]:
+    def _get_routing_order(self) -> List[str]:
         """Build provider attempt order: sticky first, then healthy, then degraded.
 
         Implements smart routing that:
@@ -603,7 +604,7 @@ class ProviderRegistry:
         )
         return [name for name, _ in attemptable]
 
-    def get_provider_health_summary(self) -> dict[str, dict]:
+    def get_provider_health_summary(self) -> Dict[str, Dict]:
         """Get health status summary for all providers.
 
         Useful for debugging/monitoring endpoints.
@@ -631,7 +632,7 @@ class ProviderRegistry:
     async def route_request(
         self,
         prompt: str,
-        model: str | None = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
         confidence_threshold: float = 0.8,
@@ -812,7 +813,7 @@ class ProviderRegistry:
             raise last_error
         raise Exception("All providers failed with no error details")
 
-    def get_provider_status(self) -> dict[str, dict[str, any]]:
+    def get_provider_status(self) -> Dict[str, Dict[str, any]]:
         """Get status information for all providers"""
         self._ensure_initialized()
         status = {}
@@ -859,7 +860,7 @@ def reset_registry():
     _registry = None
 
 
-def get_valid_provider_names() -> list[str]:
+def get_valid_provider_names() -> List[str]:
     """Get list of valid provider names for CHAT_PROVIDER"""
     return list(PROVIDER_SCHEMA.keys())
 
@@ -871,4 +872,4 @@ def print_provider_options():
         provider_class = schema["provider_class"].__name__
         default_model = schema["default_model"]
         print(f'  "{name}" - {provider_class} ({default_model})')
-    print('\nExample: CHAT_PROVIDER="fireworks"')
+    print(f'\nExample: CHAT_PROVIDER="fireworks"')

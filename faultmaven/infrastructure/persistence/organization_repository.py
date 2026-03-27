@@ -5,7 +5,8 @@ Implements IOrganizationRepository for organization and member management.
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import List, Optional
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -78,7 +79,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         logger.info(f"Created organization: {org.organization_id} ({org.name})")
         return org
 
-    async def get_organization(self, organization_id: str) -> Organization | None:
+    async def get_organization(self, organization_id: str) -> Optional[Organization]:
         """Get organization by ID."""
         stmt = select(OrganizationModel).where(
             OrganizationModel.organization_id == organization_id,
@@ -88,7 +89,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         model = result.scalar_one_or_none()
         return _model_to_domain(model) if model else None
 
-    async def get_organization_by_slug(self, slug: str) -> Organization | None:
+    async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug."""
         stmt = select(OrganizationModel).where(
             OrganizationModel.slug == slug,
@@ -100,7 +101,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
     async def update_organization(self, org: Organization) -> bool:
         """Update organization."""
-        org.updated_at = datetime.now(UTC)
+        org.updated_at = datetime.now(timezone.utc)
 
         stmt = (
             update(OrganizationModel)
@@ -131,13 +132,13 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
                 OrganizationModel.organization_id == organization_id,
                 OrganizationModel.deleted_at.is_(None),
             )
-            .values(deleted_at=datetime.now(UTC))
+            .values(deleted_at=datetime.now(timezone.utc))
         )
         result = await self.db.execute(stmt)
         await self.db.commit()
         return result.rowcount > 0
 
-    async def list_user_organizations(self, user_id: str) -> list[Organization]:
+    async def list_user_organizations(self, user_id: str) -> List[Organization]:
         """List all organizations a user belongs to."""
         stmt = (
             select(OrganizationModel)
@@ -160,7 +161,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         self, organization_id: str, user_id: str, role_id: str
     ) -> bool:
         """Add user to organization with role (upsert)."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         stmt = sqlite_insert(OrganizationMemberModel).values(
             user_id=user_id,
             organization_id=organization_id,
@@ -208,7 +209,7 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
 
     async def list_organization_members(
         self, organization_id: str
-    ) -> list[OrganizationMember]:
+    ) -> List[OrganizationMember]:
         """List all members of an organization."""
         stmt = (
             select(OrganizationMemberModel)
@@ -229,7 +230,9 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
             for row in rows
         ]
 
-    async def get_member_role(self, organization_id: str, user_id: str) -> str | None:
+    async def get_member_role(
+        self, organization_id: str, user_id: str
+    ) -> Optional[str]:
         """Get user's role in organization."""
         stmt = select(OrganizationMemberModel.role_id).where(
             OrganizationMemberModel.organization_id == organization_id,

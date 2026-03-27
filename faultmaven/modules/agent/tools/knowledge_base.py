@@ -28,7 +28,7 @@ Core Design Principles:
 
 import json
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from langchain.tools import BaseTool as LangChainBaseTool
 from langchain_core.tools import Tool
@@ -44,10 +44,10 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
 
     name: str = "knowledge_base_search"
     description: str = """
-    Search the knowledge base for relevant troubleshooting information,
-    documentation, and guides. Use this tool when you need to find
+    Search the knowledge base for relevant troubleshooting information, 
+    documentation, and guides. Use this tool when you need to find 
     specific information about errors, solutions, or procedures.
-
+    
     Input should be a search query describing what you're looking for.
     Context can be provided as a dictionary to enhance search specificity.
     """
@@ -61,7 +61,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
         self._logger = logging.getLogger(__name__)
         self._knowledge_ingester = knowledge_ingester
 
-    async def _arun(self, query: str, context: dict[str, Any] | None = None) -> str:
+    async def _arun(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
         Asynchronously search the knowledge base with contextual enhancement
 
@@ -100,7 +100,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
             self._logger.error(f"Knowledge base search failed: {e}")
             return f"Error searching knowledge base: {str(e)}"
 
-    def _expand_query_with_context(self, query: str, context: dict[str, Any]) -> str:
+    def _expand_query_with_context(self, query: str, context: Dict[str, Any]) -> str:
         """
         Expand the search query using contextual information
 
@@ -165,7 +165,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
 
         return expanded_query
 
-    def _extract_metadata_filters(self, context: dict[str, Any]) -> dict[str, Any]:
+    def _extract_metadata_filters(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Extract metadata filters from context for ChromaDB filtering
 
@@ -219,7 +219,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
 
         return filters
 
-    def _run(self, query: str, context: dict[str, Any] | None = None) -> str:
+    def _run(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
         Synchronous wrapper for the async search
 
@@ -241,9 +241,9 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
 
     def _format_results(
         self,
-        results: list[dict[str, Any]],
+        results: List[Dict[str, Any]],
         expanded_query: str,
-        metadata_filters: dict[str, Any],
+        metadata_filters: Dict[str, Any],
     ) -> str:
         """
         Format search results with source citations and context information
@@ -340,7 +340,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
 
         return "\n".join(formatted_parts)
 
-    def search(self, query: str, context: dict[str, Any] | None = None) -> str:
+    def search(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
         Public method for direct search access
 
@@ -353,7 +353,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
         """
         return self._run(query, context)
 
-    async def execute(self, params: dict[str, Any]) -> ToolResult:
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the knowledge base search tool using our interface.
 
@@ -378,7 +378,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
             self._logger.error(f"Knowledge base search execution failed: {e}")
             return ToolResult(success=False, data=None, error=str(e))
 
-    def get_schema(self) -> dict[str, Any]:
+    def get_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for our interface compliance.
 
@@ -415,7 +415,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
             },
         }
 
-    def get_tool_schema(self) -> dict[str, Any]:
+    def get_tool_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for LangChain integration (legacy compatibility).
 
@@ -496,7 +496,7 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
             self._logger.error(f"Filtered search failed: {e}")
             return f"Error in filtered search: {str(e)}"
 
-    async def execute(self, params: dict[str, Any]) -> ToolResult:
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the filtered knowledge base search tool using our interface.
 
@@ -522,7 +522,7 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
             self._logger.error(f"Filtered knowledge base search execution failed: {e}")
             return ToolResult(success=False, data=None, error=str(e))
 
-    def get_schema(self) -> dict[str, Any]:
+    def get_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for our interface compliance.
 
@@ -564,7 +564,7 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
             return asyncio.run(self._arun(query_json))
 
     def _format_filtered_results(
-        self, results: list[dict[str, Any]], filters: dict[str, Any]
+        self, results: List[Dict[str, Any]], filters: Dict[str, Any]
     ) -> str:
         """
         Format filtered search results

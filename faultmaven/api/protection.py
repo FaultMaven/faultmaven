@@ -9,8 +9,9 @@ This module provides a comprehensive protection system that integrates:
 """
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, FastAPI
 
@@ -26,6 +27,8 @@ from ..config.protection import (
 )
 from ..infrastructure.protection import TimeoutHandler
 from ..infrastructure.protection.protection_coordinator import ProtectionConfig
+from ..infrastructure.protection.rate_limiter import RedisRateLimiter
+from ..infrastructure.protection.request_hasher import RequestHasher
 from ..models.protection import ProtectionSettings
 from .middleware import DeduplicationMiddleware, RateLimitMiddleware
 
@@ -45,7 +48,7 @@ class ProtectionSystem:
     """
 
     def __init__(
-        self, app: FastAPI, session_store: ISessionStore | None = None, settings=None
+        self, app: FastAPI, session_store: Optional[ISessionStore] = None, settings=None
     ):
         self.app = app
         self.session_store = session_store
@@ -80,7 +83,7 @@ class ProtectionSystem:
             "intelligent_protection_active": False,
             "total_requests": 0,
             "protected_requests": 0,
-            "last_update": datetime.now(UTC),
+            "last_update": datetime.now(timezone.utc),
         }
 
     def _load_basic_config(self) -> ProtectionSettings:
@@ -128,7 +131,7 @@ class ProtectionSystem:
                 context={"settings_available": self.settings is not None},
             )
 
-    async def setup_protection_system(self) -> dict[str, Any]:
+    async def setup_protection_system(self) -> Dict[str, Any]:
         """
         Set up the complete unified protection system
 
@@ -178,7 +181,7 @@ class ProtectionSystem:
                 "Other middlewares...",
             ]
 
-            self.protection_status["last_update"] = datetime.now(UTC)
+            self.protection_status["last_update"] = datetime.now(timezone.utc)
 
             self.logger.info(
                 f"Protection system setup complete: "
@@ -194,7 +197,7 @@ class ProtectionSystem:
             setup_results["error"] = str(e)
             return setup_results
 
-    async def _setup_basic_protection(self) -> dict[str, Any]:
+    async def _setup_basic_protection(self) -> Dict[str, Any]:
         """Set up basic protection components (rate limiting, deduplication, timeouts)"""
         basic_result = {
             "enabled": True,
@@ -270,7 +273,7 @@ class ProtectionSystem:
 
         return basic_result
 
-    async def _setup_intelligent_protection(self) -> dict[str, Any]:
+    async def _setup_intelligent_protection(self) -> Dict[str, Any]:
         """Set up intelligent protection components"""
         intelligent_result = {
             "enabled": True,
@@ -333,11 +336,11 @@ class ProtectionSystem:
 
         return intelligent_result
 
-    async def get_protection_status(self) -> dict[str, Any]:
+    async def get_protection_status(self) -> Dict[str, Any]:
         """Get comprehensive protection system status"""
         status = {
             "system": "FaultMaven Unified Protection",
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "overall_status": (
                 "active"
                 if (
@@ -395,10 +398,10 @@ class ProtectionSystem:
 
         return status
 
-    async def get_protection_metrics(self) -> dict[str, Any]:
+    async def get_protection_metrics(self) -> Dict[str, Any]:
         """Get protection system metrics for monitoring"""
         metrics = {
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "basic_metrics": {},
             "intelligent_metrics": {},
             "combined_metrics": {
@@ -465,16 +468,16 @@ class ProtectionSystem:
 # Middleware setup
 def setup_protection_middleware(
     app: FastAPI,
-    settings: ProtectionSettings | None = None,
+    settings: Optional[ProtectionSettings] = None,
     environment: str = "development",
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Setup protection middleware (sync).
 
     Starlette/FastAPI middleware must be added *before* the application starts.
     This function is intentionally synchronous so it can be called at import-time
     (module initialization) before lifespan/startup executes.
     """
-    setup_info: dict[str, Any] = {
+    setup_info: Dict[str, Any] = {
         "protection_enabled": False,
         "middleware_added": [],
         "settings_source": "none",
@@ -540,10 +543,10 @@ def setup_protection_middleware(
 
 async def setup_protection_middleware_async(
     app: FastAPI,
-    settings: ProtectionSettings | None = None,
+    settings: Optional[ProtectionSettings] = None,
     environment: str = "development",
-    session_store: ISessionStore | None = None,
-) -> dict[str, Any]:
+    session_store: Optional[ISessionStore] = None,
+) -> Dict[str, Any]:
     """
     Async version of protection middleware setup (recommended).
 
@@ -688,7 +691,7 @@ async def setup_protection_middleware_async(
 
 
 def create_timeout_handler(
-    settings: ProtectionSettings | None = None,
+    settings: Optional[ProtectionSettings] = None,
 ) -> TimeoutHandler:
     """
     Create a timeout handler instance with the given settings
@@ -821,9 +824,9 @@ def create_protection_router():
 # Main setup function for intelligent protection
 async def setup_unified_protection_middleware(
     app: FastAPI,
-    session_store: ISessionStore | None = None,
+    session_store: Optional[ISessionStore] = None,
     environment: str = "development",
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Main function to set up unified protection middleware
 

@@ -1,6 +1,6 @@
 """Test fixtures for Agent module unit tests."""
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 
 
 def create_sample_case(
-    case_id: str | None = None,
-    user_id: str | None = None,
+    case_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     status: CaseStatus = CaseStatus.INQUIRY,
     current_turn: int = 0,
     message_count: int = 0,
@@ -36,7 +36,7 @@ def create_sample_case(
 
     case_id = case_id or f"case_{uuid4().hex[:12]}"
     user_id = user_id or str(uuid4())
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
 
     # Create case with all required fields
     # Case model has default_factory for progress, inquiry, etc., so they're auto-initialized
@@ -77,7 +77,7 @@ class MockCaseRepository:
         self.list = AsyncMock(side_effect=self._list)
         self.delete = AsyncMock(side_effect=self._delete)
 
-    async def _get(self, case_id: str) -> Case | None:
+    async def _get(self, case_id: str) -> Optional[Case]:
         """Get case by ID - return the stored case (service will mutate it)."""
         # Return reference - service mutates in place, which is fine for testing
         # The actual repository would handle this differently, but for unit tests
@@ -92,9 +92,9 @@ class MockCaseRepository:
 
     async def _list(
         self,
-        user_id: str | None = None,
-        organization_id: str | None = None,
-        status: CaseStatus | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        status: Optional[CaseStatus] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Case], int]:
@@ -134,9 +134,9 @@ class MockMilestoneEngine:
         self,
         case: Case,
         user_message: str,
-        attachments: list | None = None,
-        intent_type: str | None = None,
-        intent_data: dict[str, Any] | None = None,
+        attachments: Optional[list] = None,
+        intent_type: Optional[str] = None,
+        intent_data: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Mock turn processing.
 
@@ -156,7 +156,7 @@ class MockMilestoneEngine:
         # Update case state - increment turn (user message was already added at turn current_turn + 1)
         # Note: The service expects the engine to increment current_turn
         # case.current_turn += 1
-        case.updated_at = datetime.now(UTC)
+        case.updated_at = datetime.now(timezone.utc)
 
         # Return the same case object - real engine returns the mutated case
         return {

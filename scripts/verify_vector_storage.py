@@ -48,11 +48,15 @@ async def verify_case_evidence(case_id: str):
         # Test search
         print("\n🔎 Testing search functionality...")
         test_query = "what is this about?"
-        results = await vector_store.search(case_id=case_id, query=test_query, k=3)
+        results = await vector_store.search(
+            case_id=case_id,
+            query=test_query,
+            k=3
+        )
 
         if results:
             print(f"\n✅ Search works! Found {len(results)} result(s)")
-            print("\nTop result preview:")
+            print(f"\nTop result preview:")
             print(f"  ID: {results[0]['id']}")
             print(f"  Similarity: {results[0]['score']:.3f}")
             print(f"  Content preview: {results[0]['content'][:200]}...")
@@ -62,7 +66,6 @@ async def verify_case_evidence(case_id: str):
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
-
         traceback.print_exc()
 
 

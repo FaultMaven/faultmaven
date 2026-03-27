@@ -33,7 +33,8 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -78,7 +79,7 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_by_id(self, item_id: str) -> KnowledgeItem | None:
+    async def get_by_id(self, item_id: str) -> Optional[KnowledgeItem]:
         """Get knowledge item by ID.
 
         Args:
@@ -125,12 +126,12 @@ class KnowledgeItemRepository(ABC):
     async def list_by_organization_id(
         self,
         organization_id: str,
-        item_type: KnowledgeItemType | None = None,
-        category: str | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
+        category: Optional[str] = None,
         is_published: bool = True,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """List knowledge items with filtering and pagination.
 
         Args:
@@ -151,9 +152,9 @@ class KnowledgeItemRepository(ABC):
         self,
         organization_id: str,
         query: str,
-        item_type: KnowledgeItemType | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
         limit: int = 10,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Full-text search for knowledge items.
 
         Args:
@@ -171,10 +172,10 @@ class KnowledgeItemRepository(ABC):
     async def search_by_tags(
         self,
         organization_id: str,
-        tags: list[str],
+        tags: List[str],
         match_all: bool = False,
         limit: int = 50,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Search knowledge items by tags.
 
         Args:
@@ -193,7 +194,7 @@ class KnowledgeItemRepository(ABC):
         self,
         organization_id: str,
         limit: int = 100,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Get items that need embedding generation.
 
         Args:
@@ -209,7 +210,7 @@ class KnowledgeItemRepository(ABC):
     async def count_by_organization_id(
         self,
         organization_id: str,
-        item_type: KnowledgeItemType | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
     ) -> int:
         """Count knowledge items for an organization.
 
@@ -227,7 +228,7 @@ class KnowledgeItemRepository(ABC):
         self,
         organization_id: str,
         limit: int = 10,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score.
 
         Only includes items with at least some feedback (minimum threshold).
@@ -243,11 +244,11 @@ class KnowledgeItemRepository(ABC):
 
     async def search_by_similarity(
         self,
-        query_embedding: list[float],
+        query_embedding: List[float],
         organization_id: str,
         n_results: int = 10,
-        item_type: KnowledgeItemType | None = None,
-    ) -> list[tuple[KnowledgeItem, float]]:
+        item_type: Optional[KnowledgeItemType] = None,
+    ) -> List[Tuple[KnowledgeItem, float]]:
         """Search by vector similarity (requires vector store integration).
 
         This method provides a repository-level abstraction for vector search.
@@ -340,7 +341,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to create knowledge item: {e}"
             ) from e
 
-    async def get_by_id(self, item_id: str) -> KnowledgeItem | None:
+    async def get_by_id(self, item_id: str) -> Optional[KnowledgeItem]:
         """Get knowledge item by ID."""
         try:
             stmt = select(KnowledgeItemModel).where(
@@ -363,7 +364,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     async def update(self, item: KnowledgeItem) -> KnowledgeItem:
         """Update knowledge item fields."""
         try:
-            item.updated_at = datetime.now(UTC)
+            item.updated_at = datetime.now(timezone.utc)
 
             stmt = (
                 update(KnowledgeItemModel)
@@ -447,12 +448,12 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     async def list_by_organization_id(
         self,
         organization_id: str,
-        item_type: KnowledgeItemType | None = None,
-        category: str | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
+        category: Optional[str] = None,
         is_published: bool = True,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """List knowledge items with filtering and pagination."""
         try:
             # Build query conditions
@@ -492,9 +493,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         self,
         organization_id: str,
         query: str,
-        item_type: KnowledgeItemType | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
         limit: int = 10,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Full-text search for knowledge items.
 
         Uses LIKE operator for SQLite compatibility.
@@ -539,10 +540,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     async def search_by_tags(
         self,
         organization_id: str,
-        tags: list[str],
+        tags: List[str],
         match_all: bool = False,
         limit: int = 50,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Search knowledge items by tags.
 
         For SQLite, fetches items and filters in memory.
@@ -595,7 +596,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         self,
         organization_id: str,
         limit: int = 100,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Get items that need embedding generation."""
         try:
             stmt = (
@@ -631,7 +632,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     async def count_by_organization_id(
         self,
         organization_id: str,
-        item_type: KnowledgeItemType | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
     ) -> int:
         """Count knowledge items for an organization."""
         try:
@@ -659,7 +660,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         self,
         organization_id: str,
         limit: int = 10,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score.
 
         Filters items with at least MIN_FEEDBACK_THRESHOLD votes.
@@ -733,7 +734,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             metadata=metadata,
         )
 
-    def _parse_json_list(self, value: str | None) -> list:
+    def _parse_json_list(self, value: Optional[str]) -> List:
         """Parse JSON string to list."""
         if not value:
             return []
@@ -743,7 +744,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         except (json.JSONDecodeError, TypeError):
             return []
 
-    def _parse_json_dict(self, value: str | None) -> dict | None:
+    def _parse_json_dict(self, value: Optional[str]) -> Optional[Dict]:
         """Parse JSON string to dict."""
         if not value:
             return None
@@ -753,12 +754,12 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         except (json.JSONDecodeError, TypeError):
             return None
 
-    def _ensure_tz_aware(self, dt: datetime | None) -> datetime | None:
+    def _ensure_tz_aware(self, dt: Optional[datetime]) -> Optional[datetime]:
         """Ensure datetime is timezone-aware (UTC if naive)."""
         if dt is None:
             return None
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=UTC)
+            return dt.replace(tzinfo=timezone.utc)
         return dt
 
 
@@ -770,7 +771,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
     def __init__(self):
         """Initialize empty storage."""
-        self._items: dict[str, KnowledgeItem] = {}
+        self._items: Dict[str, KnowledgeItem] = {}
 
     # =========================================================================
     # CRUD Operations
@@ -785,7 +786,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         self._items[item.item_id] = deepcopy(item)
         return deepcopy(item)
 
-    async def get_by_id(self, item_id: str) -> KnowledgeItem | None:
+    async def get_by_id(self, item_id: str) -> Optional[KnowledgeItem]:
         """Get knowledge item by ID."""
         item = self._items.get(item_id)
         if item is None:
@@ -797,7 +798,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         if item.item_id not in self._items:
             raise ValueError(f"Knowledge item {item.item_id} not found")
 
-        item.updated_at = datetime.now(UTC)
+        item.updated_at = datetime.now(timezone.utc)
         self._items[item.item_id] = deepcopy(item)
         return deepcopy(item)
 
@@ -815,12 +816,12 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     async def list_by_organization_id(
         self,
         organization_id: str,
-        item_type: KnowledgeItemType | None = None,
-        category: str | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
+        category: Optional[str] = None,
         is_published: bool = True,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """List knowledge items with filtering and pagination."""
         items = [
             i
@@ -846,9 +847,9 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         self,
         organization_id: str,
         query: str,
-        item_type: KnowledgeItemType | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
         limit: int = 10,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Full-text search for knowledge items."""
         query_lower = query.lower()
         items = [
@@ -872,10 +873,10 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     async def search_by_tags(
         self,
         organization_id: str,
-        tags: list[str],
+        tags: List[str],
         match_all: bool = False,
         limit: int = 50,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Search knowledge items by tags."""
         if not tags:
             return []
@@ -901,7 +902,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         self,
         organization_id: str,
         limit: int = 100,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Get items that need embedding generation."""
         items = [
             i
@@ -921,7 +922,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     async def count_by_organization_id(
         self,
         organization_id: str,
-        item_type: KnowledgeItemType | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
     ) -> int:
         """Count knowledge items for an organization."""
         items = [
@@ -937,7 +938,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         self,
         organization_id: str,
         limit: int = 10,
-    ) -> list[KnowledgeItem]:
+    ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score."""
         items = [
             i

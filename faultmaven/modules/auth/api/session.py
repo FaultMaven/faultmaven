@@ -30,12 +30,12 @@ Core Design Principles:
 import logging
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
@@ -48,6 +48,8 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
     AuthSessionStatus,
     ErrorDetail,
+    ErrorResponse,
+    SessionCasesResponse,
     SessionErrorCode,
     SessionResponse,
 )
@@ -57,6 +59,7 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
 from faultmaven.services.converters import CaseConverter
+from faultmaven.utils.datetime import utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
@@ -83,7 +86,7 @@ def _get_session_timeout_bounds() -> tuple[int, int, int]:
     )
 
 
-def validate_session_timeout(timeout_minutes: int | None) -> int:
+def validate_session_timeout(timeout_minutes: Optional[int]) -> int:
     """
     Validate and clamp session timeout parameter to safe ranges.
 
@@ -157,7 +160,7 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
         if last_logged > 0:
             logger.warning(
                 f"Session not found for heartbeat: {session_id} "
-                f"(repeated attempts - last logged {int(current_time - last_logged)}s ago)"
+                f"(repeated attempts - last logged {int((current_time - last_logged))}s ago)"
             )
         else:
             logger.warning(f"Session not found for heartbeat: {session_id}")
@@ -179,16 +182,16 @@ class AuthSessionCreateRequest(BaseModel):
     See: docs/architecture/case-and-session-concepts.md for the three-tier architecture.
     """
 
-    timeout_minutes: int | None = Field(
+    timeout_minutes: Optional[int] = Field(
         default=180,
         ge=60,
         le=480,
         description="Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
         examples=[180, 240, 360],
     )
-    session_type: str | None = Field(default="troubleshooting", min_length=1)
-    metadata: dict | None = None
-    client_id: str | None = Field(
+    session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
+    metadata: Optional[dict] = None
+    client_id: Optional[str] = Field(
         None,
         min_length=1,
         max_length=255,
@@ -202,7 +205,7 @@ class SessionRestoreRequest(BaseModel):
 
     restore_point: str = Field(..., min_length=1)
     include_data: bool = Field(default=True)
-    type: str | None = Field(default="full")
+    type: Optional[str] = Field(default="full")
 
 
 @router.post(
@@ -295,8 +298,8 @@ class SessionRestoreRequest(BaseModel):
 )
 @trace("api_create_session")
 async def create_session(
-    request: AuthSessionCreateRequest | None = Body(None),
-    user_id: str | None = Query(None),
+    request: Optional[AuthSessionCreateRequest] = Body(None),
+    user_id: Optional[str] = Query(None),
     session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
     current_user: Optional["DevUser"] = Depends(get_current_user_optional),
@@ -473,8 +476,8 @@ async def get_session(
 
 @router.get("")
 async def list_sessions(
-    user_id: str | None = Query(None),
-    session_type: str | None = Query(None),
+    user_id: Optional[str] = Query(None),
+    session_type: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session_service: AuthSessionService = Depends(get_session_service),
@@ -781,7 +784,7 @@ async def cleanup_expired_sessions(
         return {
             "message": f"Successfully cleaned up {cleaned_count} expired sessions",
             "cleaned_sessions": cleaned_count,
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
     except Exception as e:
         logger.error(f"Failed to cleanup expired sessions: {e}")
@@ -857,7 +860,7 @@ async def session_heartbeat(
         # Record heartbeat operation in session history (best effort)
         heartbeat_record = {
             "action": "heartbeat",
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "endpoint": "heartbeat",
         }
 
@@ -876,7 +879,7 @@ async def session_heartbeat(
             )
 
         # Get updated session to return current last_activity (best effort)
-        last_activity = to_json_compatible(datetime.now(UTC))  # fallback
+        last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
         try:
             session = await session_service.get_session(session_id, validate=False)
             if session and session.last_activity:
@@ -924,7 +927,7 @@ async def get_session_stats(
         # Record stats request operation in session history
         stats_record = {
             "action": "stats_request",
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "endpoint": "stats",
         }
 
@@ -1173,7 +1176,7 @@ async def restore_session(
             "message": f"Session restored successfully ({restore_type} restoration)",
             "restoration_details": {
                 "type": restore_type,
-                "restored_at": to_json_compatible(datetime.now(UTC)),
+                "restored_at": to_json_compatible(datetime.now(timezone.utc)),
                 "items_restored": {
                     "data_uploads": len(session.data_uploads),
                     "case_history": len(session.case_history),

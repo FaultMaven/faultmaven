@@ -3,7 +3,7 @@
 Tests state consistency validation for milestone-based investigation.
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -118,7 +118,7 @@ class TestStatusConsistency:
         resolved_case = base_case.model_copy(
             update={
                 "status": CaseStatus.RESOLVED,
-                "resolved_at": datetime.now(UTC),
+                "resolved_at": datetime.now(timezone.utc),
             }
         )
         resolved_case.progress.solution_verified = False
@@ -135,7 +135,7 @@ class TestStatusConsistency:
         resolved_case = base_case.model_copy(
             update={
                 "status": CaseStatus.RESOLVED,
-                "resolved_at": datetime.now(UTC),
+                "resolved_at": datetime.now(timezone.utc),
             }
         )
         resolved_case.progress.solution_verified = True

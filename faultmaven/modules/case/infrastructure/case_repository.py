@@ -4,16 +4,30 @@ This module provides the repository pattern for Case domain model persistence.
 It abstracts database operations and provides clean interfaces for the service layer.
 """
 
-import builtins
+import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import (
     Case,
+    CaseAction,
     CaseStatus,
+    DocumentationData,
+    EscalationState,
+    Evidence,
+    Hypothesis,
+    InquiryData,
+    InvestigationProgress,
+    PathSelection,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    TurnProgress,
+    UploadedFile,
+    WorkingConclusion,
 )
 
 if TYPE_CHECKING:
@@ -59,7 +73,7 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def get(self, case_id: str) -> Case | None:
+    async def get(self, case_id: str) -> Optional[Case]:
         """
         Retrieve case by ID.
 
@@ -77,12 +91,12 @@ class CaseRepository(ABC):
     @abstractmethod
     async def list(
         self,
-        user_id: str | None = None,
-        organization_id: str | None = None,
-        status: CaseStatus | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        status: Optional[CaseStatus] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[Case], int]:
+    ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
 
@@ -138,10 +152,10 @@ class CaseRepository(ABC):
     async def search(
         self,
         query: str,
-        user_id: str | None = None,
-        organization_id: str | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         limit: int = 20,
-    ) -> tuple[builtins.list[Case], int]:
+    ) -> tuple[List[Case], int]:
         """
         Search cases by text query.
 
@@ -184,7 +198,7 @@ class CaseRepository(ABC):
     @abstractmethod
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> builtins.list[dict]:
+    ) -> List[dict]:
         """
         Get messages for a case with pagination.
 
@@ -221,7 +235,7 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_analytics(self, case_id: str) -> dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Compute analytics for a case.
 
@@ -301,7 +315,7 @@ class CaseRepository(ABC):
         report_type: Optional["ReportType"] = None,
         include_history: bool = False,
         only_current: bool = False,
-    ) -> builtins.list["CaseReport"]:
+    ) -> List["CaseReport"]:
         """
         Get reports for a case with optional filtering.
 
@@ -382,7 +396,7 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_checkpoints(self, case_id: str) -> builtins.list["CaseCheckpoint"]:
+    async def get_checkpoints(self, case_id: str) -> List["CaseCheckpoint"]:
         """
         Get all checkpoints for a case.
 
@@ -427,21 +441,21 @@ class InMemoryCaseRepository(CaseRepository):
 
     def __init__(self):
         """Initialize empty in-memory store."""
-        self._cases: dict[str, Case] = {}
-        self._reports: dict[str, CaseReport] = {}  # report_id -> CaseReport
+        self._cases: Dict[str, Case] = {}
+        self._reports: Dict[str, "CaseReport"] = {}  # report_id -> CaseReport
         # Standalone evidence storage (migrated from Evidence module)
-        self._standalone_evidence: dict[str, Any] = (
+        self._standalone_evidence: Dict[str, Any] = (
             {}
         )  # evidence_id -> EvidenceArtifact
         # Agent execution storage (migrated from Agent module)
-        self._agent_executions: dict[str, Any] = (
+        self._agent_executions: Dict[str, Any] = (
             {}
         )  # execution_id -> AgentExecution (tool_calls stored separately)
-        self._agent_executions: dict[str, Any] = (
+        self._agent_executions: Dict[str, Any] = (
             {}
         )  # execution_id -> AgentExecution (tool_calls stored separately)
-        self._agent_tool_calls: dict[str, Any] = {}  # tool_call_id -> AgentToolCall
-        self._checkpoints: dict[str, Any] = {}  # checkpoint_id -> CaseCheckpoint
+        self._agent_tool_calls: Dict[str, Any] = {}  # tool_call_id -> AgentToolCall
+        self._checkpoints: Dict[str, Any] = {}  # checkpoint_id -> CaseCheckpoint
 
     async def save(self, case: Case) -> Case:
         """Save case to memory."""
@@ -453,18 +467,18 @@ class InMemoryCaseRepository(CaseRepository):
 
         return case
 
-    async def get(self, case_id: str) -> Case | None:
+    async def get(self, case_id: str) -> Optional[Case]:
         """Get case from memory."""
         return self._cases.get(case_id)
 
     async def list(
         self,
-        user_id: str | None = None,
-        organization_id: str | None = None,
-        status: CaseStatus | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        status: Optional[CaseStatus] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[Case], int]:
+    ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
         filtered = list(self._cases.values())
@@ -490,6 +504,7 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def count_user_cases_on_date(self, user_id: str, date: Any) -> int:
         """Count cases for a user on a specific date in memory."""
+        from datetime import date as date_type
         from datetime import datetime
 
         target_date = date
@@ -527,10 +542,10 @@ class InMemoryCaseRepository(CaseRepository):
     async def search(
         self,
         query: str,
-        user_id: str | None = None,
-        organization_id: str | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         limit: int = 20,
-    ) -> tuple[builtins.list[Case], int]:
+    ) -> tuple[List[Case], int]:
         """Search cases by text query (simple substring match)."""
         query_lower = query.lower()
 
@@ -573,6 +588,7 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
         """Add message to case in memory."""
+        from datetime import timezone
 
         case = self._cases.get(case_id)
         if not case:
@@ -580,12 +596,12 @@ class InMemoryCaseRepository(CaseRepository):
 
         case.messages.append(message_dict)
         case.message_count += 1
-        case.last_activity_at = datetime.now(UTC)
+        case.last_activity_at = datetime.now(timezone.utc)
         return True
 
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> builtins.list[dict]:
+    ) -> List[dict]:
         """Get messages from case in memory."""
         case = self._cases.get(case_id)
         if not case:
@@ -595,15 +611,16 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update last activity timestamp in memory."""
+        from datetime import timezone
 
         case = self._cases.get(case_id)
         if not case:
             return False
 
-        case.last_activity_at = datetime.now(UTC)
+        case.last_activity_at = datetime.now(timezone.utc)
         return True
 
-    async def get_analytics(self, case_id: str) -> dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for case in memory."""
         from faultmaven.utils.serialization import to_json_compatible
 
@@ -639,9 +656,9 @@ class InMemoryCaseRepository(CaseRepository):
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
         """Clean up expired cases from memory."""
-        from datetime import timedelta
+        from datetime import timedelta, timezone
 
-        cutoff_date = datetime.now(UTC) - timedelta(days=max_age_days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
         deleted_count = 0
 
         # Collect case IDs to delete (avoid modifying dict during iteration)
@@ -665,6 +682,13 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Add report to memory."""
+        from datetime import timezone
+
+        from faultmaven.modules.case.domain.owned_models.report import (
+            CaseReport,
+            ReportType,
+        )
+        from faultmaven.utils.serialization import to_json_compatible
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
@@ -695,8 +719,9 @@ class InMemoryCaseRepository(CaseRepository):
         report_type: Optional["ReportType"] = None,
         include_history: bool = False,
         only_current: bool = False,
-    ) -> builtins.list["CaseReport"]:
+    ) -> List["CaseReport"]:
         """Get reports for a case with optional filtering."""
+        from faultmaven.modules.case.domain.owned_models.report import ReportType
 
         # Filter by case_id
         reports = [r for r in self._reports.values() if r.case_id == case_id]
@@ -719,6 +744,7 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in memory."""
+        from datetime import timezone
 
         from faultmaven.utils.serialization import to_json_compatible
 
@@ -737,7 +763,7 @@ class InMemoryCaseRepository(CaseRepository):
                     existing_report.is_current = False
 
         # Always update updated_at timestamp to reflect the modification
-        report.updated_at = to_json_compatible(datetime.now(UTC))
+        report.updated_at = to_json_compatible(datetime.now(timezone.utc))
 
         self._reports[report.report_id] = report
 
@@ -759,7 +785,7 @@ class InMemoryCaseRepository(CaseRepository):
         """Get checkpoint from memory."""
         return self._checkpoints.get(checkpoint_id)
 
-    async def get_checkpoints(self, case_id: str) -> builtins.list["CaseCheckpoint"]:
+    async def get_checkpoints(self, case_id: str) -> List["CaseCheckpoint"]:
         """Get checkpoints for case from memory."""
         checkpoints = [cp for cp in self._checkpoints.values() if cp.case_id == case_id]
         # Sort by turn number
@@ -777,11 +803,11 @@ class InMemoryCaseRepository(CaseRepository):
         size_bytes: int,
         storage_path: str,
         uploaded_by: str,
-        description: str | None = None,
-        tags: builtins.list[str] | None = None,
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> Any:
         """Create standalone evidence record (in-memory implementation)."""
-        from datetime import datetime
+        from datetime import datetime, timezone
         from uuid import uuid4
 
         from faultmaven.modules.case.domain.owned_models.evidence import (
@@ -791,7 +817,7 @@ class InMemoryCaseRepository(CaseRepository):
         )
 
         evidence_id = str(uuid4())
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         # Infer evidence type from content_type
         if content_type.startswith("image/"):
@@ -828,16 +854,21 @@ class InMemoryCaseRepository(CaseRepository):
         self._standalone_evidence[evidence_id] = evidence
         return evidence
 
-    async def get_standalone_evidence(self, evidence_id: str) -> Any | None:
+    async def get_standalone_evidence(self, evidence_id: str) -> Optional[Any]:
         """Get standalone evidence by ID (in-memory implementation)."""
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+        )
 
         return self._standalone_evidence.get(evidence_id)
 
-    async def list_standalone_evidence(
-        self, filters: Any
-    ) -> tuple[builtins.list[Any], int]:
+    async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
         """List standalone evidence with filters (in-memory implementation)."""
         from uuid import UUID
+
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceListFilter,
+        )
 
         all_evidence = list(self._standalone_evidence.values())
         filtered = all_evidence
@@ -901,9 +932,9 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def link_standalone_evidence_to_case(
         self, evidence_id: str, case_id: str
-    ) -> Any | None:
+    ) -> Optional[Any]:
         """Link standalone evidence to a case (in-memory implementation)."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         from faultmaven.modules.case.domain.owned_models.evidence import (
             EvidenceArtifact,
@@ -933,7 +964,7 @@ class InMemoryCaseRepository(CaseRepository):
                 file_size=evidence.file_size,
                 storage_backend=evidence.storage_backend,
                 created_at=evidence.created_at,
-                updated_at=datetime.now(UTC),
+                updated_at=datetime.now(timezone.utc),
                 description=evidence.description,
                 metadata=getattr(evidence, "metadata", {}),
                 tags=getattr(evidence, "tags", []),
@@ -946,7 +977,11 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def update_standalone_evidence(self, evidence: Any) -> Any:
         """Update standalone evidence record (in-memory implementation)."""
-        from datetime import datetime
+        from datetime import datetime, timezone
+
+        from faultmaven.modules.case.domain.owned_models.evidence import (
+            EvidenceArtifact,
+        )
 
         evidence_id = getattr(evidence, "evidence_id", None)
         if not evidence_id or evidence_id not in self._standalone_evidence:
@@ -954,7 +989,7 @@ class InMemoryCaseRepository(CaseRepository):
 
         # Update timestamp
         if hasattr(evidence, "updated_at"):
-            evidence.updated_at = datetime.now(UTC)
+            evidence.updated_at = datetime.now(timezone.utc)
 
         # Store updated evidence
         self._standalone_evidence[evidence_id] = evidence
@@ -962,7 +997,7 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Set evidence as primary for a case (unsets others) (in-memory implementation)."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         # Get the evidence
         evidence = self._standalone_evidence.get(evidence_id)
@@ -977,15 +1012,15 @@ class InMemoryCaseRepository(CaseRepository):
         for ev_id, ev in self._standalone_evidence.items():
             if ev_id != evidence_id and case_id in getattr(ev, "linked_case_ids", []):
                 ev.is_primary = False
-                ev.updated_at = datetime.now(UTC)
+                ev.updated_at = datetime.now(timezone.utc)
 
         # Set this evidence as primary
         evidence.is_primary = True
-        evidence.updated_at = datetime.now(UTC)
+        evidence.updated_at = datetime.now(timezone.utc)
 
         return True
 
-    async def get_primary_evidence(self, case_id: str) -> Any | None:
+    async def get_primary_evidence(self, case_id: str) -> Optional[Any]:
         """Get primary evidence for a case (in-memory implementation)."""
         # Find evidence linked to this case that is marked as primary
         for evidence in self._standalone_evidence.values():
@@ -1001,6 +1036,9 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def create_agent_execution(self, execution: Any) -> Any:
         """Create new agent execution record (in-memory implementation)."""
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            AgentExecution,
+        )
 
         if execution.execution_id in self._agent_executions:
             raise ValueError(f"Agent execution {execution.execution_id} already exists")
@@ -1018,7 +1056,7 @@ class InMemoryCaseRepository(CaseRepository):
             result.tool_calls = []
         return result
 
-    async def get_agent_execution(self, execution_id: str) -> Any | None:
+    async def get_agent_execution(self, execution_id: str) -> Optional[Any]:
         """Get agent execution by ID with tool calls loaded (in-memory implementation)."""
 
         execution = self._agent_executions.get(execution_id)
@@ -1040,12 +1078,16 @@ class InMemoryCaseRepository(CaseRepository):
     async def list_agent_executions_by_case(
         self,
         case_id: str,
-        status: Any | None = None,
-        agent_type: Any | None = None,
+        status: Optional[Any] = None,
+        agent_type: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[builtins.list[Any], int]:
+    ) -> tuple[List[Any], int]:
         """List agent executions for a case with optional filters (in-memory implementation)."""
+        from faultmaven.modules.case.domain.owned_models.agent_execution import (
+            AgentType,
+            ExecutionStatus,
+        )
 
         # Filter by case
         executions = [
@@ -1120,10 +1162,10 @@ class InMemoryCaseRepository(CaseRepository):
     async def list_agent_executions_by_session(
         self,
         session_id: str,
-        status: Any | None = None,
+        status: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[builtins.list[Any], int]:
+    ) -> tuple[List[Any], int]:
         """List agent executions for a session with optional filters (in-memory implementation)."""
 
         # Filter by session_id via metadata
@@ -1180,7 +1222,7 @@ class InMemoryCaseRepository(CaseRepository):
 
         # Update timestamp
         if hasattr(execution, "updated_at"):
-            execution.updated_at = datetime.now(UTC)
+            execution.updated_at = datetime.now(timezone.utc)
 
         # Update stored execution (preserve tool calls separately)
         stored = deepcopy(execution)
@@ -1248,14 +1290,12 @@ class InMemoryCaseRepository(CaseRepository):
 
         # Update timestamp
         if hasattr(tool_call, "updated_at"):
-            tool_call.updated_at = datetime.now(UTC)
+            tool_call.updated_at = datetime.now(timezone.utc)
 
         self._agent_tool_calls[tool_call_id] = deepcopy(tool_call)
         return deepcopy(tool_call)
 
-    async def get_agent_tool_calls_for_execution(
-        self, execution_id: str
-    ) -> builtins.list[Any]:
+    async def get_agent_tool_calls_for_execution(self, execution_id: str) -> List[Any]:
         """Get all tool calls for an execution (in-memory implementation)."""
 
         tool_calls = [
@@ -1279,8 +1319,8 @@ class InMemoryCaseRepository(CaseRepository):
     async def get_latest_agent_execution(
         self,
         case_id: str,
-        agent_type: Any | None = None,
-    ) -> Any | None:
+        agent_type: Optional[Any] = None,
+    ) -> Optional[Any]:
         """Get the most recent agent execution for a case (in-memory implementation)."""
 
         executions = [

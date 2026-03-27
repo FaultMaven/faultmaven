@@ -24,7 +24,8 @@ Design Principles:
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Optional
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
@@ -78,7 +79,7 @@ def get_verification_key() -> str:
             return settings.security.jwt_public_key
         elif settings.security.jwt_public_key_path:
             try:
-                with open(settings.security.jwt_public_key_path) as f:
+                with open(settings.security.jwt_public_key_path, "r") as f:
                     return f.read()
             except FileNotFoundError:
                 raise RuntimeError(
@@ -176,8 +177,8 @@ async def get_user_store(request: Request):
 
 # Token Extraction
 async def extract_bearer_token(
-    authorization: str | None = Header(None, alias="Authorization")
-) -> str | None:
+    authorization: Optional[str] = Header(None, alias="Authorization")
+) -> Optional[str]:
     """Extract Bearer token from Authorization header
 
     Args:
@@ -195,7 +196,7 @@ async def extract_bearer_token(
         return None
 
     if not authorization.startswith("Bearer "):
-        logger.debug("Invalid authorization header format (not Bearer)")
+        logger.debug(f"Invalid authorization header format (not Bearer)")
         return None
 
     token = authorization[7:]  # Remove "Bearer " prefix
@@ -208,8 +209,8 @@ async def extract_bearer_token(
 
 # User Authentication Dependencies
 async def get_current_user_optional(
-    request: Request, token: str | None = Depends(extract_bearer_token)
-) -> DevUser | None:
+    request: Request, token: Optional[str] = Depends(extract_bearer_token)
+) -> Optional[DevUser]:
     """Get current user from JWT token (optional - no error if missing/invalid)
 
     Implements unified JWT validation per iam-design.md:
@@ -253,7 +254,7 @@ async def get_current_user_optional(
             username=claims.get("username", ""),
             email=claims.get("email", ""),
             display_name=claims.get("username", ""),  # Use username as display name
-            created_at=datetime.now(UTC),  # JWT doesn't include created_at
+            created_at=datetime.now(timezone.utc),  # JWT doesn't include created_at
             is_dev_user=claims.get("auth_mode") == "local",  # Local mode = dev user
             is_active=True,
             roles=claims.get("roles", ["user"]),
@@ -284,7 +285,7 @@ async def get_current_user_optional(
 
 
 async def require_authentication(
-    user: DevUser | None = Depends(get_current_user_optional),
+    user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> DevUser:
     """Require authenticated user (raises 401 if not authenticated)
 
@@ -336,8 +337,8 @@ async def get_current_user_id(user: DevUser = Depends(require_authentication)) -
 
 
 async def get_current_user_id_optional(
-    user: DevUser | None = Depends(get_current_user_optional),
-) -> str | None:
+    user: Optional[DevUser] = Depends(get_current_user_optional),
+) -> Optional[str]:
     """Extract user ID for optional authentication scenarios
 
     Args:
@@ -441,7 +442,7 @@ async def get_authenticated_user_context(
 
 
 async def get_optional_user_context(
-    user: DevUser | None = Depends(get_current_user_optional),
+    user: Optional[DevUser] = Depends(get_current_user_optional),
     correlation_id: str = None,
 ) -> dict:
     """Get user context for optional authentication scenarios
@@ -506,7 +507,7 @@ async def require_dev_user(user: DevUser = Depends(require_authentication)) -> D
     return user
 
 
-def resolve_accessible_scopes(user: DevUser | None = None) -> dict:
+def resolve_accessible_scopes(user: Optional[DevUser] = None) -> dict:
     """Resolve accessible knowledge base scopes for a user to use in ChromaDB queries"""
     conditions = [{"scope": "global"}]
 

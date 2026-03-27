@@ -49,16 +49,16 @@ async def promote_to_admin(username: str):
     print(f"   Current roles: {user.roles}")
 
     # Check if already admin
-    if "admin" in user.roles:
+    if 'admin' in user.roles:
         print(f"\n⚠️  User '{username}' is already an admin!")
         return True
 
     # Add admin role
     print(f"\nAdding 'admin' role to user '{username}'...")
-    if "user" not in user.roles:
-        user.roles = ["user", "admin"]
+    if 'user' not in user.roles:
+        user.roles = ['user', 'admin']
     else:
-        user.roles.append("admin")
+        user.roles.append('admin')
 
     # Update user
     try:

@@ -20,8 +20,8 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models import DataInsightsResponse, DataType, UploadedData
@@ -70,13 +70,13 @@ class EnhancedIngestionResult:
     file_name: str
     file_size: int
     processing_status: str
-    insights: dict[str, Any]
+    insights: Dict[str, Any]
     memory_enhanced: bool = False
-    patterns_applied: list[str] = None
-    learning_opportunities: list[str] = None
+    patterns_applied: List[str] = None
+    learning_opportunities: List[str] = None
     processing_time_ms: float = 0.0
-    classification_result: Any | None = None  # ClassificationResult if available
-    processing_result: Any | None = None  # EnhancedProcessingResult if available
+    classification_result: Optional[Any] = None  # ClassificationResult if available
+    processing_result: Optional[Any] = None  # EnhancedProcessingResult if available
 
     def __post_init__(self):
         if self.patterns_applied is None:
@@ -98,13 +98,13 @@ class CaseDataIngestionService:
         log_processor: ILogProcessor,
         sanitizer: ISanitizer,
         tracer: ITracer,
-        storage_backend: IStorageBackend | None = None,
+        storage_backend: Optional[IStorageBackend] = None,
         session_service=None,  # Optional session service for operation tracking
-        settings: Any | None = None,
-        memory_service: (
-            IMemoryService | None
-        ) = None,  # Enhanced: Memory service for context
-        pattern_learner: Any | None = None,  # Enhanced: Pattern learning service
+        settings: Optional[Any] = None,
+        memory_service: Optional[
+            IMemoryService
+        ] = None,  # Enhanced: Memory service for context
+        pattern_learner: Optional[Any] = None,  # Enhanced: Pattern learning service
     ):
         """
         Initialize the Data Service with interface dependencies
@@ -171,10 +171,10 @@ class CaseDataIngestionService:
         self,
         content: str,
         session_id: str,
-        file_name: str | None = None,
-        file_size: int | None = None,
-        data_type: str | None = None,
-        context: dict[str, Any] | None = None,
+        file_name: Optional[str] = None,
+        file_size: Optional[int] = None,
+        data_type: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> UploadedData:
         """
         Ingest and process raw data using interface dependencies
@@ -198,10 +198,10 @@ class CaseDataIngestionService:
         def _validate_ingest_inputs(
             content: str,
             session_id: str,
-            file_name: str | None,
-            file_size: int | None,
-            data_type: str | None,
-            context: dict[str, Any] | None,
+            file_name: Optional[str],
+            file_size: Optional[int],
+            data_type: Optional[str],
+            context: Optional[Dict[str, Any]],
         ) -> None:
             if content is None or (isinstance(content, str) and not content.strip()):
                 raise ValidationException("Content cannot be empty")
@@ -219,11 +219,11 @@ class CaseDataIngestionService:
         self,
         content: str,
         session_id: str,
-        file_name: str | None,
-        file_size: int | None,
-        data_type: str | None,
-        context: dict[str, Any] | None,
-    ) -> dict[str, Any]:
+        file_name: Optional[str],
+        file_size: Optional[int],
+        data_type: Optional[str],
+        context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         """Execute the core data ingestion logic"""
         # OPTIMIZATION #3: Compute hash FIRST (before any processing)
         # This enables early duplicate detection to skip expensive extraction
@@ -317,7 +317,9 @@ class CaseDataIngestionService:
                 # Handle case where insights_response is not properly structured
                 detailed_insights = {
                     "processed": True,
-                    "processing_timestamp": to_json_compatible(datetime.now(UTC)),
+                    "processing_timestamp": to_json_compatible(
+                        datetime.now(timezone.utc)
+                    ),
                     "anomalies_detected": [],
                     "recommendations": [],
                     "confidence_score": 0.5,
@@ -326,7 +328,7 @@ class CaseDataIngestionService:
             logger.warning(f"Failed to extract detailed insights: {e}")
             detailed_insights = {
                 "processed": True,
-                "processing_timestamp": to_json_compatible(datetime.now(UTC)),
+                "processing_timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "anomalies_detected": [],
                 "recommendations": [],
             }
@@ -397,10 +399,10 @@ class CaseDataIngestionService:
         self,
         content: str,
         session_id: str,
-        file_name: str | None = None,
-        file_size: int | None = None,
-        data_type: str | None = None,
-        context: dict[str, Any] | None = None,
+        file_name: Optional[str] = None,
+        file_size: Optional[int] = None,
+        data_type: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> EnhancedIngestionResult:
         """
         Enhanced data ingestion with memory integration and pattern learning
@@ -639,7 +641,7 @@ class CaseDataIngestionService:
         logger.info("Business event: data_analysis_started")
 
         # Process using interface with tracing
-        start_time = datetime.now(UTC)
+        start_time = datetime.now(timezone.utc)
         with self._tracer.trace("data_analysis_processing"):
             try:
                 data_content = self._get_data_attribute(data, "content", "")
@@ -662,7 +664,7 @@ class CaseDataIngestionService:
                         "error": str(e),
                     },
                 ) from e
-        end_time = datetime.now(UTC)
+        end_time = datetime.now(timezone.utc)
 
         # Handle insights response properly
         if hasattr(insights_response, "insights"):
@@ -732,8 +734,8 @@ class CaseDataIngestionService:
         return response
 
     async def batch_process(
-        self, data_items: list[tuple[str, str | None]], session_id: str
-    ) -> list[UploadedData]:
+        self, data_items: List[tuple[str, Optional[str]]], session_id: str
+    ) -> List[UploadedData]:
         """
         Process multiple data items in batch
 
@@ -747,8 +749,8 @@ class CaseDataIngestionService:
         return await self._execute_batch_processing(data_items, session_id)
 
     async def _execute_batch_processing(
-        self, data_items: list[tuple[str, str | None]], session_id: str
-    ) -> list[UploadedData]:
+        self, data_items: List[tuple[str, Optional[str]]], session_id: str
+    ) -> List[UploadedData]:
         """Execute the core batch processing logic"""
         if not data_items:
             return []
@@ -777,7 +779,7 @@ class CaseDataIngestionService:
 
         return results
 
-    async def get_session_data(self, session_id: str) -> list[UploadedData]:
+    async def get_session_data(self, session_id: str) -> List[UploadedData]:
         """
         Get all data associated with a session
 
@@ -797,7 +799,7 @@ class CaseDataIngestionService:
 
     async def _execute_session_data_retrieval(
         self, session_id: str
-    ) -> list[UploadedData]:
+    ) -> List[UploadedData]:
         """Execute the core session data retrieval logic"""
         if not self._storage:
             return []
@@ -833,8 +835,8 @@ class CaseDataIngestionService:
         return f"data_{hash_object.hexdigest()[:16]}"
 
     def _build_evidence_report(
-        self, insights: dict[str, Any], data_type: Any, content: str
-    ) -> dict[str, Any]:
+        self, insights: Dict[str, Any], data_type: Any, content: str
+    ) -> Dict[str, Any]:
         """
         ENHANCEMENT #2: Build evidence extraction transparency report
 
@@ -849,6 +851,7 @@ class CaseDataIngestionService:
             Evidence extraction report with timeline events, observations, etc.
         """
         import re
+        from datetime import datetime
 
         from faultmaven.models import DataType
 
@@ -952,8 +955,8 @@ class CaseDataIngestionService:
         return evidence_report
 
     def _detect_anomalies(
-        self, data: UploadedData, insights: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+        self, data: UploadedData, insights: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """
         Detect anomalies in the processed data
 
@@ -1016,8 +1019,8 @@ class CaseDataIngestionService:
         return anomalies
 
     def _generate_recommendations(
-        self, data: Any, anomalies: list[dict[str, Any]], data_type: DataType = None
-    ) -> list[str]:
+        self, data: Any, anomalies: List[Dict[str, Any]], data_type: DataType = None
+    ) -> List[str]:
         """
         Generate actionable recommendations based on data and anomalies
 
@@ -1092,7 +1095,7 @@ class CaseDataIngestionService:
         return list(set(recommendations))  # Remove duplicates
 
     def _calculate_confidence_score(
-        self, data: UploadedData, insights: dict[str, Any]
+        self, data: UploadedData, insights: Dict[str, Any]
     ) -> float:
         """
         Calculate confidence score for the analysis
@@ -1195,7 +1198,7 @@ class CaseDataIngestionService:
 
         return True
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """
         Check health of data service and all dependencies
 
@@ -1296,9 +1299,9 @@ class CaseDataIngestionService:
         self,
         data_id: str,
         session_id: str,
-        user_feedback: dict[str, Any],
-        context: dict[str, Any] | None = None,
-    ) -> Any | None:  # LearningResult if available
+        user_feedback: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:  # LearningResult if available
         """
         Learn from user feedback to improve future processing
 
@@ -1367,9 +1370,9 @@ class CaseDataIngestionService:
     async def get_processing_insights(
         self,
         session_id: str,
-        data_type_filter: str | None = None,
-        time_range_hours: int | None = 24,
-    ) -> dict[str, Any]:
+        data_type_filter: Optional[str] = None,
+        time_range_hours: Optional[int] = 24,
+    ) -> Dict[str, Any]:
         """
         Get processing insights and patterns for a session
 
@@ -1486,10 +1489,10 @@ class CaseDataIngestionService:
         self,
         content: str,
         session_id: str,
-        file_name: str | None,
-        file_size: int | None,
-        data_type: str | None,
-        context: dict[str, Any] | None,
+        file_name: Optional[str],
+        file_size: Optional[int],
+        data_type: Optional[str],
+        context: Optional[Dict[str, Any]],
     ) -> None:
         """Validate inputs for enhanced ingestion"""
         if not content or not content.strip():
@@ -1507,10 +1510,10 @@ class CaseDataIngestionService:
     def _combine_processing_insights(
         self,
         classification_result: Any,  # ClassificationResult if available
-        processing_result: Any | None,  # EnhancedProcessingResult if available
-        classification_patterns: list[dict[str, Any]],
-        security_patterns: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+        processing_result: Optional[Any],  # EnhancedProcessingResult if available
+        classification_patterns: List[Dict[str, Any]],
+        security_patterns: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         """Combine insights from all processing components"""
         combined = {
             "classification": {
@@ -1553,9 +1556,9 @@ class CaseDataIngestionService:
     def _identify_learning_opportunities(
         self,
         classification_result: Any,
-        processing_result: Any | None,
-        context: dict[str, Any] | None,
-    ) -> list[str]:
+        processing_result: Optional[Any],
+        context: Optional[Dict[str, Any]],
+    ) -> List[str]:
         """Identify opportunities for pattern learning"""
         opportunities = []
 
@@ -1674,8 +1677,8 @@ class CaseDataIngestionService:
             logger.warning(f"Failed to record enhanced operation: {e}")
 
     def _generate_processing_recommendations(
-        self, insights: dict[str, Any], processing_history: list[dict[str, Any]]
-    ) -> list[str]:
+        self, insights: Dict[str, Any], processing_history: List[Dict[str, Any]]
+    ) -> List[str]:
         """Generate recommendations based on processing insights"""
         recommendations = []
 
@@ -1722,7 +1725,7 @@ class CaseDataIngestionService:
         return recommendations
 
     async def prepare_data_for_llm_analysis(
-        self, data_id: str, raw_content: str, insights: dict[str, Any], data_type: str
+        self, data_id: str, raw_content: str, insights: Dict[str, Any], data_type: str
     ) -> str:
         """
         Prepare data for LLM analysis by creating a concise summary.
@@ -1812,7 +1815,7 @@ RAW CONTENT (first 2000 characters):
 [Truncated - preprocessing failed, showing raw content]
 """
 
-    def _format_insights_basic(self, insights: dict[str, Any]) -> str:
+    def _format_insights_basic(self, insights: Dict[str, Any]) -> str:
         """Format insights dict into basic readable string"""
         lines = []
         for key, value in insights.items():
@@ -1830,9 +1833,9 @@ RAW CONTENT (first 2000 characters):
 class SimpleStorageBackend(IStorageBackend):
     """Simple in-memory storage backend for testing and development"""
 
-    def __init__(self, settings: Any | None = None):
-        self._storage: dict[str, Any] = {}
-        self._session_index: dict[str, list[str]] = {}  # session_id -> list of data_ids
+    def __init__(self, settings: Optional[Any] = None):
+        self._storage: Dict[str, Any] = {}
+        self._session_index: Dict[str, List[str]] = {}  # session_id -> list of data_ids
         self._settings = settings
 
     async def store(self, key: str, data: Any) -> None:
@@ -1852,15 +1855,15 @@ class SimpleStorageBackend(IStorageBackend):
             if key not in self._session_index[session_id]:
                 self._session_index[session_id].append(key)
 
-    async def retrieve(self, key: str) -> Any | None:
+    async def retrieve(self, key: str) -> Optional[Any]:
         """Retrieve data from memory"""
         return self._storage.get(key)
 
-    async def get(self, key: str) -> Any | None:
+    async def get(self, key: str) -> Optional[Any]:
         """Alias for retrieve() to maintain compatibility with existing code"""
         return self._storage.get(key)
 
-    async def retrieve_by_session(self, session_id: str) -> list[Any]:
+    async def retrieve_by_session(self, session_id: str) -> List[Any]:
         """Retrieve all data for a given session"""
         if session_id not in self._session_index:
             return []

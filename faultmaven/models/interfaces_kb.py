@@ -11,7 +11,7 @@ Implemented by:
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -59,28 +59,28 @@ class KBDocument(BaseModel):
 
     doc_id: str
     owner_user_id: str
-    organization_id: str | None = None
+    organization_id: Optional[str] = None
 
     title: str
-    description: str | None = None
+    description: Optional[str] = None
     document_type: KBDocumentType = KBDocumentType.OTHER
 
     chromadb_collection: str  # Which ChromaDB collection stores this
     chromadb_doc_count: int = 0  # Number of chunks in ChromaDB
 
     visibility: KBVisibility = KBVisibility.PRIVATE
-    tags: list[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
 
-    file_size: int | None = None
-    original_filename: str | None = None
-    content_type: str | None = None
-    storage_path: str | None = None
+    file_size: Optional[int] = None
+    original_filename: Optional[str] = None
+    content_type: Optional[str] = None
+    storage_path: Optional[str] = None
 
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     created_at: datetime
     updated_at: datetime
-    deleted_at: datetime | None = None
+    deleted_at: Optional[datetime] = None
 
 
 class KBDocumentShare(BaseModel):
@@ -91,8 +91,8 @@ class KBDocumentShare(BaseModel):
     permission: KBSharePermission = KBSharePermission.READ
     shared_at: datetime
     shared_by: str
-    last_accessed_at: datetime | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    last_accessed_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class KBDocumentTeamShare(BaseModel):
@@ -103,7 +103,7 @@ class KBDocumentTeamShare(BaseModel):
     permission: KBSharePermission = KBSharePermission.READ
     shared_at: datetime
     shared_by: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class KBDocumentOrgShare(BaseModel):
@@ -114,7 +114,7 @@ class KBDocumentOrgShare(BaseModel):
     permission: KBSharePermission = KBSharePermission.READ
     shared_at: datetime
     shared_by: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============================================================================
@@ -138,7 +138,7 @@ class IKBDocumentRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_document(self, doc_id: str) -> KBDocument | None:
+    async def get_document(self, doc_id: str) -> Optional[KBDocument]:
         """Get KB document by ID.
 
         Args:
@@ -176,7 +176,7 @@ class IKBDocumentRepository(ABC):
     @abstractmethod
     async def list_user_documents(
         self, user_id: str, include_shared: bool = False
-    ) -> list[KBDocument]:
+    ) -> List[KBDocument]:
         """List KB documents owned by user.
 
         Args:
@@ -189,7 +189,7 @@ class IKBDocumentRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_accessible_documents(self, user_id: str) -> list[KBDocument]:
+    async def list_accessible_documents(self, user_id: str) -> List[KBDocument]:
         """List all KB documents user can access (own + shared with them).
 
         Args:
@@ -204,11 +204,11 @@ class IKBDocumentRepository(ABC):
     async def search_documents(
         self,
         query: str,
-        user_id: str | None = None,
-        document_type: KBDocumentType | None = None,
-        tags: list[str] | None = None,
+        user_id: Optional[str] = None,
+        document_type: Optional[KBDocumentType] = None,
+        tags: Optional[List[str]] = None,
         limit: int = 20,
-    ) -> list[KBDocument]:
+    ) -> List[KBDocument]:
         """Search KB documents by text.
 
         Args:
@@ -333,7 +333,7 @@ class IKBDocumentRepository(ABC):
         pass
 
     @abstractmethod
-    async def list_document_shares(self, doc_id: str) -> dict[str, Any]:
+    async def list_document_shares(self, doc_id: str) -> Dict[str, Any]:
         """List all shares for a document.
 
         Args:
@@ -363,7 +363,7 @@ class IKBDocumentRepository(ABC):
     @abstractmethod
     async def get_user_document_permission(
         self, user_id: str, doc_id: str
-    ) -> KBSharePermission | None:
+    ) -> Optional[KBSharePermission]:
         """Get user's permission level for document.
 
         Args:

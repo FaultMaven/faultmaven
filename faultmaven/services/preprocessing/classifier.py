@@ -14,12 +14,13 @@ for all attachments (file uploads and pasted data).
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from faultmaven.models.api import ClassificationResult, DataType
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class DataClassifier:
@@ -34,9 +35,9 @@ class DataClassifier:
         self,
         filename: str,
         content: str,
-        agent_hint: DataType | None = None,
-        browser_context: str | None = None,
-        user_override: DataType | None = None,
+        agent_hint: Optional[DataType] = None,
+        browser_context: Optional[str] = None,
+        user_override: Optional[DataType] = None,
         source_metadata: Optional["SourceMetadata"] = None,
     ) -> ClassificationResult:
         """
@@ -159,7 +160,7 @@ class DataClassifier:
 
     def _classify_from_source_url(
         self, source_url: str, source_type: str
-    ) -> ClassificationResult | None:
+    ) -> Optional[ClassificationResult]:
         """
         Classify based on source URL patterns (Priority 3)
 
@@ -255,7 +256,7 @@ class DataClassifier:
 
     def _classify_from_browser_context(
         self, context: str
-    ) -> ClassificationResult | None:
+    ) -> Optional[ClassificationResult]:
         """
         Classify based on browser page type (Priority 4)
 

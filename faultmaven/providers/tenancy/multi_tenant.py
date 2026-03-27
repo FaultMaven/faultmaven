@@ -6,6 +6,8 @@ Enforces multi-tenant isolation with strict authorization checks.
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
+from typing import Optional
+
 from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import IOrganizationRepository, Organization
 from faultmaven.models.user import User
@@ -40,7 +42,7 @@ class MultiTenantProvider(TenantProvider):
         self.organization_repository = organization_repository
 
     async def get_current_organization(
-        self, current_user: User, organization_id: str | None = None
+        self, current_user: User, organization_id: Optional[str] = None
     ) -> Organization:
         """Get organization with membership validation.
 

@@ -18,6 +18,7 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 import io
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -25,6 +26,7 @@ from fastapi.responses import StreamingResponse
 from faultmaven.api.dependencies import get_evidence_artifact_service
 from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
+    EvidenceListResponse,
     EvidenceResponse,
     EvidenceUpdateRequest,
 )
@@ -48,7 +50,7 @@ async def upload_evidence(
     case_id: str,
     file: UploadFile = File(...),
     evidence_type: EvidenceArtifactType = Form(...),
-    description: str | None = Form(None),
+    description: Optional[str] = Form(None),
     is_primary: bool = Form(False),
     current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(
@@ -223,17 +225,17 @@ async def download_evidence(
     )
 
 
-@router.get("", response_model=list[EvidenceResponse])
+@router.get("", response_model=List[EvidenceResponse])
 async def list_evidence(
     case_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_type: EvidenceArtifactType | None = Query(None),
+    evidence_type: Optional[EvidenceArtifactType] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     evidence_service: APIEvidenceArtifactService = Depends(
         get_evidence_artifact_service
     ),
-) -> list[EvidenceResponse]:
+) -> List[EvidenceResponse]:
     """List evidence for case.
 
     Retrieves all evidence artifacts for a case with optional filtering.

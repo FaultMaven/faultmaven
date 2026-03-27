@@ -14,8 +14,8 @@ Tests include:
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
+from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest

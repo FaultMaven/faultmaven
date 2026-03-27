@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -23,7 +23,7 @@ from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 logger = logging.getLogger(__name__)
 
 # Trusted technical domains for domain-filtered search
-TRUSTED_DOMAINS: list[str] = [
+TRUSTED_DOMAINS: List[str] = [
     "stackoverflow.com",
     "docs.microsoft.com",
     "learn.microsoft.com",
@@ -69,7 +69,7 @@ class SearchProvider(ABC):
     """Abstract search provider interface."""
 
     @abstractmethod
-    async def search(self, query: str, max_results: int) -> list[SearchResult]:
+    async def search(self, query: str, max_results: int) -> List[SearchResult]:
         """Execute a search query and return results."""
 
     @abstractmethod
@@ -90,8 +90,8 @@ class GoogleCSEProvider(SearchProvider):
         self._engine_id = engine_id
         self._api_endpoint = api_endpoint
 
-    async def search(self, query: str, max_results: int) -> list[SearchResult]:
-        params: dict[str, str] = {
+    async def search(self, query: str, max_results: int) -> List[SearchResult]:
+        params: Dict[str, str] = {
             "key": self._api_key,
             "cx": self._engine_id,
             "q": query,
@@ -103,7 +103,7 @@ class GoogleCSEProvider(SearchProvider):
             response.raise_for_status()
             data = response.json()
 
-        results: list[SearchResult] = []
+        results: List[SearchResult] = []
         for item in data.get("items", []):
             snippet = item.get("snippet", "No description available")
             snippet = snippet.replace("\n", " ").strip()
@@ -128,7 +128,7 @@ class TavilyProvider(SearchProvider):
     def __init__(self, api_key: str):
         self._api_key = api_key
 
-    async def search(self, query: str, max_results: int) -> list[SearchResult]:
+    async def search(self, query: str, max_results: int) -> List[SearchResult]:
         from tavily import AsyncTavilyClient
 
         client = AsyncTavilyClient(api_key=self._api_key)
@@ -139,7 +139,7 @@ class TavilyProvider(SearchProvider):
             include_domains=TRUSTED_DOMAINS,
         )
 
-        results: list[SearchResult] = []
+        results: List[SearchResult] = []
         for item in response.get("results", []):
             snippet = item.get("content", "No description available")
             if len(snippet) > 300:
@@ -167,18 +167,18 @@ class WebSearchTool(AgentTool):
 
     def __init__(
         self,
-        settings: Any | None = None,
-        provider: SearchProvider | None = None,
+        settings: Optional[Any] = None,
+        provider: Optional[SearchProvider] = None,
         max_results: int = 3,
     ):
         self._max_results = max_results
-        self._provider: SearchProvider | None = provider
+        self._provider: Optional[SearchProvider] = provider
 
         if self._provider is None and settings is not None:
             self._provider = self._auto_select_provider(settings)
 
     @staticmethod
-    def _auto_select_provider(settings: Any) -> SearchProvider | None:
+    def _auto_select_provider(settings: Any) -> Optional[SearchProvider]:
         """Auto-select provider based on configured API keys.
 
         Priority: Tavily (cleaner content) > Google CSE (legacy).
@@ -226,7 +226,7 @@ class WebSearchTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> dict[str, Any]:
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -247,7 +247,7 @@ class WebSearchTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: dict[str, Any],
+        params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Execute web search within the DA loop."""
@@ -305,7 +305,7 @@ class WebSearchTool(AgentTool):
         return query
 
     @staticmethod
-    def _format_results(results: list[SearchResult], original_query: str) -> str:
+    def _format_results(results: List[SearchResult], original_query: str) -> str:
         """Format search results into a readable string for the LLM."""
         if not results:
             return f"No relevant results found for '{original_query}'."

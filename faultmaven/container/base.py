@@ -5,9 +5,16 @@ registry and utilities for clean dependency injection.
 """
 
 import logging
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
+from faultmaven.container.errors import (
+    ContainerError,
+    InitializationError,
+    ServiceUnavailableError,
+)
 from faultmaven.container.registry import DependencyRegistry, ServiceStatus
+from faultmaven.container.utils import LazyService
 
 
 class BaseDIContainer:
@@ -87,7 +94,7 @@ class BaseDIContainer:
         self,
         name: str,
         instance: Any,
-        dependencies: list[str] | None = None,
+        dependencies: Optional[List[str]] = None,
     ) -> None:
         """Register and set a service instance.
 
@@ -154,7 +161,7 @@ class BaseDIContainer:
         info = self._registry.get_info(name)
         return info is not None and info.is_available()
 
-    def get_service_status(self, name: str) -> ServiceStatus | None:
+    def get_service_status(self, name: str) -> Optional[ServiceStatus]:
         """Get the status of a service.
 
         Args:
@@ -166,7 +173,7 @@ class BaseDIContainer:
         info = self._registry.get_info(name)
         return info.status if info else None
 
-    def get_health(self) -> dict[str, Any]:
+    def get_health(self) -> Dict[str, Any]:
         """Get container health status.
 
         Returns:
@@ -258,7 +265,7 @@ class BaseDIContainer:
         self._ensure_initialized_for_getter()
         return self.get_service("tracer", required=False)
 
-    def get_tools(self) -> list[Any]:
+    def get_tools(self) -> List[Any]:
         """Get the list of tools.
 
         Returns:
@@ -269,7 +276,7 @@ class BaseDIContainer:
         tools = self.get_service("tools", required=False)
         return tools if tools is not None else []
 
-    def health_check(self) -> dict[str, Any]:
+    def health_check(self) -> Dict[str, Any]:
         """Alias for get_health() for backward compatibility.
 
         Returns:

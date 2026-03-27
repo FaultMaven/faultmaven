@@ -18,7 +18,7 @@ Run with:
 """
 
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -70,7 +70,7 @@ def create_sample_item(
         view_count=view_count,
         helpful_count=helpful_count,
         not_helpful_count=not_helpful_count,
-        created_at=created_at or datetime.now(UTC),
+        created_at=created_at or datetime.now(timezone.utc),
         metadata=metadata,
     )
 

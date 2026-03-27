@@ -24,14 +24,13 @@ Key Features:
 
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from faultmaven.modules.case.domain.models import CaseStatus
+from faultmaven.modules.case.domain.models import CaseStatus, InvestigationStrategy
 
 # Core Agentic Data Models
 
@@ -82,41 +81,41 @@ class AgentExecutionState(BaseModel):
     session_id: str
     agent_id: str = "faultmaven-agent"
     current_phase: CaseStatus = CaseStatus.INQUIRY
-    execution_context: dict[str, Any] = Field(default_factory=dict)
-    plan_stack: list[dict[str, Any]] = Field(default_factory=list)
-    observation_buffer: list[dict[str, Any]] = Field(default_factory=list)
-    adaptation_history: list[dict[str, Any]] = Field(default_factory=list)
-    confidence_metrics: dict[str, float] = Field(default_factory=dict)
-    active_tools: list[str] = Field(default_factory=list)
-    safety_constraints: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    execution_context: Dict[str, Any] = Field(default_factory=dict)
+    plan_stack: List[Dict[str, Any]] = Field(default_factory=list)
+    observation_buffer: List[Dict[str, Any]] = Field(default_factory=list)
+    adaptation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    confidence_metrics: Dict[str, float] = Field(default_factory=dict)
+    active_tools: List[str] = Field(default_factory=list)
+    safety_constraints: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Additional fields for test compatibility
     current_step: int = 1
     workflow_status: str = "planning"
-    context: dict[str, Any] = Field(default_factory=dict)
-    last_updated: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    context: Dict[str, Any] = Field(default_factory=dict)
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ConversationMemory(BaseModel):
     """Rich conversation memory with semantic understanding"""
 
     conversation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_profile: dict[str, Any] = Field(default_factory=dict)
-    interaction_patterns: dict[str, Any] = Field(default_factory=dict)
-    domain_context: dict[str, Any] = Field(default_factory=dict)
-    conversation_history: list[dict[str, Any]] = Field(default_factory=list)
-    learned_preferences: dict[str, Any] = Field(default_factory=dict)
-    troubleshooting_context: dict[str, Any] = Field(default_factory=dict)
-    semantic_memory: dict[str, Any] = Field(default_factory=dict)
+    user_profile: Dict[str, Any] = Field(default_factory=dict)
+    interaction_patterns: Dict[str, Any] = Field(default_factory=dict)
+    domain_context: Dict[str, Any] = Field(default_factory=dict)
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    learned_preferences: Dict[str, Any] = Field(default_factory=dict)
+    troubleshooting_context: Dict[str, Any] = Field(default_factory=dict)
+    semantic_memory: Dict[str, Any] = Field(default_factory=dict)
 
     # Additional fields for test compatibility
     session_id: str = ""
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    context: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    last_updated: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentCapability(BaseModel):
@@ -127,10 +126,10 @@ class AgentCapability(BaseModel):
     name: str
     description: str
     version: str = "1.0.0"
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    dependencies: list[str] = Field(default_factory=list)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    dependencies: List[str] = Field(default_factory=list)
     safety_level: SafetyLevel = SafetyLevel.SAFE
-    performance_metrics: dict[str, float] = Field(default_factory=dict)
+    performance_metrics: Dict[str, float] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -141,11 +140,11 @@ class PlanNode(BaseModel):
     name: str
     description: str
     action_type: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    dependencies: list[str] = Field(default_factory=list)
-    success_criteria: dict[str, Any] = Field(default_factory=dict)
-    fallback_actions: list[str] = Field(default_factory=list)
-    estimated_duration: float | None = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    dependencies: List[str] = Field(default_factory=list)
+    success_criteria: Dict[str, Any] = Field(default_factory=dict)
+    fallback_actions: List[str] = Field(default_factory=list)
+    estimated_duration: Optional[float] = None
     priority: ExecutionPriority = ExecutionPriority.NORMAL
     safety_level: SafetyLevel = SafetyLevel.SAFE
 
@@ -155,19 +154,19 @@ class ExecutionPlan(BaseModel):
 
     plan_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
-    query_id: str | None = None
-    nodes: list[PlanNode] = Field(default_factory=list)
-    execution_order: list[str] = Field(default_factory=list)
-    parallel_groups: list[list[str]] = Field(default_factory=list)
-    estimated_total_duration: float | None = None
-    risk_assessment: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    query_id: Optional[str] = None
+    nodes: List[PlanNode] = Field(default_factory=list)
+    execution_order: List[str] = Field(default_factory=list)
+    parallel_groups: List[List[str]] = Field(default_factory=list)
+    estimated_total_duration: Optional[float] = None
+    risk_assessment: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str = "system"
 
     # Additional fields for test compatibility
     query: str = ""
-    steps: list[PlanNode] = Field(default_factory=list)
-    context: dict[str, Any] = Field(default_factory=dict)
+    steps: List[PlanNode] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ObservationData(BaseModel):
@@ -178,11 +177,11 @@ class ObservationData(BaseModel):
     phase: CaseStatus
     source: str
     observation_type: str
-    data: dict[str, Any] = Field(default_factory=dict)
+    data: Dict[str, Any] = Field(default_factory=dict)
     confidence: float = 1.0
-    quality_score: float | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    quality_score: Optional[float] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AdaptationEvent(BaseModel):
@@ -192,10 +191,10 @@ class AdaptationEvent(BaseModel):
     session_id: str
     trigger_reason: str
     adaptation_type: str
-    changes: dict[str, Any] = Field(default_factory=dict)
-    impact_assessment: dict[str, Any] = Field(default_factory=dict)
+    changes: Dict[str, Any] = Field(default_factory=dict)
+    impact_assessment: Dict[str, Any] = Field(default_factory=dict)
     confidence: float
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentMetrics(BaseModel):
@@ -210,8 +209,8 @@ class AgentMetrics(BaseModel):
     synthesis_time: float = 0.0
     success_rate: float = 0.0
     confidence_score: float = 0.0
-    user_satisfaction: float | None = None
-    tool_usage_stats: dict[str, int] = Field(default_factory=dict)
+    user_satisfaction: Optional[float] = None
+    tool_usage_stats: Dict[str, int] = Field(default_factory=dict)
     error_count: int = 0
     adaptation_count: int = 0
 
@@ -224,8 +223,8 @@ class PolicyViolation(BaseModel):
     violation_type: str
     severity: str
     description: str
-    context: dict[str, Any] = Field(default_factory=dict)
-    detected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    context: Dict[str, Any] = Field(default_factory=dict)
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolution_status: str = "pending"
 
 
@@ -236,10 +235,10 @@ class ComponentMessage(BaseModel):
     source_component: str
     target_component: str
     message_type: str
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: Dict[str, Any] = Field(default_factory=dict)
     priority: ExecutionPriority = ExecutionPriority.NORMAL
-    correlation_id: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    correlation_id: Optional[str] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # Core Agentic Interfaces
@@ -249,7 +248,9 @@ class IAgentStateManager(ABC):
     """Interface for managing agent execution state and conversation context"""
 
     @abstractmethod
-    async def get_execution_state(self, session_id: str) -> AgentExecutionState | None:
+    async def get_execution_state(
+        self, session_id: str
+    ) -> Optional[AgentExecutionState]:
         """Retrieve current execution state for a session"""
         pass
 
@@ -263,7 +264,7 @@ class IAgentStateManager(ABC):
     @abstractmethod
     async def get_conversation_memory(
         self, session_id: str
-    ) -> ConversationMemory | None:
+    ) -> Optional[ConversationMemory]:
         """Retrieve conversation memory for context"""
         pass
 
@@ -276,7 +277,7 @@ class IAgentStateManager(ABC):
 
     @abstractmethod
     async def create_execution_plan(
-        self, session_id: str, query: str, context: dict[str, Any]
+        self, session_id: str, query: str, context: Dict[str, Any]
     ) -> ExecutionPlan:
         """Create a new execution plan based on query and context"""
         pass
@@ -297,30 +298,30 @@ class IQueryClassificationEngine(ABC):
 
     @abstractmethod
     async def classify_query(
-        self, query: str, context: dict[str, Any] | None = None
+        self, query: str, context: Optional[Dict[str, Any]] = None
     ) -> "QueryClassification":
         """Classify a user query and determine processing strategy"""
         pass
 
     @abstractmethod
-    async def extract_intent(self, query: str) -> dict[str, Any]:
+    async def extract_intent(self, query: str) -> Dict[str, Any]:
         """Extract user intent from query"""
         pass
 
     @abstractmethod
     async def assess_complexity(
-        self, query: str, context: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, query: str, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Assess query complexity to determine sync vs async processing"""
         pass
 
     @abstractmethod
-    async def identify_domain(self, query: str) -> str | None:
+    async def identify_domain(self, query: str) -> Optional[str]:
         """Identify the domain/category of the query"""
         pass
 
     @abstractmethod
-    async def extract_entities(self, query: str) -> list[dict[str, Any]]:
+    async def extract_entities(self, query: str) -> List[Dict[str, Any]]:
         """Extract entities from the query"""
         pass
 
@@ -330,8 +331,8 @@ class IToolSkillBroker(ABC):
 
     @abstractmethod
     async def discover_capabilities(
-        self, requirements: dict[str, Any]
-    ) -> list[AgentCapability]:
+        self, requirements: Dict[str, Any]
+    ) -> List[AgentCapability]:
         """Discover available capabilities matching requirements"""
         pass
 
@@ -342,20 +343,20 @@ class IToolSkillBroker(ABC):
 
     @abstractmethod
     async def execute_capability(
-        self, capability_id: str, parameters: dict[str, Any], context: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, capability_id: str, parameters: Dict[str, Any], context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a specific capability"""
         pass
 
     @abstractmethod
     async def assess_capability_safety(
-        self, capability_id: str, parameters: dict[str, Any]
+        self, capability_id: str, parameters: Dict[str, Any]
     ) -> SafetyLevel:
         """Assess the safety level of executing a capability"""
         pass
 
     @abstractmethod
-    async def get_capability_performance(self, capability_id: str) -> dict[str, float]:
+    async def get_capability_performance(self, capability_id: str) -> Dict[str, float]:
         """Get performance metrics for a capability"""
         pass
 
@@ -365,14 +366,14 @@ class IGuardrailsPolicyLayer(ABC):
 
     @abstractmethod
     async def evaluate_request(
-        self, request: dict[str, Any], context: dict[str, Any]
-    ) -> list[PolicyViolation]:
+        self, request: Dict[str, Any], context: Dict[str, Any]
+    ) -> List[PolicyViolation]:
         """Evaluate a request against all policies"""
         pass
 
     @abstractmethod
     async def check_safety_constraints(
-        self, operation: str, parameters: dict[str, Any]
+        self, operation: str, parameters: Dict[str, Any]
     ) -> bool:
         """Check if an operation meets safety constraints"""
         pass
@@ -383,13 +384,13 @@ class IGuardrailsPolicyLayer(ABC):
         pass
 
     @abstractmethod
-    async def apply_data_sanitization(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def apply_data_sanitization(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply data sanitization policies"""
         pass
 
     @abstractmethod
     async def audit_operation(
-        self, operation: str, user_id: str, parameters: dict[str, Any]
+        self, operation: str, user_id: str, parameters: Dict[str, Any]
     ) -> bool:
         """Record operation for audit purposes"""
         pass
@@ -401,30 +402,30 @@ class IResponseSynthesizer(ABC):
     @abstractmethod
     async def synthesize_response(
         self,
-        data: list[dict[str, Any]],
-        context: dict[str, Any],
-        user_preferences: dict[str, Any],
+        data: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user_preferences: Dict[str, Any],
     ) -> str:
         """Synthesize a response from multiple data sources"""
         pass
 
     @abstractmethod
     async def format_response(
-        self, content: str, format_type: str, context: dict[str, Any]
+        self, content: str, format_type: str, context: Dict[str, Any]
     ) -> str:
         """Format response according to specified type and context"""
         pass
 
     @abstractmethod
     async def personalize_response(
-        self, content: str, user_profile: dict[str, Any]
+        self, content: str, user_profile: Dict[str, Any]
     ) -> str:
         """Personalize response based on user profile"""
         pass
 
     @abstractmethod
     async def assess_response_quality(
-        self, response: str, context: dict[str, Any]
+        self, response: str, context: Dict[str, Any]
     ) -> float:
         """Assess the quality of a response"""
         pass
@@ -435,34 +436,34 @@ class IErrorFallbackManager(ABC):
 
     @abstractmethod
     async def handle_error(
-        self, error: Exception, context: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, error: Exception, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Handle an error with appropriate fallback strategy"""
         pass
 
     @abstractmethod
     async def get_fallback_strategy(
-        self, error_type: str, context: dict[str, Any]
+        self, error_type: str, context: Dict[str, Any]
     ) -> str:
         """Get appropriate fallback strategy for error type"""
         pass
 
     @abstractmethod
     async def execute_fallback(
-        self, strategy: str, context: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, strategy: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a fallback strategy"""
         pass
 
     @abstractmethod
     async def record_error_pattern(
-        self, error: Exception, context: dict[str, Any]
+        self, error: Exception, context: Dict[str, Any]
     ) -> bool:
         """Record error pattern for learning"""
         pass
 
     @abstractmethod
-    async def assess_system_health(self) -> dict[str, Any]:
+    async def assess_system_health(self) -> Dict[str, Any]:
         """Assess overall system health"""
         pass
 
@@ -472,35 +473,35 @@ class IBusinessLogicWorkflowEngine(ABC):
 
     @abstractmethod
     async def execute_workflow(
-        self, plan: ExecutionPlan, context: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, plan: ExecutionPlan, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a complete workflow plan"""
         pass
 
     @abstractmethod
     async def orchestrate_agents(
-        self, agents: list[str], task: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, agents: List[str], task: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Orchestrate multiple agents for a complex task"""
         pass
 
     @abstractmethod
     async def manage_workflow_state(
-        self, session_id: str, state: dict[str, Any]
+        self, session_id: str, state: Dict[str, Any]
     ) -> bool:
         """Manage workflow state transitions"""
         pass
 
     @abstractmethod
     async def coordinate_tool_execution(
-        self, tools: list[str], parameters: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+        self, tools: List[str], parameters: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Coordinate execution of multiple tools"""
         pass
 
     @abstractmethod
     async def adapt_workflow(
-        self, session_id: str, observations: list[ObservationData]
+        self, session_id: str, observations: List[ObservationData]
     ) -> ExecutionPlan:
         """Adapt workflow based on observations"""
         pass
@@ -516,13 +517,13 @@ class IComponentBus(ABC):
 
     @abstractmethod
     async def subscribe(
-        self, component_name: str, message_types: list[str], handler: Callable
+        self, component_name: str, message_types: List[str], handler: Callable
     ) -> bool:
         """Subscribe to specific message types"""
         pass
 
     @abstractmethod
-    async def unsubscribe(self, component_name: str, message_types: list[str]) -> bool:
+    async def unsubscribe(self, component_name: str, message_types: List[str]) -> bool:
         """Unsubscribe from message types"""
         pass
 
@@ -535,48 +536,48 @@ class AgenticLangGraphState(BaseModel):
 
     # Core identifiers
     session_id: str
-    case_id: str | None = None
+    case_id: Optional[str] = None
     workflow_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
     # Agentic execution state
     current_phase: CaseStatus = CaseStatus.INQUIRY
-    execution_state: AgentExecutionState | None = None
-    conversation_memory: ConversationMemory | None = None
+    execution_state: Optional[AgentExecutionState] = None
+    conversation_memory: Optional[ConversationMemory] = None
 
     # Planning and execution
-    current_plan: ExecutionPlan | None = None
-    active_nodes: list[str] = Field(default_factory=list)
-    completed_nodes: list[str] = Field(default_factory=list)
-    failed_nodes: list[str] = Field(default_factory=list)
+    current_plan: Optional[ExecutionPlan] = None
+    active_nodes: List[str] = Field(default_factory=list)
+    completed_nodes: List[str] = Field(default_factory=list)
+    failed_nodes: List[str] = Field(default_factory=list)
 
     # Observation and adaptation
-    observations: list[ObservationData] = Field(default_factory=list)
-    adaptations: list[AdaptationEvent] = Field(default_factory=list)
-    confidence_history: list[float] = Field(default_factory=list)
+    observations: List[ObservationData] = Field(default_factory=list)
+    adaptations: List[AdaptationEvent] = Field(default_factory=list)
+    confidence_history: List[float] = Field(default_factory=list)
 
     # Component interactions
-    component_messages: list[ComponentMessage] = Field(default_factory=list)
-    policy_violations: list[PolicyViolation] = Field(default_factory=list)
+    component_messages: List[ComponentMessage] = Field(default_factory=list)
+    policy_violations: List[PolicyViolation] = Field(default_factory=list)
 
     # User interaction
-    user_query: str | None = None
-    user_context: dict[str, Any] = Field(default_factory=dict)
-    response_preferences: dict[str, Any] = Field(default_factory=dict)
+    user_query: Optional[str] = None
+    user_context: Dict[str, Any] = Field(default_factory=dict)
+    response_preferences: Dict[str, Any] = Field(default_factory=dict)
 
     # Results and metrics
-    final_response: str | None = None
-    response_sources: list[dict[str, Any]] = Field(default_factory=list)
-    execution_metrics: AgentMetrics | None = None
+    final_response: Optional[str] = None
+    response_sources: List[Dict[str, Any]] = Field(default_factory=list)
+    execution_metrics: Optional[AgentMetrics] = None
 
     # Error handling
-    errors_encountered: list[dict[str, Any]] = Field(default_factory=list)
-    fallback_strategies_used: list[str] = Field(default_factory=list)
+    errors_encountered: List[Dict[str, Any]] = Field(default_factory=list)
+    fallback_strategies_used: List[str] = Field(default_factory=list)
 
     # Metadata
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # Factory and Utility Classes
@@ -633,9 +634,9 @@ class QueryInput(BaseModel):
 
     query_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
-    context: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    context: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class QueryContext(BaseModel):
@@ -663,10 +664,10 @@ class QueryContext(BaseModel):
     """
 
     session_id: str = ""
-    case_id: str | None = None
+    case_id: Optional[str] = None
     conversation_history: str = ""
     same_provider_for_response: bool = False
-    user_metadata: dict[str, Any] = Field(default_factory=dict)
+    user_metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def validate_for_classification(self) -> bool:
         """Validate that context has minimum required fields for classification
@@ -733,23 +734,23 @@ class QueryClassification(BaseModel):
     complexity: str = "moderate"  # simple, moderate, complex
     domain: str = "general"
     urgency: str = "medium"  # low, medium, high, critical
-    entities: list[dict[str, Any]] = Field(default_factory=list)
-    context: dict[str, Any] = Field(default_factory=dict)
+    entities: List[Dict[str, Any]] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
     classification_timestamp: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     classification_method: str = "pattern_based"
-    processing_recommendations: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    processing_recommendations: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryComplexity(BaseModel):
     """Assessment of query complexity"""
 
     complexity_score: float
-    factors: dict[str, Any] = Field(default_factory=dict)
+    factors: Dict[str, Any] = Field(default_factory=dict)
     processing_recommendation: str
-    estimated_duration: float | None = None
+    estimated_duration: Optional[float] = None
 
 
 class QueryDomain(BaseModel):
@@ -758,7 +759,7 @@ class QueryDomain(BaseModel):
     domain_id: str
     domain_name: str
     confidence: float
-    subdomain: str | None = None
+    subdomain: Optional[str] = None
 
 
 class QueryUrgency(str, Enum):
@@ -778,7 +779,7 @@ class ClassificationResult(BaseModel):
     complexity: QueryComplexity
     domain: QueryDomain
     urgency: QueryUrgency
-    processing_metadata: dict[str, Any] = Field(default_factory=dict)
+    processing_metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryClassificationResult(BaseModel):
@@ -789,7 +790,7 @@ class QueryClassificationResult(BaseModel):
     complexity: QueryComplexity
     domain: QueryDomain
     urgency: QueryUrgency
-    processing_metadata: dict[str, Any] = Field(default_factory=dict)
+    processing_metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SecurityBoundary(BaseModel):
@@ -798,7 +799,7 @@ class SecurityBoundary(BaseModel):
     boundary_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
-    rules: list[dict[str, Any]] = Field(default_factory=list)
+    rules: List[Dict[str, Any]] = Field(default_factory=list)
     enforcement_level: str = "strict"
 
 
@@ -807,7 +808,7 @@ class ContentPolicy(BaseModel):
 
     policy_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
-    rules: list[dict[str, Any]] = Field(default_factory=list)
+    rules: List[Dict[str, Any]] = Field(default_factory=list)
     enabled: bool = True
 
 
@@ -815,15 +816,15 @@ class ComplianceResult(BaseModel):
     """Result of compliance check"""
 
     compliant: bool
-    violations: list[PolicyViolation] = Field(default_factory=list)
+    violations: List[PolicyViolation] = Field(default_factory=list)
     score: float = 1.0
 
 
 class PIIDetectionResult(BaseModel):
     """Result of PII detection"""
 
-    entities_found: list[dict[str, Any]] = Field(default_factory=list)
-    anonymized_text: str | None = None
+    entities_found: List[Dict[str, Any]] = Field(default_factory=list)
+    anonymized_text: Optional[str] = None
     confidence: float = 1.0
 
 
@@ -831,9 +832,9 @@ class ValidationRequest(BaseModel):
     """Request for validation"""
 
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    content: dict[str, Any]
+    content: Dict[str, Any]
     validation_type: str
-    context: dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationResult(BaseModel):
@@ -841,8 +842,8 @@ class ValidationResult(BaseModel):
 
     request_id: str
     valid: bool
-    errors: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class SecurityLevel(str, Enum):
@@ -859,8 +860,8 @@ class GuardrailsResult(BaseModel):
 
     evaluation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     passed: bool
-    violations: list[PolicyViolation] = Field(default_factory=list)
-    recommendations: list[str] = Field(default_factory=list)
+    violations: List[PolicyViolation] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
     security_level: SecurityLevel
 
 
@@ -869,9 +870,9 @@ class ProcessingResult(BaseModel):
 
     result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     success: bool
-    data: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    data: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class QualityMetrics(BaseModel):
@@ -891,7 +892,7 @@ class ResponseTemplate(BaseModel):
     name: str
     format_type: str
     template_content: str
-    variables: list[str] = Field(default_factory=list)
+    variables: List[str] = Field(default_factory=list)
 
 
 class ResponseSource(BaseModel):
@@ -899,18 +900,18 @@ class ResponseSource(BaseModel):
 
     source_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: str
-    content: dict[str, Any] = Field(default_factory=dict)
+    content: Dict[str, Any] = Field(default_factory=dict)
     confidence: float = 1.0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SynthesisRequest(BaseModel):
     """Request for response synthesis"""
 
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    sources: list[ResponseSource] = Field(default_factory=list)
-    context: dict[str, Any] = Field(default_factory=dict)
-    format_requirements: dict[str, Any] = Field(default_factory=dict)
+    sources: List[ResponseSource] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
+    format_requirements: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SynthesisResult(BaseModel):
@@ -919,7 +920,7 @@ class SynthesisResult(BaseModel):
     request_id: str
     synthesized_content: str
     quality_metrics: QualityMetrics
-    sources_used: list[str] = Field(default_factory=list)
+    sources_used: List[str] = Field(default_factory=list)
 
 
 class ContentFormat(str, Enum):
@@ -937,17 +938,17 @@ class QualityAssessment(BaseModel):
     assessment_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content_id: str
     metrics: QualityMetrics
-    feedback: list[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    feedback: List[str] = Field(default_factory=list)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentCapabilities(BaseModel):
     """Extended agent capabilities"""
 
     capabilities_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    available_tools: list[str] = Field(default_factory=list)
-    skill_levels: dict[str, float] = Field(default_factory=dict)
-    performance_history: dict[str, float] = Field(default_factory=dict)
+    available_tools: List[str] = Field(default_factory=list)
+    skill_levels: Dict[str, float] = Field(default_factory=dict)
+    performance_history: Dict[str, float] = Field(default_factory=dict)
 
 
 class ToolExecutionRequest(BaseModel):
@@ -955,9 +956,9 @@ class ToolExecutionRequest(BaseModel):
 
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     tool_name: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    context: dict[str, Any] = Field(default_factory=dict)
-    safety_requirements: list[str] = Field(default_factory=list)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict)
+    safety_requirements: List[str] = Field(default_factory=list)
 
 
 class ToolExecutionResult(BaseModel):
@@ -966,9 +967,9 @@ class ToolExecutionResult(BaseModel):
     request_id: str
     tool_name: str
     success: bool
-    result_data: dict[str, Any] = Field(default_factory=dict)
+    result_data: Dict[str, Any] = Field(default_factory=dict)
     execution_time: float = 0.0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SafetyAssessment(BaseModel):
@@ -977,8 +978,8 @@ class SafetyAssessment(BaseModel):
     assessment_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     operation: str
     safety_level: SafetyLevel
-    risks: list[str] = Field(default_factory=list)
-    mitigations: list[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    mitigations: List[str] = Field(default_factory=list)
 
 
 class PerformanceMetrics(BaseModel):
@@ -989,16 +990,16 @@ class PerformanceMetrics(BaseModel):
     latency: float = 0.0
     throughput: float = 0.0
     error_rate: float = 0.0
-    resource_usage: dict[str, float] = Field(default_factory=dict)
+    resource_usage: Dict[str, float] = Field(default_factory=dict)
 
 
 class CapabilityDiscovery(BaseModel):
     """Result of capability discovery"""
 
     discovery_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    discovered_capabilities: list[AgentCapability] = Field(default_factory=list)
+    discovered_capabilities: List[AgentCapability] = Field(default_factory=list)
     matching_score: float = 0.0
-    recommendations: list[str] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
 
 
 class ExecutionStep(BaseModel):
@@ -1008,9 +1009,9 @@ class ExecutionStep(BaseModel):
     name: str
     description: str
     operation_type: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    prerequisites: list[str] = Field(default_factory=list)
-    success_criteria: dict[str, Any] = Field(default_factory=dict)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    prerequisites: List[str] = Field(default_factory=list)
+    success_criteria: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SuggestedAction(BaseModel):
@@ -1018,7 +1019,7 @@ class SuggestedAction(BaseModel):
 
     action_type: str
     description: str
-    commands: list[str] = Field(default_factory=list)
+    commands: List[str] = Field(default_factory=list)
     rationale: str = ""
     priority: str = "medium"
 
@@ -1030,9 +1031,9 @@ class StructuredLLMResponse(BaseModel):
     """
 
     answer: str
-    reasoning: str | None = None
-    suggested_actions: list[SuggestedAction] | None = None
-    command_validation: dict[str, Any] | None = None
+    reasoning: Optional[str] = None
+    suggested_actions: Optional[List[SuggestedAction]] = None
+    command_validation: Optional[Dict[str, Any]] = None
 
 
 class AgentResponse(BaseModel):
@@ -1042,9 +1043,9 @@ class AgentResponse(BaseModel):
     agent_id: str
     content: str
     confidence: float = 1.0
-    sources: list[ResponseSource] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    sources: List[ResponseSource] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ErrorContext(BaseModel):
@@ -1053,9 +1054,9 @@ class ErrorContext(BaseModel):
     context_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
     operation: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    system_state: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    system_state: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ErrorType(str, Enum):
@@ -1084,9 +1085,9 @@ class RecoveryStrategy(BaseModel):
     strategy_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
-    steps: list[dict[str, Any]] = Field(default_factory=list)
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
     success_probability: float = 0.0
-    estimated_time: float | None = None
+    estimated_time: Optional[float] = None
 
 
 class CircuitBreakerState(str, Enum):
@@ -1121,7 +1122,7 @@ class ErrorClassification(BaseModel):
     error_type: ErrorType
     severity: ErrorSeverity
     category: str
-    tags: list[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
     confidence: float = 1.0
 
 
@@ -1132,15 +1133,15 @@ class RecoveryResult(BaseModel):
     strategy_used: str
     success: bool
     recovery_time: float = 0.0
-    side_effects: list[str] = Field(default_factory=list)
+    side_effects: List[str] = Field(default_factory=list)
 
 
 class FallbackConfig(BaseModel):
     """Configuration for fallback behavior"""
 
     config_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    error_types: list[ErrorType] = Field(default_factory=list)
-    fallback_strategies: list[str] = Field(default_factory=list)
+    error_types: List[ErrorType] = Field(default_factory=list)
+    fallback_strategies: List[str] = Field(default_factory=list)
     max_retries: int = 3
     backoff_strategy: str = "exponential"
 
@@ -1151,11 +1152,11 @@ class ComplianceReport(BaseModel):
     report_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     evaluation_id: str
     compliance_status: str
-    violations_found: list[PolicyViolation] = Field(default_factory=list)
+    violations_found: List[PolicyViolation] = Field(default_factory=list)
     risk_level: str = "low"
-    recommendations: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    recommendations: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class SafetyClassification(BaseModel):
@@ -1164,10 +1165,10 @@ class SafetyClassification(BaseModel):
     classification_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content_id: str
     safety_level: SafetyLevel
-    risk_factors: list[str] = Field(default_factory=list)
+    risk_factors: List[str] = Field(default_factory=list)
     confidence_score: float = 1.0
-    reasoning: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    reasoning: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ContentFilter(BaseModel):
@@ -1175,11 +1176,11 @@ class ContentFilter(BaseModel):
 
     filter_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     filter_type: str
-    rules: list[dict[str, Any]] = Field(default_factory=list)
+    rules: List[Dict[str, Any]] = Field(default_factory=list)
     enabled: bool = True
     sensitivity_level: str = "medium"
-    whitelist: list[str] = Field(default_factory=list)
-    blacklist: list[str] = Field(default_factory=list)
+    whitelist: List[str] = Field(default_factory=list)
+    blacklist: List[str] = Field(default_factory=list)
 
 
 class ContentBlock(BaseModel):
@@ -1188,9 +1189,9 @@ class ContentBlock(BaseModel):
     block_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content_type: str
     content: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     priority: int = 1
-    source_reference: str | None = None
+    source_reference: Optional[str] = None
 
 
 class PresentationFormat(str, Enum):
@@ -1208,9 +1209,9 @@ class SynthesisMetadata(BaseModel):
 
     metadata_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     synthesis_strategy: str
-    quality_scores: dict[str, float] = Field(default_factory=dict)
+    quality_scores: Dict[str, float] = Field(default_factory=dict)
     processing_time: float = 0.0
-    resource_usage: dict[str, Any] = Field(default_factory=dict)
+    resource_usage: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowDefinition(BaseModel):
@@ -1219,9 +1220,9 @@ class WorkflowDefinition(BaseModel):
     workflow_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
-    steps: list[dict[str, Any]] = Field(default_factory=list)
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
     version: str = "1.0.0"
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowExecution(BaseModel):
@@ -1230,13 +1231,13 @@ class WorkflowExecution(BaseModel):
     execution_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     workflow_id: str
     status: str
-    current_step: str | None = None
-    execution_context: dict[str, Any] = Field(default_factory=dict)
-    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    completed_at: datetime | None = None
-    steps_completed: list[str] = Field(default_factory=list)
-    steps_failed: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    current_step: Optional[str] = None
+    execution_context: Dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+    steps_completed: List[str] = Field(default_factory=list)
+    steps_failed: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowStep(BaseModel):
@@ -1245,10 +1246,10 @@ class WorkflowStep(BaseModel):
     step_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     operation: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    dependencies: list[str] = Field(default_factory=list)
-    timeout: int | None = None
-    retry_policy: dict[str, Any] = Field(default_factory=dict)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    dependencies: List[str] = Field(default_factory=list)
+    timeout: Optional[int] = None
+    retry_policy: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowResult(BaseModel):
@@ -1257,8 +1258,8 @@ class WorkflowResult(BaseModel):
     result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     execution_id: str
     success: bool
-    outputs: dict[str, Any] = Field(default_factory=dict)
-    errors: list[str] = Field(default_factory=list)
+    outputs: Dict[str, Any] = Field(default_factory=dict)
+    errors: List[str] = Field(default_factory=list)
     execution_time: float = 0.0
 
 
@@ -1268,27 +1269,27 @@ class PlanningResult(BaseModel):
     planning_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     plan: ExecutionPlan
     confidence: float = 1.0
-    alternatives: list[ExecutionPlan] = Field(default_factory=list)
-    reasoning: str | None = None
+    alternatives: List[ExecutionPlan] = Field(default_factory=list)
+    reasoning: Optional[str] = None
 
 
 class ObservationResult(BaseModel):
     """Result of observation operations"""
 
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    observations: list[ObservationData] = Field(default_factory=list)
-    summary: dict[str, Any] = Field(default_factory=dict)
-    insights: list[str] = Field(default_factory=list)
+    observations: List[ObservationData] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    insights: List[str] = Field(default_factory=list)
 
 
 class AdaptationResult(BaseModel):
     """Result of adaptation operations"""
 
     adaptation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    adaptations: list[AdaptationEvent] = Field(default_factory=list)
-    updated_plan: ExecutionPlan | None = None
+    adaptations: List[AdaptationEvent] = Field(default_factory=list)
+    updated_plan: Optional[ExecutionPlan] = None
     rationale: str
-    impact_assessment: dict[str, Any] = Field(default_factory=dict)
+    impact_assessment: Dict[str, Any] = Field(default_factory=dict)
 
 
 class FallbackStrategy(BaseModel):
@@ -1297,8 +1298,8 @@ class FallbackStrategy(BaseModel):
     strategy_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
-    triggers: list[str] = Field(default_factory=list)
-    actions: list[dict[str, Any]] = Field(default_factory=list)
+    triggers: List[str] = Field(default_factory=list)
+    actions: List[Dict[str, Any]] = Field(default_factory=list)
     success_rate: float = 0.0
 
 
@@ -1307,10 +1308,10 @@ class SystemHealthStatus(BaseModel):
 
     status_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     overall_health: HealthStatus
-    component_health: dict[str, HealthStatus] = Field(default_factory=dict)
-    performance_metrics: dict[str, float] = Field(default_factory=dict)
-    alerts: list[dict[str, Any]] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    component_health: Dict[str, HealthStatus] = Field(default_factory=dict)
+    performance_metrics: Dict[str, float] = Field(default_factory=dict)
+    alerts: List[Dict[str, Any]] = Field(default_factory=list)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ErrorMetrics(BaseModel):
@@ -1321,7 +1322,7 @@ class ErrorMetrics(BaseModel):
     error_rate: float = 0.0
     recovery_rate: float = 0.0
     mean_time_to_recovery: float = 0.0
-    error_categories: dict[str, int] = Field(default_factory=dict)
+    error_categories: Dict[str, int] = Field(default_factory=dict)
 
 
 class AgenticUtils:
@@ -1334,7 +1335,7 @@ class AgenticUtils:
 
     @staticmethod
     def create_component_message(
-        source: str, target: str, message_type: str, payload: dict[str, Any]
+        source: str, target: str, message_type: str, payload: Dict[str, Any]
     ) -> ComponentMessage:
         """Create a component message"""
         return ComponentMessage(
@@ -1351,7 +1352,7 @@ class AgenticUtils:
         return True
 
     @staticmethod
-    def merge_observations(observations: list[ObservationData]) -> dict[str, Any]:
+    def merge_observations(observations: List[ObservationData]) -> Dict[str, Any]:
         """Merge multiple observations into consolidated data"""
         merged = {}
         for obs in observations:

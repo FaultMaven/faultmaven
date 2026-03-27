@@ -9,9 +9,10 @@ This middleware logs contract-critical data points for every request,
 enabling rapid identification of contract violations in production.
 """
 
+import json
 import time
 import uuid
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -44,7 +45,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         self.probe_enabled = probe_enabled
         self.log_all_requests = log_all_requests
         self.failure_sample_rate = failure_sample_rate
-        self._failure_cache: dict[str, int] = {}  # Track failure patterns
+        self._failure_cache: Dict[str, int] = {}  # Track failure patterns
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if not self.probe_enabled:
@@ -78,11 +79,11 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         self,
         method: str,
         path: str,
-        query_params: dict[str, str],
+        query_params: Dict[str, str],
         response: Response,
         correlation_id: str,
         response_time: float,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Extract contract-critical data points"""
 
         probe_data = {
@@ -130,7 +131,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
 
         return probe_data
 
-    def _analyze_response_shape(self, response: Response) -> dict[str, Any]:
+    def _analyze_response_shape(self, response: Response) -> Dict[str, Any]:
         """Analyze response body shape for contract compliance"""
         try:
             # This is a simplified approach - extracting response body in middleware
@@ -150,11 +151,11 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
 
     def _detect_violations(
         self,
-        probe_data: dict[str, Any],
+        probe_data: Dict[str, Any],
         path: str,
         method: str,
-        query_params: dict[str, str],
-    ) -> list[str]:
+        query_params: Dict[str, str],
+    ) -> List[str]:
         """Detect common contract violations"""
         violations = []
         status_code = probe_data["status_code"]
@@ -200,7 +201,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         return violations
 
     def _log_contract_probe(
-        self, probe_data: dict[str, Any], request: Request, response: Response
+        self, probe_data: Dict[str, Any], request: Request, response: Response
     ):
         """Log contract probe data for triage"""
 
@@ -247,7 +248,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
                 extra={"probe_data": probe_data},
             )
 
-    def get_failure_summary(self) -> dict[str, Any]:
+    def get_failure_summary(self) -> Dict[str, Any]:
         """Get summary of detected failures for monitoring dashboard"""
         return {
             "total_failure_patterns": len(self._failure_cache),
@@ -257,7 +258,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
 
 
 # Health check endpoint for contract probe status
-async def get_contract_probe_health() -> dict[str, Any]:
+async def get_contract_probe_health() -> Dict[str, Any]:
     """Health check for contract probe middleware"""
     return {
         "service": "contract_probe_middleware",

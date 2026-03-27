@@ -14,6 +14,7 @@ Endpoints:
 import logging
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from fastapi import (
     APIRouter,
@@ -28,9 +29,11 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.models.auth import DevUser
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
+    ConversionResponse,
     DraftUpdateRequest,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
@@ -86,7 +89,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication as _requi
 async def convert_document(
     file: UploadFile = File(...),
     scope: str = Form(...),
-    team_id: str | None = Form(None),
+    team_id: Optional[str] = Form(None),
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
@@ -373,7 +376,7 @@ class RunbookCreateRequest(BaseModel):
     root_cause_resolution: str = Field(min_length=10)
     verification: str = Field(min_length=10)
     prevention: str = Field(min_length=10)
-    team_id: str | None = None
+    team_id: Optional[str] = None
 
 
 @router.post("/runbooks/create", status_code=201)
@@ -431,7 +434,7 @@ async def create_runbook_manually(
 class CaseConversionAPIRequest(BaseModel):
     case_id: str = Field(description="ID of the resolved case")
     scope: str = Field(default="global", description="KB scope: global, team, personal")
-    team_id: str | None = None
+    team_id: Optional[str] = None
 
 
 @router.post("/convert-from-case", status_code=201)

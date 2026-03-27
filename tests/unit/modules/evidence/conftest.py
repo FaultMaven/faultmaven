@@ -1,6 +1,6 @@
 """Fixtures for EvidenceArtifact Service module tests (PR #46c)."""
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -22,20 +22,20 @@ from faultmaven.modules.evidence.domain.models import (
 
 
 def create_sample_evidence(
-    evidence_id: str | None = None,
-    case_id: str | None = None,
-    user_id: str | None = None,
+    evidence_id: Optional[str] = None,
+    case_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     organization_id: str = "org_test123",
     original_filename: str = "test_file.log",
-    stored_filename: str | None = None,
+    stored_filename: Optional[str] = None,
     file_path: str = "evidence/standalone-abc123/2025-01-02/uuid_test_file.log",
     evidence_type: EvidenceArtifactType = EvidenceArtifactType.LOG_FILE,
     mime_type: str = "text/plain",
     file_size: int = 1024,
     storage_backend: StorageBackend = StorageBackend.LOCAL_FILESYSTEM,
-    description: str | None = "Test evidence file",
-    metadata: dict | None = None,
-    tags: list | None = None,
+    description: Optional[str] = "Test evidence file",
+    metadata: Optional[dict] = None,
+    tags: Optional[list] = None,
 ) -> EvidenceArtifact:
     """Create a sample EvidenceArtifact object for testing."""
     eid = evidence_id or str(uuid4())
@@ -53,8 +53,8 @@ def create_sample_evidence(
         mime_type=mime_type,
         file_size=file_size,
         storage_backend=storage_backend,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         description=description,
         metadata=metadata or {},
         tags=tag_list,
@@ -65,9 +65,9 @@ def create_sample_evidence(
 def create_sample_upload_request(
     filename: str = "upload.log",
     content_type: str = "text/plain",
-    description: str | None = "Uploaded file",
-    tags: list[str] | None = None,
-    case_id: UUID | None = None,
+    description: Optional[str] = "Uploaded file",
+    tags: Optional[List[str]] = None,
+    case_id: Optional[UUID] = None,
 ) -> EvidenceUploadRequest:
     """Create a sample EvidenceUploadRequest for testing."""
     return EvidenceUploadRequest(
@@ -133,8 +133,8 @@ class MockEvidenceRepository:
         size_bytes: int,
         storage_path: str,
         uploaded_by: str,
-        description: str | None = None,
-        tags: list[str] | None = None,
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> EvidenceArtifact:
         evidence = create_sample_evidence(
             original_filename=filename,
@@ -149,14 +149,14 @@ class MockEvidenceRepository:
         self._storage[evidence.evidence_id] = evidence
         return evidence
 
-    async def _get_standalone_evidence(self, evidence_id) -> EvidenceArtifact | None:
+    async def _get_standalone_evidence(self, evidence_id) -> Optional[EvidenceArtifact]:
         # Accept both UUID and str
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         return self._storage.get(key)
 
     async def _list_standalone_evidence(
         self, filters: EvidenceListFilter
-    ) -> tuple[list[EvidenceArtifact], int]:
+    ) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
 
         # Apply filters
@@ -194,7 +194,7 @@ class MockEvidenceRepository:
 
     async def _link_standalone_evidence_to_case(
         self, evidence_id, case_id
-    ) -> EvidenceArtifact | None:
+    ) -> Optional[EvidenceArtifact]:
         # Accept both UUID and str
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         evidence = self._storage.get(key)
@@ -241,7 +241,7 @@ def sample_evidence() -> EvidenceArtifact:
 
 
 @pytest.fixture
-def sample_evidence_list() -> list[EvidenceArtifact]:
+def sample_evidence_list() -> List[EvidenceArtifact]:
     """Create multiple sample EvidenceArtifact objects."""
     user_id = str(uuid4())
     case_id = str(uuid4())

@@ -104,7 +104,7 @@ class ConfigPurityScanner:
 
         try:
             content = file_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (UnicodeDecodeError, IOError):
             return violations
 
         lines = content.split("\n")
@@ -184,7 +184,7 @@ class DotenvImportScanner:
         try:
             content = file_path.read_text(encoding="utf-8")
             tree = ast.parse(content, filename=str(file_path))
-        except (OSError, SyntaxError, UnicodeDecodeError):
+        except (SyntaxError, UnicodeDecodeError, IOError):
             return violations
 
         has_dotenv_import = False

@@ -12,7 +12,6 @@ CONCLUSION - TESTS NO LONGER NEEDED:
 - This exploratory test file is no longer needed - proper patterns are established
 """
 
-from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -115,7 +114,7 @@ def test_with_mock_using_override_dependency(client, app):
         username="testuser",
         email="test@example.com",
         display_name="Test User",
-        created_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
         is_dev_user=True,
         is_active=True,
         roles=["admin"],

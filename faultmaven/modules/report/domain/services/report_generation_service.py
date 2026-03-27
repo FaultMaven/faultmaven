@@ -11,11 +11,12 @@ Architecture Reference: docs/architecture/document-generation-and-closure-design
 
 import logging
 import time
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.concurrency import (
+    LockAcquisitionError,
     ReportLockManager,
 )
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
@@ -27,6 +28,7 @@ from faultmaven.modules.case.contracts import (  # Report models - now owned by 
     CaseReport,
     CaseStatus,
     ICaseRepository,
+    ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,
     ReportType,
@@ -37,6 +39,7 @@ from faultmaven.modules.case.contracts import (  # Report models - now owned by 
 # Backward compatibility re-export (imported from case.contracts now)
 from faultmaven.modules.report.domain.models import (
     CaseReport,
+    ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,
     ReportType,
@@ -66,10 +69,10 @@ class ReportGenerationService:
     def __init__(
         self,
         llm_router: Any,  # LLMRouter for generation
-        case_repository: ICaseRepository | None = None,
-        runbook_kb: RunbookKnowledgeBase | None = None,
-        lock_manager: ReportLockManager | None = None,
-        pii_redactor: Any | None = None,
+        case_repository: Optional[ICaseRepository] = None,
+        runbook_kb: Optional[RunbookKnowledgeBase] = None,
+        lock_manager: Optional[ReportLockManager] = None,
+        pii_redactor: Optional[Any] = None,
     ):
         """
         Initialize report generation service.
@@ -89,7 +92,7 @@ class ReportGenerationService:
 
     @trace("generate_reports")
     async def generate_reports(
-        self, case: Case, report_types: list[ReportType]
+        self, case: Case, report_types: List[ReportType]
     ) -> ReportGenerationResponse:
         """
         Generate requested reports for a case with concurrency control.
@@ -133,7 +136,7 @@ class ReportGenerationService:
             return await self._generate_reports_locked(case, report_types)
 
     async def _generate_reports_locked(
-        self, case: Case, report_types: list[ReportType]
+        self, case: Case, report_types: List[ReportType]
     ) -> ReportGenerationResponse:
         """
         Internal method: Generate reports with lock already acquired.
@@ -157,7 +160,7 @@ class ReportGenerationService:
                 if self.case_repository:
                     await self.case_repository.add_report(report)
                     logger.info(
-                        "Report persisted to Case repository",
+                        f"Report persisted to Case repository",
                         extra={"report_id": report.report_id, "case_id": case.case_id},
                     )
 
@@ -165,7 +168,7 @@ class ReportGenerationService:
 
                 generation_time = int((time.time() - start_time) * 1000)
                 logger.info(
-                    "Report generated successfully",
+                    f"Report generated successfully",
                     extra={
                         "case_id": case.case_id,
                         "report_type": report_type.value,
@@ -239,7 +242,7 @@ class ReportGenerationService:
                 llm_model="gpt-4",  # TODO: Get from llm_router
             )
 
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         generated_at_str = to_json_compatible(now)
         return CaseReport(
             case_id=case.case_id,
@@ -258,7 +261,7 @@ class ReportGenerationService:
         )
 
     async def _generate_incident_report(
-        self, case: Case, context: dict[str, Any]
+        self, case: Case, context: Dict[str, Any]
     ) -> str:
         """Generate incident report using LLM."""
         prompt = f"""Generate a professional incident report for the following troubleshooting case.
@@ -300,7 +303,7 @@ Keep it professional, concise, and actionable. Focus on facts and outcomes."""
         response = await self._call_llm(prompt, max_tokens=2000)
         return response
 
-    async def _generate_runbook(self, case: Case, context: dict[str, Any]) -> str:
+    async def _generate_runbook(self, case: Case, context: Dict[str, Any]) -> str:
         """Generate runbook using LLM.
 
         DEPRECATED: This method uses a non-canonical template that does not match
@@ -335,7 +338,7 @@ Make it actionable - someone should be able to follow this runbook without prior
         response = await self._call_llm(prompt, max_tokens=2500)
         return response
 
-    async def _generate_post_mortem(self, case: Case, context: dict[str, Any]) -> str:
+    async def _generate_post_mortem(self, case: Case, context: Dict[str, Any]) -> str:
         """Generate post-mortem using LLM."""
         prompt = f"""Generate a comprehensive post-mortem analysis for the following incident.
 
@@ -452,7 +455,7 @@ Key learnings available in case context."""
 
         return "# Report\n\nReport content generated from case data."
 
-    def _extract_case_context(self, case: Case) -> dict[str, Any]:
+    def _extract_case_context(self, case: Case) -> Dict[str, Any]:
         """Extract relevant context from case for report generation."""
         context = {
             "title": case.title,
@@ -531,7 +534,7 @@ Key learnings available in case context."""
                 tags=case.tags,
             )
             logger.info(
-                "Runbook indexed for similarity search",
+                f"Runbook indexed for similarity search",
                 extra={"case_id": case.case_id, "report_id": report.report_id},
             )
         except Exception as e:

@@ -6,7 +6,7 @@ Receives a shared ChromaDB client via constructor injection (Principle 5).
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import IVectorStore
@@ -46,14 +46,14 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                 metadata={"description": "FaultMaven knowledge base"},
             )
             self.logger.info(
-                "ChromaDB collection ready",
+                f"ChromaDB collection ready",
                 extra={"collection": self.collection_name},
             )
         except Exception as e:
             self.logger.error(f"Failed to connect to ChromaDB: {e}")
             raise
 
-    async def add_documents(self, documents: list[dict]) -> None:
+    async def add_documents(self, documents: List[Dict]) -> None:
         """Add documents to the vector store."""
 
         async def _add_wrapper():
@@ -64,7 +64,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             # Normalize metadata via canonical schema
             from faultmaven.models.vector_metadata import VectorMetadata
 
-            metadatas: list[dict] = []
+            metadatas: List[Dict] = []
             for md in raw_metadatas:
                 try:
                     vm = VectorMetadata(
@@ -80,7 +80,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                     )
                     metadatas.append(vm.to_chroma_metadata())
                 except Exception:
-                    sanitized: dict = {}
+                    sanitized: Dict = {}
                     for k, v in (md or {}).items():
                         if v is None:
                             continue
@@ -96,7 +96,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             self.collection.add(ids=ids, documents=contents, metadatas=metadatas)
 
             self.logger.info(
-                "Added documents to vector store",
+                f"Added documents to vector store",
                 extra={"count": len(documents), "collection": self.collection_name},
             )
 
@@ -109,8 +109,8 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         )
 
     async def search(
-        self, query: str, k: int = 5, filters: dict[str, Any] | None = None
-    ) -> list[dict]:
+        self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict]:
         """Search for similar documents in the vector store."""
 
         async def _search_wrapper():
@@ -148,10 +148,10 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
 
     async def query_by_embedding(
         self,
-        query_embedding: list[float],
-        where: dict[str, Any] | None = None,
+        query_embedding: List[float],
+        where: Optional[Dict[str, Any]] = None,
         top_k: int = 5,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Query vector store using pre-computed embedding."""
 
         async def _query_wrapper():
@@ -185,8 +185,8 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         self,
         limit: int = 100,
         offset: int = 0,
-        where: dict[str, Any] | None = None,
-    ) -> list[dict]:
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict]:
         """List documents with metadata from the collection.
 
         Uses ChromaDB's collection.get() to retrieve documents without
@@ -194,7 +194,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         """
 
         async def _list_wrapper():
-            get_params: dict[str, Any] = {
+            get_params: Dict[str, Any] = {
                 "include": ["documents", "metadatas"],
                 "limit": limit,
                 "offset": offset,
@@ -204,7 +204,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
 
             results = self.collection.get(**get_params)
 
-            formatted: list[dict] = []
+            formatted: List[Dict] = []
             if results["ids"]:
                 for i in range(len(results["ids"])):
                     formatted.append(
@@ -232,7 +232,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             retry_delay=1.0,
         )
 
-    async def get_document(self, document_id: str) -> dict | None:
+    async def get_document(self, document_id: str) -> Optional[Dict]:
         """Get a single document by ID with content and metadata."""
 
         async def _get_wrapper():
@@ -271,7 +271,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             retry_delay=1.0,
         )
 
-    async def delete_documents(self, ids: list[str]) -> None:
+    async def delete_documents(self, ids: List[str]) -> None:
         """Delete documents by IDs."""
 
         async def _delete_wrapper():

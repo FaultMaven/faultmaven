@@ -8,7 +8,7 @@ All collections live in the same ChromaDB instance as faultmaven_kb and case_* c
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import VectorStoreConnectionError, VectorStoreOperationError
 
@@ -64,8 +64,8 @@ class VectorStoreService:
     async def add_item(
         self,
         item_id: str,
-        embedding: list[float],
-        metadata: dict[str, Any],
+        embedding: List[float],
+        metadata: Dict[str, Any],
         document: str,
     ) -> None:
         """Add knowledge item to vector store."""
@@ -88,7 +88,7 @@ class VectorStoreService:
 
     async def add_items_batch(
         self,
-        items: list[dict[str, Any]],
+        items: List[Dict[str, Any]],
         batch_size: int = 100,
     ) -> None:
         """Add multiple items in batches."""
@@ -122,11 +122,11 @@ class VectorStoreService:
 
     async def search_similar(
         self,
-        query_embedding: list[float],
+        query_embedding: List[float],
         organization_id: str,
         n_results: int = 10,
-        filters: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """Search for similar items using cosine similarity."""
         try:
             conditions = [{"organization_id": organization_id}]
@@ -203,7 +203,7 @@ class VectorStoreService:
                 details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
-    async def delete_items_batch(self, item_ids: list[str]) -> None:
+    async def delete_items_batch(self, item_ids: List[str]) -> None:
         """Delete multiple items from vector store."""
         if not item_ids:
             return
@@ -220,8 +220,8 @@ class VectorStoreService:
     async def update_item(
         self,
         item_id: str,
-        embedding: list[float],
-        metadata: dict[str, Any],
+        embedding: List[float],
+        metadata: Dict[str, Any],
         document: str,
     ) -> None:
         """Update item in vector store."""
@@ -240,7 +240,7 @@ class VectorStoreService:
                 details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
-    async def get_item(self, item_id: str) -> dict[str, Any] | None:
+    async def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
         """Get item from vector store by ID."""
         try:
             result = self.collection.get(
@@ -278,7 +278,7 @@ class VectorStoreService:
                 details={"item_id": item_id, "error_type": type(e).__name__},
             ) from e
 
-    async def get_collection_stats(self) -> dict[str, Any]:
+    async def get_collection_stats(self) -> Dict[str, Any]:
         """Get collection statistics."""
         try:
             count = self.collection.count()
@@ -335,7 +335,7 @@ class VectorStoreService:
                 },
             ) from e
 
-    def _sanitize_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize metadata for ChromaDB compatibility."""
         sanitized = {}
         for key, value in metadata.items():
@@ -351,7 +351,7 @@ class VectorStoreService:
                 sanitized[key] = str(value)
         return sanitized
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """Perform health check."""
         base_health = {"service": "vector_store_service", "status": "healthy"}
 

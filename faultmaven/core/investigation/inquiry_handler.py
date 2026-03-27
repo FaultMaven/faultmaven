@@ -9,6 +9,7 @@ Reference: investigation-lifecycle-logic.md Section 1.2
 import logging
 import re
 from datetime import UTC, datetime
+from typing import Optional
 
 from faultmaven.modules.case.contracts import Case, CaseAction, CaseStatus
 
@@ -155,8 +156,8 @@ def _extract_corrections(user_message: str) -> str:
 async def _llm_generate_problem_statement(
     llm_provider,
     conversation_history: list,
-    problem_confirmation: any | None,
-    user_corrections: str | None,
+    problem_confirmation: Optional[any],
+    user_corrections: Optional[str],
 ) -> str:
     """
     Generate proposed problem statement from conversation history.

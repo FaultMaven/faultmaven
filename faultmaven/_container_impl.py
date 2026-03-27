@@ -21,12 +21,12 @@ Key Components:
 import logging
 import os
 import sys
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, List, Optional
 
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
-from faultmaven.container.errors import InitializationError
+from faultmaven.container.errors import InitializationError, ServiceUnavailableError
 from faultmaven.container.providers import (
     register_infrastructure,
     register_services,
@@ -469,6 +469,7 @@ class DIContainer(BaseDIContainer):
     def _create_minimal_knowledge_service(self):
         """Create a minimal knowledge service for testing environments"""
         import uuid
+        from datetime import datetime, timezone
 
         from faultmaven.utils.serialization import to_json_compatible
 
@@ -499,8 +500,8 @@ class DIContainer(BaseDIContainer):
                     "tags": tags or [],
                     "source_url": source_url,
                     "description": description,
-                    "created_at": to_json_compatible(datetime.now(UTC)),
-                    "updated_at": to_json_compatible(datetime.now(UTC)),
+                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                    "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                 }
 
                 return {
@@ -512,7 +513,7 @@ class DIContainer(BaseDIContainer):
                         "document_type": document_type,
                         "category": category or document_type,
                         "tags": tags or [],
-                        "created_at": to_json_compatible(datetime.now(UTC)),
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
                     },
                 }
 
@@ -533,8 +534,8 @@ class DIContainer(BaseDIContainer):
                         "status": "processed",
                         "tags": ["test", "sample"],
                         "source_url": None,
-                        "created_at": to_json_compatible(datetime.now(UTC)),
-                        "updated_at": to_json_compatible(datetime.now(UTC)),
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                        "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                         "metadata": {"author": "test-system", "version": "1.0"},
                     }
                 return None
@@ -615,8 +616,8 @@ class DIContainer(BaseDIContainer):
                         "document_id": document_id,
                         "status": "completed",
                         "progress": 100,
-                        "created_at": to_json_compatible(datetime.now(UTC)),
-                        "completed_at": to_json_compatible(datetime.now(UTC)),
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                        "completed_at": to_json_compatible(datetime.now(timezone.utc)),
                         "processing_results": {
                             "chunks_created": 1,
                             "embeddings_generated": 1,
@@ -639,8 +640,8 @@ class DIContainer(BaseDIContainer):
                         "document_type": "troubleshooting",
                         "category": "troubleshooting",
                         "tags": [],
-                        "created_at": to_json_compatible(datetime.now(UTC)),
-                        "updated_at": to_json_compatible(datetime.now(UTC)),
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                        "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                     }
 
                 doc = self.documents[document_id]
@@ -650,7 +651,7 @@ class DIContainer(BaseDIContainer):
                     doc["content"] = content
                 if tags is not None:
                     doc["tags"] = tags
-                doc["updated_at"] = to_json_compatible(datetime.now(UTC))
+                doc["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
 
                 # Return as KnowledgeBaseDocument-like structure
                 return {
@@ -668,7 +669,7 @@ class DIContainer(BaseDIContainer):
                 if document_id in self.documents:
                     doc = self.documents[document_id]
                     doc.update(kwargs)
-                    doc["updated_at"] = to_json_compatible(datetime.now(UTC))
+                    doc["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
                     return doc
                 return None
 
@@ -678,7 +679,7 @@ class DIContainer(BaseDIContainer):
                     if doc_id in self.documents:
                         self.documents[doc_id].update(updates)
                         self.documents[doc_id]["updated_at"] = to_json_compatible(
-                            datetime.now(UTC)
+                            datetime.now(timezone.utc)
                         )
                         updated_count += 1
 
@@ -719,7 +720,7 @@ class DIContainer(BaseDIContainer):
                     "total_chunks": len(self.documents),  # Simplified
                     "avg_chunk_size": 500,  # Mock value
                     "storage_used": f"{len(self.documents) * 0.5} MB",
-                    "last_updated": to_json_compatible(datetime.now(UTC)),
+                    "last_updated": to_json_compatible(datetime.now(timezone.utc)),
                 }
 
             async def get_search_analytics(self):
@@ -814,7 +815,7 @@ class DIContainer(BaseDIContainer):
         """Get the session service implementation."""
         return self.get_service("session_service")
 
-    def get_case_service(self) -> ICaseService | None:
+    def get_case_service(self) -> Optional[ICaseService]:
         """Get the case service implementation (optional feature)."""
         return self.get_service("case_service")
 
@@ -878,7 +879,7 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "milestone_engine", None)
 
-    def get_case_store(self) -> ICaseStore | None:
+    def get_case_store(self) -> Optional[ICaseStore]:
         """Get the case store implementation (optional feature)"""
         if not self._initialized:
             if not getattr(self, "_initializing", False):
@@ -916,14 +917,15 @@ class DIContainer(BaseDIContainer):
     def _create_minimal_session_service(self):
         """Create a minimal session service for testing environments"""
         import uuid
+        from datetime import datetime
 
         class MockSessionContext:
             def __init__(self, session_id, user_id=None, metadata=None):
                 self.session_id = session_id
                 self.user_id = user_id
                 self.metadata = metadata or {}
-                self.created_at = datetime.now(UTC)
-                self.last_activity = datetime.now(UTC)
+                self.created_at = datetime.now(timezone.utc)
+                self.last_activity = datetime.now(timezone.utc)
                 self.data_uploads = []
                 self.case_history = []
 
@@ -970,7 +972,7 @@ class DIContainer(BaseDIContainer):
 
             async def update_last_activity(self, session_id):
                 if session_id in self.sessions:
-                    self.sessions[session_id].last_activity = datetime.now(UTC)
+                    self.sessions[session_id].last_activity = datetime.now(timezone.utc)
                     return True
                 return False
 
@@ -1026,7 +1028,7 @@ class DIContainer(BaseDIContainer):
                             "case_id": case_id,
                             "context": context,
                             "confidence_score": confidence_score,
-                            "timestamp": datetime.now(UTC),
+                            "timestamp": datetime.now(timezone.utc),
                         }
                     )
                     return True
@@ -1065,7 +1067,7 @@ class DIContainer(BaseDIContainer):
                             ),
                             "author_id": author_id,
                             "metadata": metadata or {},
-                            "timestamp": datetime.now(UTC),
+                            "timestamp": datetime.now(timezone.utc),
                         }
                     )
                     return True
@@ -1076,6 +1078,7 @@ class DIContainer(BaseDIContainer):
     def _create_minimal_case_service(self):
         """Create a minimal case service for testing environments"""
         import uuid
+        from datetime import datetime
 
         from faultmaven.modules.case.domain.models import Case, CaseStatus
 
@@ -1115,14 +1118,14 @@ class DIContainer(BaseDIContainer):
                 )  # Use owner_id as organization_id if not provided
 
                 # Phase 2: Handle initial_message transactionally
-                current_time = datetime.now(UTC)
+                current_time = datetime.now(timezone.utc)
                 message_count = 0
 
                 # Phase 2: If initial_message provided, set message_count=1 and update timestamp
                 if initial_message and initial_message.strip():
                     message_count = 1
                     current_time = datetime.now(
-                        UTC
+                        timezone.utc
                     )  # Refresh timestamp for message creation
 
                 # Phase 3: Handle auto-title generation
@@ -1291,7 +1294,7 @@ class DIContainer(BaseDIContainer):
             async def update_case_status(self, case_id, status):
                 if case_id in self.cases:
                     self.cases[case_id].status = status
-                    self.cases[case_id].updated_at = datetime.now(UTC)
+                    self.cases[case_id].updated_at = datetime.now(timezone.utc)
                     return True
                 return False
 
@@ -1299,7 +1302,7 @@ class DIContainer(BaseDIContainer):
                 # Phase 2 & 3: Update message_count, updated_at, and handle auto-title generation
                 if case_id in self.cases:
                     case = self.cases[case_id]
-                    current_time = datetime.now(UTC)
+                    current_time = datetime.now(timezone.utc)
 
                     # Phase 2: Update message count and timestamp
                     case.message_count = getattr(case, "message_count", 0) + 1
@@ -1324,7 +1327,7 @@ class DIContainer(BaseDIContainer):
                     "case_id": case_id,
                     "query": query,
                     "priority": priority or "medium",
-                    "created_at": datetime.now(UTC),
+                    "created_at": datetime.now(timezone.utc),
                 }
 
             async def check_idempotency_key(self, idempotency_key: str):
@@ -1604,7 +1607,7 @@ class DIContainer(BaseDIContainer):
                                     role=role,
                                     content=content,
                                     created_at=created_at
-                                    or to_json_compatible(datetime.now(UTC)),
+                                    or to_json_compatible(datetime.now(timezone.utc)),
                                 )
                             )
                         except Exception as e:
@@ -1660,7 +1663,7 @@ class DIContainer(BaseDIContainer):
                     "case_id": case_id,
                     "message_type": "user_query",
                     "content": query.strip(),
-                    "timestamp": datetime.now(UTC),
+                    "timestamp": datetime.now(timezone.utc),
                     "user_id": user_id or "anonymous",
                 }
                 self.case_messages[case_id].append(query_msg)
@@ -1668,7 +1671,7 @@ class DIContainer(BaseDIContainer):
                 # Update case metadata
                 case = self.cases[case_id]
                 case.message_count = len(self.case_messages[case_id])
-                case.updated_at = datetime.now(UTC)
+                case.updated_at = datetime.now(timezone.utc)
 
                 return True
 
@@ -1693,7 +1696,7 @@ class DIContainer(BaseDIContainer):
                     "message_type": "agent_response",
                     "content": response_content.strip() if response_content else "",
                     "response_type": response_type,
-                    "timestamp": datetime.now(UTC),
+                    "timestamp": datetime.now(timezone.utc),
                     "user_id": user_id or "anonymous",
                 }
                 self.case_messages[case_id].append(response_msg)
@@ -1701,7 +1704,7 @@ class DIContainer(BaseDIContainer):
                 # Update case metadata
                 case = self.cases[case_id]
                 case.message_count = len(self.case_messages[case_id])
-                case.updated_at = datetime.now(UTC)
+                case.updated_at = datetime.now(timezone.utc)
 
                 return True
 
@@ -1749,7 +1752,7 @@ class DIContainer(BaseDIContainer):
                     return False
 
                 case = self.cases[case_id]
-                current_time = datetime.now(UTC)
+                current_time = datetime.now(timezone.utc)
 
                 # Phase 3: Handle manual title updates
                 if "title" in updates:
@@ -1966,7 +1969,7 @@ class DIContainer(BaseDIContainer):
 
     def get_business_logic_workflow_engine(
         self,
-    ) -> IBusinessLogicWorkflowEngine | None:
+    ) -> Optional[IBusinessLogicWorkflowEngine]:
         """Get the business logic workflow engine for plan-execute-observe-adapt orchestration"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
@@ -1977,7 +1980,7 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "business_logic_workflow_engine", None)
 
-    def get_agent_state_manager(self) -> IAgentStateManager | None:
+    def get_agent_state_manager(self) -> Optional[IAgentStateManager]:
         """Get the agent state manager for persistent memory and execution state management"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
@@ -1997,7 +2000,7 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "query_classification_engine", None)
 
-    def get_tool_skill_broker(self) -> IToolSkillBroker | None:
+    def get_tool_skill_broker(self) -> Optional[IToolSkillBroker]:
         """Get the tool skill broker for dynamic orchestration of tools and skills"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
@@ -2006,7 +2009,7 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "tool_skill_broker", None)
 
-    def get_guardrails_policy_layer(self) -> IGuardrailsPolicyLayer | None:
+    def get_guardrails_policy_layer(self) -> Optional[IGuardrailsPolicyLayer]:
         """Get the guardrails policy layer for safety, security, and compliance enforcement"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
@@ -2017,7 +2020,7 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "guardrails_policy_layer", None)
 
-    def get_response_synthesizer(self) -> IResponseSynthesizer | None:
+    def get_response_synthesizer(self) -> Optional[IResponseSynthesizer]:
         """Get the response synthesizer for intelligent response generation and formatting"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
@@ -2028,7 +2031,7 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "response_synthesizer", None)
 
-    def get_error_fallback_manager(self) -> IErrorFallbackManager | None:
+    def get_error_fallback_manager(self) -> Optional[IErrorFallbackManager]:
         """Get the error fallback manager for robust error recovery and graceful degradation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)

@@ -30,10 +30,11 @@ Usage:
 import asyncio
 import logging
 import threading
+import time
 import uuid
-from collections.abc import Callable
-from datetime import UTC, datetime
-from typing import Any
+from abc import ABC
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
 
 from faultmaven.models.interfaces import IJobRunner
 
@@ -76,7 +77,7 @@ class APSchedulerJobRunner(IJobRunner):
             raise ImportError(
                 "APScheduler is not installed. Install it with: pip install apscheduler"
             )
-        self._scheduler: BackgroundScheduler | None = None
+        self._scheduler: Optional[BackgroundScheduler] = None
         self._started = False
 
     def start(self) -> None:
@@ -125,8 +126,8 @@ class APSchedulerJobRunner(IJobRunner):
         self,
         task_func: Callable,
         interval_seconds: int,
-        job_id: str | None = None,
-        job_name: str | None = None,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
         replace_existing: bool = True,
@@ -158,8 +159,8 @@ class APSchedulerJobRunner(IJobRunner):
         self,
         task_func: Callable,
         run_at: datetime,
-        job_id: str | None = None,
-        job_name: str | None = None,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
     ) -> str:
@@ -195,7 +196,7 @@ class APSchedulerJobRunner(IJobRunner):
         except Exception:
             return False
 
-    def get_job_info(self, job_id: str) -> dict[str, Any] | None:
+    def get_job_info(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get information about a scheduled job."""
         if not self._scheduler:
             return None
@@ -214,7 +215,7 @@ class APSchedulerJobRunner(IJobRunner):
             "status": "scheduled" if job.next_run_time else "paused",
         }
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self) -> List[Dict[str, Any]]:
         """List all scheduled jobs."""
         if not self._scheduler:
             return []
@@ -263,8 +264,8 @@ class InMemoryJobRunner(IJobRunner):
     """
 
     def __init__(self):
-        self._jobs: dict[str, dict[str, Any]] = {}
-        self._timers: dict[str, threading.Timer] = {}
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._timers: Dict[str, threading.Timer] = {}
         self._started = False
         self._lock = threading.Lock()
 
@@ -327,15 +328,15 @@ class InMemoryJobRunner(IJobRunner):
 
             # Update next run time
             job["next_run_time"] = (
-                datetime.now(UTC).timestamp() + job["interval_seconds"]
+                datetime.now(timezone.utc).timestamp() + job["interval_seconds"]
             )
 
     def schedule_recurring(
         self,
         task_func: Callable,
         interval_seconds: int,
-        job_id: str | None = None,
-        job_name: str | None = None,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
         replace_existing: bool = True,
@@ -363,8 +364,9 @@ class InMemoryJobRunner(IJobRunner):
                 "task_func": task_func,
                 "args": args,
                 "kwargs": kwargs,
-                "next_run_time": datetime.now(UTC).timestamp() + interval_seconds,
-                "created_at": datetime.now(UTC).isoformat(),
+                "next_run_time": datetime.now(timezone.utc).timestamp()
+                + interval_seconds,
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
         # Schedule first run
@@ -379,8 +381,8 @@ class InMemoryJobRunner(IJobRunner):
         self,
         task_func: Callable,
         run_at: datetime,
-        job_id: str | None = None,
-        job_name: str | None = None,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
     ) -> str:
@@ -393,9 +395,9 @@ class InMemoryJobRunner(IJobRunner):
         job_name = job_name or f"One-time job {job_id}"
 
         # Calculate delay
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         if run_at.tzinfo is None:
-            run_at = run_at.replace(tzinfo=UTC)
+            run_at = run_at.replace(tzinfo=timezone.utc)
         delay_seconds = max(0, (run_at - now).total_seconds())
 
         with self._lock:
@@ -408,7 +410,7 @@ class InMemoryJobRunner(IJobRunner):
                 "args": args,
                 "kwargs": kwargs,
                 "next_run_time": run_at.timestamp(),
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
             # Create wrapper that executes and cleans up
@@ -440,7 +442,7 @@ class InMemoryJobRunner(IJobRunner):
             logger.info(f"Cancelled job {job_id}")
             return True
 
-    def get_job_info(self, job_id: str) -> dict[str, Any] | None:
+    def get_job_info(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get information about a scheduled job."""
         with self._lock:
             job = self._jobs.get(job_id)
@@ -452,7 +454,9 @@ class InMemoryJobRunner(IJobRunner):
                 "name": job["name"],
                 "type": job["type"],
                 "next_run_time": (
-                    datetime.fromtimestamp(job["next_run_time"], tz=UTC).isoformat()
+                    datetime.fromtimestamp(
+                        job["next_run_time"], tz=timezone.utc
+                    ).isoformat()
                     if job.get("next_run_time")
                     else None
                 ),
@@ -460,7 +464,7 @@ class InMemoryJobRunner(IJobRunner):
                 "status": "scheduled",
             }
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self) -> List[Dict[str, Any]]:
         """List all scheduled jobs."""
         with self._lock:
             return [
@@ -469,7 +473,9 @@ class InMemoryJobRunner(IJobRunner):
                     "name": job["name"],
                     "type": job["type"],
                     "next_run_time": (
-                        datetime.fromtimestamp(job["next_run_time"], tz=UTC).isoformat()
+                        datetime.fromtimestamp(
+                            job["next_run_time"], tz=timezone.utc
+                        ).isoformat()
                         if job.get("next_run_time")
                         else None
                     ),
@@ -488,7 +494,7 @@ class InMemoryJobRunner(IJobRunner):
 # =============================================================================
 
 
-def get_job_runner(runner_type: str | None = None) -> IJobRunner:
+def get_job_runner(runner_type: Optional[str] = None) -> IJobRunner:
     """Factory function to get the appropriate job runner.
 
     Args:

@@ -7,7 +7,7 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
@@ -37,7 +37,7 @@ class ListEvidenceTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> dict[str, Any]:
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -73,7 +73,7 @@ class ListEvidenceTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: dict[str, Any],
+        params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """List evidence artifacts for the current case.
@@ -145,8 +145,8 @@ class ListEvidenceTool(AgentTool):
 
     def _format_evidence_list(
         self,
-        evidence_list: list[Any],
-    ) -> list[dict[str, Any]]:
+        evidence_list: List[Any],
+    ) -> List[Dict[str, Any]]:
         """Format evidence list for LLM consumption.
 
         Args:
@@ -220,7 +220,7 @@ class SearchKnowledgeTool(AgentTool):
         )
 
     @property
-    def parameters_schema(self) -> dict[str, Any]:
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
@@ -240,7 +240,7 @@ class SearchKnowledgeTool(AgentTool):
 
     async def execute_with_context(
         self,
-        params: dict[str, Any],
+        params: Dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         """Search the knowledge base.

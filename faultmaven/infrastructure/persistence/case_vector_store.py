@@ -9,8 +9,8 @@ Receives a shared ChromaDB client via constructor injection (Principle 5).
 """
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 
@@ -54,7 +54,7 @@ class CaseVectorStore(BaseExternalClient):
 
         metadata = {
             "case_id": case_id,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
@@ -68,7 +68,7 @@ class CaseVectorStore(BaseExternalClient):
             raise
 
     async def add_documents(
-        self, case_id: str, documents: list[dict[str, Any]]
+        self, case_id: str, documents: List[Dict[str, Any]]
     ) -> None:
         """Add documents to case-specific collection."""
 
@@ -112,8 +112,8 @@ class CaseVectorStore(BaseExternalClient):
         case_id: str,
         query: str,
         k: int = 5,
-        where: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """Search for similar documents in case-specific collection."""
 
         async def _search_wrapper():
@@ -190,7 +190,7 @@ class CaseVectorStore(BaseExternalClient):
             retry_delay=1.0,
         )
 
-    async def cleanup_orphaned_collections(self, active_case_ids: list[str]) -> int:
+    async def cleanup_orphaned_collections(self, active_case_ids: List[str]) -> int:
         """Clean up case collections without corresponding active cases."""
 
         async def _cleanup_wrapper():

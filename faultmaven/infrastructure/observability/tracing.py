@@ -31,9 +31,8 @@ import functools
 import logging
 import os
 import time
-from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Callable, Dict, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import ITracer
@@ -188,7 +187,7 @@ class OpikTracer(BaseExternalClient, ITracer):
             self._record_fallback_metrics(operation, start_time, "error")
             raise
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """
         Perform comprehensive health check for OpikTracer.
 
@@ -284,7 +283,7 @@ class OpikTracer(BaseExternalClient, ITracer):
 
 
 def init_opik_tracing(
-    api_key: str | None = None,
+    api_key: Optional[str] = None,
     project_name: str = "FaultMaven Development",
     settings=None,
 ):

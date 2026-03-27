@@ -321,7 +321,7 @@ class TestResponseFormatConsistency:
             service_error_handler,
         ]
 
-        for exc, handler in zip(exceptions, handlers, strict=False):
+        for exc, handler in zip(exceptions, handlers):
             response = await handler(mock_request, exc)
             body = response.body.decode()
             assert '"error"' in body
@@ -344,7 +344,7 @@ class TestResponseFormatConsistency:
             service_error_handler,
         ]
 
-        for exc, handler in zip(exceptions, handlers, strict=False):
+        for exc, handler in zip(exceptions, handlers):
             response = await handler(mock_request, exc)
             body = response.body.decode()
             assert '"status_code"' in body
@@ -367,7 +367,7 @@ class TestResponseFormatConsistency:
             service_error_handler,
         ]
 
-        for exc, handler in zip(exceptions, handlers, strict=False):
+        for exc, handler in zip(exceptions, handlers):
             response = await handler(mock_request, exc)
             body = response.body.decode()
             assert '"detail"' in body

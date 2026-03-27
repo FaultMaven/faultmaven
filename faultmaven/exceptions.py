@@ -1,7 +1,7 @@
 """Custom exceptions for FaultMaven application."""
 
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, Optional
 
 
 class ErrorSeverity(Enum):
@@ -25,7 +25,7 @@ class RecoveryResult(Enum):
 class FaultMavenException(Exception):
     """Base exception for all FaultMaven errors."""
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.details = details or {}
 
@@ -105,8 +105,8 @@ class LLMException(FaultMavenException):
     def __init__(
         self,
         message: str,
-        status_code: int | None = None,
-        retryable: bool | None = None,
+        status_code: Optional[int] = None,
+        retryable: Optional[bool] = None,
         **kwargs,
     ):
         self.status_code = status_code
@@ -135,7 +135,7 @@ class ModelLoadingException(LLMException):
         self,
         message: str = "Model is loading",
         retry_after: int = 10,
-        model_name: str | None = None,
+        model_name: Optional[str] = None,
     ):
         self.retry_after = retry_after
         self.model_name = model_name
@@ -155,8 +155,8 @@ class ToolCallingUnsupportedError(LLMException):
     def __init__(
         self,
         message: str = "Model does not support tool calling",
-        provider: str | None = None,
-        model: str | None = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
     ):
         self.provider = provider
         self.model = model
@@ -277,9 +277,9 @@ class NotFoundError(ServiceError):
 
     def __init__(
         self,
-        resource_type: str | None = None,
-        resource_id: str | None = None,
-        message: str | None = None,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        message: Optional[str] = None,
     ):
         self.resource_type = resource_type
         self.resource_id = resource_id
@@ -313,8 +313,8 @@ class AuthenticationError(ServiceError):
     def __init__(
         self,
         message: str = "Authentication failed",
-        error_code: str | None = None,
-        details: dict[str, Any] | None = None,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         self.error_code = error_code
         super().__init__(message, details={**(details or {}), "error_code": error_code})
@@ -346,9 +346,9 @@ class ConflictError(ServiceError):
     def __init__(
         self,
         message: str,
-        resource_type: str | None = None,
-        resource_id: str | None = None,
-        conflict_reason: str | None = None,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        conflict_reason: Optional[str] = None,
     ):
         self.resource_type = resource_type
         self.resource_id = resource_id

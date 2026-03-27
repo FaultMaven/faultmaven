@@ -52,7 +52,7 @@ def vector_store(chroma_client):
     )
 
 
-def create_embedding(value: float = 0.1) -> list[float]:
+def create_embedding(value: float = 0.1) -> List[float]:
     """Create test embedding vector."""
     return [value] * EMBEDDING_DIMENSIONS
 
@@ -63,7 +63,7 @@ def create_item_data(
     item_type: str = "faq",
     category: str = "general",
     content: str = "Test content",
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Create test item data for vector store."""
     return {
         "item_id": item_id,

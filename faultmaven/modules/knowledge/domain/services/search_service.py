@@ -19,7 +19,7 @@ Usage:
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import (
     EmbeddingException,
@@ -93,10 +93,10 @@ class KnowledgeSearchService:
         query: str,
         organization_id: str,
         n_results: int = 10,
-        item_type: KnowledgeItemType | None = None,
-        category: str | None = None,
+        item_type: Optional[KnowledgeItemType] = None,
+        category: Optional[str] = None,
         mark_retrieved: bool = True,
-    ) -> list[tuple[KnowledgeItem, float]]:
+    ) -> List[Tuple[KnowledgeItem, float]]:
         """Semantic search using vector similarity.
 
         Workflow:
@@ -136,10 +136,10 @@ class KnowledgeSearchService:
         query: str,
         organization_id: str,
         n_results: int,
-        item_type: KnowledgeItemType | None,
-        category: str | None,
+        item_type: Optional[KnowledgeItemType],
+        category: Optional[str],
         mark_retrieved: bool,
-    ) -> list[tuple[KnowledgeItem, float]]:
+    ) -> List[Tuple[KnowledgeItem, float]]:
         """Internal implementation of semantic search."""
         # Step 1: Generate embedding for query
         try:
@@ -179,7 +179,7 @@ class KnowledgeSearchService:
             ) from e
 
         # Step 4: Fetch full KnowledgeItem objects
-        results: list[tuple[KnowledgeItem, float]] = []
+        results: List[Tuple[KnowledgeItem, float]] = []
         for result in vector_results:
             item_id = result["item_id"]
             distance = result.get("distance", 0.0)
@@ -208,12 +208,12 @@ class KnowledgeSearchService:
         query: str,
         organization_id: str,
         n_results: int = 10,
-        semantic_weight: float | None = None,
-        text_weight: float | None = None,
-        item_type: KnowledgeItemType | None = None,
-        category: str | None = None,
+        semantic_weight: Optional[float] = None,
+        text_weight: Optional[float] = None,
+        item_type: Optional[KnowledgeItemType] = None,
+        category: Optional[str] = None,
         mark_retrieved: bool = True,
-    ) -> list[tuple[KnowledgeItem, float]]:
+    ) -> List[Tuple[KnowledgeItem, float]]:
         """Hybrid search combining semantic + full-text search.
 
         Uses weighted score combination:
@@ -254,12 +254,12 @@ class KnowledgeSearchService:
         query: str,
         organization_id: str,
         n_results: int,
-        semantic_weight: float | None,
-        text_weight: float | None,
-        item_type: KnowledgeItemType | None,
-        category: str | None,
+        semantic_weight: Optional[float],
+        text_weight: Optional[float],
+        item_type: Optional[KnowledgeItemType],
+        category: Optional[str],
         mark_retrieved: bool,
-    ) -> list[tuple[KnowledgeItem, float]]:
+    ) -> List[Tuple[KnowledgeItem, float]]:
         """Internal implementation of hybrid search."""
         # Use default weights if not provided
         sem_weight = (
@@ -296,7 +296,7 @@ class KnowledgeSearchService:
             text_results = []
 
         # Combine results with weighted scores
-        item_scores: dict[str, dict[str, Any]] = {}
+        item_scores: Dict[str, Dict[str, Any]] = {}
 
         # Add semantic results with normalized scores
         max_semantic_score = max((s for _, s in semantic_results), default=1.0)
@@ -324,7 +324,7 @@ class KnowledgeSearchService:
                 }
 
         # Calculate combined scores and sort
-        combined_results: list[tuple[KnowledgeItem, float]] = []
+        combined_results: List[Tuple[KnowledgeItem, float]] = []
         for data in item_scores.values():
             combined_score = data["semantic_score"] + data["text_score"]
             combined_results.append((data["item"], combined_score))
@@ -428,9 +428,9 @@ class KnowledgeSearchService:
 
     async def index_items_batch(
         self,
-        items: list[KnowledgeItem],
+        items: List[KnowledgeItem],
         batch_size: int = 50,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Index multiple knowledge items in batches.
 
         Args:
@@ -448,16 +448,16 @@ class KnowledgeSearchService:
 
     async def _index_items_batch_impl(
         self,
-        items: list[KnowledgeItem],
+        items: List[KnowledgeItem],
         batch_size: int,
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """Internal implementation of batch indexing."""
         if not items:
             return {"processed": 0, "succeeded": 0, "failed": 0}
 
         succeeded = 0
         failed = 0
-        failed_items: list[str] = []
+        failed_items: List[str] = []
 
         # Process in batches
         for i in range(0, len(items), batch_size):
@@ -478,7 +478,7 @@ class KnowledgeSearchService:
 
             # Process each item
             vector_store_items = []
-            for j, (item, embedding) in enumerate(zip(batch, embeddings, strict=False)):
+            for j, (item, embedding) in enumerate(zip(batch, embeddings)):
                 try:
                     # Update item with embedding
                     item.set_embedding(
@@ -601,8 +601,8 @@ class KnowledgeSearchService:
 
     async def get_indexing_stats(
         self,
-        organization_id: str | None = None,
-    ) -> dict[str, Any]:
+        organization_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Get indexing statistics.
 
         Args:
@@ -619,8 +619,8 @@ class KnowledgeSearchService:
 
     async def _get_indexing_stats_impl(
         self,
-        organization_id: str | None,
-    ) -> dict[str, Any]:
+        organization_id: Optional[str],
+    ) -> Dict[str, Any]:
         """Internal implementation of get_indexing_stats."""
         # Get vector store stats
         try:
@@ -666,7 +666,7 @@ class KnowledgeSearchService:
             "tokens_used": self.embedding_service.get_total_tokens(),
         }
 
-    async def health_check(self) -> dict[str, Any]:
+    async def health_check(self) -> Dict[str, Any]:
         """Perform health check for the knowledge search service.
 
         Returns:

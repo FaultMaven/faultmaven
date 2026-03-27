@@ -15,11 +15,12 @@ Architecture:
 - Zero business logic (just data transformation)
 """
 
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import IVectorStore
 
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
 from faultmaven.models.case_ui import (
@@ -30,6 +31,8 @@ from faultmaven.models.case_ui import (
     EvidenceSummary,
     HypothesisSummary,
     ImpactData,
+    InquiryQuestion,
+    InquiryRequestSummary,
     InquiryResponseData,
     InvestigationProgressSummary,
     InvestigationStrategyData,
@@ -86,7 +89,7 @@ def transform_case_for_ui(case: Case) -> CaseUIResponse:
 # ============================================================
 
 
-def _get_investigation_strategy_data(case: Case) -> InvestigationStrategyData | None:
+def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrategyData]:
     """Extract investigation strategy from case state."""
 
     # Map investigation path to descriptive approach
@@ -131,7 +134,7 @@ def _get_investigation_strategy_data(case: Case) -> InvestigationStrategyData | 
     )
 
 
-def _extract_problem_verification(case: Case) -> ProblemVerificationData | None:
+def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationData]:
     """Extract problem verification data from case state."""
 
     # Get urgency and severity

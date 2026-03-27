@@ -5,7 +5,7 @@ Test Coverage: 12-15 tests
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -41,8 +41,8 @@ def default_organization():
         max_members=100,
         max_cases=None,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
 
@@ -201,8 +201,8 @@ async def test_ensure_default_organization_creates_if_missing(
         max_members=100,
         max_cases=None,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     mock_organization_repository.create_organization.return_value = created_org
 
@@ -289,8 +289,8 @@ async def test_default_org_has_pro_plan_tier(
         max_members=100,
         max_cases=None,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
     mock_organization_repository.create_organization.return_value = created_org
 

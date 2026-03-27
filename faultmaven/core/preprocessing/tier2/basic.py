@@ -10,7 +10,7 @@ Design Reference:
 
 import logging
 import time
-from typing import Any
+from typing import Any, List, Optional
 
 from faultmaven.core.preprocessing.models import (
     AnalysisContext,
@@ -77,7 +77,7 @@ class BasicTier2Service(ITier2AnalysisService):
     async def is_available(self) -> bool:
         return True
 
-    def _keyword_search(self, content: str, query: str) -> list[dict]:
+    def _keyword_search(self, content: str, query: str) -> List[dict]:
         """Find sections of content matching query keywords."""
         lines = content.split("\n")
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
@@ -104,7 +104,7 @@ class BasicTier2Service(ITier2AnalysisService):
         return self._merge_overlapping(matches)[: self.max_excerpts]
 
     @staticmethod
-    def _merge_overlapping(matches: list[dict]) -> list[dict]:
+    def _merge_overlapping(matches: List[dict]) -> List[dict]:
         """Merge overlapping excerpt windows."""
         if not matches:
             return []

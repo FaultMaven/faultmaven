@@ -8,6 +8,7 @@ Design: Follows TASK-024 (Report Module) API model pattern.
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 class HypothesisCreateRequest(BaseModel):
     """Request model for creating a hypothesis."""
 
-    title: str | None = Field(
+    title: Optional[str] = Field(
         None,
         min_length=5,
         max_length=200,
@@ -33,19 +34,19 @@ class HypothesisCreateRequest(BaseModel):
         description="Hypothesis statement - what we think caused the problem",
     )
 
-    likelihood: Decimal | None = Field(
+    likelihood: Optional[Decimal] = Field(
         None,
         ge=0.0,
         le=1.0,
         description="Initial likelihood score (0.00-1.00). Optional, can be set later.",
     )
 
-    supporting_evidence_ids: list[str] = Field(
+    supporting_evidence_ids: List[str] = Field(
         default_factory=list,
         description="List of evidence IDs supporting this hypothesis",
     )
 
-    metadata: dict = Field(
+    metadata: Dict = Field(
         default_factory=dict,
         description="Additional metadata (source, rationale, etc.)",
     )
@@ -68,49 +69,49 @@ class HypothesisCreateRequest(BaseModel):
 class HypothesisUpdateRequest(BaseModel):
     """Request model for updating a hypothesis."""
 
-    title: str | None = Field(
+    title: Optional[str] = Field(
         None,
         min_length=5,
         max_length=200,
         description="Updated hypothesis title",
     )
 
-    statement: str | None = Field(
+    statement: Optional[str] = Field(
         None,
         min_length=10,
         max_length=5000,
         description="Updated hypothesis statement",
     )
 
-    status: str | None = Field(
+    status: Optional[str] = Field(
         None,
         description="Status: captured, active, validated, refuted, inconclusive, retired",
     )
 
-    likelihood: float | None = Field(
+    likelihood: Optional[float] = Field(
         None,
         ge=0.0,
         le=1.0,
         description="Updated likelihood score (0.00-1.00)",
     )
 
-    evidence_supporting: list[str] | None = Field(
+    evidence_supporting: Optional[List[str]] = Field(
         None,
         description="Updated list of supporting evidence IDs",
     )
 
-    evidence_against: list[str] | None = Field(
+    evidence_against: Optional[List[str]] = Field(
         None,
         description="Updated list of contradicting evidence IDs",
     )
 
-    validation_result: str | None = Field(
+    validation_result: Optional[str] = Field(
         None,
         max_length=2000,
         description="Validation result or findings",
     )
 
-    metadata: dict | None = Field(
+    metadata: Optional[Dict] = Field(
         None,
         description="Updated metadata",
     )
@@ -157,7 +158,7 @@ class HypothesisValidateRequest(BaseModel):
         description="Detailed validation findings",
     )
 
-    supporting_evidence_ids: list[str] | None = Field(
+    supporting_evidence_ids: Optional[List[str]] = Field(
         default_factory=list,
         description="Evidence IDs that validate this hypothesis",
     )
@@ -188,12 +189,14 @@ class HypothesisResponse(BaseModel):
     case_id: str = Field(..., description="Associated case identifier")
     statement: str = Field(..., description="Hypothesis statement")
     status: str = Field(..., description="Current status")
-    likelihood: float | None = Field(None, description="Likelihood score (0.00-1.00)")
-    initial_likelihood: float | None = Field(
+    likelihood: Optional[float] = Field(
+        None, description="Likelihood score (0.00-1.00)"
+    )
+    initial_likelihood: Optional[float] = Field(
         None, description="Initial likelihood score"
     )
     category: str = Field(..., description="Hypothesis category")
-    evidence_links: dict[str, dict] = Field(
+    evidence_links: Dict[str, Dict] = Field(
         default_factory=dict, description="Evidence relationships"
     )
     last_updated_turn: int = Field(default=0)
@@ -201,11 +204,11 @@ class HypothesisResponse(BaseModel):
     proposed_at: datetime = Field(..., description="When proposed")
     updated_at: datetime = Field(..., description="Last updated")
     created_by: str = Field(..., description="User who created this hypothesis")
-    updated_by: str | None = Field(None, description="User who last updated")
-    metadata: dict = Field(default_factory=dict, description="Additional metadata")
+    updated_by: Optional[str] = Field(None, description="User who last updated")
+    metadata: Dict = Field(default_factory=dict, description="Additional metadata")
 
     @classmethod
-    def from_dict(cls, data: dict) -> "HypothesisResponse":
+    def from_dict(cls, data: Dict) -> "HypothesisResponse":
         """Create HypothesisResponse from dictionary."""
         return cls(
             hypothesis_id=data.get("hypothesis_id"),
@@ -234,7 +237,7 @@ class HypothesisResponse(BaseModel):
         )
 
     @classmethod
-    def from_domain(cls, data: dict) -> "HypothesisResponse":
+    def from_domain(cls, data: Dict) -> "HypothesisResponse":
         """Create HypothesisResponse from domain model dict (orchestrator/repository layer).
 
         This method is consistent with TASK-024 (Report Module) pattern.
@@ -274,29 +277,29 @@ class SolutionCreateRequest(BaseModel):
         description="Detailed solution description",
     )
 
-    implementation_steps: list[str] = Field(
+    implementation_steps: List[str] = Field(
         ...,
         min_items=1,
         description="Ordered list of implementation steps",
     )
 
-    hypothesis_id: str | None = Field(
+    hypothesis_id: Optional[str] = Field(
         None,
         description="Optional hypothesis ID to link this solution to (must be validated)",
     )
 
-    risk_level: str | None = Field(
+    risk_level: Optional[str] = Field(
         None,
         description="Risk level: low, medium, high, critical",
     )
 
-    estimated_effort: str | None = Field(
+    estimated_effort: Optional[str] = Field(
         None,
         max_length=100,
         description="Estimated effort (e.g., '2 hours', '1 day', 'Immediate')",
     )
 
-    metadata: dict = Field(
+    metadata: Dict = Field(
         default_factory=dict,
         description="Additional metadata (rollback plan, dependencies, etc.)",
     )
@@ -335,47 +338,47 @@ class SolutionCreateRequest(BaseModel):
 class SolutionUpdateRequest(BaseModel):
     """Request model for updating a solution."""
 
-    description: str | None = Field(
+    description: Optional[str] = Field(
         None,
         min_length=20,
         max_length=5000,
         description="Updated solution description",
     )
 
-    status: str | None = Field(
+    status: Optional[str] = Field(
         None,
         description="Status: proposed, in_progress, implemented, verified, rejected",
     )
 
-    implementation_steps: list[str] | None = Field(
+    implementation_steps: Optional[List[str]] = Field(
         None,
         min_items=1,
         description="Updated implementation steps",
     )
 
-    risk_level: str | None = Field(
+    risk_level: Optional[str] = Field(
         None,
         description="Updated risk level: low, medium, high, critical",
     )
 
-    estimated_effort: str | None = Field(
+    estimated_effort: Optional[str] = Field(
         None,
         max_length=100,
         description="Updated estimated effort",
     )
 
-    verification_result: str | None = Field(
+    verification_result: Optional[str] = Field(
         None,
         max_length=2000,
         description="Verification result after implementation",
     )
 
-    implemented: bool | None = Field(
+    implemented: Optional[bool] = Field(
         None,
         description="Mark as implemented (sets implemented_at timestamp)",
     )
 
-    metadata: dict | None = Field(
+    metadata: Optional[Dict] = Field(
         None,
         description="Updated metadata",
     )
@@ -403,25 +406,27 @@ class SolutionResponse(BaseModel):
 
     solution_id: str = Field(..., description="Unique solution identifier")
     case_id: str = Field(..., description="Associated case identifier")
-    hypothesis_id: str | None = Field(
+    hypothesis_id: Optional[str] = Field(
         None, description="Linked hypothesis identifier (if any)"
     )
     description: str = Field(..., description="Solution description")
     status: str = Field(..., description="Current status")
-    implementation_steps: list[str] = Field(..., description="Implementation steps")
-    risk_level: str | None = Field(None, description="Risk level")
-    estimated_effort: str | None = Field(None, description="Estimated effort")
-    verification_result: str | None = Field(None, description="Verification result")
-    verification_timestamp: datetime | None = Field(None, description="When verified")
+    implementation_steps: List[str] = Field(..., description="Implementation steps")
+    risk_level: Optional[str] = Field(None, description="Risk level")
+    estimated_effort: Optional[str] = Field(None, description="Estimated effort")
+    verification_result: Optional[str] = Field(None, description="Verification result")
+    verification_timestamp: Optional[datetime] = Field(
+        None, description="When verified"
+    )
     proposed_at: datetime = Field(..., description="When proposed")
-    implemented_at: datetime | None = Field(None, description="When implemented")
+    implemented_at: Optional[datetime] = Field(None, description="When implemented")
     updated_at: datetime = Field(..., description="Last updated")
     created_by: str = Field(..., description="User who created this solution")
-    updated_by: str | None = Field(None, description="User who last updated")
-    metadata: dict = Field(default_factory=dict, description="Additional metadata")
+    updated_by: Optional[str] = Field(None, description="User who last updated")
+    metadata: Dict = Field(default_factory=dict, description="Additional metadata")
 
     @classmethod
-    def from_dict(cls, data: dict) -> "SolutionResponse":
+    def from_dict(cls, data: Dict) -> "SolutionResponse":
         """Create SolutionResponse from dictionary (repository layer)."""
         # Extract metadata fields
         metadata = data.get("metadata", {})
@@ -460,7 +465,7 @@ class SolutionResponse(BaseModel):
         )
 
     @classmethod
-    def from_domain(cls, data: dict) -> "SolutionResponse":
+    def from_domain(cls, data: Dict) -> "SolutionResponse":
         """Create SolutionResponse from domain model (orchestrator/repository layer).
 
         This is an alias for from_dict() for consistency with other API response models.
@@ -479,12 +484,12 @@ class SolutionResponse(BaseModel):
 class InvestigationProgressResponse(BaseModel):
     """Response model for investigation progress summary."""
 
-    hypotheses: dict = Field(
+    hypotheses: Dict = Field(
         ...,
         description="Hypothesis metrics (total, confirmed, rejected, testing, completion_rate)",
     )
 
-    solutions: dict = Field(
+    solutions: Dict = Field(
         ...,
         description="Solution metrics (total, implemented, implementation_rate)",
     )

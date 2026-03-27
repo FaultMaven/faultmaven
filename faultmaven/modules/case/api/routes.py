@@ -18,12 +18,14 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 import uuid
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Body,
     Depends,
     File,
@@ -40,13 +42,19 @@ from fastapi.responses import JSONResponse
 
 from faultmaven.api.dependencies import get_api_case_service
 from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_id,
     get_current_user_optional,
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import (
     get_case_repository,  # TD-001: use case_repository for reports
     get_case_service,
+    get_case_vector_store,
+    get_data_service,
     get_investigation_service,  # V2.0 milestone-based
+    get_preprocessing_service,
+    get_session_id,
+    get_session_service,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
@@ -60,16 +68,30 @@ from faultmaven.infrastructure.observability.tracing import trace
 
 # TD-001: IReportStore removed - reports now accessed via CaseRepository
 from faultmaven.models.api import (
+    AgentResponse,
+    Case,
     CaseMessagesResponse,
+    CaseResponse,
     ErrorDetail,
     ErrorResponse,
+    Message,
+    ProcessingStatus,
+    QueryJobStatus,
+    QueryRequest,
+    ResponseType,
+    TitleGenerateResponse,
     TitleResponse,
+    User,
+    ViewState,
 )
 from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
+    AttachmentResult,
     CaseCreateRequest,
     CaseDetail,
     CaseListFilter,
     CaseListResponse,
+    CaseMessage,
+    CaseParticipant,
     CaseSearchRequest,
     CaseSummary,
     CaseUpdateRequest,
@@ -80,6 +102,7 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     RelatedHypothesis,
     SourceFileReference,
     TurnResponse,
+    UploadedFileDetails,
     UploadedFileDetailsResponse,
     UploadedFileMetadata,
     UploadedFilesList,
@@ -90,10 +113,12 @@ from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
+from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.modules.case.domain.models import CaseStatus
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
 from faultmaven.services.case_service import APICaseService
+from faultmaven.services.converters import CaseConverter
 from faultmaven.utils.serialization import to_json_compatible
 
 # Create router
@@ -335,11 +360,11 @@ def apply_title_case(title: str) -> str:
 
 
 def get_extractive_fallback_title(
-    user_signals: str | None,
+    user_signals: Optional[str],
     context_text: str,
     case,
     max_words: int = MAX_TITLE_WORDS_DEFAULT,
-) -> str | None:
+) -> Optional[str]:
     """Generate fallback title using extractive logic.
 
     Tries multiple sources in order of reliability:
@@ -357,7 +382,7 @@ def get_extractive_fallback_title(
         Extracted title or None if insufficient content
     """
 
-    def _clean_fallback_candidate(text: str) -> str | None:
+    def _clean_fallback_candidate(text: str) -> Optional[str]:
         """Clean and validate a fallback title candidate."""
         words = text.strip().split()[:max_words]
         candidate = " ".join(words)
@@ -401,7 +426,7 @@ def get_extractive_fallback_title(
     return None
 
 
-async def _di_get_case_service_dependency(request: Request) -> ICaseService | None:
+async def _di_get_case_service_dependency(request: Request) -> Optional[ICaseService]:
     """Runtime wrapper so patched dependency is honored in tests."""
     # Import inside to resolve the patched function at call time
     from faultmaven.api.v1.dependencies import get_case_service as _getter
@@ -412,7 +437,7 @@ async def _di_get_case_service_dependency(request: Request) -> ICaseService | No
 # Legacy dependency functions removed - using new auth_dependencies directly
 
 
-async def _di_get_session_id_dependency(request: Request) -> str | None:
+async def _di_get_session_id_dependency(request: Request) -> Optional[str]:
     """Runtime wrapper so patched dependency is honored in tests."""
     from faultmaven.api.v1.dependencies import get_session_id as _get_session_id
 
@@ -426,7 +451,7 @@ async def _di_get_session_service_dependency(request: Request) -> ISessionServic
     return await _getter(request)
 
 
-def check_case_service_available(case_service: ICaseService | None) -> ICaseService:
+def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
     """Check if case service is available and raise appropriate error if not"""
     if case_service is None:
         # For protected endpoints that require authentication, return 401 instead of 500
@@ -465,7 +490,7 @@ def check_case_not_closed(case) -> None:
 @trace("api_delete_case")
 async def delete_case(
     case_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -544,7 +569,7 @@ async def delete_case(
 async def create_case(
     request: CaseCreateRequest,
     response: Response,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> CaseSummary:
@@ -636,9 +661,9 @@ async def create_case(
 @trace("api_list_cases")
 async def list_cases(
     response: Response,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    status: CaseStatus | None = Query(None, description="Filter by status"),
+    status: Optional[CaseStatus] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     # Changed default to True - new cases should be visible immediately
@@ -688,6 +713,7 @@ async def list_cases(
 
         # DEFENSIVE: Ensure we actually have CaseSummary objects (validation check)
         from faultmaven.models.api_models import CaseSummary
+        from faultmaven.modules.case.domain.models import Case as CaseEntity
 
         validated_summaries = []
         for item in case_summaries:
@@ -762,7 +788,7 @@ async def list_cases(
 async def get_case(
     case_id: str,
     response: Response,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> CaseDetail:
     """
@@ -823,7 +849,7 @@ async def get_case(
 async def get_case_ui(
     case_id: str,
     response: Response,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> CaseUIResponse:
     """
@@ -889,7 +915,7 @@ async def update_case(
     case_id: str,
     request: CaseUpdateRequest,
     response: Response,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -1018,13 +1044,13 @@ async def generate_case_title(
     case_id: str,
     request: Request,
     response: Response,
-    request_body: dict[str, Any] | None = Body(
+    request_body: Optional[Dict[str, Any]] = Body(
         None, description="Optional request parameters"
     ),
     force: bool = Query(
         False, description="Only overwrite non-default titles when true"
     ),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> TitleResponse:
     """
@@ -1178,7 +1204,7 @@ async def generate_case_title(
 
         # Debug logging to diagnose empty extraction
         logger.info(
-            "Title generation: Extracted user signals",
+            f"Title generation: Extracted user signals",
             extra={
                 "case_id": case_id,
                 "context_length": len(context_text) if context_text else 0,
@@ -1290,7 +1316,7 @@ async def generate_case_title(
 
         # Optional telemetry logging
         logger.info(
-            "Title generation completed successfully",
+            f"Title generation completed successfully",
             extra={
                 "case_id": case_id,
                 "title_source": title_source,
@@ -1423,7 +1449,7 @@ def _extract_user_signals_from_context(context_text: str) -> str:
 
 def _generate_smart_extractive_title(
     user_signals: str, max_words: int = MAX_TITLE_WORDS_DEFAULT
-) -> str | None:
+) -> Optional[str]:
     """Generate title using smart extractive logic (no LLM).
 
     Strips conversational filler and extracts meaningful technical content.
@@ -1483,8 +1509,8 @@ async def _generate_title_with_llm(
     context_text: str,
     case,
     max_words: int = 8,
-    hint: str | None = None,
-    user_signals: str | None = None,
+    hint: Optional[str] = None,
+    user_signals: Optional[str] = None,
     llm_provider=None,
 ) -> tuple[str, str]:
     """Generate title using hybrid approach: smart extractive for simple cases, LLM for complex.
@@ -1678,7 +1704,7 @@ async def _generate_title_with_llm(
             if not fallback:
                 raise ValueError("LLM failed and insufficient fallback context")
             logger.info(
-                "Title generation: LLM empty response, using fallback",
+                f"Title generation: LLM empty response, using fallback",
                 extra={"fallback_title": fallback},
             )
             return fallback, "fallback"
@@ -1691,19 +1717,19 @@ async def _generate_title_with_llm(
         if not fallback:
             raise ValueError("Both LLM and fallback title generation failed")
         logger.info(
-            "Title generation: LLM exception, using fallback",
+            f"Title generation: LLM exception, using fallback",
             extra={"error": str(e), "fallback_title": fallback},
         )
         return fallback, "fallback"
 
 
-@router.post("/search", response_model=list[CaseSummary])
+@router.post("/search", response_model=List[CaseSummary])
 @trace("api_search_cases")
 async def search_cases(
     request: CaseSearchRequest,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-) -> list[CaseSummary]:
+) -> List[CaseSummary]:
     """
     Search cases by content
 
@@ -1725,13 +1751,13 @@ async def search_cases(
         )
 
 
-@router.get("/{case_id}/analytics", response_model=dict[str, Any])
+@router.get("/{case_id}/analytics", response_model=Dict[str, Any])
 @trace("api_get_case_analytics")
 async def get_case_analytics(
     case_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Get case analytics and metrics
 
@@ -1772,7 +1798,7 @@ async def get_case_messages_enhanced(
     include_debug: bool = Query(
         False, description="Include debug information for troubleshooting"
     ),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> CaseMessagesResponse:
     """
@@ -1828,19 +1854,19 @@ async def get_case_messages_enhanced(
 # Session-case integration endpoints
 
 
-@router.post("/sessions/{session_id}/case", response_model=dict[str, Any])
+@router.post("/sessions/{session_id}/case", response_model=Dict[str, Any])
 @trace("api_create_case_for_session")
 async def create_case_for_session(
     session_id: str,
     request: Request,
-    title: str | None = Query(
+    title: Optional[str] = Query(
         None, description="Case title (optional, auto-generated if not provided)"
     ),
     force_new: bool = Query(False, description="Force creation of new case"),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
-    current_user: UserDTO | None = Depends(get_current_user_optional),
-) -> dict[str, Any]:
+    current_user: Optional[UserDTO] = Depends(get_current_user_optional),
+) -> Dict[str, Any]:
     """
     Create or get case for a session
 
@@ -1908,14 +1934,14 @@ async def create_case_for_session(
         )
 
 
-@router.post("/sessions/{session_id}/resume/{case_id}", response_model=dict[str, Any])
+@router.post("/sessions/{session_id}/resume/{case_id}", response_model=Dict[str, Any])
 @trace("api_resume_case_in_session")
 async def resume_case_in_session(
     session_id: str,
     case_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Resume an existing case in a session
 
@@ -1958,14 +1984,14 @@ async def resume_case_in_session(
 async def submit_turn(
     case_id: str,
     fastapi_request: Request,
-    query: str | None = Form(None),
-    files: list[UploadFile] = File(default=[]),
-    pasted_content: str | None = Form(None),
-    intent_type: str | None = Form(None),
-    intent_data: str | None = Form(None),
-    input_type: str | None = Form(None),
-    source_url: str | None = Form(None),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    query: Optional[str] = Form(None),
+    files: List[UploadFile] = File(default=[]),
+    pasted_content: Optional[str] = Form(None),
+    intent_type: Optional[str] = Form(None),
+    intent_data: Optional[str] = Form(None),
+    input_type: Optional[str] = Form(None),
+    source_url: Optional[str] = Form(None),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service=Depends(get_investigation_service),
     current_user: UserDTO = Depends(require_authentication),
 ) -> TurnResponse:
@@ -2027,7 +2053,7 @@ async def submit_turn(
                 )
             )
         if pasted_content:
-            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
             # Determine source type — prefer explicit field sent by the frontend,
             # then fall back to the legacy header embedded in the content body.
@@ -2091,7 +2117,7 @@ async def submit_turn(
 
             return response
 
-        except TimeoutError:
+        except asyncio.TimeoutError:
             from faultmaven.config.settings import get_settings
 
             agent_timeout = float(get_settings().agent.agent_request_timeout)
@@ -2197,11 +2223,11 @@ async def submit_case_query_gone(case_id: str):
 # Health and status endpoints
 
 
-@router.get("/health", response_model=dict[str, Any])
+@router.get("/health", response_model=Dict[str, Any])
 @trace("api_case_health")
 async def get_case_service_health(
     case_service: ICaseService = Depends(_di_get_case_service_dependency),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Get case service health status
 
@@ -2214,7 +2240,7 @@ async def get_case_service_health(
         return {
             "service": "case_management",
             "status": "healthy",
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "features": {
                 "case_persistence": True,
                 "case_sharing": True,
@@ -2227,7 +2253,7 @@ async def get_case_service_health(
         return {
             "service": "case_management",
             "status": "unhealthy",
-            "timestamp": to_json_compatible(datetime.now(UTC)),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "error": str(e),
         }
 
@@ -2243,7 +2269,7 @@ async def list_case_data(
         50, ge=1, le=200, description="Maximum number of items to return"
     ),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ) -> JSONResponse:
     """
@@ -2284,9 +2310,9 @@ async def list_case_data(
 async def get_case_data(
     case_id: str,
     data_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Get specific data file details for a case."""
     case_service = check_case_service_available(case_service)
 
@@ -2306,7 +2332,7 @@ async def get_case_data(
             "description": "Sample case data",
             "expected_type": "log_file",
             "size_bytes": 1024,
-            "upload_timestamp": to_json_compatible(datetime.now(UTC)),
+            "upload_timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "processing_status": "completed",
         }
 
@@ -2352,7 +2378,7 @@ async def upload_case_data_gone(case_id: str):
 async def delete_case_data(
     case_id: str,
     data_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """Remove data file from a case. Returns 204 No Content on success."""
@@ -2389,7 +2415,7 @@ async def delete_case_data(
 @trace("api_get_report_recommendations")
 async def get_report_recommendations(
     case_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -2423,6 +2449,7 @@ async def get_report_recommendations(
     # Note: Domain imports kept temporarily until DI is implemented
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
     from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+    from faultmaven.modules.report.domain.models import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import (
         ReportRecommendationService,
     )
@@ -2491,8 +2518,8 @@ async def get_report_recommendations(
 @trace("api_generate_case_reports")
 async def generate_case_reports(
     case_id: str,
-    request_body: dict[str, Any] = Body(...),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
+    request_body: Dict[str, Any] = Body(...),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """Generate case documentation reports."""
@@ -2528,7 +2555,7 @@ async def generate_case_reports(
         # Transition to DOCUMENTING if needed
         if case.status != CaseStatus.DOCUMENTING:
             case.status = CaseStatus.DOCUMENTING
-            case.documenting_started_at = datetime.now(UTC)
+            case.documenting_started_at = datetime.now(timezone.utc)
 
         # Generate reports
         response = await report_service.generate_reports(case, request.report_types)
@@ -2546,9 +2573,9 @@ async def generate_case_reports(
 async def get_case_reports(
     case_id: str,
     include_history: bool = Query(default=False),
-    report_type: str | None = Query(default=None),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
-    case_repository: CaseRepository | None = Depends(get_case_repository),
+    report_type: Optional[str] = Query(default=None),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -2609,8 +2636,8 @@ async def download_case_report(
     case_id: str,
     report_id: str,
     format: str = Query(default="markdown"),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
-    case_repository: CaseRepository | None = Depends(get_case_repository),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -2666,7 +2693,7 @@ async def download_case_report(
             filename = f"{report.report_type.value}_{case_id}_{report.version}.md"
 
         logger.info(
-            "Serving report download",
+            f"Serving report download",
             extra={
                 "case_id": case_id,
                 "report_id": report_id,
@@ -2697,9 +2724,9 @@ async def download_case_report(
 @trace("api_close_case")
 async def close_case(
     case_id: str,
-    request_body: dict[str, Any] | None = Body(default=None),
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
-    case_repository: CaseRepository | None = Depends(get_case_repository),
+    request_body: Optional[Dict[str, Any]] = Body(default=None),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -2770,7 +2797,7 @@ async def close_case(
                     )
                 else:
                     logger.info(
-                        "No reports to link for case closure",
+                        f"No reports to link for case closure",
                         extra={"case_id": case_id},
                     )
 
@@ -2782,14 +2809,14 @@ async def close_case(
                 # Continue closing case even if report linking fails
 
         # Close case
-        closed_at = datetime.now(UTC)
+        closed_at = datetime.now(timezone.utc)
         case.status = CaseStatus.CLOSED
         await case_service.update_case_status(
             case_id, CaseStatus.CLOSED, current_user.user_id
         )
 
         logger.info(
-            "Case closed successfully",
+            f"Case closed successfully",
             extra={"case_id": case_id, "archived_report_count": len(archived_reports)},
         )
 
@@ -2813,8 +2840,8 @@ async def close_case(
 @trace("api_archive_case")
 async def archive_case(
     case_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
-    case_repository: CaseRepository | None = Depends(get_case_repository),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """Archive a case — hide it from the default list view.
@@ -2846,14 +2873,14 @@ async def archive_case(
             }
 
         # Set archive flag
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         object.__setattr__(case, "is_archived", True)
         object.__setattr__(case, "archived_at", now)
 
         if case_repository:
             await case_repository.save(case)
 
-        logger.info("Case archived", extra={"case_id": case_id})
+        logger.info(f"Case archived", extra={"case_id": case_id})
         return {"case_id": case_id, "is_archived": True}
 
     except HTTPException:
@@ -2867,8 +2894,8 @@ async def archive_case(
 @trace("api_unarchive_case")
 async def unarchive_case(
     case_id: str,
-    case_service: ICaseService | None = Depends(_di_get_case_service_dependency),
-    case_repository: CaseRepository | None = Depends(get_case_repository),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """Unarchive a case — restore it to the default list view.
@@ -2892,7 +2919,7 @@ async def unarchive_case(
         if case_repository:
             await case_repository.save(case)
 
-        logger.info("Case unarchived", extra={"case_id": case_id})
+        logger.info(f"Case unarchived", extra={"case_id": case_id})
         return {"case_id": case_id, "is_archived": False}
 
     except HTTPException:
@@ -3375,7 +3402,7 @@ async def unshare_case(
 
 @router.get(
     "/{case_id}/participants",
-    response_model=list[dict[str, Any]],
+    response_model=List[Dict[str, Any]],
     summary="Get Case Participants",
     description="Get all participants who have access to this case.",
 )
@@ -3383,7 +3410,7 @@ async def get_case_participants(
     case_id: str = Path(..., description="Case ID"),
     case_service: ICaseService = Depends(get_case_service),
     auth: tuple = Depends(require_authentication),
-) -> list[dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """Get all participants for a case."""
     session_id, user_id = auth
 
@@ -3412,7 +3439,7 @@ async def get_case_participants(
 
 @router.get(
     "/{case_id}/access-check",
-    response_model=dict[str, bool],
+    response_model=Dict[str, bool],
     summary="Check Case Access",
     description="Check if current user has access to this case.",
 )
@@ -3420,7 +3447,7 @@ async def check_case_access(
     case_id: str = Path(..., description="Case ID"),
     case_service: ICaseService = Depends(get_case_service),
     auth: tuple = Depends(require_authentication),
-) -> dict[str, bool]:
+) -> Dict[str, bool]:
     """Check if user has access to case."""
     session_id, user_id = auth
 
@@ -3443,7 +3470,7 @@ async def check_case_access(
 
 @router.post(
     "/{case_id}/extract-knowledge",
-    response_model=dict[str, Any],
+    response_model=Dict[str, Any],
     summary="Extract Knowledge from Case",
     description="Extract reusable knowledge from a case into a suggestion for the knowledge base.",
     status_code=status.HTTP_201_CREATED,
@@ -3451,11 +3478,11 @@ async def check_case_access(
 @trace("api_extract_knowledge")
 async def extract_knowledge_from_case(
     case_id: str = Path(..., description="Case ID to extract knowledge from"),
-    request_body: dict[str, Any] | None = Body(default=None),
+    request_body: Optional[Dict[str, Any]] = Body(default=None),
     request: Request = None,
     case_service: ICaseService = Depends(get_case_service),
     current_user: UserDTO = Depends(require_authentication),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Extract knowledge from a case conversation into a suggestion.
 
@@ -3475,6 +3502,7 @@ async def extract_knowledge_from_case(
     Returns:
         KnowledgeExtractionResponse with suggestion details
     """
+    from faultmaven.models.api import KnowledgeExtractionResponse
     from faultmaven.utils.serialization import to_json_compatible
 
     try:

@@ -9,9 +9,8 @@ Uses Redis (real or FakeRedis) for all storage — no dict fallbacks.
 import json
 import logging
 import time
-from collections.abc import Callable
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -43,7 +42,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         app,
         settings: ProtectionSettings,
         redis_client=None,
-        redis_url: str | None = None,
+        redis_url: Optional[str] = None,
     ):
         super().__init__(app)
         self.settings = settings
@@ -105,14 +104,16 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 self._update_metrics(check_duration, duplicate_found=True)
 
                 if cached_response:
-                    self.logger.debug("Returning cached response for duplicate request")
+                    self.logger.debug(
+                        f"Returning cached response for duplicate request"
+                    )
                     self.metrics["cache_hits"] += 1
                     return JSONResponse(content=json.loads(cached_response))
                 else:
                     # Calculate TTL remaining
                     if original_timestamp:
                         elapsed = (
-                            datetime.now(UTC) - original_timestamp
+                            datetime.now(timezone.utc) - original_timestamp
                         ).total_seconds()
                         ttl_remaining = max(0, int(ttl - elapsed))
                     else:
@@ -121,7 +122,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                     # If TTL has expired, allow the request through
                     if ttl_remaining == 0:
                         self.logger.debug(
-                            "Duplicate request TTL expired, allowing request through"
+                            f"Duplicate request TTL expired, allowing request through"
                         )
                     else:
                         return self._create_duplicate_response(
@@ -205,7 +206,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_duplicate(
         self, request: Request
-    ) -> tuple[bool, str | None, datetime | None, int]:
+    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
         """Check if request is a duplicate"""
         request_hash = await self._generate_request_hash(request)
 
@@ -214,7 +215,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         return await self._check_hash_duplicate(request_hash, request.url.path)
 
-    async def _generate_request_hash(self, request: Request) -> str | None:
+    async def _generate_request_hash(self, request: Request) -> Optional[str]:
         """Generate hash for request"""
         try:
             session_id = self._extract_session_id(request)
@@ -242,7 +243,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             self.logger.error(f"Failed to generate request hash: {e}")
             return None
 
-    async def _get_request_body(self, request: Request) -> str | None:
+    async def _get_request_body(self, request: Request) -> Optional[str]:
         """Get request body for hashing"""
         try:
             if hasattr(request, "_body"):
@@ -261,7 +262,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_hash_duplicate(
         self, request_hash: str, endpoint: str
-    ) -> tuple[bool, str | None, datetime | None, int]:
+    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
         """Check if hash represents a duplicate request via Redis."""
         config = self.endpoint_configs.get(endpoint, {})
         ttl = config.get("ttl", self.settings.deduplication["default"].ttl)
@@ -275,7 +276,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_redis_duplicate(
         self, key: str, ttl: int
-    ) -> tuple[bool, str | None, datetime | None, int]:
+    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
         """Check for duplicate using Redis (real or FakeRedis)."""
         lua_script = """
         local key = KEYS[1]
@@ -292,7 +293,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         return {0, nil}  -- not duplicate
         """
 
-        current_time = datetime.now(UTC)
+        current_time = datetime.now(timezone.utc)
         current_time_str = to_json_compatible(current_time)
 
         result = await self._redis.eval(lua_script, 1, key, ttl, current_time_str)
@@ -340,7 +341,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             self.logger.debug(f"Response caching failed: {e}")
 
-    def _extract_session_id(self, request: Request) -> str | None:
+    def _extract_session_id(self, request: Request) -> Optional[str]:
         """Extract session ID from request"""
         session_id = request.headers.get("X-Session-ID")
         if session_id:
@@ -359,12 +360,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     def _create_duplicate_response(
         self,
         request: Request,
-        original_timestamp: datetime | None,
+        original_timestamp: Optional[datetime],
         ttl_remaining: int,
     ) -> JSONResponse:
         """Create error response for duplicate request"""
         error = DuplicateRequestError(
-            original_timestamp=original_timestamp or datetime.now(UTC),
+            original_timestamp=original_timestamp or datetime.now(timezone.utc),
             ttl_remaining=ttl_remaining,
             correlation_id=request.headers.get("x-correlation-id", ""),
         )
@@ -422,7 +423,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             current_avg * (total_requests - 1) + check_duration
         ) / total_requests
 
-    async def get_metrics(self) -> dict[str, Any]:
+    async def get_metrics(self) -> Dict[str, Any]:
         """Get middleware metrics"""
         duplicate_rate = 0.0
         if self.metrics["requests_checked"] > 0:

@@ -16,9 +16,8 @@ Usage:
 import asyncio
 import logging
 import os
-from collections.abc import Callable
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 

@@ -12,12 +12,12 @@ Design Principles:
 - Comprehensive error handling and status tracking
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from .core_contracts import Budget
 
@@ -110,7 +110,7 @@ class ExecutionContext(BaseModel):
         le=300000,
         description="Maximum execution timeout in milliseconds",
     )
-    memory_limit_mb: int | None = Field(
+    memory_limit_mb: Optional[int] = Field(
         default=None, description="Memory limit for agent execution"
     )
 
@@ -118,13 +118,13 @@ class ExecutionContext(BaseModel):
     user_skill_level: UserSkillLevel = Field(
         default=UserSkillLevel.INTERMEDIATE, description="User's assessed skill level"
     )
-    user_preferences: dict[str, Any] = Field(
+    user_preferences: Dict[str, Any] = Field(
         default_factory=dict, description="User preferences and settings"
     )
 
     # Execution metadata
     priority: str = Field(default="normal", description="Execution priority level")
-    correlation_id: str | None = Field(
+    correlation_id: Optional[str] = Field(
         default=None, description="Correlation ID for distributed tracing"
     )
 
@@ -143,7 +143,7 @@ class AgentRequest(BaseModel):
     query: str = Field(
         min_length=1, max_length=10000, description="User query or problem description"
     )
-    context: dict[str, Any] = Field(
+    context: Dict[str, Any] = Field(
         default_factory=dict, description="Additional context and metadata"
     )
 
@@ -157,18 +157,18 @@ class AgentRequest(BaseModel):
     )
 
     # Previous results for context
-    previous_results: list[dict[str, Any]] = Field(
+    previous_results: List[Dict[str, Any]] = Field(
         default_factory=list, description="Results from previous agents in this turn"
     )
 
     # Timestamps
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Request creation timestamp",
     )
 
     # Agent-specific parameters
-    agent_parameters: dict[str, Any] = Field(
+    agent_parameters: Dict[str, Any] = Field(
         default_factory=dict, description="Agent-specific parameters and options"
     )
 
@@ -181,7 +181,7 @@ class AgentResponse(BaseModel):
     status: AgentStatus = Field(description="Execution status")
 
     # Core response data
-    result: dict[str, Any] = Field(description="Agent-specific result data")
+    result: Dict[str, Any] = Field(description="Agent-specific result data")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence in the result")
 
     # Resource consumption
@@ -193,30 +193,30 @@ class AgentResponse(BaseModel):
     )
 
     # Quality indicators
-    result_quality: dict[str, Any] = Field(
+    result_quality: Dict[str, Any] = Field(
         default_factory=dict, description="Quality metrics for the result"
     )
 
     # Error handling
-    errors: list[dict[str, Any]] = Field(
+    errors: List[Dict[str, Any]] = Field(
         default_factory=list, description="Any errors encountered during execution"
     )
-    warnings: list[str] = Field(
+    warnings: List[str] = Field(
         default_factory=list,
         description="Non-fatal warnings generated during execution",
     )
 
     # Recommendations for next steps
-    next_steps: list[str] = Field(
+    next_steps: List[str] = Field(
         default_factory=list, description="Recommended next steps or agents"
     )
 
     # Timestamps
     started_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC),
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Execution start timestamp",
     )
-    completed_at: datetime | None = Field(
+    completed_at: Optional[datetime] = Field(
         default=None, description="Execution completion timestamp"
     )
 
@@ -224,7 +224,7 @@ class AgentResponse(BaseModel):
     agent_version: str = Field(
         default="1.0", description="Agent version that produced this result"
     )
-    metadata: dict[str, Any] = Field(
+    metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata"
     )
 
@@ -245,10 +245,10 @@ class TriageResult(BaseModel):
     )
 
     # Routing recommendations
-    routing_recommendations: list[str] = Field(
+    routing_recommendations: List[str] = Field(
         description="Recommended next agents for routing"
     )
-    routing_priorities: dict[str, float] = Field(
+    routing_priorities: Dict[str, float] = Field(
         default_factory=dict, description="Priority scores for each recommended agent"
     )
 
@@ -256,18 +256,18 @@ class TriageResult(BaseModel):
     categorization_reasoning: str = Field(
         description="Explanation of categorization decision"
     )
-    severity_factors: list[str] = Field(
+    severity_factors: List[str] = Field(
         default_factory=list, description="Factors contributing to severity assessment"
     )
-    urgency_factors: list[str] = Field(
+    urgency_factors: List[str] = Field(
         default_factory=list, description="Factors contributing to urgency assessment"
     )
 
     # Effort estimation
-    estimated_resolution_time: str | None = Field(
+    estimated_resolution_time: Optional[str] = Field(
         default=None, description="Estimated time to resolution"
     )
-    complexity_assessment: dict[str, Any] = Field(
+    complexity_assessment: Dict[str, Any] = Field(
         default_factory=dict, description="Technical complexity assessment"
     )
 
@@ -280,16 +280,16 @@ class TriageResult(BaseModel):
 class ScopingResult(BaseModel):
     """Result from scoping agent analysis."""
 
-    questions: list[str] = Field(
+    questions: List[str] = Field(
         max_length=2, description="Clarifying questions (max 2 per turn)"
     )
-    question_rationale: list[str] = Field(description="Rationale for each question")
+    question_rationale: List[str] = Field(description="Rationale for each question")
 
     # Information gaps
-    information_gaps: list[str] = Field(
+    information_gaps: List[str] = Field(
         description="Identified missing information categories"
     )
-    gap_priorities: dict[str, float] = Field(
+    gap_priorities: Dict[str, float] = Field(
         default_factory=dict, description="Priority scores for each information gap"
     )
 
@@ -302,16 +302,16 @@ class ScopingResult(BaseModel):
     )
 
     # Question metadata
-    question_types: list[str] = Field(
+    question_types: List[str] = Field(
         default_factory=list,
         description="Types of questions asked (temporal, technical, etc.)",
     )
-    expected_clarification: list[str] = Field(
+    expected_clarification: List[str] = Field(
         default_factory=list, description="Expected information from each question"
     )
 
     # Template information
-    templates_used: list[str] = Field(
+    templates_used: List[str] = Field(
         default_factory=list, description="Question templates that were utilized"
     )
 
@@ -324,47 +324,47 @@ class ScopingResult(BaseModel):
 class DiagnosticResult(BaseModel):
     """Result from diagnostic agent analysis."""
 
-    hypotheses: list[dict[str, Any]] = Field(
+    hypotheses: List[Dict[str, Any]] = Field(
         description="Ranked list of root cause hypotheses"
     )
-    hypothesis_scores: list[float] = Field(
+    hypothesis_scores: List[float] = Field(
         description="Likelihood scores for each hypothesis"
     )
 
     # Test execution results
-    test_results: list[dict[str, Any]] = Field(
+    test_results: List[Dict[str, Any]] = Field(
         default_factory=list, description="Results from executed diagnostic tests"
     )
-    test_execution_summary: dict[str, Any] = Field(
+    test_execution_summary: Dict[str, Any] = Field(
         default_factory=dict, description="Summary of test execution"
     )
 
     # Validated hypotheses
-    validated_hypotheses: list[dict[str, Any]] = Field(
+    validated_hypotheses: List[Dict[str, Any]] = Field(
         default_factory=list, description="Hypotheses validated by test results"
     )
-    invalidated_hypotheses: list[dict[str, Any]] = Field(
+    invalidated_hypotheses: List[Dict[str, Any]] = Field(
         default_factory=list, description="Hypotheses invalidated by test results"
     )
 
     # Evidence correlation
-    supporting_evidence: dict[str, list[str]] = Field(
+    supporting_evidence: Dict[str, List[str]] = Field(
         default_factory=dict, description="Evidence supporting each hypothesis"
     )
-    contradictory_evidence: dict[str, list[str]] = Field(
+    contradictory_evidence: Dict[str, List[str]] = Field(
         default_factory=dict, description="Evidence contradicting hypotheses"
     )
 
     # Execution details
-    parallel_execution_plan: dict[str, Any] = Field(
+    parallel_execution_plan: Dict[str, Any] = Field(
         default_factory=dict, description="Plan for parallel test execution"
     )
-    cancelled_tests: list[str] = Field(
+    cancelled_tests: List[str] = Field(
         default_factory=list, description="Tests that were cancelled due to budget/time"
     )
 
     # Safety assessment
-    risk_assessments: dict[str, str] = Field(
+    risk_assessments: Dict[str, str] = Field(
         default_factory=dict, description="Risk assessment for each test"
     )
 
@@ -386,21 +386,21 @@ class ValidationResult(BaseModel):
     )
 
     # Individual validation results
-    validated_items: list[dict[str, Any]] = Field(
+    validated_items: List[Dict[str, Any]] = Field(
         description="Individual validation results for each item"
     )
-    validation_details: dict[str, Any] = Field(
+    validation_details: Dict[str, Any] = Field(
         default_factory=dict, description="Detailed validation analysis"
     )
 
     # Risk assessment
-    risk_assessment: dict[str, Any] = Field(description="Comprehensive risk analysis")
-    risk_mitigation: list[str] = Field(
+    risk_assessment: Dict[str, Any] = Field(description="Comprehensive risk analysis")
+    risk_mitigation: List[str] = Field(
         default_factory=list, description="Risk mitigation recommendations"
     )
 
     # Compliance checking
-    compliance_results: dict[str, bool] = Field(
+    compliance_results: Dict[str, bool] = Field(
         default_factory=dict, description="Results of compliance validation"
     )
     best_practice_alignment: float = Field(
@@ -408,21 +408,21 @@ class ValidationResult(BaseModel):
     )
 
     # Recommendations
-    recommendations: list[str] = Field(
+    recommendations: List[str] = Field(
         default_factory=list, description="Validation-based recommendations"
     )
-    required_modifications: list[str] = Field(
+    required_modifications: List[str] = Field(
         default_factory=list, description="Required modifications before proceeding"
     )
-    additional_precautions: list[str] = Field(
+    additional_precautions: List[str] = Field(
         default_factory=list, description="Additional precautions to consider"
     )
 
     # Cross-reference results
-    similar_cases: list[dict[str, Any]] = Field(
+    similar_cases: List[Dict[str, Any]] = Field(
         default_factory=list, description="Similar cases from knowledge base"
     )
-    historical_outcomes: dict[str, Any] = Field(
+    historical_outcomes: Dict[str, Any] = Field(
         default_factory=dict, description="Historical outcomes for similar validations"
     )
 
@@ -435,49 +435,49 @@ class ValidationResult(BaseModel):
 class PatternResult(BaseModel):
     """Result from pattern agent analysis."""
 
-    pattern_matches: list[dict[str, Any]] = Field(
+    pattern_matches: List[Dict[str, Any]] = Field(
         description="Ranked list of matching patterns"
     )
-    match_scores: list[float] = Field(description="Pattern match confidence scores")
+    match_scores: List[float] = Field(description="Pattern match confidence scores")
 
     # Success rate information
-    success_rates: dict[str, float] = Field(
+    success_rates: Dict[str, float] = Field(
         description="Historical success rates for each pattern"
     )
-    effectiveness_data: dict[str, dict[str, Any]] = Field(
+    effectiveness_data: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict, description="Detailed effectiveness metrics for patterns"
     )
 
     # Context similarity
-    context_similarity: dict[str, float] = Field(
+    context_similarity: Dict[str, float] = Field(
         default_factory=dict, description="How well context matches historical cases"
     )
-    user_match_quality: dict[str, float] = Field(
+    user_match_quality: Dict[str, float] = Field(
         default_factory=dict,
         description="How well user profile matches historical users",
     )
 
     # Pattern metadata
-    pattern_versions: dict[str, str] = Field(
+    pattern_versions: Dict[str, str] = Field(
         default_factory=dict, description="Version information for matched patterns"
     )
-    pattern_categories: dict[str, list[str]] = Field(
+    pattern_categories: Dict[str, List[str]] = Field(
         default_factory=dict, description="Categories for each matched pattern"
     )
 
     # Recommendations
-    recommended_patterns: list[str] = Field(
+    recommended_patterns: List[str] = Field(
         description="Top recommended patterns to follow"
     )
-    anti_patterns: list[str] = Field(
+    anti_patterns: List[str] = Field(
         default_factory=list, description="Patterns to avoid based on history"
     )
 
     # Analytics
-    pattern_popularity: dict[str, int] = Field(
+    pattern_popularity: Dict[str, int] = Field(
         default_factory=dict, description="Usage frequency of each pattern"
     )
-    recent_success_trends: dict[str, float] = Field(
+    recent_success_trends: Dict[str, float] = Field(
         default_factory=dict, description="Recent success rate trends for patterns"
     )
 
@@ -498,37 +498,37 @@ class LearningResult(BaseModel):
     )
 
     # Learning outcomes
-    learned_patterns: list[dict[str, Any]] = Field(
+    learned_patterns: List[Dict[str, Any]] = Field(
         default_factory=list, description="New patterns identified from outcomes"
     )
-    pattern_updates: list[dict[str, Any]] = Field(
+    pattern_updates: List[Dict[str, Any]] = Field(
         default_factory=list, description="Updates to existing pattern success rates"
     )
-    knowledge_updates: list[dict[str, Any]] = Field(
+    knowledge_updates: List[Dict[str, Any]] = Field(
         default_factory=list, description="Proposed knowledge base updates"
     )
 
     # Model improvements
-    confidence_improvements: dict[str, float] = Field(
+    confidence_improvements: Dict[str, float] = Field(
         default_factory=dict, description="Improvements to confidence calibration"
     )
-    accuracy_gains: dict[str, float] = Field(
+    accuracy_gains: Dict[str, float] = Field(
         default_factory=dict, description="Accuracy improvements by category"
     )
 
     # Governance status
-    governance_status: dict[str, str] = Field(
+    governance_status: Dict[str, str] = Field(
         default_factory=dict, description="Approval status for proposed updates"
     )
-    pending_approvals: list[str] = Field(
+    pending_approvals: List[str] = Field(
         default_factory=list, description="Updates pending human approval"
     )
 
     # Deployment planning
-    deployment_plan: dict[str, Any] = Field(
+    deployment_plan: Dict[str, Any] = Field(
         default_factory=dict, description="Staged deployment plan for approved updates"
     )
-    rollout_schedule: list[dict[str, Any]] | None = Field(
+    rollout_schedule: Optional[List[Dict[str, Any]]] = Field(
         default=None, description="Scheduled rollout phases"
     )
 
@@ -542,7 +542,7 @@ class LearningResult(BaseModel):
 
     # Processing metadata
     processing_time_ms: int = Field(ge=0, description="Total batch processing time")
-    memory_peak_mb: int | None = Field(
+    memory_peak_mb: Optional[int] = Field(
         default=None, description="Peak memory usage during processing"
     )
 
@@ -550,6 +550,6 @@ class LearningResult(BaseModel):
     failed_outcomes: int = Field(
         default=0, description="Number of outcomes that failed processing"
     )
-    processing_errors: list[str] = Field(
+    processing_errors: List[str] = Field(
         default_factory=list, description="Errors encountered during processing"
     )

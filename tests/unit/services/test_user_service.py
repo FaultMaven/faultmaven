@@ -12,7 +12,7 @@ Coverage target: 90%+
 """
 
 import uuid
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -68,7 +68,7 @@ def registered_user(user_repo):
     """Create and save a registered user in the repository."""
     from faultmaven.utils.password import hash_password
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     user = RepositoryUser(
         user_id=str(uuid.uuid4()),
         username="existinguser",

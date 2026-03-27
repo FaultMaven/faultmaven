@@ -5,7 +5,7 @@ Test Coverage: 15-18 tests
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -40,8 +40,8 @@ def test_organization():
         max_members=50,
         max_cases=1000,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
 
@@ -248,8 +248,8 @@ async def test_different_users_can_access_different_organizations(
         max_members=10,
         max_cases=100,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     org2 = Organization(
@@ -260,8 +260,8 @@ async def test_different_users_can_access_different_organizations(
         max_members=50,
         max_cases=1000,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     user1 = User(
@@ -457,8 +457,8 @@ async def test_concurrent_access_different_organizations(
         max_members=10,
         max_cases=100,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     org_b = Organization(
@@ -469,8 +469,8 @@ async def test_concurrent_access_different_organizations(
         max_members=50,
         max_cases=1000,
         settings={},
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
     )
 
     user_a = User(

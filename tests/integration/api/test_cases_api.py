@@ -20,7 +20,7 @@ Note: Terminal states (RESOLVED, CLOSED) are irreversible by design. To handle c
 recurrence, create a new case with a link to the original case (future enhancement).
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -60,8 +60,8 @@ def mock_case():
     mock.title = "Test Case"
     mock.description = "Test Description"
     mock.status = CaseStatus.INQUIRY
-    mock.created_at = datetime.now(UTC)
-    mock.updated_at = datetime.now(UTC)
+    mock.created_at = datetime.now(timezone.utc)
+    mock.updated_at = datetime.now(timezone.utc)
     # Optional fields - must be explicit to avoid MagicMock being returned
     mock.problem_verification = None
     mock.closure_reason = None
@@ -85,7 +85,7 @@ def mock_case():
 @pytest.fixture
 def mock_case_summary():
     """Create a mock CaseSummary for list endpoints."""
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     return CaseSummary(
         case_id="case_123abc",
         title="Test Case",

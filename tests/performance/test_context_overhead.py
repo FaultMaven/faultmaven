@@ -221,7 +221,7 @@ class TestContextVariablePerformance:
         num_threads = 5  # Reduced for CI stability
         operations_per_thread = 50  # Reduced for CI stability
 
-        def thread_worker(thread_id: int) -> list[str]:
+        def thread_worker(thread_id: int) -> List[str]:
             """Worker function for each thread."""
             results = []
 
@@ -332,7 +332,7 @@ class TestContextVariablePerformance:
                     "max_operation_time": max(operation_times),
                 }
 
-            except Exception:
+            except Exception as e:
                 coordinator.end_request()
                 raise
 

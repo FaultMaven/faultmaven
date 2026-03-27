@@ -18,7 +18,7 @@ Authentication:
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, Query, status
 
@@ -26,6 +26,7 @@ from faultmaven.api.dependencies import get_investigation_session_service
 from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
     SessionCreateRequest,
+    SessionListResponse,
     SessionResponse,
     SessionUpdateRequest,
 )
@@ -95,7 +96,7 @@ async def get_active_session(
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> SessionResponse | None:
+) -> Optional[SessionResponse]:
     """Get currently active session for case.
 
     Returns the currently active investigation session for a case,
@@ -171,17 +172,17 @@ async def get_session(
     return SessionResponse.from_domain(session)
 
 
-@router.get("", response_model=list[SessionResponse])
+@router.get("", response_model=List[SessionResponse])
 async def list_sessions(
     case_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    status_filter: SessionStatus | None = Query(None, alias="status"),
+    status_filter: Optional[SessionStatus] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
-) -> list[SessionResponse]:
+) -> List[SessionResponse]:
     """List sessions for case.
 
     Retrieves all investigation sessions for a case with optional filtering.

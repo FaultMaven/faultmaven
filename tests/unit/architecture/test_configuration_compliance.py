@@ -31,7 +31,7 @@ class ConfigurationViolationScanner:
             "tests/architecture/test_configuration_compliance.py",  # This test file
         }
 
-    def scan_for_os_getenv_violations(self) -> list[dict[str, Any]]:
+    def scan_for_os_getenv_violations(self) -> List[Dict[str, Any]]:
         """Find all os.getenv() calls outside of allowed files"""
         violations = []
 
@@ -48,12 +48,12 @@ class ConfigurationViolationScanner:
 
         return violations
 
-    def _scan_file_for_env_access(self, file_path: Path) -> list[dict[str, Any]]:
+    def _scan_file_for_env_access(self, file_path: Path) -> List[Dict[str, Any]]:
         """Scan single file for environment variable access"""
         violations = []
 
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             tree = ast.parse(content, filename=str(file_path))
@@ -68,7 +68,7 @@ class ConfigurationViolationScanner:
 
         return violations
 
-    def scan_for_legacy_config_imports(self) -> list[dict[str, Any]]:
+    def scan_for_legacy_config_imports(self) -> List[Dict[str, Any]]:
         """Find imports of legacy configuration modules"""
         violations = []
 
@@ -80,12 +80,12 @@ class ConfigurationViolationScanner:
 
         return violations
 
-    def _scan_file_for_legacy_imports(self, file_path: Path) -> list[dict[str, Any]]:
+    def _scan_file_for_legacy_imports(self, file_path: Path) -> List[Dict[str, Any]]:
         """Scan single file for legacy configuration imports"""
         violations = []
 
         try:
-            with open(file_path, encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             # Look for legacy import patterns
@@ -110,7 +110,7 @@ class ConfigurationViolationScanner:
                             }
                         )
 
-        except (OSError, UnicodeDecodeError):
+        except (UnicodeDecodeError, IOError):
             pass
 
         return violations

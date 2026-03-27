@@ -5,8 +5,10 @@ This module implements the Anthropic Claude LLM provider for high-quality
 reasoning and analysis tasks using the Claude API.
 """
 
+import asyncio
 import json
 import time
+from typing import List, Optional
 
 import aiohttp
 
@@ -15,7 +17,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -29,12 +31,12 @@ class AnthropicProvider(BaseLLMProvider):
         """Check if Anthropic provider is properly configured"""
         return bool(self.config.api_key and self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> list[str]:
+    def get_supported_models(self) -> List[str]:
         """Get list of supported Claude models"""
         return self.config.models.copy()
 
     def get_structured_output_capability(
-        self, model: str | None = None
+        self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for Anthropic Claude models.
@@ -55,7 +57,7 @@ class AnthropicProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: str | None = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
         **kwargs,
@@ -162,7 +164,7 @@ class AnthropicProvider(BaseLLMProvider):
                         )
 
                     response_data = await response.json()
-        except TimeoutError:
+        except asyncio.TimeoutError:
             raise LLMException(
                 f"Anthropic API request timed out after {self.config.timeout}s "
                 f"(model: {selected_model})"

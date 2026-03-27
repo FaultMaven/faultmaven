@@ -8,6 +8,7 @@ Reference: investigation-lifecycle-logic.md Section 3.3 (lines 854-996)
 
 import logging
 import re
+from typing import List, Tuple
 
 from faultmaven.modules.case.contracts import Case, CaseStatus
 
@@ -22,7 +23,7 @@ class DiagnosticReasoningError(Exception):
 
 def validate_diagnostic_reasoning(
     case: Case, agent_response: str, contains_suggestion: bool = None
-) -> tuple[bool, list[str]]:
+) -> Tuple[bool, List[str]]:
     """
     Validate that agent response includes diagnostic reasoning when making suggestions.
 

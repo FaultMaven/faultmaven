@@ -14,6 +14,8 @@ Key Components:
 """
 
 import re
+from datetime import datetime
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -31,10 +33,10 @@ class DevLoginRequest(BaseModel):
         max_length=50,
         description="Username or email address (3-50 chars)",
     )
-    email: str | None = Field(
+    email: Optional[str] = Field(
         None, description="Optional email address (will auto-generate if not provided)"
     )
-    display_name: str | None = Field(
+    display_name: Optional[str] = Field(
         None,
         max_length=100,
         description="Optional display name (will auto-generate if not provided)",
@@ -88,7 +90,7 @@ class UserProfile(BaseModel):
     display_name: str = Field(..., description="Display name")
     created_at: str = Field(..., description="Account creation timestamp (ISO format)")
     is_dev_user: bool = Field(default=True, description="Development user flag")
-    roles: list[str] = Field(
+    roles: List[str] = Field(
         default=["user"],
         description="User roles for access control (e.g., ['user'], ['user', 'admin'])",
     )
@@ -170,7 +172,7 @@ class AuthError(BaseModel):
 
     error: str = Field(..., description="Error code")
     error_description: str = Field(..., description="Human-readable error description")
-    correlation_id: str | None = Field(
+    correlation_id: Optional[str] = Field(
         None, description="Request correlation ID for debugging"
     )
 
@@ -214,7 +216,7 @@ class UserInfoResponse(UserProfile):
     Includes additional metadata for the current user.
     """
 
-    last_login: str | None = Field(
+    last_login: Optional[str] = Field(
         None, description="Last login timestamp (ISO format)"
     )
     token_count: int = Field(

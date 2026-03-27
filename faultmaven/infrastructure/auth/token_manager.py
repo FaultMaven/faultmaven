@@ -24,7 +24,8 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
 from faultmaven.models.auth import (
     AuthToken,
@@ -82,7 +83,7 @@ class RedisTokenManager:
             token_hash = self._hash_token(token)
 
             # Create token metadata
-            expires_at = datetime.now(UTC) + timedelta(
+            expires_at = datetime.now(timezone.utc) + timedelta(
                 seconds=self.token_expiry_seconds
             )
             auth_token = AuthToken(
@@ -90,7 +91,7 @@ class RedisTokenManager:
                 user_id=user.user_id,
                 token_hash=token_hash,
                 expires_at=expires_at,
-                created_at=datetime.now(UTC),
+                created_at=datetime.now(timezone.utc),
             )
 
             # Store in Redis with expiration
@@ -304,7 +305,7 @@ class RedisTokenManager:
             logger.error(f"Token cleanup failed: {e}")
             return 0
 
-    async def get_user_tokens(self, user_id: str) -> list[AuthToken]:
+    async def get_user_tokens(self, user_id: str) -> List[AuthToken]:
         """Get all active tokens for a user
 
         Args:
@@ -342,7 +343,7 @@ class RedisTokenManager:
             meta_data = await self._redis_get(meta_key)
             if meta_data:
                 meta_dict = json.loads(meta_data)
-                meta_dict["last_used_at"] = datetime.now(UTC).isoformat()
+                meta_dict["last_used_at"] = datetime.now(timezone.utc).isoformat()
                 await self._redis_set(
                     meta_key, json.dumps(meta_dict), self.token_expiry_seconds
                 )
@@ -362,7 +363,7 @@ class RedisTokenManager:
             logger.error(f"Redis SET failed for key {key}: {e}")
             raise
 
-    async def _redis_get(self, key: str) -> str | None:
+    async def _redis_get(self, key: str) -> Optional[str]:
         """Get Redis key value"""
         try:
             result = await self.redis.get(key)
@@ -385,7 +386,7 @@ class RedisTokenManager:
         except Exception as e:
             logger.error(f"Redis SADD failed for key {key}: {e}")
 
-    async def _redis_smembers(self, key: str) -> list[str]:
+    async def _redis_smembers(self, key: str) -> List[str]:
         """Get Redis set members"""
         try:
             members = await self.redis.smembers(key)

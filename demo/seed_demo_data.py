@@ -134,7 +134,6 @@ Impact: Some payment transactions are failing during pod restarts.
     except Exception as e:
         print(f"   ❌ Failed to create demo case: {e}")
         import traceback
-
         traceback.print_exc()
         return None
 
@@ -165,9 +164,7 @@ async def main():
         print("  2. View the demo case in Case History")
         print("  3. Try asking FaultMaven: 'Why is the payment service crashing?'")
         print("")
-        print(
-            "The AI will analyze the evidence and suggest increasing the memory limit."
-        )
+        print("The AI will analyze the evidence and suggest increasing the memory limit.")
     else:
         print("⚠️  Demo seeding completed with some errors")
         print("    Check the output above for details")

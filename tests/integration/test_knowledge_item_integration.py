@@ -11,8 +11,8 @@ Requirements:
 """
 
 import os
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -128,7 +128,7 @@ def create_sample_item(
         view_count=view_count,
         helpful_count=helpful_count,
         not_helpful_count=not_helpful_count,
-        created_at=created_at or datetime.now(UTC),
+        created_at=created_at or datetime.now(timezone.utc),
         metadata=metadata,
     )
 
@@ -412,7 +412,7 @@ async def test_tag_search_match_any(repository: DatabaseKnowledgeItemRepository)
 async def test_tag_search_preserves_order(repository: DatabaseKnowledgeItemRepository):
     """Test tag search returns items ordered by created_at DESC."""
     organization_id = generate_org_id()
-    base_time = datetime.now(UTC)
+    base_time = datetime.now(timezone.utc)
 
     for i in range(5):
         await repository.create(
@@ -475,7 +475,7 @@ async def test_items_without_embeddings_ordered_oldest_first(
 ):
     """Test items without embeddings are ordered oldest first."""
     organization_id = generate_org_id()
-    base_time = datetime.now(UTC)
+    base_time = datetime.now(timezone.utc)
 
     for i in range(5):
         await repository.create(
@@ -729,7 +729,7 @@ async def test_list_pagination(repository: DatabaseKnowledgeItemRepository):
 async def test_list_ordering_by_created_at(repository: DatabaseKnowledgeItemRepository):
     """Test items are ordered by created_at descending."""
     organization_id = generate_org_id()
-    base_time = datetime.now(UTC)
+    base_time = datetime.now(timezone.utc)
 
     for i in range(10):
         await repository.create(

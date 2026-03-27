@@ -16,6 +16,7 @@ Latency: ~5s with parallelization (acceptable for large documents)
 import asyncio
 import logging
 import re
+from typing import List, Optional
 
 from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import ILLMProvider
@@ -48,7 +49,7 @@ class ChunkingService:
         self.max_parallel_chunks = max_parallel_chunks
 
     async def process_long_text(
-        self, content: str, data_type: DataType, filename: str | None = None
+        self, content: str, data_type: DataType, filename: Optional[str] = None
     ) -> str:
         """
         Process long document using map-reduce pattern
@@ -94,7 +95,7 @@ class ChunkingService:
 
         return final_summary
 
-    def _split_on_structure(self, content: str) -> list[str]:
+    def _split_on_structure(self, content: str) -> List[str]:
         """
         Split content into chunks on natural boundaries
 
@@ -182,7 +183,7 @@ class ChunkingService:
 
         return chunks
 
-    def _split_on_sentences(self, paragraph: str) -> list[str]:
+    def _split_on_sentences(self, paragraph: str) -> List[str]:
         """Split paragraph into sentences (simple sentence boundary detection)"""
         # Simple sentence splitter - splits on ". " or ".\n"
         sentences = re.split(r"\.(?:\s+|\n)", paragraph)
@@ -191,8 +192,8 @@ class ChunkingService:
         return sentences
 
     async def _map_summarize_chunks(
-        self, chunks: list[str], data_type: DataType
-    ) -> list[str]:
+        self, chunks: List[str], data_type: DataType
+    ) -> List[str]:
         """
         MAP phase: Summarize each chunk in parallel (batched)
 
@@ -351,9 +352,9 @@ Target: 200-400 words per chunk.
 
     async def _reduce_synthesize(
         self,
-        chunk_summaries: list[str],
+        chunk_summaries: List[str],
         data_type: DataType,
-        filename: str | None = None,
+        filename: Optional[str] = None,
     ) -> str:
         """
         REDUCE phase: Synthesize all chunk summaries into final summary

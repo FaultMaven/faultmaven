@@ -14,9 +14,8 @@ Note: As of TASK-020, JWT authentication is required. Legacy header authenticati
 """
 
 import json
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timezone
-from typing import List
+from datetime import datetime, timezone
+from typing import AsyncGenerator, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -73,9 +72,9 @@ def mock_session():
     session.total_token_usage = 1000
     session.token_budget_limit = 50000
     session.session_goal = "Debug the API errors"
-    session.started_at = datetime.now(UTC)
-    session.created_at = datetime.now(UTC)
-    session.updated_at = datetime.now(UTC)
+    session.started_at = datetime.now(timezone.utc)
+    session.created_at = datetime.now(timezone.utc)
+    session.updated_at = datetime.now(timezone.utc)
     return session
 
 
@@ -88,9 +87,9 @@ def mock_execution():
     execution.agent_type = AgentType.INVESTIGATOR
     execution.agent_model = "claude-3-opus"
     execution.status = ExecutionStatus.COMPLETED
-    execution.started_at = datetime.now(UTC)
-    execution.completed_at = datetime.now(UTC)
-    execution.created_at = datetime.now(UTC)
+    execution.started_at = datetime.now(timezone.utc)
+    execution.completed_at = datetime.now(timezone.utc)
+    execution.created_at = datetime.now(timezone.utc)
     execution.response = (
         "Based on my analysis, the error is caused by a database connection timeout."
     )

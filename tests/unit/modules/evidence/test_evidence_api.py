@@ -51,12 +51,12 @@ class MockEvidenceServiceForAPI:
         self._storage[evidence.evidence_id] = evidence
         return evidence
 
-    async def _get(self, evidence_id: UUID) -> EvidenceArtifact | None:
+    async def _get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
         return self._storage.get(str(evidence_id))
 
     async def _list(
         self, filters: EvidenceListFilter
-    ) -> tuple[list[EvidenceArtifact], int]:
+    ) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
         return results[filters.offset : filters.offset + filters.limit], len(results)
 
@@ -79,7 +79,7 @@ class MockEvidenceServiceForAPI:
             evidence.linked_case_ids.append(cid)
         return evidence
 
-    async def _get_url(self, evidence_id: UUID) -> str | None:
+    async def _get_url(self, evidence_id: UUID) -> Optional[str]:
         evidence = self._storage.get(str(evidence_id))
         if evidence:
             return f"http://localhost:8090/api/v1/evidence/file/{evidence.file_path}"

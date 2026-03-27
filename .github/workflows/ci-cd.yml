@@ -384,7 +384,8 @@ jobs:
       - name: Run security linter
         run: |
           # Fail on high-confidence, high-severity findings (-ll = medium+, -iii = high confidence)
-          bandit -r faultmaven/ -ll -iii -f json -o bandit-report.json || true
+          # Skip B324 (weak MD5): all MD5 usage is for caching/fingerprinting, not security
+          bandit -r faultmaven/ -ll -iii --skip B324 -f json -o bandit-report.json || true
           python -c "
           import json, sys
           try:

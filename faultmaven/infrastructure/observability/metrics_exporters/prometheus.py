@@ -19,6 +19,7 @@ Usage:
 """
 
 import logging
+from typing import Optional, Set
 
 from fastapi import APIRouter, Response
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Labels that are FORBIDDEN in metrics to ensure bounded cardinality
 # These would create unbounded label values and break Prometheus
-FORBIDDEN_LABELS: set[str] = {
+FORBIDDEN_LABELS: Set[str] = {
     "case_id",
     "session_id",
     "user_id",
@@ -41,7 +42,7 @@ FORBIDDEN_LABELS: set[str] = {
 
 
 # Allowed bounded labels for reference
-ALLOWED_LABELS: set[str] = {
+ALLOWED_LABELS: Set[str] = {
     "method",  # HTTP method (GET, POST, etc.)
     "endpoint",  # Endpoint category (cases, knowledge, etc.)
     "status_code",  # HTTP status code (200, 404, etc.)
@@ -88,7 +89,7 @@ def get_prometheus_response() -> Response:
 
 def create_prometheus_metrics_endpoint(
     path: str = "/metrics",
-    tags: list | None = None,
+    tags: Optional[list] = None,
 ) -> APIRouter:
     """Create a FastAPI router with Prometheus /metrics endpoint.
 

@@ -20,11 +20,10 @@ Usage:
         case = await repo.get("case_abc123def456")
 """
 
-import builtins
 import json
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -39,6 +38,11 @@ from faultmaven.infrastructure.persistence.models import (
     CaseActionModel,
     CaseMessageModel,
     CaseModel,
+    CaseTagModel,
+    EvidenceModel,
+    HypothesisModel,
+    SolutionModel,
+    UploadedFileModel,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -103,7 +107,7 @@ class DatabaseCaseRepository(CaseRepository):
         """
         try:
             # Update timestamp
-            case.updated_at = datetime.now(UTC)
+            case.updated_at = datetime.now(timezone.utc)
 
             # Convert domain model to ORM model
             case_model = self._case_to_model(case)
@@ -126,7 +130,7 @@ class DatabaseCaseRepository(CaseRepository):
             logger.error(f"Failed to save case {case.case_id}: {e}")
             raise RepositoryException(f"Failed to save case {case.case_id}: {e}") from e
 
-    async def get(self, case_id: str) -> Case | None:
+    async def get(self, case_id: str) -> Optional[Case]:
         """
         Retrieve a case by ID.
 
@@ -172,12 +176,12 @@ class DatabaseCaseRepository(CaseRepository):
 
     async def list(
         self,
-        user_id: str | None = None,
-        organization_id: str | None = None,
-        status: CaseStatus | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        status: Optional[CaseStatus] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[Case], int]:
+    ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
 
@@ -274,10 +278,10 @@ class DatabaseCaseRepository(CaseRepository):
     async def search(
         self,
         query: str,
-        user_id: str | None = None,
-        organization_id: str | None = None,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         limit: int = 20,
-    ) -> tuple[builtins.list[Case], int]:
+    ) -> tuple[List[Case], int]:
         """
         Search cases by text query.
 
@@ -376,7 +380,7 @@ class DatabaseCaseRepository(CaseRepository):
             created_at = (
                 message_dict.get("created_at")
                 or message_dict.get("timestamp")
-                or datetime.now(UTC)
+                or datetime.now(timezone.utc)
             )
             message_model = CaseMessageModel(
                 message_id=message_id,
@@ -395,7 +399,7 @@ class DatabaseCaseRepository(CaseRepository):
             await self.db.execute(
                 update(CaseModel)
                 .where(CaseModel.case_id == case_id)
-                .values(updated_at=datetime.now(UTC))
+                .values(updated_at=datetime.now(timezone.utc))
             )
 
             await self.db.commit()
@@ -410,7 +414,7 @@ class DatabaseCaseRepository(CaseRepository):
 
     async def get_messages(
         self, case_id: str, limit: int = 50, offset: int = 0
-    ) -> builtins.list[dict]:
+    ) -> List[dict]:
         """
         Get messages for a case with pagination.
 
@@ -485,7 +489,7 @@ class DatabaseCaseRepository(CaseRepository):
             stmt = (
                 update(CaseModel)
                 .where(CaseModel.case_id == case_id)
-                .values(updated_at=datetime.now(UTC))
+                .values(updated_at=datetime.now(timezone.utc))
             )
 
             result = await self.db.execute(stmt)
@@ -500,7 +504,7 @@ class DatabaseCaseRepository(CaseRepository):
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
 
-    async def get_analytics(self, case_id: str) -> dict[str, Any]:
+    async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
         Compute analytics for a case.
 
@@ -568,7 +572,7 @@ class DatabaseCaseRepository(CaseRepository):
             RepositoryException: If cleanup fails
         """
         try:
-            cutoff_date = datetime.now(UTC) - timedelta(days=max_age_days)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
             # Find expired cases - use closed_at from metadata
             # Need to extract closed_at from JSONB metadata column
@@ -618,7 +622,7 @@ class DatabaseCaseRepository(CaseRepository):
     # Session-Aware Methods
     # ========================================================================
 
-    async def get_cases_by_session(self, session_id: str) -> builtins.list[Case]:
+    async def get_cases_by_session(self, session_id: str) -> List[Case]:
         """
         Get all cases associated with a session.
 
@@ -658,8 +662,8 @@ class DatabaseCaseRepository(CaseRepository):
             ) from e
 
     async def get_orphaned_cases(
-        self, user_id: str | None = None, limit: int = 50, offset: int = 0
-    ) -> tuple[builtins.list[Case], int]:
+        self, user_id: Optional[str] = None, limit: int = 50, offset: int = 0
+    ) -> tuple[List[Case], int]:
         """
         Get cases with no session (session_id is NULL).
 
@@ -716,7 +720,9 @@ class DatabaseCaseRepository(CaseRepository):
             logger.error(f"Failed to get orphaned cases: {e}")
             raise RepositoryException(f"Failed to get orphaned cases: {e}") from e
 
-    async def link_case_to_session(self, case_id: str, session_id: str | None) -> bool:
+    async def link_case_to_session(
+        self, case_id: str, session_id: Optional[str]
+    ) -> bool:
         """
         Link or unlink a case to/from a session.
 
@@ -734,7 +740,7 @@ class DatabaseCaseRepository(CaseRepository):
             stmt = (
                 update(CaseModel)
                 .where(CaseModel.case_id == case_id)
-                .values(session_id=session_id, updated_at=datetime.now(UTC))
+                .values(session_id=session_id, updated_at=datetime.now(timezone.utc))
             )
 
             result = await self.db.execute(stmt)
@@ -754,7 +760,7 @@ class DatabaseCaseRepository(CaseRepository):
             ) from e
 
     async def save_with_session(
-        self, case: Case, session_id: str | None = None
+        self, case: Case, session_id: Optional[str] = None
     ) -> Case:
         """
         Save a case with optional session linkage.
@@ -773,7 +779,7 @@ class DatabaseCaseRepository(CaseRepository):
         """
         try:
             # Update timestamp
-            case.updated_at = datetime.now(UTC)
+            case.updated_at = datetime.now(timezone.utc)
 
             # Convert domain model to ORM model
             case_model = self._case_to_model(case)
@@ -806,7 +812,7 @@ class DatabaseCaseRepository(CaseRepository):
     # ========================================================================
 
     async def _sync_messages(
-        self, case_id: str, messages: builtins.list[dict[str, Any]]
+        self, case_id: str, messages: List[Dict[str, Any]]
     ) -> None:
         """Sync messages for a case (append-only)."""
         if not messages:
@@ -835,9 +841,7 @@ class DatabaseCaseRepository(CaseRepository):
                 )
                 self.db.add(message_model)
 
-    async def _sync_case_actions(
-        self, case_id: str, actions: builtins.list[CaseAction]
-    ) -> None:
+    async def _sync_case_actions(self, case_id: str, actions: List[CaseAction]) -> None:
         """Sync case actions for a case (append-only)."""
         if not actions:
             return
@@ -1092,7 +1096,7 @@ class DatabaseCaseRepository(CaseRepository):
     # JSON Parsing Helpers
     # ========================================================================
 
-    def _parse_json(self, value: str | None, default: Any = None) -> Any:
+    def _parse_json(self, value: Optional[str], default: Any = None) -> Any:
         """Safely parse JSON string."""
         if value is None:
             return default
@@ -1101,7 +1105,7 @@ class DatabaseCaseRepository(CaseRepository):
         except (json.JSONDecodeError, TypeError):
             return default
 
-    def _parse_datetime(self, value: Any) -> datetime | None:
+    def _parse_datetime(self, value: Any) -> Optional[datetime]:
         """Parse datetime from string or datetime."""
         if value is None:
             return None
@@ -1113,15 +1117,15 @@ class DatabaseCaseRepository(CaseRepository):
         except (ValueError, AttributeError):
             return None
 
-    def _ensure_tz_aware(self, dt: datetime | None) -> datetime | None:
+    def _ensure_tz_aware(self, dt: Optional[datetime]) -> Optional[datetime]:
         """Ensure datetime is timezone-aware (UTC if naive)."""
         if dt is None:
             return None
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=UTC)
+            return dt.replace(tzinfo=timezone.utc)
         return dt
 
-    def _parse_inquiry(self, value: str | None) -> InquiryData:
+    def _parse_inquiry(self, value: Optional[str]) -> InquiryData:
         """Parse InquiryData from JSON."""
         data = self._parse_json(value, {})
         try:
@@ -1129,7 +1133,7 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return InquiryData()
 
-    def _parse_progress(self, value: str | None) -> InvestigationProgress:
+    def _parse_progress(self, value: Optional[str]) -> InvestigationProgress:
         """Parse InvestigationProgress from JSON."""
         data = self._parse_json(value, {})
         try:
@@ -1137,7 +1141,7 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return InvestigationProgress()
 
-    def _parse_documentation(self, value: str | None) -> DocumentationData:
+    def _parse_documentation(self, value: Optional[str]) -> DocumentationData:
         """Parse DocumentationData from JSON."""
         data = self._parse_json(value, {})
         try:
@@ -1146,8 +1150,8 @@ class DatabaseCaseRepository(CaseRepository):
             return DocumentationData()
 
     def _parse_problem_verification(
-        self, value: str | None
-    ) -> ProblemVerification | None:
+        self, value: Optional[str]
+    ) -> Optional[ProblemVerification]:
         """Parse ProblemVerification from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1157,7 +1161,9 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_working_conclusion(self, value: str | None) -> WorkingConclusion | None:
+    def _parse_working_conclusion(
+        self, value: Optional[str]
+    ) -> Optional[WorkingConclusion]:
         """Parse WorkingConclusion from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1168,8 +1174,8 @@ class DatabaseCaseRepository(CaseRepository):
             return None
 
     def _parse_root_cause_conclusion(
-        self, value: str | None
-    ) -> RootCauseConclusion | None:
+        self, value: Optional[str]
+    ) -> Optional[RootCauseConclusion]:
         """Parse RootCauseConclusion from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1179,7 +1185,7 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_path_selection(self, value: str | None) -> PathSelection | None:
+    def _parse_path_selection(self, value: Optional[str]) -> Optional[PathSelection]:
         """Parse PathSelection from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1189,7 +1195,9 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_escalation_state(self, value: str | None) -> EscalationState | None:
+    def _parse_escalation_state(
+        self, value: Optional[str]
+    ) -> Optional[EscalationState]:
         """Parse EscalationState from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1199,9 +1207,7 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_turn_history(
-        self, value: builtins.list[dict]
-    ) -> builtins.list[TurnProgress]:
+    def _parse_turn_history(self, value: List[dict]) -> List[TurnProgress]:
         """Parse TurnProgress list from JSON."""
         result = []
         for item in value:
@@ -1211,9 +1217,7 @@ class DatabaseCaseRepository(CaseRepository):
                 pass
         return result
 
-    def _parse_uploaded_files(
-        self, value: builtins.list[dict]
-    ) -> builtins.list[UploadedFile]:
+    def _parse_uploaded_files(self, value: List[dict]) -> List[UploadedFile]:
         """Parse UploadedFile list from JSON."""
         result = []
         for item in value:
@@ -1223,7 +1227,7 @@ class DatabaseCaseRepository(CaseRepository):
                 pass
         return result
 
-    def _parse_evidence(self, value: builtins.list[dict]) -> builtins.list[Evidence]:
+    def _parse_evidence(self, value: List[dict]) -> List[Evidence]:
         """Parse Evidence list from JSON."""
         result = []
         for item in value:
@@ -1233,7 +1237,7 @@ class DatabaseCaseRepository(CaseRepository):
                 pass
         return result
 
-    def _parse_hypotheses(self, value: dict[str, dict]) -> dict[str, Hypothesis]:
+    def _parse_hypotheses(self, value: Dict[str, dict]) -> Dict[str, Hypothesis]:
         """Parse Hypothesis dict from JSON."""
         result = {}
         for key, item in value.items():
@@ -1243,7 +1247,7 @@ class DatabaseCaseRepository(CaseRepository):
                 pass
         return result
 
-    def _parse_solutions(self, value: builtins.list[dict]) -> builtins.list[Solution]:
+    def _parse_solutions(self, value: List[dict]) -> List[Solution]:
         """Parse Solution list from JSON."""
         result = []
         for item in value:

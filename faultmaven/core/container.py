@@ -23,8 +23,7 @@ Design Reference: Phase 3, Week 14-15 - DI Container Implementation
 """
 
 import logging
-from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, Callable, Dict, Optional, Type, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +41,12 @@ class ServiceContainer:
         _factories: Dictionary of service type -> factory function
     """
 
-    _instances: dict[type, Any] = {}
-    _factories: dict[type, Callable] = {}
+    _instances: Dict[Type, Any] = {}
+    _factories: Dict[Type, Callable] = {}
     _lock: bool = False  # Simple lock for thread safety during initialization
 
     @classmethod
-    def register_factory(cls, service_type: type[T], factory: Callable[[], T]) -> None:
+    def register_factory(cls, service_type: Type[T], factory: Callable[[], T]) -> None:
         """Register a factory for creating service instances.
 
         Args:
@@ -64,7 +63,7 @@ class ServiceContainer:
         logger.debug(f"Registered factory for {service_type.__name__}")
 
     @classmethod
-    def register_instance(cls, service_type: type[T], instance: T) -> None:
+    def register_instance(cls, service_type: Type[T], instance: T) -> None:
         """Register an existing service instance (useful for testing).
 
         Args:
@@ -80,7 +79,7 @@ class ServiceContainer:
         logger.debug(f"Registered instance for {service_type.__name__}")
 
     @classmethod
-    def get(cls, service_type: type[T]) -> T:
+    def get(cls, service_type: Type[T]) -> T:
         """Get or create a service instance (singleton pattern).
 
         If the service has not been created yet, the factory will be called
@@ -122,7 +121,7 @@ class ServiceContainer:
             raise
 
     @classmethod
-    def has_factory(cls, service_type: type) -> bool:
+    def has_factory(cls, service_type: Type) -> bool:
         """Check if a factory is registered for a service type.
 
         Args:
@@ -134,7 +133,7 @@ class ServiceContainer:
         return service_type in cls._factories
 
     @classmethod
-    def has_instance(cls, service_type: type) -> bool:
+    def has_instance(cls, service_type: Type) -> bool:
         """Check if an instance exists for a service type.
 
         Args:
@@ -181,7 +180,7 @@ class ServiceContainer:
         )
 
     @classmethod
-    def get_registered_services(cls) -> dict[str, bool]:
+    def get_registered_services(cls) -> Dict[str, bool]:
         """Get status of all registered services (for debugging/health checks).
 
         Returns:
@@ -207,7 +206,7 @@ class ServiceContainerError(Exception):
 class ServiceNotFoundError(ServiceContainerError):
     """Exception raised when a service is not registered."""
 
-    def __init__(self, service_type: type):
+    def __init__(self, service_type: Type):
         self.service_type = service_type
         super().__init__(
             f"Service {service_type.__name__} is not registered in the container. "

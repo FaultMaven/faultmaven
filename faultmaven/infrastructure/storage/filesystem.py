@@ -13,8 +13,10 @@ Usage:
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import aiofiles
 import aiofiles.os
@@ -86,7 +88,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         key: str,
         content_type: str = "application/octet-stream",
         expires_in: timedelta = timedelta(hours=1),
-        metadata: dict[str, str] | None = None,
+        metadata: Optional[Dict[str, str]] = None,
     ) -> PresignedUrl:
         """Generate an API endpoint URL for file upload.
 
@@ -106,7 +108,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         encoded_key = key.replace("/", "%2F")
         url = f"{self.base_url}/api/v1/storage/upload/{encoded_key}"
 
-        expires_at = datetime.now(UTC) + expires_in
+        expires_at = datetime.now(timezone.utc) + expires_in
 
         logger.debug(f"Generated upload URL for key={key}")
 
@@ -121,7 +123,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         self,
         key: str,
         expires_in: timedelta = timedelta(hours=1),
-        filename: str | None = None,
+        filename: Optional[str] = None,
     ) -> PresignedUrl:
         """Generate an API endpoint URL for file download.
 
@@ -151,7 +153,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         if filename:
             url += f"?filename={filename}"
 
-        expires_at = datetime.now(UTC) + expires_in
+        expires_at = datetime.now(timezone.utc) + expires_in
 
         logger.debug(f"Generated download URL for key={key}")
 
@@ -166,7 +168,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         key: str,
         data: bytes,
         content_type: str = "application/octet-stream",
-        metadata: dict[str, str] | None = None,
+        metadata: Optional[Dict[str, str]] = None,
     ) -> StoredFile:
         """Store a file to the filesystem.
 
@@ -199,7 +201,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
                         {
                             "content_type": content_type,
                             "metadata": metadata,
-                            "created_at": datetime.now(UTC).isoformat(),
+                            "created_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
                 )
@@ -210,11 +212,11 @@ class FilesystemStorageBackend(IFileStorageBackend):
             key=key,
             size_bytes=len(data),
             content_type=content_type,
-            created_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
             metadata=metadata,
         )
 
-    async def retrieve_file(self, key: str) -> bytes | None:
+    async def retrieve_file(self, key: str) -> Optional[bytes]:
         """Retrieve file content from filesystem.
 
         Args:
@@ -270,7 +272,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         full_path = self._get_full_path(key)
         return await aiofiles.os.path.exists(str(full_path))
 
-    async def get_file_info(self, key: str) -> StoredFile | None:
+    async def get_file_info(self, key: str) -> Optional[StoredFile]:
         """Get file metadata without downloading content.
 
         Args:
@@ -289,13 +291,13 @@ class FilesystemStorageBackend(IFileStorageBackend):
         # Try to load metadata from sidecar file
         content_type = "application/octet-stream"
         metadata = None
-        created_at = datetime.fromtimestamp(stat.st_ctime, tz=UTC)
+        created_at = datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc)
 
         metadata_path = full_path.with_suffix(full_path.suffix + ".meta")
         if await aiofiles.os.path.exists(str(metadata_path)):
             import json
 
-            async with aiofiles.open(metadata_path) as f:
+            async with aiofiles.open(metadata_path, "r") as f:
                 meta_data = json.loads(await f.read())
                 content_type = meta_data.get("content_type", content_type)
                 metadata = meta_data.get("metadata")

@@ -9,7 +9,7 @@ Section 5.4: Intelligent Report Recommendation
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
@@ -17,6 +17,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case
 from faultmaven.modules.report.domain.models import (
+    CaseReport,
     ReportRecommendation,
     ReportType,
     RunbookRecommendation,
@@ -43,9 +44,9 @@ class ReportRecommendationService:
     def __init__(
         self,
         runbook_kb: RunbookKnowledgeBase,
-        embedding_service: (
-            Any | None
-        ) = None,  # For future explicit embedding generation
+        embedding_service: Optional[
+            Any
+        ] = None,  # For future explicit embedding generation
     ):
         """
         Initialize report recommendation service.
@@ -77,7 +78,7 @@ class ReportRecommendationService:
             ReportRecommendation with available types and runbook suggestion
         """
         logger.info(
-            "Getting report recommendations for case", extra={"case_id": case.case_id}
+            f"Getting report recommendations for case", extra={"case_id": case.case_id}
         )
 
         # Always available: incident-specific reports
@@ -103,7 +104,7 @@ class ReportRecommendationService:
         )
 
         logger.info(
-            "Report recommendation generated",
+            f"Report recommendation generated",
             extra={
                 "case_id": case.case_id,
                 "runbook_action": runbook_rec.action,
@@ -116,7 +117,7 @@ class ReportRecommendationService:
     async def _find_similar_runbooks(
         self,
         case: Case,
-    ) -> list[SimilarRunbook]:
+    ) -> List[SimilarRunbook]:
         """
         Find existing runbooks similar to current case.
 
@@ -159,7 +160,7 @@ class ReportRecommendationService:
                 )
             else:
                 logger.debug(
-                    "No similar runbooks found", extra={"case_id": case.case_id}
+                    f"No similar runbooks found", extra={"case_id": case.case_id}
                 )
 
             return similar_runbooks
@@ -171,7 +172,7 @@ class ReportRecommendationService:
             # Return empty list on error - fail gracefully
             return []
 
-    async def _create_case_embedding(self, case: Case) -> list[float]:
+    async def _create_case_embedding(self, case: Case) -> List[float]:
         """
         Create semantic embedding for case.
 
@@ -217,7 +218,7 @@ class ReportRecommendationService:
         # when we call search_runbooks with the searchable text
 
         logger.debug(
-            "Created case embedding",
+            f"Created case embedding",
             extra={"case_id": case.case_id, "text_length": len(searchable_text)},
         )
 
@@ -226,7 +227,7 @@ class ReportRecommendationService:
         return []
 
     def _generate_runbook_recommendation(
-        self, similar_runbooks: list[SimilarRunbook]
+        self, similar_runbooks: List[SimilarRunbook]
     ) -> RunbookRecommendation:
         """
         Generate runbook recommendation based on similarity analysis.

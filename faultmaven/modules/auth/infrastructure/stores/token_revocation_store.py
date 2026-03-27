@@ -8,7 +8,7 @@ Two implementations:
 2. PostgresTokenRevocationStore - For enterprise deployment (persistent audit trail, ORM)
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
@@ -51,7 +51,7 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
 
         from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
-        expires_at = datetime.now(UTC) + timedelta(seconds=ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
         async with self.session_factory() as session:
             stmt = sqlite_insert(OAuthRevokedTokenModel).values(
@@ -68,7 +68,7 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
         from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
         async with self.session_factory() as session:
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             stmt = select(OAuthRevokedTokenModel.jti).where(
                 OAuthRevokedTokenModel.jti == jti,
                 OAuthRevokedTokenModel.expires_at > now,
@@ -82,7 +82,7 @@ class PostgresTokenRevocationStore(ITokenRevocationStore):
         from faultmaven.infrastructure.persistence.models import OAuthRevokedTokenModel
 
         async with self.session_factory() as session:
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             stmt = delete(OAuthRevokedTokenModel).where(
                 OAuthRevokedTokenModel.expires_at <= now
             )

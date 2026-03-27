@@ -14,6 +14,7 @@ Design Reference: docs/architecture/data-processing/README.md
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Optional
 
 
 class ProcessingMode(str, Enum):

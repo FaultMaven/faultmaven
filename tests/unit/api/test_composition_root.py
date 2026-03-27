@@ -197,7 +197,7 @@ class TestNoServiceLocatorInApiLayer:
 
         for route_file in module_routes:
             if os.path.exists(route_file):
-                with open(route_file) as f:
+                with open(route_file, "r") as f:
                     content = f.read()
 
                 # Check for Service Locator calls (not in comments)
@@ -279,7 +279,7 @@ class TestArchitecturalCompliance:
 
         for filepath in files_to_check:
             if os.path.exists(filepath):
-                with open(filepath) as f:
+                with open(filepath, "r") as f:
                     content = f.read()
                     lines = content.split("\n")
 
@@ -351,7 +351,7 @@ class TestArchitecturalCompliance:
 
     def test_main_py_wires_services_to_app_state(self):
         """Test that main.py wires services to app.state"""
-        with open("faultmaven/main.py") as f:
+        with open("faultmaven/main.py", "r") as f:
             content = f.read()
 
         # Should have app.state assignments

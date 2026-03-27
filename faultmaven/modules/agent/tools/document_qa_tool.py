@@ -11,7 +11,7 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, Optional
 
 from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
@@ -79,9 +79,9 @@ class DocumentQATool(LangChainBaseTool):
     async def _arun(
         self,
         question: str,
-        scope_id: str | None = None,
+        scope_id: Optional[str] = None,
         k: int = 5,
-        filters: dict[str, Any] | None = None,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -110,10 +110,10 @@ class DocumentQATool(LangChainBaseTool):
     async def answer_question(
         self,
         question: str,
-        scope_id: str | None,
+        scope_id: Optional[str],
         k: int,
-        filters: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
 

@@ -7,7 +7,7 @@ detection - no LLM calls required.
 """
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Tuple
 
 from faultmaven.services.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -17,7 +17,7 @@ from faultmaven.services.preprocessing.extractors.utils import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class UnstructuredTextExtractor:

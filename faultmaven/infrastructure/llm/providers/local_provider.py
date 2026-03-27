@@ -5,7 +5,9 @@ This module implements the local LLM provider for self-hosted models
 including Phi-3, Ollama, and other local inference servers.
 """
 
+import asyncio
 import logging
+from typing import List, Optional
 
 import aiohttp
 
@@ -32,11 +34,11 @@ class LocalProvider(BaseLLMProvider):
         """Check if local provider is properly configured"""
         return bool(self.config.base_url and self.config.models)
 
-    def get_supported_models(self) -> list[str]:
+    def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
 
-    def supports_tool_calling(self, model: str | None = None) -> bool:
+    def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Check if the local model supports tool calling.
 
         Only functionary and hermes models have native function calling support.
@@ -51,7 +53,7 @@ class LocalProvider(BaseLLMProvider):
         return False
 
     def get_structured_output_capability(
-        self, model: str | None = None
+        self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
         """
         Determine structured output capability for local models.
@@ -79,7 +81,7 @@ class LocalProvider(BaseLLMProvider):
     async def generate(
         self,
         prompt: str,
-        model: str | None = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
         **kwargs,
@@ -274,7 +276,7 @@ class LocalProvider(BaseLLMProvider):
                         response_time_ms=response_time,
                     )
 
-            except TimeoutError as e:
+            except asyncio.TimeoutError as e:
                 response_time = self._get_response_time_ms()
                 self.logger.warning(
                     f"Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)"

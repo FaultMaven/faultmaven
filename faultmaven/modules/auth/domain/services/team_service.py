@@ -14,10 +14,10 @@ Core Responsibilities:
 
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.organization import (
     AuditCategory,
@@ -38,8 +38,8 @@ class TeamService:
         self,
         team_repository: ITeamRepository,
         organization_repository: IOrganizationRepository,
-        audit_repository: Any | None = None,
-        settings: Any | None = None,
+        audit_repository: Optional[Any] = None,
+        settings: Optional[Any] = None,
     ):
         """
         Initialize the Team Service.
@@ -61,7 +61,7 @@ class TeamService:
         organization_id: str,
         name: str,
         creator_user_id: str,
-        description: str | None = None,
+        description: Optional[str] = None,
     ) -> Team:
         """
         Create a new team within an organization.
@@ -87,7 +87,7 @@ class TeamService:
 
         # Create team
         team_id = f"team_{uuid.uuid4().hex[:17]}"
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
 
         team = Team(
             team_id=team_id,
@@ -120,7 +120,7 @@ class TeamService:
         return created_team
 
     @trace("team_service_get_team")
-    async def get_team(self, team_id: str) -> Team | None:
+    async def get_team(self, team_id: str) -> Optional[Team]:
         """Get team by ID."""
         return await self.repository.get_team(team_id)
 
@@ -129,8 +129,8 @@ class TeamService:
         self,
         team_id: str,
         user_id: str,
-        name: str | None = None,
-        description: str | None = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> bool:
         """
         Update team details.
@@ -203,7 +203,7 @@ class TeamService:
         team_id: str,
         user_id: str,
         added_by: str,
-        team_role: str | None = "member",
+        team_role: Optional[str] = "member",
     ) -> bool:
         """
         Add user to team.
@@ -297,17 +297,17 @@ class TeamService:
         return success
 
     @trace("team_service_list_organization_teams")
-    async def list_organization_teams(self, organization_id: str) -> list[Team]:
+    async def list_organization_teams(self, organization_id: str) -> List[Team]:
         """List all teams in an organization."""
         return await self.repository.list_organization_teams(organization_id)
 
     @trace("team_service_list_user_teams")
-    async def list_user_teams(self, user_id: str, organization_id: str) -> list[Team]:
+    async def list_user_teams(self, user_id: str, organization_id: str) -> List[Team]:
         """List all teams a user belongs to in an organization."""
         return await self.repository.list_user_teams(user_id, organization_id)
 
     @trace("team_service_list_team_members")
-    async def list_team_members(self, team_id: str) -> list[TeamMember]:
+    async def list_team_members(self, team_id: str) -> List[TeamMember]:
         """List all members of a team."""
         return await self.repository.list_team_members(team_id)
 

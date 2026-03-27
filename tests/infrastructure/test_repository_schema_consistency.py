@@ -11,7 +11,7 @@ Tests verify:
 - Optional fields are properly handled
 """
 
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,7 +43,7 @@ class TestUploadedFileSchemaConsistency:
             size_bytes=1024,  # NOT file_size
             data_type="log",  # NOT content_type
             uploaded_at_turn=1,
-            uploaded_at=datetime.now(UTC),
+            uploaded_at=datetime.now(timezone.utc),
             source_type="file_upload",
             content_ref="s3://bucket/key",  # Optional but present
             preprocessing_summary="Test summary",  # Optional
@@ -76,7 +76,7 @@ class TestUploadedFileSchemaConsistency:
             size_bytes=1024,
             data_type="log",
             uploaded_at_turn=1,
-            uploaded_at=datetime.now(UTC),
+            uploaded_at=datetime.now(timezone.utc),
             source_type="file_upload",
             content_ref=None,  # Should be allowed
         )
@@ -96,8 +96,8 @@ class TestUploadedFileSchemaConsistency:
             user_id="user_123",  # Changed from owner_id
             organization_id="org_123",  # Added required field
             status=CaseStatus.INQUIRY,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             messages=[],
             uploaded_files=[
                 UploadedFile(
@@ -106,7 +106,7 @@ class TestUploadedFileSchemaConsistency:
                     size_bytes=2048,
                     data_type="log",
                     uploaded_at_turn=1,
-                    uploaded_at=datetime.now(UTC),
+                    uploaded_at=datetime.now(timezone.utc),
                     source_type="file_upload",
                     content_ref="s3://bucket/test.log",
                 )
@@ -147,7 +147,7 @@ class TestMessageSchemaConsistency:
             "turn_number": 1,
             "role": "user",
             "content": "Test message",
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "author_id": "user_123",
             "metadata": {},
         }
@@ -224,8 +224,8 @@ class TestRepositoryArchitecture:
             user_id="user_001",  # Required field, not owner_id
             organization_id="org_001",  # Required field
             status=CaseStatus.INQUIRY,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             messages=[],
         )
 
@@ -235,8 +235,8 @@ class TestRepositoryArchitecture:
             user_id="user_002",  # Required field, not owner_id
             organization_id="org_002",  # Required field
             status=CaseStatus.INQUIRY,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             messages=[],
         )
 
@@ -336,8 +336,8 @@ class TestDatabaseSchemaIntegration:
             title="Integration Test",
             owner_id="user_integration_001",
             status=CaseStatus.INQUIRY,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             messages=[],
             uploaded_files=[
                 UploadedFile(
@@ -346,7 +346,7 @@ class TestDatabaseSchemaIntegration:
                     size_bytes=4096,
                     data_type="log",
                     uploaded_at_turn=1,
-                    uploaded_at=datetime.now(UTC),
+                    uploaded_at=datetime.now(timezone.utc),
                     source_type="file_upload",
                     content_ref="s3://test-bucket/integration.log",
                     preprocessing_summary="Integration test file",
@@ -389,8 +389,8 @@ class TestDatabaseSchemaIntegration:
             title="NULL Fields Test",
             owner_id="user_integration_002",
             status=CaseStatus.INQUIRY,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             messages=[],
             uploaded_files=[
                 UploadedFile(
@@ -399,7 +399,7 @@ class TestDatabaseSchemaIntegration:
                     size_bytes=1024,
                     data_type="log",
                     uploaded_at_turn=1,
-                    uploaded_at=datetime.now(UTC),
+                    uploaded_at=datetime.now(timezone.utc),
                     source_type="file_upload",
                     content_ref=None,  # Processing pending
                     preprocessing_summary=None,  # Not processed yet

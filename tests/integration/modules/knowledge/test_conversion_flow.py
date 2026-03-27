@@ -17,7 +17,7 @@ import sys
 
 # Ensure root conftest mocks are loaded before any faultmaven imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 
@@ -56,7 +56,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 3, 22, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _make_user(roles=None, user_id="user-001", username="testuser"):
@@ -66,7 +66,7 @@ def _make_user(roles=None, user_id="user-001", username="testuser"):
         username=username,
         email="test@example.com",
         display_name="Test User",
-        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         roles=roles or ["user"],
         organization_id="org-001",
     )

@@ -13,7 +13,7 @@ Tests the API case service layer functionality including:
 - Search cases
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -129,7 +129,7 @@ class TestCreateCase:
         """Test that create_case sets correct timestamps."""
         mock_case_repo.save.side_effect = lambda case: case
 
-        before = datetime.now(UTC)
+        before = datetime.now(timezone.utc)
         result = await case_service.create_case(
             user_id="user_1",
             organization_id="org_1",
@@ -137,7 +137,7 @@ class TestCreateCase:
             description="",
             severity=CaseSeverity.MEDIUM,
         )
-        after = datetime.now(UTC)
+        after = datetime.now(timezone.utc)
 
         assert result.created_at >= before
         assert result.created_at <= after
@@ -722,7 +722,7 @@ class TestCloseCase:
         closed_case = sample_case.model_copy(
             update={
                 "status": CaseStatus.RESOLVED,
-                "resolved_at": datetime.now(UTC),
+                "resolved_at": datetime.now(timezone.utc),
                 "closure_reason": "Already resolved",
             }
         )

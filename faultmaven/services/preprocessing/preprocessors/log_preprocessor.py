@@ -15,7 +15,8 @@ Key Features:
 import logging
 import re
 import time
-from typing import Any
+import uuid
+from typing import Any, Dict, List, Optional
 
 from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.models.api import (
@@ -42,7 +43,7 @@ class LogPreprocessor(IPreprocessor):
         self,
         content: str,
         filename: str,
-        source_metadata: SourceMetadata | None = None,
+        source_metadata: Optional[SourceMetadata] = None,
     ) -> PreprocessedData:
         """
         Process log file into LLM-ready summary
@@ -128,8 +129,8 @@ class LogPreprocessor(IPreprocessor):
             )
 
     def _extract_error_samples(
-        self, content: str, insights: dict[str, Any]
-    ) -> list[str]:
+        self, content: str, insights: Dict[str, Any]
+    ) -> List[str]:
         """
         Extract sample error messages from raw log content
 
@@ -156,7 +157,7 @@ class LogPreprocessor(IPreprocessor):
 
         return samples
 
-    def _detect_security_issues(self, content: str) -> list[str]:
+    def _detect_security_issues(self, content: str) -> List[str]:
         """
         Detect potential security issues in log content
 
@@ -186,11 +187,11 @@ class LogPreprocessor(IPreprocessor):
 
     def _format_log_summary(
         self,
-        insights: dict[str, Any],
-        error_samples: list[str],
+        insights: Dict[str, Any],
+        error_samples: List[str],
         filename: str,
-        source_metadata: SourceMetadata | None,
-        security_flags: list[str],
+        source_metadata: Optional[SourceMetadata],
+        security_flags: List[str],
     ) -> str:
         """
         Format insights into LLM-ready plain text summary

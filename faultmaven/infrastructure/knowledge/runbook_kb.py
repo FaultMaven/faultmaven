@@ -13,8 +13,8 @@ Section 5.4.5: Dual-Source Runbook Architecture
 """
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
@@ -71,11 +71,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
     async def search_runbooks(
         self,
-        query_embedding: list[float],
-        filters: dict[str, Any] | None = None,
+        query_embedding: List[float],
+        filters: Optional[Dict[str, Any]] = None,
         top_k: int = 5,
         min_similarity: float = MIN_SIMILARITY_THRESHOLD,
-    ) -> list[SimilarRunbook]:
+    ) -> List[SimilarRunbook]:
         """
         Search for similar runbooks using semantic similarity.
 
@@ -148,7 +148,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         format="markdown",
                         generation_status=ReportStatus.COMPLETED,
                         generated_at=metadata.get(
-                            "created_at", to_json_compatible(datetime.now(UTC))
+                            "created_at", to_json_compatible(datetime.now(timezone.utc))
                         ),
                         generation_time_ms=0,  # Not stored for indexed runbooks
                         is_current=True,
@@ -210,9 +210,9 @@ class RunbookKnowledgeBase(BaseExternalClient):
         self,
         runbook: CaseReport,
         source: RunbookSource = RunbookSource.INCIDENT_DRIVEN,
-        case_title: str | None = None,
-        domain: str | None = None,
-        tags: list[str] | None = None,
+        case_title: Optional[str] = None,
+        domain: Optional[str] = None,
+        tags: Optional[List[str]] = None,
     ) -> None:
         """
         Index runbook for future similarity search.
@@ -284,7 +284,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             await self.vector_store.add_documents(documents)
 
             logger.info(
-                "Indexed runbook for similarity search",
+                f"Indexed runbook for similarity search",
                 extra={
                     "report_id": runbook.report_id,
                     "source": source.value,
@@ -305,8 +305,8 @@ class RunbookKnowledgeBase(BaseExternalClient):
         runbook_content: str,
         document_title: str,
         domain: str,
-        tags: list[str],
-        original_document_id: str | None = None,
+        tags: List[str],
+        original_document_id: Optional[str] = None,
     ) -> str:
         """
         Convenience method for indexing document-driven runbooks.
@@ -336,7 +336,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             content=runbook_content,
             format="markdown",
             generation_status=ReportStatus.COMPLETED,
-            generated_at=to_json_compatible(datetime.now(UTC)),
+            generated_at=to_json_compatible(datetime.now(timezone.utc)),
             generation_time_ms=0,  # Pre-generated from documentation
             is_current=True,
             version=1,
@@ -360,7 +360,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
         )
 
         logger.info(
-            "Indexed document-derived runbook",
+            f"Indexed document-derived runbook",
             extra={
                 "runbook_id": runbook_id,
                 "document_title": document_title,

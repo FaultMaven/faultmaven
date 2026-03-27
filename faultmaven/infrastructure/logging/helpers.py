@@ -6,7 +6,7 @@ with full context and stack traces across the FaultMaven codebase.
 """
 
 import logging
-from typing import Any
+from typing import Any, Dict, Optional
 
 
 def log_error_with_context(
@@ -71,7 +71,7 @@ def log_operation_error(
     logger: logging.Logger,
     operation: str,
     error: Exception,
-    entity_id: str | None = None,
+    entity_id: Optional[str] = None,
     **context: Any,
 ) -> None:
     """

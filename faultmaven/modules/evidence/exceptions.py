@@ -3,9 +3,9 @@
 This module defines exceptions specific to the evidence management module.
 """
 
-from typing import Any
+from typing import Any, Dict, Optional
 
-from faultmaven.exceptions import FaultMavenException
+from faultmaven.exceptions import FaultMavenException, ServiceError
 
 
 class EvidenceException(FaultMavenException):
@@ -20,8 +20,8 @@ class EvidenceNotFoundError(EvidenceException):
     def __init__(
         self,
         message: str = "Evidence not found",
-        evidence_id: str | None = None,
-        case_id: str | None = None,
+        evidence_id: Optional[str] = None,
+        case_id: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
         self.case_id = case_id
@@ -40,9 +40,9 @@ class EvidenceUploadError(EvidenceException):
     def __init__(
         self,
         message: str,
-        filename: str | None = None,
-        error_code: str | None = None,
-        details: dict[str, Any] | None = None,
+        filename: Optional[str] = None,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         self.filename = filename
         self.error_code = error_code
@@ -62,8 +62,8 @@ class EvidenceValidationError(EvidenceException):
     def __init__(
         self,
         message: str,
-        field: str | None = None,
-        constraint: str | None = None,
+        field: Optional[str] = None,
+        constraint: Optional[str] = None,
     ):
         self.field = field
         self.constraint = constraint
@@ -80,9 +80,9 @@ class EvidenceStorageError(EvidenceException):
     def __init__(
         self,
         message: str,
-        storage_backend: str | None = None,
-        file_path: str | None = None,
-        operation: str | None = None,
+        storage_backend: Optional[str] = None,
+        file_path: Optional[str] = None,
+        operation: Optional[str] = None,
     ):
         self.storage_backend = storage_backend
         self.file_path = file_path
@@ -103,8 +103,8 @@ class EvidenceAccessError(EvidenceException):
     def __init__(
         self,
         message: str = "Access denied",
-        evidence_id: str | None = None,
-        organization_id: str | None = None,
+        evidence_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
         self.organization_id = organization_id
@@ -124,9 +124,9 @@ class EvidenceProcessingError(EvidenceException):
     def __init__(
         self,
         message: str,
-        evidence_id: str | None = None,
-        processing_step: str | None = None,
-        error_code: str | None = None,
+        evidence_id: Optional[str] = None,
+        processing_step: Optional[str] = None,
+        error_code: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
         self.processing_step = processing_step

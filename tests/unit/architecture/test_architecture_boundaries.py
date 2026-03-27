@@ -254,7 +254,7 @@ class TestInterfaceCompliance:
 class TestCircularDependencies:
     """Test for circular import patterns"""
 
-    def _get_module_imports(self, module_path: Path) -> set[str]:
+    def _get_module_imports(self, module_path: Path) -> Set[str]:
         """Get all imports from a Python module"""
         try:
             content = module_path.read_text()
@@ -275,7 +275,7 @@ class TestCircularDependencies:
     def test_no_circular_imports(self):
         """Test that there are no circular import patterns"""
         # Build dependency graph
-        dependency_graph: dict[str, set[str]] = {}
+        dependency_graph: Dict[str, Set[str]] = {}
 
         # Get all Python files in the faultmaven package
         for py_file in Path("faultmaven").rglob("*.py"):
@@ -295,12 +295,12 @@ class TestCircularDependencies:
             dependency_graph[module_name] = faultmaven_imports
 
         # Simple cycle detection using DFS
-        def has_cycle(graph: dict[str, set[str]]) -> list[str]:
+        def has_cycle(graph: Dict[str, Set[str]]) -> List[str]:
             visited = set()
             rec_stack = set()
             cycle_path = []
 
-            def dfs(node: str, path: list[str]) -> bool:
+            def dfs(node: str, path: List[str]) -> bool:
                 if node in rec_stack:
                     # Found cycle, extract it
                     cycle_start = path.index(node)

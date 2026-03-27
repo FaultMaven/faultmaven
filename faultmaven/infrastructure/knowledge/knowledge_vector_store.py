@@ -12,8 +12,8 @@ to prevent cross-tenant data leaks.
 """
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 
@@ -75,7 +75,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         """Get or create a KB collection by exact name."""
         metadata = {
             "type": "knowledge_base",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
@@ -91,7 +91,7 @@ class KnowledgeVectorStore(BaseExternalClient):
             raise
 
     def _enforce_scope_invariant(
-        self, collection_name: str, where: dict[str, Any] | None
+        self, collection_name: str, where: Optional[Dict[str, Any]]
     ) -> None:
         """Reject unscoped queries against the KB collection.
 
@@ -126,8 +126,8 @@ class KnowledgeVectorStore(BaseExternalClient):
         collection_name: str,
         query: str,
         k: int = 5,
-        where: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+        where: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """Search for similar documents in a KB collection.
 
         Args:
@@ -198,7 +198,7 @@ class KnowledgeVectorStore(BaseExternalClient):
     async def add_documents(
         self,
         collection_name: str,
-        documents: list[dict[str, Any]],
+        documents: List[Dict[str, Any]],
     ) -> None:
         """Add documents to a KB collection.
 

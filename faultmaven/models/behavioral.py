@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -79,7 +79,7 @@ class TimingProfile(BaseModel):
 
     avg_request_interval: float  # seconds between requests
     request_interval_stddev: float
-    peak_activity_hours: list[int]  # hours of day (0-23)
+    peak_activity_hours: List[int]  # hours of day (0-23)
     session_duration_avg: float  # average session length in minutes
     burst_frequency: float  # bursts per hour
     think_time_avg: float  # average time between user actions
@@ -90,7 +90,7 @@ class ErrorPattern(BaseModel):
 
     error_type: str
     frequency: int
-    endpoints_affected: list[str]
+    endpoints_affected: List[str]
     first_occurrence: datetime
     last_occurrence: datetime
     error_rate_trend: Trend
@@ -110,8 +110,8 @@ class ResourceProfile(BaseModel):
 class BehaviorVector(BaseModel):
     """Feature vector for ML analysis"""
 
-    features: dict[str, float]
-    feature_names: list[str]
+    features: Dict[str, float]
+    feature_names: List[str]
     extraction_timestamp: datetime
     window_size: int  # minutes of data this vector represents
     confidence: float = Field(ge=0.0, le=1.0)
@@ -124,7 +124,7 @@ class TemporalAnomaly(BaseModel):
     timestamp: datetime
     severity: float = Field(ge=0.0, le=1.0)
     duration: timedelta
-    affected_patterns: list[str]
+    affected_patterns: List[str]
     description: str
 
 
@@ -132,15 +132,15 @@ class BehaviorProfile(BaseModel):
     """Comprehensive client behavior profile"""
 
     session_id: str
-    client_fingerprint: str | None = None
-    request_patterns: list[RequestPattern] = Field(default_factory=list)
-    timing_characteristics: TimingProfile | None = None
-    endpoint_preferences: dict[str, float] = Field(
+    client_fingerprint: Optional[str] = None
+    request_patterns: List[RequestPattern] = Field(default_factory=list)
+    timing_characteristics: Optional[TimingProfile] = None
+    endpoint_preferences: Dict[str, float] = Field(
         default_factory=dict
     )  # endpoint -> usage_ratio
-    error_patterns: list[ErrorPattern] = Field(default_factory=list)
-    resource_usage: ResourceProfile | None = None
-    behavior_vectors: list[BehaviorVector] = Field(default_factory=list)
+    error_patterns: List[ErrorPattern] = Field(default_factory=list)
+    resource_usage: Optional[ResourceProfile] = None
+    behavior_vectors: List[BehaviorVector] = Field(default_factory=list)
 
     # Metadata
     first_seen: datetime
@@ -150,7 +150,7 @@ class BehaviorProfile(BaseModel):
 
     # Risk assessment
     current_risk_level: RiskLevel = RiskLevel.LOW
-    risk_factors: list[str] = Field(default_factory=list)
+    risk_factors: List[str] = Field(default_factory=list)
 
     @field_validator("endpoint_preferences")
     @classmethod
@@ -169,12 +169,12 @@ class AnomalyResult(BaseModel):
 
     session_id: str
     overall_score: float = Field(ge=0.0, le=1.0)  # 0.0 = normal, 1.0 = highly anomalous
-    anomaly_types: list[AnomalyType]
-    pattern_anomalies: dict[str, float] = Field(
+    anomaly_types: List[AnomalyType]
+    pattern_anomalies: Dict[str, float] = Field(
         default_factory=dict
     )  # pattern_name -> anomaly_score
-    temporal_anomalies: list[TemporalAnomaly] = Field(default_factory=list)
-    feature_contributions: dict[str, float] = Field(
+    temporal_anomalies: List[TemporalAnomaly] = Field(default_factory=list)
+    feature_contributions: Dict[str, float] = Field(
         default_factory=dict
     )  # feature_name -> contribution
 
@@ -186,7 +186,7 @@ class AnomalyResult(BaseModel):
 
     # Explanation
     explanation: str = ""
-    recommended_actions: list[str] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
 
 
 class Violation(BaseModel):
@@ -197,7 +197,7 @@ class Violation(BaseModel):
     severity: str  # "low", "medium", "high", "critical"
     description: str
     timestamp: datetime
-    endpoint: str | None = None
+    endpoint: Optional[str] = None
     session_id: str
     resolution_status: str = "open"  # "open", "resolved", "ignored"
     penalty_applied: bool = False
@@ -212,7 +212,7 @@ class ReputationEvent(BaseModel):
     timestamp: datetime
     session_id: str
     description: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ReputationScore(BaseModel):
@@ -228,14 +228,14 @@ class ReputationScore(BaseModel):
     reliability_score: int = Field(ge=0, le=100)  # error generation patterns
 
     # Historical data
-    historical_violations: list[Violation] = Field(default_factory=list)
-    reputation_events: list[ReputationEvent] = Field(default_factory=list)
+    historical_violations: List[Violation] = Field(default_factory=list)
+    reputation_events: List[ReputationEvent] = Field(default_factory=list)
 
     # Trends and recovery
     reputation_trend: Trend = Trend.STABLE
     recovery_progress: float = Field(default=0.0, ge=0.0, le=1.0)
-    last_violation: datetime | None = None
-    last_positive_event: datetime | None = None
+    last_violation: Optional[datetime] = None
+    last_positive_event: Optional[datetime] = None
 
     # Metadata
     first_scored: datetime
@@ -264,17 +264,17 @@ class BehaviorScore(BaseModel):
     overall_behavior_score: float = Field(
         ge=0.0, le=1.0
     )  # 0.0 = suspicious, 1.0 = normal
-    pattern_scores: dict[BehaviorType, float] = Field(default_factory=dict)
+    pattern_scores: Dict[BehaviorType, float] = Field(default_factory=dict)
     risk_level: RiskLevel
     confidence: float = Field(ge=0.0, le=1.0)
 
     # Detailed analysis
-    anomalies_detected: list[AnomalyResult] = Field(default_factory=list)
-    risk_factors: list[str] = Field(default_factory=list)
-    positive_indicators: list[str] = Field(default_factory=list)
+    anomalies_detected: List[AnomalyResult] = Field(default_factory=list)
+    risk_factors: List[str] = Field(default_factory=list)
+    positive_indicators: List[str] = Field(default_factory=list)
 
     # Recommendations
-    recommended_actions: list[str] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
     monitoring_level: str = "normal"  # "minimal", "normal", "enhanced", "intensive"
 
     # Metadata
@@ -287,11 +287,11 @@ class ClientProfile(BaseModel):
     """Comprehensive client profile combining behavior and reputation"""
 
     client_id: str
-    session_ids: list[str] = Field(default_factory=list)
+    session_ids: List[str] = Field(default_factory=list)
 
     # Core profiles
-    behavior_profile: BehaviorProfile | None = None
-    reputation_score: ReputationScore | None = None
+    behavior_profile: Optional[BehaviorProfile] = None
+    reputation_score: Optional[ReputationScore] = None
 
     # Current state
     current_risk_level: RiskLevel = RiskLevel.LOW
@@ -305,8 +305,8 @@ class ClientProfile(BaseModel):
 
     # Trust and access
     trust_level: float = Field(default=0.5, ge=0.0, le=1.0)
-    access_restrictions: list[str] = Field(default_factory=list)
-    monitoring_flags: list[str] = Field(default_factory=list)
+    access_restrictions: List[str] = Field(default_factory=list)
+    monitoring_flags: List[str] = Field(default_factory=list)
 
 
 # --- Analysis Results ---
@@ -320,11 +320,11 @@ class BehaviorAnalysisResult(BaseModel):
 
     # Analysis components
     behavior_score: BehaviorScore
-    anomaly_results: list[AnomalyResult] = Field(default_factory=list)
-    pattern_analysis: dict[str, Any] = Field(default_factory=dict)
+    anomaly_results: List[AnomalyResult] = Field(default_factory=list)
+    pattern_analysis: Dict[str, Any] = Field(default_factory=dict)
 
     # Temporal analysis
-    trend_analysis: dict[str, Trend] = Field(default_factory=dict)
+    trend_analysis: Dict[str, Trend] = Field(default_factory=dict)
     prediction_horizon: timedelta = timedelta(hours=1)
     predicted_risk: RiskLevel = RiskLevel.LOW
 
@@ -332,7 +332,7 @@ class BehaviorAnalysisResult(BaseModel):
     analysis_timestamp: datetime
     processing_time_ms: float
     data_completeness: float = Field(ge=0.0, le=1.0)
-    ml_model_versions: dict[str, str] = Field(default_factory=dict)
+    ml_model_versions: Dict[str, str] = Field(default_factory=dict)
 
 
 class ProtectionDecision(BaseModel):
@@ -343,19 +343,19 @@ class ProtectionDecision(BaseModel):
 
     # Decision
     allow_request: bool = True
-    applied_restrictions: list[str] = Field(default_factory=list)
-    rate_limit_override: dict[str, Any] | None = None
+    applied_restrictions: List[str] = Field(default_factory=list)
+    rate_limit_override: Optional[Dict[str, Any]] = None
     priority_level: str = "normal"  # "low", "normal", "high", "critical"
 
     # Reasoning
-    decision_factors: dict[str, float] = Field(default_factory=dict)
+    decision_factors: Dict[str, float] = Field(default_factory=dict)
     risk_assessment: RiskLevel
     confidence: float = Field(ge=0.0, le=1.0)
     explanation: str = ""
 
     # Actions
-    monitoring_actions: list[str] = Field(default_factory=list)
-    alerting_actions: list[str] = Field(default_factory=list)
+    monitoring_actions: List[str] = Field(default_factory=list)
+    alerting_actions: List[str] = Field(default_factory=list)
     logging_level: str = "normal"  # "minimal", "normal", "detailed", "verbose"
 
     # Metadata
