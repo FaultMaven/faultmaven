@@ -943,11 +943,18 @@ class ConversionService:
             ]
 
     async def list_all_drafts(self, user_id: str) -> List[dict]:
-        """List all non-deleted drafts across all jobs for this user."""
+        """List all non-deleted drafts the user can access.
+
+        Returns drafts where:
+        - User owns the conversion job (personal/team scope), OR
+        - Draft scope is 'global' (visible to all users — global KB is shared)
+        """
         if not self._db_session_factory:
             return []
 
         async with self._db_session_factory() as session:
+            from sqlalchemy import or_
+
             result = await session.execute(
                 select(ConversionDraftModel, ConversionJobModel)
                 .join(
@@ -955,7 +962,10 @@ class ConversionService:
                     ConversionDraftModel.conversion_id == ConversionJobModel.id,
                 )
                 .where(
-                    ConversionJobModel.user_id == user_id,
+                    or_(
+                        ConversionJobModel.user_id == user_id,
+                        ConversionJobModel.scope == "global",
+                    ),
                     ConversionDraftModel.status != DraftStatus.DELETED.value,
                 )
                 .order_by(ConversionDraftModel.created_at.desc())
