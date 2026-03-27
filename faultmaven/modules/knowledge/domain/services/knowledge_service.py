@@ -122,7 +122,7 @@ class KnowledgeService:
         self._user_patterns: Dict[str, Dict[str, Any]] = {}  # User behavior patterns
         self._frequent_query_cache: Dict[str, Any] = {}  # High-frequency query cache
 
-        self._document_counter = 0
+        # _document_counter removed — upload_document() now uses UUID-based IDs
 
         # Redis key patterns for KB metadata and jobs
         self._kb_doc_key = "kb:doc:{document_id}"
@@ -973,39 +973,35 @@ class KnowledgeService:
                 raise RuntimeError(f"Document archive failed: {str(e)}") from e
 
     async def get_document_statistics(self) -> Dict[str, Any]:
-        """
-        Get knowledge base statistics
-
-        Returns:
-            Dictionary with knowledge base statistics
-        """
+        """Get knowledge base statistics from ChromaDB (source of truth)."""
         with self._tracer.trace("knowledge_service_get_statistics"):
             try:
-                import json as _json
-
-                # Compute stats from Redis metadata store
-                ids = await self._redis.smembers(self._kb_docs_set)
                 documents_by_type: Dict[str, int] = {}
                 tag_counts: Dict[str, int] = {}
                 total_documents = 0
 
-                for did in ids or []:
-                    raw = await self._redis.hget(
-                        self._kb_doc_key.format(document_id=did), "data"
-                    )
-                    if not raw:
-                        continue
-                    try:
-                        doc = _json.loads(raw)
-                    except Exception:
-                        continue
-                    if doc.get("archived_at"):
-                        continue
-                    total_documents += 1
-                    dtype = doc.get("document_type", "unknown")
-                    documents_by_type[dtype] = documents_by_type.get(dtype, 0) + 1
-                    for tag in doc.get("tags", []) or []:
-                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                if self._vector_store and hasattr(self._vector_store, "list_documents"):
+                    raw_docs = await self._vector_store.list_documents(limit=500)
+
+                    seen_ids: set = set()
+                    for raw in raw_docs:
+                        meta = raw.get("metadata", {})
+                        doc_id = raw.get("id", meta.get("document_id", ""))
+                        if doc_id in seen_ids:
+                            continue
+                        seen_ids.add(doc_id)
+
+                        total_documents += 1
+                        dtype = meta.get("document_type", "unknown")
+                        documents_by_type[dtype] = documents_by_type.get(dtype, 0) + 1
+                        raw_tags = meta.get("tags", "")
+                        tag_list = (
+                            [t.strip() for t in raw_tags.split(",") if t.strip()]
+                            if isinstance(raw_tags, str)
+                            else raw_tags if isinstance(raw_tags, list) else []
+                        )
+                        for tag in tag_list:
+                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
                 most_used_tags = sorted(
                     tag_counts.keys(), key=lambda t: tag_counts[t], reverse=True
@@ -1577,126 +1573,19 @@ class KnowledgeService:
         rank_by: Optional[str] = None,
         user: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Search documents with filtering by category, document_type, and tags"""
+        """Search documents from ChromaDB with text scoring and RBAC filtering."""
         from faultmaven.api.v1.utils.parsing import normalize_tags_field
 
         try:
-            # Get all documents from Redis
-            all_documents: List[Dict[str, Any]] = []
-            try:
-                import json as _json
-
-                # Normalize IDs to strings
-                raw_ids = await self._redis.smembers(self._kb_docs_set)
-                candidate_ids = set(
-                    [
-                        (
-                            rid.decode("utf-8")
-                            if isinstance(rid, (bytes, bytearray))
-                            else str(rid)
-                        )
-                        for rid in (raw_ids or set())
-                    ]
-                )
-                logger.info(
-                    f"KB list: base candidate count",
-                    extra={"count": len(candidate_ids)},
-                )
-                if document_type:
-                    raw_type_ids = await self._redis.smembers(
-                        self._kb_index_type.format(document_type=document_type)
-                    )
-                    type_ids = set(
-                        [
-                            (
-                                tid.decode("utf-8")
-                                if isinstance(tid, (bytes, bytearray))
-                                else str(tid)
-                            )
-                            for tid in (raw_type_ids or set())
-                        ]
-                    )
-                    candidate_ids = (
-                        set(candidate_ids).intersection(type_ids)
-                        if candidate_ids
-                        else type_ids
-                    )
-                if tags:
-                    for tag in tags:
-                        raw_tag_ids = await self._redis.smembers(
-                            self._kb_index_tag.format(tag=tag)
-                        )
-                        tag_ids = set(
-                            [
-                                (
-                                    tid.decode("utf-8")
-                                    if isinstance(tid, (bytes, bytearray))
-                                    else str(tid)
-                                )
-                                for tid in (raw_tag_ids or set())
-                            ]
-                        )
-                        candidate_ids = (
-                            set(candidate_ids).intersection(tag_ids)
-                            if candidate_ids
-                            else tag_ids
-                        )
-                logger.info(
-                    f"KB list: filtered candidate count",
-                    extra={"count": len(candidate_ids)},
-                )
-                for did in list(candidate_ids):
-                    raw = await self._redis.hget(
-                        self._kb_doc_key.format(document_id=did), "data"
-                    )
-                    if raw:
-                        try:
-                            all_documents.append(_json.loads(raw))
-                        except Exception:
-                            continue
-                logger.info(
-                    f"KB list: loaded documents",
-                    extra={"count": len(all_documents)},
-                )
-            except Exception as e:
-                logger.error(f"Failed to read KB metadata from Redis: {e}")
-                raise
-
-            # Extract user context for RBAC
-            user_id = getattr(user, "user_id", None) if user else None
-            team_id = getattr(user, "organization_id", None) if user else None
-
-            # Apply filters
-            filtered_docs = []
-            for doc in all_documents:
-                # Apply RBAC Scope
-                metadata = doc.get("metadata", {})
-                scope = metadata.get("scope", doc.get("scope", "global"))
-
-                if scope == "personal":
-                    owner_id = metadata.get("owner_id", doc.get("owner_id"))
-                    if not user_id or owner_id != user_id:
-                        continue
-                elif scope == "team":
-                    doc_team_id = metadata.get("team_id", doc.get("team_id"))
-                    if not team_id or doc_team_id != team_id:
-                        continue
-
-                # Filter by document type
-                if document_type and doc.get("document_type") != document_type:
-                    continue
-
-                # Filter by category
-                if category and doc.get("category") != category:
-                    continue
-
-                # Filter by tags
-                if tags:
-                    doc_tags = doc.get("tags", [])
-                    if not any(tag in doc_tags for tag in tags):
-                        continue
-
-                filtered_docs.append(doc)
+            # Get all documents from ChromaDB via list_documents (already RBAC-filtered)
+            result = await self.list_documents(
+                document_type=document_type,
+                tags=tags,
+                limit=500,
+                offset=0,
+                user=user,
+            )
+            filtered_docs = result.get("documents", [])
 
             # Simple text search within filtered documents
             scored_results = []
