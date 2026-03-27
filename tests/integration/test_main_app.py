@@ -36,7 +36,16 @@ def _ensure_database():
     engine = create_engine(f"sqlite:///{db_file}")
     Base.metadata.create_all(engine)
 
-    # Stamp alembic_version so migrations treat the DB as up-to-date
+    # Stamp alembic_version with the latest head so migrations are a no-op.
+    # Using create_all creates tables from current models (which include all
+    # columns from all migrations), so we must stamp the latest revision.
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    alembic_cfg = Config("alembic.ini")
+    script_dir = ScriptDirectory.from_config(alembic_cfg)
+    head_rev = script_dir.get_current_head()
+
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -46,7 +55,7 @@ def _ensure_database():
         )
         conn.execute(
             text("INSERT INTO alembic_version (version_num) VALUES (:rev)"),
-            {"rev": "424078e5aa04"},
+            {"rev": head_rev},
         )
 
     engine.dispose()
