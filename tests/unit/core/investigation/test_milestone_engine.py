@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -140,7 +140,7 @@ class TestMilestoneEngine:
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
                 source_type=EvidenceSourceType.LOGS,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
@@ -288,7 +288,7 @@ class TestMilestoneEngine:
                 content_ref="test.log",
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
                 source_type=EvidenceSourceType.LOGS,
-                collected_at=datetime.now(timezone.utc),
+                collected_at=datetime.now(UTC),
                 collected_by="user_123",
                 primary_purpose="Testing",
                 preprocessed_content="Log content",
@@ -1459,10 +1459,7 @@ class TestReadinessAssessments:
         from faultmaven.core.investigation.terminal_transitions import (
             assess_runbook_readiness,
         )
-        from faultmaven.modules.case.contracts import (
-            Solution,
-            SolutionType,
-        )
+        from faultmaven.modules.case.contracts import Solution, SolutionType
 
         case = self._make_case()
         # Solution exists but no root_cause_conclusion

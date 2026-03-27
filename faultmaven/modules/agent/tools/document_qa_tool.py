@@ -11,16 +11,16 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
 
 from faultmaven.config.settings import get_settings
-from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
+from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -79,9 +79,9 @@ class DocumentQATool(LangChainBaseTool):
     async def _arun(
         self,
         question: str,
-        scope_id: Optional[str] = None,
+        scope_id: str | None = None,
         k: int = 5,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: dict[str, Any] | None = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -110,10 +110,10 @@ class DocumentQATool(LangChainBaseTool):
     async def answer_question(
         self,
         question: str,
-        scope_id: Optional[str],
+        scope_id: str | None,
         k: int,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
 

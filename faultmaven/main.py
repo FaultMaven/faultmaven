@@ -35,11 +35,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Now import everything else
-import logging
 import os
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -242,8 +241,8 @@ from .modules.auth.api.session import router as session_router
 from .modules.auth.api.teams import router as teams_router
 from .modules.case.api.routes import router as case_router
 from .modules.evidence.api.routes import router as evidence_router
-from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.knowledge.api.conversion_routes import router as conversion_router
+from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
 
 # SessionManager now handled via DI container - services.session.SessionService
@@ -335,7 +334,7 @@ async def lifespan(app: FastAPI):
         token_manager = container.get_token_manager()
 
         logger.info(
-            f"Container initialization complete. Checking authentication services..."
+            "Container initialization complete. Checking authentication services..."
         )
         logger.info(
             f"   - user_store: {type(user_store).__name__ if user_store else 'None'}"
@@ -346,7 +345,7 @@ async def lifespan(app: FastAPI):
 
         if user_store is None or token_manager is None:
             logger.error(
-                f"❌ Critical authentication services missing after container initialization:"
+                "❌ Critical authentication services missing after container initialization:"
             )
             logger.error(f"   - user_store: {user_store}")
             logger.error(f"   - token_manager: {token_manager}")
@@ -650,7 +649,6 @@ async def lifespan(app: FastAPI):
     # Initialize Phase 2 monitoring components
     try:
         from .infrastructure.monitoring.alerting import (
-            alert_manager,
             setup_default_alert_rules,
         )
         from .infrastructure.monitoring.apm_integration import apm_integration
@@ -853,9 +851,7 @@ def setup_middleware():
         )
 
         if logging_enabled:
-            logger.info(
-                f"✅ CORS configured for development with local network support"
-            )
+            logger.info("✅ CORS configured for development with local network support")
             logger.info(f"   Allowed origins: {cors_origins}")
             logger.info(f"   Local network pattern: {local_network_regex}")
     else:
@@ -1193,7 +1189,7 @@ def _is_debug_enabled(settings=None) -> bool:
         settings = _app_settings
         if settings is None:
             try:
-                from .config.settings import Environment, get_settings
+                from .config.settings import get_settings
 
                 settings = get_settings()
             except Exception:
@@ -1238,7 +1234,7 @@ if _is_debug_enabled(settings=_debug_settings):
         return {
             "routes": routes_info,
             "count": len(routes_info),
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
     @app.get("/debug/health")
@@ -1246,7 +1242,7 @@ if _is_debug_enabled(settings=_debug_settings):
         """Minimal debug health endpoint."""
         return {
             "status": "ok",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
     @app.get("/debug/config")
@@ -1263,13 +1259,13 @@ if _is_debug_enabled(settings=_debug_settings):
         Useful for debugging configuration issues and verifying preset application.
         """
         try:
-            from .config.presets import get_preset_info, list_available_presets
+            from .config.presets import list_available_presets
             from .config.settings import get_settings
 
             settings = get_settings()
 
             return {
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
                 "configuration": settings.get_configuration_summary(),
                 "available_presets": list_available_presets(),
             }
@@ -1277,7 +1273,7 @@ if _is_debug_enabled(settings=_debug_settings):
             logger.error(f"Failed to get configuration info: {e}")
             return {
                 "error": f"Failed to get configuration: {e}",
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
             }
 
     @app.get("/debug/llm-providers")
@@ -1305,7 +1301,7 @@ if _is_debug_enabled(settings=_debug_settings):
             strict_mode = settings_debug.llm.strict_provider_mode
 
             return {
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
                 "primary_provider": fallback_chain[0] if fallback_chain else "none",
                 "strict_mode": strict_mode,
                 "fallback_chain": fallback_chain,
@@ -1317,7 +1313,7 @@ if _is_debug_enabled(settings=_debug_settings):
             logger.error(f"Failed to get LLM provider status: {e}")
             return {
                 "error": f"Failed to get LLM provider status: {e}",
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
             }
 
 else:
@@ -1500,7 +1496,7 @@ async def health_check():
         # Enhanced health status with component details
         health_status = {
             "status": overall_status.value,
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "overall_sla": sla_summary["overall_sla"],
             "components": {},
             "services": {"session_manager": "active", "api": "running"},
@@ -1532,7 +1528,7 @@ async def health_check():
         # Fallback to basic health status
         health_status = {
             "status": "degraded",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "error": "Enhanced health monitoring unavailable",
             "services": {"session_manager": "unknown", "api": "running"},
         }
@@ -1652,7 +1648,7 @@ async def health_check_dependencies():
                 sla_details[component_name] = {"error": str(e)}
 
         return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "container_health": health,
             "service_tests": service_tests,
             "component_health": {
@@ -1683,7 +1679,7 @@ async def health_check_dependencies():
         return {
             "error": f"Enhanced dependency health check failed: {e}",
             "container_available": False,
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -1713,7 +1709,7 @@ async def logging_health_check():
         health_status = coordinator.get_health_status()
 
         # Add timestamp and additional metadata
-        health_status["timestamp"] = to_json_compatible(datetime.now(timezone.utc))
+        health_status["timestamp"] = to_json_compatible(datetime.now(UTC))
         health_status["service"] = "logging"
 
         return health_status
@@ -1722,7 +1718,7 @@ async def logging_health_check():
         return {
             "status": "error",
             "error": f"Logging health check failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "service": "logging",
         }
 
@@ -1747,7 +1743,7 @@ async def health_check_sla():
                 detailed_sla[component_name] = {"error": str(e)}
 
         return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "summary": sla_summary,
             "components": detailed_sla,
         }
@@ -1756,7 +1752,7 @@ async def health_check_sla():
         logger.error(f"SLA health check failed: {e}")
         return {
             "error": f"SLA health check failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -1783,7 +1779,7 @@ async def health_check_component(component_name: str):
             sla_details = {"error": str(e)}
 
         return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "component_name": component_name,
             "health": {
                 "status": component_health.status.value,
@@ -1803,7 +1799,7 @@ async def health_check_component(component_name: str):
         return {
             "error": f"Component health check failed: {e}",
             "component_name": component_name,
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -1820,7 +1816,7 @@ async def health_check_error_patterns():
             error_context = context.error_context
 
             return {
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
                 "escalation_level": error_context.escalation_level.value,
                 "detected_patterns": error_context.get_pattern_summary(),
                 "recovery_summary": error_context.get_recovery_summary(),
@@ -1835,7 +1831,7 @@ async def health_check_error_patterns():
             }
         else:
             return {
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
                 "message": "No active error context",
                 "patterns": [],
                 "recovery_attempts": [],
@@ -1845,7 +1841,7 @@ async def health_check_error_patterns():
         logger.error(f"Error patterns health check failed: {e}")
         return {
             "error": f"Error patterns health check failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -1874,7 +1870,7 @@ async def get_performance_metrics():
         else:
             # Return basic metrics if middleware not found
             return {
-                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "timestamp": to_json_compatible(datetime.now(UTC)),
                 "error": "Performance middleware not found",
                 "metrics_collector": metrics_collector.get_metrics_summary(),
                 "apm_integration": apm_integration.get_export_statistics(),
@@ -1885,7 +1881,7 @@ async def get_performance_metrics():
         logger.error(f"Performance metrics endpoint failed: {e}")
         return {
             "error": f"Performance metrics failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -1904,7 +1900,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         active_alerts = alert_manager.get_active_alerts()
 
         return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "time_window_minutes": time_window_minutes,
             "dashboard": dashboard_data,
             "active_alerts": [
@@ -1925,7 +1921,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         logger.error(f"Real-time metrics endpoint failed: {e}")
         return {
             "error": f"Real-time metrics failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -1939,7 +1935,7 @@ async def get_alert_status():
         alert_stats = alert_manager.get_alert_statistics()
 
         return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "statistics": alert_stats,
             "active_alerts": [
                 {
@@ -1967,7 +1963,7 @@ async def get_alert_status():
         logger.error(f"Alert status endpoint failed: {e}")
         return {
             "error": f"Alert status failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -2017,7 +2013,7 @@ async def get_system_optimization_metrics():
             logger.warning(f"Failed to get LLM optimization metrics: {e}")
 
         return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "system_optimization": optimization_metrics,
             "resource_optimization": resource_metrics,
             "llm_optimization": llm_optimization_metrics,
@@ -2050,7 +2046,7 @@ async def get_system_optimization_metrics():
         logger.error(f"System optimization metrics endpoint failed: {e}")
         return {
             "error": f"System optimization metrics failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
         }
 
 
@@ -2102,7 +2098,7 @@ async def trigger_system_cleanup():
                     cleanup_results["cache_cleanup"] = {"error": str(e)}
                 break
 
-        cleanup_results["timestamp"] = to_json_compatible(datetime.now(timezone.utc))
+        cleanup_results["timestamp"] = to_json_compatible(datetime.now(UTC))
         cleanup_results["cleanup_triggered"] = True
 
         return cleanup_results
@@ -2111,7 +2107,7 @@ async def trigger_system_cleanup():
         logger.error(f"System cleanup trigger failed: {e}")
         return {
             "error": f"System cleanup failed: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "timestamp": to_json_compatible(datetime.now(UTC)),
             "cleanup_triggered": False,
         }
 

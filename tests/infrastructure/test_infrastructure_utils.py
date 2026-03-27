@@ -10,7 +10,8 @@ import asyncio
 import contextlib
 import json
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from collections.abc import AsyncGenerator
+from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,14 +23,14 @@ from aiohttp.test_utils import TestServer
 class MockHTTPServer:
     """Utility for creating test HTTP servers with controllable behavior."""
 
-    def __init__(self, port: Optional[int] = None):
+    def __init__(self, port: int | None = None):
         self.port = port
         self.request_history = []
         self.response_config = {}
         self.failure_config = {}
         self.latency_config = {}
 
-    async def create_server(self, routes: List[Dict] = None):
+    async def create_server(self, routes: list[dict] = None):
         """Create HTTP server with configurable routes."""
         app = web.Application()
 
@@ -101,7 +102,7 @@ class MockHTTPServer:
         await server.start_server()
         return server
 
-    def configure_response(self, method: str, path: str, response_data: Dict):
+    def configure_response(self, method: str, path: str, response_data: dict):
         """Configure response for specific route."""
         route_key = f"{method.upper()}:{path}"
         self.response_config[route_key] = response_data
@@ -127,7 +128,7 @@ class MockHTTPServer:
         route_key = f"{method.upper()}:{path}"
         self.latency_config[route_key] = delay_seconds
 
-    def get_request_history(self) -> List[Dict]:
+    def get_request_history(self) -> list[dict]:
         """Get history of requests made to server."""
         return self.request_history.copy()
 
@@ -145,7 +146,7 @@ class MockRedisCluster:
         self.call_count = 0
         self.operation_times = []
 
-    async def get(self, key: str) -> Optional[str]:
+    async def get(self, key: str) -> str | None:
         """Get value from Redis."""
         start_time = time.time()
         self.call_count += 1
@@ -161,7 +162,7 @@ class MockRedisCluster:
         self.operation_times.append(time.time() - start_time)
         return result
 
-    async def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
+    async def set(self, key: str, value: str, ex: int | None = None) -> bool:
         """Set value in Redis."""
         start_time = time.time()
         self.call_count += 1
@@ -228,7 +229,7 @@ class MockRedisCluster:
         self.data.clear()
         self.expirations.clear()
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """Get performance statistics."""
         if not self.operation_times:
             return {"call_count": 0, "avg_time": 0, "max_time": 0}
@@ -250,7 +251,7 @@ class MockVectorDatabase:
         self.metadata = {}
         self.operation_count = 0
 
-    def add_documents(self, docs: List[Dict]):
+    def add_documents(self, docs: list[dict]):
         """Add documents to vector database."""
         self.operation_count += 1
 
@@ -265,7 +266,7 @@ class MockVectorDatabase:
             # Simple text-based "embedding" for testing
             self.embeddings[doc_id] = self._generate_text_embedding(content)
 
-    def search(self, query: str, k: int = 5) -> List[Dict]:
+    def search(self, query: str, k: int = 5) -> list[dict]:
         """Search for similar documents."""
         self.operation_count += 1
 
@@ -297,7 +298,7 @@ class MockVectorDatabase:
 
         return results
 
-    def delete_documents(self, doc_ids: List[str]):
+    def delete_documents(self, doc_ids: list[str]):
         """Delete documents by IDs."""
         self.operation_count += 1
 
@@ -306,7 +307,7 @@ class MockVectorDatabase:
             self.embeddings.pop(doc_id, None)
             self.metadata.pop(doc_id, None)
 
-    def _generate_text_embedding(self, text: str) -> Dict[str, float]:
+    def _generate_text_embedding(self, text: str) -> dict[str, float]:
         """Generate simple text-based embedding for similarity testing."""
         words = text.lower().split()
         word_counts = {}
@@ -322,7 +323,7 @@ class MockVectorDatabase:
 
         return word_counts
 
-    def _calculate_similarity(self, embedding1: Dict, embedding2: Dict) -> float:
+    def _calculate_similarity(self, embedding1: dict, embedding2: dict) -> float:
         """Calculate cosine similarity between embeddings."""
         common_words = set(embedding1.keys()) & set(embedding2.keys())
 
@@ -352,7 +353,7 @@ class MockVectorDatabase:
 @pytest.fixture
 async def http_test_server():
     """Fixture providing HTTP test server."""
-    server_util = TestHTTPServer()
+    server_util = MockHTTPServer()
     server = await server_util.create_server()
 
     yield server, server_util
@@ -426,7 +427,7 @@ class PerformanceBenchmark:
             raise ValueError("No measurements taken")
         return sum(self.measurements) / len(self.measurements)
 
-    def get_statistics(self) -> Dict:
+    def get_statistics(self) -> dict:
         """Get comprehensive statistics."""
         if not self.measurements:
             return {"count": 0}
@@ -455,7 +456,7 @@ class ConcurrencyTester:
     """Utility for testing concurrent operations."""
 
     @staticmethod
-    async def run_concurrent_operations(operations: List, max_concurrency: int = None):
+    async def run_concurrent_operations(operations: list, max_concurrency: int = None):
         """Run operations concurrently with optional concurrency limit."""
         if max_concurrency and len(operations) > max_concurrency:
             # Run in batches
@@ -492,7 +493,7 @@ class ConcurrencyTester:
 
 
 # Helper functions for common test scenarios
-def create_sample_log_data(count: int = 100) -> List[str]:
+def create_sample_log_data(count: int = 100) -> list[str]:
     """Create sample log data for testing."""
     log_levels = ["INFO", "WARN", "ERROR", "DEBUG"]
     log_messages = [
@@ -521,8 +522,8 @@ def create_sample_log_data(count: int = 100) -> List[str]:
 
 
 def create_sample_documents(
-    count: int = 50, categories: List[str] = None
-) -> List[Dict]:
+    count: int = 50, categories: list[str] = None
+) -> list[dict]:
     """Create sample documents for vector database testing."""
     if categories is None:
         categories = ["error", "solution", "configuration", "performance", "security"]
@@ -549,7 +550,7 @@ def create_sample_documents(
     return documents
 
 
-def create_sample_metrics_data() -> Dict[str, List]:
+def create_sample_metrics_data() -> dict[str, list]:
     """Create sample metrics data for testing."""
     import random
 
@@ -572,7 +573,7 @@ def assert_performance_within_bounds(
 
 
 def assert_concurrent_performance(
-    results: Dict, min_ops_per_second: float, operation: str = "operations"
+    results: dict, min_ops_per_second: float, operation: str = "operations"
 ):
     """Assert that concurrent performance meets minimum requirements."""
     ops_per_second = results["operations_per_second"]
