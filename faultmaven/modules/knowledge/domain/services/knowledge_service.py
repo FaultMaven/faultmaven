@@ -912,50 +912,62 @@ class KnowledgeService:
             try:
                 from datetime import datetime, timezone
 
-                archived_at = datetime.now(timezone.utc).isoformat()
+                # Verify document exists in ChromaDB (source of truth) or Redis
+                doc_exists = False
 
+                if self._vector_store and hasattr(self._vector_store, "get_document"):
+                    chroma_doc = await self._vector_store.get_document(document_id)
+                    if chroma_doc:
+                        doc_exists = True
+
+                if not doc_exists and self._redis:
+                    import json as _json
+
+                    doc_key = self._kb_doc_key.format(document_id=document_id)
+                    raw = await self._redis.hget(doc_key, "data")
+                    if raw:
+                        doc_exists = True
+
+                if not doc_exists:
+                    return {
+                        "success": False,
+                        "error": f"Document {document_id} not found",
+                    }
+
+                # Remove from ChromaDB (persistent store)
+                if self._vector_store:
+                    await self._remove_from_vector_store(document_id)
+
+                # Clean up Redis cache
                 try:
                     import json as _json
 
                     doc_key = self._kb_doc_key.format(document_id=document_id)
                     raw = await self._redis.hget(doc_key, "data")
-                    if not raw:
-                        return {
-                            "success": False,
-                            "error": f"Document {document_id} not found",
-                        }
+                    if raw:
+                        doc = _json.loads(raw)
+                        archived_at = datetime.now(timezone.utc).isoformat()
+                        doc["archived_at"] = archived_at
+                        await self._redis.hset(doc_key, "data", _json.dumps(doc))
 
-                    doc = _json.loads(raw)
-                    doc["archived_at"] = archived_at
-
-                    # Update the document in Redis with archived_at flag
-                    await self._redis.hset(doc_key, "data", _json.dumps(doc))
-
-                    # Remove from index sets so it no longer appears in listings
-                    pipe = self._redis.pipeline()
-                    pipe.srem(self._kb_docs_set, document_id)
-                    if doc.get("document_type"):
-                        pipe.srem(
-                            self._kb_index_type.format(
-                                document_type=doc["document_type"]
-                            ),
-                            document_id,
-                        )
-                    for tag in doc.get("tags", []) or []:
-                        pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
-                    await pipe.execute()
+                        pipe = self._redis.pipeline()
+                        pipe.srem(self._kb_docs_set, document_id)
+                        if doc.get("document_type"):
+                            pipe.srem(
+                                self._kb_index_type.format(
+                                    document_type=doc["document_type"]
+                                ),
+                                document_id,
+                            )
+                        for tag in doc.get("tags", []) or []:
+                            pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
+                        await pipe.execute()
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to archive KB metadata in Redis for {document_id}: {e}"
-                    )
+                    logger.warning(f"Failed to clean up Redis for {document_id}: {e}")
 
                 # Remove associated job if exists
                 job_id = f"job_{document_id}"
                 await self._redis.delete(self._kb_job_key.format(job_id=job_id))
-
-                # Remove from vector store so archived docs don't appear in searches
-                if self._vector_store:
-                    await self._remove_from_vector_store(document_id)
 
                 logger.info(f"Successfully archived document {document_id}")
                 return {"success": True, "document_id": document_id}
