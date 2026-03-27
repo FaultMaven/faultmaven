@@ -431,12 +431,51 @@ async def get_env_config_status(
             ),
         }
 
+        # Report actual runtime state, not raw setting defaults.
+        # Bootstrap may create persistent stores even when settings say "inmemory".
+        import os
+        from pathlib import Path
+
+        # Database: check alembic.ini for actual DB URL (bootstrap always uses this)
+        db_backend = settings.database.case_storage_type
+        alembic_url = ""
+        for ini_path in [
+            Path("alembic.ini"),
+            Path(os.environ.get("ALEMBIC_CONFIG", "")),
+        ]:
+            if ini_path.exists():
+                for line in ini_path.read_text().splitlines():
+                    if line.strip().startswith("sqlalchemy.url"):
+                        alembic_url = line.split("=", 1)[1].strip()
+                        break
+                break
+        if "sqlite" in alembic_url:
+            db_backend = "sqlite"
+        elif "postgresql" in alembic_url:
+            db_backend = "postgresql"
+
+        # Vector storage: check if ChromaDB PersistentClient is active
+        vector_storage = settings.database.vector_storage_type
+        chroma_dir = Path(
+            getattr(settings.database, "chromadb_persist_dir", "./data/chroma")
+        )
+        if (chroma_dir / "chroma.sqlite3").exists():
+            vector_storage = "chromadb (persistent)"
+
+        # Session storage: FakeRedis = inmemory, real Redis = redis
+        session_storage = settings.database.session_storage_type
+        redis_url = getattr(settings.database, "redis_url", None)
+        if redis_url and "redis://" in str(redis_url):
+            session_storage = "redis"
+        else:
+            session_storage = "fakeredis (inmemory)"
+
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
-            db_backend=settings.database.case_storage_type,
-            session_storage=settings.database.session_storage_type,
-            vector_storage=settings.database.vector_storage_type,
+            db_backend=db_backend,
+            session_storage=session_storage,
+            vector_storage=vector_storage,
             llm_provider=(
                 settings.llm.provider.value if settings.llm.provider else "not_set"
             ),
