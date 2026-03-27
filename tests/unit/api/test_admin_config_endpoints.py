@@ -468,7 +468,7 @@ class TestGetEnvConfigStatus:
         assert result.auth_mode == "local"
         assert result.deployment == "local"
         assert result.db_backend == "sqlite"
-        assert result.session_storage == "inmemory"
+        assert result.session_storage == "fakeredis (inmemory)"
         assert result.vector_storage == "inmemory"
         assert result.llm_provider == "anthropic"
         assert result.pii_redaction_enabled is False
@@ -476,14 +476,20 @@ class TestGetEnvConfigStatus:
         assert result.timestamp is not None
 
     @pytest.mark.asyncio
-    async def test_cloud_config(self, mock_admin_user, mock_settings):
+    async def test_cloud_config(
+        self, mock_admin_user, mock_settings, tmp_path, monkeypatch
+    ):
         """Returns correct values for cloud deployment config."""
         mock_settings.auth.auth_mode = "oauth"
         mock_settings.server.environment = MagicMock(value="production")
         mock_settings.database.case_storage_type = "postgresql"
         mock_settings.database.session_storage_type = "redis"
+        mock_settings.database.redis_url = "redis://localhost:6379"
         mock_settings.database.vector_storage_type = "chromadb"
         mock_settings.protection.protection_enabled = True
+
+        # Run from temp dir so alembic.ini is not found (avoids sqlite override)
+        monkeypatch.chdir(tmp_path)
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(current_user=mock_admin_user)
