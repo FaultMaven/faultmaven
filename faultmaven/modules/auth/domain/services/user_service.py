@@ -15,18 +15,20 @@ This service provides:
 Design Reference: TASK-018 User Management Service, TASK-019 Admin User Management
 """
 
+from __future__ import annotations
+
 import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
 
-# Redis is always available (real Redis or FakeRedis via DI)
-from redis.asyncio import Redis
-
 from faultmaven.config.settings import get_settings
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 from faultmaven.exceptions import (
     AuthenticationError,
     AuthorizationError,

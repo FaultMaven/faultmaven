@@ -12,18 +12,20 @@ This module provides production-ready JWT authentication using RS256 algorithm:
 Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
 
+from __future__ import annotations
+
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
 
-# Redis is always available (real Redis or FakeRedis via DI)
-from redis.asyncio import Redis
-
 from faultmaven.config.settings import get_settings
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
 from faultmaven.modules.auth.domain.models.auth import (
     AuthenticatedUser,
