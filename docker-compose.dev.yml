@@ -81,4 +81,4 @@ volumes:
   redis_data:
   chromadb_data:
   # postgres_data:
-  data: 
+  data:

@@ -128,7 +128,7 @@ class CustomValidatorTool(BaseTool):
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         # Implementation
         pass
-    
+
     def get_schema(self) -> Dict[str, Any]:
         # Schema definition
         pass
@@ -307,7 +307,3 @@ See **[Contributing Guidelines](../CONTRIBUTING.md)** for:
 **Last Updated**: 2026-03-13
 **Version**: 1.1
 **Maintainer**: Architecture Team
-
-
-
-

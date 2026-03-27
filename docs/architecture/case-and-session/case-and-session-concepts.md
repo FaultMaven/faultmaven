@@ -1,8 +1,8 @@
 # Case and Session Concepts in FaultMaven
 
-**Version:** 2.0  
-**Date:** 2025-10-11  
-**Status:** Authoritative Specification  
+**Version:** 2.0
+**Date:** 2025-10-11
+**Status:** Authoritative Specification
 **Purpose:** Define foundational concepts that both frontend and backend must understand identically
 
 ---
@@ -93,7 +93,7 @@ function getOrCreateClientId(): string {
 
 **Contains**:
 - User authentication state
-- Session creation/expiry timestamps 
+- Session creation/expiry timestamps
 - User identity information
 - Client identification for resumption
 - Session resumption status and metadata
@@ -101,7 +101,7 @@ function getOrCreateClientId(): string {
 
 **Does NOT Contain**:
 - ❌ Cases (cases are independent resources)
-- ❌ Case history (cases manage their own history)  
+- ❌ Case history (cases manage their own history)
 - ❌ Current active case ID (frontend UI state)
 - ❌ Other users' session data (strict isolation)
 - ❌ Cross-client session data (each client maintains independent session)
@@ -200,7 +200,7 @@ graph TB
 
 ## Architecture Principles
 
-**Key Architectural Principles**: 
+**Key Architectural Principles**:
 - Cases are **NOT** nested under sessions. Sessions provide **authentication context only**.
 - **Multiple concurrent sessions per user**: Each client/device maintains independent session
 - **Session resumption**: Same client_id can resume sessions across browser restarts
@@ -390,7 +390,7 @@ Authorization: Bearer <token>
 ```python
 class SessionService:
     """Authentication session management only"""
-    
+
     async def create_session(self, user_id: str, client_id: Optional[str] = None) -> SessionContext:
         """Create new authentication session with TTL and client binding"""
         # Try to resume existing session for this (user, client) pair
@@ -400,7 +400,7 @@ class SessionService:
             )
             if existing_session_id:
                 return await session_store.get_session(existing_session_id)
-        
+
         # Create new session bound to (user, client)
         session = Session(
             session_id=str(uuid4()),
@@ -408,16 +408,16 @@ class SessionService:
             client_id=client_id,
             created_at=datetime.utcnow()
         )
-        
+
         # Index by (user_id, client_id) for resumption
         if client_id:
             await session_store.create_client_index(user_id, client_id, session.session_id)
-        
+
         return session
-        
+
     async def validate_session(self, session_id: str) -> bool:
         """Validate session is active and not expired"""
-        
+
     async def get_user_from_session(self, session_id: str) -> str:
         """Get user_id from valid session for authorization"""
 ```
@@ -427,17 +427,17 @@ class SessionService:
 ```python
 class CaseService:
     """Case management as top-level resources"""
-    
+
     async def create_case(self, user_id: str, title: str, initial_query: Optional[str]) -> Case:
         """Create new case as independent resource"""
-        
+
     async def get_user_cases(self, user_id: str) -> List[Case]:
         """Get all cases belonging to user"""
-        
+
     async def get_case(self, case_id: str, user_id: str) -> Case:
         """Get specific case with authorization check"""
         # Validate: case.owner_id == user_id
-        
+
     async def get_case_conversation_history(self, case_id: str, user_id: str) -> List[Dict]:
         """Get conversation history for case with auth check"""
 
@@ -453,9 +453,9 @@ class CaseService:
 ```python
 class AgentService:
     async def process_case_query(
-        self, 
-        case_id: str, 
-        user_id: str, 
+        self,
+        case_id: str,
+        user_id: str,
         request: QueryRequest
     ) -> AgentResponse:
         """Process query within specific case context"""
@@ -623,7 +623,7 @@ async def create_session(user_id: str):
 ### Flow 4: Case List and Navigation (Multi-Session Enhanced)
 
 1. User wants to see all their cases from any active session
-2. Frontend sends: `GET /api/v1/cases` with `X-Session-ID: {session_id}` header  
+2. Frontend sends: `GET /api/v1/cases` with `X-Session-ID: {session_id}` header
 3. Backend validates session and returns cases where case.user_id matches session.user_id
 4. **Consistent case list across all user sessions**: Same cases visible from all devices
 5. User can switch between cases without losing any conversation history
@@ -678,14 +678,14 @@ describe('Session-Case Relationship', () => {
   test('cases should persist across session expiry', async () => {
     const session1 = await client.createSession();
     const case1 = await client.createCase(session1, "Test Case");
-    
+
     // Let session expire
     await expireSession(session1.session_id);
-    
+
     // Create new session
     const session2 = await client.createSession();
     const cases = await client.getSessionCases(session2.session_id);
-    
+
     expect(cases).toContain(case1);  // ✅ Case persists beyond session
   });
 });
@@ -727,10 +727,10 @@ async def test_session_resumption():
 
     # Create initial session
     session1 = await session_service.create_session(user_id, client_id)
-    
+
     # Simulate browser restart - same client_id
     session2 = await session_service.create_session(user_id, client_id)
-    
+
     assert session1.session_id == session2.session_id  # ✅ Same session resumed
     assert session2.session_resumed == True            # ✅ Resumption flag set
 ```
@@ -746,13 +746,13 @@ Authentication Session: session_abc123 (User: john@company.com, TTL: 24h)
 │
 └── Case (Independent Resource): case_def456
     ├── Title: "Database Performance Issues"
-    ├── Status: "investigating" 
+    ├── Status: "investigating"
     ├── Owner: john@company.com (authorization reference)
     ├── Created: 2024-01-15T10:30:00Z
     ├── Conversation History:
     │   ├── 10:30 Q: "Database queries are slow"
     │   ├── 10:30 A: "Let's analyze the performance metrics..."
-    │   ├── 10:32 Q: "Started after recent deployment" 
+    │   ├── 10:32 Q: "Started after recent deployment"
     │   ├── 10:32 A: "Recent deployment changes can affect performance..."
     │   ├── 10:35 Q: "Should I check query execution plans?"
     │   ├── 10:35 A: "Yes, query execution plans will show..."
@@ -1057,4 +1057,3 @@ The implementation provides a solid foundation for advanced features like case s
 ---
 
 **This document is authoritative** - any implementation that deviates from these definitions should be considered incorrect and require refactoring.
-

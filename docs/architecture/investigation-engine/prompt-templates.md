@@ -57,20 +57,20 @@ CASE_MODEL_VERSION = "v3.0"
 def build_inquiry_prompt(case: Case, user_message: str) -> str:
     """
     Build INQUIRY template for pre-investigation exploration.
-    
+
     Args:
         case: Case in INQUIRY status
         user_message: Current user message
-        
+
     Returns:
         Complete prompt string
     """
-    
+
     # Get previous problem statement if exists
     previous_statement_section = ""
     if case.inquiry.proposed_problem_statement:
         confirmed_status = "✅ Confirmed" if case.inquiry.problem_statement_confirmed else "⏳ Awaiting user confirmation"
-        
+
         revision_note = ""
         if not case.inquiry.problem_statement_confirmed:
             revision_note = """
@@ -79,14 +79,14 @@ NOTE: User has NOT confirmed yet. They may:
 - Suggest revisions → UPDATE proposed_problem_statement based on their feedback
 - Show engagement (uploading data, asking about the problem) → Treat as implicit confirmation
 """
-        
+
         previous_statement_section = f"""
 YOUR PROPOSED PROBLEM STATEMENT:
 "{case.inquiry.proposed_problem_statement}"
 
 Confirmation Status: {confirmed_status}
 {revision_note}"""
-    
+
     prompt = f"""<!-- Prompt Version: {TEMPLATE_VERSION} -->
 <!-- Architecture: {ARCHITECTURE_VERSION} -->
 <!-- Case Model: {CASE_MODEL_VERSION} -->
@@ -402,7 +402,7 @@ Response: Provide input without formal investigation
 ...
 Let me know if you'd like me to investigate this formally alongside your team."
 """
-    
+
     return prompt
 ```
 
@@ -416,15 +416,15 @@ Let me know if you'd like me to investigate this formally alongside your team."
 def build_investigating_prompt(case: Case, user_message: str) -> str:
     """
     Build INVESTIGATING template with adaptive instructions.
-    
+
     Args:
         case: Case in INVESTIGATING status
         user_message: Current user message
-        
+
     Returns:
         Complete prompt string
     """
-    
+
     # Build sections
     header = _build_investigating_header(case)
     current_state = _build_current_state_section(case)
@@ -446,15 +446,15 @@ def build_investigating_prompt(case: Case, user_message: str) -> str:
 
 {output_format}
 """
-    
+
     return prompt
 
 
 def _build_investigating_header(case: Case) -> str:
     """Build header section with metadata"""
-    
+
     path_display = case.path_selection.path if case.path_selection else "Not yet selected"
-    
+
     return f"""<!-- Prompt Version: {TEMPLATE_VERSION} -->
 <!-- Architecture: {ARCHITECTURE_VERSION} -->
 <!-- Case Model: {CASE_MODEL_VERSION} -->
@@ -471,25 +471,25 @@ Investigation Path: {path_display}"""
 
 def _build_current_state_section(case: Case) -> str:
     """Build current state context section"""
-    
+
     # Problem statement
     problem_stmt = "Not yet verified"
     if case.problem_verification:
         problem_stmt = case.problem_verification.symptom_statement
-    
+
     # Milestone status
     milestones_display = _format_milestones(case.progress)
-    
+
     # Data collected summary
     active_hypotheses = len([h for h in case.hypotheses.values() if h.status == "ACTIVE"])
     data_summary = f"""**DATA COLLECTED:**
 - Evidence: {len(case.evidence)} pieces
 - Hypotheses: {len(case.hypotheses)} generated ({active_hypotheses} active)
 - Solutions: {len(case.solutions)} proposed"""
-    
+
     # Recent conversation
     recent_conversation = _format_recent_conversation(case.turn_history)
-    
+
     # Working conclusion
     working_conclusion_display = ""
     if case.working_conclusion:
@@ -497,12 +497,12 @@ def _build_current_state_section(case: Case) -> str:
         caveats_display = ""
         if wc.caveats:
             caveats_display = f"\nCaveats: {', '.join(wc.caveats[:2])}"
-        
+
         working_conclusion_display = f"""
 **WORKING CONCLUSION:**
 Statement: {wc.statement}
 Confidence: {wc.confidence * 100:.0f}%{caveats_display}"""
-    
+
     return f"""═══════════════════════════════════════════════════════════
 WHAT YOU ALREADY KNOW (Don't re-verify!)
 ═══════════════════════════════════════════════════════════
@@ -562,21 +562,21 @@ def _format_milestones(progress) -> str:
 
 def _format_recent_conversation(turn_history: List[TurnProgress]) -> str:
     """Format recent conversation turns"""
-    
+
     if not turn_history:
         return ""
-    
+
     recent = turn_history[-3:]  # Last 3 turns
     lines = ["\n**RECENT CONVERSATION:**"]
     for turn in recent:
         lines.append(f"Turn {turn.turn_number}: {turn.outcome}")
-    
+
     return "\n".join(lines)
 
 
 def _build_user_message_section(user_message: str) -> str:
     """Build user message section"""
-    
+
     return f"""═══════════════════════════════════════════════════════════
 USER'S MESSAGE
 ═══════════════════════════════════════════════════════════
@@ -868,7 +868,7 @@ If ALL criteria met → Include proposed_transition in response"""
 
 def _build_general_instructions(case: Case) -> str:
     """Build general instructions (apply to all stages)"""
-    
+
     # No stall warning injected here — turns_without_progress is surfaced
     # to the user via the UI (InvestigationProgressSummary) instead of
     # injecting prompt nudges. The LLM's behavior is constant regardless
@@ -972,7 +972,7 @@ verified actual pool metrics yet - that would increase confidence to 85%+."
 
 def _build_output_format_section() -> str:
     """Build output format instructions"""
-    
+
     return """═══════════════════════════════════════════════════════════
 OUTCOME CLASSIFICATION
 ═══════════════════════════════════════════════════════════
@@ -1054,38 +1054,38 @@ Example:
 def build_terminal_prompt(case: Case, user_message: str) -> str:
     """
     Build TERMINAL template for closed cases.
-    
+
     Args:
         case: Case in RESOLVED or CLOSED status
         user_message: Current user message
-        
+
     Returns:
         Complete prompt string
     """
-    
+
     # Get case summary details
     problem = "Not investigated"
     if case.problem_verification:
         problem = case.problem_verification.symptom_statement
-    
+
     root_cause = "Not identified"
     if case.root_cause_conclusion:
         root_cause = case.root_cause_conclusion.root_cause
-    
+
     solution = "None"
     if case.solutions:
         solution = case.solutions[0].title
-    
+
     closure_reason = case.closure_reason or "Unknown"
-    
+
     # Format timestamps
     closed_ago = _format_time_ago(case.closed_at)
-    
+
     # Time to resolution
     duration = "Unknown"
     if case.time_to_resolution:
         duration = _format_duration(case.time_to_resolution)
-    
+
     prompt = f"""<!-- Prompt Version: {TEMPLATE_VERSION} -->
 <!-- Architecture: {ARCHITECTURE_VERSION} -->
 <!-- Case Model: {CASE_MODEL_VERSION} -->
@@ -1215,7 +1215,7 @@ Return JSON matching TerminalResponse schema:
 }}
 
 **Remember**: This case is read-only. Focus on explaining, not updating."""
-    
+
     return prompt
 
 
@@ -1223,10 +1223,10 @@ def _format_time_ago(dt: datetime) -> str:
     """Format datetime as 'X ago' string"""
     if not dt:
         return "Unknown"
-    
+
     now = datetime.now(timezone.utc)
     delta = now - dt
-    
+
     if delta.days > 0:
         return f"{delta.days} day{'s' if delta.days != 1 else ''} ago"
     elif delta.seconds >= 3600:
@@ -1279,34 +1279,34 @@ from prompts.templates import (
 def build_prompt(case: Case, user_message: str) -> str:
     """
     Build appropriate prompt based on case status.
-    
+
     Args:
         case: Current case
         user_message: User's message
-        
+
     Returns:
         Complete prompt string
-        
+
     Raises:
         ValueError: If case status is invalid
     """
-    
+
     if case.status == CaseStatus.INQUIRY:
         return build_inquiry_prompt(case, user_message)
-    
+
     elif case.status == CaseStatus.INVESTIGATING:
         return build_investigating_prompt(case, user_message)
-    
+
     elif case.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]:
         return build_terminal_prompt(case, user_message)
-    
+
     else:
         raise ValueError(f"Invalid case status: {case.status}")
 
 
 def get_prompt_metadata(case: Case) -> Dict[str, str]:
     """Get metadata about prompt that will be used"""
-    
+
     return {
         "template_version": TEMPLATE_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
@@ -1318,7 +1318,7 @@ def get_prompt_metadata(case: Case) -> Dict[str, str]:
 
 def _get_template_name(status: CaseStatus) -> str:
     """Get template name for status"""
-    
+
     if status == CaseStatus.INQUIRY:
         return "INQUIRY"
     elif status == CaseStatus.INVESTIGATING:

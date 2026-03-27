@@ -26,34 +26,34 @@ class ToolResult(BaseModel):
 class BaseTool(ABC):
     """
     Base interface for all agent tools.
-    
+
     This interface defines the contract that all tools must implement
     to be used within the FaultMaven agent system.
     """
-    
+
     @abstractmethod
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the tool with the given parameters.
-        
+
         Args:
             params: Dictionary of parameters for tool execution
-            
+
         Returns:
             ToolResult containing success status, data, and optional error
-            
+
         Raises:
             ToolExecutionException: When tool execution fails critically
             ValidationException: When parameters don't match schema
             TimeoutException: When execution exceeds configured timeout
         """
         pass
-    
+
     @abstractmethod
     def get_schema(self) -> Dict[str, Any]:
         """
         Return the tool's schema for agent discovery.
-        
+
         Returns:
             Dictionary containing:
                 - name: Tool identifier
@@ -71,7 +71,7 @@ class BaseTool(ABC):
 @dataclass
 class ToolResult:
     """Result of a tool execution"""
-    
+
     success: bool                    # Did execution succeed?
     data: Any                       # Tool output (any JSON-serializable type)
     error: Optional[str] = None     # Error message if failed
@@ -273,10 +273,10 @@ All tools must sanitize inputs:
 async def execute(self, params: Dict) -> ToolResult:
     # ALWAYS sanitize user input
     sanitized_query = self.sanitizer.sanitize(params['query'])
-    
+
     # Process with sanitized data
     result = await self._process(sanitized_query)
-    
+
     return ToolResult(success=True, data=result)
 ```
 
@@ -375,11 +375,11 @@ class MCPTool(BaseTool):
 @register_tool("system_tool")
 class SystemTool(BaseTool):
     ALLOWED_COMMANDS = ['kubectl', 'curl', 'nslookup']
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         if params['command'] not in self.ALLOWED_COMMANDS:
             return ToolResult(success=False, error="Command not whitelisted")
-        
+
         # Execute with timeout and sanitization
         result = await self._safe_execute(params)
         return ToolResult(success=True, data=result)
@@ -463,10 +463,10 @@ async def execute(self, params: Dict) -> ToolResult:
 ```python
 async def execute(self, params: Dict) -> ToolResult:
     result = await self._call_external_api(params)
-    
+
     # Sanitize output before returning
     sanitized = self.sanitizer.sanitize(str(result))
-    
+
     return ToolResult(success=True, data=sanitized)
 ```
 
@@ -476,7 +476,7 @@ async def execute(self, params: Dict) -> ToolResult:
 ```python
 class DangerousTool(BaseTool):
     REQUIRES_CONFIRMATION = True
-    
+
     async def execute(self, params: Dict) -> ToolResult:
         # Agent will request user confirmation before executing
         pass
@@ -548,10 +548,6 @@ Before tool acceptance:
 
 ---
 
-**Last Updated**: 2025-10-12  
-**Version**: 1.0  
+**Last Updated**: 2025-10-12
+**Version**: 1.0
 **Maintainer**: Architecture Team
-
-
-
-

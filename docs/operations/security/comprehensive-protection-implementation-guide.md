@@ -1,7 +1,7 @@
 # FaultMaven Unified Protection System
 
-**Status**: Production Ready ✅  
-**Last Updated**: 2025-08-17  
+**Status**: Production Ready ✅
+**Last Updated**: 2025-08-17
 **Version**: 2.0 (Unified Implementation)
 
 ## Table of Contents
@@ -88,15 +88,15 @@ graph TD
     A[Client Request] --> B[Protection Gateway]
     B --> C[Basic Protection Layer]
     C --> D[Rate Limiting]
-    C --> E[Request Deduplication] 
+    C --> E[Request Deduplication]
     C --> F[Timeout Management]
-    
+
     B --> G[Intelligent Protection Layer]
     G --> H[Behavioral Analysis]
     G --> I[ML Anomaly Detection]
     G --> J[Reputation Engine]
     G --> K[Smart Circuit Breakers]
-    
+
     L[Protection Coordinator] --> M[Decision Engine]
     D --> L
     E --> L
@@ -105,10 +105,10 @@ graph TD
     I --> L
     J --> L
     K --> L
-    
+
     M --> N[Allow/Block/Throttle]
     N --> O[Application Logic]
-    
+
     style B fill:#e1f5fe
     style C fill:#f3e5f5
     style G fill:#e8f5e8
@@ -290,7 +290,7 @@ from faultmaven.models.interfaces import ISessionStore
 
 session_store = get_session_store()  # Your implementation
 protection_info = await setup_protection_middleware_async(
-    app, 
+    app,
     session_store=session_store
 )
 ```
@@ -306,7 +306,7 @@ protection_system.environment = "production"
 
 # Customize configuration
 protection_system.basic_config.rate_limits["custom"] = RateLimitConfig(
-    requests=100, 
+    requests=100,
     window=300
 )
 

@@ -67,7 +67,7 @@ RATE_LIMITS = {
 class RateLimitMiddleware:
     """
     Multi-level rate limiting with Redis backend
-    
+
     Features:
     - Sliding window algorithm
     - Progressive penalties (exponential backoff)
@@ -91,7 +91,7 @@ class RateLimitMiddleware:
 class RequestDeduplicationMiddleware:
     """
     Hash-based request deduplication
-    
+
     Features:
     - Content-based hashing (excludes timestamps)
     - Per-endpoint TTL configuration
@@ -115,7 +115,7 @@ def generate_request_hash(session_id: str, endpoint: str, body: str) -> str:
 class AgentTimeoutManager:
     """
     Timeout management for agent operations
-    
+
     Features:
     - Hierarchical timeouts (operation < phase < total)
     - Graceful cleanup on timeout
@@ -126,7 +126,7 @@ class AgentTimeoutManager:
 
 **Timeout Hierarchy**:
 1. **LLM Call Timeout**: 30 seconds
-2. **Phase Timeout**: 45 seconds  
+2. **Phase Timeout**: 45 seconds
 3. **Total Agent Timeout**: 60 seconds
 4. **Emergency Shutdown**: 90 seconds (force kill)
 
@@ -141,7 +141,7 @@ RATE_LIMIT_REDIS_URL=redis://localhost:6379/1
 RATE_LIMIT_GLOBAL_REQUESTS=1000
 RATE_LIMIT_GLOBAL_WINDOW=60
 
-# Request Deduplication  
+# Request Deduplication
 DEDUP_ENABLED=true
 DEDUP_DEFAULT_TTL=30
 DEDUP_TITLE_TTL=300
@@ -167,7 +167,7 @@ ENDPOINT_RATE_LIMITS = {
 # Progressive penalty multipliers
 PENALTY_MULTIPLIERS = {
     "first_violation": 2.0,    # 2x longer wait
-    "second_violation": 4.0,   # 4x longer wait  
+    "second_violation": 4.0,   # 4x longer wait
     "third_violation": 8.0,    # 8x longer wait
     "persistent_violation": 16.0  # 16x longer wait
 }
@@ -222,7 +222,7 @@ PROTECTION_METRICS = {
 - Timeout mechanisms
 - Configuration validation
 
-### Integration Tests  
+### Integration Tests
 - End-to-end protection flows
 - Redis integration
 - Middleware interaction
@@ -252,7 +252,7 @@ PROTECTION_METRICS = {
 ## Implementation Order
 
 1. **Rate Limiting Middleware** (highest impact)
-2. **Request Deduplication** (prevents exact incident)  
+2. **Request Deduplication** (prevents exact incident)
 3. **Agent Timeouts** (prevents resource exhaustion)
 4. **Integration & Testing** (ensures reliability)
 5. **Monitoring & Alerting** (operational visibility)

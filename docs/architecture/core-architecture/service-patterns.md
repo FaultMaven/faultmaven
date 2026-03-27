@@ -1,6 +1,6 @@
 # Enhanced Service Layer Patterns and Best Practices
 
-**Document Type**: Architecture Deep-dive  
+**Document Type**: Architecture Deep-dive
 **Last Updated**: August 2025
 
 ## Overview
@@ -50,23 +50,23 @@ async def process_query(
 ) -> AgentResponse:
     # Get memory context
     memory_context = await self.memory_service.retrieve_context(session_id, query)
-    
+
     # Plan response strategy
     strategy = await self.planning_service.plan_response_strategy(query, memory_context)
-    
+
     # Generate optimized prompt
     prompt = await self.prompt_engine.assemble_prompt(
         question=query,
         response_type=ResponseType.ANSWER,
         context=memory_context
     )
-    
+
     # Process with intelligence
     result = await self._process_with_intelligence(query, prompt, strategy, memory_context)
-    
+
     # Consolidate insights
     await self.memory_service.consolidate_insights(session_id, result)
-    
+
     return result
 ```
 
@@ -81,21 +81,21 @@ async def process_query(self, query: str, session_id: str) -> Response:
     # Validate input
     if not query or not query.strip():
         raise ValueError("Query cannot be empty")
-    
+
     # Get memory context for enhanced validation
     memory_context = await self.memory_service.retrieve_context(session_id, query)
-    
+
     # Enhanced validation with memory
     validation_result = await self._validate_with_memory(query, memory_context)
     if not validation_result.is_valid:
         raise ValueError(f"Enhanced validation failed: {validation_result.reason}")
-    
+
     # Sanitize input
     sanitized_query = self.data_sanitizer.sanitize(query)
-    
+
     # Process with enhanced context
     result = await self._process_with_memory_context(sanitized_query, memory_context)
-    
+
     return result
 ```
 
@@ -108,12 +108,12 @@ async def operation(self, params: Dict, session_id: str) -> Result:
     try:
         # Get planning context
         planning_context = await self.planning_service.get_current_context(session_id)
-        
+
         # Execute with strategic guidance
         result = await self._execute_with_planning(params, planning_context)
-        
+
         return result
-        
+
     except ValidationError as e:
         # Plan recovery strategy
         recovery_plan = await self.planning_service.plan_error_recovery(
@@ -121,10 +121,10 @@ async def operation(self, params: Dict, session_id: str) -> Result:
             error_details=str(e),
             context=planning_context
         )
-        
+
         self.logger.warning(f"Validation failed: {e}, recovery plan: {recovery_plan}")
         raise ValueError(f"Invalid input: {str(e)}") from e
-        
+
     except ExternalServiceError as e:
         # Plan fallback strategy
         fallback_plan = await self.planning_service.plan_fallback_strategy(
@@ -132,10 +132,10 @@ async def operation(self, params: Dict, session_id: str) -> Result:
             error_details=str(e),
             context=planning_context
         )
-        
+
         self.logger.error(f"External service failed: {e}, fallback plan: {fallback_plan}")
         raise RuntimeError(f"Service unavailable: {str(e)}") from e
-        
+
     except Exception as e:
         # Plan general error recovery
         recovery_plan = await self.planning_service.plan_error_recovery(
@@ -143,7 +143,7 @@ async def operation(self, params: Dict, session_id: str) -> Result:
             error_details=str(e),
             context=planning_context
         )
-        
+
         self.logger.error(f"Unexpected error: {e}, recovery plan: {recovery_plan}", exc_info=True)
         raise RuntimeError("Operation failed") from e
 ```
@@ -158,18 +158,18 @@ async def traced_operation(self, params: Dict, session_id: str) -> Result:
     # Get comprehensive context
     memory_context = await self.memory_service.retrieve_context(session_id, "operation")
     planning_context = await self.planning_service.get_current_context(session_id)
-    
+
     # Log with enhanced context
     self.logger.info(f"Starting operation with params: {params}")
     self.logger.info(f"Memory context: {memory_context.summary}")
     self.logger.info(f"Planning context: {planning_context.current_phase}")
-    
+
     # Execute with context
     result = await self._execute_with_context(params, memory_context, planning_context)
-    
+
     # Log completion with insights
     self.logger.info(f"Operation completed successfully, insights: {result.insights}")
-    
+
     return result
 ```
 
@@ -181,17 +181,17 @@ Services format results consistently with memory integration:
 async def format_response(self, result: Any, session_id: str) -> FormattedResponse:
     # Get memory context for enhanced formatting
     memory_context = await self.memory_service.retrieve_context(session_id, "response_formatting")
-    
+
     # Format with memory awareness
     formatted_result = await self._format_with_memory(result, memory_context)
-    
+
     # Update memory with formatting insights
     await self.memory_service.consolidate_insights(session_id, {
         "operation": "response_formatting",
         "result": formatted_result,
         "memory_context_used": memory_context.summary
     })
-    
+
     return formatted_result
 ```
 
@@ -204,7 +204,7 @@ Create a base class for services with memory integration:
 ```python
 class EnhancedBaseService:
     """Base class for services with memory and planning integration"""
-    
+
     def __init__(
         self,
         memory_service: IMemoryService,
@@ -214,19 +214,19 @@ class EnhancedBaseService:
         self._memory = memory_service
         self._planning = planning_service
         self.logger = logger or logging.getLogger(self.__class__.__name__)
-    
+
     async def get_enhanced_context(self, session_id: str, operation: str) -> EnhancedContext:
         """Get comprehensive context for operations"""
         memory_context = await self._memory.retrieve_context(session_id, operation)
         planning_context = await self._planning.get_current_context(session_id)
-        
+
         return EnhancedContext(
             memory=memory_context,
             planning=planning_context,
             session_id=session_id,
             operation=operation
         )
-    
+
     async def consolidate_operation_insights(self, session_id: str, operation: str, result: Any) -> bool:
         """Consolidate insights from operation execution"""
         return await self._memory.consolidate_insights(session_id, {
@@ -234,7 +234,7 @@ class EnhancedBaseService:
             "result": result,
             "timestamp": datetime.utcnow().isoformat()
         })
-    
+
     async def plan_operation_strategy(self, operation: str, context: Dict) -> StrategicPlan:
         """Plan strategy for operation execution"""
         return await self._planning.plan_operation_strategy(operation, context)
@@ -247,7 +247,7 @@ Implement the enhanced agent service with intelligence:
 ```python
 class EnhancedAgentService(EnhancedBaseService):
     """Enhanced agent service with memory, planning, and prompting"""
-    
+
     def __init__(
         self,
         llm_provider: ILLMProvider,
@@ -264,43 +264,43 @@ class EnhancedAgentService(EnhancedBaseService):
         self._tracer = tracer
         self._sanitizer = sanitizer
         self._prompt_engine = prompt_engine
-    
+
     async def process_query(self, request: QueryRequest) -> AgentResponse:
         """Process query with enhanced intelligence"""
         # Get enhanced context
         context = await self.get_enhanced_context(request.session_id, "query_processing")
-        
+
         # Plan response strategy
         strategy = await self.plan_operation_strategy("query_processing", {
             "query": request.query,
             "session_id": request.session_id,
             "memory_context": context.memory
         })
-        
+
         # Generate optimized prompt
         prompt = await self._prompt_engine.assemble_prompt(
             question=request.query,
             response_type=ResponseType.ANSWER,
             context=context.memory
         )
-        
+
         # Execute with intelligence
         result = await self._execute_with_intelligence(request, prompt, strategy, context)
-        
+
         # Consolidate insights
         await self.consolidate_operation_insights(
-            request.session_id, 
-            "query_processing", 
+            request.session_id,
+            "query_processing",
             result
         )
-        
+
         return result
-    
+
     async def _execute_with_intelligence(
-        self, 
-        request: QueryRequest, 
-        prompt: str, 
-        strategy: StrategicPlan, 
+        self,
+        request: QueryRequest,
+        prompt: str,
+        strategy: StrategicPlan,
         context: EnhancedContext
     ) -> AgentResponse:
         """Execute query with strategic intelligence"""
@@ -312,14 +312,14 @@ class EnhancedAgentService(EnhancedBaseService):
                 result = await self._execute_solution_phase(request, prompt, context)
             else:
                 result = await self._execute_default_phase(request, prompt, context)
-            
+
             # Update planning context with results
             await self._planning.update_execution_results(
-                context.session_id, 
-                strategy.id, 
+                context.session_id,
+                strategy.id,
                 result
             )
-            
+
             return result
 ```
 
@@ -330,7 +330,7 @@ Implement the enhanced data service with memory integration:
 ```python
 class EnhancedDataService(EnhancedBaseService):
     """Enhanced data service with memory integration"""
-    
+
     def __init__(
         self,
         data_classifier: IDataClassifier,
@@ -343,36 +343,36 @@ class EnhancedDataService(EnhancedBaseService):
         self._classifier = data_classifier
         self._processor = log_processor
         self._sanitizer = sanitizer
-    
+
     async def process_data(self, data: bytes, filename: str, session_id: str) -> ProcessedData:
         """Process data with memory integration"""
         # Get enhanced context
         context = await self.get_enhanced_context(session_id, "data_processing")
-        
+
         # Plan processing strategy
         strategy = await self.plan_operation_strategy("data_processing", {
             "filename": filename,
             "data_size": len(data),
             "memory_context": context.memory
         })
-        
+
         # Execute with strategic guidance
         result = await self._execute_processing_strategy(data, filename, strategy, context)
-        
+
         # Consolidate insights
         await self.consolidate_operation_insights(
-            session_id, 
-            "data_processing", 
+            session_id,
+            "data_processing",
             result
         )
-        
+
         return result
-    
+
     async def _execute_processing_strategy(
-        self, 
-        data: bytes, 
-        filename: str, 
-        strategy: StrategicPlan, 
+        self,
+        data: bytes,
+        filename: str,
+        strategy: StrategicPlan,
         context: EnhancedContext
     ) -> ProcessedData:
         """Execute data processing according to strategy"""
@@ -381,7 +381,7 @@ class EnhancedDataService(EnhancedBaseService):
             "session_id": context.session_id,
             "memory_context": context.memory
         })
-        
+
         # Process according to type with memory correlation
         if data_type == DataType.LOG_FILE:
             result = await self._process_log_file(data, filename, context)
@@ -389,10 +389,10 @@ class EnhancedDataService(EnhancedBaseService):
             result = await self._process_config_file(data, filename, context)
         else:
             result = await self._process_generic_file(data, filename, context)
-        
+
         # Enhance result with memory insights
         enhanced_result = await self._enhance_with_memory_insights(result, context)
-        
+
         return enhanced_result
 ```
 
@@ -405,12 +405,12 @@ Create comprehensive mocks for testing:
 ```python
 class MockMemoryService(IMemoryService):
     """Comprehensive mock memory service for testing"""
-    
+
     def __init__(self):
         self._contexts = {}
         self._insights = []
         self._user_profiles = {}
-    
+
     async def retrieve_context(self, session_id: str, query: str) -> ConversationContext:
         # Return mock context or create new one
         if session_id not in self._contexts:
@@ -420,7 +420,7 @@ class MockMemoryService(IMemoryService):
                 user_profile=MockUserProfile()
             )
         return self._contexts[session_id]
-    
+
     async def consolidate_insights(self, session_id: str, result: dict) -> bool:
         self._insights.append({
             'session_id': session_id,
@@ -428,21 +428,21 @@ class MockMemoryService(IMemoryService):
             'timestamp': datetime.utcnow().isoformat()
         })
         return True
-    
+
     def get_consolidated_insights(self) -> List[Dict]:
         return self._insights.copy()
-    
+
     def set_mock_context(self, session_id: str, context: ConversationContext):
         """Set mock context for testing"""
         self._contexts[session_id] = context
 
 class MockPlanningService(IPlanningService):
     """Comprehensive mock planning service for testing"""
-    
+
     def __init__(self):
         self._strategies = {}
         self._current_contexts = {}
-    
+
     async def plan_response_strategy(self, query: str, context: dict) -> StrategicPlan:
         # Return mock strategy
         strategy = StrategicPlan(
@@ -454,7 +454,7 @@ class MockPlanningService(IPlanningService):
             ]
         )
         return strategy
-    
+
     async def get_current_context(self, session_id: str) -> PlanningContext:
         # Return mock planning context
         if session_id not in self._current_contexts:
@@ -464,7 +464,7 @@ class MockPlanningService(IPlanningService):
                 completed_phases=[]
             )
         return self._current_contexts[session_id]
-    
+
     def set_mock_context(self, session_id: str, context: PlanningContext):
         """Set mock planning context for testing"""
         self._current_contexts[session_id] = context
@@ -487,7 +487,7 @@ class TestEnhancedAgentService:
             'tracer': Mock(spec=ITracer),
             'sanitizer': Mock(spec=ISanitizer)
         }
-    
+
     @pytest.fiide
     def enhanced_agent_service(self, mock_services):
         return EnhancedAgentService(
@@ -499,12 +499,12 @@ class TestEnhancedAgentService:
             planning_service=mock_services['planning'],
             prompt_engine=mock_services['prompt_engine']
         )
-    
+
     async def test_process_query_with_intelligence(self, enhanced_agent_service, mock_services):
         # Setup mocks
         mock_services['prompt_engine'].assemble_prompt.return_value = "Enhanced prompt"
         mock_services['llm'].generate_with_context.return_value = "Intelligent response"
-        
+
         # Set mock context
         mock_context = ConversationContext(
             working_memory=["previous_query"],
@@ -512,18 +512,18 @@ class TestEnhancedAgentService:
             user_profile=MockUserProfile()
         )
         mock_services['memory'].set_mock_context("test_session", mock_context)
-        
+
         # Execute
         request = QueryRequest(session_id="test_session", query="test query")
         result = await enhanced_agent_service.process_query(request)
-        
+
         # Verify intelligence features were used
         mock_services['memory'].retrieve_context.assert_called_once()
         mock_services['planning'].plan_operation_strategy.assert_called_once()
         mock_services['prompt_engine'].assemble_prompt.assert_called_once()
         mock_services['llm'].generate_with_context.assert_called_once()
         mock_services['memory'].consolidate_insights.assert_called_once()
-        
+
         assert result is not None
 ```
 
@@ -536,44 +536,44 @@ Implement caching with memory context:
 ```python
 class MemoryAwareCache:
     """Cache that considers memory context for optimization"""
-    
+
     def __init__(self, memory_service: IMemoryService):
         self._memory = memory_service
         self._cache = {}
         self._access_patterns = {}
-    
+
     async def get(self, key: str, session_id: str) -> Optional[Any]:
         # Check cache first
         if key in self._cache:
             # Update access patterns
             await self._update_access_patterns(session_id, key)
             return self._cache[key]
-        
+
         # Get memory context for optimization
         memory_context = await self._memory.retrieve_context(session_id, "cache_access")
-        
+
         # Use memory patterns for cache optimization
         if self._should_pre_warm_cache(key, memory_context):
             await self._pre_warm_cache(key, memory_context)
-        
+
         return None
-    
+
     async def _update_access_patterns(self, session_id: str, key: str):
         """Update access patterns for optimization"""
         if session_id not in self._access_patterns:
             self._access_patterns[session_id] = {}
-        
+
         if key not in self._access_patterns[session_id]:
             self._access_patterns[session_id][key] = 0
-        
+
         self._access_patterns[session_id][key] += 1
-    
+
     def _should_pre_warm_cache(self, key: str, memory_context: ConversationContext) -> bool:
         """Determine if cache should be pre-warmed based on memory context"""
         # Check if key is frequently accessed
         if hasattr(memory_context, 'frequently_accessed'):
             return key in memory_context.frequently_accessed
-        
+
         return False
 ```
 
@@ -584,14 +584,14 @@ Optimize resource usage based on planning context:
 ```python
 class PlanningAwareResourceManager:
     """Resource manager that considers planning context"""
-    
+
     def __init__(self, planning_service: IPlanningService):
         self._planning = planning_service
-    
+
     async def allocate_resources(self, operation: str, session_id: str) -> ResourceAllocation:
         # Get planning context
         planning_context = await self._planning.get_current_context(session_id)
-        
+
         # Allocate based on planning phase
         if planning_context.current_phase == "analysis":
             # Allocate more resources for analysis
@@ -613,17 +613,17 @@ Use memory context for intelligent error recovery:
 ```python
 class MemoryEnhancedErrorRecovery:
     """Error recovery that considers memory context"""
-    
+
     def __init__(self, memory_service: IMemoryService):
         self._memory = memory_service
-    
+
     async def attempt_recovery(self, error: Exception, session_id: str, operation: str) -> RecoveryResult:
         # Get memory context for recovery
         memory_context = await self._memory.retrieve_context(session_id, "error_recovery")
-        
+
         # Check if similar errors occurred before
         similar_errors = await self._find_similar_errors(error, memory_context)
-        
+
         if similar_errors:
             # Use successful recovery strategies from memory
             recovery_strategy = await self._select_recovery_strategy(similar_errors)
@@ -631,17 +631,17 @@ class MemoryEnhancedErrorRecovery:
         else:
             # Try standard recovery strategies
             return await self._try_standard_recovery(error)
-    
+
     async def _find_similar_errors(self, error: Exception, memory_context: ConversationContext) -> List[Dict]:
         """Find similar errors from memory context"""
         # Search memory for similar error patterns
         error_patterns = memory_context.get('error_patterns', [])
-        
+
         similar_errors = []
         for pattern in error_patterns:
             if self._errors_are_similar(error, pattern['error']):
                 similar_errors.append(pattern)
-        
+
         return similar_errors
 ```
 
@@ -652,14 +652,14 @@ Use planning context for strategic error recovery:
 ```python
 class PlanningEnhancedErrorRecovery:
     """Error recovery that considers planning context"""
-    
+
     def __init__(self, planning_service: IPlanningService):
         self._planning = planning_service
-    
+
     async def plan_error_recovery(self, error: Exception, session_id: str) -> RecoveryPlan:
         # Get planning context
         planning_context = await self._planning.get_current_context(session_id)
-        
+
         # Plan recovery based on current phase
         if planning_context.current_phase == "analysis":
             # Analysis phase errors - focus on data validation

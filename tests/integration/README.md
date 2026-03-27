@@ -202,29 +202,29 @@ async def test_settings_container_services_integration():
     """Test complete Settings → Container → Services flow."""
     # Reset container for clean state
     container.reset()
-    
+
     # Test with realistic environment configuration
     test_env = {
         'CHAT_PROVIDER': 'fireworks',
         'FIREWORKS_API_KEY': 'test-key',
         'REDIS_HOST': 'localhost'
     }
-    
+
     with patch.dict(os.environ, test_env):
         # Validate settings layer
         settings = get_settings()
         assert settings.llm.provider == LLMProvider.FIREWORKS
-        
+
         # Validate container initialization
         agent_service = container.get_agent_service()
         assert agent_service is not None
-        
+
         # Validate end-to-end service operation
         result = await agent_service.process_query(
             "Test troubleshooting query",
             "integration-test-session"
         )
-        
+
         assert result.session_id == "integration-test-session"
         assert len(result.response) > 50
 ```
@@ -235,21 +235,21 @@ async def test_settings_container_services_integration():
 async def test_interface_compliance_real_scenario():
     """Test interface compliance in production-like scenarios."""
     container.reset()
-    
+
     # Get services through container (interface resolution)
     agent_service = container.get_agent_service()
     knowledge_service = container.get_knowledge_service()
-    
+
     # Validate services implement expected interfaces
     assert hasattr(agent_service, 'process_query')
     assert hasattr(knowledge_service, 'search_knowledge_base')
-    
+
     # Test cross-service integration
     kb_result = await knowledge_service.search_knowledge_base(
         "database connection issues", limit=3
     )
     assert isinstance(kb_result, list)
-    
+
     # Test agent service with knowledge integration
     agent_result = await agent_service.process_query(
         "Database connection problems",

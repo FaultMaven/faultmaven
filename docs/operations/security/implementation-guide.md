@@ -7,7 +7,7 @@
 ```python
 # FastAPI Middleware Stack (order matters!)
 app.add_middleware(CORSMiddleware, ...)          # 1. CORS (outermost)
-app.add_middleware(GZipMiddleware, ...)          # 2. Compression  
+app.add_middleware(GZipMiddleware, ...)          # 2. Compression
 app.add_middleware(LoggingMiddleware, ...)       # 3. Request logging
 app.add_middleware(RateLimitMiddleware, ...)     # 4. Rate limiting (NEW)
 app.add_middleware(DeduplicationMiddleware, ...) # 5. Deduplication (NEW)
@@ -66,7 +66,7 @@ faultmaven/
 ### Step 2: Middleware Implementation
 
 1. **Rate limiting middleware**
-2. **Deduplication middleware**  
+2. **Deduplication middleware**
 3. **Timeout manager integration**
 4. **Error handling and responses**
 
@@ -101,11 +101,11 @@ class ProtectionSettings:
     RATE_LIMITING_ENABLED: bool = True
     DEDUPLICATION_ENABLED: bool = True
     TIMEOUT_MANAGEMENT_ENABLED: bool = True
-    
+
     # Graceful degradation
     FAIL_OPEN_ON_REDIS_ERROR: bool = True
     FAIL_OPEN_ON_TIMEOUT_ERROR: bool = False
-    
+
     # Development/testing
     DEBUG_PROTECTION: bool = False
     PROTECTION_BYPASS_HEADERS: List[str] = []
@@ -182,7 +182,7 @@ def constant_time_compare(a: str, b: str) -> bool:
     """Constant time string comparison"""
     return hmac.compare_digest(a.encode(), b.encode())
 
-# Prevent enumeration attacks  
+# Prevent enumeration attacks
 def add_jitter(base_time: float) -> float:
     """Add random jitter to retry times"""
     return base_time + random.uniform(0, base_time * 0.1)
@@ -194,9 +194,9 @@ def add_jitter(base_time: float) -> float:
 # Prevent hash collision attacks
 def secure_hash(content: str, salt: str) -> str:
     """Cryptographically secure hashing with salt"""
-    return hashlib.pbkdf2_hmac('sha256', 
-                              content.encode(), 
-                              salt.encode(), 
+    return hashlib.pbkdf2_hmac('sha256',
+                              content.encode(),
+                              salt.encode(),
                               100000).hex()
 ```
 

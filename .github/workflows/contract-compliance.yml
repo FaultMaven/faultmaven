@@ -15,7 +15,7 @@ jobs:
   contract-compliance:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -37,18 +37,18 @@ jobs:
         python -c "
         import yaml
         import sys
-        
+
         # Load and validate OpenAPI spec
         with open('docs/reference/api/openapi.locked.yaml') as f:
             spec = yaml.safe_load(f)
-        
+
         print(f'✅ OpenAPI {spec[\"openapi\"]} spec loaded successfully')
         print(f'✅ API: {spec[\"info\"][\"title\"]} v{spec[\"info\"][\"version\"]}')
-        
+
         # Check for dangling references
         components = spec.get('components', {})
         schemas = components.get('schemas', {})
-        
+
         refs_found = []
         def find_refs(obj):
             if isinstance(obj, dict):
@@ -62,9 +62,9 @@ jobs:
             elif isinstance(obj, list):
                 for item in obj:
                     find_refs(item)
-        
+
         find_refs(spec)
-        
+
         if refs_found:
             print(f'❌ Found {len(refs_found)} dangling references:')
             for ref in refs_found[:5]:
@@ -72,7 +72,7 @@ jobs:
             sys.exit(1)
         else:
             print('✅ No dangling references found')
-            
+
         # Check critical schemas exist (only schemas returned as JSON responses;
         # AgentResponse is excluded — agent endpoint uses SSE streaming, not JSON)
         critical_schemas = ['CaseSummary', 'LLMConfigResponse', 'EnvConfigStatusResponse']
@@ -119,7 +119,7 @@ jobs:
         echo "🔍 Runtime Probe: Contract violation monitoring enabled"
         echo "📊 Coverage: All critical endpoints and error paths"
         echo ""
-        
+
     - name: Check Contract Compliance Status
       if: failure()
       run: |
@@ -132,7 +132,7 @@ jobs:
         echo "3. Fix status codes, headers, or response shapes"
         echo "4. Re-run: python -m pytest tests/api/test_contract_compliance_focused.py -v"
         exit 1
-        
+
     - name: Contract Compliance Success
       if: success()
       run: |

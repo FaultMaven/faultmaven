@@ -295,7 +295,7 @@ graph TD
 def is_logs_definitive(content: str) -> bool:
     """
     Returns True if content has definitive log file markers.
-    
+
     Requirements:
     - Timestamps in >30% of lines
     - Log levels in >30% of lines
@@ -304,19 +304,19 @@ def is_logs_definitive(content: str) -> bool:
     lines = content.split('\n')
     if len(lines) < 3:
         return False
-    
+
     timestamp_count = 0
     loglevel_count = 0
-    
+
     for line in lines[:min(50, len(lines))]:  # Check first 50 lines
         if has_timestamp_at_start(line):
             timestamp_count += 1
         if has_log_level(line):
             loglevel_count += 1
-    
+
     timestamp_ratio = timestamp_count / len(lines[:50])
     loglevel_ratio = loglevel_count / len(lines[:50])
-    
+
     return timestamp_ratio > 0.3 and loglevel_ratio > 0.3
 ```
 
@@ -337,7 +337,7 @@ Oct 14 14:32:01 hostname service[1234]: Log message
 def is_metrics_definitive(content: str) -> bool:
     """
     Returns True if content has definitive metrics markers.
-    
+
     Command Output Indicators:
     - Tabular structure (aligned columns)
     - Column headers with metric names
@@ -347,7 +347,7 @@ def is_metrics_definitive(content: str) -> bool:
     # Check for tabular structure
     if not has_tabular_structure(content):
         return False
-    
+
     # Check for metric column headers
     header_patterns = [
         r'\b(PID|USER|CPU|MEM|TIME|COMMAND)\b',  # ps, top
@@ -355,15 +355,15 @@ def is_metrics_definitive(content: str) -> bool:
         r'\b(rx|tx|bytes|packets)\b',            # network stats
         r'\b(total|used|free|available)\b',      # memory stats
     ]
-    
+
     has_metric_headers = any(
         re.search(pattern, content[:500], re.IGNORECASE)
         for pattern in header_patterns
     )
-    
+
     if not has_metric_headers:
         return False
-    
+
     # Check numeric density in data rows
     return has_high_numeric_density(content)
 
@@ -372,23 +372,23 @@ def has_tabular_structure(content: str) -> bool:
     lines = content.strip().split('\n')
     if len(lines) < 3:
         return False
-    
+
     # Check if lines have consistent field positions
     field_positions = []
     for line in lines[:10]:
         # Find whitespace-separated field boundaries
         positions = [m.start() for m in re.finditer(r'\s{2,}', line)]
         field_positions.append(positions)
-    
+
     # Check if field positions are consistent (±2 chars)
     if len(field_positions) < 3:
         return False
-    
+
     reference = field_positions[0]
     for positions in field_positions[1:]:
         if not positions_match(reference, positions, tolerance=2):
             return False
-    
+
     return True
 ```
 
@@ -583,35 +583,35 @@ def disambiguate_config_vs_text(content: str) -> DataType:
     is_yaml = is_valid_yaml(content)
     is_ini = is_valid_ini(content)
     is_toml = is_valid_toml(content)
-    
+
     if any([is_json, is_yaml, is_ini, is_toml]):
         # Parseable → CONFIG
         return DataType.CONFIGURATION
-    
+
     # Check prose density
     prose_indicators = [
         r'\b(the|and|for|with|that|this|from|which)\b',  # Common prose words
         r'[A-Z][a-z]+\s+[a-z]+\s+[a-z]+',  # Sentence structure
         r'\.\s+[A-Z]',  # Sentence boundaries
     ]
-    
+
     prose_score = sum(
         len(re.findall(pattern, content, re.IGNORECASE))
         for pattern in prose_indicators
     ) / max(len(content), 1)
-    
+
     # Check structured data indicators
     structure_indicators = [
         r'^\w+\s*[:=]\s*\S+',  # Key-value pairs
         r'^\s*[\w\.]+:\s*$',   # YAML-like keys
         r'^\[[^\]]+\]',        # INI sections
     ]
-    
+
     structure_score = sum(
         len(re.findall(pattern, content, re.MULTILINE))
         for pattern in structure_indicators
     ) / max(content.count('\n'), 1)
-    
+
     # Decision
     if prose_score > structure_score * 2:
         return DataType.TEXT
@@ -630,7 +630,7 @@ def disambiguate_config_vs_text(content: str) -> DataType:
 ```python
 class EnhancedDataClassifier:
     """Enhanced classifier with multi-tier fallback."""
-    
+
     async def classify_with_fallback(
         self,
         content: str,
@@ -640,7 +640,7 @@ class EnhancedDataClassifier:
     ) -> ClassificationResult:
         """
         Classify with comprehensive fallback chain.
-        
+
         Returns:
             ClassificationResult with type, confidence, reasoning
         """
@@ -650,7 +650,7 @@ class EnhancedDataClassifier:
             user_description=user_description,
             source_metadata=source_metadata,
         )
-        
+
         # Level 1: Definitive indicators (99%+)
         result = self._check_definitive_indicators(context)
         if result.confidence >= 0.99:
@@ -685,9 +685,9 @@ class EnhancedDataClassifier:
         # best heuristic confidence < 0.50
         result = self._request_user_confirmation(context)
         return result  # 100% confidence after user input
-    
+
     def _check_definitive_indicators(
-        self, 
+        self,
         context: ClassificationContext
     ) -> ClassificationResult:
         """Check for unambiguous markers."""
@@ -700,14 +700,14 @@ class EnhancedDataClassifier:
                         reasoning=f"Definitive: {description}",
                         fallback_level=1,
                     )
-        
+
         return ClassificationResult(
             data_type=DataType.TEXT,
             confidence=0.0,
             reasoning="No definitive indicators found",
             fallback_level=0,
         )
-    
+
     async def _llm_classify_with_examples(
         self,
         context: ClassificationContext
@@ -716,23 +716,23 @@ class EnhancedDataClassifier:
         LLM classification with few-shot examples and confidence.
         """
         prompt = self._build_classification_prompt_with_examples(context)
-        
+
         response = await self.llm_router.route(
             prompt=prompt,
             max_tokens=150,
             temperature=0.0,  # Deterministic
         )
-        
+
         # Parse structured response
         parsed = self._parse_llm_classification_response(response.content)
-        
+
         return ClassificationResult(
             data_type=parsed['type'],
             confidence=parsed['confidence'],
             reasoning=f"LLM: {parsed['reasoning']}",
             fallback_level=5,
         )
-    
+
     def _build_classification_prompt_with_examples(
         self,
         context: ClassificationContext
@@ -761,7 +761,7 @@ Respond in JSON format:
   "reasoning": "Brief explanation of why this classification was chosen"
 }}
 """
-    
+
     def _get_few_shot_examples(self) -> str:
         """Provide few-shot examples for LLM."""
         return """
@@ -801,7 +801,7 @@ Reasoning: Python source code
 ```python
 class ConfidenceScorer:
     """Calculate confidence scores for classifications."""
-    
+
     def calculate_confidence(
         self,
         data_type: DataType,
@@ -811,7 +811,7 @@ class ConfidenceScorer:
     ) -> float:
         """
         Calculate confidence based on multiple factors.
-        
+
         Factors:
         1. Number of matched patterns
         2. Pattern strength (weighted)
@@ -829,25 +829,25 @@ class ConfidenceScorer:
         }
 
         base = level_confidence.get(fallback_level, 0.50)
-        
+
         # Adjust for pattern count
         pattern_bonus = min(0.10, len(matched_patterns) * 0.02)
-        
+
         # Adjust for pattern strength
         strength_bonus = self._calculate_pattern_strength(matched_patterns)
-        
+
         # Final confidence
         confidence = min(1.0, base + pattern_bonus + strength_bonus)
-        
+
         return confidence
-    
+
     def _calculate_pattern_strength(
         self,
         matched_patterns: List[str]
     ) -> float:
         """
         Calculate strength bonus based on pattern quality.
-        
+
         Strong patterns (e.g., trace IDs) get higher bonus than
         weak patterns (e.g., common keywords).
         """
@@ -858,12 +858,12 @@ class ConfidenceScorer:
             'timestamp_sequential': 0.08,
             'generic_keyword': 0.02,
         }
-        
+
         bonus = sum(
             pattern_weights.get(pattern, 0.02)
             for pattern in matched_patterns
         )
-        
+
         return min(0.15, bonus)  # Cap at 15%
 ```
 
@@ -925,7 +925,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     'ps': {
         'type': DataType.METRICS,
         'patterns': [
@@ -934,7 +934,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.90,
     },
-    
+
     'vmstat': {
         'type': DataType.METRICS,
         'patterns': [
@@ -943,7 +943,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     'iostat': {
         'type': DataType.METRICS,
         'patterns': [
@@ -952,7 +952,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     'netstat': {
         'type': DataType.METRICS,
         'patterns': [
@@ -961,7 +961,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.90,
     },
-    
+
     'free': {
         'type': DataType.METRICS,
         'patterns': [
@@ -971,7 +971,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     # Logs
     'dmesg': {
         'type': DataType.LOGS,
@@ -982,7 +982,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     'journalctl': {
         'type': DataType.LOGS,
         'patterns': [
@@ -992,7 +992,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     # Trace
     'strace': {
         'type': DataType.LOGS,  # System call trace → LOGS (subtype: system_trace)
@@ -1023,7 +1023,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     # Configuration
     'lsof': {
         'type': DataType.METRICS,  # Process file descriptors
@@ -1033,7 +1033,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.90,
     },
-    
+
     'lscpu': {
         'type': DataType.CONFIGURATION,  # CPU info
         'patterns': [
@@ -1043,7 +1043,7 @@ COMMAND_OUTPUTS = {
         ],
         'confidence': 0.95,
     },
-    
+
     'df': {
         'type': DataType.METRICS,  # Disk usage
         'patterns': [
@@ -1057,17 +1057,17 @@ COMMAND_OUTPUTS = {
 def detect_linux_command_output(content: str) -> Optional[ClassificationResult]:
     """
     Detect specific Linux command output.
-    
+
     Returns:
         ClassificationResult if recognized, None otherwise
     """
     for cmd_name, signature in COMMAND_OUTPUTS.items():
         matched_patterns = []
-        
+
         for pattern in signature['patterns']:
             if re.search(pattern, content, re.MULTILINE | re.IGNORECASE):
                 matched_patterns.append(pattern)
-        
+
         # Require at least 2 pattern matches for confidence
         if len(matched_patterns) >= 2:
             return ClassificationResult(
@@ -1077,7 +1077,7 @@ def detect_linux_command_output(content: str) -> Optional[ClassificationResult]:
                 fallback_level=1,  # Definitive
                 metadata={'command': cmd_name, 'patterns': matched_patterns},
             )
-    
+
     return None
 ```
 
@@ -1160,7 +1160,7 @@ content = """
 # =====================
 # This section configures the database connection settings.
 # Supported databases: PostgreSQL, MySQL, SQLite
-# 
+#
 # Example usage:
 #   database:
 #     type: postgresql
@@ -1202,11 +1202,11 @@ Retry attempt 3/5 failed
 ```python
 class AdaptiveClassifier:
     """Classifier that learns from user corrections."""
-    
+
     def __init__(self):
         self.feedback_store = FeedbackStore()
         self.pattern_learner = PatternLearner()
-    
+
     async def record_user_correction(
         self,
         content: str,
@@ -1225,17 +1225,17 @@ class AdaptiveClassifier:
             confidence=confidence,
             timestamp=datetime.utcnow(),
         )
-        
+
         # Learn new patterns if confidence was low
         if confidence < 0.70:
             new_patterns = await self.pattern_learner.extract_patterns(
                 content=content,
                 data_type=actual_type,
             )
-            
+
             if new_patterns:
                 await self._update_pattern_database(actual_type, new_patterns)
-    
+
     async def get_similar_past_classifications(
         self,
         content: str,
@@ -1249,9 +1249,9 @@ class AdaptiveClassifier:
             content=content,
             limit=top_k,
         )
-        
+
         return similar
-    
+
     async def _update_pattern_database(
         self,
         data_type: DataType,
@@ -1262,7 +1262,7 @@ class AdaptiveClassifier:
         """
         # Validate patterns before adding
         validated = self._validate_patterns(new_patterns)
-        
+
         # Add to pattern database with lower weight initially
         for pattern in validated:
             await self.pattern_db.add_pattern(
@@ -1278,7 +1278,7 @@ class AdaptiveClassifier:
 ```python
 class PatternLearner:
     """Extract new patterns from misclassified data."""
-    
+
     async def extract_patterns(
         self,
         content: str,
@@ -1297,23 +1297,23 @@ Content:
 Provide patterns as a JSON array:
 ["pattern1", "pattern2", ...]
 """
-        
+
         response = await self.llm_router.route(
             prompt=prompt,
             max_tokens=200,
             temperature=0.0,
         )
-        
+
         try:
             patterns = json.loads(response.content)
             return self._validate_patterns(patterns)
         except:
             return []
-    
+
     def _validate_patterns(self, patterns: List[str]) -> List[str]:
         """Validate regex patterns before adding to database."""
         validated = []
-        
+
         for pattern in patterns:
             try:
                 re.compile(pattern)
@@ -1322,9 +1322,9 @@ Provide patterns as a JSON array:
                     validated.append(pattern)
             except re.error:
                 continue
-        
+
         return validated
-    
+
     def _is_too_broad(self, pattern: str) -> bool:
         """Check if pattern is too generic to be useful."""
         # Patterns like .* or \w+ are too broad
@@ -1462,7 +1462,3 @@ ClassificationResult(
 **Document Version**: 2.1
 **Last Updated**: 2026-02-23
 **Status**: Design Specification
-
-
-
-

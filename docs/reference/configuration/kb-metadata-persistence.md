@@ -130,7 +130,3 @@ This document describes how FaultMaven persists Knowledge Base (KB) data across 
 - Upload → List → Restart API → List again (documents persist)
 - Tag/type filters return correct subsets
 - Retrieval for known connectivity queries returns sources populated from KB and vectors
-
-
-
-

@@ -10,7 +10,7 @@ graph TB
         API_CLIENT[API Clients]
         CURL[CLI Tools]
     end
-    
+
     subgraph "API Gateway Layer"
         MAIN[main.py<br/>FastAPI App]
         CORS[CORS Middleware]
@@ -21,7 +21,7 @@ graph TB
         ROUTE[FastAPI Routers]
         DEP[Dependencies]
     end
-    
+
     subgraph "Service Layer"
         AS[Agent Service]
         DS[Data Service]
@@ -33,7 +33,7 @@ graph TB
         CONF[Confidence Service]
         ANAL[Analytics Service]
     end
-    
+
     subgraph "Agentic Framework (7 Components)"
         AWE[Business Logic & Workflow Engine<br/>workflow_engine.py]
         ASM[State & Session Manager<br/>state_manager.py]
@@ -43,7 +43,7 @@ graph TB
         ARS[Response Synthesizer<br/>response_synthesizer.py]
         AEM[Error Handling & Fallback Manager<br/>error_manager.py]
     end
-    
+
     subgraph "Core Domain Layer"
         AGENT[AI Agent Core<br/>agent.py]
         DOCTRINE[5-Phase SRE Doctrine<br/>doctrine.py]
@@ -53,20 +53,20 @@ graph TB
         ORCHESTRATOR[Troubleshooting Orchestrator<br/>troubleshooting_orchestrator.py]
         LOOP_GUARD[Loop Guard<br/>loop_guard.py]
     end
-    
+
     subgraph "Data Processing Layer"
         CLASSIFIER[Data Classifier<br/>classifier.py]
         LOG_ANALYZER[Log Analyzer<br/>log_analyzer.py]
         PATTERN_LEARNER[Pattern Learner<br/>pattern_learner.py]
         CONFIDENCE[Confidence Aggregator<br/>aggregator.py]
     end
-    
+
     subgraph "Knowledge Management Layer"
         KB_INGESTION[Knowledge Ingestion<br/>ingestion.py]
         KB_RETRIEVAL[Advanced Retrieval<br/>advanced_retrieval.py]
         VECTOR_STORE[Vector Store<br/>chromadb_store.py]
     end
-    
+
     subgraph "Infrastructure Layer"
         LLM[LLM Router<br/>router.py]
         REDIS[Redis Client<br/>redis_client.py]
@@ -77,7 +77,7 @@ graph TB
         ALERT[Alert Manager<br/>alerting.py]
         CACHE[Intelligent Cache<br/>intelligent_cache.py]
     end
-    
+
     subgraph "Protection & Monitoring Layer"
         PROT_COORD[Protection Coordinator<br/>protection_coordinator.py]
         ANOMALY[Anomaly Detector<br/>anomaly_detector.py]
@@ -86,14 +86,14 @@ graph TB
         CIRCUIT[Smart Circuit Breaker<br/>smart_circuit_breaker.py]
         RATE_LIMIT[Rate Limiter<br/>rate_limiter.py]
     end
-    
+
     subgraph "Tool System"
         KB_TOOL[Knowledge Base Tool<br/>knowledge_base.py]
         ENH_KB_TOOL[Enhanced Knowledge Tool<br/>enhanced_knowledge_tool.py]
         WEB_TOOL[Web Search Tool<br/>web_search.py]
         TOOL_REGISTRY[Tool Registry<br/>registry.py]
     end
-    
+
     subgraph "External Services"
         REDIS_EXT[(Redis<br/>Session Store)]
         CHROMA_EXT[(ChromaDB<br/>Vector Store)]
@@ -103,18 +103,18 @@ graph TB
         ANTHROPIC_EXT[Anthropic<br/>Claude Models]
         FIREWORKS_EXT[Fireworks AI<br/>Open Models]
     end
-    
+
     subgraph "Dependency Injection"
         CONTAINER[DI Container<br/>container.py]
         SETTINGS[Settings<br/>settings.py]
         FEATURE_FLAGS[Feature Flags<br/>feature_flags.py]
     end
-    
+
     %% Client connections
     BE --> CORS
     API_CLIENT --> CORS
     CURL --> CORS
-    
+
     %% Middleware stack
     CORS --> LOG
     LOG --> PERF
@@ -122,7 +122,7 @@ graph TB
     PROT --> OPIK
     OPIK --> ROUTE
     ROUTE --> DEP
-    
+
     %% Service routing
     DEP --> AS
     DEP --> DS
@@ -131,7 +131,7 @@ graph TB
     DEP --> CS
     DEP --> JS
     DEP --> GS
-    
+
     %% Agentic framework orchestration
     AS --> AWE
     AWE --> ASM
@@ -140,7 +140,7 @@ graph TB
     AWE --> AGL
     AWE --> ARS
     AWE --> AEM
-    
+
     %% Core domain connections
     AS --> AGENT
     AS --> DOCTRINE
@@ -149,24 +149,24 @@ graph TB
     AS --> REASONING
     AS --> ORCHESTRATOR
     AS --> LOOP_GUARD
-    
+
     %% Data processing
     DS --> CLASSIFIER
     DS --> LOG_ANALYZER
     DS --> PATTERN_LEARNER
     DS --> CONFIDENCE
-    
+
     %% Knowledge management
     KS --> KB_INGESTION
     KS --> KB_RETRIEVAL
     KS --> VECTOR_STORE
-    
+
     %% Tool system
     ATB --> KB_TOOL
     ATB --> ENH_KB_TOOL
     ATB --> WEB_TOOL
     ATB --> TOOL_REGISTRY
-    
+
     %% Infrastructure connections
     AS --> LLM
     AS --> OBS
@@ -180,7 +180,7 @@ graph TB
     ATB --> KB_TOOL
     AGL --> SECURITY
     ARS --> LLM
-    
+
     %% Protection system
     PROT --> PROT_COORD
     PROT_COORD --> ANOMALY
@@ -188,14 +188,14 @@ graph TB
     PROT_COORD --> REPUTATION
     PROT_COORD --> CIRCUIT
     PROT_COORD --> RATE_LIMIT
-    
+
     %% Health and monitoring
     HEALTH --> REDIS_EXT
     HEALTH --> CHROMA_EXT
     HEALTH --> PRESIDIO_EXT
     HEALTH --> OPIK_EXT
     METRICS --> ALERT
-    
+
     %% External service connections
     LLM --> OPENAI_EXT
     LLM --> ANTHROPIC_EXT
@@ -204,7 +204,7 @@ graph TB
     OBS --> OPIK_EXT
     REDIS --> REDIS_EXT
     VECTOR_STORE --> CHROMA_EXT
-    
+
     %% Dependency injection
     CONTAINER --> AS
     CONTAINER --> DS
@@ -223,11 +223,11 @@ graph TB
     CONTAINER --> AGL
     CONTAINER --> ARS
     CONTAINER --> AEM
-    
+
     %% Settings and configuration
     SETTINGS --> CONTAINER
     FEATURE_FLAGS --> CONTAINER
-    
+
     %% Styling
     classDef client fill:#e1f5fe
     classDef api fill:#f3e5f5
@@ -239,7 +239,7 @@ graph TB
     classDef tools fill:#e0f2f1
     classDef external fill:#f3e5f5
     classDef di fill:#e8eaf6
-    
+
     class BE,API_CLIENT,CURL client
     class MAIN,CORS,LOG,PERF,PROT,OPIK,ROUTE,DEP api
     class AS,DS,KS,SS,CS,JS,GS,CONF,ANAL service
@@ -339,7 +339,7 @@ graph TB
         API_CLIENT[API Clients]
         CURL[CLI Tools]
     end
-    
+
     subgraph "API Gateway Layer"
         MAIN[main.py<br/>FastAPI App]
         CORS[CORS Middleware]
@@ -350,7 +350,7 @@ graph TB
         ROUTE[FastAPI Routers]
         DEP[Dependencies]
     end
-    
+
     subgraph "Service Layer"
         AS[Agent Service]
         DS[Data Service]
@@ -362,7 +362,7 @@ graph TB
         CONF[Confidence Service]
         ANAL[Analytics Service]
     end
-    
+
     subgraph "Agentic Framework (7 Components)"
         AWE[Business Logic & Workflow Engine<br/>workflow_engine.py]
         ASM[State & Session Manager<br/>state_manager.py]
@@ -372,7 +372,7 @@ graph TB
         ARS[Response Synthesizer<br/>response_synthesizer.py]
         AEM[Error Handling & Fallback Manager<br/>error_manager.py]
     end
-    
+
     subgraph "Core Domain Layer"
         AGENT[AI Agent Core<br/>agent.py]
         DOCTRINE[5-Phase SRE Doctrine<br/>doctrine.py]
@@ -382,20 +382,20 @@ graph TB
         ORCHESTRATOR[Troubleshooting Orchestrator<br/>troubleshooting_orchestrator.py]
         LOOP_GUARD[Loop Guard<br/>loop_guard.py]
     end
-    
+
     subgraph "Data Processing Layer"
         CLASSIFIER[Data Classifier<br/>classifier.py]
         LOG_ANALYZER[Log Analyzer<br/>log_analyzer.py]
         PATTERN_LEARNER[Pattern Learner<br/>pattern_learner.py]
         CONFIDENCE[Confidence Aggregator<br/>aggregator.py]
     end
-    
+
     subgraph "Knowledge Management Layer"
         KB_INGESTION[Knowledge Ingestion<br/>ingestion.py]
         KB_RETRIEVAL[Advanced Retrieval<br/>advanced_retrieval.py]
         VECTOR_STORE[Vector Store<br/>chromadb_store.py]
     end
-    
+
     subgraph "Infrastructure Layer"
         LLM[LLM Router<br/>router.py]
         REDIS[Redis Client<br/>redis_client.py]
@@ -406,7 +406,7 @@ graph TB
         ALERT[Alert Manager<br/>alerting.py]
         CACHE[Intelligent Cache<br/>intelligent_cache.py]
     end
-    
+
     subgraph "Protection & Monitoring Layer"
         PROT_COORD[Protection Coordinator<br/>protection_coordinator.py]
         ANOMALY[Anomaly Detector<br/>anomaly_detector.py]
@@ -415,14 +415,14 @@ graph TB
         CIRCUIT[Smart Circuit Breaker<br/>smart_circuit_breaker.py]
         RATE_LIMIT[Rate Limiter<br/>rate_limiter.py]
     end
-    
+
     subgraph "Tool System"
         KB_TOOL[Knowledge Base Tool<br/>knowledge_base.py]
         ENH_KB_TOOL[Enhanced Knowledge Tool<br/>enhanced_knowledge_tool.py]
         WEB_TOOL[Web Search Tool<br/>web_search.py]
         TOOL_REGISTRY[Tool Registry<br/>registry.py]
     end
-    
+
     subgraph "External Services"
         REDIS_EXT[(Redis<br/>Session Store)]
         CHROMA_EXT[(ChromaDB<br/>Vector Store)]
@@ -432,18 +432,18 @@ graph TB
         ANTHROPIC_EXT[Anthropic<br/>Claude Models]
         FIREWORKS_EXT[Fireworks AI<br/>Open Models]
     end
-    
+
     subgraph "Dependency Injection"
         CONTAINER[DI Container<br/>container.py]
         SETTINGS[Settings<br/>settings.py]
         FEATURE_FLAGS[Feature Flags<br/>feature_flags.py]
     end
-    
+
     %% Client connections
     BE --> CORS
     API_CLIENT --> CORS
     CURL --> CORS
-    
+
     %% Middleware stack
     CORS --> LOG
     LOG --> PERF
@@ -451,7 +451,7 @@ graph TB
     PROT --> OPIK
     OPIK --> ROUTE
     ROUTE --> DEP
-    
+
     %% Service routing
     DEP --> AS
     DEP --> DS
@@ -460,7 +460,7 @@ graph TB
     DEP --> CS
     DEP --> JS
     DEP --> GS
-    
+
     %% Agentic framework orchestration
     AS --> AWE
     AWE --> ASM
@@ -469,7 +469,7 @@ graph TB
     AWE --> AGL
     AWE --> ARS
     AWE --> AEM
-    
+
     %% Core domain connections
     AS --> AGENT
     AS --> DOCTRINE
@@ -478,24 +478,24 @@ graph TB
     AS --> REASONING
     AS --> ORCHESTRATOR
     AS --> LOOP_GUARD
-    
+
     %% Data processing
     DS --> CLASSIFIER
     DS --> LOG_ANALYZER
     DS --> PATTERN_LEARNER
     DS --> CONFIDENCE
-    
+
     %% Knowledge management
     KS --> KB_INGESTION
     KS --> KB_RETRIEVAL
     KS --> VECTOR_STORE
-    
+
     %% Tool system
     ATB --> KB_TOOL
     ATB --> ENH_KB_TOOL
     ATB --> WEB_TOOL
     ATB --> TOOL_REGISTRY
-    
+
     %% Infrastructure connections
     AS --> LLM
     AS --> OBS
@@ -509,7 +509,7 @@ graph TB
     ATB --> KB_TOOL
     AGL --> SECURITY
     ARS --> LLM
-    
+
     %% Protection system
     PROT --> PROT_COORD
     PROT_COORD --> ANOMALY
@@ -517,14 +517,14 @@ graph TB
     PROT_COORD --> REPUTATION
     PROT_COORD --> CIRCUIT
     PROT_COORD --> RATE_LIMIT
-    
+
     %% Health and monitoring
     HEALTH --> REDIS_EXT
     HEALTH --> CHROMA_EXT
     HEALTH --> PRESIDIO_EXT
     HEALTH --> OPIK_EXT
     METRICS --> ALERT
-    
+
     %% External service connections
     LLM --> OPENAI_EXT
     LLM --> ANTHROPIC_EXT
@@ -533,7 +533,7 @@ graph TB
     OBS --> OPIK_EXT
     REDIS --> REDIS_EXT
     VECTOR_STORE --> CHROMA_EXT
-    
+
     %% Dependency injection
     CONTAINER --> AS
     CONTAINER --> DS
@@ -552,11 +552,11 @@ graph TB
     CONTAINER --> AGL
     CONTAINER --> ARS
     CONTAINER --> AEM
-    
+
     %% Settings and configuration
     SETTINGS --> CONTAINER
     FEATURE_FLAGS --> CONTAINER
-    
+
     %% Styling
     classDef client fill:#e1f5fe
     classDef api fill:#f3e5f5
@@ -568,7 +568,7 @@ graph TB
     classDef tools fill:#e0f2f1
     classDef external fill:#f3e5f5
     classDef di fill:#e8eaf6
-    
+
     class BE,API_CLIENT,CURL client
     class MAIN,CORS,LOG,PERF,PROT,OPIK,ROUTE,DEP api
     class AS,DS,KS,SS,CS,JS,GS,CONF,ANAL service

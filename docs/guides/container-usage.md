@@ -1,6 +1,6 @@
 # Enhanced Dependency Injection Container Usage Guide
 
-**Document Type**: Developer Guide  
+**Document Type**: Developer Guide
 **Last Updated**: August 2025
 
 ## Overview
@@ -68,12 +68,12 @@ async def process_query(
 ):
     # Agent service with agentic framework integration
     result = await agent_service.process_query(query)
-    
+
     # Access agentic workflow engine for advanced processing if needed
     if workflow_engine:
         enhanced_result = await workflow_engine.process_query(query.query, query.session_id)
         result.update(enhanced_result)
-    
+
     return result
 ```
 
@@ -112,16 +112,16 @@ class DIContainer:
         try:
             # Layer 1: Intelligence (core intelligent capabilities)
             self._create_intelligence_layer()
-            
+
             # Layer 2: Infrastructure (external services)
             self._create_infrastructure_layer()
-            
+
             # Layer 3: Tools (agent capabilities with intelligence integration)
             self._create_tools_layer()
-            
+
             # Layer 4: Enhanced Services (with intelligence dependencies)
             self._create_service_layer()
-            
+
             self._initialized = True
         except Exception as e:
             # Graceful degradation with mock intelligence implementations
@@ -137,7 +137,7 @@ The container now provides the following enhanced service getters:
 ```python
 # Enhanced Core Services with Intelligence
 agent_service = container.get_agent_service()        # Pure AgentService
-data_service = container.get_data_service()          # EnhancedDataService  
+data_service = container.get_data_service()          # EnhancedDataService
 knowledge_service = container.get_knowledge_service() # EnhancedKnowledgeService
 session_service = container.get_session_service()    # EnhancedSessionService
 
@@ -222,11 +222,11 @@ All intelligence services are accessed through interfaces:
 
 ```python
 from faultmaven.models.interfaces import (
-    IMemoryService, 
-    IPlanningService, 
+    IMemoryService,
+    IPlanningService,
     IPromptEngine,
-    ILLMProvider, 
-    ISanitizer, 
+    ILLMProvider,
+    ISanitizer,
     ITracer
 )
 
@@ -252,7 +252,7 @@ The container automatically selects appropriate implementations with intelligenc
 ```python
 def _create_intelligence_layer(self):
     """Create intelligence layer with environment-based selection"""
-    
+
     # Memory service with Redis and ChromaDB
     if os.getenv("ENABLE_MEMORY_FEATURES") == "true":
         try:
@@ -266,7 +266,7 @@ def _create_intelligence_layer(self):
             self.memory_service = MockMemoryService()
     else:
         self.memory_service = MockMemoryService()
-    
+
     # Planning service with LLM integration
     if os.getenv("ENABLE_PLANNING_FEATURES") == "true":
         try:
@@ -279,7 +279,7 @@ def _create_intelligence_layer(self):
             self.planning_service = MockPlanningService()
     else:
         self.planning_service = MockPlanningService()
-    
+
     # Advanced prompt engine
     if os.getenv("ENABLE_ADVANCED_PROMPTING") == "true":
         try:
@@ -322,12 +322,12 @@ for layer, layer_health in health['components'].items():
 #   ✅ llm_provider: True
 #   ✅ sanitizer: True
 #   ✅ tracer: True
-# 
+#
 # Intelligence Layer:
 #   ✅ memory: healthy
 #   ✅ planning: healthy
 #   ✅ prompt_engine: healthy
-# 
+#
 # Services Layer:
 #   ✅ agent_service: True
 #   ✅ data_service: True
@@ -389,14 +389,14 @@ curl http://localhost:8090/health/intelligence
 if health["status"] == "degraded":
     # Check intelligence services specifically
     intelligence_health = health["components"]["intelligence"]
-    
+
     if intelligence_health["status"] == "degraded":
         failed_intelligence_services = [
-            name for name, service_health in intelligence_health["services"].items() 
+            name for name, service_health in intelligence_health["services"].items()
             if service_health.get('status') != 'healthy'
         ]
         print(f"Failed intelligence services: {failed_intelligence_services}")
-        
+
         # Check specific intelligence service details
         for service_name in failed_intelligence_services:
             service = getattr(container, f"{service_name}_service")
@@ -430,21 +430,21 @@ def test_enhanced_agent_service_with_intelligence_mocks():
     # Reset container
     container = DIContainer()
     container.reset()
-    
+
     # Set test environment for intelligence features
     os.environ["ENABLE_INTELLIGENT_FEATURES"] = "true"
     os.environ["ENABLE_MEMORY_FEATURES"] = "true"
     os.environ["ENABLE_PLANNING_FEATURES"] = "true"
     os.environ["ENABLE_ADVANCED_PROMPTING"] = "true"
-    
+
     # Get enhanced service with intelligence dependencies
     agent_service = container.get_agent_service()
-    
+
     # Verify enhanced service has intelligence dependencies
     assert hasattr(agent_service, '_memory_service')
     assert hasattr(agent_service, '_planning_service')
     assert hasattr(agent_service, '_prompt_engine')
-    
+
     # Verify mock intelligence implementations
     assert isinstance(agent_service._memory_service, MockMemoryService)
     assert isinstance(agent_service._planning_service, MockPlanningService)
@@ -459,9 +459,9 @@ class TestEnhancedContainer(DIContainer):
     def _create_intelligence_layer(self):
         # Custom test intelligence implementations
         self.memory_service = TestMemoryService()
-        self.planning_service = TestPlanningService() 
+        self.planning_service = TestPlanningService()
         self.prompt_engine = TestPromptEngine()
-        
+
         # Real implementations for other components
         super()._create_infrastructure_layer()
         super()._create_tools_layer()
@@ -471,11 +471,11 @@ class TestEnhancedContainer(DIContainer):
 def test_with_custom_intelligence_container():
     original_container = DIContainer._instance
     DIContainer._instance = TestEnhancedContainer()
-    
+
     try:
         agent_service = container.get_agent_service()
         memory_service = container.get_memory_service()
-        
+
         # Test with custom intelligence implementations
         assert isinstance(memory_service, TestMemoryService)
         # ... test enhanced functionality
@@ -528,9 +528,9 @@ from faultmaven.config.enhanced_feature_flags import (
 
 def get_enhanced_service_implementation():
     """Get enhanced service based on feature flags"""
-    if (ENABLE_INTELLIGENT_FEATURES and 
-        ENABLE_MEMORY_FEATURES and 
-        ENABLE_PLANNING_FEATURES and 
+    if (ENABLE_INTELLIGENT_FEATURES and
+        ENABLE_MEMORY_FEATURES and
+        ENABLE_PLANNING_FEATURES and
         ENABLE_ADVANCED_PROMPTING):
         # Use enhanced services with intelligence from container
         return container.get_agent_service()
@@ -550,19 +550,19 @@ class CustomEnhancedContainer(DIContainer):
             self.memory_service = CustomMemoryService()
         else:
             super()._create_intelligence_layer()
-        
+
         # Custom planning service configuration
         if os.getenv("CUSTOM_PLANNING_STRATEGY"):
             self.planning_service = CustomPlanningService()
         else:
             super()._create_intelligence_layer()
-        
+
         # Custom prompt engine configuration
         if os.getenv("CUSTOM_PROMPT_OPTIMIZATION"):
             self.prompt_engine = CustomPromptEngine()
         else:
             super()._create_intelligence_layer()
-    
+
     def _create_service_layer(self):
         # Pure interface-based service configuration
         self.agent_service = AgentService(
@@ -589,10 +589,10 @@ def initialize(self):
         self._create_service_layer()
         self._initialized = True
         logger.info("✅ Enhanced DI Container initialized successfully")
-        
+
     except Exception as e:
         logger.error(f"❌ Enhanced DI Container initialization failed: {e}")
-        
+
         # Fallback to minimal container with mock intelligence
         try:
             self._create_minimal_enhanced_container()
@@ -609,25 +609,25 @@ def initialize(self):
 def _create_minimal_enhanced_container(self):
     """Create minimal enhanced container with mock intelligence implementations"""
     from unittest.mock import MagicMock
-    
+
     # Mock intelligence layer
     self.memory_service = MockMemoryService()
     self.planning_service = MockPlanningService()
     self.prompt_engine = MockPromptEngine()
-    
+
     # Mock infrastructure layer
     self.llm_provider = MagicMock(spec=ILLMProvider)
     self.sanitizer = MagicMock(spec=ISanitizer)
     self.tracer = MagicMock(spec=ITracer)
-    
+
     # Empty tools list
     self.tools = []
-    
+
     # Mock enhanced service layer
     self.agent_service = MagicMock(spec=AgentService)
     self.data_service = MagicMock(spec=EnhancedDataService)
     self.knowledge_service = MagicMock(spec=EnhancedKnowledgeService)
-    
+
     logger.info("Created minimal enhanced container with mock intelligence for testing environment")
 ```
 
@@ -636,7 +636,7 @@ def _create_minimal_enhanced_container(self):
 ```python
 def _create_intelligence_layer(self):
     """Create intelligence layer with error isolation"""
-    
+
     # Memory Service (may fail if Redis/ChromaDB unavailable)
     try:
         self.memory_service = MemoryService(
@@ -647,7 +647,7 @@ def _create_intelligence_layer(self):
     except Exception as e:
         logger.warning(f"⚠️ Memory service failed: {e}")
         self.memory_service = MockMemoryService()
-    
+
     # Planning Service (may fail if LLM provider unavailable)
     try:
         self.planning_service = PlanningService(
@@ -657,7 +657,7 @@ def _create_intelligence_layer(self):
     except Exception as e:
         logger.warning(f"⚠️ Planning service failed: {e}")
         self.planning_service = MockPlanningService()
-    
+
     # Prompt Engine (may fail if LLM provider unavailable)
     try:
         self.prompt_engine = AdvancedPromptEngine(
@@ -668,7 +668,7 @@ def _create_intelligence_layer(self):
     except Exception as e:
         logger.warning(f"⚠️ Advanced prompt engine failed: {e}")
         self.prompt_engine = MockPromptEngine()
-    
+
     logger.info(f"Intelligence layer initialized with {sum([1 for s in [self.memory_service, self.planning_service, self.prompt_engine] if not isinstance(s, MockService)])} real services")
 ```
 
@@ -710,7 +710,7 @@ def get_prompt_engine(self):
 ### Enhanced Lazy Initialization Benefits
 
 - **Faster Startup**: Only create intelligence components when needed
-- **Memory Conservation**: Don't load unused intelligence dependencies  
+- **Memory Conservation**: Don't load unused intelligence dependencies
 - **Error Isolation**: Failed intelligence components don't prevent application start
 - **Development Speed**: Developers can work without all intelligence dependencies
 - **Feature Toggle Support**: Enable/disable intelligence features at runtime
@@ -720,7 +720,7 @@ def get_prompt_engine(self):
 ### Enhanced Container Usage Guidelines
 
 1. **Intelligence Service Access**: Use dedicated getters for each intelligence service
-2. **Interface Returns**: Always return interface types, not concrete classes  
+2. **Interface Returns**: Always return interface types, not concrete classes
 3. **Error Handling**: Gracefully handle missing intelligence dependencies
 4. **Health Monitoring**: Include health checks for all intelligence services
 5. **Testing Support**: Provide comprehensive mock implementations for testing
@@ -738,7 +738,7 @@ class IEnhancedService(ABC):
 # 2. Implement enhanced concrete class with intelligence
 class EnhancedService(IEnhancedService):
     def __init__(
-        self, 
+        self,
         dependency: ISomeDependency,
         memory_service: IMemoryService,
         planning_service: IPlanningService
@@ -746,20 +746,20 @@ class EnhancedService(IEnhancedService):
         self.dependency = dependency
         self.memory_service = memory_service
         self.planning_service = planning_service
-    
+
     async def process_with_intelligence(self, data: str, session_id: str) -> EnhancedResult:
         # Get memory context
         context = await self.memory_service.retrieve_context(session_id, data)
-        
+
         # Plan processing strategy
         strategy = await self.planning_service.plan_processing_strategy(data, context)
-        
+
         # Process with intelligence
         result = self.dependency.transform(data)
-        
+
         # Consolidate insights
         await self.memory_service.consolidate_insights(session_id, {"result": result})
-        
+
         return EnhancedResult(data=result, context=context, strategy=strategy)
 
 # 3. Add to enhanced container
@@ -787,7 +787,7 @@ def test_with_mock_intelligence(mock_get_planning, mock_get_memory):
     mock_planning = MagicMock(spec=IPlanningService)
     mock_get_memory.return_value = mock_memory
     mock_get_planning.return_value = mock_planning
-    
+
     service = container.get_enhanced_service()
     # Test with mock intelligence implementations
 
@@ -796,7 +796,7 @@ def test_with_clean_enhanced_container():
     container.reset()
     os.environ["ENABLE_INTELLIGENT_FEATURES"] = "true"
     os.environ["TEST_MODE"] = "true"
-    
+
     service = container.get_enhanced_service()
     # Test with fresh enhanced container state
 
@@ -805,7 +805,7 @@ def test_enhanced_container_health():
     health = container.get_health_status()
     assert health["status"] in ["healthy", "degraded", "unhealthy"]
     assert "intelligence" in health["components"]
-    
+
     intelligence_health = health["components"]["intelligence"]
     assert "memory" in intelligence_health["services"]
     assert "planning" in intelligence_health["services"]
@@ -861,16 +861,16 @@ def debug_enhanced_container():
     health = container.get_health_status()
     print(f"Enhanced Container Status: {health['status']}")
     print(f"Initialized: {container._initialized}")
-    
+
     # Check intelligence services
     if "intelligence" in health["components"]:
         intelligence_health = health["components"]["intelligence"]
         print(f"Intelligence Status: {intelligence_health['status']}")
-        
+
         for service_name, service_health in intelligence_health["services"].items():
             status_icon = "✅" if service_health.get('status') == 'healthy' else "❌"
             print(f"  {status_icon} {service_name}: {service_health.get('status', 'unknown')}")
-            
+
             # Show additional metrics if available
             if 'memory_usage_mb' in service_health:
                 print(f"    Memory Usage: {service_health['memory_usage_mb']}MB")
@@ -878,12 +878,12 @@ def debug_enhanced_container():
                 print(f"    Active Strategies: {service_health['active_strategies']}")
             if 'quality_score' in service_health:
                 print(f"    Quality Score: {service_health['quality_score']}")
-    
+
     # Check LLM provider status
     if hasattr(container, 'llm_provider'):
         llm_provider = container.get_llm_provider()
         print(f"LLM Provider: {type(llm_provider).__name__}")
-        
+
         if hasattr(llm_provider, 'get_provider_status'):
             status = llm_provider.get_provider_status()
             print("LLM Provider Status:")
@@ -924,9 +924,9 @@ prompt_engine = container.get_prompt_engine()
 ```python
 # Mixed approach during intelligence migration
 def get_enhanced_agent_service():
-    if (ENABLE_INTELLIGENT_FEATURES and 
-        ENABLE_MEMORY_FEATURES and 
-        ENABLE_PLANNING_FEATURES and 
+    if (ENABLE_INTELLIGENT_FEATURES and
+        ENABLE_MEMORY_FEATURES and
+        ENABLE_PLANNING_FEATURES and
         ENABLE_ADVANCED_PROMPTING):
         # Use enhanced services with intelligence from container
         return container.get_agent_service()
@@ -938,7 +938,7 @@ def get_enhanced_agent_service():
 # Phase 1: Enable memory features
 os.environ["ENABLE_MEMORY_FEATURES"] = "true"
 
-# Phase 2: Enable planning features  
+# Phase 2: Enable planning features
 os.environ["ENABLE_PLANNING_FEATURES"] = "true"
 
 # Phase 3: Enable advanced prompting

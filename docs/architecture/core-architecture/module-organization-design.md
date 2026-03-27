@@ -1,8 +1,8 @@
 # Module Organization Design: Vertical vs Horizontal
 
-**Version**: 2.1  
-**Date**: 2026-01-10  
-**Status**: Schema-Verified Recommendation  
+**Version**: 2.1
+**Date**: 2026-01-10
+**Status**: Schema-Verified Recommendation
 **Related**: [Architectural Design Principles](architectural-design-principles.md)
 
 **Schema Verification**: This document has been verified against `case-storage-design.md` and `data-storage-design.md` (2026-01-09).
@@ -317,7 +317,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 
 **Decision**: ⚠️ **SHARED** (not vertical, not horizontal infrastructure)
 
-**Rationale**: 
+**Rationale**:
 - Fails Criterion 1: No domain data ownership (data owned by `modules/case/`)
 - Has business logic but doesn't own the domain
 - Should remain in `core/` as shared domain logic
@@ -578,7 +578,7 @@ api/v1/routes/
 └── report.py             # Report endpoints
 ```
 
-**Pros**: Simple, fits traditional patterns  
+**Pros**: Simple, fits traditional patterns
 **Cons**: Loses domain cohesion, harder to extract as microservices
 
 #### Option B: Domain Service Structure (Recommended)
@@ -604,7 +604,7 @@ modules/report/            # Domain Service (NOT vertical, TD-001 complete)
 # NO infrastructure/       # Uses Case repository for persistence (TD-001 complete)
 ```
 
-**Pros**: Maintains domain cohesion, extraction-ready, matches schema reality  
+**Pros**: Maintains domain cohesion, extraction-ready, matches schema reality
 **Cons**: Hybrid structure requires documentation clarity
 
 ### Recommended Approach: Domain Service Structure
@@ -648,12 +648,12 @@ from faultmaven.modules.case.contracts import ICaseRepository
 class EvidenceService:
     def __init__(self, case_repo: ICaseRepository):
         self.case_repo = case_repo  # Uses Case contract
-    
+
     async def collect_evidence(self, case_id: str, evidence_data: Evidence):
         # Business logic: validation, preprocessing
         validated = self.validate(evidence_data)
         processed = await self.preprocess(validated)
-        
+
         # Delegate persistence to Case module (Case owns the table)
         await self.case_repo.add_evidence(case_id, processed)
 ```
@@ -675,11 +675,11 @@ class AgentService:
         self.case_service = case_service
         self.knowledge_service = knowledge_service
         self.llm_provider = llm_provider
-    
+
     async def investigate(self, case_id: str, query: str):
         # LangGraph orchestration (ephemeral state)
         result = await self.orchestrate_investigation(case_id, query)
-        
+
         # All persistent state via Case module
         await self.case_service.add_investigation_result(case_id, result)
 ```
@@ -704,11 +704,11 @@ class ReportGenerationService:
         self.runbook_kb = runbook_kb
         self.lock_manager = lock_manager
         self.pii_redactor = pii_redactor
-    
+
     async def generate_report(self, case_id: str, report_type: ReportType):
         case = await self.case_repository.get(case_id)
         report = await self._generate(case, report_type)
-        
+
         # TD-001 Complete: Persistent storage via Case repository
         await self.case_repository.add_report(report)  # PostgreSQL reports table
         return report
@@ -811,7 +811,7 @@ from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrat
 | `infrastructure/observability/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Cross-cutting concern |
 | `core/investigation/` | ❌ No* | ✅ Yes | ⚠️ Shared | ⚠️ **SHARED** | Logic only, data in Case |
 
-*Data owned by `modules/case/`, not `core/`  
+*Data owned by `modules/case/`, not `core/`
 **Result**: Only **3 modules** are truly vertical (Auth, Case, Knowledge). Evidence, Agent, and Report are domain services.
 
 ---
@@ -941,7 +941,7 @@ These components provide **technical capabilities** and should remain horizontal
 
 #### 1. **`infrastructure/llm/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: LLM provider abstraction and routing
-- **Why Horizontal**: 
+- **Why Horizontal**:
   - Used by Agent, Report, Knowledge modules
   - Stateless provider adapters
   - No business logic, just technical integration
@@ -1384,8 +1384,8 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 ### TD-001: Migrate Report Storage from Ephemeral to Persistent
 
-**Status**: ✅ **COMPLETE** (2026-01-10)  
-**Priority**: Medium  
+**Status**: ✅ **COMPLETE** (2026-01-10)
+**Priority**: Medium
 **Related Modules**: Report (domain service), Case (vertical module)
 
 #### Completed Migration
@@ -1430,7 +1430,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 ---
 
-**Document Owner**: Engineering Leadership  
-**Status**: Schema-Verified Active Recommendation  
-**Last Updated**: 2026-01-09  
+**Document Owner**: Engineering Leadership
+**Status**: Schema-Verified Active Recommendation
+**Last Updated**: 2026-01-09
 **Schema Verification**: Verified against `case-storage-design.md` v3.1 and `data-storage-design.md` v2.0
