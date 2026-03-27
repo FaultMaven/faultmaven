@@ -1142,9 +1142,10 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         """Upload document - API-compatible wrapper that stores documents"""
         try:
-            # Generate unique document ID
-            self._document_counter += 1
-            document_id = f"kb_{str(self._document_counter).zfill(8)}"
+            # Generate unique document ID (UUID-based to survive server restarts)
+            import uuid as _uuid
+
+            document_id = f"kb_{_uuid.uuid4().hex[:12]}"
             job_id = f"job_{document_id}"
 
             # Create document object
