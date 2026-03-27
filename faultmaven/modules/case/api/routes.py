@@ -48,14 +48,10 @@ from faultmaven.api.v1.auth_dependencies import (
 )
 from faultmaven.api.v1.dependencies import (
     get_case_repository,  # TD-001: use case_repository for reports
-)
-from faultmaven.api.v1.dependencies import (
-    get_investigation_service,  # V2.0 milestone-based
-)
-from faultmaven.api.v1.dependencies import (
     get_case_service,
     get_case_vector_store,
     get_data_service,
+    get_investigation_service,  # V2.0 milestone-based
     get_preprocessing_service,
     get_session_id,
     get_session_service,

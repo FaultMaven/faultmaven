@@ -146,6 +146,8 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
 
                 # Make process_query an async mock that returns a TroubleshootingResponse object
                 async def mock_process_query(*args, **kwargs):
+                    from faultmaven.exceptions import ValidationException
+
                     # Handle invalid input gracefully
                     try:
                         # Extract query details from the request
@@ -168,8 +170,6 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         raise ValidationException(f"Invalid request format: {e}")
 
                     # Implement validation logic to match real AgentService behavior
-                    from faultmaven.exceptions import ValidationException
-
                     # Validate query
                     if not query or not query.strip():
                         raise ValidationException("Query cannot be empty")

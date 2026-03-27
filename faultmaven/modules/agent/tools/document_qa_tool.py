@@ -17,10 +17,10 @@ from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
 
 from faultmaven.config.settings import get_settings
-from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
+from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)

@@ -38,9 +38,11 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
+from faultmaven.infrastructure.persistence.user_repository import (
+    InMemoryUserRepository,
+    UserRepository,
+)
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
-from faultmaven.infrastructure.persistence.user_repository import UserRepository
 from faultmaven.models.auth import TokenPair
 from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.services.base import BaseService

@@ -352,7 +352,7 @@ class MockVectorDatabase:
 @pytest.fixture
 async def http_test_server():
     """Fixture providing HTTP test server."""
-    server_util = TestHTTPServer()
+    server_util = MockHTTPServer()
     server = await server_util.create_server()
 
     yield server, server_util

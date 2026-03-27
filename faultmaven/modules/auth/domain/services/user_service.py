@@ -38,12 +38,10 @@ from faultmaven.modules.auth.domain.models.auth import TokenPair
 from faultmaven.modules.auth.domain.models.rbac import Role, get_permissions_for_roles
 from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
     InMemoryUserRepository,
+    UserRepository,
 )
 from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
     User as RepositoryUser,
-)
-from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
-    UserRepository,
 )
 from faultmaven.utils.password import (
     hash_password,

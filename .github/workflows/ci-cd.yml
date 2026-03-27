@@ -56,8 +56,8 @@ jobs:
       - name: Validate key tool versions in lockfile
         run: |
           echo "Checking pinned tool versions..."
-          grep -q "^black==25.1.0$" requirements/test.txt || (echo "ERROR: black not pinned to 25.1.0 in lockfile" && exit 1)
-          grep -q "^isort==5.13.2$" requirements/test.txt || (echo "ERROR: isort not pinned to 5.13.2 in lockfile" && exit 1)
+          grep -q "^black==25.1.0$" requirements/dev.txt || (echo "ERROR: black not pinned to 25.1.0 in lockfile" && exit 1)
+          grep -q "^ruff==0.9.10$" requirements/dev.txt || (echo "ERROR: ruff not pinned to 0.9.10 in lockfile" && exit 1)
           echo "✓ Tool versions verified"
 
       - name: Validate lockfiles install cleanly
@@ -67,7 +67,9 @@ jobs:
 
   # ============================================================================
   # CODE QUALITY CHECKS
-  # Run once, used by both community and enterprise test jobs
+  # Runs pre-commit hooks to ensure CI matches local developer experience.
+  # Covers: formatting (black), linting + import sorting (ruff), secret
+  # detection, file hygiene, and API key pattern checks.
   # ============================================================================
   code-quality:
     needs: [env-check]
@@ -84,19 +86,17 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
+          cache-dependency-path: 'requirements/dev.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          pip install -r requirements/dev.txt
           pip install -e . --no-deps
 
-      - name: Run Code Quality Checks
+      - name: Run Pre-commit Checks
         run: |
-          black --check faultmaven/ tests/
-          isort --check-only faultmaven/ tests/
-          flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          pre-commit run --all-files
 
   # ============================================================================
   # COMMUNITY EDITION TESTING
@@ -157,7 +157,7 @@ jobs:
 
       - name: Check Coverage Threshold
         run: |
-          coverage report --fail-under=40
+          coverage report --fail-under=71
 
       - name: Upload Community Coverage
         uses: codecov/codecov-action@v4
@@ -227,7 +227,7 @@ jobs:
 
       - name: Check Coverage Threshold
         run: |
-          coverage report --fail-under=40
+          coverage report --fail-under=71
 
       - name: Upload Enterprise Coverage
         uses: codecov/codecov-action@v4
@@ -241,6 +241,7 @@ jobs:
   # Enforce architectural boundaries with import-linter
   # ============================================================================
   architecture-lint:
+    needs: [env-check]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     name: Architecture Boundary Check
@@ -275,6 +276,7 @@ jobs:
   # Verify pyproject.toml and packaging configuration
   # ============================================================================
   test-packaging:
+    needs: [env-check]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     name: Test Packaging Configuration
@@ -325,9 +327,11 @@ jobs:
 
   # ============================================================================
   # SECURITY SCANNING
-  # Non-blocking security checks (safety + bandit)
+  # Fails on high/critical severity findings. Medium/low are reported but
+  # do not block the pipeline.
   # ============================================================================
   security-scan:
+    needs: [env-check]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     name: Security Scanning
@@ -348,8 +352,55 @@ jobs:
 
       - name: Check dependencies for vulnerabilities
         run: |
-          safety check --json || echo "⚠️ Safety check completed with warnings (non-blocking)"
+          # Fail on critical/high severity vulnerabilities
+          safety check --json > safety-report.json 2>&1 || true
+          # Parse results: fail if any high/critical CVEs found
+          python -c "
+          import json, sys
+          try:
+              with open('safety-report.json') as f:
+                  data = json.load(f)
+              vulns = data if isinstance(data, list) else data.get('vulnerabilities', [])
+              if not vulns:
+                  print('✓ No known vulnerabilities found')
+                  sys.exit(0)
+              print(f'Found {len(vulns)} vulnerability(ies)')
+              # Safety v3 format: severity is in the vulnerability object
+              high_crit = [v for v in vulns if str(v.get('severity', '')).lower() in ('high', 'critical')]
+              if high_crit:
+                  print(f'✗ {len(high_crit)} high/critical vulnerabilities detected:')
+                  for v in high_crit:
+                      pkg = v.get('package_name', v.get('package', 'unknown'))
+                      vuln_id = v.get('vulnerability_id', v.get('id', 'N/A'))
+                      sev = v.get('severity', 'unknown')
+                      print(f'  - {pkg}: {vuln_id} ({sev})')
+                  sys.exit(1)
+              else:
+                  print(f'⚠ {len(vulns)} low/medium vulnerabilities (non-blocking)')
+          except (json.JSONDecodeError, FileNotFoundError):
+              print('⚠ Could not parse safety output (non-blocking)')
+          "
 
       - name: Run security linter
         run: |
-          bandit -r faultmaven/ -ll || echo "⚠️ Bandit scan completed with findings (non-blocking)"
+          # Fail on high-confidence, high-severity findings (-ll = medium+, -iii = high confidence)
+          bandit -r faultmaven/ -ll -iii -f json -o bandit-report.json || true
+          python -c "
+          import json, sys
+          try:
+              with open('bandit-report.json') as f:
+                  data = json.load(f)
+              results = data.get('results', [])
+              high_sev = [r for r in results if r.get('issue_severity') == 'HIGH' and r.get('issue_confidence') == 'HIGH']
+              if high_sev:
+                  print(f'✗ {len(high_sev)} high-severity/high-confidence findings:')
+                  for r in high_sev:
+                      print(f\"  - {r['filename']}:{r['line_number']}: {r['issue_text']} [{r['test_id']}]\")
+                  sys.exit(1)
+              elif results:
+                  print(f'⚠ {len(results)} lower-severity findings (non-blocking)')
+              else:
+                  print('✓ No security issues found')
+          except (json.JSONDecodeError, FileNotFoundError):
+              print('⚠ Could not parse bandit output (non-blocking)')
+          "

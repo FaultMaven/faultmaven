@@ -20,13 +20,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
 
+# Redis is always available (real Redis or FakeRedis via DI)
+from redis.asyncio import Redis
+
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser, TokenClaims, TokenPair
 from faultmaven.models.rbac import get_permissions_for_roles
-
-# Redis is always available (real Redis or FakeRedis via DI)
-from redis.asyncio import Redis
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:

@@ -52,7 +52,7 @@ except ImportError:
         toml = TomlWrapper()
     except ImportError:
         try:
-            import tomli as toml  # Read-only backport (also requires binary)
+            import tomli  # Read-only backport (also requires binary)
 
             # tomli also needs binary mode, create similar wrapper
             class TomliWrapper:

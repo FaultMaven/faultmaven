@@ -26,13 +26,11 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.models.auth import DevUser
-from fastapi.responses import JSONResponse
-
-from pydantic import BaseModel, Field
-
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     ConversionResponse,
@@ -81,7 +79,6 @@ def _get_conversion_service(request: Request) -> ConversionService:
 
 
 from faultmaven.api.v1.auth_dependencies import require_authentication as _require_auth
-
 
 # =============================================================================
 # POST /knowledge/convert
