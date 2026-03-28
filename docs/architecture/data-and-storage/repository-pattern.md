@@ -811,7 +811,7 @@ class Container:
 
         else:
             # ChromaDB always available (PersistentClient for local, HttpClient for cloud)
-            # Client created by DI container via create_chromadb_client()
+            # Client created by DI container via create_kb_chromadb_client() or create_evidence_chromadb_client()
             self.vector_store = ChromaDBVectorStore(client=chromadb_client)
 ```
 

@@ -6,6 +6,7 @@ Production operations documentation.
 
 | Section | Description |
 |---------|-------------|
+| [Data & Storage Management](./data-storage-management.md) | Data directory layout, KB runbook management, backup/restore |
 | [Monitoring](./monitoring/) | Logging, metrics, and observability |
 | [Security](./security/) | Security implementation and policies |
 | [Runbooks](./runbooks/) | Troubleshooting guides |

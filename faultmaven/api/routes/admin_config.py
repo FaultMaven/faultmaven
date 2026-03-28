@@ -456,11 +456,22 @@ async def get_env_config_status(
 
         # Vector storage: check if ChromaDB PersistentClient is active
         vector_storage = settings.database.vector_storage_type
-        chroma_dir = Path(
-            getattr(settings.database, "chromadb_persist_dir", "./data/chroma")
+        chroma_kb_dir = Path(
+            getattr(settings.database, "chromadb_kb_persist_dir", "./data/chroma-kb")
         )
-        if (chroma_dir / "chroma.sqlite3").exists():
-            vector_storage = "chromadb (persistent)"
+        chroma_evidence_dir = Path(
+            getattr(
+                settings.database,
+                "chromadb_evidence_persist_dir",
+                "./data/chroma-evidence",
+            )
+        )
+        kb_active = (chroma_kb_dir / "chroma.sqlite3").exists()
+        evidence_active = (chroma_evidence_dir / "chroma.sqlite3").exists()
+        if kb_active and evidence_active:
+            vector_storage = "chromadb (persistent, split: kb + evidence)"
+        elif kb_active:
+            vector_storage = "chromadb (persistent, kb only)"
 
         # Session storage: FakeRedis = inmemory, real Redis = redis
         session_storage = settings.database.session_storage_type

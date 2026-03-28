@@ -163,7 +163,8 @@ FaultMaven community edition runs entirely on your local machine:
 | **Database** | SQLite | `./faultmaven.db` |
 | **File Storage** | Local filesystem | `./data/uploads/` |
 | **Sessions** | In-memory | RAM (cleared on restart) |
-| **Knowledge Base** | ChromaDB (embedded) | `./data/chromadb/` |
+| **Knowledge Base** | ChromaDB (embedded) | `./data/chroma-kb/` |
+| **Evidence Vectors** | ChromaDB (embedded) | `./data/chroma-evidence/` |
 | **Vector Embeddings** | Sentence Transformers | Local model cache |
 
 **No external services required!** Perfect for:

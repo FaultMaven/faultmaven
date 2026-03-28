@@ -55,7 +55,8 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 | Layer | Local Deployment | Cloud Deployment |
 |-------|-----------------|------------------|
 | **Relational** | SQLite (`data/faultmaven.db`) | PostgreSQL |
-| **Vector** | ChromaDB PersistentClient (`data/chroma/`) | ChromaDB HttpClient |
+| **Vector (KB)** | ChromaDB PersistentClient (`data/chroma-kb/`) | ChromaDB HttpClient |
+| **Vector (Evidence)** | ChromaDB PersistentClient (`data/chroma-evidence/`) | ChromaDB HttpClient |
 | **Cache/Sessions** | FakeRedis (in-process) | Redis |
 | **Blob Storage** | Local filesystem (`data/evidence/`) | S3 |
 
@@ -64,7 +65,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 - **Deployment Agnostic**: Same code, deployment-time selection via DI
 - **No Dual Code Paths**: FakeRedis and PersistentClient are full-API replacements, not fallbacks
 - **Interface-Based**: Repository pattern for testability
-- **Shared Clients**: One ChromaDB client and one Redis client, injected everywhere
+- **Shared Clients**: Two ChromaDB clients (KB + evidence, lifecycle-separated) and one Redis client, injected via DI
 
 ## Related Documentation
 

@@ -169,8 +169,8 @@ def register_tools(container: BaseDIContainer) -> None:
         create_knowledge_vector_store,
     )
 
-    chromadb_client = getattr(container, "chromadb_client", None)
-    knowledge_vector_store = create_knowledge_vector_store(settings, chromadb_client)
+    kb_chromadb_client = getattr(container, "kb_chromadb_client", None)
+    knowledge_vector_store = create_knowledge_vector_store(settings, kb_chromadb_client)
     container.knowledge_vector_store = knowledge_vector_store
 
     qa_tools = create_document_qa_tools(

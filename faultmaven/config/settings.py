@@ -567,7 +567,10 @@ class DatabaseSettings(BaseSettings):
     # ChromaDB Extended Configuration (merged from EnhancedDatabaseSettings)
     chromadb_auth_token: Optional[SecretStr] = Field(default=None)
     chromadb_collection: str = Field(default="faultmaven_kb")
-    chromadb_persist_dir: str = Field(default="./data/chroma")
+
+    # ChromaDB Split Storage — separate instances for KB (permanent) and evidence (ephemeral)
+    chromadb_kb_persist_dir: str = Field(default="./data/chroma-kb")
+    chromadb_evidence_persist_dir: str = Field(default="./data/chroma-evidence")
 
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3")
@@ -1187,8 +1190,8 @@ class EmbeddingSettings(BaseSettings):
 
     # ChromaDB Vector Store
     chroma_persist_directory: str = Field(
-        default="./data/chroma",
-        description="Directory for ChromaDB persistence",
+        default="./data/chroma-kb",
+        description="Directory for ChromaDB KB persistence",
     )
     chroma_collection_name: str = Field(
         default="knowledge_items",

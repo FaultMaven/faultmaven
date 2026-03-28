@@ -256,7 +256,10 @@ class TestChromaDBSettingsMapping:
 
         assert settings.database.chromadb_host == "chromadb.faultmaven.local"
         assert settings.database.chromadb_port == 30080
-        assert settings.database.chromadb_persist_dir == "./data/chroma"
+        assert settings.database.chromadb_kb_persist_dir == "./data/chroma-kb"
+        assert (
+            settings.database.chromadb_evidence_persist_dir == "./data/chroma-evidence"
+        )
 
     def test_chromadb_from_env(self):
         """Test that ChromaDB settings are read from environment."""
@@ -269,7 +272,8 @@ class TestChromaDBSettingsMapping:
             {
                 "CHROMADB_HOST": "chromadb.example.com",
                 "CHROMADB_PORT": "8000",
-                "CHROMADB_PERSIST_DIR": "/data/chroma",
+                "CHROMADB_KB_PERSIST_DIR": "/data/chroma-kb",
+                "CHROMADB_EVIDENCE_PERSIST_DIR": "/data/chroma-evidence",
                 "CHROMADB_AUTH_TOKEN": "token123",
             },
         ):
@@ -278,7 +282,11 @@ class TestChromaDBSettingsMapping:
 
             assert settings.database.chromadb_host == "chromadb.example.com"
             assert settings.database.chromadb_port == 8000
-            assert settings.database.chromadb_persist_dir == "/data/chroma"
+            assert settings.database.chromadb_kb_persist_dir == "/data/chroma-kb"
+            assert (
+                settings.database.chromadb_evidence_persist_dir
+                == "/data/chroma-evidence"
+            )
             assert (
                 settings.database.chromadb_auth_token.get_secret_value() == "token123"
             )

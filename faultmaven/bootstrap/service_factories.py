@@ -102,13 +102,12 @@ def register_services(redis_client=None) -> None:
         logger.debug("Creating VectorStoreService via DI container")
         from faultmaven.container import container
 
-        chromadb_client = getattr(container, "chromadb_client", None)
-        if chromadb_client is None:
-            # Fallback: get from registered services
-            chromadb_client = container.get_service("chromadb_client")
+        kb_chromadb_client = getattr(container, "kb_chromadb_client", None)
+        if kb_chromadb_client is None:
+            kb_chromadb_client = container.get_service("kb_chromadb_client")
 
         return VectorStoreService(
-            client=chromadb_client,
+            client=kb_chromadb_client,
             collection_name=getattr(
                 settings, "vector_store_collection", "faultmaven_kb"
             ),

@@ -24,16 +24,19 @@
 **Single Instance, Multiple Collections Pattern**:
 
 ```
-ChromaDB (single PersistentClient at data/chroma/ for local, HttpClient for cloud)
+ChromaDB KB Instance (PersistentClient at data/chroma-kb/ for local, HttpClient for cloud)
 ├── Collections:
 │   ├── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered)
 │   ├── faultmaven_runbooks   (runbook similarity recommendations)
-│   ├── knowledge_items       (knowledge module search service)
+│   └── knowledge_items       (knowledge module search service)
+
+ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local, HttpClient for cloud)
+├── Collections:
 │   ├── case_{case_id}        (per-case evidence, dynamic, ephemeral)
 │   └── ...
 ```
 
-**Architecture**: One shared ChromaDB client created in the DI container, injected into all vector stores. Local deployment uses `PersistentClient` (file-based at `data/chroma/chroma.sqlite3`), cloud uses `HttpClient` to external server. Same pattern as Redis/FakeRedis.
+**Architecture**: Two ChromaDB clients created in the DI container — one for permanent KB collections (`kb_chromadb_client` at `data/chroma-kb/`), one for ephemeral case evidence (`evidence_chromadb_client` at `data/chroma-evidence/`). Local deployment uses `PersistentClient` (file-based), cloud uses `HttpClient` to external server. Separate instances ensure KB data is protected from evidence churn and can be backed up independently.
 
 **Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Scope fields (`scope`, `owner_id`, `team_id`) are stored at ingestion time. The unified `kb_qa` tool builds a combined filter:
 
@@ -68,13 +71,17 @@ ChromaDB (single PersistentClient at data/chroma/ for local, HttpClient for clou
 All vector stores receive the same ChromaDB client via DI injection. No store creates its own client.
 
 ```python
-# DI container creates one client (infrastructure.py:create_chromadb_client)
-chromadb_client = create_chromadb_client(settings)  # PersistentClient or HttpClient
+# DI container creates two clients (infrastructure.py)
+kb_client = create_kb_chromadb_client(settings)          # PersistentClient @ data/chroma-kb/
+evidence_client = create_evidence_chromadb_client(settings)  # PersistentClient @ data/chroma-evidence/
 
-# Injected into all stores
-ChromaDBVectorStore(client=chromadb_client, collection_name="faultmaven_kb")
-CaseVectorStore(client=chromadb_client)   # dynamic case_{id} collections
-VectorStoreService(client=chromadb_client) # knowledge_items collection
+# KB client injected into permanent stores
+ChromaDBVectorStore(client=kb_client, collection_name="faultmaven_kb")
+VectorStoreService(client=kb_client)       # knowledge_items collection
+KnowledgeVectorStore(client=kb_client)     # permanent KB collections
+
+# Evidence client injected into ephemeral store
+CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 client = chromadb.HttpClient(host="chromadb.faultmaven.local", port=30080)
 private_collection = client.get_or_create_collection(f"kb_private_{user_id}")
 ---

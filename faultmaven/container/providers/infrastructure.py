@@ -180,14 +180,20 @@ def create_preprocessing_service(
     )
 
 
-def create_chromadb_client(settings: FaultMavenSettings):
-    """Create a shared ChromaDB client for all vector stores.
+def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, label: str):
+    """Create a ChromaDB client for a specific persist directory.
 
     Cloud deployment: HttpClient to external ChromaDB server.
-    Local deployment: PersistentClient at data/chroma/ (in-process, file-based).
+    Local deployment: PersistentClient at the given persist_dir.
 
-    Never returns None — PersistentClient is always available (chromadb is a base dependency).
-    Same pattern as Redis: one client, deployment-time selection, injected everywhere.
+    For cloud (HttpClient), both KB and evidence clients connect to the same
+    server — collection names provide isolation. For local (PersistentClient),
+    separate directories provide physical isolation for different lifecycles.
+
+    Args:
+        settings: Application settings
+        persist_dir: Local persist directory (used for PersistentClient fallback)
+        label: Human-readable label for logging (e.g., "KB", "evidence")
     """
     import chromadb
     from chromadb.config import Settings as ChromaSettings
@@ -240,7 +246,7 @@ def create_chromadb_client(settings: FaultMavenSettings):
                     else ChromaSettings()
                 ),
             )
-            logger.info(f"✅ ChromaDB client: HttpClient @ {host}:{port}")
+            logger.info(f"✅ ChromaDB {label} client: HttpClient @ {host}:{port}")
             return client
         except Exception as e:
             logger.warning(
@@ -251,11 +257,34 @@ def create_chromadb_client(settings: FaultMavenSettings):
     # Local: in-process persistent ChromaDB (always available)
     import os
 
-    persist_dir = getattr(settings.database, "chromadb_persist_dir", "./data/chroma")
     os.makedirs(persist_dir, exist_ok=True)
     client = chromadb.PersistentClient(path=persist_dir)
-    logger.info(f"✅ ChromaDB client: PersistentClient @ {persist_dir}")
+    logger.info(f"✅ ChromaDB {label} client: PersistentClient @ {persist_dir}")
     return client
+
+
+def create_kb_chromadb_client(settings: FaultMavenSettings):
+    """Create ChromaDB client for permanent KB collections.
+
+    Stores: faultmaven_kb, faultmaven_runbooks, knowledge_items.
+    Lifecycle: permanent — backed up, never wiped.
+    """
+    persist_dir = getattr(
+        settings.database, "chromadb_kb_persist_dir", "./data/chroma-kb"
+    )
+    return _create_chromadb_client(settings, persist_dir, "KB")
+
+
+def create_evidence_chromadb_client(settings: FaultMavenSettings):
+    """Create ChromaDB client for ephemeral case evidence collections.
+
+    Stores: case_{case_id} collections (dynamic, one per active case).
+    Lifecycle: ephemeral — deleted on case closure, excluded from backups.
+    """
+    persist_dir = getattr(
+        settings.database, "chromadb_evidence_persist_dir", "./data/chroma-evidence"
+    )
+    return _create_chromadb_client(settings, persist_dir, "evidence")
 
 
 def create_vector_store(
@@ -265,7 +294,7 @@ def create_vector_store(
 
     Args:
         settings: Application settings
-        chromadb_client: Shared ChromaDB client (from create_chromadb_client)
+        chromadb_client: KB ChromaDB client (from create_kb_chromadb_client)
 
     Returns:
         Tuple of (vector_store, is_disabled)
@@ -291,7 +320,7 @@ def create_case_vector_store(
 
     Args:
         settings: Application settings
-        chromadb_client: Shared ChromaDB client (from create_chromadb_client)
+        chromadb_client: Evidence ChromaDB client (from create_evidence_chromadb_client)
     """
     if settings.server.skip_service_checks:
         logger.info("Skipping case vector store (SKIP_SERVICE_CHECKS=True)")
@@ -316,7 +345,7 @@ def create_knowledge_vector_store(
 
     Args:
         settings: Application settings
-        chromadb_client: Shared ChromaDB client (from create_chromadb_client)
+        chromadb_client: KB ChromaDB client (from create_kb_chromadb_client)
     """
     if settings.server.skip_service_checks:
         logger.info("Skipping knowledge vector store (SKIP_SERVICE_CHECKS=True)")
@@ -590,18 +619,27 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             "deep_analysis_service", "DEEP_ANALYSIS_BACKEND=disabled"
         )
 
-    # ChromaDB client (shared by all vector stores)
+    # ChromaDB clients — split by lifecycle:
+    #   KB client: permanent collections (faultmaven_kb, faultmaven_runbooks, knowledge_items)
+    #   Evidence client: ephemeral per-case collections (case_{case_id})
     if not settings.server.skip_service_checks:
-        chromadb_client = create_chromadb_client(settings)
-        container._register_service("chromadb_client", chromadb_client)
-        container.chromadb_client = chromadb_client
+        kb_chromadb_client = create_kb_chromadb_client(settings)
+        evidence_chromadb_client = create_evidence_chromadb_client(settings)
+        container._register_service("kb_chromadb_client", kb_chromadb_client)
+        container._register_service(
+            "evidence_chromadb_client", evidence_chromadb_client
+        )
+        container.kb_chromadb_client = kb_chromadb_client
+        container.evidence_chromadb_client = evidence_chromadb_client
     else:
-        chromadb_client = None
-        container.chromadb_client = None
+        kb_chromadb_client = None
+        evidence_chromadb_client = None
+        container.kb_chromadb_client = None
+        container.evidence_chromadb_client = None
 
-    # Vector store (global KB)
+    # Vector store (global KB) — uses KB client
     try:
-        vector_store, is_disabled = create_vector_store(settings, chromadb_client)
+        vector_store, is_disabled = create_vector_store(settings, kb_chromadb_client)
         if is_disabled:
             container._register_disabled("vector_store", "SKIP_SERVICE_CHECKS=True")
         else:
@@ -610,8 +648,8 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         logger.warning(f"Vector store initialization failed: {e}")
         container._register_failed("vector_store", str(e))
 
-    # Case vector store (dynamic per-case collections)
-    case_vector_store = create_case_vector_store(settings, chromadb_client)
+    # Case vector store (dynamic per-case collections) — uses evidence client
+    case_vector_store = create_case_vector_store(settings, evidence_chromadb_client)
     if case_vector_store:
         container._register_service("case_vector_store", case_vector_store)
         container.case_vector_store = case_vector_store

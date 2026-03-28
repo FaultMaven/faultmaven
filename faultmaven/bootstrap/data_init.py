@@ -1,7 +1,7 @@
 """Data Directory and Database Initialization (Bootstrap).
 
 Handles first-run initialization tasks:
-1. Create data directories (data/chroma, data/evidence)
+1. Create data directories (data/chroma-kb, data/chroma-evidence, data/evidence)
 2. Run Alembic migrations to ensure schema is up-to-date
 3. Create default local admin user if database is empty
 
@@ -57,10 +57,11 @@ def ensure_data_directories() -> None:
     """Create data directories if they don't exist.
 
     Creates (relative to project root):
-        - data/              (root data directory)
-        - data/chroma/       (ChromaDB vector storage)
-        - data/evidence/     (uploaded evidence files)
-        - data/knowledge/    (runbook source files by scope)
+        - data/                  (root data directory)
+        - data/chroma-kb/        (ChromaDB KB vector storage — permanent)
+        - data/chroma-evidence/  (ChromaDB case evidence vector storage — ephemeral)
+        - data/evidence/         (uploaded evidence files)
+        - data/knowledge/        (runbook source files by scope)
 
     These directories are gitignored and store runtime data.
     Uses absolute paths based on project root for deployment flexibility.
@@ -69,7 +70,8 @@ def ensure_data_directories() -> None:
 
     directories = [
         project_root / "data",
-        project_root / "data" / "chroma",
+        project_root / "data" / "chroma-kb",
+        project_root / "data" / "chroma-evidence",
         project_root / "data" / "evidence",
         project_root / "data" / "knowledge",
         project_root / "data" / "knowledge" / "global",

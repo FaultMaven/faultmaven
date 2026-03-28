@@ -1218,7 +1218,7 @@ Browser → SessionRoutes → SessionService → RedisSessionStore
 | **ITracer** | OpikTracer | ✅ Complete | infrastructure/observability/tracing.py |
 | **ISanitizer** | DataSanitizer | ✅ Complete | infrastructure/security/redaction.py |
 | **BaseTool** | 7 tools | ✅ Complete | tools/*.py |
-| **IVectorStore** | ChromaDBVectorStore (shared client, PersistentClient local / HttpClient cloud) | ✅ Complete | infrastructure/persistence/chromadb_store.py |
+| **IVectorStore** | ChromaDBVectorStore (KB client: `data/chroma-kb/`, Evidence client: `data/chroma-evidence/`) | ✅ Complete | infrastructure/persistence/chromadb_store.py |
 | **ISessionStore** | RedisSessionStore (real Redis or FakeRedis) | ✅ Complete | infrastructure/persistence/*_session_store.py |
 | **ICaseStore** | PostgreSQLHybridCaseRepository, PostgreSQLCaseRepository, InMemoryCaseRepository | ✅ Complete | infrastructure/persistence/*_case_repository.py |
 | **ICaseService** | CaseService | ✅ Complete | services/domain/case_service.py |

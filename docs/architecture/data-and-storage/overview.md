@@ -112,19 +112,24 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 │   - Request deduplication (content-hash with Lua scripts)             │
 │   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
 │                                                                        │
-│ ChromaDB (single PersistentClient at data/chroma/):                   │
+│ ChromaDB KB Instance (PersistentClient at data/chroma-kb/):           │
 │   - faultmaven_kb: All KB documents (global/personal/team scope,     │
 │     filtered by metadata: scope, owner_id, team_id)                  │
 │   - faultmaven_runbooks: Runbook similarity search (report_type,     │
 │     domain metadata — used for "this looks like runbook X")          │
 │   - knowledge_items: Knowledge module items (organization_id,        │
 │     item_type, category — used by KnowledgeSearchService)            │
+│   Lifecycle: permanent — backed up, never wiped.                     │
+│                                                                        │
+│ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│
 │   - case_{case_id}: Per-case evidence (dynamic, ephemeral —         │
 │     created on first upload, deleted on case close)                  │
+│   Lifecycle: ephemeral — excluded from backups, safe to wipe.        │
 │                                                                        │
-│   NOTE: All collections share one ChromaDB client via DI.             │
-│   Local: PersistentClient (data/chroma/chroma.sqlite3)               │
-│   Cloud: HttpClient to external ChromaDB server                      │
+│   Two separate ChromaDB clients created in DI container:             │
+│   - kb_chromadb_client → data/chroma-kb/ (permanent KB data)         │
+│   - evidence_chromadb_client → data/chroma-evidence/ (ephemeral)     │
+│   Cloud: both use HttpClient to external ChromaDB server             │
 │                                                                        │
 │   Scope isolation on faultmaven_kb uses metadata filtering:          │
 │   - global_kb_qa tool: {"scope": "global"}                           │
@@ -208,7 +213,8 @@ session_store = container.get_service("session_store")
 vector_store = container.get_service("vector_store")        # ChromaDBVectorStore (faultmaven_kb)
 case_vector_store = container.case_vector_store              # CaseVectorStore (case_{id} collections)
 redis_client = container.redis_client                        # Real Redis or FakeRedis
-chromadb_client = container.chromadb_client                  # Shared ChromaDB client
+kb_chromadb_client = container.kb_chromadb_client            # KB ChromaDB client (permanent)
+evidence_chromadb_client = container.evidence_chromadb_client # Evidence ChromaDB client (ephemeral)
 ```
 
 See [repository-pattern.md](./repository-pattern.md) for detailed abstraction layer specification.

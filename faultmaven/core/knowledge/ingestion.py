@@ -46,7 +46,9 @@ from faultmaven.models import KnowledgeBaseDocument
 class KnowledgeIngester:
     """Handles asynchronous ingestion of documents into the knowledge base"""
 
-    def __init__(self, chroma_persist_directory: str = "./chroma_db", settings=None):
+    def __init__(
+        self, chroma_persist_directory: str = "./data/chroma-kb", settings=None
+    ):
         self.logger = logging.getLogger(__name__)
         self.sanitizer = DataSanitizer()
 
@@ -106,12 +108,13 @@ class KnowledgeIngester:
                 ),
             )
         else:
-            # Local development with persistent client
-            self.logger.info(
-                f"Using ChromaDB PersistentClient at {chroma_persist_directory}"
+            # Local development with persistent client — use KB persist dir from settings
+            kb_dir = getattr(
+                settings.database, "chromadb_kb_persist_dir", chroma_persist_directory
             )
+            self.logger.info(f"Using ChromaDB PersistentClient at {kb_dir}")
             self.chroma_client = chromadb.PersistentClient(
-                path=chroma_persist_directory,
+                path=kb_dir,
                 settings=Settings(anonymized_telemetry=False, allow_reset=True),
             )
 
