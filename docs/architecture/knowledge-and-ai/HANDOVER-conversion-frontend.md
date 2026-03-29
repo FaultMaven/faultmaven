@@ -9,7 +9,7 @@
 
 ## What Exists (Backend — Done)
 
-The full backend pipeline is implemented, tested (117 tests), and feature-flagged behind `ENABLE_DOCUMENT_CONVERSION=true`.
+The full backend pipeline is implemented and tested (117 tests). Conversion endpoints are always active — no feature flag required.
 
 ### API Endpoints (all under `/api/v1/knowledge`)
 
