@@ -1342,19 +1342,94 @@ status: draft
 
         discovered = []
         skipped = 0
+        reverted = 0
         errors = []
 
-        # Collect all tracked file paths from DB
+        # Reconcile DB state before scanning disk
         tracked_paths: set[str] = set()
+        ingested_titles_for_reconcile: set[str] = set()
         if self._db_session_factory:
             async with self._db_session_factory() as session:
-                result = await session.execute(select(ConversionDraftModel.file_path))
-                tracked_paths = {row[0] for row in result.all()}
+                all_drafts_result = await session.execute(select(ConversionDraftModel))
+                all_draft_models = all_drafts_result.scalars().all()
+
+                # Need ingested titles to detect drafts that duplicate ChromaDB entries
+                ingested_titles_for_reconcile: set[str] = set()
+                if self._knowledge_service:
+                    try:
+                        kb_result = await self._knowledge_service.list_documents(
+                            limit=500
+                        )
+                        for doc in kb_result.get("documents", []):
+                            t = doc.get("title", "")
+                            if t:
+                                ingested_titles_for_reconcile.add(t.strip().lower())
+                    except Exception:
+                        pass
+
+                for draft_model in all_draft_models:
+                    file_exists = Path(draft_model.file_path).exists()
+
+                    if draft_model.status == "deleted":
+                        continue
+
+                    if not file_exists:
+                        draft_model.status = "deleted"
+                        continue
+
+                    # If this draft's runbook is already in ChromaDB (ingested
+                    # via auto-ingest or another path), remove the draft —
+                    # it's a duplicate
+                    if (
+                        draft_model.status == "draft"
+                        and draft_model.title
+                        and draft_model.title.strip().lower()
+                        in ingested_titles_for_reconcile
+                    ):
+                        draft_model.status = "deleted"
+                        logger.info(
+                            f"Removed duplicate draft {draft_model.id} "
+                            f"(already ingested in KB)"
+                        )
+                        continue
+
+                    if draft_model.status == "verified":
+                        still_ingested = False
+                        if self._knowledge_service:
+                            try:
+                                doc = await self._knowledge_service.get_document(
+                                    draft_model.runbook_id
+                                )
+                                still_ingested = doc is not None
+                            except Exception:
+                                pass
+                        if not still_ingested:
+                            draft_model.status = "draft"
+                            reverted += 1
+                            logger.info(
+                                f"Reverted orphaned draft {draft_model.id} "
+                                f"(runbook removed from KB)"
+                            )
+
+                    tracked_paths.add(draft_model.file_path)
+
+                await session.commit()
+
+        # Reuse ingested titles from reconciliation phase
+        ingested_titles = (
+            ingested_titles_for_reconcile if self._db_session_factory else set()
+        )
 
         # Walk all scope directories
         knowledge_dir = self._data_dir
         if not knowledge_dir.exists():
-            return {"discovered": 0, "skipped": 0, "errors": [], "drafts": []}
+            return {
+                "discovered": 0,
+                "reverted": reverted,
+                "skipped": 0,
+                "errors": [],
+                "drafts": [],
+            }
 
         for md_file in sorted(knowledge_dir.rglob("*.md")):
             # Skip sources directory (retained original uploads)
@@ -1363,7 +1438,7 @@ status: draft
 
             file_path_str = str(md_file)
 
-            # Skip if already tracked
+            # Skip if already tracked in drafts DB
             if file_path_str in tracked_paths:
                 skipped += 1
                 continue
@@ -1390,6 +1465,11 @@ status: draft
 
             title = metadata.get("title", md_file.stem.replace("-", " ").title())
             runbook_id = metadata.get("id", md_file.stem)
+
+            # Skip if already ingested in ChromaDB (via auto-ingest or other path)
+            if title.strip().lower() in ingested_titles:
+                skipped += 1
+                continue
 
             # Infer scope from directory path
             scope = "global"
@@ -1470,6 +1550,7 @@ status: draft
 
         return {
             "discovered": len(discovered),
+            "reverted": reverted,
             "skipped": skipped,
             "errors": errors,
             "drafts": discovered,
