@@ -2597,7 +2597,7 @@ async def get_case_reports(
     Args:
         case_id: Case identifier
         include_history: If True, return all report versions; if False, only current
-        report_type: Optional filter by report type (incident_report, runbook, post_mortem)
+        report_type: Optional filter by report type (resolution_summary, closure_summary, runbook)
 
     Returns:
         List of CaseReport objects

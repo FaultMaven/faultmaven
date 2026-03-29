@@ -333,9 +333,9 @@ async def test_index_runbook_skips_non_runbook_types(runbook_kb, mock_vector_sto
     incident_report = CaseReport(
         report_id="report-999",
         case_id="case-xyz",
-        report_type=ReportType.INCIDENT_REPORT,  # Not a runbook
-        title="Incident Report",
-        content="# Incident Report...",
+        report_type=ReportType.RESOLUTION_SUMMARY,  # Not a runbook
+        title="Resolution Summary",
+        content="# Resolution Summary...",
         format="markdown",
         generation_status=ReportStatus.COMPLETED,
         generated_at="2025-10-13T10:30:00Z",

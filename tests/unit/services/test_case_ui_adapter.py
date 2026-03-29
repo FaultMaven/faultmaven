@@ -496,7 +496,7 @@ class TestTransformResolved:
 
         assert len(result.reports_available) > 0
         report_types = [r.report_type for r in result.reports_available]
-        assert "incident_report" in report_types
+        assert "resolution_summary" in report_types
 
     def test_resolved_root_cause_from_validated_hypothesis(self):
         case = _make_resolved_case()

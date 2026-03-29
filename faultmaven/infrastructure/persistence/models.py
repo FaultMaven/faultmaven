@@ -2006,7 +2006,7 @@ class ReportModel(Base):
     )
     report_type = Column(
         String(30), nullable=False
-    )  # incident_report | runbook | post_mortem
+    )  # resolution_summary | closure_summary | runbook
     version = Column(Integer, nullable=False, server_default="1")
     is_current = Column(Boolean, nullable=False, server_default="1")
     linked_to_closure = Column(Boolean, nullable=False, server_default="0")

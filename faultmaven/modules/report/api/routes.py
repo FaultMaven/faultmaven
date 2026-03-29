@@ -261,10 +261,9 @@ async def generate_report(
 ) -> ReportGenerationResponse:
     """Generate reports for a case.
 
-    Supports LLM-powered content generation for:
-    - INCIDENT_REPORT: Detailed incident analysis
-    - RUNBOOK: Step-by-step operational procedures
-    - POST_MORTEM: Comprehensive retrospective
+    Supports terminal summary generation:
+    - RESOLUTION_SUMMARY: Auto-generated for resolved cases
+    - CLOSURE_SUMMARY: Auto-generated for closed cases
 
     Args:
         request: Report generation request with report types
@@ -389,9 +388,8 @@ async def get_report_recommendations(
             return ReportRecommendationResponse(
                 case_id=case_id,
                 available_for_generation=[
-                    ReportType.INCIDENT_REPORT.value,
-                    ReportType.RUNBOOK.value,
-                    ReportType.POST_MORTEM.value,
+                    ReportType.RESOLUTION_SUMMARY.value,
+                    ReportType.CLOSURE_SUMMARY.value,
                 ],
                 runbook_recommendation={
                     "action": "generate",
@@ -702,7 +700,7 @@ async def list_reports_for_case(
     Args:
         case_id: Case UUID
         include_history: If True, include all versions; if False, only current
-        report_type: Optional filter by report type (incident_report, runbook, post_mortem)
+        report_type: Optional filter by report type (resolution_summary, closure_summary, runbook)
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
         case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
@@ -744,7 +742,7 @@ async def list_reports_for_case(
             except ValueError:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid report type: {report_type}. Valid types: incident_report, runbook, post_mortem",
+                    detail=f"Invalid report type: {report_type}. Valid types: resolution_summary, closure_summary, runbook",
                 )
 
         # Get reports

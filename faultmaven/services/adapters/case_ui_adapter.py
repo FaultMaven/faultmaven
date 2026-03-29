@@ -483,19 +483,9 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     # Report availability
     reports_available = [
         ReportAvailability(
-            report_type="incident_report",
-            status="recommended",
-            reason="Standard incident documentation",
-        ),
-        ReportAvailability(
-            report_type="post_mortem",
-            status="recommended",
-            reason="Detailed analysis for future reference",
-        ),
-        ReportAvailability(
-            report_type="timeline",
-            status="available",
-            reason="Investigation timeline reconstructed",
+            report_type="resolution_summary",
+            status="auto_generated",
+            reason="Auto-generated on resolution",
         ),
     ]
 

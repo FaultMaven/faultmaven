@@ -657,30 +657,40 @@ class MilestoneEngine:
         logger.info("MilestoneEngine initialized with structured output engine")
 
     async def _auto_generate_report(self, case: "Case") -> None:
-        """Fire-and-forget auto-generation of incident report on terminal transition.
+        """Fire-and-forget auto-generation of terminal summary.
 
-        Called after case is saved in terminal state. Failure is logged but
-        does not propagate — the transition is already complete.
+        Generates RESOLUTION_SUMMARY for RESOLVED cases and CLOSURE_SUMMARY
+        for CLOSED cases. Called after case is saved in terminal state.
+        Failure is logged but does not propagate — the transition is
+        already complete.
         """
         if not getattr(case, "_pending_summary", False):
             return
         if not self.report_service:
-            logger.debug("No report service available — skipping auto-report")
+            logger.debug("No report service available — skipping auto-summary")
             return
 
         try:
             from faultmaven.modules.case.domain.owned_models.report import ReportType
 
-            await self.report_service.generate_reports(
-                case, [ReportType.INCIDENT_REPORT]
-            )
+            if case.status == CaseStatus.RESOLVED:
+                report_type = ReportType.RESOLUTION_SUMMARY
+            elif case.status == CaseStatus.CLOSED:
+                report_type = ReportType.CLOSURE_SUMMARY
+            else:
+                logger.warning(
+                    f"Unexpected status {case.status} for auto-summary on case {case.case_id}"
+                )
+                return
+
+            await self.report_service.generate_reports(case, [report_type])
             logger.info(
-                f"Auto-generated incident report for case {case.case_id}",
-                extra={"case_id": case.case_id},
+                f"Auto-generated {report_type.value} for case {case.case_id}",
+                extra={"case_id": case.case_id, "report_type": report_type.value},
             )
         except Exception as e:
             logger.warning(
-                f"Auto-report generation failed for case {case.case_id}: {e}",
+                f"Auto-summary generation failed for case {case.case_id}: {e}",
                 extra={"case_id": case.case_id},
             )
 

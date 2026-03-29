@@ -175,7 +175,7 @@ def sample_report() -> CaseReport:
     return CaseReport(
         report_id=str(uuid4()),
         case_id="case_test123",
-        report_type=ReportType.INCIDENT_REPORT,
+        report_type=ReportType.RESOLUTION_SUMMARY,
         title="Incident Report: API Slowness",
         content="# Incident Report\n\nAPI experiencing high latency on 2024-01-15.",
         format="markdown",
@@ -339,11 +339,11 @@ async def test_inmemory_get_reports_filter_by_type(
     # Get only incident reports
     reports = await inmemory_repository.get_reports(
         case_id=sample_report.case_id,
-        report_type=ReportType.INCIDENT_REPORT,
+        report_type=ReportType.RESOLUTION_SUMMARY,
     )
 
     assert len(reports) == 1
-    assert reports[0].report_type == ReportType.INCIDENT_REPORT
+    assert reports[0].report_type == ReportType.RESOLUTION_SUMMARY
 
 
 @pytest.mark.asyncio
@@ -569,7 +569,7 @@ async def test_report_versioning_flow(
     current_reports = await inmemory_repository.get_reports(
         case_id=sample_report.case_id,
         only_current=True,
-        report_type=ReportType.INCIDENT_REPORT,
+        report_type=ReportType.RESOLUTION_SUMMARY,
     )
     assert len(current_reports) == 1
     assert current_reports[0].report_id == report_v2.report_id
@@ -596,7 +596,7 @@ async def test_multiple_report_types_per_case(
 
     # Verify both types exist
     report_types = {r.report_type for r in all_reports}
-    assert ReportType.INCIDENT_REPORT in report_types
+    assert ReportType.RESOLUTION_SUMMARY in report_types
     assert ReportType.RUNBOOK in report_types
 
 

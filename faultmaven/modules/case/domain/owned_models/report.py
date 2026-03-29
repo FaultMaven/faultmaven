@@ -27,9 +27,12 @@ from faultmaven.utils.serialization import to_json_compatible
 class ReportType(str, Enum):
     """Type of case documentation report"""
 
-    INCIDENT_REPORT = "incident_report"
+    # Auto-generated on terminal transition
+    RESOLUTION_SUMMARY = "resolution_summary"  # RESOLVED cases
+    CLOSURE_SUMMARY = "closure_summary"  # CLOSED cases
+
+    # User-requested via ConversionService
     RUNBOOK = "runbook"
-    POST_MORTEM = "post_mortem"
 
 
 class ReportStatus(str, Enum):
@@ -116,6 +119,10 @@ class CaseReport(BaseModel):
     )
     version: int = Field(default=1, ge=1, le=5, description="Version number")
     linked_to_closure: bool = Field(default=False, description="Linked to case closure")
+    auto_generated: bool = Field(
+        default=False,
+        description="True for auto-generated terminal summaries, False for user-requested reports",
+    )
     metadata: Optional[RunbookMetadata] = Field(
         None, description="Runbook-specific metadata"
     )
@@ -166,9 +173,9 @@ class ReportRecommendation(BaseModel):
     available_for_generation: List[ReportType] = Field(
         ...,
         description=(
-            "Report types available for generation.\n"
-            "- Always includes: incident_report, post_mortem\n"
-            "- Conditionally includes: runbook (based on similarity search)"
+            "Report types available.\n"
+            "- Auto-generated: resolution_summary (resolved), closure_summary (closed)\n"
+            "- User-requested: runbook (via ConversionService)"
         ),
     )
     runbook_recommendation: RunbookRecommendation = Field(

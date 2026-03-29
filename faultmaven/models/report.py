@@ -23,9 +23,9 @@ from faultmaven.utils.serialization import to_json_compatible
 class ReportType(str, Enum):
     """Type of case documentation report"""
 
-    INCIDENT_REPORT = "incident_report"
+    RESOLUTION_SUMMARY = "resolution_summary"
+    CLOSURE_SUMMARY = "closure_summary"
     RUNBOOK = "runbook"
-    POST_MORTEM = "post_mortem"
 
 
 class ReportStatus(str, Enum):

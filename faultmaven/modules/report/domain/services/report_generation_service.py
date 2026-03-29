@@ -1,17 +1,18 @@
 """
-Report Generation Service - LLM-Based Case Documentation
+Report Generation Service - Terminal Summary Generation
 
-Generates professional documentation for resolved troubleshooting cases:
-1. Incident Report: Timeline, root cause, resolution, recommendations
-2. Runbook: Step-by-step reproduction and resolution procedures
-3. Post-Mortem: Comprehensive retrospective with lessons learned
+Auto-generates structured summaries when cases reach terminal state:
+- RESOLUTION_SUMMARY: For RESOLVED cases (root cause, solution, evidence, timeline)
+- CLOSURE_SUMMARY: For CLOSED cases (investigation state, approaches, closure reason)
 
-Architecture Reference: docs/architecture/document-generation-and-closure-design.md
+Runbook generation is handled separately by ConversionService.
+
+Architecture Reference: docs/architecture/investigation-engine/investigation-lifecycle-logic.md §1.7.4
 """
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ValidationException
@@ -19,11 +20,10 @@ from faultmaven.infrastructure.concurrency import (
     LockAcquisitionError,
     ReportLockManager,
 )
-from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import (  # Report models - now owned by Case module
+from faultmaven.modules.case.contracts import (  # Report models - owned by Case module
     Case,
     CaseReport,
     CaseStatus,
@@ -32,8 +32,6 @@ from faultmaven.modules.case.contracts import (  # Report models - now owned by 
     ReportGenerationResponse,
     ReportStatus,
     ReportType,
-    RunbookMetadata,
-    RunbookSource,
 )
 
 # Backward compatibility re-export (imported from case.contracts now)
@@ -43,8 +41,6 @@ from faultmaven.modules.report.domain.models import (
     ReportGenerationResponse,
     ReportStatus,
     ReportType,
-    RunbookMetadata,
-    RunbookSource,
 )
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -53,14 +49,14 @@ logger = logging.getLogger(__name__)
 
 class ReportGenerationService:
     """
-    Generate professional case documentation using LLM.
+    Auto-generate terminal summaries for resolved and closed cases.
 
     Key Features:
-    - Three report types: Incident Report, Runbook, Post-Mortem
-    - LLM-based generation from case context
+    - RESOLUTION_SUMMARY for RESOLVED cases (root cause, solution, evidence, timeline)
+    - CLOSURE_SUMMARY for CLOSED cases (investigation state, approaches, closure reason)
     - PII sanitization before storage
-    - Report versioning (up to 5 regenerations per type)
-    - Automatic runbook indexing for similarity search
+    - Fire-and-forget from milestone engine (failure doesn't block transition)
+    - Trivial case detection (skipped by should_generate_terminal_summary guardrail)
     """
 
     MAX_REGENERATIONS = 5
@@ -68,25 +64,21 @@ class ReportGenerationService:
 
     def __init__(
         self,
-        llm_router: Any,  # LLMRouter for generation
         case_repository: Optional[ICaseRepository] = None,
-        runbook_kb: Optional[RunbookKnowledgeBase] = None,
         lock_manager: Optional[ReportLockManager] = None,
         pii_redactor: Optional[Any] = None,
+        # Legacy kwargs accepted for backward compatibility with existing DI wiring
+        **kwargs: Any,
     ):
         """
         Initialize report generation service.
 
         Args:
-            llm_router: LLM router for text generation
-            case_repository: Case repository for report persistence (TD-001: migrated from IReportStore)
-            runbook_kb: Optional RunbookKB for auto-indexing runbooks
+            case_repository: Case repository for report persistence
             lock_manager: Optional lock manager for concurrency control
             pii_redactor: Optional PII redactor for sanitization
         """
-        self.llm_router = llm_router
         self.case_repository = case_repository
-        self.runbook_kb = runbook_kb
         self.lock_manager = lock_manager
         self.pii_redactor = pii_redactor
 
@@ -178,10 +170,6 @@ class ReportGenerationService:
                     },
                 )
 
-                # Optional: Auto-index runbook in User KB for similarity search (separate from storage)
-                if report_type == ReportType.RUNBOOK and self.runbook_kb:
-                    await self._index_generated_runbook(report, case)
-
             except Exception as e:
                 logger.error(
                     f"Failed to generate {report_type.value} report: {e}",
@@ -214,16 +202,16 @@ class ReportGenerationService:
         # Extract case context
         context = self._extract_case_context(case)
 
-        # Generate report content using LLM
-        if report_type == ReportType.INCIDENT_REPORT:
-            content = await self._generate_incident_report(case, context)
-            title = f"Incident Report: {case.title}"
-        elif report_type == ReportType.RUNBOOK:
-            content = await self._generate_runbook(case, context)
-            title = f"Runbook: {case.title}"
-        elif report_type == ReportType.POST_MORTEM:
-            content = await self._generate_post_mortem(case, context)
-            title = f"Post-Mortem: {case.title}"
+        # Generate report content based on type
+        auto_generated = False
+        if report_type == ReportType.RESOLUTION_SUMMARY:
+            content = await self._generate_resolution_summary(case, context)
+            title = f"Resolution Summary: {case.title}"
+            auto_generated = True
+        elif report_type == ReportType.CLOSURE_SUMMARY:
+            content = await self._generate_closure_summary(case, context)
+            title = f"Closure Summary: {case.title}"
+            auto_generated = True
         else:
             raise ValidationException(
                 "invalid_report_type", f"Unknown report type: {report_type}"
@@ -234,17 +222,6 @@ class ReportGenerationService:
             content = await self.pii_redactor.redact(content)
 
         generation_time_ms = int((time.time() - start_time) * 1000)
-
-        # Create report metadata for runbooks
-        metadata = None
-        if report_type == ReportType.RUNBOOK:
-            metadata = RunbookMetadata(
-                source=RunbookSource.INCIDENT_DRIVEN,
-                domain=getattr(case, "domain", "general"),
-                tags=getattr(case, "tags", []),
-                case_context=context,
-                llm_model="gpt-4",  # TODO: Get from llm_router
-            )
 
         now = datetime.now(timezone.utc)
         generated_at_str = to_json_compatible(now)
@@ -261,66 +238,104 @@ class ReportGenerationService:
             is_current=True,
             version=getattr(case, "report_generation_count", 0) + 1,
             linked_to_closure=False,
-            metadata=metadata,
+            auto_generated=auto_generated,
+            metadata=None,
         )
 
-    async def _generate_incident_report(
+    async def _generate_resolution_summary(
         self, case: Case, context: Dict[str, Any]
     ) -> str:
-        """Generate incident report from case data.
+        """Generate resolution summary for RESOLVED cases.
 
-        Builds a structured report directly from case fields.
-        When LLM integration is available, this can be enhanced to use
-        LLM for natural language generation from the same data.
+        Content structure per investigation-lifecycle-logic.md §1.7.4:
+        - Problem Statement
+        - Root Cause
+        - Solution Applied
+        - Confirming Evidence
+        - Timeline
+        - Milestones Reached
+        - Investigation Path
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
-        status = case.status.value.replace("_", " ").title()
         created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
-        resolved = context.get("resolved_at", "In progress")
+        resolved = (
+            to_json_compatible(case.resolved_at) if case.resolved_at else "Unknown"
+        )
         duration = context.get("duration", "Unknown")
         closure = getattr(case, "closure_reason", None) or ""
 
-        # Build evidence summary
-        evidence_items = case.evidence if case.evidence else []
-        evidence_count = len(evidence_items)
-
-        # Build hypothesis summary
-        hypotheses = case.hypotheses if case.hypotheses else []
-        hypothesis_count = len(hypotheses)
-
-        # Build solutions summary
         solutions = case.solutions if case.solutions else []
+        hypotheses = case.hypotheses if case.hypotheses else []
+        evidence_items = case.evidence if case.evidence else []
+        milestones = (
+            case.progress.completed_milestones
+            if hasattr(case, "progress") and case.progress
+            else []
+        )
 
         parts = [
-            f"# Incident Report: {title}\n",
-            f"## Summary\n",
-            f"- **Status:** {status}",
-            f"- **Created:** {created}",
-            f"- **Resolved:** {resolved}",
-            f"- **Duration:** {duration}",
-            f"- **Evidence collected:** {evidence_count} item{'s' if evidence_count != 1 else ''}",
-            f"- **Hypotheses explored:** {hypothesis_count}",
-            f"- **Solutions proposed:** {len(solutions)}\n",
-            f"## Problem Description\n",
+            f"# Resolution Summary: {title}\n",
+            f"## Problem Statement\n",
             f"{description}\n",
         ]
 
-        if closure:
-            parts.append(f"## Resolution\n")
+        # Root Cause — from validated hypotheses
+        validated = [
+            h
+            for h in hypotheses
+            if hasattr(h, "status")
+            and hasattr(h.status, "value")
+            and h.status.value == "validated"
+        ]
+        if validated:
+            parts.append("## Root Cause\n")
+            for h in validated:
+                h_title = getattr(h, "title", "")
+                h_desc = getattr(h, "description", "")
+                parts.append(f"**{h_title}**")
+                if h_desc:
+                    parts.append(f"{h_desc}")
+            parts.append("")
+        elif closure:
+            parts.append("## Root Cause\n")
             parts.append(f"{closure}\n")
 
+        # Solution Applied
         if solutions:
-            parts.append("## Solutions Applied\n")
+            parts.append("## Solution Applied\n")
             for i, sol in enumerate(solutions, 1):
                 sol_title = getattr(sol, "title", f"Solution {i}")
                 sol_desc = getattr(sol, "description", "")
-                parts.append(f"### {i}. {sol_title}\n")
+                parts.append(f"**{i}. {sol_title}**")
                 if sol_desc:
-                    parts.append(f"{sol_desc}\n")
+                    parts.append(f"{sol_desc}")
+            parts.append("")
 
+        # Confirming Evidence
+        if evidence_items:
+            parts.append("## Confirming Evidence\n")
+            parts.append(
+                f"{len(evidence_items)} evidence item{'s' if len(evidence_items) != 1 else ''} collected during investigation.\n"
+            )
+
+        # Timeline
+        parts.append("## Timeline\n")
+        parts.append(f"- **Created:** {created}")
+        parts.append(f"- **Resolved:** {resolved}")
+        parts.append(f"- **Duration:** {duration}")
+        parts.append(f"- **Turns:** {getattr(case, 'current_turn', 0)}\n")
+
+        # Milestones Reached
+        if milestones:
+            parts.append("## Milestones Reached\n")
+            for m in milestones:
+                parts.append(f"- {m.replace('_', ' ').title()}")
+            parts.append("")
+
+        # Investigation Summary
         if hypotheses:
-            parts.append("## Investigation Summary\n")
+            parts.append("## Investigation Path\n")
             for h in hypotheses:
                 h_title = getattr(h, "title", "")
                 h_status = getattr(h, "status", "")
@@ -335,157 +350,120 @@ class ReportGenerationService:
 
         return "\n".join(parts)
 
-    async def _generate_runbook(self, case: Case, context: Dict[str, Any]) -> str:
-        """Generate runbook using LLM.
+    async def _generate_closure_summary(
+        self, case: Case, context: Dict[str, Any]
+    ) -> str:
+        """Generate closure summary for CLOSED cases.
 
-        DEPRECATED: This method uses a non-canonical template that does not match
-        the runbook content architecture (runbook-content-architecture.md).
-        New runbook generation should use ConversionService.convert_from_case()
-        which produces drafts with the canonical template (Problem Definition,
-        Diagnostic Steps, Mitigation, Root Cause Resolution, Verification,
-        Prevention, Sources) and YAML frontmatter.
-
-        This method is retained for backward compatibility with the Report tab's
-        existing generation flow. It will be removed once the Runbook tab
-        (which uses convert_from_case) is the primary path.
+        Content structure per investigation-lifecycle-logic.md §1.7.4:
+        - Problem Statement
+        - Investigation State
+        - Approaches Attempted
+        - Closure Reason
+        - Leading Hypotheses
+        - Mitigation Status
+        - Timeline
+        - Recommendation
         """
-        prompt = f"""Generate a step-by-step operational runbook for the following incident.
+        title = case.title or "Untitled Case"
+        description = case.description or "No description provided."
+        created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
+        closed = to_json_compatible(case.closed_at) if case.closed_at else "Unknown"
+        duration = context.get("duration", "Unknown")
+        closure_reason = getattr(case, "closure_reason", None) or "Not specified"
 
-**Incident:** {case.title}
-**Problem:** {case.description or 'N/A'}
-**Root Cause:** {context.get('root_cause', 'Not determined')}
-**Solution:** {context.get('resolution_steps', 'N/A')}
+        hypotheses = case.hypotheses if case.hypotheses else []
+        evidence_items = case.evidence if case.evidence else []
+        solutions = case.solutions if case.solutions else []
+        milestones = (
+            case.progress.completed_milestones
+            if hasattr(case, "progress") and case.progress
+            else []
+        )
 
-Generate a detailed runbook in Markdown format with the following sections:
-1. Problem Description (symptoms, error messages, impact)
-2. Prerequisites (required access, tools, knowledge)
-3. Diagnosis Steps (how to confirm this is the same issue)
-4. Resolution Procedure (step-by-step fix instructions)
-5. Validation Steps (how to verify the fix worked)
-6. Rollback Procedure (if resolution doesn't work)
-7. Related Issues (similar problems to watch for)
+        parts = [
+            f"# Closure Summary: {title}\n",
+            f"## Problem Statement\n",
+            f"{description}\n",
+        ]
 
-Make it actionable - someone should be able to follow this runbook without prior knowledge of the incident."""
+        # Investigation State — how far diagnosis progressed
+        parts.append("## Investigation State\n")
+        if milestones:
+            parts.append(
+                f"{len(milestones)} milestone{'s' if len(milestones) != 1 else ''} reached: "
+                + ", ".join(m.replace("_", " ") for m in milestones)
+                + "."
+            )
+        else:
+            parts.append("No investigation milestones were reached.")
+        parts.append(
+            f"\n{len(evidence_items)} evidence item{'s' if len(evidence_items) != 1 else ''} collected. "
+            f"{len(hypotheses)} hypothesis{'es' if len(hypotheses) != 1 else ''} explored.\n"
+        )
 
-        response = await self._call_llm(prompt, max_tokens=2500)
-        return response
+        # Closure Reason
+        parts.append("## Closure Reason\n")
+        parts.append(f"{closure_reason}\n")
 
-    async def _generate_post_mortem(self, case: Case, context: Dict[str, Any]) -> str:
-        """Generate post-mortem using LLM."""
-        prompt = f"""Generate a comprehensive post-mortem analysis for the following incident.
+        # Leading Hypotheses — top hypotheses at time of closure
+        if hypotheses:
+            parts.append("## Leading Hypotheses\n")
+            sorted_hyps = sorted(
+                hypotheses,
+                key=lambda h: getattr(h, "confidence", 0),
+                reverse=True,
+            )
+            for h in sorted_hyps[:5]:  # Top 5
+                h_title = getattr(h, "title", "")
+                h_status = getattr(h, "status", "")
+                h_conf = getattr(h, "confidence", 0)
+                status_str = (
+                    h_status.value if hasattr(h_status, "value") else str(h_status)
+                )
+                parts.append(
+                    f"- **{h_title}** — {status_str} (confidence: {h_conf:.0%})"
+                )
+            parts.append("")
 
-**Incident:** {case.title}
-**Duration:** {context.get('duration', 'Unknown')}
-**Impact:** {context.get('impact', 'See problem description')}
-**Root Cause:** {context.get('root_cause', 'Not fully determined')}
+        # Mitigation Status
+        if solutions:
+            parts.append("## Mitigation Status\n")
+            for i, sol in enumerate(solutions, 1):
+                sol_title = getattr(sol, "title", f"Solution {i}")
+                sol_desc = getattr(sol, "description", "")
+                parts.append(f"**{i}. {sol_title}**")
+                if sol_desc:
+                    parts.append(f"{sol_desc}")
+            parts.append("")
 
-Generate a thorough post-mortem in Markdown format with the following sections:
-1. Incident Summary (what happened, when, impact)
-2. Timeline (detailed sequence of events and actions taken)
-3. Root Cause Analysis (why it happened, contributing factors)
-4. What Went Well (positive aspects of response)
-5. What Went Wrong (gaps, delays, miscommunications)
-6. Action Items (specific improvements with owners and deadlines)
-7. Lessons Learned (key takeaways for the team)
-8. Related Work (links to similar incidents, documentation updates)
+        # Timeline
+        parts.append("## Timeline\n")
+        parts.append(f"- **Created:** {created}")
+        parts.append(f"- **Closed:** {closed}")
+        parts.append(f"- **Duration:** {duration}")
+        parts.append(f"- **Turns:** {getattr(case, 'current_turn', 0)}\n")
 
-Be honest, blameless, and focused on learning. This is for team improvement."""
+        # Recommendation — especially for escalated cases
+        if closure_reason.lower() in ("escalated", "abandoned"):
+            parts.append("## Recommendation\n")
+            if hypotheses:
+                top_hyp = sorted(
+                    hypotheses,
+                    key=lambda h: getattr(h, "confidence", 0),
+                    reverse=True,
+                )[0]
+                top_title = getattr(top_hyp, "title", "Unknown")
+                parts.append(
+                    f"The most promising lead at time of closure was: **{top_title}**. "
+                    f"A follow-up investigation should start there.\n"
+                )
+            else:
+                parts.append(
+                    "No hypotheses were formulated. A fresh investigation may be needed.\n"
+                )
 
-        response = await self._call_llm(prompt, max_tokens=3000)
-        return response
-
-    async def _call_llm(self, prompt: str, max_tokens: int = 2000) -> str:
-        """
-        Call LLM for text generation.
-
-        In production, this would use the LLMRouter with proper error handling,
-        retries, and fallback providers.
-        """
-        # TODO: Implement proper LLM router integration
-        # For now, return a template-based mock response
-        return self._generate_template_fallback(prompt)
-
-    def _generate_template_fallback(self, prompt: str) -> str:
-        """
-        Generate template-based fallback when LLM unavailable.
-
-        This ensures reports are always generated even if LLM fails.
-        """
-        if "incident report" in prompt.lower():
-            return """# Incident Report
-
-## Executive Summary
-This incident report was auto-generated from case investigation data.
-
-## Problem Description
-See case description and timeline for details.
-
-## Timeline of Events
-- Case opened
-- Investigation conducted
-- Issue resolved
-
-## Root Cause Analysis
-Root cause analysis is available in the case investigation state.
-
-## Resolution Steps
-Resolution steps documented in case resolution.
-
-## Recommendations
-Review case context for specific recommendations."""
-
-        elif "runbook" in prompt.lower():
-            return """# Operational Runbook
-
-## Problem Description
-See case for symptom details.
-
-## Prerequisites
-- System access
-- Diagnostic tools
-
-## Diagnosis Steps
-1. Check system status
-2. Review error logs
-3. Verify symptoms match case description
-
-## Resolution Procedure
-See case resolution for detailed steps.
-
-## Validation Steps
-1. Verify issue resolved
-2. Monitor for recurrence
-
-## Rollback Procedure
-Documented in case if applicable."""
-
-        elif "post-mortem" in prompt.lower():
-            return """# Post-Mortem Analysis
-
-## Incident Summary
-Post-mortem generated from case investigation.
-
-## Timeline
-See case timeline for detailed sequence.
-
-## Root Cause Analysis
-Root cause documented in case resolution.
-
-## What Went Well
-- Issue identified and resolved
-- Documentation created
-
-## What Went Wrong
-See case notes for areas of improvement.
-
-## Action Items
-- Review case recommendations
-- Update procedures as needed
-
-## Lessons Learned
-Key learnings available in case context."""
-
-        return "# Report\n\nReport content generated from case data."
+        return "\n".join(parts)
 
     def _extract_case_context(self, case: Case) -> Dict[str, Any]:
         """Extract relevant context from case for report generation."""
@@ -507,8 +485,9 @@ Key learnings available in case context."""
 
     def _calculate_duration(self, case: Case) -> str:
         """Calculate case duration in human-readable format."""
-        if case.resolved_at and case.created_at:
-            duration = (case.resolved_at - case.created_at).total_seconds()
+        end_time = case.resolved_at or case.closed_at
+        if end_time and case.created_at:
+            duration = (end_time - case.created_at).total_seconds()
             hours = duration / 3600
             if hours < 1:
                 return f"{int(hours * 60)} minutes"
@@ -527,27 +506,4 @@ Key learnings available in case context."""
             raise ValidationException(
                 "invalid_case_state",
                 f"Cannot generate reports from {case.status.value} state. Case must be resolved or closed first.",
-            )
-
-    async def _index_generated_runbook(self, report: CaseReport, case: Case) -> None:
-        """Auto-index generated runbook for similarity search."""
-        if not self.runbook_kb:
-            return
-
-        try:
-            await self.runbook_kb.index_runbook(
-                runbook=report,
-                source=RunbookSource.INCIDENT_DRIVEN,
-                case_title=case.title,
-                domain=getattr(case, "domain", "general"),
-                tags=case.tags,
-            )
-            logger.info(
-                f"Runbook indexed for similarity search",
-                extra={"case_id": case.case_id, "report_id": report.report_id},
-            )
-        except Exception as e:
-            # Don't fail report generation if indexing fails
-            logger.warning(
-                f"Failed to index runbook: {e}", extra={"case_id": case.case_id}
             )

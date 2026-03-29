@@ -529,13 +529,11 @@ def create_tenant_provider(
 
 
 def create_report_generation_service(
-    llm_router: Any | None,
     case_repository: Any | None,
-    runbook_kb: Any | None,
     lock_manager: Any | None,
     pii_redactor: Any | None,
 ) -> Any | None:
-    """Create report generation service (TD-001: migrated from IReportStore to CaseRepository)."""
+    """Create report generation service for terminal summaries."""
     if not case_repository:
         logger.debug("ReportGenerationService skipped (no case repository)")
         return None
@@ -546,9 +544,7 @@ def create_report_generation_service(
         )
 
         service = ReportGenerationService(
-            llm_router=llm_router,
             case_repository=case_repository,
-            runbook_kb=runbook_kb,
             lock_manager=lock_manager,
             pii_redactor=pii_redactor,
         )
@@ -906,13 +902,10 @@ def register_services(container: BaseDIContainer) -> None:
 
     # Report Generation Service (TD-001: migrated from IReportStore to CaseRepository)
     llm_provider = container.get_service("llm_provider")
-    runbook_kb = getattr(container, "runbook_kb", None)
     lock_manager = getattr(container, "lock_manager", None)
     pii_redactor = getattr(container, "pii_redactor", None)
     report_generation_service = create_report_generation_service(
-        llm_router=llm_provider,
         case_repository=case_repository,
-        runbook_kb=runbook_kb,
         lock_manager=lock_manager,
         pii_redactor=pii_redactor,
     )
