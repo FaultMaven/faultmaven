@@ -25,7 +25,7 @@ Design Principles:
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
@@ -507,17 +507,36 @@ async def require_dev_user(user: DevUser = Depends(require_authentication)) -> D
     return user
 
 
-def resolve_accessible_scopes(user: Optional[DevUser] = None) -> dict:
-    """Resolve accessible knowledge base scopes for a user to use in ChromaDB queries"""
-    conditions = [{"scope": "global"}]
+async def resolve_accessible_scopes(
+    user: Optional[DevUser] = None,
+    team_ids: Optional[List[str]] = None,
+) -> dict:
+    """Resolve accessible knowledge base scopes for a user.
+
+    Returns a ChromaDB-compatible $or filter that matches all documents
+    the user is allowed to see:
+    - global: always included
+    - personal: matched by owner_id
+    - team: matched by any of the user's team memberships
+
+    Args:
+        user: The authenticated user (or None for anonymous).
+        team_ids: Pre-resolved list of team IDs the user belongs to.
+                  Pass this to avoid re-querying when already available.
+    """
+    conditions: List[dict] = [{"scope": "global"}]
 
     if user:
         conditions.append({"$and": [{"scope": "personal"}, {"owner_id": user.user_id}]})
 
-        team_id = getattr(user, "organization_id", None) or getattr(
-            user, "team_id", None
-        )
-        if team_id:
-            conditions.append({"$and": [{"scope": "team"}, {"team_id": team_id}]})
+        if team_ids:
+            if len(team_ids) == 1:
+                conditions.append(
+                    {"$and": [{"scope": "team"}, {"team_id": team_ids[0]}]}
+                )
+            else:
+                conditions.append(
+                    {"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]}
+                )
 
     return {"$or": conditions}

@@ -199,6 +199,7 @@ async def upload_document(
 
 @router.get("/documents")
 async def list_documents(
+    request: Request,
     document_type: Optional[str] = None,
     tags: Optional[str] = None,
     scope: Optional[str] = None,
@@ -233,6 +234,15 @@ async def list_documents(
         # Parse tags filter
         tag_list = parse_comma_separated_tags(tags) or None
 
+        # Resolve user's team memberships for RBAC
+        team_ids: List[str] = []
+        if current_user:
+            team_service = getattr(request.app.state, "team_service", None)
+            if team_service:
+                team_ids = await team_service.list_all_user_team_ids(
+                    current_user.user_id
+                )
+
         # Delegate to service layer
         return await knowledge_service.list_documents(
             document_type=document_type,
@@ -241,6 +251,7 @@ async def list_documents(
             limit=limit,
             offset=offset,
             user=current_user,
+            team_ids=team_ids,
         )
 
     except Exception as e:

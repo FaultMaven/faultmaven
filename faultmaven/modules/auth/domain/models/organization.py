@@ -391,6 +391,21 @@ class ITeamRepository(ABC):
         pass
 
     @abstractmethod
+    async def list_all_user_team_ids(self, user_id: str) -> List[str]:
+        """List all team IDs a user belongs to across all organizations.
+
+        Lightweight query for scope resolution — returns only IDs,
+        no full Team objects.
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            List of team_id strings
+        """
+        pass
+
+    @abstractmethod
     async def add_member(
         self, team_id: str, user_id: str, team_role: Optional[str] = None
     ) -> bool:

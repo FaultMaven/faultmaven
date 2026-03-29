@@ -289,7 +289,12 @@ async def get_agent_orchestration_service(
         AgentOrchestrationService,
     )
 
-    return factory.create_agent_orchestration_service()
+    # Resolve team service for KB scope filtering during agent execution
+    from faultmaven.container import container
+
+    team_service = container.get_team_service() if container else None
+
+    return factory.create_agent_orchestration_service(team_service=team_service)
 
 
 # Future service dependencies:

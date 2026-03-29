@@ -278,6 +278,7 @@ class AgentOrchestrationService:
         tool_timeout: int = 30,
         max_parallel_tools: int = 5,
         checkpoint_service: Any = None,
+        team_service: Any = None,
     ):
         """Initialize agent orchestration service.
 
@@ -291,6 +292,7 @@ class AgentOrchestrationService:
             retry_initial_delay: Initial retry delay in seconds
             tool_timeout: Tool execution timeout in seconds
             max_parallel_tools: Maximum parallel tool executions
+            team_service: Team service for resolving user team memberships (optional)
 
         Raises:
             ValueError: If required dependencies are not provided
@@ -317,6 +319,7 @@ class AgentOrchestrationService:
         self.tool_timeout = tool_timeout
         self.max_parallel_tools = max_parallel_tools
         self.checkpoint_service = checkpoint_service
+        self.team_service = team_service
 
     @property
     def llm_client(self) -> LLMClient:
@@ -426,12 +429,23 @@ class AgentOrchestrationService:
             total_tokens = {"input_tokens": 0, "output_tokens": 0}
             all_tool_calls: list[AgentToolCall] = []
 
+            # Resolve user's team memberships for KB scope filtering
+            team_ids: list[str] = []
+            if self.team_service:
+                try:
+                    team_ids = await self.team_service.list_all_user_team_ids(
+                        session.user_id
+                    )
+                except Exception:
+                    pass  # Graceful degradation — global + personal still work
+
             # Create tool context for tool execution
             tool_context = ToolContext(
                 session_id=session_id,
                 case_id=session.case_id,
                 organization_id=organization_id,
                 user_id=session.user_id,
+                team_ids=team_ids,
                 evidence_service=self.evidence_service,
                 execution_id=execution_id,
             )

@@ -180,8 +180,12 @@ class ServiceFactory:
 
     def create_agent_orchestration_service(
         self,
+        team_service=None,
     ) -> "AgentOrchestrationService":  # noqa: F821
         """Create agent orchestration service with dependencies.
+
+        Args:
+            team_service: Optional team service for resolving user team memberships.
 
         Returns:
             AgentOrchestrationService instance with injected dependencies
@@ -198,6 +202,7 @@ class ServiceFactory:
             session_service=self.create_investigation_session_service(),
             evidence_service=self.create_evidence_artifact_service(),
             tool_registry=agent_tool_registry,
+            team_service=team_service,
             # LLM client will be created lazily by the service
         )
 

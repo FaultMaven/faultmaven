@@ -306,6 +306,11 @@ class TeamService:
         """List all teams a user belongs to in an organization."""
         return await self.repository.list_user_teams(user_id, organization_id)
 
+    @trace("team_service_list_all_user_team_ids")
+    async def list_all_user_team_ids(self, user_id: str) -> List[str]:
+        """List all team IDs a user belongs to across all organizations."""
+        return await self.repository.list_all_user_team_ids(user_id)
+
     @trace("team_service_list_team_members")
     async def list_team_members(self, team_id: str) -> List[TeamMember]:
         """List all members of a team."""

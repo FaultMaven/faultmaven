@@ -1264,6 +1264,7 @@ class KnowledgeService:
         limit: int = 50,
         offset: int = 0,
         user: Optional[Any] = None,
+        team_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """List documents from ChromaDB (persistent) with RBAC filtering.
 
@@ -1274,6 +1275,8 @@ class KnowledgeService:
             scope: Optional scope filter (global, team, personal). When set,
                    only documents matching this scope are returned (still
                    subject to RBAC — personal only shows your own, etc.).
+            team_ids: List of team IDs the user belongs to (across all orgs).
+                      Used for team scope RBAC filtering.
         """
         try:
             if not self._vector_store:
@@ -1287,7 +1290,7 @@ class KnowledgeService:
 
             # Build ChromaDB where clause for scope-based pre-filtering
             user_id = getattr(user, "user_id", None) if user else None
-            user_team_id = getattr(user, "team_id", None) if user else None
+            user_team_ids = set(team_ids) if team_ids else set()
 
             # Query ChromaDB — fetch more than needed for post-filtering
             # ChromaDB doesn't support OR across scope filters, so we fetch all
@@ -1347,7 +1350,7 @@ class KnowledgeService:
                     if not user_id or doc.get("owner_id") != user_id:
                         continue
                 elif doc_scope == "team":
-                    if not user_team_id or doc.get("team_id") != user_team_id:
+                    if not user_team_ids or doc.get("team_id") not in user_team_ids:
                         continue
 
                 # Filter by tags

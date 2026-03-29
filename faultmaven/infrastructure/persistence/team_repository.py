@@ -126,6 +126,19 @@ class PostgreSQLTeamRepository(ITeamRepository):
         models = result.scalars().all()
         return [_model_to_domain(m) for m in models]
 
+    async def list_all_user_team_ids(self, user_id: str) -> List[str]:
+        """List all team IDs a user belongs to across all organizations."""
+        stmt = (
+            select(TeamMemberModel.team_id)
+            .join(TeamModel, TeamModel.team_id == TeamMemberModel.team_id)
+            .where(
+                TeamMemberModel.user_id == user_id,
+                TeamModel.deleted_at.is_(None),
+            )
+        )
+        result = await self.db.execute(stmt)
+        return [row[0] for row in result.all()]
+
     async def add_member(
         self, team_id: str, user_id: str, team_role: Optional[str] = None
     ) -> bool:
