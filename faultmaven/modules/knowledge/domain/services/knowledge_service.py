@@ -1260,6 +1260,7 @@ class KnowledgeService:
         self,
         document_type: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        scope: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         user: Optional[Any] = None,
@@ -1268,6 +1269,11 @@ class KnowledgeService:
 
         ChromaDB is the source of truth for document listing. Redis is used
         only as a write-through cache for upload metadata, not for listing.
+
+        Args:
+            scope: Optional scope filter (global, team, personal). When set,
+                   only documents matching this scope are returned (still
+                   subject to RBAC — personal only shows your own, etc.).
         """
         try:
             if not self._vector_store:
@@ -1331,18 +1337,18 @@ class KnowledgeService:
                 }
                 all_documents.append(doc)
 
-            # Apply RBAC scope filtering
-            filtered_docs = []
+            # Apply RBAC first, then optional scope filter
+            accessible_docs = []
             for doc in all_documents:
-                scope = doc.get("scope", "global")
+                doc_scope = doc.get("scope", "global")
 
-                if scope == "personal":
+                # RBAC: personal/team docs visible only to owner/members
+                if doc_scope == "personal":
                     if not user_id or doc.get("owner_id") != user_id:
                         continue
-                elif scope == "team":
+                elif doc_scope == "team":
                     if not user_team_id or doc.get("team_id") != user_team_id:
                         continue
-                # global scope: visible to all
 
                 # Filter by tags
                 if tags:
@@ -1350,7 +1356,21 @@ class KnowledgeService:
                     if not any(tag in doc_tags for tag in tags):
                         continue
 
-                filtered_docs.append(doc)
+                accessible_docs.append(doc)
+
+            # Scope counts (from all accessible docs, before scope filter)
+            scope_counts = {"global": 0, "team": 0, "personal": 0}
+            for doc in accessible_docs:
+                s = doc.get("scope", "global")
+                if s in scope_counts:
+                    scope_counts[s] += 1
+
+            # Apply explicit scope filter
+            filtered_docs = (
+                [d for d in accessible_docs if d.get("scope") == scope]
+                if scope
+                else accessible_docs
+            )
 
             # Apply pagination
             total = len(filtered_docs)
@@ -1365,7 +1385,12 @@ class KnowledgeService:
                 "total_count": total,
                 "limit": limit,
                 "offset": offset,
-                "filters": {"document_type": document_type, "tags": tags},
+                "filters": {
+                    "document_type": document_type,
+                    "tags": tags,
+                    "scope": scope,
+                },
+                "scope_counts": scope_counts,
             }
 
         except Exception as e:

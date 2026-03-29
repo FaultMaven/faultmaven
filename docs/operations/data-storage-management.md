@@ -154,6 +154,31 @@ Response:
 }
 ```
 
+### Updating built-in global runbooks
+
+The 59 built-in runbooks ship in `resources/knowledge/builtin/` and are copied to `data/knowledge/global/` on first startup. To update them from the KB Toolkit (the authoritative source), sync the two directories:
+
+```bash
+rsync -av --delete \
+  /path/to/faultmaven-kb-toolkit/data/runbooks/ \
+  /path/to/faultmaven/resources/knowledge/builtin/
+```
+
+This skips unchanged files (compares size + modification time), copies new or modified runbooks, and removes any that were deleted from the toolkit. The `--delete` flag is safe here because the toolkit is the source of truth for built-in runbooks.
+
+After syncing, the updated files are in the repo (`resources/`) but not yet in the runtime directory (`data/knowledge/global/`). To propagate changes to a running instance:
+
+```bash
+# Copy updated files to runtime directory
+rsync -av --delete \
+  resources/knowledge/builtin/ \
+  data/knowledge/global/
+
+# Then scan + verify from the Dashboard to re-ingest updated runbooks
+```
+
+Note: the bootstrap only copies built-in runbooks if `data/knowledge/global/` is empty. On subsequent startups, it does not overwrite user modifications. The rsync above is a manual step for when you want to pull in updated runbooks from a new release.
+
 ### Important: do not ingest runbooks directly into ChromaDB
 
 Copying runbook files into `data/knowledge/` is the correct way to add runbooks at the OS level. However, do **not** write directly to ChromaDB (e.g., via scripts or the ChromaDB Python client). The `conversion_drafts` table in `faultmaven.db` is the single source of truth for ingestion state. Writing directly to ChromaDB bypasses this table, which causes:

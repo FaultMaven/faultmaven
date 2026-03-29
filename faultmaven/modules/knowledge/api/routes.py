@@ -201,6 +201,7 @@ async def upload_document(
 async def list_documents(
     document_type: Optional[str] = None,
     tags: Optional[str] = None,
+    scope: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
@@ -212,6 +213,7 @@ async def list_documents(
     Args:
         document_type: Filter by document type
         tags: Filter by tags (comma-separated)
+        scope: Filter by scope (global, team, personal)
         limit: Maximum number of documents to return
         offset: Number of documents to skip
 
@@ -221,6 +223,13 @@ async def list_documents(
     logger = logging.getLogger(__name__)
 
     try:
+        # Validate scope if provided
+        if scope and scope not in ("global", "team", "personal"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid scope: {scope}. Allowed: global, team, personal",
+            )
+
         # Parse tags filter
         tag_list = parse_comma_separated_tags(tags) or None
 
@@ -228,6 +237,7 @@ async def list_documents(
         return await knowledge_service.list_documents(
             document_type=document_type,
             tags=tag_list,
+            scope=scope,
             limit=limit,
             offset=offset,
             user=current_user,
