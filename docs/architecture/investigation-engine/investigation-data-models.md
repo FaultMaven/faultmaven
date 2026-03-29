@@ -625,41 +625,40 @@ class CaseAction(BaseModel):
 
 ### 1.5.1 Terminal Summary Report Types
 
-When a case reaches a disposition, the system auto-generates a lightweight summary report. These are distinct from user-requested reports (`incident_report`, `post_mortem`, `runbook`).
+When a case reaches terminal state, the system auto-generates a structured summary report.
 
 ```python
 class ReportType(str, Enum):
     """Type of case documentation report"""
 
-    # User-requested report types
-    INCIDENT_REPORT = "incident_report"
+    # Auto-generated on terminal transition
+    RESOLUTION_SUMMARY = "resolution_summary"  # RESOLVED cases
+    CLOSURE_SUMMARY = "closure_summary"        # CLOSED cases
+
+    # User-requested via ConversionService
     RUNBOOK = "runbook"
-    POST_MORTEM = "post_mortem"
-
-    # Auto-generated terminal summaries
-    RESOLUTION_SUMMARY = "resolution_summary"
-    CLOSURE_SUMMARY = "closure_summary"
 
 
-class Report(BaseModel):
-    """Case documentation report"""
+class CaseReport(BaseModel):
+    """Case documentation report (stored in reports table)"""
 
     report_id: str
     case_id: str
     report_type: ReportType
-    content: str
+    title: str
+    content: str                    # Markdown
+    format: Literal["markdown"]
+    generation_status: ReportStatus
+    generated_at: str               # ISO 8601
+    generation_time_ms: int
+    is_current: bool = True
+    version: int = Field(default=1)
+    linked_to_closure: bool = False
     auto_generated: bool = Field(
         default=False,
-        description="True for system-generated summaries (RESOLUTION_SUMMARY, CLOSURE_SUMMARY). "
-                    "False for user-requested reports (incident_report, post_mortem, runbook)."
+        description="True for terminal summaries (RESOLUTION_SUMMARY, CLOSURE_SUMMARY)."
     )
-    linked_to_closure: bool = Field(
-        default=False,
-        description="When True, case transitions from QUERY-ONLY to FROZEN mode"
-    )
-    version: int = Field(default=1)
-    created_at: datetime
-    created_by: str  # "system" for auto-generated, user_id for user-requested
+    metadata: Optional[RunbookMetadata] = None
 ```
 
 **Auto-generated summary mapping:**

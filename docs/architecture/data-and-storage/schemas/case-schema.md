@@ -778,7 +778,7 @@ CREATE TABLE reports (
     -- ============================================================
     -- Report Type & Versioning
     -- ============================================================
-    report_type VARCHAR(30) NOT NULL,              -- incident_report | runbook | post_mortem
+    report_type VARCHAR(30) NOT NULL,              -- resolution_summary | closure_summary | runbook
     version INTEGER NOT NULL DEFAULT 1,
     is_current BOOLEAN NOT NULL DEFAULT TRUE,      -- Latest version for this report_type
     linked_to_closure BOOLEAN NOT NULL DEFAULT FALSE,
@@ -809,7 +809,7 @@ CREATE TABLE reports (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 
     CONSTRAINT reports_type_check
-        CHECK (report_type IN ('incident_report', 'runbook', 'post_mortem')),
+        CHECK (report_type IN ('resolution_summary', 'closure_summary', 'runbook')),
 
     CONSTRAINT reports_status_check
         CHECK (generation_status IN ('generating', 'completed', 'failed')),

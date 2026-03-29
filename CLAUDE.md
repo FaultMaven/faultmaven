@@ -671,7 +671,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | OAuth | `GET /auth/oauth/authorize` | OAuth authorization |
 | OAuth | `POST /auth/oauth/token` | OAuth token exchange |
 | Evidence | `POST /evidence/upload` | File upload |
-| Reports | `GET/POST /reports` | Report generation |
+| Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
 | Organizations | `GET/POST /organizations` | Organization management |
 | Teams | `GET/POST /teams` | Team management |
 | Sessions | `GET /sessions` | Session management |
