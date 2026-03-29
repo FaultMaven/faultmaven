@@ -88,7 +88,7 @@ def ensure_data_directories() -> None:
 def seed_builtin_runbooks() -> int:
     """Copy built-in runbooks to data/knowledge/global/ if the directory is empty.
 
-    Ships 59 runbooks from faultmaven/knowledge/builtin/ (checked into the repo)
+    Ships 59 runbooks from resources/knowledge/builtin/ (checked into the repo)
     into the runtime data directory. Only copies if the target directory has no
     .md files, so user modifications are preserved on subsequent startups.
 
@@ -96,7 +96,7 @@ def seed_builtin_runbooks() -> int:
         Number of runbooks copied (0 if already populated).
     """
     project_root = get_project_root()
-    builtin_dir = Path(__file__).parent.parent / "knowledge" / "builtin"
+    builtin_dir = project_root / "resources" / "knowledge" / "builtin"
     target_dir = project_root / "data" / "knowledge" / "global"
 
     if not builtin_dir.exists():
