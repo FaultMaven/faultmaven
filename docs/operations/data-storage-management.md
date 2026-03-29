@@ -48,7 +48,7 @@ data/
 | `chroma-kb/` | ChromaDB (permanent) | KB embeddings: `faultmaven_kb`, `faultmaven_runbooks`, `knowledge_items` collections. Backed up, never wiped. | Permanent |
 | `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections (one per active case). Excluded from backups, safe to wipe. | Per-case lifecycle |
 | `evidence/<user_id>/case_*` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. | 90-day retention |
-| `knowledge/global/` | Filesystem | Runbook markdown source files (global scope) | Permanent |
+| `knowledge/global/` | Filesystem | Runbook markdown source files (global scope). Seeded from `faultmaven/knowledge/builtin/` on first startup (59 built-in runbooks). | Permanent |
 | `knowledge/personal_*/` | Filesystem | Runbook markdown from case-to-runbook conversion | User-controlled |
 | `knowledge/team_*/` | Filesystem | Team-scoped runbook files | Team-controlled |
 
@@ -68,16 +68,16 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 ### Relationship between knowledge/, evidence/, and the two ChromaDB instances
 
 ```
-knowledge/*.md  →  ingest_runbooks.py  →  chroma-kb/ (faultmaven_kb collection)
+knowledge/*.md  →  Dashboard scan → verify  →  chroma-kb/ (faultmaven_kb collection)
 
 evidence/<user_id>/case_*/file  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
-- `knowledge/` holds **source markdown files**. The ingestion pipeline reads them, chunks the text, generates BGE-M3 embeddings, and writes into the `faultmaven_kb` collection in `chroma-kb/`.
+- `knowledge/` holds **source markdown files**. The canonical ingestion path is: copy files here, scan from the Dashboard (or `POST /api/v1/knowledge/scan`), then verify each draft. Verification triggers chunking, BGE-M3 embedding generation, and storage into the `faultmaven_kb` collection in `chroma-kb/`.
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
-Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. You must re-ingest or delete the document via the API for the vector store to reflect the change.
+Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. You must delete the document via the Dashboard or API for the vector store to reflect the change.
 
 ---
 
@@ -154,31 +154,15 @@ Response:
 }
 ```
 
-### Ingesting runbooks directly into ChromaDB (CLI)
+### Important: do not ingest runbooks directly into ChromaDB
 
-For global runbooks that don't need the draft review workflow, use the ingestion script to write directly into ChromaDB:
+Copying runbook files into `data/knowledge/` is the correct way to add runbooks at the OS level. However, do **not** write directly to ChromaDB (e.g., via scripts or the ChromaDB Python client). The `conversion_drafts` table in `faultmaven.db` is the single source of truth for ingestion state. Writing directly to ChromaDB bypasses this table, which causes:
 
-```bash
-# Ingest all global runbooks
-python -m faultmaven.scripts.ingest_runbooks
+- The Dashboard "Scan for runbooks" to re-discover the file as a new draft
+- Verifying that draft to ingest the same content a second time — duplicate embeddings
+- No audit trail of who ingested the runbook or when
 
-# Ingest from a specific directory
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global
-
-# Dry run (validate without ingesting)
-python -m faultmaven.scripts.ingest_runbooks --dry-run
-
-# Force re-ingest all (ignore change detection)
-python -m faultmaven.scripts.ingest_runbooks --force
-
-# Filter by technology
-python -m faultmaven.scripts.ingest_runbooks --technology kubernetes
-
-# Verify after ingestion
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --verify
-```
-
-The script tracks previously ingested files in `data/knowledge/global/.ingestion_log.json` and only processes changed or new files on subsequent runs.
+Always use the scan → verify workflow to move runbooks from `data/knowledge/` into the vector database.
 
 ### Removing a runbook
 

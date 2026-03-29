@@ -2,8 +2,9 @@
 
 Handles first-run initialization tasks:
 1. Create data directories (data/chroma-kb, data/chroma-evidence, data/evidence)
-2. Run Alembic migrations to ensure schema is up-to-date
-3. Create default local admin user if database is empty
+2. Copy built-in runbooks to data/knowledge/global/ if empty
+3. Run Alembic migrations to ensure schema is up-to-date
+4. Create default local admin user if database is empty
 
 This runs at application startup to ensure a smooth out-of-the-box experience
 for local deployments without requiring manual setup steps.
@@ -17,6 +18,7 @@ Design Notes:
 
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 
@@ -81,6 +83,46 @@ def ensure_data_directories() -> None:
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created data directory: {path}")
+
+
+def seed_builtin_runbooks() -> int:
+    """Copy built-in runbooks to data/knowledge/global/ if the directory is empty.
+
+    Ships 59 runbooks from faultmaven/knowledge/builtin/ (checked into the repo)
+    into the runtime data directory. Only copies if the target directory has no
+    .md files, so user modifications are preserved on subsequent startups.
+
+    Returns:
+        Number of runbooks copied (0 if already populated).
+    """
+    project_root = get_project_root()
+    builtin_dir = Path(__file__).parent.parent / "knowledge" / "builtin"
+    target_dir = project_root / "data" / "knowledge" / "global"
+
+    if not builtin_dir.exists():
+        logger.debug("No built-in runbooks directory found — skipping seed")
+        return 0
+
+    # Check if target already has runbook files
+    existing = list(target_dir.rglob("*.md")) if target_dir.exists() else []
+    if existing:
+        logger.debug(f"Global KB already has {len(existing)} runbooks — skipping seed")
+        return 0
+
+    # Copy built-in runbooks preserving subdirectory structure
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for src_file in sorted(builtin_dir.rglob("*.md")):
+        relative = src_file.relative_to(builtin_dir)
+        dest = target_dir / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, dest)
+        copied += 1
+
+    if copied:
+        logger.info(f"Seeded {copied} built-in runbooks into data/knowledge/global/")
+
+    return copied
 
 
 def run_alembic_migrations() -> bool:
@@ -262,11 +304,14 @@ async def initialize_data_layer(container: Any) -> None:
     # Step 1: Ensure data directories exist
     ensure_data_directories()
 
-    # Step 2: Run database migrations
+    # Step 2: Seed built-in runbooks if global KB directory is empty
+    seed_builtin_runbooks()
+
+    # Step 3: Run database migrations
     # Note: This uses synchronous Alembic - runs in the event loop's executor
     run_alembic_migrations()
 
-    # Step 3: Create default admin user if needed
+    # Step 4: Create default admin user if needed
     admin_user = await ensure_default_admin_exists(container)
     if admin_user:
         logger.info(f"Default admin user ready: {admin_user.username}")

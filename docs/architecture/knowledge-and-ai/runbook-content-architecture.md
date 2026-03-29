@@ -33,7 +33,7 @@ FaultMaven is a delivery mechanism and a growing framework for troubleshooting k
 
 - [knowledge-base-architecture.md](./knowledge-base-architecture.md) — Storage systems, vector stores, KB-neutral tool design
 - `faultmaven/modules/knowledge/domain/models/knowledge_item.py` — Domain model
-- `faultmaven/scripts/ingest_runbooks.py` — Ingestion pipeline and validator
+- `faultmaven/modules/knowledge/domain/services/conversion_service.py` — Scan, verify, and ingestion workflow
 - `faultmaven/core/knowledge/ingestion.py` — Chunking and embedding
 
 ---
@@ -241,7 +241,7 @@ Validates YAML frontmatter completeness and correctness.
 - `domain` and `symptom_class` values are from the controlled vocabulary
 - `last_updated` is a valid ISO 8601 date
 
-**Implementation:** `RunbookValidator.validate_runbook()` in `faultmaven/scripts/ingest_runbooks.py`
+**Implementation:** Validated during the scan → verify workflow in `conversion_service.py`
 
 ### Gate 2: Structural Linting
 
@@ -253,7 +253,7 @@ Validates the markdown document contains required sections with actionable conte
 - At least one fenced code block exists in `Diagnostic Steps` and `Root Cause Resolution` sections
 - No section is empty (header with no content before the next header)
 
-**Implementation:** `RunbookValidator.REQUIRED_SECTIONS` check in `faultmaven/scripts/ingest_runbooks.py`. Currently checks for: `Quick Reference Card`, `Diagnostic Steps`, `Solutions`, `Prevention`, `Related Issues`. These section names should be updated to match the canonical template defined in Section 3.
+**Implementation:** Structural validation during scan → verify workflow. Currently checks for: `Quick Reference Card`, `Diagnostic Steps`, `Solutions`, `Prevention`, `Related Issues`. These section names should be updated to match the canonical template defined in Section 3.
 
 ### Gate 3: Semantic Density Check (Planned)
 
@@ -328,9 +328,9 @@ This section tracks what is implemented versus planned.
 
 | Feature | Status | Location |
 |---------|--------|----------|
-| YAML frontmatter parsing | Implemented | `ingest_runbooks.py:RunbookValidator` |
-| Structural linting (required sections) | Implemented | `ingest_runbooks.py:REQUIRED_SECTIONS` |
-| Taxonomy fields stored in ChromaDB | **Implemented (toolkit)** | KB Toolkit's `kb-ingest` propagates `domain`, `service`, `symptom_class`, `scope`, `status`, `last_updated` as distinct ChromaDB metadata keys. FaultMaven API ingestion pipeline (`ingest_runbooks.py`) not yet updated. |
+| YAML frontmatter parsing | Implemented | `conversion_service.py` scan workflow |
+| Structural linting (required sections) | Implemented | `conversion_service.py` verify workflow |
+| Taxonomy fields stored in ChromaDB | **Partially implemented** | KB Toolkit's `kb-ingest` propagates `domain`, `service`, `symptom_class`, `scope`, `status`, `last_updated` as distinct ChromaDB metadata keys locally. FaultMaven API verify workflow not yet updated to propagate all taxonomy fields. |
 | `domain`/`service`/`symptom_class` filtering | **Designed, not implemented** | Federated search with `where` clause filtering designed in [knowledge-base-architecture.md](./knowledge-base-architecture.md). Requires API-side implementation. |
 | DRAFT/IN-REVIEW/VERIFIED/STALE/DEPRECATED lifecycle | **Partially implemented** | 5-state lifecycle defined. KB Toolkit enforces via `valid_statuses`. `KnowledgeItem` in FaultMaven API has `is_published` bool only — needs lifecycle enum. |
 | Staleness detection (6-month auto-transition) | **Implemented (toolkit)** | `kb-stale-check` CLI scans `last_updated`, reports stale runbooks, `--auto-tag` updates frontmatter. FaultMaven API has no background job for this yet. |
@@ -338,12 +338,12 @@ This section tracks what is implemented versus planned.
 | Semantic density check (LLM-driven) | **Not implemented** | Planned for Gate 3 |
 | Verification-weighted retrieval | **Not implemented** | `KnowledgeItem.verification_level` exists but is not used in search ranking |
 | Usage tracking | Implemented | `KnowledgeItem.view_count`, `helpful_count`, `not_helpful_count` |
-| Ingestion pipeline with change detection | Implemented | `ingest_runbooks.py:RunbookIngestionPipeline` (MD5 hash comparison) |
+| Ingestion pipeline with draft tracking | Implemented | `conversion_service.py` scan → verify workflow (`conversion_drafts` table) |
 
 ### Implementation Priority
 
 1. **Store taxonomy in ChromaDB metadata** — Unblocks filtered search. Moderate effort: extend `_process_and_store()` in `ingestion.py` to propagate frontmatter fields.
 2. **Lifecycle state enum on KnowledgeItem** — Replace `is_published` with a proper state field. Low effort, high value.
 3. **Staleness background job** — Compare `last_updated` against current date. Requires job scheduler integration.
-4. **Align validator section names** — Current `REQUIRED_SECTIONS` in `ingest_runbooks.py` don't match the canonical template. Quick fix.
+4. **Align validator section names** — Current structural validation checks don't match the canonical template. Quick fix.
 5. **Verification-weighted retrieval** — Boost `ADMIN_VERIFIED` items in search results. Requires ChromaDB metadata filter or post-retrieval reranking.

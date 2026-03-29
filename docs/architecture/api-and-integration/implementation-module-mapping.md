@@ -547,7 +547,7 @@ This document maps every module in the FaultMaven codebase to its architectural 
 
 | File | Purpose |
 |------|---------|
-| `ingest_runbooks.py` | Runbook ingestion script |
+| *(removed)* | Runbook ingestion now handled by scan → verify workflow in `conversion_service.py` |
 
 ---
 

@@ -86,11 +86,17 @@ python -m faultmaven.main
 uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Expected output**:
+**First startup** takes 2-3 minutes longer than usual. FaultMaven automatically:
+- Creates data directories and runs database migrations
+- Creates a default admin account (`admin` / `admin@local.faultmaven`)
+- Copies 59 built-in troubleshooting runbooks into the knowledge base
+- Generates vector embeddings for all runbooks (this is the slow part)
+
+Subsequent startups are fast (~5 seconds). You'll see:
+
 ```
-INFO:     Started server process [12345]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
+INFO:     ✅ Auto-ingested 59 built-in runbooks into knowledge base
+INFO:     🚀 FaultMaven API server startup COMPLETE
 INFO:     Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)
 ```
 

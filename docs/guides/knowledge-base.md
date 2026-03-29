@@ -698,31 +698,25 @@ This is wrong. Fix it.
 
 ## Ingestion, Updates & Maintenance
 
-### Overview: Automated Pipeline
+### Overview: Ingestion Pipeline
 
+```text
+Runbook Files → data/knowledge/{scope}/ → Dashboard Scan → Verify → ChromaDB Ingestion
+                                                ↓                         ↓
+                                          Draft Records             Chunks + Embeddings
 ```
-Runbook Files (Git) → Validation → MD5 Change Detection → ChromaDB Ingestion
-                          ↓                                        ↓
-                    Error Reports                          123 Chunks Ready
-```
 
-### 1. Automated Ingestion Pipeline
+### 1. Canonical Ingestion Workflow
 
-**Location:** `faultmaven/scripts/ingest_runbooks.py`
+**How runbooks get into the knowledge base:**
 
-**What it does:**
-1. Discovers runbook markdown files
-2. Extracts YAML frontmatter metadata
-3. Validates against quality schema
-4. Detects changes using MD5 hashes
-5. Chunks content (1000 chars, 200 overlap)
-6. Generates BGE-M3 embeddings
-7. Stores in ChromaDB vector database
+1. Place `.md` runbook files in `data/knowledge/{scope}/` (see [data-storage-management.md](../operations/data-storage-management.md) for scope directories)
+2. From the Dashboard KB page, click **"Scan for runbooks"** (or `POST /api/v1/knowledge/scan`)
+3. Scanned files appear as drafts in the Drafts tab
+4. Review and **verify** each draft — verification triggers chunking, embedding, and ChromaDB ingestion
+5. Verified runbooks appear in the Runbooks list and are searchable by the AI agent
 
-**Trigger events:**
-- PR merged to main branch (automatic)
-- Manual execution (on-demand)
-- Scheduled batch runs (future)
+The `conversion_drafts` table tracks ingestion state. Do not write directly to ChromaDB — see [data-storage-management.md](../operations/data-storage-management.md#important-do-not-ingest-runbooks-directly-into-chromadb) for why.
 
 ### 2. Ingestion Process Details
 
@@ -886,8 +880,10 @@ print(f'Top tags: {stats[\"top_tags\"]}')
 4. Notify users of critical change
 
 ```bash
-# Emergency re-ingestion
-python -m faultmaven.scripts.ingest_runbooks --force
+# Emergency re-ingestion: update the file on disk, then re-scan and re-verify
+# from the Dashboard, or via the API:
+curl -X POST http://localhost:8090/api/v1/knowledge/scan \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ### 5. Ingestion Monitoring
@@ -938,49 +934,27 @@ kb-toolkit --help
 
 ---
 
-### 2. Manual Ingestion Pipeline (Legacy)
+### 2. Ingestion via API (Without Dashboard UI)
 
-**Location:** `faultmaven/scripts/ingest_runbooks.py`
-
-> **Note:** For production use, prefer the `faultmaven-kb-toolkit` for better automation and error handling.
-
-#### Basic Usage
+If you prefer the command line over the Dashboard, the same scan → verify workflow is available via the API:
 
 ```bash
-# Activate virtual environment
-source .venv/bin/activate
+# Step 1: Copy runbooks to the appropriate scope directory
+cp my-runbook.md data/knowledge/global/
+cp team-runbook.md data/knowledge/team_<team_id>/
+cp personal-runbook.md data/knowledge/personal_<user_id>/
 
-# Ingest all verified runbooks
-python -m faultmaven.scripts.ingest_runbooks --status verified
+# Step 2: Scan for untracked runbooks
+curl -X POST http://localhost:8090/api/v1/knowledge/scan \
+  -H "Authorization: Bearer $TOKEN"
 
-# Dry-run to validate without ingesting
-python -m faultmaven.scripts.ingest_runbooks --dry-run --status all
+# Step 3: List discovered drafts
+curl http://localhost:8090/api/v1/knowledge/drafts \
+  -H "Authorization: Bearer $TOKEN"
 
-# Force re-ingest everything (ignores change detection)
-python -m faultmaven.scripts.ingest_runbooks --force
-```
-
-#### Advanced Options
-
-```bash
-# Ingest specific technology
-python -m faultmaven.scripts.ingest_runbooks --technology kubernetes
-
-# Ingest all statuses (verified, draft, deprecated)
-python -m faultmaven.scripts.ingest_runbooks --status all
-
-# Combine filters
-python -m faultmaven.scripts.ingest_runbooks \
-  --technology redis \
-  --status verified \
-  --force
-
-# Custom runbook directory
-python -m faultmaven.scripts.ingest_runbooks \
-  --runbook-dir /path/to/runbooks
-
-# Skip validation (not recommended)
-python -m faultmaven.scripts.ingest_runbooks --no-validate
+# Step 4: Verify a draft (triggers ingestion into ChromaDB)
+curl -X POST http://localhost:8090/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 #### Output Examples
@@ -1219,8 +1193,8 @@ curl http://chromadb.faultmaven.local:30080/api/v1/heartbeat
 # Check BGE-M3 model
 python -c "from faultmaven.infrastructure.model_cache import model_cache; print(model_cache.get_bge_m3_model())"
 
-# Run in debug mode
-LOG_LEVEL=DEBUG python -m faultmaven.scripts.ingest_runbooks --dry-run
+# Check API logs for ingestion errors
+./faultmaven.sh logs api | grep -i "ingestion\|knowledge"
 ```
 
 **Issue: Search returns no results**
@@ -1244,11 +1218,9 @@ print(f'Embedding shape: {embedding.shape}')
 
 **Issue: Validation errors**
 ```bash
-# Run dry-run to see all errors
-python -m faultmaven.scripts.ingest_runbooks --dry-run --status all
-
-# Check specific runbook
-python validate_runbook.py docs/runbooks/path/to/runbook.md
+# Scan to discover files and check for errors in the response
+curl -X POST http://localhost:8090/api/v1/knowledge/scan \
+  -H "Authorization: Bearer $TOKEN" | jq '.errors'
 ```
 
 ---
@@ -1551,8 +1523,9 @@ FaultMaven/
 ├── faultmaven/
 │   ├── core/knowledge/
 │   │   └── ingestion.py                  # Ingestion engine
-│   └── scripts/
-│       └── ingest_runbooks.py            # Ingestion pipeline
+│   └── modules/knowledge/
+│       └── domain/services/
+│           └── conversion_service.py     # Scan, verify, ingest workflow
 │
 └── tests/quality/
     ├── benchmark_queries.py              # Test queries
@@ -1563,10 +1536,9 @@ FaultMaven/
 ### B. Quick Reference Commands
 
 ```bash
-# INGESTION
-python -m faultmaven.scripts.ingest_runbooks --status verified
-python -m faultmaven.scripts.ingest_runbooks --dry-run --status all
-python -m faultmaven.scripts.ingest_runbooks --technology kubernetes --force
+# INGESTION (via API — scan then verify from Dashboard or API)
+curl -X POST http://localhost:8090/api/v1/knowledge/scan -H "Authorization: Bearer $TOKEN"
+curl http://localhost:8090/api/v1/knowledge/drafts -H "Authorization: Bearer $TOKEN"
 
 # QUALITY TESTING
 pytest tests/quality/ -v

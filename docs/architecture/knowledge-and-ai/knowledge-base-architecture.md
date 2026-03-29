@@ -139,7 +139,7 @@ The KB Toolkit and FaultMaven runtime use different directories:
 | Path | Purpose | Who writes | Who reads |
 |------|---------|-----------|-----------|
 | `faultmaven-kb-toolkit/data/runbooks/` | Authoring workspace — draft, validate, score | KB Toolkit (`kb-init`, `kb-researcher`) | Toolkit CLI (`kb-validate`, `kb-quality`) |
-| `faultmaven/data/knowledge/{scope}/` | Runtime storage — ingested into ChromaDB | Ingestion pipeline, Dashboard upload, conversion feature | `ingest_runbooks.py`, FaultMaven API |
+| `faultmaven/data/knowledge/{scope}/` | Runtime storage — ingested into ChromaDB via scan → verify | Dashboard scan + verify, conversion feature | FaultMaven API (scan/verify endpoints) |
 | `faultmaven/docs/operations/runbooks/` | Community contributions — shared with the open-source community | Community members | Human readers (not ingested) |
 
 To move toolkit-generated runbooks into FaultMaven for ingestion:
@@ -148,9 +148,10 @@ To move toolkit-generated runbooks into FaultMaven for ingestion:
 # Copy validated runbooks from toolkit to FaultMaven's global KB storage
 cp faultmaven-kb-toolkit/data/runbooks/**/*.md faultmaven/data/knowledge/global/
 
-# Ingest into ChromaDB
-cd faultmaven
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global
+# Then scan and verify from the Dashboard (KB → Drafts → Scan for runbooks → Verify)
+# Or via API:
+curl -X POST http://localhost:8090/api/v1/knowledge/scan -H "Authorization: Bearer $TOKEN"
+# Then verify each draft to trigger ingestion into ChromaDB
 ```
 
 ---
@@ -183,7 +184,7 @@ Live (during investigation):
 | Chunking | 1000-character chunks, 200-character overlap, sentence boundary splitting |
 | Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
 | Ingestion pipeline | `KnowledgeIngester` in `core/knowledge/ingestion.py` |
-| Batch ingestion | `scripts/ingest_runbooks.py` (with validation, change detection, progress tracking) |
+| Ingestion workflow | Dashboard scan → verify (via `conversion_service.py`) |
 
 #### KB vs Evidence Chunking — Why They Differ
 
@@ -457,23 +458,23 @@ Adding a new KB tier requires:
 ### Ingestion Pipeline
 
 ```bash
-# Batch ingestion with validation (Global KB)
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --validate
+# Step 1: Place runbooks in data/knowledge/global/
+cp runbooks/*.md data/knowledge/global/
 
-# Filter by domain or status
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --domain database --status verified
+# Step 2: Scan for untracked files (Dashboard or API)
+curl -X POST http://localhost:8090/api/v1/knowledge/scan -H "Authorization: Bearer $TOKEN"
 
-# Dry run (validate without ingesting)
-python -m faultmaven.scripts.ingest_runbooks --runbook-dir data/knowledge/global --dry-run
+# Step 3: Verify each draft from the Dashboard Drafts tab
+# Verification triggers validation, chunking, embedding, and ChromaDB ingestion
 ```
 
-The pipeline includes YAML frontmatter parsing, structural validation, MD5-based change detection, and progress tracking. For content standards enforced by this pipeline, see [runbook-content-architecture.md](./runbook-content-architecture.md).
+The scan → verify workflow includes YAML frontmatter parsing, structural validation, and quality scoring. For content standards, see [runbook-content-architecture.md](./runbook-content-architecture.md).
 
 ### Files
 
 | Component | Location |
 |-----------|----------|
-| Ingestion pipeline | `scripts/ingest_runbooks.py` |
+| Scan + verify workflow | `modules/knowledge/domain/services/conversion_service.py` |
 | Knowledge ingester | `core/knowledge/ingestion.py` |
 | KBConfig | `modules/agent/tools/kb_configs/global_kb_config.py` |
 

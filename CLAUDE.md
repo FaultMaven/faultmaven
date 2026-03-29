@@ -335,9 +335,11 @@ pip install -e ".[dev]"           # Install dependencies
 ```
 
 **Auto-Initialization:** On first startup, FaultMaven automatically:
-- Creates `data/` directories (database, ChromaDB, evidence)
+- Creates `data/` directories (database, ChromaDB, evidence, knowledge)
+- Copies 59 built-in runbooks from `faultmaven/knowledge/builtin/` to `data/knowledge/global/`
 - Runs database migrations
 - Creates a default admin account (`admin@local.faultmaven`)
+- Auto-ingests built-in runbooks into ChromaDB (scan → verify, ~2-3 min for embeddings)
 
 Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 

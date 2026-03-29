@@ -1457,6 +1457,7 @@ status: draft
 
             discovered.append(
                 {
+                    "conversion_id": conversion_id,
                     "draft_id": draft_id,
                     "title": draft.title,
                     "runbook_id": runbook_id,

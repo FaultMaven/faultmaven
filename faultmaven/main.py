@@ -705,6 +705,38 @@ async def lifespan(app: FastAPI):
     # Middleware must be added before the app starts. It is configured at import time.
     logger.info("✅ Middleware already configured")
 
+    # Auto-ingest built-in runbooks on first startup (empty KB)
+    try:
+        conversion_svc = getattr(app.state, "conversion_service", None)
+        if conversion_svc:
+            from .bootstrap.data_init import DEFAULT_ADMIN_USERNAME
+
+            scan_result = await conversion_svc.scan_for_runbooks(user_id="system")
+            discovered = scan_result.get("drafts", [])
+            if discovered:
+                verified = 0
+                for draft in discovered:
+                    try:
+                        await conversion_svc.verify_draft(
+                            conversion_id=draft.get("conversion_id", ""),
+                            draft_id=draft["draft_id"],
+                            user_id="system",
+                            username="system",
+                        )
+                        verified += 1
+                    except Exception as verify_err:
+                        logger.debug(
+                            f"Auto-verify skipped for {draft.get('title', '?')}: {verify_err}"
+                        )
+                if verified:
+                    logger.info(
+                        f"✅ Auto-ingested {verified} built-in runbooks into knowledge base"
+                    )
+            else:
+                logger.debug("No new runbooks to auto-ingest (KB already populated)")
+    except Exception as e:
+        logger.warning(f"Built-in runbook auto-ingestion failed (non-critical): {e}")
+
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"
     )
