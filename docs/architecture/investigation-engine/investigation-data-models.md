@@ -679,7 +679,14 @@ class Report(BaseModel):
 
 **Skip-if-trivial guardrail** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
 
-Auto-summary generation is skipped when a case has nothing meaningful to summarize:
+Auto-summary generation is scheduled for ALL terminal transition paths:
+
+- `_execute_resolved_transition()` — INVESTIGATING → RESOLVED
+- `_execute_closed_transition()` — INVESTIGATING/INQUIRY → CLOSED (via User-Agent Handshake)
+- `force_close_investigation()` — INVESTIGATING → CLOSED (direct user action)
+- `close_from_inquiry()` — INQUIRY → CLOSED (direct user action)
+
+The guardrail skips generation when a case has nothing meaningful to summarize:
 
 - `closure_reason == "duplicate"` — parent case has the real content
 - Zero evidence AND zero hypotheses AND fewer than 4 messages — trivial inquiry-only closure

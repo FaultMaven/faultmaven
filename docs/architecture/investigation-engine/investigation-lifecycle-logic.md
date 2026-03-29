@@ -156,8 +156,8 @@ def _apply_inquiry_updates(case: Case, updates: Any, metadata: Dict[str, Any],
     3. If user provides preliminary guidance -> Refine problem statement
     4. If user decides to investigate -> Set flag
 
-    The mechanical fallback (step 2) uses inquiry_handler.user_confirms() — a
-    word-boundary regex matcher with a 100-char message length guard — to catch
+    The mechanical fallback (step 2) uses a word-boundary regex matcher with a
+    100-char message length guard (inline in milestone_engine.py) to catch
     explicit confirmations ("yes", "proceed", "looks good") that the LLM missed.
     This prevents the INQUIRY confirmation loop where the agent re-asks "Let me
     confirm..." across multiple turns without progressing.
@@ -255,14 +255,16 @@ def propose_transition(case, to_status, reason, summary, evidence_ids=None):
     }
 
 def confirm_pending_transition(case, user_id):
-    """Execute transition after user confirms."""
-    case.progress.solution_verified = True
-    case.atomic_update(
-        status=CaseStatus.RESOLVED,
-        resolved_at=datetime.now(UTC),
-        closed_at=datetime.now(UTC),
-        closure_reason="resolved",
-    )
+    """Execute transition after user confirms.
+
+    Raises ValueError if case is in an invalid state for the requested
+    transition (e.g., trying to resolve a case that is not INVESTIGATING).
+    pending_transition is only cleared after successful execution.
+    """
+    if pending["to_status"] == "resolved":
+        _execute_resolved_transition(case, user_id, pending["reason"])  # raises on invalid state
+    elif pending["to_status"] == "closed":
+        _execute_closed_transition(case, user_id, pending["reason"])    # raises on invalid state
     case.pending_transition = None
     # DISPOSITION - no further case actions
 ```
@@ -513,20 +515,24 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     Disposition: Yes (irreversible)
     """
     if case.status != CaseStatus.INVESTIGATING:
-        raise CaseActionError("Can only force-close from INVESTIGATING phase")
+        raise ValueError("Can only force-close from INVESTIGATING status")
 
-    case.status = CaseStatus.CLOSED
-    case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = reason  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
+    case.atomic_update(
+        status=CaseStatus.CLOSED,
+        closed_at=datetime.now(UTC),
+        closure_reason=reason,  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
+    )
     # Note: "mitigation_sufficient" is used when user closes after mitigation
     # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
     case.action_history.append(CaseAction(
         from_status=CaseStatus.INVESTIGATING,
         to_status=CaseStatus.CLOSED,
-        triggered_at=datetime.now(timezone.utc),
+        triggered_at=datetime.now(UTC),
         triggered_by=user_id,
         reason=f"User force-closed: {reason}"
     ))
+    # Schedule auto-summary generation (skip-if-trivial guardrail applies)
+    case._pending_summary = should_generate_terminal_summary(case)
     # DISPOSITION - no further case actions
 
 
@@ -538,18 +544,22 @@ def close_from_inquiry(case: Case, user_id: str):
     Disposition: Yes (irreversible)
     """
     if case.status != CaseStatus.INQUIRY:
-        raise CaseActionError("Can only close-from-inquiry when in INQUIRY phase")
+        raise ValueError("Can only close-from-inquiry when in INQUIRY status")
 
-    case.status = CaseStatus.CLOSED
-    case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = "inquiry_only"
+    case.atomic_update(
+        status=CaseStatus.CLOSED,
+        closed_at=datetime.now(UTC),
+        closure_reason="inquiry_only",
+    )
     case.action_history.append(CaseAction(
         from_status=CaseStatus.INQUIRY,
         to_status=CaseStatus.CLOSED,
-        triggered_at=datetime.now(timezone.utc),
+        triggered_at=datetime.now(UTC),
         triggered_by=user_id,
         reason="User closed after inquiry only"
     ))
+    # Schedule auto-summary generation (skip-if-trivial guardrail applies)
+    case._pending_summary = should_generate_terminal_summary(case)
     # DISPOSITION - no further case actions
 ```
 
@@ -567,7 +577,7 @@ State updates occur at specific points within a turn to ensure consistency:
 | `changes_identified` | Progress milestone | After evidence processing | LLM sets in structured output when changes correlated |
 | `root_cause_identified` | Progress milestone | After hypothesis validation | LLM sets when hypothesis validated with high confidence |
 | `solution_proposed` | Progress milestone | After LLM proposes action | Set when ProposedAction with action_type=SOLUTION is created |
-| `path_selection` | — | During DIAGNOSIS (when temporal_state + urgency_level available) | Automatic from problem verification data |
+| `path_selection` | — | When `symptom_verified` milestone completes (single trigger point) | Automatic from problem verification data. Reverted if milestone validation invalidates `symptom_verified`. |
 | `mitigation_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed temp fix (submitted results) |
 | `mitigation_verified` | Gate milestone | LLM structured output | LLM detects user confirms mitigation worked → return to DIAGNOSIS |
 | `solution_accepted` | Gate milestone | LLM structured output | LLM detects user complied with proposed solution (submitted results) |

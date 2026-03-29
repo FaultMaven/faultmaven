@@ -264,7 +264,7 @@ Follow this progression based on conversation state:
 │ Step C: USER AGREES TO INVESTIGATE                      │
 ├─────────────────────────────────────────────────────────┤
 │ Situation: User says "yes", "please investigate",      │
-│            "go ahead", etc.                            │
+│            "confirmed", "looks good", etc.             │
 │                                                         │
 │ Actions:                                                │
 │ • System sets: decided_to_investigate = True            │

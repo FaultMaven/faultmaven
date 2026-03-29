@@ -208,7 +208,7 @@ def _get_vector_store(self) -> IVectorStore:
     """Get vector store with memory integration"""
     if not hasattr(self, '_vector_store'):
         # Create base vector store
-        base_store = ChromaDBVectorStore()
+        base_store = ChromaDBVectorStore(client=self.chromadb_client)
 
         # Wrap with memory enhancement
         self._vector_store = MemoryEnhancedVectorStore(
@@ -652,7 +652,7 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
                     ChromaDBVectorStore,
                 )
 
-                store = ChromaDBVectorStore()
+                store = ChromaDBVectorStore(client=chromadb_client, collection_name=collection_name)
                 logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}")
                 return store, False
             except Exception as e:
@@ -707,9 +707,9 @@ The following infrastructure providers implement this pattern:
 **DO NOT** implement infrastructure providers like this:
 
 ```python
-# ❌ WRONG: Hard failure breaks container initialization
+# ❌ WRONG: Missing required `client` arg AND hard failure breaks container initialization
 def create_vector_store(settings: FaultMavenSettings) -> ChromaDBVectorStore:
-    store = ChromaDBVectorStore()  # If this fails, entire system fails
+    store = ChromaDBVectorStore()  # Missing client! Also, if this fails, entire system fails
     return store
 ```
 
