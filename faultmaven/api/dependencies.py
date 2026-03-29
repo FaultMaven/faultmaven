@@ -285,12 +285,11 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
+    # Resolve team service for KB scope filtering during agent execution
+    from faultmaven.container import container
     from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
         AgentOrchestrationService,
     )
-
-    # Resolve team service for KB scope filtering during agent execution
-    from faultmaven.container import container
 
     team_service = container.get_team_service() if container else None
 
