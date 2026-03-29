@@ -1987,6 +1987,63 @@ class ConversionJobModel(Base):
         )
 
 
+class ReportModel(Base):
+    """Generated case documentation report (incident reports, runbooks, post-mortems).
+
+    Versioned, persistent storage linked to cases via FK.
+    Repository layer uses raw SQL for SQLite compatibility, but this ORM model
+    ensures the table is created by Alembic and available for future ORM queries.
+    """
+
+    __tablename__ = "reports"
+
+    report_id = Column(String(36), primary_key=True)
+    case_id = Column(
+        String(17),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    report_type = Column(
+        String(30), nullable=False
+    )  # incident_report | runbook | post_mortem
+    version = Column(Integer, nullable=False, server_default="1")
+    is_current = Column(Boolean, nullable=False, server_default="1")
+    linked_to_closure = Column(Boolean, nullable=False, server_default="0")
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    format = Column(String(20), nullable=False, server_default="markdown")
+    generation_status = Column(
+        String(20), nullable=False
+    )  # generating | completed | failed
+    generation_time_ms = Column(Integer, nullable=False)
+    report_metadata = Column("metadata", JSON, nullable=True)  # RunbookMetadata as JSON
+    generated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    # Relationships
+    case = relationship("CaseModel", backref="reports")
+
+    __table_args__ = (
+        Index("idx_reports_type_version", "case_id", "report_type"),
+        CheckConstraint("version >= 1 AND version <= 5", name="reports_version_check"),
+        CheckConstraint(
+            "generation_time_ms >= 0 AND generation_time_ms <= 120000",
+            name="reports_gen_time_check",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Report(id={self.report_id}, case={self.case_id}, "
+            f"type={self.report_type}, v{self.version})>"
+        )
+
+
 class ConversionDraftModel(Base):
     """Individual runbook draft generated from a conversion job."""
 

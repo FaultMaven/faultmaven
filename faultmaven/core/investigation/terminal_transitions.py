@@ -69,7 +69,11 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     """
     Execute a pending transition after user confirmation.
 
-    Returns True if transition was executed, False if no pending transition.
+    Returns True if transition was executed, False if no pending transition
+    or if the transition target is unknown.
+
+    Raises:
+        ValueError: If case is in an invalid state for the requested transition.
 
     Args:
         case: Case with pending_transition
@@ -90,7 +94,7 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
         case.pending_transition = None
         return False
 
-    # Clear pending transition after execution
+    # Clear pending transition only after successful execution
     case.pending_transition = None
     return True
 
@@ -112,13 +116,16 @@ def cancel_pending_transition(case: Case) -> bool:
 
 
 def _execute_resolved_transition(case: Case, user_id: str, reason: str):
-    """Execute INVESTIGATING → RESOLVED after user confirmation."""
+    """Execute INVESTIGATING → RESOLVED after user confirmation.
+
+    Raises:
+        ValueError: If case is not in INVESTIGATING status.
+    """
     if case.status != CaseStatus.INVESTIGATING:
-        logger.error(
+        raise ValueError(
             f"Cannot resolve case {case.case_id}: status is {case.status}, "
             f"expected INVESTIGATING"
         )
-        return
 
     logger.info(
         f"User {user_id} confirmed resolution for case {case.case_id}. "
@@ -160,14 +167,17 @@ def _execute_resolved_transition(case: Case, user_id: str, reason: str):
 
 
 def _execute_closed_transition(case: Case, user_id: str, reason: str):
-    """Execute → CLOSED after user confirmation."""
+    """Execute → CLOSED after user confirmation.
+
+    Raises:
+        ValueError: If case is not in INVESTIGATING or INQUIRY status.
+    """
     from_status = case.status
     if from_status not in (CaseStatus.INVESTIGATING, CaseStatus.INQUIRY):
-        logger.error(
+        raise ValueError(
             f"Cannot close case {case.case_id}: status is {from_status}, "
             f"expected INVESTIGATING or INQUIRY"
         )
-        return
 
     logger.info(
         f"User {user_id} confirmed closure for case {case.case_id}. "
@@ -718,6 +728,9 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
         )
     )
 
+    # Schedule auto-summary generation (checked by milestone engine after save)
+    case._pending_summary = should_generate_terminal_summary(case)
+
     logger.info(f"Case {case.case_id} force-closed → CLOSED (terminal state)")
     # TERMINAL - no further transitions
 
@@ -759,6 +772,9 @@ def close_from_inquiry(case: Case, user_id: str):
             reason="User closed after inquiry only",
         )
     )
+
+    # Schedule auto-summary generation (checked by milestone engine after save)
+    case._pending_summary = should_generate_terminal_summary(case)
 
     logger.info(f"Case {case.case_id} closed from inquiry → CLOSED (terminal state)")
     # TERMINAL - no further transitions

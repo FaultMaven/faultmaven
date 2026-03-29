@@ -506,19 +506,21 @@ This flow ensures team knowledge quality is governed by the team admin while ena
 
 ### Implementation Status
 
-Team KB is **designed but not yet fully implemented**. The infrastructure supports it:
+Team KB scope filtering is **implemented end-to-end**:
 
 - Team and organization models exist in the auth module (`modules/auth/domain/models/`)
-- `KBConfig` Strategy Pattern supports adding Team KB with zero changes to `DocumentQATool`
-- Collection naming convention defined: `team_{team_id}_kb`
+- `team_members` junction table supports multi-team membership per user
+- `TeamService.list_all_user_team_ids(user_id)` resolves all team memberships across orgs
+- Team IDs are wired into `ToolContext.team_ids` during agent execution (via `AgentOrchestrationService`)
+- The unified `kb_qa` tool builds a combined filter: `{"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]}`
+- ChromaDB metadata stores `scope` + `team_id` at ingestion time
+- API endpoints (`GET /knowledge/documents`) support `scope=team` filter with team membership check
 
 **Remaining work:**
 
-1. Create `TeamKBConfig(KBConfig)` implementation
-2. Register `TeamKBConfig` in the federated search layer (no separate tool wrapper needed)
-3. Add team KB management API endpoints (upload, list, delete for team admin)
-4. Implement promotion workflow (submit, review, approve/reject) with team admin approval gate
-5. Wire team_id and organization_id scoping into the knowledge module
+1. Team KB management API endpoints (upload, list, delete restricted to team admin role)
+2. Promotion workflow (personal → team: submit, review, approve/reject with team admin approval gate)
+3. `KBConfig` Strategy Pattern: add `TeamKBConfig(KBConfig)` for the federated search layer (optional — unified `kb_qa` already handles team scope via metadata filter)
 
 ---
 

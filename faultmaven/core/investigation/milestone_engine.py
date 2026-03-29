@@ -468,9 +468,9 @@ def validate_reasoning_first(
         if isinstance(ref, str) and ref.startswith("turn_"):
             try:
                 turn_num = int(ref.split("_")[1])
-                if turn_num < 0 or turn_num > case.current_turn:
+                if turn_num < 1 or turn_num > case.current_turn:
                     errors.append(
-                        f"Invalid turn reference '{ref}': turn number must be between 0 and current turn ({case.current_turn})"
+                        f"Invalid turn reference '{ref}': turn number must be between 1 and current turn ({case.current_turn})"
                     )
             except (IndexError, ValueError):
                 errors.append(
@@ -603,6 +603,7 @@ class MilestoneEngine:
         da_model: str | None = None,
         sanitizer: Any | None = None,
         redis_client: Any | None = None,
+        report_service: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -627,6 +628,9 @@ class MilestoneEngine:
             redis_client: Async Redis client for persisting redaction
                 registries across turns. When None, registries are
                 in-memory only (consistent within turn).
+            report_service: Optional ReportGenerationService for auto-generating
+                reports on terminal transitions. Fire-and-forget — failure
+                does not block the transition.
         """
         self.llm_provider = llm_provider
         self.repository = repository
@@ -639,6 +643,7 @@ class MilestoneEngine:
         self.da_model = da_model
         self.sanitizer = sanitizer
         self.redis_client = redis_client
+        self.report_service = report_service
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.stagnation_detector = StagnationDetector()
@@ -650,6 +655,34 @@ class MilestoneEngine:
         self._case_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
         logger.info("MilestoneEngine initialized with structured output engine")
+
+    async def _auto_generate_report(self, case: "Case") -> None:
+        """Fire-and-forget auto-generation of incident report on terminal transition.
+
+        Called after case is saved in terminal state. Failure is logged but
+        does not propagate — the transition is already complete.
+        """
+        if not getattr(case, "_pending_summary", False):
+            return
+        if not self.report_service:
+            logger.debug("No report service available — skipping auto-report")
+            return
+
+        try:
+            from faultmaven.modules.case.domain.owned_models.report import ReportType
+
+            await self.report_service.generate_reports(
+                case, [ReportType.INCIDENT_REPORT]
+            )
+            logger.info(
+                f"Auto-generated incident report for case {case.case_id}",
+                extra={"case_id": case.case_id},
+            )
+        except Exception as e:
+            logger.warning(
+                f"Auto-report generation failed for case {case.case_id}: {e}",
+                extra={"case_id": case.case_id},
+            )
 
     def _should_redact(self) -> bool:
         """Determine whether PII redaction should be applied at the engine level.
@@ -883,11 +916,7 @@ class MilestoneEngine:
                             "Case resolved. The issue has been marked as resolved."
                         ]
 
-                        # Check if auto-summary will be generated
-                        if getattr(case, "_pending_summary", False):
-                            response_parts.append(
-                                "\nA resolution summary has been generated."
-                            )
+                        # Note: incident report is auto-generated after save (fire-and-forget)
 
                         # Check runbook suggestion (content readiness + deduplication)
                         from faultmaven.core.investigation.terminal_transitions import (
@@ -914,6 +943,10 @@ class MilestoneEngine:
 
                         # Save and return — transition is complete
                         await self.repository.save(case)
+
+                        # Auto-generate incident report (fire-and-forget)
+                        await self._auto_generate_report(case)
+
                         return {
                             "agent_response": "\n".join(response_parts),
                             "suggested_follow_ups": [],
@@ -1742,6 +1775,13 @@ class MilestoneEngine:
             case_updated.updated_at = datetime.now(UTC)
             case_updated.last_activity_at = datetime.now(UTC)
             await self.repository.save(case_updated)
+
+            # Step 7b: Auto-generate incident report on terminal transition (fire-and-forget)
+            if metadata.get("status_transitioned") and case_updated.status in (
+                CaseStatus.RESOLVED,
+                CaseStatus.CLOSED,
+            ):
+                await self._auto_generate_report(case_updated)
 
             logger.info(
                 f"Turn {case_updated.current_turn} processed successfully. "
@@ -3425,8 +3465,7 @@ class MilestoneEngine:
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
-            # Bug #3: Path Selection Trigger
-            # Check if symptom_verified was just completed
+            # Trigger path selection when symptom_verified is first completed
             if (
                 "symptom_verified" in metadata["milestones_completed"]
                 and not case.path_selection
@@ -3571,17 +3610,13 @@ class MilestoneEngine:
                     metadata.setdefault("milestone_validation_warnings", []).extend(
                         result.warnings
                     )
-
-        # 2c. Trigger Path Selection if symptom_verified milestone completed
-        if "symptom_verified" in metadata.get("milestones_completed", []):
-            if not case.path_selection:
-                case.path_selection = determine_investigation_path(
-                    case.problem_verification
-                )
-                logger.info(
-                    f"Path selection triggered: {case.path_selection.path.value} "
-                    f"(auto={case.path_selection.auto_selected})"
-                )
+                    # If symptom_verified was reverted, also revert path selection
+                    # that was set optimistically during milestone application
+                    if result.milestone == "symptom_verified" and case.path_selection:
+                        logger.warning(
+                            f"Path selection reverted: symptom_verified milestone was invalid"
+                        )
+                        case.path_selection = None
 
         # 3. Add/Update Hypotheses
         if hasattr(updates, "hypotheses_to_add") and updates.hypotheses_to_add:
@@ -3958,8 +3993,6 @@ class MilestoneEngine:
             "correct",
             "confirmed",
             "approve",
-            "go ahead",
-            "do it",
             "mark as resolved",
             "close it",
             "that's right",

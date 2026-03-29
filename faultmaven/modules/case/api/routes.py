@@ -451,6 +451,17 @@ async def _di_get_session_service_dependency(request: Request) -> ISessionServic
     return await _getter(request)
 
 
+async def _di_get_vector_store_dependency(request: Request):
+    """Get the DI-provided ChromaDB vector store for report services."""
+    try:
+        container = request.app.extra.get("di_container")
+        if container:
+            return getattr(container, "vector_store", None)
+        return None
+    except Exception:
+        return None
+
+
 def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
     """Check if case service is available and raise appropriate error if not"""
     if case_service is None:
@@ -2417,6 +2428,7 @@ async def get_report_recommendations(
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
+    vector_store=Depends(_di_get_vector_store_dependency),
 ):
     """
     Get intelligent report recommendations for a resolved case.
@@ -2445,10 +2457,7 @@ async def get_report_recommendations(
         404: Case not found or access denied
         500: Internal server error
     """
-    # TODO: Refactor to use IReportQuery via dependency injection (Principle 2)
-    # Note: Domain imports kept temporarily until DI is implemented
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
     from faultmaven.modules.report.domain.models import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import (
         ReportRecommendationService,
@@ -2477,9 +2486,11 @@ async def get_report_recommendations(
                 },
             )
 
-        # Initialize services for recommendation
-        # Note: In production, these should be injected via DI container
-        vector_store = ChromaDBVectorStore()
+        if vector_store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Vector store not available. Check ChromaDB configuration.",
+            )
         runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
         recommendation_service = ReportRecommendationService(runbook_kb=runbook_kb)
 
@@ -2522,17 +2533,14 @@ async def generate_case_reports(
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
-    """Generate case documentation reports."""
-    # TODO: Refactor to use IReportCommand via dependency injection (Principle 2)
-    # Note: Domain imports kept temporarily until DI is implemented
-    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+    """Regenerate reports for a terminal case.
+
+    Reports are auto-generated when a case reaches terminal state.
+    This endpoint allows regeneration if the original was missing or needs refresh.
+    """
     from faultmaven.modules.report.domain.models import (
         ReportGenerationRequest,
         ReportType,
-    )
-    from faultmaven.modules.report.domain.services.report_generation_service import (
-        ReportGenerationService,
     )
 
     case_service = check_case_service_available(case_service)
@@ -2542,27 +2550,32 @@ async def generate_case_reports(
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
-        # Parse request
+        # Only terminal cases can have reports
+        if case.status.value not in ("resolved", "closed"):
+            raise HTTPException(
+                status_code=400,
+                detail="Reports can only be generated for resolved or closed cases",
+            )
+
+        # Get the report service from the DI container
+        from faultmaven.container.registry import get_container
+
+        container = get_container()
+        report_service = getattr(container, "report_generation_service", None)
+        if not report_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Report generation service not available",
+            )
+
         request = ReportGenerationRequest(
             report_types=[ReportType(t) for t in request_body["report_types"]]
         )
-
-        # Initialize services
-        vector_store = ChromaDBVectorStore()
-        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
-        report_service = ReportGenerationService(llm_router=None, runbook_kb=runbook_kb)
-
-        # Transition to DOCUMENTING if needed
-        if case.status != CaseStatus.DOCUMENTING:
-            case.status = CaseStatus.DOCUMENTING
-            case.documenting_started_at = datetime.now(timezone.utc)
-
-        # Generate reports
         response = await report_service.generate_reports(case, request.report_types)
-        case.report_generation_count += 1
-
         return response.model_dump()
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Report generation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

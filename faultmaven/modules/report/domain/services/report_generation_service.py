@@ -111,11 +111,13 @@ class ReportGenerationService:
         # Validate case state
         self._validate_case_for_report_generation(case)
 
-        # Check regeneration limit
-        if case.report_generation_count >= case.max_report_regenerations:
+        # Check regeneration limit (fields may not exist on older Case models)
+        report_gen_count = getattr(case, "report_generation_count", 0)
+        max_regenerations = getattr(case, "max_report_regenerations", 5)
+        if report_gen_count >= max_regenerations:
             raise ValidationException(
                 "regeneration_limit_exceeded",
-                f"Maximum {case.max_report_regenerations} regenerations allowed",
+                f"Maximum {max_regenerations} regenerations allowed",
             )
 
         logger.info(
@@ -195,7 +197,9 @@ class ReportGenerationService:
             )
 
         # Calculate remaining regenerations
-        remaining = case.max_report_regenerations - (case.report_generation_count + 1)
+        report_gen_count = getattr(case, "report_generation_count", 0)
+        max_regenerations = getattr(case, "max_report_regenerations", 5)
+        remaining = max(0, max_regenerations - (report_gen_count + 1))
 
         return ReportGenerationResponse(
             case_id=case.case_id, reports=reports, remaining_regenerations=remaining
@@ -237,7 +241,7 @@ class ReportGenerationService:
             metadata = RunbookMetadata(
                 source=RunbookSource.INCIDENT_DRIVEN,
                 domain=getattr(case, "domain", "general"),
-                tags=case.tags,
+                tags=getattr(case, "tags", []),
                 case_context=context,
                 llm_model="gpt-4",  # TODO: Get from llm_router
             )
@@ -255,7 +259,7 @@ class ReportGenerationService:
             updated_at=None,  # Will be set by repository.add_report to generated_at (for new reports)
             generation_time_ms=generation_time_ms,
             is_current=True,
-            version=case.report_generation_count + 1,
+            version=getattr(case, "report_generation_count", 0) + 1,
             linked_to_closure=False,
             metadata=metadata,
         )
@@ -263,45 +267,73 @@ class ReportGenerationService:
     async def _generate_incident_report(
         self, case: Case, context: Dict[str, Any]
     ) -> str:
-        """Generate incident report using LLM."""
-        prompt = f"""Generate a professional incident report for the following troubleshooting case.
+        """Generate incident report from case data.
 
-**Case Title:** {case.title}
-**Description:** {case.description or 'N/A'}
-**Status:** {case.status.value}
-**Created:** {to_json_compatible(case.created_at)}
-**Resolved:** {context.get('resolved_at', 'In progress')}
+        Builds a structured report directly from case fields.
+        When LLM integration is available, this can be enhanced to use
+        LLM for natural language generation from the same data.
+        """
+        title = case.title or "Untitled Case"
+        description = case.description or "No description provided."
+        status = case.status.value.replace("_", " ").title()
+        created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
+        resolved = context.get("resolved_at", "In progress")
+        duration = context.get("duration", "Unknown")
+        closure = getattr(case, "closure_reason", None) or ""
 
-**Problem Summary:**
-{context.get('problem_summary', 'See case description')}
+        # Build evidence summary
+        evidence_items = case.evidence if case.evidence else []
+        evidence_count = len(evidence_items)
 
-**Timeline of Events:**
-{context.get('timeline', 'N/A')}
+        # Build hypothesis summary
+        hypotheses = case.hypotheses if case.hypotheses else []
+        hypothesis_count = len(hypotheses)
 
-**Root Cause:**
-{context.get('root_cause', 'Not yet determined')}
+        # Build solutions summary
+        solutions = case.solutions if case.solutions else []
 
-**Resolution Steps:**
-{context.get('resolution_steps', 'N/A')}
+        parts = [
+            f"# Incident Report: {title}\n",
+            f"## Summary\n",
+            f"- **Status:** {status}",
+            f"- **Created:** {created}",
+            f"- **Resolved:** {resolved}",
+            f"- **Duration:** {duration}",
+            f"- **Evidence collected:** {evidence_count} item{'s' if evidence_count != 1 else ''}",
+            f"- **Hypotheses explored:** {hypothesis_count}",
+            f"- **Solutions proposed:** {len(solutions)}\n",
+            f"## Problem Description\n",
+            f"{description}\n",
+        ]
 
-**Recommendations:**
-{context.get('recommendations', 'None')}
+        if closure:
+            parts.append(f"## Resolution\n")
+            parts.append(f"{closure}\n")
 
-Generate a structured incident report in Markdown format with the following sections:
-1. Executive Summary
-2. Problem Description
-3. Timeline of Events
-4. Root Cause Analysis
-5. Resolution Steps
-6. Impact Assessment
-7. Recommendations for Prevention
-8. Lessons Learned
+        if solutions:
+            parts.append("## Solutions Applied\n")
+            for i, sol in enumerate(solutions, 1):
+                sol_title = getattr(sol, "title", f"Solution {i}")
+                sol_desc = getattr(sol, "description", "")
+                parts.append(f"### {i}. {sol_title}\n")
+                if sol_desc:
+                    parts.append(f"{sol_desc}\n")
 
-Keep it professional, concise, and actionable. Focus on facts and outcomes."""
+        if hypotheses:
+            parts.append("## Investigation Summary\n")
+            for h in hypotheses:
+                h_title = getattr(h, "title", "")
+                h_status = getattr(h, "status", "")
+                h_conf = getattr(h, "confidence", 0)
+                status_str = (
+                    h_status.value if hasattr(h_status, "value") else str(h_status)
+                )
+                parts.append(
+                    f"- **{h_title}** — {status_str} (confidence: {h_conf:.0%})"
+                )
+            parts.append("")
 
-        # Call LLM (simplified - in production would use proper LLM router)
-        response = await self._call_llm(prompt, max_tokens=2000)
-        return response
+        return "\n".join(parts)
 
     async def _generate_runbook(self, case: Case, context: Dict[str, Any]) -> str:
         """Generate runbook using LLM.
@@ -465,42 +497,19 @@ Key learnings available in case context."""
                 to_json_compatible(case.created_at) if case.created_at else None
             ),
             "resolved_at": (
-                to_json_compatible(case.updated_at)
-                if case.status == CaseStatus.RESOLVED
-                else None
+                to_json_compatible(case.resolved_at) if case.resolved_at else None
             ),
             "duration": self._calculate_duration(case),
             "message_count": case.message_count,
-            "tags": case.tags,
         }
-
-        # Extract diagnostic state if available
-        if hasattr(case, "diagnostic_state") and case.diagnostic_state:
-            diag = case.diagnostic_state
-            context.update(
-                {
-                    "problem_summary": (
-                        getattr(diag.anomaly_frame, "statement", None)
-                        if hasattr(diag, "anomaly_frame")
-                        else None
-                    ),
-                    "root_cause": (
-                        getattr(diag.root_cause, "description", None)
-                        if hasattr(diag, "root_cause")
-                        else None
-                    ),
-                    "hypotheses_count": (
-                        len(diag.hypotheses) if hasattr(diag, "hypotheses") else 0
-                    ),
-                }
-            )
 
         return context
 
     def _calculate_duration(self, case: Case) -> str:
         """Calculate case duration in human-readable format."""
-        if case.resolution_time_hours:
-            hours = case.resolution_time_hours
+        if case.resolved_at and case.created_at:
+            duration = (case.resolved_at - case.created_at).total_seconds()
+            hours = duration / 3600
             if hours < 1:
                 return f"{int(hours * 60)} minutes"
             elif hours < 24:
@@ -512,12 +521,12 @@ Key learnings available in case context."""
 
     def _validate_case_for_report_generation(self, case: Case) -> None:
         """Validate case is in valid state for report generation."""
-        valid_states = [CaseStatus.RESOLVED, CaseStatus.SOLVED, CaseStatus.DOCUMENTING]
+        valid_states = [CaseStatus.RESOLVED, CaseStatus.CLOSED]
 
         if case.status not in valid_states:
             raise ValidationException(
                 "invalid_case_state",
-                f"Cannot generate reports from {case.status.value} state. Case must be resolved first.",
+                f"Cannot generate reports from {case.status.value} state. Case must be resolved or closed first.",
             )
 
     async def _index_generated_runbook(self, report: CaseReport, case: Case) -> None:

@@ -134,7 +134,7 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 │   Scope isolation on faultmaven_kb uses metadata filtering:          │
 │   - global_kb_qa tool: {"scope": "global"}                           │
 │   - user_kb_qa tool: {"scope": "personal", "owner_id": user_id}     │
-│   - Team KB: metadata stored, dedicated tool not yet implemented     │
+│   - Team KB: {"scope": "team", "team_id": {"$in": team_ids}}        │
 │                                                                        │
 │   KB config layer returns logical names (global_kb, user_{id}_kb)    │
 │   which map to faultmaven_kb with metadata filters, NOT separate     │

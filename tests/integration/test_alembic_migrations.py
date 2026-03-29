@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision (conversion tables with source_type)
-HEAD_REVISION = "b7f3c1d2e5a8"
+HEAD_REVISION = "c8d4e2f1a3b7"
 
 
 @pytest.fixture(scope="function")
@@ -116,6 +116,7 @@ EXPECTED_TABLES = [
     "organization_members",
     "organizations",
     "permissions",
+    "reports",
     "role_permissions",
     "roles",
     "sessions",
