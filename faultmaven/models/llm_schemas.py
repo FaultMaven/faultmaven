@@ -315,7 +315,7 @@ class DocumentToGenerate(BaseModel):
     """
 
     document_type: Literal[
-        "incident_report", "post_mortem", "runbook", "timeline", "lessons_learned"
+        "runbook", "timeline", "chat_summary", "lessons_learned", "other"
     ] = Field(description="Type of document")
 
     title: str = Field(description="Document title", max_length=200)

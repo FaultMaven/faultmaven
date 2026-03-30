@@ -2895,13 +2895,7 @@ class EscalationState(BaseModel):
 
 
 class DocumentType(str, Enum):
-    """Type of generated document"""
-
-    INCIDENT_REPORT = "incident_report"
-    """Formal incident report"""
-
-    POST_MORTEM = "post_mortem"
-    """Post-mortem analysis"""
+    """Type of generated document."""
 
     RUNBOOK = "runbook"
     """Runbook entry for future reference"""
@@ -2913,14 +2907,10 @@ class DocumentType(str, Enum):
     """Timeline visualization of events"""
 
     EVIDENCE_BUNDLE = "evidence_bundle"
-    """
-    Compiled evidence package.
-    """
+    """Compiled evidence package"""
 
     OTHER = "other"
-    """
-    Does not fit standard document types.
-    """
+    """Does not fit standard document types"""
 
 
 class GeneratedDocument(BaseModel):
@@ -2982,10 +2972,6 @@ class DocumentationData(BaseModel):
         default=None,
         description="Runbook entry created from this case",
         max_length=5000,
-    )
-
-    post_mortem_id: Optional[str] = Field(
-        default=None, description="Link to post-mortem doc if created"
     )
 
     # ============================================================
