@@ -2873,28 +2873,25 @@ class MilestoneEngine:
         if result.data is None:
             return "Success (no data returned)"
 
-        # KB results: format as readable text with source citations
-        if tool_name == "kb_qa" and isinstance(result.data, dict):
-            answer = result.data.get("answer", "")
-            sources = result.data.get("sources", [])
-            # Filter out placeholder sources
-            sources = [s for s in sources if s and s != "Unknown document"]
-            logger.info(f"kb_qa result: {len(answer)} chars, sources={sources}")
-            parts = [
+        # KB results: wrap with relay instruction and source citation guidance.
+        # Note: _arun returns a pre-formatted string (via KBConfig.format_response),
+        # not a dict. The string includes "Sources: ..." at the end.
+        if tool_name == "kb_qa" and result.data:
+            content = (
+                result.data if isinstance(result.data, str) else json.dumps(result.data)
+            )
+            logger.info(f"kb_qa result: {len(content)} chars")
+            return (
                 "KNOWLEDGE BASE RESULT — Include the detailed content below "
-                "in your response. Do NOT summarize it into a single sentence.\n",
-                answer,
-            ]
-            if sources:
-                source_list = ", ".join(f'"{s}"' for s in sources)
-                parts.append(
-                    f"\nSource references: {source_list}\n"
-                    "IMPORTANT: Cite these sources in your response, e.g. "
-                    "\"According to the runbook 'PostgreSQL Connection Pool "
-                    "Exhaustion'...\" so the user knows where the information "
-                    "comes from."
-                )
-            return "\n".join(parts)
+                "in your response to the user. Do NOT summarize it into a "
+                "single sentence. Preserve the key details, diagnostic steps, "
+                "and resolution procedures.\n\n"
+                f"{content}\n\n"
+                "IMPORTANT: Cite the source document titles mentioned above "
+                "in your response (e.g. 'According to the runbook "
+                '"PostgreSQL Connection Pool Exhaustion"...\') so the user '
+                "knows where the information comes from."
+            )
 
         if isinstance(result.data, str):
             return result.data
