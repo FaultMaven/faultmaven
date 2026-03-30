@@ -613,9 +613,9 @@ RESOLVED case
 2. **User approval** — Agent presents the suggestion; user decides. Never bypassed.
 3. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`. ≥85% match → agent tells user an existing runbook covers this. 70-84% → offers both options. <70% → suggests generating new.
 
-**Auto-summary guardrail** (`should_generate_terminal_summary()`): Summaries are auto-generated for all terminal cases EXCEPT trivial ones (zero evidence + zero hypotheses + fewer than 4 messages) and duplicates (`closure_reason="duplicate"`).
+**Auto-summary guardrail** (`should_generate_terminal_summary()`): Summaries are auto-generated for all terminal cases that have both sufficient conversation (>=4 messages) and investigation substance (evidence, hypotheses, confirmed description, or completed milestones). Always skipped for duplicates.
 
-**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `global_kb_qa` and `user_kb_qa` tools surface these runbooks during DIAGNOSIS, potentially enabling fast-track resolution (INQUIRY → RESOLVED) without a full investigation cycle.
+**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast-track resolution (INQUIRY → RESOLVED) without a full investigation cycle.
 
 ---
 

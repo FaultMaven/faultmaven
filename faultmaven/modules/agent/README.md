@@ -45,20 +45,18 @@ faultmaven/modules/agent/
     ├── registry.py             # ToolRegistry
     ├── list_evidence_tool.py   # Evidence tools
     ├── read_file_tool.py
-    ├── case_evidence_qa.py
-    ├── knowledge_base.py       # Knowledge tools
-    ├── user_kb_qa.py
-    ├── global_kb_qa.py
-    ├── document_qa_tool.py
-    ├── search_file_tool.py      # Tier 2 mechanical search
-    ├── deep_analysis_tool.py    # Tier 3 deep LLM analysis
+    ├── case_evidence_qa.py     # Case-scoped evidence Q&A
+    ├── kb_qa.py                # Unified KB Q&A (all scopes: global + personal + team)
+    ├── kb_tool_adapter.py      # AgentTool wrapper for kb_qa
+    ├── document_qa_tool.py     # KB-neutral base class (strategy pattern)
+    ├── search_file_tool.py     # Tier 2 mechanical search (keyword/regex)
+    ├── deep_analysis_tool.py   # Tier 3 deep LLM analysis
     ├── web_search.py           # Web search tool
-    ├── kb_config.py
+    ├── kb_config.py            # Abstract KBConfig strategy interface
     └── kb_configs/             # Knowledge base configurations
         ├── __init__.py
         ├── case_evidence_config.py
-        ├── global_kb_config.py
-        └── user_kb_config.py
+        └── unified_kb_config.py
 ```
 
 ---
@@ -111,13 +109,13 @@ The Agent module maintains **three separate services** with clear separation of 
 - `SearchFileTool` - Tier 2 mechanical search (keyword/regex/extractor) with two-pass keyword matching and zero-result vocabulary recovery
 - `DeepAnalysisTool` - Tier 3 deep LLM analysis with pluggable backends (external, local, basic)
 
-**Knowledge Tools** (import from Knowledge module):
-- `KnowledgeBaseTool` - Access knowledge base
-- `UserKBQATool` - User-specific knowledge Q&A
-- `GlobalKBQATool` - Global knowledge Q&A
-- `DocumentQATool` - Document-specific Q&A
+**Knowledge Tools**:
+
+- `AnswerFromKB` (via `KBToolAdapter`, tool name: `kb_qa`) - Unified KB Q&A, searches all accessible scopes (global + personal + team) in a single query
+- `DocumentQATool` - KB-neutral base class (strategy pattern with KBConfig)
 
 **Web Tools**:
+
 - `WebSearchTool` - Web search capability
 
 **Tool System**:

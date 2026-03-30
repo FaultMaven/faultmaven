@@ -150,22 +150,22 @@ See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-speci
 | `search_file` | Keyword/regex search on raw evidence files | $0 |
 | `deep_analysis` | LLM-interpreted analysis of evidence sections (1/turn limit) | ~$0.01 |
 | `web_search` | Search trusted technical domains (Google CSE or Tavily provider) | $0 |
-| `global_kb_qa` | System-wide KB: documented solutions, best practices | ~$0.01 |
-| `user_kb_qa` | User's personal runbooks and procedures | ~$0.01 |
+| `kb_qa` | Unified KB Q&A — searches all accessible scopes (global + personal + team) | ~$0.01 |
+| `case_evidence_search` | Case-scoped forensic Q&A via semantic search on vectorized evidence | ~$0.01 |
 
-Tools are registered conditionally — only available tools appear in the LLM's function-calling schema. If no search provider API key is configured, `web_search` is omitted. If KB vector stores aren't populated, `global_kb_qa`/`user_kb_qa` are omitted.
+Tools are registered conditionally — only available tools appear in the LLM's function-calling schema. If no search provider API key is configured, `web_search` is omitted. If KB vector stores aren't populated, `kb_qa` is omitted.
 
 **DA System Instruction (Type A/B/C question routing)**: The system instruction injected for DA turns includes:
 
 * **TYPE A — Case question**: Questions about THIS case's evidence (IPs, errors, timestamps, patterns). Agent MUST search evidence (`search_file`, `deep_analysis`) before responding. The structural indexes are summaries — they lack specific values needed for grounded analysis.
-* **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from own knowledge, optionally using `web_search` or `global_kb_qa` for supplementary detail. Connect to case context when relevant.
+* **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from own knowledge, optionally using `web_search` or `kb_qa` for supplementary detail. Connect to case context when relevant.
 * **TYPE C — Hybrid**: Questions bridging case data and external knowledge (e.g., "Is our Redis config following best practices?"). Agent searches evidence first, then applies knowledge/KB context for the reference baseline.
 * **Default**: When uncertain, treat as Type A — evidence search is always safe. Only skip evidence search when the question clearly cannot be answered from log files, configs, or other submitted data.
 
 **Tool priority guidance** in the DA system instruction:
 
 1. Start with case evidence (`search_file`, `deep_analysis`) — ground analysis in THIS case's data first
-2. Check knowledge bases (`global_kb_qa`, `user_kb_qa`) for documented solutions when evidence alone doesn't explain the issue
+2. Check knowledge base (`kb_qa`) for documented solutions when evidence alone doesn't explain the issue
 3. Use `web_search` as a last resort when evidence and KB have no answers
 
 **Additional DA system instruction elements:**

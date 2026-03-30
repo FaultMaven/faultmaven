@@ -231,80 +231,63 @@ The taxonomy fields (`domain`, `service`, `symptom_class`) are defined in [runbo
 
 This section documents the **current implementation** and **planned improvements**. Features marked as **PLANNED** represent the target design; features marked as **CURRENT** describe what exists in code today.
 
-| Feature | Status | Current Reality | Target Design |
-|---------|--------|-----------------|---------------|
-| Federated search | **PLANNED** | 3 separate tools: `global_kb_qa`, `user_kb_qa`, `answer_from_case_evidence` | Single `answer_from_knowledge_base` tool |
-| Collection naming | **CURRENT** | Single unified collection `faultmaven_kb` with metadata-based scope filtering. `KnowledgeVectorStore` enforces scope invariant. | No change needed |
-| Hybrid search (metadata filtering) | **PLANNED** | Pure vector similarity, no metadata filtering | `domain_filter`/`service_filter` from case context |
-| Staleness-aware synthesis | **PLANNED** | No staleness warnings injected | Warning injection via `format_chunk_metadata()` |
-| Fast-track confidence | **CURRENT** | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py:3788` | No change needed |
-| Tier-based reranking | **PLANNED** | N/A (single-tier queries) | Personal > Team > Global tiebreaker |
-| Team KB | **PLANNED** | Infrastructure exists, no `TeamKBConfig` | Full team KB with promotion workflow |
+| Feature | Status | Notes |
+| ------- | ------ | ----- |
+| Federated search | **Implemented** | Single `kb_qa` tool searches all scopes (global + personal + team) via `$or` filter |
+| Collection naming | **Implemented** | Single collection `faultmaven_kb` with metadata-based scope filtering |
+| Hybrid search | **PLANNED** | Metadata filtering (`domain_filter`/`service_filter`) from case context |
+| Staleness-aware synthesis | **PLANNED** | `last_updated`/`status` stored; injection logic pending |
+| Fast-track confidence | **Implemented** | `KB_FAST_TRACK_THRESHOLD = 0.7` in `milestone_engine.py` |
+| Tier-based reranking | **PLANNED** | Personal > Team > Global tiebreaker not yet applied |
 
-#### Current Baseline (3-Tool Architecture)
+#### Current Tool Architecture
 
-The milestone engine (`milestone_engine.py:2206-2207`) registers tools individually:
+| Tool | Collection | Purpose |
+| ---- | ---------- | ------- |
+| `kb_qa` | `faultmaven_kb` | Unified KB Q&A (global + personal + team via `$or` filter) |
+| `case_evidence_search` | `case_{case_id}_evidence` | Case-scoped forensic Q&A on vectorized evidence |
 
-```python
-has_global_kb = "global_kb_qa" in tool_names
-has_user_kb = "user_kb_qa" in tool_names
-```
-
-The agent must decide which KB to query. During INQUIRY (fast-track resolution), this adds reasoning overhead — the agent shouldn't need to choose between global and personal KB.
-
-| Tool (Current) | Collection | Purpose |
-|----------------|------------|---------|
-| `global_kb_qa` | `global_kb` | System-wide remediation knowledge |
-| `user_kb_qa` | `user_{user_id}_kb` | User's personal runbooks |
-| `answer_from_case_evidence` | `case_{case_id}_evidence` | Forensic analysis of uploaded case evidence |
+The old 3-tool approach (`global_kb_qa`, `user_kb_qa`, `answer_from_case_evidence`) has been replaced. The agent calls one `kb_qa` tool and scope filtering is automatic based on user context.
 
 ### Design Principles
 
-Three principles govern the **target retrieval design**:
+Three principles govern the retrieval design:
 
-1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers concurrently and merges results. (**PLANNED** — current baseline uses 3 separate tools.)
-2. **Hybrid Search** — Vector similarity is augmented with metadata filtering (domain, service) derived from case context, reducing irrelevant retrievals. (**PLANNED** — metadata fields are stored at ingestion time but no query path uses them yet.)
-3. **Staleness-Aware Synthesis** — The synthesis LLM sees lifecycle warnings (stale, deprecated) injected directly into chunk context, and propagates them to the user. (**PLANNED** — `last_updated` and `status` are stored in metadata; injection logic not yet implemented.)
+1. **Federated Search** — The agent calls one knowledge tool, not three. The backend searches all authorized tiers and merges results. **(Implemented)** — `AnswerFromKB` with `UnifiedKBConfig` and `$or` scope filter.
+2. **Hybrid Search** — Vector similarity augmented with metadata filtering (domain, service) derived from case context. **(PLANNED)** — metadata fields stored at ingestion; query path not yet using them.
+3. **Staleness-Aware Synthesis** — The synthesis LLM sees lifecycle warnings (stale, deprecated) injected into chunk context. **(PLANNED)** — `last_updated` and `status` stored; injection logic pending.
 
-### Federated Search: One Knowledge Tool (PLANNED)
-
-**The problem with the current 3-tool approach:** LLMs degrade when given too many overlapping tools. With separate `global_kb_qa` and `user_kb_qa` plus the case evidence tool, the agent wastes reasoning tokens deciding *which library to visit* instead of *what to ask*. The tier distinction matters for governance (who can write), not for retrieval (who can read).
-
-**The target design:** A single `answer_from_knowledge_base` tool that performs a federated search across all authorized tiers.
+### Federated Search: Implementation
 
 ```text
-Agent calls: answer_from_knowledge_base(question, domain_filter?, service_filter?)
+Agent calls: kb_qa(question)
   │
-  ├── Backend resolves user context (org_id, team_id, user_id)
+  ├── KBToolAdapter resolves user context (user_id, team_ids) from ToolContext
   │
-  ├── Concurrent search across authorized collections:
-  │   ├── global_kb                    (all users)
-  │   ├── team_{team_id}_kb           (if user belongs to team)
-  │   └── user_{user_id}_kb           (user's own)
+  ├── AnswerFromKB builds $or scope filter:
+  │   ├── {"scope": "global"}                              (all users)
+  │   ├── {"scope": "personal", "owner_id": user_id}      (user's own)
+  │   └── {"scope": "team", "team_id": {"$in": team_ids}} (user's teams)
   │
-  ├── Merge chunks from all tiers, rerank by score (with tier tiebreaker)
+  ├── Single query to unified `faultmaven_kb` collection with metadata filter
   │
-  ├── Inject staleness warnings for stale chunks (see below)
-  │
-  ├── Synthesis LLM produces unified answer with tier provenance in citations
-  │   e.g., "[Global KB: pg-connection-pool-runbook] ..."
-  │   e.g., "[Team KB: our-pg-failover-procedure] ..."
+  ├── Synthesis LLM produces answer with source citations
   │
   └── Return answer to agent
 ```
 
-**Case evidence remains a separate tool.** `answer_from_case_evidence` is not part of the federated search. Evidence uses a forensic synthesis prompt and serves a fundamentally different role (diagnose) than knowledge (remediate). This boundary is the evidence-vs-knowledge distinction established in the Purpose section.
+**Case evidence remains a separate tool.** `case_evidence_search` is not part of the federated search. Evidence uses a forensic synthesis prompt and serves a fundamentally different role (diagnose) than knowledge (remediate). This boundary is the evidence-vs-knowledge distinction established in the Purpose section.
 
-**Target tool interface (2 tools, down from current 3):**
+**Tool interface (2 tools):**
 
 | Tool | Parameters | Purpose |
-|------|-----------|---------|
-| `answer_from_knowledge_base` | `question`, `domain_filter?`, `service_filter?` | Remediation knowledge from all authorized KB tiers |
-| `answer_from_case_evidence` | `case_id`, `question` | Forensic analysis of uploaded case evidence |
+| ---- | ---------- | ------- |
+| `kb_qa` | `question` | Remediation knowledge from all authorized KB scopes |
+| `case_evidence_search` | `case_id`, `question` | Forensic analysis of uploaded case evidence |
 
-### Strategy Pattern with KBConfig (Preserved)
+### Strategy Pattern with KBConfig
 
-The federated search changes the tool interface, not the internal architecture. Each tier still has its own `KBConfig` that handles collection naming, citation formatting, and cache TTL. The `DocumentQATool` core remains KB-neutral — it queries one collection at a time. The federated search layer orchestrates concurrent calls across configs and merges the results.
+The `DocumentQATool` base class is KB-neutral — it queries via an injected `KBConfig` strategy. `UnifiedKBConfig` handles scope filtering via metadata `$or` conditions against a single collection. `CaseEvidenceConfig` handles case-scoped evidence with a forensic synthesis prompt.
 
 **KBConfig interface** (abstract base in `modules/agent/tools/kb_config.py`):
 
