@@ -2887,10 +2887,12 @@ class MilestoneEngine:
                 "single sentence. Preserve the key details, diagnostic steps, "
                 "and resolution procedures.\n\n"
                 f"{content}\n\n"
-                "IMPORTANT: Cite the source document titles mentioned above "
-                "in your response (e.g. 'According to the runbook "
-                '"PostgreSQL Connection Pool Exhaustion"...\') so the user '
-                "knows where the information comes from."
+                "SOURCE CITATION: At the very end of your response, add a "
+                "compact source line in italic markdown using this exact format:\n"
+                "*Sources: [title1], [title2]*\n"
+                "Use only the primary source title(s) from the content above. "
+                "Keep it to one short line. Do NOT write a verbose paragraph "
+                "about where the information came from."
             )
 
         if isinstance(result.data, str):
