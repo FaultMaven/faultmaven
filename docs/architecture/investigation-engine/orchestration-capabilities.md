@@ -130,18 +130,21 @@ See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-speci
 
 **Key**: Compression only affects what the LLM sees. The uncompressed content is preserved in the `AgentToolCall` record for audit and debugging.
 
-### 5.4 DA Tool Loop: Bounded Tool-Calling (v5.0)
+### 5.4 Tool-Augmented Generation (v5.0 → v6.0)
 
-**Problem**: In Directed Analysis turns, the LLM needs to search evidence files for specific data (timestamps, error codes, usernames) before generating a grounded response. Without tool access during generation, the LLM either hallucinates details or produces generic answers not grounded in case evidence.
+**Problem**: The LLM needs access to case evidence (search_file, deep_analysis) and knowledge base (kb_qa) to produce grounded responses. Without tool access, the LLM either hallucinates details or answers from training data instead of runbook content.
 
 **Mechanism** (`_tool_augmented_generate()` in `milestone_engine.py`):
 
-1. When `query_mode == "directed_analysis"`, the milestone engine routes inference through a bounded tool-calling loop instead of single-shot generation. Knowledge queries (`query_mode == "knowledge_query"`) bypass the tool loop entirely and use the non-tool generation path.
-2. The LLM receives up to 5 investigation tools plus the schema tool as function-calling tools, with a DA-specific system instruction that includes Type A/B/C question routing and a required OBSERVATION + ANALYSIS response format.
-3. All tools are available from iteration 0. The loop runs for up to 4 iterations. Each iteration either:
+1. All turns get tools when `investigation_tools` is registered. The LLM decides which tool to invoke based on the user's question and tool descriptions.
+2. `tool_choice` varies by query context:
+   - **Directed Analysis + evidence**: `tool_choice="required"` — LLM must search evidence before answering
+   - **All other turns** (knowledge queries, triage, terminal Q&A): `tool_choice="auto"` — LLM decides whether to use tools
+3. The LLM receives investigation tools plus the schema tool as function-calling tools, with a system instruction that includes Type A/B/C question routing, evidence-vs-knowledge distinction, and OBSERVATION + ANALYSIS response format.
+4. The loop runs for up to 4 iterations. Each iteration either:
    - Executes a tool call and feeds the result back to the LLM
    - Terminates when the LLM returns a structured response via `schema_tool`
-4. If the loop exhausts all iterations without a structured response, it falls back to single-shot `_generate_structured_output()`.
+5. If the LLM returns no tool calls (auto mode), its text response is captured and the next iteration forces the schema tool.
 
 **Investigation Tools** (registered in `_create_investigation_tools()`):
 
@@ -184,13 +187,17 @@ The `Evidence.original_filename` field (set during `_preprocess_attachment()`) p
 
 **Stage-aware context**: `_build_tool_context()` injects the current investigation stage (`DIAGNOSIS`, `MITIGATION`, `TREATMENT`) into `ToolContext.metadata["stage"]`, enabling `web_search` to enrich queries with stage-appropriate terms (e.g., "root cause diagnosis" vs "workaround mitigation").
 
+**Evidence vs Knowledge rule** in the DA system instruction:
+
+Evidence is user-submitted case data (logs, metrics, configs) — only user-submitted data goes in `evidence_to_add`. Knowledge from `kb_qa`, `web_search`, or LLM training data informs analysis but is NEVER recorded as evidence.
+
 **Key characteristics:**
 
 * Zero additional LLM calls for mechanical tools (search_file, web_search are $0)
-* KB tools cost ~$0.01 per call (vector search + LLM synthesis)
-* At most 1 additional LLM call per tool iteration (for the loop's inference step)
-* Falls back gracefully to single-shot on loop exhaustion
-* Knowledge queries bypass the tool loop entirely (no tool_choice="required" overhead)
+* KB synthesis costs ~$0.01 per call (vector search + LLM synthesis, max_tokens=2000)
+* `tool_choice="auto"` for non-DA turns adds zero overhead when LLM doesn't need tools
+* Falls back gracefully to single-shot on loop exhaustion or provider incompatibility
+* `kb_qa` results are formatted with relay instructions and source citation guidance
 
 See [Data Preprocessing Design §5.0](../data-processing/data-preprocessing-design-specification.md) for the scenario-driven processing model that determines when DA mode is selected.
 

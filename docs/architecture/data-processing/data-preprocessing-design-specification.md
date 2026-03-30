@@ -127,12 +127,12 @@ Data submitted to FaultMaven — whether uploaded files or pasted text — is al
               │                 │
               v                 v
    ┌──────────────────┐  ┌──────────────────────────┐
-   │  DA TOOL LOOP    │  │  PROACTIVE VECTORIZATION  │
+   │  TOOL LOOP       │  │  PROACTIVE VECTORIZATION  │
    │  search_file,    │  │  Background task for      │
    │  deep_analysis,  │  │  large files (>50KB).      │
    │  web_search,     │  │  Runs concurrently with   │
-   │  global_kb_qa,   │  │  tool loop. kb_search     │
-   │  user_kb_qa      │  │  available when done.     │
+   │  kb_qa,          │  │  tool loop. kb_search     │
+   │  case_evidence   │  │  available when done.     │
    └────────┬─────────┘  └──────────────────────────┘
             │
    Reactive fallback?
@@ -175,7 +175,7 @@ Knowledge questions are detected by matching ALL three gates:
 2. **No hard case-specific entities**: No timestamps, HTTP status codes, or IP addresses. Service names and error keywords are allowed (they can be the *subject* of a knowledge question, e.g., "How does Redis clustering work?")
 3. **No case references**: No possessive/locational references to case data ("the error", "in the logs", "we're seeing"). All case reference patterns require a prefix (the/this/our/in/from) to avoid matching bare nouns like "What is a null pointer exception?"
 
-Knowledge queries bypass the DA tool loop entirely — the LLM answers from built-in knowledge via the non-tool path. Diagnostic reasoning validation is skipped, and a KNOWLEDGE QUERY OVERRIDE escape clause relaxes evidence-grounding requirements in the prompt.
+Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM can invoke `kb_qa` when the question is about runbooks or documented procedures. The LLM decides whether to use a tool based on the question. Diagnostic reasoning validation is skipped, and a KNOWLEDGE QUERY OVERRIDE escape clause relaxes evidence-grounding requirements in the prompt.
 
 ### 1.2 Design Principles
 
@@ -197,8 +197,7 @@ Knowledge queries bypass the DA tool loop entirely — the LLM answers from buil
 | `search_file` | $0.00 | ~0.5-2s | No | Agent needs specific data from raw file |
 | `deep_analysis` | ~$0.01-0.05 | 3-15s | Yes | Agent needs interpreted analysis |
 | `web_search` | $0.00 | 1-2s | No | Error messages, external docs (Google CSE or Tavily) |
-| `global_kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | System-wide KB: documented solutions, best practices |
-| `user_kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | User's personal runbooks and procedures |
+| `kb_qa` | ~$0.01 | 0.5-2s | Yes (synthesis) | Unified KB: all scopes (global + personal + team) |
 | `vectorize_file` | ~$0.05-0.50 | 10-60s | Embed only | Auto-triggered on DA failure; file must pass size gates |
 | `case_evidence_search` | $0.00 | ~0.5s | No | After vectorization, semantic search |
 
@@ -864,13 +863,15 @@ appropriate for the question. If your analysis is insufficient, the system will
 automatically index large files for semantic search — you do not need to manage this.
 ```
 
-**Knowledge Query mode**: Knowledge queries bypass the DA tool loop entirely and use the non-tool generation path. The investigation prompt is appended with a `KNOWLEDGE QUERY OVERRIDE` escape clause that relaxes evidence-grounding and diagnostic reasoning requirements. The LLM answers from built-in knowledge, optionally connecting to the case context.
+**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. The investigation prompt is appended with a `KNOWLEDGE QUERY OVERRIDE` escape clause that relaxes evidence-grounding and diagnostic reasoning requirements.
 
-**DA System Instruction (Type A/B/C routing)**: Within the DA tool loop, the system instruction includes question routing guidance:
+**System Instruction (Type A/B/C routing)**: The system instruction includes question routing guidance:
 
 - **TYPE A — Case question**: Questions about THIS case's evidence (IPs, errors, timestamps). Agent MUST search evidence before responding.
-- **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from knowledge, optionally using `web_search` or `global_kb_qa`.
+- **TYPE B — Knowledge question**: General technical questions not answerable from case evidence. Agent answers from knowledge, optionally using `web_search` or `kb_qa`.
 - **TYPE C — Hybrid**: Questions bridging case data and external knowledge. Agent searches evidence first, then applies knowledge/KB context.
+
+**Evidence vs Knowledge rule**: Evidence is user-submitted case data only — `evidence_to_add` entries must come from user-submitted files, pasted text, or user statements. Knowledge from `kb_qa`, `web_search`, or LLM training data informs analysis but is never recorded as evidence.
 
 Default is Type A (evidence search is always safe).
 
@@ -1090,8 +1091,7 @@ Evidence form is assigned deterministically based on how evidence enters the sys
 | `search_file` | $0 | No | Agent needs specific data from raw file |
 | `deep_analysis` | ~$0.01 | Yes | Agent needs interpreted analysis |
 | `web_search` | $0 | No | External docs/solutions (Google CSE or Tavily) |
-| `global_kb_qa` | ~$0.01 | Yes (synthesis) | System-wide KB: documented solutions, best practices |
-| `user_kb_qa` | ~$0.01 | Yes (synthesis) | User's personal runbooks and procedures |
+| `kb_qa` | ~$0.01 | Yes (synthesis) | Unified KB: all scopes (global + personal + team) |
 | `vectorize_file` | ~$0.05+ | Embed only | Auto-triggered on DA failure (no user confirmation) |
 | `case_evidence_search` | $0 | No | After vectorization, semantic search |
 

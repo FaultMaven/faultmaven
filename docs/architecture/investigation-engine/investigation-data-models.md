@@ -1312,11 +1312,6 @@ class DocumentationData(BaseModel):
         description="Runbook entry created from this case"
     )
 
-    post_mortem_id: Optional[str] = Field(
-        default=None,
-        description="Link to post-mortem document if created"
-    )
-
     lessons_learned: List[str] = Field(
         default_factory=list,
         description="Key takeaways from investigation"
@@ -1376,9 +1371,7 @@ class GeneratedDocument(BaseModel):
     )
 
 class DocumentType(str, Enum):
-    """Type of generated document"""
-    INCIDENT_REPORT = "incident_report"
-    POST_MORTEM = "post_mortem"
+    """Type of generated document."""
     RUNBOOK = "runbook"
     CHAT_SUMMARY = "chat_summary"
     TIMELINE = "timeline"
