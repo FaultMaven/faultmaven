@@ -2306,7 +2306,9 @@ class MilestoneEngine:
                     if func_name == "deep_analysis":
                         deep_analysis_count += 1
 
-                    result_text = self._format_tool_result(tool_result)
+                    result_text = self._format_tool_result(
+                        tool_result, tool_name=func_name
+                    )
 
                     # --- Per-evidence DA failure tracking (v5.2) ---
                     # Track search_file empty results and check vectorization
@@ -2863,15 +2865,30 @@ class MilestoneEngine:
         return msg
 
     @staticmethod
-    def _format_tool_result(result: Any) -> str:
+    def _format_tool_result(result: Any, tool_name: str = "") -> str:
         """Format a ToolResult into a string for the LLM."""
-        if result.success:
-            if isinstance(result.data, str):
-                return result.data
-            elif result.data is not None:
-                return json.dumps(result.data)
+        if not result.success:
+            return f"Error: {result.error or 'Unknown error'}"
+
+        if result.data is None:
             return "Success (no data returned)"
-        return f"Error: {result.error or 'Unknown error'}"
+
+        # KB results: format as readable text with source citations
+        if tool_name == "kb_qa" and isinstance(result.data, dict):
+            answer = result.data.get("answer", "")
+            sources = result.data.get("sources", [])
+            parts = [
+                "KNOWLEDGE BASE RESULT — Include this content in your response "
+                "to the user. Do NOT summarize it into a single sentence.\n",
+                answer,
+            ]
+            if sources:
+                parts.append("\nSources: " + ", ".join(f"[{s}]" for s in sources))
+            return "\n".join(parts)
+
+        if isinstance(result.data, str):
+            return result.data
+        return json.dumps(result.data)
 
     @staticmethod
     def _parse_nested_json(obj):
