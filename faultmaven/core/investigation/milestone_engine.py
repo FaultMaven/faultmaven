@@ -665,6 +665,10 @@ class MilestoneEngine:
         already complete.
         """
         if not getattr(case, "_pending_summary", False):
+            logger.debug(
+                f"Auto-summary skipped for case {case.case_id}: "
+                f"guardrail determined insufficient substance"
+            )
             return
         if not self.report_service:
             logger.debug("No report service available — skipping auto-summary")
@@ -2070,7 +2074,7 @@ class MilestoneEngine:
         max_tokens: int = 8000,
         redaction_ctx: Any | None = None,
         case: Any | None = None,
-        force_tool_use: bool = True,
+        force_tool_use: bool = False,
     ) -> BaseInteractionResponse:
         """Run a bounded tool-calling loop with investigation tools.
 
@@ -3024,7 +3028,7 @@ class MilestoneEngine:
         schema_model: Any,
         investigation_tools: list[dict] | None = None,
         tool_context: Any | None = None,
-        force_tool_use: bool = True,
+        force_tool_use: bool = False,
         redaction_ctx: Any | None = None,
         case: Any | None = None,
     ) -> BaseInteractionResponse:
