@@ -195,7 +195,7 @@ Answer:"""
                     {"role": "system", "content": self._kb_config.system_prompt},
                     {"role": "user", "content": synthesis_prompt},
                 ],
-                max_tokens=500,
+                max_tokens=1500,
                 temperature=0.3,  # Low temperature for factual accuracy
             )
 
