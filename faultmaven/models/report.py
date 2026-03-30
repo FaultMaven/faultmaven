@@ -159,8 +159,8 @@ class ReportRecommendation(BaseModel):
         ...,
         description=(
             "Report types available for generation.\n"
-            "- Always includes: incident_report, post_mortem\n"
-            "- Conditionally includes: runbook (based on similarity search)"
+            "- Auto-generated: resolution_summary (RESOLVED), closure_summary (CLOSED)\n"
+            "- Conditionally includes: runbook (based on similarity search, RESOLVED only)"
         ),
     )
     runbook_recommendation: RunbookRecommendation = Field(

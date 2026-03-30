@@ -474,12 +474,17 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
     return case_service
 
 
-def check_case_not_closed(case) -> None:
-    """Reject write operations on closed/archived cases."""
-    if case.status == CaseStatus.CLOSED:
+def require_case_not_terminal(case) -> None:
+    """Reject write operations on terminal (RESOLVED/CLOSED) or archived cases."""
+    if case.is_archived:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Case is archived and read-only. Unarchive the case to make changes.",
+        )
+    if case.is_terminal:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Case is in terminal state and read-only. No further modifications allowed.",
         )
 
 
@@ -939,10 +944,10 @@ async def update_case(
     response.headers["x-correlation-id"] = correlation_id
 
     try:
-        # Reject writes on archived (closed) cases
+        # Reject writes on terminal or archived cases
         case = await case_service.get_case(case_id, current_user.user_id)
         if case:
-            check_case_not_closed(case)
+            require_case_not_terminal(case)
 
         # Build updates dict from request (milestone-based model)
         updates = {}
@@ -1126,6 +1131,10 @@ async def generate_case_title(
             f"🔍 Case retrieved: title='{case.title}', force={effective_force}",
             extra={"existing_title": case.title},
         )
+
+        # Terminal cases already have a final title — skip regeneration
+        if case.is_terminal:
+            return TitleResponse(title=case.title)
 
         # Idempotency check removed - allow free regeneration
         # Rationale:
@@ -2043,8 +2052,28 @@ async def submit_turn(
                 headers={"x-correlation-id": correlation_id},
             )
 
-        # Reject new turns on archived (closed) cases
-        check_case_not_closed(case)
+        # Archived cases: no interaction at all
+        if case.is_archived:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Case is archived and read-only. Unarchive the case to make changes.",
+                headers={"x-correlation-id": correlation_id},
+            )
+
+        # Terminal cases: allow text-only Q&A, block evidence and state transitions
+        if case.is_terminal:
+            if files or pasted_content:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot submit evidence to a closed case. Only questions about the case are allowed.",
+                    headers={"x-correlation-id": correlation_id},
+                )
+            if intent_type == "status_transition":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot change status of a closed case.",
+                    headers={"x-correlation-id": correlation_id},
+                )
 
         # Build attachments list
         # Every attachment carries source_metadata so the classifier knows the
@@ -2529,6 +2558,7 @@ async def get_report_recommendations(
 @trace("api_generate_case_reports")
 async def generate_case_reports(
     case_id: str,
+    fastapi_request: Request,
     request_body: Dict[str, Any] = Body(...),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
@@ -2551,17 +2581,16 @@ async def generate_case_reports(
             raise HTTPException(status_code=404, detail="Case not found")
 
         # Only terminal cases can have reports
-        if case.status.value not in ("resolved", "closed"):
+        if not case.is_terminal:
             raise HTTPException(
                 status_code=400,
                 detail="Reports can only be generated for resolved or closed cases",
             )
 
-        # Get the report service from the DI container
-        from faultmaven.container.registry import get_container
-
-        container = get_container()
-        report_service = getattr(container, "report_generation_service", None)
+        # Get the report service from app.state (Composition Root)
+        report_service = getattr(
+            fastapi_request.app.state, "report_generation_service", None
+        )
         if not report_service:
             raise HTTPException(
                 status_code=503,

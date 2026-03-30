@@ -1048,212 +1048,44 @@ Example:
 
 ## 4. TERMINAL Template
 
-```python
-# prompts/templates.py (continued)
+The TERMINAL template handles two scenarios for closed/resolved cases:
 
-def build_terminal_prompt(case: Case, user_message: str) -> str:
-    """
-    Build TERMINAL template for closed cases.
+1. **User asks to regenerate the summary report** — The milestone engine detects the intent via pattern matching and triggers report regeneration directly. No LLM call needed.
+2. **User asks questions about the case** — Routed through the LLM with `TERMINAL_TEMPLATE` and `TerminalResponse` schema.
 
-    Args:
-        case: Case in RESOLVED or CLOSED status
-        user_message: Current user message
+The template uses the same `get_prompt_for_case()` function as other stages, with the `TERMINAL_TEMPLATE` string selected when `case.status` is RESOLVED or CLOSED.
 
-    Returns:
-        Complete prompt string
-    """
+```text
+TERMINAL_TEMPLATE key instructions:
 
-    # Get case summary details
-    problem = "Not investigated"
-    if case.problem_verification:
-        problem = case.problem_verification.symptom_statement
+YOUR TASK:
+This case is in terminal state — investigation data is immutable.
 
-    root_cause = "Not identified"
-    if case.root_cause_conclusion:
-        root_cause = case.root_cause_conclusion.root_cause
+You CAN:
+- Answer questions about the investigation findings.
+- Summarize the root cause and solution if requested.
+- Explain what happened, clarify evidence, interpret the timeline.
+- Extract lessons learned.
 
-    solution = "None"
-    if case.solutions:
-        solution = case.solutions[0].title
+You CANNOT:
+- Accept new evidence or perform new investigation.
+- Update milestones, propose transitions, or modify case state.
+- Resume troubleshooting. If the user describes ongoing issues,
+  direct them to open a new case.
 
-    closure_reason = case.closure_reason or "Unknown"
+REPORT REGENERATION:
+The summary report was auto-generated at closure time. If the user asks
+to regenerate or improve the report, the system handles it directly —
+you do not need to do anything special. Just acknowledge the request.
 
-    # Format timestamps
-    closed_ago = _format_time_ago(case.closed_at)
-
-    # Time to resolution
-    duration = "Unknown"
-    if case.time_to_resolution:
-        duration = _format_duration(case.time_to_resolution)
-
-    prompt = f"""<!-- Prompt Version: {TEMPLATE_VERSION} -->
-<!-- Architecture: {ARCHITECTURE_VERSION} -->
-<!-- Case Model: {CASE_MODEL_VERSION} -->
-
-You are FaultMaven.
-
-═══════════════════════════════════════════════════════════
-⚠️ STATUS: {case.status.upper()} (TERMINAL STATE)
-═══════════════════════════════════════════════════════════
-
-**THIS INVESTIGATION IS PERMANENTLY CLOSED**
-
-═══════════════════════════════════════════════════════════
-CASE SUMMARY
-═══════════════════════════════════════════════════════════
-
-**Problem**: {problem}
-
-**Root Cause**: {root_cause}
-
-**Solution**: {solution}
-
-**Closure Reason**: {closure_reason}
-
-**Closed**: {closed_ago}
-
-**Investigation Duration**: {duration} ({case.current_turn} turns)
-
-═══════════════════════════════════════════════════════════
-USER'S MESSAGE
-═══════════════════════════════════════════════════════════
-
-{user_message}
-
-═══════════════════════════════════════════════════════════
-YOUR TASK
-═══════════════════════════════════════════════════════════
-
-**You CAN:**
-✅ Answer questions about this closed case
-✅ Explain what happened and why
-✅ Summarize findings
-✅ Provide documentation if requested
-✅ Extract lessons learned
-
-**You ABSOLUTELY CANNOT:**
-❌ Set any milestones
-❌ Add new evidence
-❌ Generate new hypotheses
-❌ Propose new solutions
-❌ Resume troubleshooting
-❌ Update investigation state in ANY way
-
-This case is **immutable** - investigation state cannot be modified.
-
-═══════════════════════════════════════════════════════════
-IF USER WANTS TO CONTINUE TROUBLESHOOTING
-═══════════════════════════════════════════════════════════
-
-This investigation is permanently closed. If user describes ongoing or new
-issues, they need a NEW case.
-
-**Response Template:**
-
-"This investigation is closed and cannot be reopened. However, I can help
-you with this {{new/ongoing}} issue.
-
-Would you like me to:
-1. **Start a fresh investigation** (recommended)
-2. Reference this closed case as context
-
-I'll create a new case if you'd like to continue troubleshooting."
-
-**CRITICAL**: Direct user to new case - NEVER attempt to reopen terminal case!
-
-═══════════════════════════════════════════════════════════
-DOCUMENTATION
-═══════════════════════════════════════════════════════════
-
-If user requests documentation, fill out documentation_updates:
-
-• **lessons_learned**: Key takeaways from investigation
-  Example: "Async queries need explicit connection management"
-
-• **what_went_well**: Positive aspects
-  Example: "Quick correlation of errors with deployment timing"
-
-• **what_could_improve**: Areas for improvement
-  Example: "Earlier detection via connection pool monitoring"
-
-• **preventive_measures**: How to prevent recurrence
-  Example: "Add connection lifecycle tests for async queries"
-
-• **monitoring_recommendations**: Alerts/monitors to add
-  Example: "Alert on connection pool utilization >80%"
-
-• **documents_to_generate**: Which document types
-  Values: incident_report | post_mortem | runbook | chat_summary | other
-
-═══════════════════════════════════════════════════════════
-CONVERSATION STYLE
-═══════════════════════════════════════════════════════════
-
-• Be helpful and informative about the closed case
-• Don't be apologetic about inability to reopen
-• Be direct about the disposition (case is closed, period)
-• Offer alternatives (new case, documentation, questions)
-
-═══════════════════════════════════════════════════════════
-OUTPUT FORMAT
-═══════════════════════════════════════════════════════════
-
-Return JSON matching TerminalResponse schema:
-
-{{
-  "agent_response": "<your response about closed case>",
-  "state_updates": {{
-    "documentation_updates": {{
-      "lessons_learned": [...],
-      "what_went_well": [...],
-      "what_could_improve": [...],
-      "preventive_measures": [...],
-      "monitoring_recommendations": [...],
-      "documents_to_generate": [...]
-    }} or null
-  }}
-}}
-
-**Remember**: This case is read-only. Focus on explaining, not updating."""
-
-    return prompt
-
-
-def _format_time_ago(dt: datetime) -> str:
-    """Format datetime as 'X ago' string"""
-    if not dt:
-        return "Unknown"
-
-    now = datetime.now(timezone.utc)
-    delta = now - dt
-
-    if delta.days > 0:
-        return f"{delta.days} day{'s' if delta.days != 1 else ''} ago"
-    elif delta.seconds >= 3600:
-        hours = delta.seconds // 3600
-        return f"{hours} hour{'s' if hours != 1 else ''} ago"
-    elif delta.seconds >= 60:
-        minutes = delta.seconds // 60
-        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-    else:
-        return "Just now"
-
-
-def _format_duration(delta: timedelta) -> str:
-    """Format timedelta to human readable string"""
-    seconds = int(delta.total_seconds())
-    if seconds < 60:
-        return f"{seconds} seconds"
-    elif seconds < 3600:
-        minutes = seconds // 60
-        return f"{minutes} minute{'s' if minutes != 1 else ''}"
-    else:
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        if minutes > 0:
-            return f"{hours}h {minutes}m"
-        return f"{hours} hour{'s' if hours != 1 else ''}"
+FOLLOW-UP SUGGESTIONS:
+Include 1-3 contextual COOPERATIVE suggestions when appropriate.
+Do NOT attach suggestions when the user is already requesting an action
+(e.g. report regeneration). Only suggest when the user is asking
+questions about the case.
 ```
+
+**Output format**: `TerminalResponse` schema — `agent_response` + optional `suggested_follow_ups` + `state_updates` (documentation metadata only, no investigation state changes).
 
 ---
 

@@ -1553,23 +1553,40 @@ class TestReadinessAssessments:
         result = assess_runbook_readiness(case)
         assert result.verdict == result.NEEDS_ENRICHMENT
 
-    def test_summary_guardrail_skips_trivial_cases(self):
-        """Trivial case (no evidence, no hypotheses, <4 messages) → skip summary."""
+    def test_summary_guardrail_skips_too_few_messages(self):
+        """Case with <4 messages → skip summary regardless of substance."""
         from faultmaven.core.investigation.terminal_transitions import (
             should_generate_terminal_summary,
         )
 
-        # Use a simple mock to avoid Pydantic terminal-state validators
         case = MagicMock()
-        case.case_id = "case_trivial"
+        case.case_id = "case_short"
         case.closure_reason = "inquiry_only"
-        case.evidence = []
+        case.evidence = [MagicMock()]  # Has substance but too few messages
         case.hypotheses = {}
+        case.description = "A real problem"
+        case.progress.completed_milestones = []
         case.message_count = 2
         assert should_generate_terminal_summary(case) is False
 
+    def test_summary_guardrail_skips_no_substance(self):
+        """Case with enough messages but no substance → skip summary."""
+        from faultmaven.core.investigation.terminal_transitions import (
+            should_generate_terminal_summary,
+        )
+
+        case = MagicMock()
+        case.case_id = "case_trivial"
+        case.closure_reason = "abandoned"
+        case.evidence = []
+        case.hypotheses = {}
+        case.description = ""
+        case.progress.completed_milestones = []
+        case.message_count = 8
+        assert should_generate_terminal_summary(case) is False
+
     def test_summary_guardrail_generates_for_real_investigations(self):
-        """Case with evidence → generate summary."""
+        """Case with evidence and enough messages → generate summary."""
         from faultmaven.core.investigation.terminal_transitions import (
             should_generate_terminal_summary,
         )
@@ -1579,6 +1596,8 @@ class TestReadinessAssessments:
         case.closure_reason = "resolved"
         case.evidence = [MagicMock()]  # Has at least one evidence item
         case.hypotheses = {}
+        case.description = "API latency issue"
+        case.progress.completed_milestones = ["symptom_verified"]
         case.message_count = 8
         assert should_generate_terminal_summary(case) is True
 

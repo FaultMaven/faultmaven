@@ -496,25 +496,52 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
 def should_generate_terminal_summary(case: "Case") -> bool:
     """Determine whether a terminal case warrants an auto-generated summary.
 
-    Skip generation for trivial cases: no evidence, no hypotheses, and
-    fewer than 4 messages (typical inquiry-only or duplicate closures).
+    A useful summary requires both sufficient conversation AND investigation
+    substance. Skip generation when the case lacks meaningful content.
 
-    Also skip for duplicate closures — the parent case has the real content.
+    Two independent checks (both must pass):
+    1. Minimum 4 messages (enough conversation to summarize)
+    2. At least one substance indicator:
+       - Has evidence (investigation produced data)
+       - Has hypotheses (investigation produced theories)
+       - Has a confirmed problem description (inquiry completed)
+       - Has completed milestones (investigation made progress)
+
+    Always skip for duplicate closures — the parent case has the real content.
     """
     # Always skip duplicates
     if case.closure_reason == "duplicate":
         return False
 
+    message_count = getattr(case, "message_count", 0) or 0
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
-    message_count = getattr(case, "message_count", 0) or 0
+    has_description = bool(case.description and case.description.strip())
+    milestones_completed = (
+        len(case.progress.completed_milestones) if case.progress else 0
+    )
 
-    # Skip if trivial: no evidence, no hypotheses, fewer than 4 messages
-    if evidence_count == 0 and hypothesis_count == 0 and message_count < 4:
+    # Check 1: Minimum conversation depth
+    if message_count < 4:
         logger.info(
-            f"Skipping terminal summary for case {case.case_id}: trivial case "
-            f"(evidence={evidence_count}, hypotheses={hypothesis_count}, "
-            f"messages={message_count})"
+            f"Skipping terminal summary for case {case.case_id}: insufficient "
+            f"conversation (messages={message_count}, threshold=4)"
+        )
+        return False
+
+    # Check 2: Investigation substance
+    has_substance = (
+        evidence_count > 0
+        or hypothesis_count > 0
+        or has_description
+        or milestones_completed > 0
+    )
+
+    if not has_substance:
+        logger.info(
+            f"Skipping terminal summary for case {case.case_id}: no investigation "
+            f"substance (evidence={evidence_count}, hypotheses={hypothesis_count}, "
+            f"description={has_description}, milestones={milestones_completed})"
         )
         return False
 

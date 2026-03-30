@@ -694,6 +694,163 @@ class MilestoneEngine:
                 extra={"case_id": case.case_id},
             )
 
+    _REPORT_REGEN_PATTERNS = (
+        "regenerate",
+        "re-generate",
+        "redo the report",
+        "redo the summary",
+        "new report",
+        "new summary",
+        "update the report",
+        "update the summary",
+        "better report",
+        "better summary",
+        "generate a report",
+        "generate a summary",
+        "generate report",
+        "generate summary",
+    )
+
+    async def _process_terminal_turn(
+        self,
+        case: "Case",
+        user_message: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Handle turns on terminal cases: Q&A and report regeneration.
+
+        Terminal cases are immutable — no evidence, milestones, or state changes.
+        Two scenarios:
+          1. User explicitly asks to regenerate the summary → comply directly.
+          2. User asks questions about the case → answer via TERMINAL_TEMPLATE.
+        """
+        msg_lower = user_message.lower()
+
+        # Scenario 1: User explicitly requests report regeneration
+        if any(p in msg_lower for p in self._REPORT_REGEN_PATTERNS):
+            return await self._handle_report_regeneration(case, metadata)
+
+        # Scenario 2: Q&A — route through normal LLM pipeline with TERMINAL_TEMPLATE
+        # The existing prompt/schema selection (get_prompt_for_case + TerminalResponse)
+        # already handles this correctly. Delegate to the main pipeline starting from
+        # prompt building, skipping intent detection.
+        return await self._process_terminal_qa(case, user_message, metadata)
+
+    async def _handle_report_regeneration(
+        self,
+        case: "Case",
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Regenerate the terminal summary report for a closed case."""
+        from faultmaven.modules.case.domain.owned_models.report import ReportType
+
+        if case.status == CaseStatus.RESOLVED:
+            report_type = ReportType.RESOLUTION_SUMMARY
+            report_label = "Resolution Summary"
+        else:
+            report_type = ReportType.CLOSURE_SUMMARY
+            report_label = "Closure Summary"
+
+        if not self.report_service:
+            return {
+                "agent_response": (
+                    "Report generation is not available at the moment. "
+                    "Please try again later."
+                ),
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
+
+        try:
+            await self.report_service.generate_reports(case, [report_type])
+            agent_response = (
+                f"The {report_label} has been regenerated. "
+                f"You can view it in the Dashboard."
+            )
+            logger.info(
+                f"Regenerated {report_type.value} for terminal case {case.case_id}",
+                extra={"case_id": case.case_id, "report_type": report_type.value},
+            )
+        except Exception as e:
+            logger.warning(
+                f"Report regeneration failed for case {case.case_id}: {e}",
+                extra={"case_id": case.case_id},
+            )
+            agent_response = (
+                f"Failed to regenerate the {report_label}. " f"Please try again later."
+            )
+
+        return {
+            "agent_response": agent_response,
+            "suggested_follow_ups": [],
+            "case_updated": case,
+            "metadata": metadata,
+        }
+
+    async def _process_terminal_qa(
+        self,
+        case: "Case",
+        user_message: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Process a Q&A turn on a terminal case via the LLM.
+
+        Uses TERMINAL_TEMPLATE and TerminalResponse schema. No state mutations.
+        """
+        from faultmaven.config.settings import get_settings
+        from faultmaven.infrastructure.security.case_redaction import (
+            CaseRedactionContext,
+        )
+
+        redaction_settings = get_settings()
+        redaction_ctx = CaseRedactionContext(
+            case_id=case.case_id,
+            sanitizer=self.sanitizer,
+            redis_client=self.redis_client,
+            enabled=self._should_redact(),
+            ttl_hours=redaction_settings.protection.redaction_registry_ttl_hours,
+        )
+        await redaction_ctx.load()
+
+        prompt = get_prompt_for_case(case, user_message)
+
+        response_obj = await self._generate_structured_output(
+            prompt,
+            TerminalResponse,
+            redaction_ctx=redaction_ctx,
+            case=case,
+        )
+
+        await redaction_ctx.save()
+
+        # Extract follow-up suggestions
+        follow_ups = []
+        if (
+            hasattr(response_obj, "suggested_follow_ups")
+            and response_obj.suggested_follow_ups
+        ):
+            for f in response_obj.suggested_follow_ups:
+                suggestion = {
+                    "label": f.label,
+                    "action_type": f.action_type,
+                    "payload": f.payload,
+                }
+                if f.body:
+                    suggestion["body"] = f.body
+                if f.cooperative_action:
+                    suggestion["cooperative_action"] = f.cooperative_action
+                if f.hints:
+                    suggestion["hints"] = f.hints
+                follow_ups.append(suggestion)
+
+        return {
+            "agent_response": response_obj.agent_response,
+            "suggested_follow_ups": follow_ups,
+            "case_updated": case,
+            "metadata": metadata,
+        }
+
     def _should_redact(self) -> bool:
         """Determine whether PII redaction should be applied at the engine level.
 
@@ -803,6 +960,10 @@ class MilestoneEngine:
                 "status_transitioned": False,
                 "outcome": TurnOutcome.CONVERSATION,
             }
+
+            # 0a. Terminal case handling — Q&A and report regeneration only
+            if case.is_terminal:
+                return await self._process_terminal_turn(case, user_message, metadata)
 
             # 0b. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"

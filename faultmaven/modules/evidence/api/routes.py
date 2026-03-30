@@ -49,6 +49,19 @@ async def get_evidence_service(request: Request) -> Optional[EvidenceService]:
     return getattr(request.app.state, "evidence_service", None)
 
 
+async def _require_case_not_terminal(service: EvidenceService, case_id: UUID) -> None:
+    """Reject evidence operations targeting a terminal case."""
+    repo = getattr(service, "case_repository", None)
+    if not repo:
+        return
+    case = await repo.get(str(case_id))
+    if case and case.is_terminal:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot submit evidence to a closed case. Only questions about the case are allowed.",
+        )
+
+
 @router.post("", response_model=EvidenceArtifact, status_code=status.HTTP_201_CREATED)
 async def upload_evidence(
     file: UploadFile = File(...),
@@ -71,6 +84,9 @@ async def upload_evidence(
     Returns:
         Created evidence record
     """
+    if case_id:
+        await _require_case_not_terminal(service, case_id)
+
     tag_list = []
     if tags:
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
@@ -269,6 +285,7 @@ async def link_evidence_to_case(
         HTTPException: 404 if evidence not found
     """
     try:
+        await _require_case_not_terminal(service, link_request.case_id)
         return await service.link_to_case(evidence_id, link_request.case_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

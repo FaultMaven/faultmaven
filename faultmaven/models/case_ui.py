@@ -233,7 +233,7 @@ class ReportAvailability(BaseModel):
     """Report generation availability status for RESOLVED phase."""
 
     report_type: str = Field(
-        description="Type: incident_report | post_mortem | runbook | timeline",
+        description="Type: resolution_summary | closure_summary | runbook",
         max_length=100,
     )
 

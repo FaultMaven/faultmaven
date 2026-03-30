@@ -60,6 +60,8 @@ def mock_case():
     mock.title = "Test Case"
     mock.description = "Test Description"
     mock.status = CaseStatus.INQUIRY
+    mock.is_terminal = False
+    mock.is_archived = False
     mock.created_at = datetime.now(timezone.utc)
     mock.updated_at = datetime.now(timezone.utc)
     # Optional fields - must be explicit to avoid MagicMock being returned
@@ -521,6 +523,7 @@ class TestUpdateCase:
     ):
         """Test successful case update - v2.0 uses PUT and returns status response."""
         mock_case.title = "Updated Title"
+        mock_case_service.get_case.return_value = mock_case
         mock_case_service.update_case.return_value = mock_case
 
         response = await client.put(
@@ -542,6 +545,7 @@ class TestUpdateCase:
         """Test updating multiple fields - v2.0 uses PUT method."""
         mock_case.title = "Updated"
         mock_case.status = CaseStatus.INVESTIGATING
+        mock_case_service.get_case.return_value = mock_case
         mock_case_service.update_case.return_value = mock_case
 
         response = await client.put(
@@ -559,6 +563,7 @@ class TestUpdateCase:
         """Test updating non-existent case - v2.0 uses PUT method."""
         from faultmaven.exceptions import NotFoundError
 
+        mock_case_service.get_case.return_value = None
         mock_case_service.update_case.side_effect = NotFoundError("Case", "nonexistent")
 
         response = await client.put(
@@ -573,6 +578,7 @@ class TestUpdateCase:
         """Test updating case from different organization - v2.0 uses PUT method."""
         from faultmaven.exceptions import AuthorizationError
 
+        mock_case_service.get_case.return_value = None
         mock_case_service.update_case.side_effect = AuthorizationError(
             "Case not accessible by organization"
         )

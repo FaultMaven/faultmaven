@@ -842,8 +842,8 @@ Is this correct? Once you confirm, I'll mark the case as resolved.
 What will happen:
 - A Resolution Summary will be auto-generated
 - No further evidence submission or investigation will be possible
-- You can still ask questions about this case until a report is generated
-- After report generation, the case will be frozen (read-only)
+- You can still ask questions about this case and regenerate the summary report
+- Archive the case from Dashboard when you are done
 
 [✅ Yes, mark as resolved]  [❌ No, continue investigating]"""
 ```
@@ -861,9 +861,8 @@ Here's what will happen when I close this case:
 
 - A Closure Summary will be auto-generated capturing investigation state and findings so far
 - No further evidence submission or investigation will be possible
-- You can still ask questions about this case until a report is generated
-- You'll be able to generate an Incident Report from the Dashboard
-- After report generation, the case will be frozen (read-only)
+- You can still ask questions about this case and regenerate the summary report
+- Archive the case from Dashboard when you are done
 
 Please select a closure reason:
 
@@ -986,78 +985,77 @@ All manual case actions use **existing endpoints** - no new APIs required:
 
 ### 1.7 Post-Terminal Lifecycle
 
-When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive for a limited period. The post-terminal lifecycle defines three **interaction modes** derived from existing state — no new database fields required.
+When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive until archived. The post-terminal lifecycle defines two **interaction modes** — no new database fields required.
 
 #### 1.7.1 Case Interaction Modes
 
 ```
-┌─────────────┐   terminal    ┌──────────────┐   report       ┌──────────┐   archived /
-│   ACTIVE    │──transition──►│  QUERY-ONLY  │──generated───► │  FROZEN  │──retention──► removed
-│             │               │              │                │          │   expires
-└─────────────┘               └──────────────┘                └──────────┘
- Evidence ✓                    Evidence ✗                      Evidence ✗
- Milestones ✓                  Milestones ✗                    Queries ✗
- Agent turns ✓                 Q&A over case data ✓            Reports: download only
- Full investigation            Report generation ✓             Read-only until purge
-                               Auto-summary available ✓
+┌─────────────┐   terminal    ┌──────────────┐   user        ┌──────────┐
+│   ACTIVE    │──transition──►│   TERMINAL   │──archives───► │ ARCHIVED │──retention──► removed
+│             │               │              │               │          │   expires
+└─────────────┘               └──────────────┘               └──────────┘
+ Evidence ✓                    Evidence ✗                      No interaction
+ Milestones ✓                  Q&A over case data ✓            Not in default list
+ Agent turns ✓                 View/download reports ✓         Reports: viewable if
+ Full investigation            Regenerate summary ✓              unarchived
+                               Knowledge extraction ✓
+                                 (RESOLVED only)
 ```
 
 **Derivation logic** (no new stored field):
 
 ```python
 @property
-def interaction_mode(self) -> str:
-    """Derived from case status and report state."""
-    if not self.is_terminal:
-        return "active"
-    if self.has_linked_report:   # any report with linked_to_closure=True
-        return "frozen"
-    return "query_only"
+def is_terminal(self) -> bool:
+    """Case has reached a disposition (RESOLVED or CLOSED)."""
+    return self.status in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
 ```
 
-#### 1.7.2 QUERY-ONLY Mode
+#### 1.7.2 Terminal Mode
 
-**Purpose**: Allow users to ask questions about the completed investigation before generating a final report. The agent answers from existing case data only — no new investigation.
+**Purpose**: Allow users to ask questions about the completed investigation and manage the summary report. The agent answers from existing case data only — no new investigation. The summary report can be regenerated at any time before archival.
 
 **Behavior**:
 
-- `process_turn()` short-circuits before milestone processing
-- Routes to a **CASE_REVIEW prompt template** instead of DIAGNOSIS/MITIGATION/TREATMENT
-- The review template instructs the LLM: "You are reviewing a completed case. Answer questions using only the existing case data. Do not propose new actions or evidence requests."
+- `_process_turn_impl()` short-circuits before intent detection and milestone processing
+- Routes to **TERMINAL_TEMPLATE** prompt with `TerminalResponse` schema
+- The template instructs the LLM: answer questions using existing case data, do not propose new actions or evidence requests
 - Agent has read access to: messages, evidence, hypotheses, solutions, action_history, auto-generated summary
 - Agent can NOT: accept new evidence, update milestones, propose transitions
-- Agent CAN: explain what happened, clarify evidence, help interpret the timeline, assist with report generation
+- Agent CAN: explain what happened, clarify evidence, interpret timeline, extract lessons learned
+
+**Two interaction scenarios**:
+
+1. **User explicitly asks to regenerate the report** → Agent complies directly. The milestone engine detects the intent via pattern matching and triggers report regeneration without an LLM call. No suggestions attached.
+2. **User asks questions about the case** → Agent answers via the LLM with TERMINAL_TEMPLATE. May attach COOPERATIVE suggestions (e.g., "Regenerate summary report", "Generate runbook") when contextually appropriate.
 
 **Implementation in milestone engine**:
 
 ```python
-async def process_turn(self, case, user_message, ...):
+async def _process_turn_impl(self, case, user_message, ...):
+    ...
+    # 0a. Terminal case handling — Q&A and report regeneration only
     if case.is_terminal:
-        if case.interaction_mode == "frozen":
-            raise CaseFrozenError(
-                "Case is frozen after report generation. "
-                "View existing reports in Dashboard."
-            )
-        # QUERY-ONLY mode: skip milestones, use review template
-        return await self._process_review_turn(case, user_message)
+        return await self._process_terminal_turn(case, user_message, metadata)
 
     # Normal investigation flow...
 ```
 
-#### 1.7.3 FROZEN Mode
+**Report regeneration**: The summary report is auto-generated at closure time (same turn). Users can request regeneration at any point while the case is in terminal state. Regeneration overwrites the existing report — there is always exactly one summary report per case.
 
-Once a report is linked to closure (`linked_to_closure=True`):
+**API-level enforcement** (`submit_turn` endpoint):
 
-- All session endpoints reject new messages with `409 Conflict`
-- Copilot shows a read-only banner: "This case is closed. View reports in Dashboard."
-- Existing reports remain downloadable
-- Case stays visible in case list until archived from Dashboard or retention policy expires
+| Input                    | Terminal case behavior           |
+| ------------------------ | -------------------------------- |
+| Text query only          | Allowed — routed to terminal Q&A |
+| Files or pasted content  | Rejected — 409 Conflict          |
+| Status transition intent | Rejected — 409 Conflict          |
 
-**Edge case: user never generates a report**: The case stays in QUERY-ONLY indefinitely. The retention policy handles eventual cleanup. No artificial timeout. If the user wants to freeze without a report, they archive from Dashboard.
+**Archived cases**: All interaction rejected with 409 Conflict. Archived cases are hidden from default list but remain accessible via "Include archived" filter.
 
-#### 1.7.4 Auto-Generated Terminal Summary
+#### 1.7.3 Auto-Generated Terminal Summary
 
-When a case reaches any terminal state, the system automatically generates a lightweight summary report. This is distinct from user-requested reports (incident_report, post_mortem, runbook) — it's automatic, generated using the SYNTHESIS LLM capability (cheap/fast provider), and serves as the canonical "what happened" record.
+When a case reaches any terminal state, the system automatically generates a lightweight summary report in the same turn. This is the canonical "what happened" record, generated using the SYNTHESIS LLM capability (cheap/fast provider).
 
 **Two summary types**:
 
@@ -1071,8 +1069,8 @@ When a case reaches any terminal state, the system automatically generates a lig
 - Single LLM call using SYNTHESIS capability (Fireworks/Groq for speed and cost)
 - Input assembled via `context_builder.py`: case messages, evidence list, hypothesis states, action_history, milestone progress
 - Stored as `Report` with `auto_generated=True` (distinguishes from user-requested reports)
-- **Fire-and-forget**: failure does not block the transition. Error logged, case still transitions. Summary can be retried later via Dashboard.
-- No versioning (auto-generated once; user-requested reports have versioning)
+- **Fire-and-forget**: failure does not block the transition. Error logged, case still transitions. Summary can be regenerated later via chat.
+- One report per case — regeneration overwrites the existing report
 
 **Resolution Summary content**:
 
@@ -1099,7 +1097,20 @@ Timeline                  — created_at → key actions → closed_at
 Recommendation            — If escalated: what the next investigator should look at first
 ```
 
-#### 1.7.5 Session Cleanup on Terminal Transition
+**Skip-if-trivial guardrail** (`should_generate_terminal_summary()` in `terminal_transitions.py`):
+
+Auto-summary generation is scheduled for ALL terminal transition paths. The guardrail skips generation when a case lacks meaningful content. Two independent checks must both pass:
+
+1. **Minimum conversation depth**: At least 4 messages (enough to summarize)
+2. **Investigation substance** (at least one must be true):
+   - Has evidence (investigation produced data)
+   - Has hypotheses (investigation produced theories)
+   - Has a confirmed problem description (inquiry completed)
+   - Has completed milestones (investigation made progress)
+
+Always skipped for `closure_reason == "duplicate"` — parent case has the real content.
+
+#### 1.7.4 Session Cleanup on Terminal Transition
 
 When a case transitions to a terminal state, all active sessions are gracefully completed:
 
@@ -1113,7 +1124,7 @@ for session in active_sessions:
     await session_repo.update(session)
 ```
 
-Uses the existing `InvestigationSession.complete()` method. No new session statuses needed. When the user queries in QUERY-ONLY mode, a new session is created with the review prompt template.
+Uses the existing `InvestigationSession.complete()` method. No new session statuses needed.
 
 ---
 

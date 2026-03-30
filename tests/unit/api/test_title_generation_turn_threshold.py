@@ -58,6 +58,7 @@ class TestTurnThreshold:
         case.description = "Test case"
         case.user_id = "user_123"
         case.status = "open"
+        case.is_terminal = False
         case.message_count = 0
         return case
 

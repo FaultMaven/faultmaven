@@ -571,11 +571,10 @@ The path determines **whether the agent offers mitigation** during DIAGNOSIS. Th
 
 ## 7.5 Terminal State Behavior
 
-When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case doesn't immediately become inert. The post-terminal lifecycle has three phases:
+When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive until archived. The post-terminal lifecycle has two phases:
 
 1. **Terminal transition** — Investigation stops. Active sessions completed. Auto-generated summary created (Resolution Summary for RESOLVED, Closure Summary for CLOSED). Terminal metrics emitted.
-2. **QUERY-ONLY mode** — User can ask questions about the completed investigation. Agent operates in review mode (read-only access to case data, no new evidence or milestones). User can generate reports and — for RESOLVED cases only — extract runbooks.
-3. **FROZEN mode** — Triggered when a user-requested report is linked to closure. No further interaction. Case stays on list until archived from Dashboard or retention policy expires.
+2. **Terminal mode** — Case state is immutable, but users can ask questions about the investigation (agent uses TERMINAL_TEMPLATE in review mode), regenerate the summary report, and — for RESOLVED cases only — extract runbooks. Users archive the case from Dashboard when done.
 
 See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle) for full specification including interaction mode derivation, session cleanup, and auto-summary content.
 

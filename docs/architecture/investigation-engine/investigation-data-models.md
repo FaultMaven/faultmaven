@@ -591,29 +591,6 @@ class Case(BaseModel):
             return self.closed_at - self.created_at
         return None
 
-    @property
-    def has_linked_report(self) -> bool:
-        """Check if any report is linked to case closure"""
-        return any(r.linked_to_closure for r in self.reports)
-
-    @property
-    def interaction_mode(self) -> str:
-        """Derived post-terminal interaction mode.
-
-        Determines what operations are permitted on a terminal case.
-        Derived from case status and report state — no new stored field.
-
-        Returns:
-            "active"     - Full investigation (evidence, milestones, agent turns)
-            "query_only" - Q&A over existing case data, report generation allowed
-            "frozen"     - No interaction, reports download-only
-        """
-        if not self.is_terminal:
-            return "active"
-        if self.has_linked_report:
-            return "frozen"
-        return "query_only"
-
 class CaseAction(BaseModel):
     """Record of a case action (phase transition or disposition change)"""
     from_status: CaseStatus
@@ -685,12 +662,12 @@ Auto-summary generation is scheduled for ALL terminal transition paths:
 - `force_close_investigation()` — INVESTIGATING → CLOSED (direct user action)
 - `close_from_inquiry()` — INQUIRY → CLOSED (direct user action)
 
-The guardrail skips generation when a case has nothing meaningful to summarize:
+The guardrail skips generation when a case lacks meaningful content. Two independent checks must both pass:
 
-- `closure_reason == "duplicate"` — parent case has the real content
-- Zero evidence AND zero hypotheses AND fewer than 4 messages — trivial inquiry-only closure
+1. **Minimum conversation depth**: At least 4 messages
+2. **Investigation substance** (at least one): evidence, hypotheses, confirmed description, or completed milestones
 
-Everything else gets a summary, including abandoned and escalated cases (the investigation state is worth recording even without a solution).
+Always skipped for `closure_reason == "duplicate"`. Everything else with substance gets a summary, including abandoned and escalated cases.
 
 ### 1.5.2 Resolution & Runbook Readiness Models
 
