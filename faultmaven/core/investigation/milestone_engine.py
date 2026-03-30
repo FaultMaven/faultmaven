@@ -815,9 +815,20 @@ class MilestoneEngine:
 
         prompt = get_prompt_for_case(case, user_message)
 
+        # Pass tools with auto tool_choice — LLM decides whether to invoke
+        # kb_qa, web_search, etc. based on the user's question.
+        tools_kwargs: dict[str, Any] = {}
+        if self.investigation_tools:
+            tools_kwargs["investigation_tools"] = self._build_da_tool_schemas()
+            tools_kwargs["tool_context"] = self._build_tool_context(
+                case, intent_data=None
+            )
+            tools_kwargs["force_tool_use"] = False
+
         response_obj = await self._generate_structured_output(
             prompt,
             TerminalResponse,
+            **tools_kwargs,
             redaction_ctx=redaction_ctx,
             case=case,
         )
@@ -1622,22 +1633,15 @@ class MilestoneEngine:
                 )
 
             # 2. Invoke LLM with structured output
-            # For DA turns, use tool-augmented generation so the LLM can
-            # search evidence files directly during reasoning.
+            # Tool availability: all turns get tools when tools are registered.
+            # The LLM decides which tool to invoke based on the user's question.
+            #
+            # tool_choice varies by query mode:
+            # - directed_analysis + evidence: "required" — LLM must search evidence
+            # - all other turns: "auto" — LLM decides whether to use tools
             query_mode = (intent_data or {}).get("query_mode")
-            # Route through tool-augmented DA loop ONLY for directed_analysis.
-            # Knowledge queries use the non-tool path — the LLM answers from
-            # built-in knowledge (the KNOWLEDGE QUERY OVERRIDE in the prompt
-            # relaxes evidence-grounding requirements). Routing them through
-            # the tool loop would force tool_choice="required", adding latency
-            # and cost for questions the LLM can answer directly.
-            if query_mode == "directed_analysis" and case.evidence:
-                if not self.investigation_tools:
-                    raise MilestoneEngineError(
-                        "Directed analysis requires investigation_tools but none configured. "
-                        "Ensure search_file and deep_analysis tools are registered."
-                    )
-
+            if self.investigation_tools:
+                force_tools = query_mode == "directed_analysis" and bool(case.evidence)
                 da_tools = self._build_da_tool_schemas()
                 da_context = self._build_tool_context(case, intent_data)
                 response_obj = await self._generate_structured_output(
@@ -1645,6 +1649,7 @@ class MilestoneEngine:
                     schema_model,
                     investigation_tools=da_tools,
                     tool_context=da_context,
+                    force_tool_use=force_tools,
                     redaction_ctx=redaction_ctx,
                     case=case,
                 )
@@ -2065,19 +2070,19 @@ class MilestoneEngine:
         max_tokens: int = 8000,
         redaction_ctx: Any | None = None,
         case: Any | None = None,
+        force_tool_use: bool = True,
     ) -> BaseInteractionResponse:
-        """Run a bounded tool-calling loop for DA turns.
+        """Run a bounded tool-calling loop with investigation tools.
 
-        The LLM gets real investigation tools (search_file, deep_analysis)
-        alongside the response schema tool. It searches evidence until ready,
-        then calls the schema tool to produce structured output.
+        The LLM gets real investigation tools (search_file, deep_analysis,
+        kb_qa, web_search) alongside the response schema tool.
 
         Algorithm:
         1. Build schema tool from Pydantic model (reuses existing converter)
         2. Combine: all_tools = investigation_tools + schema_tools
-        3. Loop with tool_choice="required" (LLM must always call a tool —
-           either an investigation tool to gather data, or the schema tool
-           to produce the final structured response)
+        3. Loop with tool_choice per force_tool_use:
+           - force_tool_use=True (DA turns): "required" — LLM must call a tool
+           - force_tool_use=False (other turns): "auto" — LLM may respond directly
         4. When LLM calls schema tool → parse and return structured output
         5. After max iterations → force schema with only schema tools available
 
@@ -2158,8 +2163,15 @@ class MilestoneEngine:
             else:
                 tools_for_call = all_tools
 
-            # Force tool choice on all iterations to prevent plain-text responses
-            choice = "required"
+            # DA turns: "required" — LLM must search evidence before answering
+            # Other turns: "auto" — LLM decides whether to use tools
+            # Final/force-schema iterations always use "required" (schema tool only)
+            if is_final or force_schema_next:
+                choice = "required"
+            elif force_tool_use:
+                choice = "required"
+            else:
+                choice = "auto"
 
             logger.info(
                 f"Tool loop iteration {iteration}/{self.MAX_TOOL_ITERATIONS} "
@@ -2978,6 +2990,7 @@ class MilestoneEngine:
         schema_model: Any,
         investigation_tools: list[dict] | None = None,
         tool_context: Any | None = None,
+        force_tool_use: bool = True,
         redaction_ctx: Any | None = None,
         case: Any | None = None,
     ) -> BaseInteractionResponse:
@@ -2992,13 +3005,15 @@ class MilestoneEngine:
         - NONE mode: Schema only in prompt, no API support (legacy models)
 
         When investigation_tools and tool_context are provided, routes through
-        _tool_augmented_generate for a bounded tool-calling loop (DA turns).
+        _tool_augmented_generate for a bounded tool-calling loop.
 
         Args:
             prompt: User prompt
             schema_model: Pydantic model class for expected output
-            investigation_tools: OpenAI-format tool defs for search_file/deep_analysis
+            investigation_tools: OpenAI-format tool defs for investigation tools
             tool_context: ToolContext for tool execution
+            force_tool_use: If True, tool_choice="required" (DA turns).
+                If False, tool_choice="auto" (LLM decides).
             redaction_ctx: Case-scoped redaction context for PII sanitization
 
         Returns:
@@ -3036,6 +3051,7 @@ class MilestoneEngine:
                         schema_model,
                         investigation_tools,
                         tool_context,
+                        force_tool_use=force_tool_use,
                         redaction_ctx=redaction_ctx,
                         case=case,
                     )
