@@ -2735,12 +2735,11 @@ async def download_case_report(
             filename = f"{report.report_type.value}_{case_id}_{report.version}.md"
 
         logger.info(
-            f"Serving report download",
+            f"Serving report download: {filename}",
             extra={
                 "case_id": case_id,
                 "report_id": report_id,
-                "format": format,
-                "filename": filename,
+                "download_format": format,
             },
         )
 
