@@ -189,8 +189,7 @@ Answer:"""
                 f"Calling synthesis LLM: {synthesis_provider}/{synthesis_model}"
             )
 
-            response = await self._llm_router.call_llm(
-                provider=synthesis_provider,
+            response = await self._llm_router.route(
                 model=synthesis_model,
                 messages=[
                     {"role": "system", "content": self._kb_config.system_prompt},
@@ -200,7 +199,7 @@ Answer:"""
                 temperature=0.3,  # Low temperature for factual accuracy
             )
 
-            answer = response.get("content", "").strip()
+            answer = response.content.strip()
 
             # Extract sources using config (KB-specific)
             sources = list(
