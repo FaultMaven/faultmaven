@@ -2877,13 +2877,23 @@ class MilestoneEngine:
         if tool_name == "kb_qa" and isinstance(result.data, dict):
             answer = result.data.get("answer", "")
             sources = result.data.get("sources", [])
+            # Filter out placeholder sources
+            sources = [s for s in sources if s and s != "Unknown document"]
+            logger.info(f"kb_qa result: {len(answer)} chars, sources={sources}")
             parts = [
-                "KNOWLEDGE BASE RESULT — Include this content in your response "
-                "to the user. Do NOT summarize it into a single sentence.\n",
+                "KNOWLEDGE BASE RESULT — Include the detailed content below "
+                "in your response. Do NOT summarize it into a single sentence.\n",
                 answer,
             ]
             if sources:
-                parts.append("\nSources: " + ", ".join(f"[{s}]" for s in sources))
+                source_list = ", ".join(f'"{s}"' for s in sources)
+                parts.append(
+                    f"\nSource references: {source_list}\n"
+                    "IMPORTANT: Cite these sources in your response, e.g. "
+                    "\"According to the runbook 'PostgreSQL Connection Pool "
+                    "Exhaustion'...\" so the user knows where the information "
+                    "comes from."
+                )
             return "\n".join(parts)
 
         if isinstance(result.data, str):
