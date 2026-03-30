@@ -261,20 +261,30 @@ class GeminiProvider(BaseLLMProvider):
                 elif finish_reason == "MAX_TOKENS":
                     content = "[Response truncated due to token limit]"
 
-        # CRITICAL FIX: Check for MAX_TOKENS even when content exists
-        # Gemini can return partial JSON that looks complete but is truncated.
-        # This causes Pydantic validation errors: "EOF while parsing a value"
+        # Check for MAX_TOKENS truncation — behavior depends on request type.
+        # Structured requests (JSON schema, tool calling) need complete output
+        # for valid parsing. Unstructured (plain text) can use partial content.
         if content and "candidates" in response_data:
             candidate = response_data["candidates"][0]
             finish_reason = candidate.get("finishReason", "")
             if finish_reason == "MAX_TOKENS":
-                # Raise exception to trigger retry with higher max_tokens
-                raise LLMException(
-                    f"Response truncated due to token limit (finishReason=MAX_TOKENS). "
-                    f"Response length: {len(content)} chars. "
-                    "Increase max_tokens parameter or simplify prompt.",
-                    retryable=True,
-                )
+                is_structured = bool(rf) or bool(tools_param)
+                if is_structured:
+                    # Structured output: truncated JSON is unusable — raise to
+                    # trigger retry or fallback
+                    raise LLMException(
+                        f"Response truncated due to token limit (finishReason=MAX_TOKENS). "
+                        f"Response length: {len(content)} chars. "
+                        "Increase max_tokens parameter or simplify prompt.",
+                        retryable=True,
+                    )
+                else:
+                    # Unstructured text: partial content is still valuable.
+                    # Log warning but return the content as-is.
+                    self.logger.warning(
+                        f"Gemini response truncated (MAX_TOKENS) but returning "
+                        f"partial content ({len(content)} chars) for unstructured request."
+                    )
 
         # Calculate metrics
         response_time_ms = int((time.time() - start_time) * 1000)
