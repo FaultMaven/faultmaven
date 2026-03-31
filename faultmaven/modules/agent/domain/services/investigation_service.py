@@ -165,7 +165,11 @@ class InvestigationService:
             if not payload.has_query and payload.has_attachments:
                 query = generate_implicit_query(payload.attachments, evidence_created)
 
-            # 2. Save user message to conversation history BEFORE LLM processing
+            # 2. Build user message and update case in-memory (NOT persisted yet).
+            #    Deferring the save until after LLM processing ensures atomic
+            #    persistence of both user and agent messages.  If the LLM fails,
+            #    the database is untouched — no orphaned user message, no inflated
+            #    turn count — so the client can cleanly retry the same turn.
             from uuid import uuid4
 
             intent = payload.intent
@@ -194,7 +198,6 @@ class InvestigationService:
             case.messages.append(user_message_obj)
             case.message_count += 1
             case.current_turn = next_turn
-            await self.repository.save(case)
 
             # ── STEP 2: LLM INFERENCE ──
             # Heuristic check for greetings if intent is CONVERSATION (default)
@@ -279,9 +282,10 @@ class InvestigationService:
             if redaction_ctx:
                 agent_response_text = redaction_ctx.reverse(agent_response_text)
 
-            # 4. Save agent response to conversation history
-            from uuid import uuid4
-
+            # 4. Save agent response AND user message atomically.
+            #    The user message was appended in-memory at step 2 but not
+            #    persisted.  This single save commits both messages together,
+            #    guaranteeing no half-completed turns in the database.
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
