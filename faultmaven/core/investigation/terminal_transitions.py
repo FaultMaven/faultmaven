@@ -37,6 +37,7 @@ def propose_transition(
     reason: str,
     summary: str,
     evidence_ids: Optional[list] = None,
+    closure_reason: Optional[str] = None,
 ) -> None:
     """
     Store a pending transition proposal on the case.
@@ -50,6 +51,9 @@ def propose_transition(
         reason: Why the agent believes this transition is appropriate
         summary: Summary presented to user for confirmation
         evidence_ids: Evidence IDs supporting the proposal
+        closure_reason: Short closure reason for CLOSED transitions
+            (e.g. "abandoned", "inquiry_only", "escalated").
+            If None, falls back to reason.
     """
     case.pending_transition = {
         "to_status": to_status,
@@ -59,6 +63,8 @@ def propose_transition(
         "proposed_at": datetime.now(UTC).isoformat(),
         "proposed_by": "agent",
     }
+    if closure_reason:
+        case.pending_transition["closure_reason"] = closure_reason
     logger.info(
         f"Transition proposed for case {case.case_id}: → {to_status} "
         f"(pending user confirmation). Reason: {reason}"
@@ -88,7 +94,9 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     if to_status == "resolved":
         _execute_resolved_transition(case, user_id, pending["reason"])
     elif to_status == "closed":
-        _execute_closed_transition(case, user_id, pending["reason"])
+        # Use explicit closure_reason if set, otherwise fall back to reason
+        close_reason = pending.get("closure_reason", pending["reason"])
+        _execute_closed_transition(case, user_id, close_reason)
     else:
         logger.error(f"Unknown pending transition target: {to_status}")
         case.pending_transition = None
@@ -331,6 +339,89 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
         verdict=ResolutionReadiness.READY,
         message="",
         missing=missing,
+    )
+
+
+# ============================================================
+# CLOSURE READINESS ASSESSMENT
+# ============================================================
+
+
+class ClosureReadiness:
+    """Assessment of what was accomplished during an investigation before closing.
+
+    Two verdicts:
+    - HAS_SUBSTANCE: Investigation produced meaningful work worth summarizing.
+    - TRIVIAL: Investigation had minimal substance (quick close, no real work done).
+    """
+
+    HAS_SUBSTANCE = "has_substance"
+    TRIVIAL = "trivial"
+
+    def __init__(self, verdict: str, message: str):
+        self.verdict = verdict
+        self.message = message
+
+
+def assess_closure_readiness(case: "Case") -> ClosureReadiness:
+    """Summarize what was accomplished during investigation for the CLOSED confirmation prompt.
+
+    Uses the same data points as should_generate_terminal_summary() but presents
+    them as a user-facing summary rather than a boolean gate.
+
+    The actual CLOSURE_SUMMARY report is generated only after user confirms.
+
+    Args:
+        case: Case being assessed for closure
+
+    Returns:
+        ClosureReadiness with verdict and user-facing summary message
+    """
+    evidence_count = len(case.evidence) if case.evidence else 0
+    hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
+    milestones_completed = (
+        len(case.progress.completed_milestones) if case.progress else 0
+    )
+    has_root_cause = bool(
+        case.root_cause_conclusion
+        and getattr(case.root_cause_conclusion, "root_cause", None)
+    )
+    has_solutions = bool(case.solutions and len(case.solutions) > 0)
+
+    # Build summary parts
+    parts = []
+    if evidence_count > 0:
+        parts.append(
+            f"- **Evidence collected**: {evidence_count} item{'s' if evidence_count != 1 else ''}"
+        )
+    if hypothesis_count > 0:
+        parts.append(f"- **Hypotheses explored**: {hypothesis_count}")
+    if milestones_completed > 0:
+        parts.append(f"- **Milestones completed**: {milestones_completed}")
+    if has_root_cause:
+        rc = getattr(case.root_cause_conclusion, "root_cause", "")
+        parts.append(f"- **Root cause identified**: {rc}")
+    if has_solutions:
+        sol_titles = [getattr(s, "title", "Untitled") for s in case.solutions]
+        parts.append(f"- **Solutions on record**: {', '.join(sol_titles)}")
+
+    if not parts:
+        return ClosureReadiness(
+            verdict=ClosureReadiness.TRIVIAL,
+            message=(
+                "This case has minimal investigation data. "
+                "Are you sure you want to close it?"
+            ),
+        )
+
+    summary = "Here's what was accomplished during this investigation:\n\n" + "\n".join(
+        parts
+    )
+    summary += "\n\nAre you sure you want to close this case without resolution?"
+
+    return ClosureReadiness(
+        verdict=ClosureReadiness.HAS_SUBSTANCE,
+        message=summary,
     )
 
 

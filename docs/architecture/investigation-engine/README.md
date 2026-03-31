@@ -47,12 +47,12 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 | Post-Terminal Lifecycle | **Implemented** | 2-mode lifecycle (ACTIVE → TERMINAL → ARCHIVED), terminal Q&A via TERMINAL_TEMPLATE, report regeneration, API-level enforcement (409 for evidence/transitions), session cleanup, auto-generated summaries with skip-if-trivial guardrail. See [Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle). |
 | Terminal Summary Auto-Generation | **Implemented** | `RESOLUTION_SUMMARY` and `CLOSURE_SUMMARY` report types, SYNTHESIS LLM, fire-and-forget, skip-if-trivial guardrail. All 4 terminal transition paths schedule summaries. See [Data Models §1.5.1](./investigation-data-models.md#151-terminal-summary-report-types). |
 | Resolution Readiness Gate | **Implemented** | `assess_resolution_readiness()` validates root cause + solution before allowing RESOLVED transition. See [Lifecycle Logic §1.5.4](./investigation-lifecycle-logic.md#154-case-action-confirmation-examples). |
-| Knowledge Flywheel (Runbook Generation) | **Implemented** | RESOLVED-only, never automatic. 3-factor gate: content readiness (`assess_runbook_readiness`), user approval, deduplication. See [Framework §7.5.1](./evidence-driven-investigation-framework.md#751-knowledge-flywheel-resolved-cases-only). |
+| Knowledge Flywheel (Runbook Generation) | **Implemented** | RESOLVED-only, never automatic. Suggest first, evaluate on acceptance. Readiness + dedup checked when user accepts. See [Framework §7.5.1](./evidence-driven-investigation-framework.md#751-knowledge-flywheel-resolved-cases-only). |
 | Terminal Metrics & Analytics | **Design Complete** | Prometheus counters/histograms/gauges + structlog events. See [Orchestration §6](./orchestration-capabilities.md#6-terminal-metrics--analytics). |
 | Case Action Consequence Messaging | **Implemented** | Confirmation modals inform users of post-terminal effects, ambiguous close asks for clarification. See [Lifecycle Logic §1.5.4](./investigation-lifecycle-logic.md#154-case-action-confirmation-examples). |
 | Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated |
 | Knowledge Fast-Track Resolution | Design Complete | Data model exists, milestone engine wiring deferred |
-| `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles transition, no evidence check |
+| `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles all terminal transitions (RESOLVED + CLOSED). CLOSED uses `assess_closure_readiness` for confirmation summary. |
 
 See [Evidence-Driven Investigation Framework](./evidence-driven-investigation-framework.md) for full design details.
 

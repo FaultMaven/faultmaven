@@ -209,7 +209,7 @@ class InvestigationProgress(BaseModel):
 
     root_cause_method: Optional[str] = Field(
         default=None,
-        description="direct_analysis | hypothesis_validation | correlation | other"
+        description="direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other"
     )
 
     # ============================================================
@@ -678,11 +678,13 @@ Two validation checks gate the resolve and runbook generation flows. Both are in
 ```python
 class ResolutionReadiness:
     READY = "ready"           # Root cause + solution present → propose transition
-    NEEDS_INFO = "needs_info" # One missing (e.g., root cause but no solution) → ask user
-    SUGGEST_CLOSE = "suggest_close"  # No root cause, no solution, no evidence → suggest CLOSED
+    NEEDS_INFO = "needs_info" # One missing (e.g., root cause but no solution) → propose with needs_info=True
+    SUGGEST_CLOSE = "suggest_close"  # No root cause, no solution, no evidence → propose with needs_info=True
 ```
 
 Checks: `root_cause_conclusion` (or `working_conclusion` with likelihood ≥0.6), `solutions` list, `problem_verification`, `evidence` list.
+
+For `NEEDS_INFO` and `SUGGEST_CLOSE`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, `_check_automatic_transitions` re-evaluates readiness. When the case becomes READY, the LLM response is overridden with a deterministic confirmation prompt.
 
 **RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation:
 
@@ -710,6 +712,16 @@ Maps case data to the 7 canonical runbook sections:
 1. Content readiness (RunbookReadiness check — no I/O)
 2. User approval (not checked here — caller presents suggestion)
 3. Deduplication (ChromaDB vector search via `runbook_kb` — ≥85% = existing covers, 70-84% = suggest with caveat)
+
+**ClosureReadiness** (`assess_closure_readiness(case)`) — investigation summary for the CLOSED confirmation prompt:
+
+```python
+class ClosureReadiness:
+    HAS_SUBSTANCE = "has_substance"  # Investigation produced meaningful work → show summary
+    TRIVIAL = "trivial"              # Minimal data → warn user before closing
+```
+
+Summarizes what was accomplished: evidence count, hypotheses explored, milestones completed, root cause (if identified), and solutions (if any). Used by both the dropdown and NLP CLOSED paths to show a meaningful confirmation prompt before the user commits to an irreversible closure. The actual CLOSURE_SUMMARY report is generated only after the user confirms.
 
 ### 1.6 ProblemVerification
 

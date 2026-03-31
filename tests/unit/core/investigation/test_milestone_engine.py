@@ -700,20 +700,18 @@ class TestMilestoneEngine:
         assert last_transition.to_status == CaseStatus.RESOLVED
 
     @pytest.mark.asyncio
-    async def test_user_intent_close_as_unresolved_transitions_to_closed(
+    async def test_user_intent_close_as_unresolved_proposes_closed(
         self, mock_llm, mock_repo, base_case
     ):
-        """Test user intent: 'Close as unresolved' should transition to CLOSED, not RESOLVED
+        """Test user intent: 'Close as unresolved' should propose CLOSED via handshake.
 
-        This tests the fix for the bug where:
-        - User says "Close this case as unresolved"
-        - System was incorrectly transitioning to RESOLVED (with solution)
-        - Should transition to CLOSED (without solution, abandoned)
+        NLP abandonment patterns now propose a pending transition instead of
+        immediately executing the CLOSED transition. The user must confirm.
 
         Pattern matching order:
-        1. Abandonment patterns (highest priority) → CLOSED
-        2. Resolution patterns (medium priority) → RESOLVED
-        3. Ambiguous close patterns (lowest priority) → RESOLVED (backward compatible)
+        1. Abandonment patterns (highest priority) → propose CLOSED
+        2. Resolution patterns (medium priority) → propose RESOLVED
+        3. Ambiguous close patterns (lowest priority) → ask clarification
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -727,48 +725,27 @@ class TestMilestoneEngine:
         base_case.progress.symptom_verified = True
         base_case.progress.scope_assessed = True
 
-        # Mock LLM response using TerminalResponse schema
-        # (case will be CLOSED after user intent detection, so TerminalResponse is used)
+        # Mock LLM response (still goes through LLM after proposing)
         mock_response_content = json.dumps(
             {
-                "agent_response": "Understood. This case has been closed without resolution as requested.",
-                "state_updates": {
-                    "final_summary_update": "Case closed by user request without finding resolution.",
-                },
+                "agent_response": "Understood. I've noted your intent to close.",
+                "state_updates": {"outcome": "conversation"},
             }
         )
         mock_llm.generate.return_value = mock_response_content
 
-        # User explicitly says "close as unresolved" - should trigger CLOSED, not RESOLVED
+        # User explicitly says "close as unresolved" - should propose CLOSED, not execute immediately
         result = await engine.process_turn(base_case, "Close this case as unresolved")
 
         updated_case = result["case_updated"]
 
-        # ===== VERIFY CORRECT TERMINAL STATE =====
+        # Case should still be INVESTIGATING with a pending transition
+        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.pending_transition is not None
+        assert updated_case.pending_transition["to_status"] == "closed"
 
-        # 1. Case transitioned to CLOSED (NOT RESOLVED)
-        assert updated_case.status == CaseStatus.CLOSED
-        assert updated_case.status != CaseStatus.RESOLVED
-        assert updated_case.is_terminal is True
-
-        # 2. Terminal state timestamps set
-        assert updated_case.closed_at is not None
-
-        # 3. Correct closure reason (abandoned, not resolved)
-        assert updated_case.closure_reason == "abandoned"
-
-        # 4. Solution milestone NOT completed (no solution verified)
+        # Solution milestone NOT completed
         assert updated_case.progress.solution_verified is False
-
-        # 5. resolved_at should be None (not a resolution)
-        assert updated_case.resolved_at is None
-
-        # 6. Status history recorded transition to CLOSED
-        assert len(updated_case.action_history) > 0
-        last_transition = updated_case.action_history[-1]
-        assert last_transition.from_status == CaseStatus.INVESTIGATING
-        assert last_transition.to_status == CaseStatus.CLOSED
-        assert "abandoned" in last_transition.reason.lower()
 
     @pytest.mark.asyncio
     async def test_user_intent_ambiguous_close_asks_for_clarification(
@@ -811,7 +788,11 @@ class TestMilestoneEngine:
     async def test_explicit_status_transition_inquiry_to_closed(
         self, mock_llm, mock_repo
     ):
-        """Test explicit status_transition intent: INQUIRY → CLOSED via dropdown"""
+        """Test explicit status_transition intent: INQUIRY → CLOSED via dropdown.
+
+        Dropdown CLOSED now proposes a pending transition (handshake) instead
+        of executing immediately.
+        """
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -849,32 +830,28 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # 1. Status should be CLOSED
-        assert updated_case.status == CaseStatus.CLOSED
+        # 1. Status should still be INQUIRY — pending transition proposed
+        assert updated_case.status == CaseStatus.INQUIRY
 
-        # 2. Closure reason should be "inquiry_only"
-        assert updated_case.closure_reason == "inquiry_only"
+        # 2. Pending transition should be set to "closed"
+        assert updated_case.pending_transition is not None
+        assert updated_case.pending_transition["to_status"] == "closed"
 
-        # 3. closed_at should be set
-        assert updated_case.closed_at is not None
-
-        # 4. Should NOT have gone through investigation
+        # 3. Should NOT have gone through investigation
         assert updated_case.progress.symptom_verified is False
 
-        # 5. Status history should record the transition
-        assert len(updated_case.action_history) > 0
-        last_transition = updated_case.action_history[-1]
-        assert last_transition.from_status == CaseStatus.INQUIRY
-        assert last_transition.to_status == CaseStatus.CLOSED
-
-        # 6. Agent response should acknowledge closure
-        assert "closed" in result["agent_response"].lower()
+        # 4. LLM should NOT be called (deterministic response)
+        assert not mock_llm.generate.called
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_investigating_to_closed(
         self, mock_llm, mock_repo, base_case
     ):
-        """Test explicit status_transition intent: INVESTIGATING → CLOSED via dropdown"""
+        """Test explicit status_transition intent: INVESTIGATING → CLOSED via dropdown.
+
+        Dropdown CLOSED now proposes a pending transition (handshake) instead
+        of executing immediately.
+        """
         engine = MilestoneEngine(
             mock_llm,
             mock_repo,
@@ -900,26 +877,18 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # 1. Status should be CLOSED
-        assert updated_case.status == CaseStatus.CLOSED
+        # 1. Status should still be INVESTIGATING — pending transition proposed
+        assert updated_case.status == CaseStatus.INVESTIGATING
 
-        # 2. Closure reason should be "abandoned"
-        assert updated_case.closure_reason == "abandoned"
+        # 2. Pending transition should be set to "closed"
+        assert updated_case.pending_transition is not None
+        assert updated_case.pending_transition["to_status"] == "closed"
 
-        # 3. closed_at should be set
-        assert updated_case.closed_at is not None
-
-        # 4. Solution should NOT be verified
+        # 3. Solution should NOT be verified
         assert updated_case.progress.solution_verified is False
 
-        # 5. Status history should record the transition
-        assert len(updated_case.action_history) > 0
-        last_transition = updated_case.action_history[-1]
-        assert last_transition.from_status == CaseStatus.INVESTIGATING
-        assert last_transition.to_status == CaseStatus.CLOSED
-
-        # 6. Agent response should acknowledge closure
-        assert "closed" in result["agent_response"].lower()
+        # 4. LLM should NOT be called (deterministic response)
+        assert not mock_llm.generate.called
 
     @pytest.mark.asyncio
     async def test_explicit_status_transition_inquiry_to_investigating(
@@ -1106,10 +1075,11 @@ class TestMilestoneEngine:
     async def test_resolved_dropdown_suggests_close_when_not_ready(
         self, mock_llm, mock_repo, base_case
     ):
-        """Dropdown RESOLVED suggests CLOSE when case lacks root cause and solution.
+        """Dropdown RESOLVED with missing info sets pending_transition with needs_info.
 
-        If the case has no root cause, no solution, and no evidence, the system
-        should not allow resolution. Instead, it suggests closing the case.
+        The system remembers the user's resolve intent so that when they provide
+        the missing info, the next turn shows a confirmation prompt without
+        requiring another dropdown click or LLM call.
         """
         # base_case has no root_cause_conclusion, no solutions, no evidence
         engine = MilestoneEngine(
@@ -1126,9 +1096,11 @@ class TestMilestoneEngine:
             intent_data={"from_status": "investigating", "to_status": "resolved"},
         )
 
-        # Case should still be INVESTIGATING — no transition proposed
+        # Case should still be INVESTIGATING with pending transition + needs_info
         assert result["case_updated"].status == CaseStatus.INVESTIGATING
-        assert result["case_updated"].pending_transition is None
+        assert result["case_updated"].pending_transition is not None
+        assert result["case_updated"].pending_transition["to_status"] == "resolved"
+        assert result["case_updated"].pending_transition["needs_info"] is True
 
         # Response suggests closing instead
         assert "close" in result["agent_response"].lower()
@@ -1228,13 +1200,13 @@ class TestMilestoneEngine:
         assert "resolved" in result["agent_response"].lower()
 
     @pytest.mark.asyncio
-    async def test_closed_transitions_still_execute_immediately(
+    async def test_closed_transitions_use_handshake(
         self, mock_llm, mock_repo, base_case
     ):
-        """CLOSED transitions remain immediate (no handshake needed).
+        """CLOSED transitions now use the handshake pattern (pending transition).
 
-        Design: CLOSED transitions have optional info requirements, so
-        immediate execution is intentional.
+        Design: CLOSED transitions propose a pending transition with a closure
+        readiness summary. The user must confirm before the transition executes.
         """
         engine = MilestoneEngine(
             mock_llm,
@@ -1252,10 +1224,11 @@ class TestMilestoneEngine:
 
         updated_case = result["case_updated"]
 
-        # Should execute immediately (no pending transition)
-        assert updated_case.status == CaseStatus.CLOSED
-        assert updated_case.pending_transition is None
-        # LLM should NOT be called (immediate return)
+        # Should propose transition (not execute immediately)
+        assert updated_case.status == CaseStatus.INVESTIGATING
+        assert updated_case.pending_transition is not None
+        assert updated_case.pending_transition["to_status"] == "closed"
+        # LLM should NOT be called (deterministic response)
         assert not mock_llm.generate.called
 
 

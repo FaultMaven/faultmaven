@@ -202,9 +202,18 @@ class MilestoneUpdates(BaseModel):
     root_cause_identified: Optional[bool] = None
     root_cause_likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     # solution_proposed removed (3F) — set programmatically at ProposedAction creation
-    root_cause_method: Optional[str] = Field(
+    root_cause_method: Optional[
+        Literal[
+            "direct_analysis",
+            "hypothesis_validation",
+            "single_shot_validation",
+            "correlation",
+            "user_provided",
+            "other",
+        ]
+    ] = Field(
         None,
-        description="direct_analysis | hypothesis_validation | correlation | other",
+        description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other",
     )
 
     # Stage-gate milestones (LLM-settable, drive stage transitions)

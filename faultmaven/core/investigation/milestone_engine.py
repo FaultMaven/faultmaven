@@ -588,6 +588,59 @@ def _investigation_confirmation_suggestions() -> list:
     ]
 
 
+def _build_resolution_confirmation(case) -> str:
+    """Build the resolution confirmation prompt with optional enrichment hints.
+
+    Shows what we have on record (root cause + solution) and suggests
+    additional details that would improve the resolution documentation
+    and any runbook generated from it. Makes clear these are optional.
+    """
+    parts = [
+        "Here's what I have on record:\n",
+        f"- **Root cause**: {_get_root_cause_summary(case)}",
+        f"- **Solution**: {_get_solution_summary(case)}",
+    ]
+
+    # Check what enrichment data is missing — these improve docs but don't block resolution
+    enrichment_hints = []
+
+    evidence_count = len(case.evidence) if case.evidence else 0
+    if evidence_count == 0:
+        enrichment_hints.append("diagnostic evidence (logs, metrics, error messages)")
+
+    has_verification = False
+    if case.solutions:
+        has_verification = any(
+            getattr(s, "verification_method", None) for s in case.solutions
+        )
+    if not has_verification:
+        enrichment_hints.append("how you verified the fix worked")
+
+    has_commands = False
+    if case.solutions:
+        has_commands = any(
+            getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
+            for s in case.solutions
+        )
+    if not has_commands:
+        enrichment_hints.append("specific commands or steps you used")
+
+    if enrichment_hints:
+        parts.append(
+            "\nThis is enough to resolve. If you'd like to improve the documentation "
+            "(and any runbook generated from it), you can also share:"
+        )
+        for hint in enrichment_hints:
+            parts.append(f"- {hint}")
+        parts.append("\nConfirm to resolve now, or share more details first.")
+    else:
+        parts.append(
+            "\nIs this correct? Once you confirm, I'll mark the case as resolved."
+        )
+
+    return "\n".join(parts)
+
+
 def _resolution_confirmation_suggestions() -> list:
     """Generate COOPERATIVE follow-up suggestions for resolution confirmation.
 
@@ -1096,16 +1149,19 @@ class MilestoneEngine:
                             )
 
                         confirm_pending_transition(case, case.user_id)
-                        await self.repository.save(case)
-
-                        # Auto-generate report (fire-and-forget)
-                        await self._auto_generate_report(case)
 
                         agent_response = (
                             "Case resolved."
                             if case.status == CaseStatus.RESOLVED
                             else "Case closed."
                         )
+                        self._record_deterministic_turn(
+                            case, user_message or "", agent_response
+                        )
+                        await self.repository.save(case)
+
+                        # Auto-generate report (fire-and-forget)
+                        await self._auto_generate_report(case)
 
                         follow_ups = (
                             _runbook_suggestion()
@@ -1176,33 +1232,48 @@ class MilestoneEngine:
 
                 # Import terminal transition functions
                 from faultmaven.core.investigation.terminal_transitions import (
-                    close_from_inquiry,
-                    force_close_investigation,
+                    assess_closure_readiness,
+                    propose_transition,
                 )
 
                 # Handle each status transition
                 if to_status_str == "closed":
-                    if case.status == CaseStatus.INQUIRY:
-                        close_from_inquiry(case=case, user_id=case.user_id)
-                        agent_response = "Case closed without investigation."
-                    elif case.status == CaseStatus.INVESTIGATING:
-                        force_close_investigation(
-                            case=case, user_id=case.user_id, reason="abandoned"
-                        )
-                        agent_response = "Investigation closed without resolution."
-                    else:
+                    if case.status not in (
+                        CaseStatus.INQUIRY,
+                        CaseStatus.INVESTIGATING,
+                    ):
                         raise ValueError(
                             f"Cannot transition to CLOSED from {case.status.value}"
                         )
 
-                    logger.info(
-                        f"Case {case.case_id} transitioned to CLOSED via explicit intent"
+                    # Use closure readiness for a meaningful summary
+                    closure = assess_closure_readiness(case)
+                    closure_reason = (
+                        "inquiry_only"
+                        if case.status == CaseStatus.INQUIRY
+                        else "abandoned"
                     )
 
-                    # Save and return immediately (skip LLM)
+                    propose_transition(
+                        case=case,
+                        to_status="closed",
+                        reason=f"User requested closure via dropdown ({closure_reason})",
+                        summary=closure.message,
+                        closure_reason=closure_reason,
+                    )
+
+                    logger.info(
+                        f"Proposed CLOSED transition for case {case.case_id} via dropdown "
+                        f"(pending user confirmation)"
+                    )
+
+                    # Save and return with closure summary
+                    self._record_deterministic_turn(
+                        case, user_message or "", closure.message
+                    )
                     await self.repository.save(case)
                     return {
-                        "agent_response": agent_response,
+                        "agent_response": closure.message,
                         "suggested_follow_ups": [],
                         "case_updated": case,
                         "metadata": {
@@ -1281,13 +1352,15 @@ class MilestoneEngine:
                             response_parts.append(f"\n{rb_suggestion.message}")
 
                         # Save and return — transition is complete
+                        _resp = "\n".join(response_parts)
+                        self._record_deterministic_turn(case, user_message or "", _resp)
                         await self.repository.save(case)
 
                         # Auto-generate incident report (fire-and-forget)
                         await self._auto_generate_report(case)
 
                         return {
-                            "agent_response": "\n".join(response_parts),
+                            "agent_response": _resp,
                             "suggested_follow_ups": [],
                             "case_updated": case,
                             "metadata": {
@@ -1305,29 +1378,25 @@ class MilestoneEngine:
 
                     readiness = assess_resolution_readiness(case)
 
-                    if readiness.verdict == readiness.SUGGEST_CLOSE:
-                        # Case lacks fundamental info — suggest CLOSED instead
+                    if readiness.verdict in (
+                        readiness.SUGGEST_CLOSE,
+                        readiness.NEEDS_INFO,
+                    ):
+                        # Not ready — tell user what's missing, remember their intent
                         logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} not ready "
-                            f"for resolution (missing: {readiness.missing}). Suggesting CLOSE."
+                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} "
+                            f"verdict={readiness.verdict} (missing: {readiness.missing}). "
+                            f"Remembering resolve intent."
                         )
-                        await self.repository.save(case)
-                        return {
-                            "agent_response": readiness.message,
-                            "suggested_follow_ups": [],
-                            "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
-                        }
-
-                    if readiness.verdict == readiness.NEEDS_INFO:
-                        # Partially ready — ask for missing details before proposing
-                        logger.info(
-                            f"INVESTIGATING->RESOLVED dropdown: case {case.case_id} needs more info "
-                            f"(missing: {readiness.missing}). Asking user."
+                        propose_transition(
+                            case=case,
+                            to_status="resolved",
+                            reason=f"User indicated resolution via dropdown ({readiness.verdict})",
+                            summary=readiness.message,
+                        )
+                        case.pending_transition["needs_info"] = True
+                        self._record_deterministic_turn(
+                            case, user_message or "", readiness.message
                         )
                         await self.repository.save(case)
                         return {
@@ -1356,15 +1425,14 @@ class MilestoneEngine:
                     )
 
                     # Return immediately with confirmation prompt.
+                    _resp = (
+                        "You've indicated this issue is resolved.\n\n"
+                        + _build_resolution_confirmation(case)
+                    )
+                    self._record_deterministic_turn(case, user_message or "", _resp)
                     await self.repository.save(case)
                     return {
-                        "agent_response": (
-                            "You've indicated this issue is resolved.\n\n"
-                            "Here's what I have on record:\n"
-                            f"- **Root cause**: {_get_root_cause_summary(case)}\n"
-                            f"- **Solution**: {_get_solution_summary(case)}\n\n"
-                            "Is this correct? Once you confirm, I'll mark the case as resolved."
-                        ),
+                        "agent_response": _resp,
                         "suggested_follow_ups": [],
                         "case_updated": case,
                         "metadata": {
@@ -1380,13 +1448,12 @@ class MilestoneEngine:
                             f"Cannot transition to INVESTIGATING from {case.status.value}"
                         )
 
-                    # Design: Dropdown = message. Instead of bypassing the agent,
-                    # inject the pre-composed message and let normal INQUIRY processing
-                    # handle the multi-turn problem statement flow.
-                    # The LLM will:
-                    #   - Ask user to describe the problem (if no statement exists)
-                    #   - Present existing statement for confirmation (if one exists)
-                    #   - Confirm and trigger transition (if already confirmed)
+                    # Inject a pre-composed message and let the normal INQUIRY
+                    # LLM flow handle the problem statement + transition.
+                    # The frontend expects the case to transition in this turn,
+                    # so we fall through to the LLM pipeline which can set
+                    # user_confirmed_investigation=True and trigger the transition
+                    # via _check_automatic_transitions.
                     from faultmaven.modules.case.domain.services.case_action_manager import (
                         CaseActionManager,
                     )
@@ -1483,16 +1550,21 @@ class MilestoneEngine:
                             f"Detected user intent to CLOSE from INQUIRY for case {case.case_id}: '{user_message[:50]}...'"
                         )
                         from faultmaven.core.investigation.terminal_transitions import (
-                            close_from_inquiry,
+                            assess_closure_readiness,
+                            propose_transition,
                         )
 
-                        close_from_inquiry(
+                        closure = assess_closure_readiness(case)
+                        propose_transition(
                             case=case,
-                            user_id=case.user_id,
+                            to_status="closed",
+                            reason="User expressed close intent from INQUIRY via NLP",
+                            summary=closure.message,
+                            closure_reason="inquiry_only",
                         )
 
                         logger.info(
-                            f"Case {case.case_id} transitioned to CLOSED (inquiry_only) based on user intent"
+                            f"Proposed CLOSED transition for case {case.case_id} (inquiry_only) based on user intent"
                         )
 
                 # ========================================
@@ -1572,20 +1644,22 @@ class MilestoneEngine:
                         logger.info(
                             f"Detected explicit user intent to ABANDON case {case.case_id} (CLOSED): '{user_message[:50]}...'"
                         )
-                        # Import here to avoid circular dependency
                         from faultmaven.core.investigation.terminal_transitions import (
-                            force_close_investigation,
+                            assess_closure_readiness,
+                            propose_transition,
                         )
 
-                        # Force close with "abandoned" reason
-                        force_close_investigation(
+                        closure = assess_closure_readiness(case)
+                        propose_transition(
                             case=case,
-                            user_id=case.user_id,
-                            reason="abandoned",
+                            to_status="closed",
+                            reason="User expressed abandonment intent via NLP",
+                            summary=closure.message,
+                            closure_reason="abandoned",
                         )
 
                         logger.info(
-                            f"Case {case.case_id} transitioned to CLOSED (abandoned) based on user intent"
+                            f"Proposed CLOSED transition for case {case.case_id} (abandoned) based on user intent"
                         )
 
                     # CHECK RESOLUTION (medium priority)
@@ -1604,27 +1678,24 @@ class MilestoneEngine:
 
                         readiness = assess_resolution_readiness(case)
 
-                        if readiness.verdict == readiness.SUGGEST_CLOSE:
+                        if readiness.verdict in (
+                            readiness.SUGGEST_CLOSE,
+                            readiness.NEEDS_INFO,
+                        ):
                             logger.info(
-                                f"NLP resolve for case {case.case_id}: not ready "
-                                f"(missing: {readiness.missing}). Suggesting CLOSE."
+                                f"NLP resolve for case {case.case_id}: "
+                                f"verdict={readiness.verdict} (missing: {readiness.missing}). "
+                                f"Remembering resolve intent."
                             )
-                            await self.repository.save(case)
-                            return {
-                                "agent_response": readiness.message,
-                                "suggested_follow_ups": [],
-                                "case_updated": case,
-                                "metadata": {
-                                    "turn_number": case.current_turn,
-                                    "milestones_completed": [],
-                                    "progress_made": False,
-                                },
-                            }
-
-                        if readiness.verdict == readiness.NEEDS_INFO:
-                            logger.info(
-                                f"NLP resolve for case {case.case_id}: needs more info "
-                                f"(missing: {readiness.missing}). Asking user."
+                            propose_transition(
+                                case=case,
+                                to_status="resolved",
+                                reason=f"User indicated resolution via NLP ({readiness.verdict})",
+                                summary=readiness.message,
+                            )
+                            case.pending_transition["needs_info"] = True
+                            self._record_deterministic_turn(
+                                case, user_message, readiness.message
                             )
                             await self.repository.save(case)
                             return {
@@ -1651,15 +1722,14 @@ class MilestoneEngine:
                         )
                         metadata["transition_proposed_this_turn"] = True
 
+                        _resp = (
+                            "It sounds like the issue is resolved.\n\n"
+                            + _build_resolution_confirmation(case)
+                        )
+                        self._record_deterministic_turn(case, user_message, _resp)
                         await self.repository.save(case)
                         return {
-                            "agent_response": (
-                                "It sounds like the issue is resolved.\n\n"
-                                "Here's what I have on record:\n"
-                                f"- **Root cause**: {_get_root_cause_summary(case)}\n"
-                                f"- **Solution**: {_get_solution_summary(case)}\n\n"
-                                "Is this correct? Once you confirm, I'll mark the case as resolved."
-                            ),
+                            "agent_response": _resp,
                             "suggested_follow_ups": [],
                             "case_updated": case,
                             "metadata": {
@@ -1683,15 +1753,17 @@ class MilestoneEngine:
                         # route through the resolve_patterns or abandonment_patterns.
 
                         # Return immediately with clarification request.
+                        _resp = (
+                            "You'd like to close this case. Before I do, I need to know:\n\n"
+                            "- **Resolved** — The problem is fixed. I'll document the solution.\n"
+                            "- **Closed** — The investigation is ending without a solution "
+                            "(abandoned, escalated, or mitigation was sufficient).\n\n"
+                            "Which would you like?"
+                        )
+                        self._record_deterministic_turn(case, user_message, _resp)
                         await self.repository.save(case)
                         return {
-                            "agent_response": (
-                                "You'd like to close this case. Before I do, I need to know:\n\n"
-                                "- **Resolved** — The problem is fixed. I'll document the solution.\n"
-                                "- **Closed** — The investigation is ending without a solution "
-                                "(abandoned, escalated, or mitigation was sufficient).\n\n"
-                                "Which would you like?"
-                            ),
+                            "agent_response": _resp,
                             "suggested_follow_ups": [],
                             "case_updated": case,
                             "metadata": {
@@ -2147,6 +2219,16 @@ class MilestoneEngine:
             await redaction_ctx.save()
 
             agent_response_text = response_obj.agent_response
+
+            # Override LLM response with deterministic confirmation when
+            # user provided missing info after a SUGGEST_CLOSE/NEEDS_INFO verdict.
+            # Shows what we have + enrichment hints, with confirmation suggestions.
+            if metadata.get("resolution_ready_for_confirmation"):
+                agent_response_text = (
+                    "Thanks for the additional details.\n\n"
+                    + _build_resolution_confirmation(case_updated)
+                )
+                follow_ups = _resolution_confirmation_suggestions()
 
             # Append runbook suggestion when case just transitioned to RESOLVED
             if (
@@ -3859,8 +3941,23 @@ class MilestoneEngine:
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
+            _valid_methods = {
+                "direct_analysis",
+                "hypothesis_validation",
+                "single_shot_validation",
+                "correlation",
+                "user_provided",
+                "other",
+            }
             if m.root_cause_method:
-                p.root_cause_method = m.root_cause_method
+                if m.root_cause_method in _valid_methods:
+                    p.root_cause_method = m.root_cause_method
+                else:
+                    logger.warning(
+                        f"LLM returned invalid root_cause_method '{m.root_cause_method}', "
+                        f"mapping to 'other'"
+                    )
+                    p.root_cause_method = "other"
 
             # Ensure consistency: if root_cause_identified was just set,
             # root_cause_method and root_cause_likelihood must also be set
@@ -4272,6 +4369,17 @@ class MilestoneEngine:
                 logger.info(
                     f"Skipping confirmation check - transition was just proposed this turn"
                 )
+            elif case.pending_transition.get("needs_info"):
+                # User was told what's missing and has now responded.
+                # Don't re-evaluate readiness (it checks formal objects the LLM
+                # may not have populated yet). Trust the user — clear needs_info
+                # and present the confirmation prompt with enrichment hints.
+                case.pending_transition["needs_info"] = False
+                metadata["resolution_ready_for_confirmation"] = True
+                logger.info(
+                    f"Case {case.case_id}: needs_info turn received, "
+                    f"presenting confirmation prompt"
+                )
             else:
                 from faultmaven.core.investigation.terminal_transitions import (
                     cancel_pending_transition,
@@ -4620,6 +4728,36 @@ class MilestoneEngine:
             next_steps=next_steps or [],
             stagnation_detected=stagnation_detected,
             validation_repairs=validation_repairs or [],
+        )
+
+    def _record_deterministic_turn(
+        self,
+        case: Case,
+        user_message: str,
+        agent_response: str,
+    ) -> None:
+        """Record a minimal TurnProgress for deterministic early-return paths.
+
+        Deterministic paths (dropdown confirmations, closure summaries, etc.)
+        skip the full LLM pipeline but still consume a turn number. Without
+        recording a TurnProgress entry, the turn_history validator rejects
+        the case on the next load due to non-sequential turn numbers.
+        """
+        case.turn_history.append(
+            TurnProgress(
+                turn_number=case.current_turn,
+                timestamp=datetime.now(UTC),
+                milestones_completed=[],
+                evidence_added=[],
+                hypotheses_generated=[],
+                hypotheses_validated=[],
+                solutions_proposed=[],
+                progress_made=False,
+                actions_taken=[],
+                outcome=TurnOutcome.CONVERSATION,
+                user_message_summary=self._summarize_text(user_message, 200),
+                agent_response_summary=self._summarize_text(agent_response, 500),
+            )
         )
 
     def _extract_actions(self, agent_response: str) -> list[str]:

@@ -722,11 +722,21 @@ If you cannot formulate a new hypothesis or identify new evidence to request:
   solutions attempted and their outcomes
 - Let the user decide whether to continue iterating or escalate
 
-**COMPLETION:**
-When the user confirms the solution worked:
-→ Mark solution_verified = True
-→ Case transitions to RESOLVED
+**COMPLETION (Two-Step Confirmation):**
+
+This is a two-step process. You MUST follow these steps exactly:
+
+**TURN WHERE YOU DETECT SOLUTION SUCCESS (solution_verified is not yet True):**
+→ Set proposed_transition to RESOLVED in your response
+→ Offer exactly two COOPERATIVE suggestions (query_submit):
+  1. Positive: "Yes, mark as resolved" — confirms the resolution
+  2. Mild negative: "Not yet, I want to investigate further" — lets user continue
+→ Do NOT suggest evidence collection (logs, metrics, monitoring) as alternatives.
+  If the user declines, they want to continue investigation, not collect more data.
+
+**TURN WHERE USER CONFIRMS RESOLUTION (solution_verified = True):**
 → Provide a brief summary: what happened, what fixed it, preventive recommendations
+→ Case transitions to RESOLVED
 
 **MITIGATION FOLLOW-UP:**
 If a temporary workaround was applied during MITIGATION stage:

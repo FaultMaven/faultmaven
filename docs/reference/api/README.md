@@ -5627,7 +5627,7 @@ Agent completes milestones opportunistically based on data availability.
 - `changes_identified` (boolean) ❌ - Recent changes identified: deployments, configs, scaling events
 - `root_cause_identified` (boolean) ❌ - Root cause determined (directly or via hypothesis validation)
 - `root_cause_likelihood` (number) ❌ - Likelihood in root cause identification (0.0 = unknown, 1.0 = certain)
-- `root_cause_method` (unknown) ❌ - How root cause was identified: direct_analysis | hypothesis_validation | correlation | other
+- `root_cause_method` (unknown) ❌ - How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other
 - `solution_proposed` (boolean) ❌ - Solution or mitigation has been proposed
 - `solution_applied` (boolean) ❌ - Solution has been applied by user
 - `solution_verified` (boolean) ❌ - Solution effectiveness verified (error rate decreased, metrics improved)

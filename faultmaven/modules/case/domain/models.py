@@ -407,7 +407,7 @@ class InvestigationProgress(BaseModel):
 
     root_cause_method: Optional[str] = Field(
         default=None,
-        description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | other",
+        description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other",
     )
 
     # ============================================================
@@ -534,6 +534,7 @@ class InvestigationProgress(BaseModel):
                 "hypothesis_validation",
                 "single_shot_validation",
                 "correlation",
+                "user_provided",
                 "other",
             ]
             if v not in allowed:

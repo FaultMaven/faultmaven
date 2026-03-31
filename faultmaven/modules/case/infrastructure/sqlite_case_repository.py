@@ -446,17 +446,19 @@ class SQLiteCaseRepository(CaseRepository):
             result = await self.db.execute(list_query, params)
             case_ids = [row[0] for row in result.fetchall()]
 
-            # Fetch full cases
+            # Fetch full cases — skip individual failures so one bad case
+            # doesn't prevent listing all others
             cases = []
             for cid in case_ids:
-                case = await self.get(cid)
-                if case:
-                    cases.append(case)
-
-            return cases, total_count
-
-        except Exception as e:
-            raise RepositoryException(f"Failed to list cases: {e}") from e
+                try:
+                    case = await self.get(cid)
+                    if case:
+                        cases.append(case)
+                except RepositoryException as e:
+                    logger.error(
+                        f"Skipping case {cid} in list: deserialization failed: {e}"
+                    )
+                    continue
 
             return cases, total_count
 

@@ -243,7 +243,7 @@ If multiple solutions exist, the agent proposes resolution when AT LEAST ONE
 solution appears effective. The user confirms which solution resolved the issue.
 
 ```python
-def propose_transition(case, to_status, reason, summary, evidence_ids=None):
+def propose_transition(case, to_status, reason, summary, evidence_ids=None, closure_reason=None):
     """Store a pending transition proposal. Does NOT execute."""
     case.pending_transition = {
         "to_status": to_status,
@@ -253,6 +253,8 @@ def propose_transition(case, to_status, reason, summary, evidence_ids=None):
         "proposed_at": datetime.now(UTC).isoformat(),
         "proposed_by": "agent",
     }
+    if closure_reason:
+        case.pending_transition["closure_reason"] = closure_reason
 
 def confirm_pending_transition(case, user_id):
     """Execute transition after user confirms.
@@ -262,9 +264,10 @@ def confirm_pending_transition(case, user_id):
     pending_transition is only cleared after successful execution.
     """
     if pending["to_status"] == "resolved":
-        _execute_resolved_transition(case, user_id, pending["reason"])  # raises on invalid state
+        _execute_resolved_transition(case, user_id, pending["reason"])
     elif pending["to_status"] == "closed":
-        _execute_closed_transition(case, user_id, pending["reason"])    # raises on invalid state
+        close_reason = pending.get("closure_reason", pending["reason"])
+        _execute_closed_transition(case, user_id, close_reason)
     case.pending_transition = None
     # DISPOSITION - no further case actions
 ```
@@ -273,32 +276,54 @@ def confirm_pending_transition(case, user_id):
 The user might mean "this command works" not "the whole system is fixed."
 Disposition actions are irreversible, so false positives are costly.
 
+**CLOSED transitions also use the handshake.** Unlike RESOLVED, CLOSED transitions
+don't need readiness checks, but `assess_closure_readiness(case)` produces a
+meaningful investigation summary for the confirmation prompt. This gives the user a
+chance to see what was accomplished before committing to an irreversible action.
+
+**needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO` or
+`SUGGEST_CLOSE`, the system stores the pending transition with `needs_info=True`.
+This remembers the user's intent to resolve. On subsequent turns, the system
+re-evaluates readiness automatically. When the case becomes READY, the system
+overrides the LLM response with a deterministic confirmation prompt.
+
 #### INVESTIGATING → CLOSED (Disposition)
 
-**Trigger**: Investigation abandoned without solution
+**Trigger**: User-Agent Handshake (same pattern as RESOLVED)
+
+Both dropdown and NLP abandonment patterns propose a pending transition with a
+closure readiness summary. The user must confirm before the transition executes.
+
+`assess_closure_readiness(case)` summarizes what was accomplished (evidence count,
+hypotheses explored, milestones completed, root cause, solutions) for the confirmation
+prompt. Two verdicts: `HAS_SUBSTANCE` (shows summary) or `TRIVIAL` (minimal data warning).
 
 ```python
-def force_close_investigation(case: Case, user_id: str, reason: str):
-    """User abandons investigation without solution"""
-    case.status = CaseStatus.CLOSED
-    case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = reason  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
-    # DISPOSITION - no further case actions
-    # Note: "mitigation_sufficient" is used when user closes after mitigation
-    # without pursuing RCA. UI renders as "Closed - Mitigated" (distinct from abandoned).
+closure = assess_closure_readiness(case)
+propose_transition(
+    case=case,
+    to_status="closed",
+    reason="User expressed abandonment intent",
+    summary=closure.message,
+    closure_reason="abandoned",  # "abandoned" | "escalated" | "mitigation_sufficient" | "other"
+)
+# User confirms → _execute_closed_transition(case, user_id, "abandoned")
 ```
 
 #### INQUIRY → CLOSED (Disposition)
 
-**Trigger**: Inquiry-only, no investigation needed
+**Trigger**: User-Agent Handshake (same pattern as above)
 
 ```python
-def close_from_inquiry(case: Case, user_id: str):
-    """Close after inquiry without formal investigation"""
-    case.status = CaseStatus.CLOSED
-    case.closed_at = datetime.now(timezone.utc)
-    case.closure_reason = "inquiry_only"
-    # DISPOSITION - no further case actions
+closure = assess_closure_readiness(case)
+propose_transition(
+    case=case,
+    to_status="closed",
+    reason="User expressed close intent from INQUIRY",
+    summary=closure.message,
+    closure_reason="inquiry_only",
+)
+# User confirms → _execute_closed_transition(case, user_id, "inquiry_only")
 ```
 
 #### INQUIRY → RESOLVED (Disposition, Fast-Track)
@@ -669,38 +694,17 @@ Body: {
 
 ---
 
-**Step 3: Agent Validates and Asks for Confirmation**
+##### Step 3: Agent Validates and Responds
 
-Agent receives request message and responds with:
-1. **Context validation** - Ensures prerequisites are met or asks for missing information
-2. **Confirmation question** - Presents specific question with Yes/No buttons
-3. **Tip text** - Indicates user can type qualified answer
+The dropdown injects a pre-composed message and routes through the normal INQUIRY
+LLM pipeline. The LLM handles validation and confirmation:
 
-**Example Agent Response** (INQUIRY → INVESTIGATING):
+**With problem statement**: The LLM presents the existing problem description for
+confirmation. When the LLM sets `user_confirmed_investigation=True`, the transition
+fires automatically through `_check_automatic_transitions`.
 
-```
-"You've requested to move to investigation.
-
-Based on our conversation, the problem is:
-'Database queries timing out in production, affecting 30% of requests'
-
-Is this what you want me to investigate?
-
-[✅ Yes]  [❌ No]
-
-💡 Tip: Click a button or type to clarify"
-```
-
-**If missing information**, agent asks questions first:
-
-```
-"You've requested to move to investigation.
-
-Before we can investigate, I need to understand the problem.
-What issue are you experiencing?"
-
-(No buttons yet - waiting for user to provide context)
-```
+**Without problem statement**: The LLM asks the user to describe the problem.
+No transition occurs until the user provides context and the LLM confirms.
 
 ---
 
@@ -1959,40 +1963,47 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 
 **Eligibility**: RESOLVED cases only. CLOSED cases are not eligible — quality over quantity.
 
-**Trigger**: Two paths — both require user approval (never automatic):
+**Design**: Suggest first, evaluate on acceptance. The agent always offers a COOPERATIVE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
 
-1. **Agent suggests** — When the case reaches RESOLVED, the agent evaluates runbook readiness and suggests generation if appropriate. User approves or ignores.
-2. **User requests** — Via Dashboard RunbookTab or by asking the agent directly.
+**Trigger flow (Copilot)**:
 
-**Rationale**: Only resolved cases have a confirmed root cause and verified solution. Extracting runbooks from abandoned or escalated cases would produce incomplete, unverified procedures that could mislead future investigators. Automatic generation is avoided to prevent unreviewed content in the knowledge pipeline.
+```text
+User confirms resolution
+    → Agent offers COOPERATIVE suggestion: "Would you like me to create a runbook?"
+    → User accepts
+        → System evaluates readiness + deduplication
+        → Four possible outcomes:
+            SUCCESS           → Draft created, user redirected to Dashboard
+            NOT_SUITABLE      → "Not enough data for a quality runbook" (no draft)
+            EXISTING_COVERS   → "Similar runbook exists: {title} ({score}% match)"
+            GENERATION_FAILED → "Generation failed, try again later"
+    → User declines or ignores
+        → No evaluation, no side effects
+```
 
-**3-Factor Runbook Gate** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
+**Trigger flow (Dashboard)**:
 
-Before suggesting or attempting runbook generation, the system checks three factors (cheapest first):
+Users can also generate runbooks from the Dashboard RunbookTab on resolved cases. The same readiness + dedup evaluation applies when the user clicks "Generate Runbook".
 
-| Factor | Check | Blocks if |
-|--------|-------|-----------|
-| **1. Content readiness** | `assess_runbook_readiness(case)` — maps case data to the 7 canonical runbook sections | Missing problem definition OR root cause with actionable fix (commands/steps) |
-| **2. User approval** | Agent suggests, user approves | User ignores or declines |
-| **3. No similar runbook exists** | `RunbookKnowledgeBase` vector search in ChromaDB | ≥85% match with existing runbook |
+**Readiness assessment** (`assess_runbook_readiness()` in `terminal_transitions.py`):
 
-**Content readiness verdicts** (`RunbookReadiness`):
+Maps case data to the 7 canonical runbook sections and checks coverage.
 
-| Verdict | Condition | Agent behavior |
-|---------|-----------|----------------|
-| `READY` | Problem + root cause + actionable solution + at most 1 enrichment gap | Suggests: "Would you like me to create a runbook?" |
-| `NEEDS_ENRICHMENT` | Critical sections OK, but 2+ enrichment sections thin (diagnostic steps, mitigation, verification) | Suggests with caveat: "Some sections would be thin. Proceed or provide more detail?" |
-| `NOT_SUITABLE` | Missing problem definition or root cause with actionable fix | No suggestion shown |
+| Verdict | Condition | Outcome |
+|---------|-----------|---------|
+| `READY` | Problem + root cause + actionable solution + at most 1 enrichment gap | Draft generated |
+| `NEEDS_ENRICHMENT` | Critical sections OK, but 2+ enrichment sections thin | Draft generated with quality warning |
+| `NOT_SUITABLE` | Missing problem definition or root cause with actionable fix | `NOT_SUITABLE` outcome — no draft |
 
-**Deduplication verdicts** (`RunbookSuggestion`):
+**Deduplication** (`RunbookKnowledgeBase` vector search):
 
-| Similarity | Verdict | Agent behavior |
-|------------|---------|----------------|
-| ≥85% | `EXISTING_COVERS` | "A similar runbook already exists: **{title}** ({score}% match)" |
-| 70-84% | `SUGGEST_WITH_CAVEATS` | "A partially similar runbook exists. Generate new or review existing?" |
-| <70% | `SUGGEST` | "Would you like me to create a runbook?" |
+| Similarity | Verdict | Outcome |
+|------------|---------|---------|
+| ≥85% | `EXISTING_COVERS` | No new draft — link to existing runbook |
+| 70-84% | `SUGGEST_WITH_CAVEATS` | Draft generated with note about similar runbook |
+| <70% | No conflict | Draft generated normally |
 
-**Workflow** (canonical path via `ConversionService`, triggered after user approves):
+**Workflow** (canonical path via `ConversionService`, triggered after user accepts):
 
 1. `POST /api/v1/knowledge/convert-from-case` — extracts case data (solutions, root cause, hypotheses, evidence, domain/service)
 2. LLM generates canonical runbook (YAML frontmatter + 7 markdown sections) using `CONVERSION_SYSTEM_PROMPT`

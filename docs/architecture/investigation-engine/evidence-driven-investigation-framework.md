@@ -602,16 +602,16 @@ RESOLVED case
 
 **Why RESOLVED only**: CLOSED cases lack a verified root cause and confirmed solution. Extracting runbooks from abandoned or escalated cases would produce incomplete, unverified procedures. The auto-generated Closure Summary captures what was learned from CLOSED cases without risking low-quality knowledge base entries.
 
-**Runbook generation is never automatic.** Two triggers, both requiring user approval:
+**Runbook generation is never automatic.** Design: suggest first, evaluate on acceptance.
 
-1. **Agent suggests** — On resolution, the system evaluates a 3-factor gate (content readiness, deduplication, user approval). If the case passes, the agent says "Would you like me to create a runbook?" The user approves or ignores.
-2. **User requests** — Via Dashboard RunbookTab or by asking the agent directly.
+1. **Agent always offers** — On resolution, the agent presents a COOPERATIVE suggestion: "Would you like me to create a runbook?" No evaluation happens yet.
+2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Four outcomes: `SUCCESS` (draft created), `NOT_SUITABLE` (not enough data), `EXISTING_COVERS` (similar runbook exists), `GENERATION_FAILED`.
+3. **User requests** — Via Dashboard RunbookTab, same evaluation applies.
 
-**3-Factor Runbook Gate** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
+**Readiness + Deduplication** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
 
 1. **Content readiness** (`assess_runbook_readiness`) — Maps case data to the 7 canonical runbook sections. Requires problem definition + root cause with actionable fix (commands/steps). Returns READY, NEEDS_ENRICHMENT, or NOT_SUITABLE.
-2. **User approval** — Agent presents the suggestion; user decides. Never bypassed.
-3. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`. ≥85% match → agent tells user an existing runbook covers this. 70-84% → offers both options. <70% → suggests generating new.
+2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`. ≥85% match → existing covers. 70-84% → suggest with caveat. <70% → no conflict.
 
 **Auto-summary guardrail** (`should_generate_terminal_summary()`): Summaries are auto-generated for all terminal cases that have both sufficient conversation (>=4 messages) and investigation substance (evidence, hypotheses, confirmed description, or completed milestones). Always skipped for duplicates.
 

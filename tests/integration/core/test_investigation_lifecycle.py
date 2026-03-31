@@ -544,7 +544,7 @@ class TestInvestigationLifecycle:
         assert updated2.inquiry.decided_to_investigate is True
 
     async def test_close_from_inquiry_via_intent(self, engine, case_repo):
-        """Close case from INQUIRY without investigation via explicit intent."""
+        """Close case from INQUIRY via dropdown proposes pending transition."""
         case = _make_inquiry_case(current_turn=1)
         await case_repo.save(case)
 
@@ -556,11 +556,13 @@ class TestInvestigationLifecycle:
         )
 
         updated = result["case_updated"]
-        assert updated.status == CaseStatus.CLOSED
-        assert updated.is_terminal is True
+        # Should propose CLOSED, not execute immediately
+        assert updated.status == CaseStatus.INQUIRY
+        assert updated.pending_transition is not None
+        assert updated.pending_transition["to_status"] == "closed"
 
     async def test_abandon_investigation_via_intent(self, engine, case_repo):
-        """Close INVESTIGATING case without resolution via explicit intent."""
+        """Close INVESTIGATING case via dropdown proposes pending transition."""
         case = _make_investigating_case(current_turn=5)
         await case_repo.save(case)
 
@@ -572,8 +574,10 @@ class TestInvestigationLifecycle:
         )
 
         updated = result["case_updated"]
-        assert updated.status == CaseStatus.CLOSED
-        assert updated.is_terminal is True
+        # Should propose CLOSED, not execute immediately
+        assert updated.status == CaseStatus.INVESTIGATING
+        assert updated.pending_transition is not None
+        assert updated.pending_transition["to_status"] == "closed"
 
 
 # ============================================================
@@ -905,7 +909,7 @@ class TestNaturalLanguageIntentDetection:
     """Test pattern-based intent detection for status transitions."""
 
     async def test_close_from_inquiry_via_natural_language(self, engine, case_repo):
-        """User says 'never mind' during INQUIRY → case closed."""
+        """User says 'never mind' during INQUIRY → pending transition proposed."""
         case = _make_inquiry_case(current_turn=1)
         await case_repo.save(case)
 
@@ -916,15 +920,16 @@ class TestNaturalLanguageIntentDetection:
         ):
             result = await engine.process_turn(case, "close this case, never mind")
 
-        assert result["case_updated"].status == CaseStatus.CLOSED
+        updated = result["case_updated"]
+        assert updated.pending_transition is not None
+        assert updated.pending_transition["to_status"] == "closed"
 
     async def test_abandon_investigation_via_natural_language(self, engine, case_repo):
-        """User says 'abandon this case' during INVESTIGATING → case closed."""
+        """User says 'abandon this case' during INVESTIGATING → pending transition proposed."""
         case = _make_investigating_case(current_turn=5)
         await case_repo.save(case)
 
-        # "abandon this case" triggers force_close_investigation → CLOSED
-        # Still goes through LLM but status changes before response processing
+        # "abandon this case" now proposes CLOSED via handshake
         with patch.object(
             engine,
             "_generate_structured_output",
@@ -932,7 +937,9 @@ class TestNaturalLanguageIntentDetection:
         ):
             result = await engine.process_turn(case, "I want to abandon this case")
 
-        assert result["case_updated"].status == CaseStatus.CLOSED
+        updated = result["case_updated"]
+        assert updated.pending_transition is not None
+        assert updated.pending_transition["to_status"] == "closed"
 
     async def test_resolve_proposal_via_natural_language(self, engine, case_repo):
         """User says 'the fix worked' → proposes transition (User-Agent Handshake)."""

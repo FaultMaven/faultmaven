@@ -514,6 +514,12 @@ async def lifespan(app: FastAPI):
         app.state.llm_provider = container.get_llm_provider()
         logger.info("✅ Services attached to app.state (Composition Root)")
 
+        # Late-bind conversion_service into milestone engine (avoids circular DI)
+        _milestone_engine = getattr(container, "milestone_engine", None)
+        _conversion_svc = getattr(app.state, "conversion_service", None)
+        if _milestone_engine and _conversion_svc:
+            _milestone_engine.conversion_service = _conversion_svc
+
         # Check LLM provider configuration and warn if none configured
         _check_llm_configuration(app.state.llm_provider, settings=settings)
     except RuntimeError as e:
