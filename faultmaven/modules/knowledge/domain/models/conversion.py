@@ -283,6 +283,94 @@ class CaseConversionRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
     scope: str = "global"
 
+    @classmethod
+    def from_case(cls, case, scope: str = "global") -> "CaseConversionRequest":
+        """Extract runbook generation data from a resolved Case domain object.
+
+        Reusable by both the API route and the milestone engine.
+        """
+        # Root cause
+        rc_obj = getattr(case, "root_cause_conclusion", None)
+        root_cause = getattr(rc_obj, "root_cause", None) if rc_obj else None
+        rc_mechanism = getattr(rc_obj, "mechanism", None) if rc_obj else None
+
+        # Problem description
+        pv = getattr(case, "problem_verification", None)
+        symptom = (getattr(pv, "symptom_statement", "") or "") if pv else ""
+        severity = (getattr(pv, "severity", "medium") or "medium") if pv else "medium"
+        affected = (getattr(pv, "affected_services", []) or []) if pv else []
+
+        # Solutions
+        solutions = []
+        for sol in getattr(case, "solutions", []) or []:
+            parts = []
+            if t := getattr(sol, "title", None):
+                parts.append(f"Solution: {t}")
+            if v := getattr(sol, "immediate_action", None):
+                parts.append(f"Immediate action: {v}")
+            if v := getattr(sol, "longterm_fix", None):
+                parts.append(f"Permanent fix: {v}")
+            for attr, label, fmt in [
+                (
+                    "implementation_steps",
+                    "Steps",
+                    lambda s: "\n".join(f"  {i+1}. {x}" for i, x in enumerate(s)),
+                ),
+                ("commands", "Commands", lambda s: "\n".join(f"  $ {x}" for x in s)),
+                ("risks", "Risks", lambda s: "; ".join(s)),
+            ]:
+                if v := getattr(sol, attr, None):
+                    parts.append(
+                        f"{label}:\n{fmt(v)}"
+                        if attr != "risks"
+                        else f"{label}: {fmt(v)}"
+                    )
+            if parts:
+                solutions.append("\n".join(parts))
+
+        # Hypotheses
+        hypotheses = getattr(case, "hypotheses", {}) or {}
+        validated = []
+        for h_id, h in hypotheses.items() if isinstance(hypotheses, dict) else []:
+            status = getattr(h, "status", None)
+            val = status.value if hasattr(status, "value") else str(status)
+            if val == "validated":
+                validated.append(getattr(h, "statement", None) or str(h))
+        hyp_summary = "; ".join(validated) if validated else ""
+
+        # Evidence summary
+        wc = getattr(case, "working_conclusion", None)
+        ev_summary = ""
+        if wc:
+            ev_summary = getattr(wc, "statement", "") or ""
+            if r := getattr(wc, "reasoning", None):
+                ev_summary += f"\nReasoning: {r}"
+        briefs = [
+            getattr(e, "summary", None) for e in (getattr(case, "evidence", []) or [])
+        ]
+        briefs = [b for b in briefs if b][:10]
+        if briefs:
+            ev_summary += "\n\nKey evidence:\n" + "\n".join(f"- {b}" for b in briefs)
+
+        service = affected[0] if affected else "unknown"
+        tags = getattr(case, "tags", []) or []
+
+        return cls(
+            case_id=case.case_id,
+            title=getattr(case, "title", "Untitled Case") or "Untitled Case",
+            description=symptom,
+            root_cause=root_cause,
+            root_cause_mechanism=rc_mechanism,
+            solutions=solutions,
+            hypotheses_summary=hyp_summary,
+            evidence_summary=ev_summary,
+            domain="general",
+            service=service,
+            severity=severity.lower() if isinstance(severity, str) else "medium",
+            tags=tags if tags else affected,
+            scope=scope,
+        )
+
 
 # =============================================================================
 # ID Generation Utilities

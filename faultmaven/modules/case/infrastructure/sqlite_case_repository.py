@@ -33,6 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.contracts import (
+    ActionAttempt,
     Case,
     CaseAction,
     CaseCheckpoint,
@@ -50,11 +51,13 @@ from faultmaven.modules.case.contracts import (
     InvestigationStrategy,
     PathSelection,
     ProblemVerification,
+    ProposedAction,
     ReportStatus,
     ReportType,
     RootCauseConclusion,
     RunbookMetadata,
     Solution,
+    TurnProgress,
     UploadedFile,
     WorkingConclusion,
 )
@@ -1172,12 +1175,14 @@ class SQLiteCaseRepository(CaseRepository):
             INSERT INTO cases (
                 case_id, user_id, organization_id, title,
                 status, created_at, updated_at,
+                is_archived, archived_at,
                 inquiry, problem_verification, working_conclusion,
                 root_cause_conclusion, path_selection,
                 escalation_state, documentation, progress, metadata
             ) VALUES (
                 :case_id, :user_id, :organization_id, :title,
                 :status, :created_at, :updated_at,
+                :is_archived, :archived_at,
                 :inquiry, :problem_verification, :working_conclusion,
                 :root_cause_conclusion, :path_selection,
                 :escalation_state, :documentation, :progress, :metadata
@@ -1188,6 +1193,8 @@ class SQLiteCaseRepository(CaseRepository):
                 title = EXCLUDED.title,
                 status = EXCLUDED.status,
                 updated_at = EXCLUDED.updated_at,
+                is_archived = EXCLUDED.is_archived,
+                archived_at = EXCLUDED.archived_at,
                 inquiry = EXCLUDED.inquiry,
                 problem_verification = EXCLUDED.problem_verification,
                 working_conclusion = EXCLUDED.working_conclusion,
@@ -1210,6 +1217,12 @@ class SQLiteCaseRepository(CaseRepository):
                 "status": case.status.value,
                 "created_at": case.created_at,
                 "updated_at": case.updated_at,
+                "is_archived": (
+                    case.is_archived if hasattr(case, "is_archived") else False
+                ),
+                "archived_at": (
+                    case.archived_at if hasattr(case, "archived_at") else None
+                ),
                 "inquiry": json.dumps(to_json_compatible(case.inquiry.model_dump())),
                 "problem_verification": (
                     json.dumps(
@@ -1259,6 +1272,31 @@ class SQLiteCaseRepository(CaseRepository):
                             to_json_compatible(case.resolved_at)
                             if hasattr(case, "resolved_at") and case.resolved_at
                             else None
+                        ),
+                        "pending_transition": case.pending_transition,
+                        "proposed_actions": (
+                            [
+                                to_json_compatible(a.model_dump())
+                                for a in case.proposed_actions
+                            ]
+                            if case.proposed_actions
+                            else []
+                        ),
+                        "action_attempts": (
+                            [
+                                to_json_compatible(a.model_dump())
+                                for a in case.action_attempts
+                            ]
+                            if case.action_attempts
+                            else []
+                        ),
+                        "turn_history": (
+                            [
+                                to_json_compatible(t.model_dump())
+                                for t in case.turn_history
+                            ]
+                            if case.turn_history
+                            else []
                         ),
                     }
                 ),
@@ -1465,12 +1503,16 @@ class SQLiteCaseRepository(CaseRepository):
                     solution_id, case_id, organization_id, solution_type, title, immediate_action,
                     longterm_fix, implementation_steps, commands, risks,
                     description, status,
-                    proposed_at, updated_at, metadata
+                    risk_level, estimated_effort, verification_result, verification_timestamp,
+                    proposed_at, implemented_at, updated_at, metadata,
+                    created_by, updated_by
                 ) VALUES (
                     :solution_id, :case_id, :organization_id, :solution_type, :title, :immediate_action,
                     :longterm_fix, :implementation_steps, :commands, :risks,
                     :description, :status,
-                    :proposed_at, :updated_at, :metadata
+                    :risk_level, :estimated_effort, :verification_result, :verification_timestamp,
+                    :proposed_at, :implemented_at, :updated_at, :metadata,
+                    :created_by, :updated_by
                 )
                 ON CONFLICT (solution_id) DO UPDATE SET
                     solution_type = EXCLUDED.solution_type,
@@ -1482,6 +1524,11 @@ class SQLiteCaseRepository(CaseRepository):
                     risks = EXCLUDED.risks,
                     description = EXCLUDED.description,
                     status = EXCLUDED.status,
+                    risk_level = EXCLUDED.risk_level,
+                    estimated_effort = EXCLUDED.estimated_effort,
+                    verification_result = EXCLUDED.verification_result,
+                    verification_timestamp = EXCLUDED.verification_timestamp,
+                    implemented_at = EXCLUDED.implemented_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
             """
@@ -1527,10 +1574,21 @@ class SQLiteCaseRepository(CaseRepository):
                         )
                     ),
                     "status": "proposed",
+                    "risk_level": (
+                        solution.risk_level if hasattr(solution, "risk_level") else None
+                    ),
+                    "estimated_effort": (
+                        solution.effort if hasattr(solution, "effort") else None
+                    ),
+                    "verification_result": None,
+                    "verification_timestamp": None,
                     "proposed_at": getattr(solution, "proposed_at", None)
                     or datetime.now(UTC),
+                    "implemented_at": None,
                     "updated_at": datetime.now(UTC),
                     "metadata": json.dumps({}),
+                    "created_by": "system",
+                    "updated_by": None,
                 },
             )
 
@@ -1807,11 +1865,30 @@ class SQLiteCaseRepository(CaseRepository):
             "status": CaseStatus(row.status),
             "action_history": [],
             "closure_reason": metadata.get("closure_reason"),
+            "pending_transition": metadata.get("pending_transition"),
             "progress": progress,
             "current_turn": metadata.get("current_turn", 0),
             "turns_without_progress": metadata.get("turns_without_progress", 0),
             "message_count": metadata.get("message_count", 0),
-            "turn_history": [],
+            "turn_history": (
+                [TurnProgress(**t) for t in metadata.get("turn_history", [])]
+                if metadata.get("turn_history")
+                else []
+            ),
+            "proposed_actions": (
+                [ProposedAction(**a) for a in metadata.get("proposed_actions", [])]
+                if metadata.get("proposed_actions")
+                else []
+            ),
+            "action_attempts": (
+                [ActionAttempt(**a) for a in metadata.get("action_attempts", [])]
+                if metadata.get("action_attempts")
+                else []
+            ),
+            "is_archived": (
+                bool(row.is_archived) if hasattr(row, "is_archived") else False
+            ),
+            "archived_at": (row.archived_at if hasattr(row, "archived_at") else None),
             "path_selection": path_selection,
             "inquiry": inquiry,
             "problem_verification": problem_verification,

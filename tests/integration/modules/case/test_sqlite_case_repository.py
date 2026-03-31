@@ -92,7 +92,9 @@ async def create_test_schema(session: AsyncSession):
             escalation_state TEXT,
             documentation TEXT,
             progress TEXT,
-            metadata TEXT
+            metadata TEXT,
+            is_archived INTEGER NOT NULL DEFAULT 0,
+            archived_at TIMESTAMP
         )
     """
         )

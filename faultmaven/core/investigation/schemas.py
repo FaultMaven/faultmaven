@@ -496,8 +496,8 @@ class RootCauseConclusionUpdate(BaseModel):
 
     root_cause: str
     mechanism: str
-    evidence_ids: List[str]
-    likelihood: float = Field(ge=0.0, le=1.0)
+    evidence_ids: List[str] = Field(default_factory=list)
+    likelihood: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class SolutionToAdd(BaseModel):

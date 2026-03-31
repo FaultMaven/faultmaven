@@ -564,6 +564,95 @@ def _get_solution_summary(case) -> str:
     return "Not yet documented"
 
 
+def _investigation_confirmation_suggestions() -> list:
+    """Generate COOPERATIVE follow-up suggestions for investigation confirmation.
+
+    Used when the dropdown triggers INQUIRY → INVESTIGATING and a problem
+    statement already exists. One positive (confirm) and one mild negative (refine).
+    """
+    return [
+        {
+            "label": "Yes, let's investigate",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Yes, that's correct. Let's investigate.",
+            "body": "Confirm the problem statement and start the investigation.",
+        },
+        {
+            "label": "Not quite, let me clarify",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Not quite — let me clarify the problem before we investigate.",
+            "body": "Refine the problem statement before starting the investigation.",
+        },
+    ]
+
+
+def _resolution_confirmation_suggestions() -> list:
+    """Generate COOPERATIVE follow-up suggestions for resolution confirmation.
+
+    Mirrors the INQUIRY confirmation pattern: one positive (confirm resolution)
+    and one mild negative (continue investigating).
+    """
+    return [
+        {
+            "label": "Yes, mark as resolved",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
+            "body": "Confirm resolution and close the investigation.",
+        },
+        {
+            "label": "Not yet, continue investigating",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Not yet — I'd like to continue investigating before resolving.",
+            "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+        },
+    ]
+
+
+def _close_confirmation_suggestions() -> list:
+    """Generate COOPERATIVE follow-up suggestions for close (abandon) confirmation.
+
+    Mirrors the INQUIRY and RESOLVED confirmation patterns: one positive
+    (confirm close) and one mild negative (continue investigating).
+    """
+    return [
+        {
+            "label": "Yes, close this case",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Yes, close this case without resolution.",
+            "body": "Confirm closing the case. A summary will be generated.",
+        },
+        {
+            "label": "Not yet, continue investigating",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Not yet — I'd like to continue investigating.",
+            "body": "Keep the investigation open and continue working toward a solution.",
+        },
+    ]
+
+
+def _runbook_suggestion() -> list:
+    """Generate COOPERATIVE suggestion for runbook generation.
+
+    Always offered at resolution time. Evaluation (readiness, deduplication)
+    happens when the user accepts — not at suggestion time.
+    """
+    return [
+        {
+            "label": "Generate runbook from this case",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Generate a runbook from this resolved case",
+            "body": "Create a reusable troubleshooting runbook from the root cause and solution.",
+        },
+    ]
+
+
 # =============================================================================
 # Milestone Engine - Main Implementation
 # =============================================================================
@@ -980,7 +1069,71 @@ class MilestoneEngine:
             if case.is_terminal:
                 return await self._process_terminal_turn(case, user_message, metadata)
 
-            # 0b. Detect explicit user intent to close/resolve case
+            # 0b. Pending transition confirmation — short-circuit before LLM
+            # When a pending transition exists (User-Agent Handshake), check if
+            # the user is confirming or declining BEFORE calling the LLM. This
+            # avoids unnecessary LLM calls and prevents schema validation errors
+            # from blocking the confirmation.
+            if hasattr(case, "pending_transition") and case.pending_transition:
+                if not case.pending_transition.get("needs_info"):
+                    # Standard confirmation (not awaiting info)
+                    if self._user_confirms_transition(user_message):
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            confirm_pending_transition,
+                        )
+
+                        if self.checkpoint_service:
+                            to_status = case.pending_transition.get(
+                                "to_status", "unknown"
+                            )
+                            await self.checkpoint_service.create_checkpoint(
+                                case,
+                                trigger="pre_case_action",
+                                metadata={
+                                    "from_status": case.status.value,
+                                    "to_status": to_status,
+                                },
+                            )
+
+                        confirm_pending_transition(case, case.user_id)
+                        await self.repository.save(case)
+
+                        # Auto-generate report (fire-and-forget)
+                        await self._auto_generate_report(case)
+
+                        agent_response = (
+                            "Case resolved."
+                            if case.status == CaseStatus.RESOLVED
+                            else "Case closed."
+                        )
+
+                        follow_ups = (
+                            _runbook_suggestion()
+                            if case.status == CaseStatus.RESOLVED
+                            else []
+                        )
+
+                        return {
+                            "agent_response": agent_response,
+                            "suggested_follow_ups": follow_ups,
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": True,
+                                "status_transitioned": True,
+                            },
+                        }
+                    elif self._user_declines_transition(user_message):
+                        from faultmaven.core.investigation.terminal_transitions import (
+                            cancel_pending_transition,
+                        )
+
+                        cancel_pending_transition(case)
+                        await self.repository.save(case)
+                        # Fall through to normal LLM processing
+
+            # 0c. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"
             # without relying on LLM to set solution_verified=True
             #

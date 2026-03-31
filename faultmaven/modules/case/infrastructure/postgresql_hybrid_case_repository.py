@@ -28,6 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models import (
+    ActionAttempt,
     Case,
     CaseAction,
     CaseStatus,
@@ -42,6 +43,7 @@ from faultmaven.modules.case.domain.models import (
     InvestigationProgress,
     PathSelection,
     ProblemVerification,
+    ProposedAction,
     RootCauseConclusion,
     Solution,
     TurnProgress,
@@ -1054,7 +1056,36 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 ),
                 "documentation": json.dumps(case.documentation.model_dump(mode="json")),
                 "progress": json.dumps(case.progress.model_dump(mode="json")),
-                "metadata": json.dumps({}),  # Reserved for future use
+                "metadata": json.dumps(
+                    {
+                        k: v
+                        for k, v in {
+                            "pending_transition": case.pending_transition,
+                            "proposed_actions": (
+                                [
+                                    a.model_dump(mode="json")
+                                    for a in case.proposed_actions
+                                ]
+                                if case.proposed_actions
+                                else []
+                            ),
+                            "action_attempts": (
+                                [
+                                    a.model_dump(mode="json")
+                                    for a in case.action_attempts
+                                ]
+                                if case.action_attempts
+                                else []
+                            ),
+                            "turn_history": (
+                                [t.model_dump(mode="json") for t in case.turn_history]
+                                if case.turn_history
+                                else []
+                            ),
+                        }.items()
+                        if v
+                    }
+                ),
             },
         )
 
@@ -1609,6 +1640,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     f"from proposed_problem_statement"
                 )
 
+        # Parse metadata for pending_transition
+        metadata = (
+            json.loads(row.metadata)
+            if hasattr(row, "metadata") and row.metadata
+            else {}
+        )
+
         # Reconstruct Case
         return Case(
             case_id=row.case_id,
@@ -1620,12 +1658,29 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             description=description,
             status=CaseStatus(row.status),
             action_history=[],  # Load separately if needed
-            closure_reason=None,
+            closure_reason=getattr(row, "closure_reason", None),
+            pending_transition=metadata.get("pending_transition"),
+            is_archived=bool(row.is_archived) if hasattr(row, "is_archived") else False,
+            archived_at=row.archived_at if hasattr(row, "archived_at") else None,
             # Progress
             progress=progress,
-            current_turn=0,  # Not stored in hybrid schema
-            turns_without_progress=0,
-            turn_history=[],
+            current_turn=getattr(row, "current_turn", 0) or 0,
+            turns_without_progress=getattr(row, "turns_without_progress", 0) or 0,
+            turn_history=(
+                [TurnProgress(**t) for t in metadata.get("turn_history", [])]
+                if metadata.get("turn_history")
+                else []
+            ),
+            proposed_actions=(
+                [ProposedAction(**a) for a in metadata.get("proposed_actions", [])]
+                if metadata.get("proposed_actions")
+                else []
+            ),
+            action_attempts=(
+                [ActionAttempt(**a) for a in metadata.get("action_attempts", [])]
+                if metadata.get("action_attempts")
+                else []
+            ),
             # Path and strategy
             path_selection=path_selection,
             investigation_strategy=None,  # Not stored
