@@ -302,7 +302,7 @@ Runbooks are created from **verified, authoritative sources**:
 - ✅ **Production Incidents** - Real-world troubleshooting experiences
 - ✅ **Official Documentation** - Kubernetes, Redis, PostgreSQL docs
 - ✅ **Engineering Runbooks** - Internal SRE/DevOps playbooks
-- ✅ **Post-Mortems** - Incident retrospectives and lessons learned
+- ✅ **Resolution Summaries** - Auto-generated case resolution documentation
 
 #### Secondary Sources (Referenced)
 - 📚 **Technical Books** - "Site Reliability Engineering" (Google)

@@ -234,7 +234,7 @@ user must explicitly confirm before the case action executes.
 1. Agent detects solution effectiveness → includes `ProposedTransition` in response
 2. System stores `pending_transition` on case (does NOT execute)
 3. Agent's response asks user: "Should I mark this case as resolved?"
-4. Next turn: user confirms → system sets `solution_verified=True` and transitions
+4. Next turn: user confirms → system ensures milestone ordering (`solution_proposed` → `solution_accepted` → `solution_verified`) and transitions
 5. If user declines → `pending_transition` cleared, investigation continues
 
 **MULTIPLE SOLUTIONS HANDLING**:
@@ -1017,7 +1017,7 @@ def is_terminal(self) -> bool:
 
 #### 1.7.2 Terminal Mode
 
-**Purpose**: Allow users to ask questions about the completed investigation and manage the summary report. The agent answers from existing case data only — no new investigation. The summary report can be regenerated at any time before archival.
+**Purpose**: Allow users to ask questions about the completed investigation, manage the summary report, and generate runbooks. The agent answers from existing case data only — no new investigation. The summary report can be regenerated at any time before archival.
 
 **Behavior**:
 
@@ -1028,10 +1028,11 @@ def is_terminal(self) -> bool:
 - Agent can NOT: accept new evidence, update milestones, propose transitions
 - Agent CAN: explain what happened, clarify evidence, interpret timeline, extract lessons learned
 
-**Two interaction scenarios**:
+**Three interaction scenarios**:
 
-1. **User explicitly asks to regenerate the report** → Agent complies directly. The milestone engine detects the intent via pattern matching and triggers report regeneration without an LLM call. No suggestions attached.
-2. **User asks questions about the case** → Agent answers via the LLM with TERMINAL_TEMPLATE. May attach COOPERATIVE suggestions (e.g., "Regenerate summary report", "Generate runbook") when contextually appropriate.
+1. **User asks to regenerate the report** → Pattern matching triggers report regeneration without an LLM call. Fire-and-forget, directs user to Dashboard.
+2. **User accepts runbook suggestion** (RESOLVED only) → Pattern matching triggers `_handle_runbook_creation()`: evaluates readiness + deduplication, then calls `ConversionService.convert_from_case()` as fire-and-forget background task. Directs user to Dashboard Knowledge > Drafts.
+3. **User asks questions about the case** → Agent answers via the LLM with TERMINAL_TEMPLATE.
 
 **Implementation in milestone engine**:
 

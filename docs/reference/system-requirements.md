@@ -137,9 +137,9 @@ The system SHALL be considered successful when:
 
 **Escalation**: The process of transferring a case from automated agent handling to human expert intervention.
 
-**Incident Report**: A structured document generated from case history containing timeline, root cause, resolution actions, and recommendations.
+**Resolution Summary**: An auto-generated structured document for resolved cases, covering root cause, solution, confirming evidence, and timeline.
 
-**Post-Mortem**: A comprehensive analysis document covering incident details, investigation process, root cause analysis, resolution, and lessons learned.
+**Closure Summary**: An auto-generated structured document for closed cases, summarizing what was investigated, evidence collected, and why the case was closed.
 
 **Runbook**: A step-by-step procedural document for reproducing an issue and applying the resolution, designed for operational teams.
 
@@ -668,13 +668,15 @@ Multiple termination decision-makers balance:
 
 The system SHALL provide documentation generation and structured case closure capabilities. When a case enters a resolution state (resolved, resolved_with_workaround, resolved_by_user), the system SHALL:
 
-**Document Generation Options:**
-- Present users with available report types:
-  - Incident Report: Timeline, root cause, resolution actions
-  - Runbook: Step-by-step reproduction and resolution procedure
-  - Post-Mortem: Comprehensive analysis with lessons learned
-- Allow users to select one or more report types
-- Allow users to close case without generating reports
+**Document Generation:**
+
+- Auto-generated on terminal transition:
+  - Resolution Summary: Root cause, solution, confirming evidence, timeline (RESOLVED cases)
+  - Closure Summary: Investigation progress, evidence collected, closure reason (CLOSED cases)
+- User-initiated from Copilot or Dashboard:
+  - Runbook: Step-by-step reproduction and resolution procedure (RESOLVED cases only)
+- Summary report can be regenerated from Copilot or Dashboard
+- Runbook enters draft workflow: edit → verify → ingest into knowledge base
 
 **DOCUMENTING State Behavior:**
 - Transition to "documenting" state upon first report generation request

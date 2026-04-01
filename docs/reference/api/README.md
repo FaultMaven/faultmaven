@@ -1192,8 +1192,8 @@ intelligent runbook suggestions based on similarity search of existing
 runbooks (both incident-driven and document-driven sources).
 
 Recommendation Logic:
-- Always available: Incident Report, Post-Mortem (unique per incident)
-- Conditional: Runbook (based on similarity search)
+- Always available: Resolution Summary / Closure Summary (auto-generated at terminal transition)
+- Conditional: Runbook (based on readiness + similarity search)
     - ≥85% similarity: Recommend reuse existing runbook
     - 70-84% similarity: Offer both review OR generate options
     - <70% similarity: Recommend generate new runbook

@@ -707,11 +707,12 @@ Maps case data to the 7 canonical runbook sections:
 | Prevention | LLM-generated from context | Always available |
 | Sources | Case ID reference | Always available |
 
-**RunbookSuggestion** (`evaluate_runbook_suggestion(case, runbook_kb)`) — combines all 3 factors:
+**RunbookSuggestion** (`evaluate_runbook_suggestion(case, runbook_kb)`) — evaluated when user accepts the suggestion (not at suggestion time):
 
 1. Content readiness (RunbookReadiness check — no I/O)
-2. User approval (not checked here — caller presents suggestion)
-3. Deduplication (ChromaDB vector search via `runbook_kb` — ≥85% = existing covers, 70-84% = suggest with caveat)
+2. Deduplication (ChromaDB vector search via `runbook_kb` — ≥85% = existing covers, 70-84% = suggest with caveat)
+
+If eligible, `ConversionService.convert_from_case()` runs as a fire-and-forget background task. The draft appears in Dashboard Knowledge > Drafts.
 
 **ClosureReadiness** (`assess_closure_readiness(case)`) — investigation summary for the CLOSED confirmation prompt:
 
