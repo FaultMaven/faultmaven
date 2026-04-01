@@ -4,7 +4,8 @@ Documentation for FaultMaven's knowledge management, vector search, and AI agent
 
 ## Architecture Documents
 
-- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — Storage and retrieval: single-collection design (faultmaven_kb), scope isolation via metadata filtering, unified KB tool, scope safety invariant, staleness-aware synthesis
+- **[Vector Retrieval Architecture](./vector-retrieval-architecture.md)** — Shared vector infrastructure: BGE-M3 embeddings, two-stage hybrid search pipeline, four-signal reranker, KB vs. evidence collection strategies, implementation status
+- **[Knowledge Base Architecture](./knowledge-base-architecture.md)** — KB storage design: single-collection (faultmaven_kb), 3-tier scope model, scope safety invariant, access control, ingestion workflow
 - **[Runbook Content Architecture](./runbook-content-architecture.md)** — What goes INTO the KB: taxonomy, templates, quality gates, lifecycle governance, RAG-optimized authoring rules
 - **[Document-to-Runbook Conversion](./document-to-runbook-conversion.md)** — Converting uploaded documents into template-compliant runbooks: preprocessing pipeline, KNOWLEDGE_PROVIDER LLM, draft management
 
@@ -14,7 +15,7 @@ Documentation for FaultMaven's knowledge management, vector search, and AI agent
 
 ## Key Technologies
 
-- **Vector Database**: ChromaDB (single `faultmaven_kb` collection, metadata-filtered scopes)
-- **Embeddings**: BGE-M3 (1024 dims, multilingual) via sentence-transformers
-- **RAG**: Retrieval-Augmented Generation for knowledge-grounded responses
-- **Scope Safety**: `KnowledgeVectorStore` enforces scope filter invariant — unscoped KB queries are rejected
+- **Vector Database**: ChromaDB (single `faultmaven_kb` collection for KB; per-case `case_{id}` collections for evidence)
+- **Embeddings**: BGE-M3 (1024 dims, multilingual) via sentence-transformers — shared by KB and evidence
+- **Retrieval Pipeline**: Two-stage hybrid search (vector + binary keyword recall → four-signal reranker) for KB; pure vector search for evidence
+- **Scope Safety**: `KnowledgeVectorStore` enforces scope filter invariant — unscoped KB queries raise `ValueError`
