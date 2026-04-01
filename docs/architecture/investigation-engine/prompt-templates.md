@@ -703,7 +703,13 @@ def _get_diagnosis_instructions(case: Case) -> str:
 **Active Hypotheses:** {active_hypotheses}
 {path_guidance}
 
-**YOUR NATURAL FLOW** (no sub-stages — follow the evidence):
+**KNOWLEDGE & RUNBOOK AUTHORITY** (CRITICAL INSTRUCTION):
+□ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom before inventing procedures.
+□ If a Runbook is found, IT IS THE ABSOLUTE AUTHORITY. Switch from "independent diagnostician" to "runbook executor".
+□ You MUST execute its prescribed steps. State clearly: "According to our runbook for [Service]..."
+□ If tools return no results → Proceed silently (don't mention failure)
+
+**YOUR PROGRESSION** (If no runbook exists, follow the evidence):
 
 1. **Verify Symptoms** (if not yet done)
    - Confirm symptom with logs, metrics, or user reports
@@ -739,11 +745,6 @@ def _get_diagnosis_instructions(case: Case) -> str:
    - Propose a SPECIFIC action (command, config change, rollback)
    - NOT "Would you like me to suggest a fix?" — propose the actual fix
    - User compliance (executing and submitting results) triggers stage transition
-
-**TOOL CHECK** (before requesting user data):
-□ Search KB for this error message / symptom pattern
-□ Check documentation for known issues with affected service
-□ If tools return no results → Proceed silently (don't mention failure)
 
 **Evidence Request Format:**
 "To diagnose this, the most useful would be [PRIMARY].
