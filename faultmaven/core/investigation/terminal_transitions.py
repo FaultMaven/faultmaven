@@ -580,7 +580,7 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
             "This case doesn't have enough structured data for a quality runbook. "
             "Missing:\n\n"
             + "\n".join(missing_desc)
-            + "\n\nYou can still generate reports (Incident Report, Post-Mortem) from the Dashboard."
+            + "\n\nThe resolution summary should have already been generated — you can view it in the Dashboard."
         ),
         section_coverage=coverage,
     )
