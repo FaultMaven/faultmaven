@@ -45,6 +45,7 @@ class ToolContext:
     )
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    in_memory_case: Optional[Any] = None
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
         """Create a new context with the execution ID set."""
@@ -57,6 +58,7 @@ class ToolContext:
             evidence_service=self.evidence_service,
             execution_id=execution_id,
             metadata=self.metadata,
+            in_memory_case=self.in_memory_case,
         )
 
 

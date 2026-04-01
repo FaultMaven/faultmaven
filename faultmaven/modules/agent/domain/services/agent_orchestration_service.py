@@ -440,6 +440,7 @@ class AgentOrchestrationService:
                     pass  # Graceful degradation — global + personal still work
 
             # Create tool context for tool execution
+            case = await self.case_repo.get(session.case_id)
             tool_context = ToolContext(
                 session_id=session_id,
                 case_id=session.case_id,
@@ -448,6 +449,7 @@ class AgentOrchestrationService:
                 team_ids=team_ids,
                 evidence_service=self.evidence_service,
                 execution_id=execution_id,
+                in_memory_case=case,
             )
 
             # Execute with retry

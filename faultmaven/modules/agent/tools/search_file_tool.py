@@ -414,15 +414,17 @@ class SearchFileTool(AgentTool):
             "search_file: evidence %s not in standalone table, trying case-embedded",
             evidence_id,
         )
-        case_repo = getattr(ev_service, "case_repository", None)
-        if not case_repo:
-            logger.warning("search_file: no case_repository on evidence_service")
-            return None
-
-        case = await case_repo.get(context.case_id)
+        case = getattr(context, "in_memory_case", None)
         if not case:
-            logger.warning("search_file: case %s not found", context.case_id)
-            return None
+            case_repo = getattr(ev_service, "case_repository", None)
+            if not case_repo:
+                logger.warning("search_file: no case_repository on evidence_service")
+                return None
+
+            case = await case_repo.get(context.case_id)
+            if not case:
+                logger.warning("search_file: case %s not found", context.case_id)
+                return None
 
         # Find evidence in case's embedded list
         case_evidence = None

@@ -3098,6 +3098,12 @@ class MilestoneEngine:
             "(e.g., <IP_ADDRESS_1>). The raw files contain ORIGINAL values. "
             "When calling search_file, use ORIGINAL values from the user's "
             "message, NOT PII tokens.\n\n"
+            "SEARCHABLE EVIDENCE — Only use search_file on evidence with "
+            'searchable="true" in <evidence_collected>. These are uploaded '
+            "files with raw content on disk. Evidence WITHOUT this attribute "
+            "are investigation notes — they have no file to search. If you "
+            "need to search a file, check the evidence id and filename from "
+            "the searchable entries.\n\n"
             "EVIDENCE vs KNOWLEDGE — These are fundamentally different data types:\n"
             "- EVIDENCE is case-specific data submitted by the user: log files, "
             "metrics, configs, pasted text, screenshots, user statements about "
@@ -3107,9 +3113,9 @@ class MilestoneEngine:
             "NEVER recorded as evidence. Do NOT create evidence_to_add entries "
             "from kb_qa results, web_search results, or your own knowledge.\n\n"
             "RESPONSE FORMAT — Your agent_response MUST follow this structure:\n"
-            "1. OBSERVATION: For case questions, cite specific data found — "
-            "exact values from timestamps, error messages, IPs/hostnames, or "
-            "metrics. For knowledge questions, state the relevant facts.\n"
+            "1. OBSERVATION: For case questions, cite the filename and line "
+            "numbers from search results (e.g., 'In data_6-1.log, line 42: "
+            "...'). For knowledge questions, state the relevant facts.\n"
             "2. ANALYSIS: Explain the significance. For case questions, use "
             "causal language connecting findings to your diagnosis. For knowledge "
             "questions, relate the information to the user's investigation context "
@@ -3143,6 +3149,7 @@ class MilestoneEngine:
             user_id=user_id,
             evidence_service=self.evidence_service,
             metadata=metadata,
+            in_memory_case=case,
         )
 
     def _parse_schema_tool_call(
@@ -3230,6 +3237,20 @@ class MilestoneEngine:
                 "Keep it to one short line. Do NOT write a verbose paragraph "
                 "about where the information came from."
             )
+
+        # search_file results: append citation guidance so the LLM cites
+        # filename and line numbers in its response.
+        if tool_name == "search_file" and isinstance(result.data, dict):
+            filename = result.data.get("filename", "unknown")
+            results_count = result.data.get("results_count", 0)
+            content = json.dumps(result.data)
+            if results_count > 0:
+                content += (
+                    f"\n\nCITATION: When referencing these results, cite the "
+                    f'filename and line numbers (e.g., "In {filename}, '
+                    f'line 42: ...").'
+                )
+            return content
 
         if isinstance(result.data, str):
             return result.data

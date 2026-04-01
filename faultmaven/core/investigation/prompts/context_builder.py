@@ -705,7 +705,14 @@ def _build_evidence_context(
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
-        result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}{filename_attr}>\n'
+        # Mark evidence as searchable if it has a raw file on disk
+        is_searchable = (
+            ev.form.value == "document"
+            and getattr(ev, "content_ref", None)
+            and not str(ev.content_ref).startswith("ev_")
+        )
+        searchable_attr = ' searchable="true"' if is_searchable else ""
+        result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if structural_index.strip():
             role_attr = (
@@ -729,16 +736,20 @@ def _build_evidence_context(
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
-        entry = (
-            f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{filename_attr}>'
+        is_searchable = (
+            ev.form.value == "document"
+            and getattr(ev, "content_ref", None)
+            and not str(ev.content_ref).startswith("ev_")
         )
+        searchable_attr = ' searchable="true"' if is_searchable else ""
+        entry = f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{filename_attr}{searchable_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
         result += entry
         total_chars += len(entry)
 
-    # Tier C: USER_TEXT evidence (summary only, always)
+    # Tier C: USER_TEXT evidence (summary only, always — never searchable)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent text items
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:

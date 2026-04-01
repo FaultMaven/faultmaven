@@ -98,14 +98,19 @@ class VectorizeFileTool(AgentTool):
 
             # Fallback: case-embedded evidence (unified ingestion pipeline)
             if not evidence:
-                case_repo = getattr(context.evidence_service, "case_repository", None)
-                if case_repo:
-                    case = await case_repo.get(context.case_id)
-                    if case:
-                        for ev in getattr(case, "evidence", []):
-                            if getattr(ev, "evidence_id", None) == evidence_id:
-                                evidence = ev
-                                break
+                case = getattr(context, "in_memory_case", None)
+                if not case:
+                    case_repo = getattr(
+                        context.evidence_service, "case_repository", None
+                    )
+                    if case_repo:
+                        case = await case_repo.get(context.case_id)
+
+                if case:
+                    for ev in getattr(case, "evidence", []):
+                        if getattr(ev, "evidence_id", None) == evidence_id:
+                            evidence = ev
+                            break
 
             if not evidence:
                 return ToolResult(
