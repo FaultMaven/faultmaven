@@ -102,7 +102,7 @@ Each candidate chunk is scored across four weighted signals:
 | Status is `deprecated` | -0.30 |
 | Status is `draft` | -0.10 |
 
-The `context_metadata` parameter carries domain and service from case context, enabling case-aware reranking without the agent making an explicit filter decision. This parameter currently exists in the method signature but wiring from the KB tool call path is incomplete — see Section 7.
+**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `context_metadata` parameter on `hybrid_search()` should support both modes: `filter_mode="hard"` adds to the `where` clause, `filter_mode="soft"` (default) applies as rerank boost only.
 
 **Tiebreaking:** When two chunks produce the same weighted score, scope priority breaks the tie: personal > team > global. This ensures a user's own runbook surfaces above a generic global procedure when both are equally relevant.
 
@@ -235,6 +235,8 @@ Evidence uses token-based chunking optimized for heterogeneous content (logs, co
 
 The larger chunks (versus KB's 200–3000 character structure-aware chunks) preserve context for forensic analysis. A log entry only makes sense alongside its neighboring entries; a config file section should not be split from its keys.
 
+**Tradeoff note:** 4000-token embeddings dilute semantic signal — an error buried in mundane log lines gets averaged out in the embedding vector. This is acceptable because evidence vectorization (Tier 4) is a last resort after keyword search (Tier 2) and LLM analysis (Tier 3) have already failed. The precision loss is mitigated by the escalation design. The planned chunk type discriminator (see §7) would allow type-specific sizing: smaller chunks for logs (~500-1000 tokens), section-based chunks for configs, preserving forensic context where it matters while improving retrieval precision where it doesn't.
+
 ### 4-Tier Evidence Escalation
 
 Vector search (Tier 4) is the most expensive tier and is not the first resort. The full escalation path:
@@ -316,7 +318,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search, not post-filtering. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
 | Evidence 4-tier escalation | **Implemented** | See `data-preprocessing-design-specification.md` |
 | Proactive vectorization | **Implemented** | Background trigger at DA mode start for large files |
-| Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Wiring from copilot → API → `KBToolAdapter` incomplete. |
+| Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Hard pre-filter mode (high confidence) and soft rerank boost (low confidence) designed but `filter_mode` parameter not yet implemented. Wiring from copilot → API → `KBToolAdapter` incomplete. |
 | Dual retrieval paths (fast/deep) | **Planned** | Fast path: metadata-filtered vector, skip reranking. Deep path: current full pipeline. |
 | Dynamic hybrid weights | **Planned** | Shift term overlap weight for identifier-heavy queries via regex detection. |
 | True BM25 | **Not done** | ChromaDB does not expose BM25. Binary `$contains` is a partial substitute. Would need `rank_bm25` lib or separate index. |
