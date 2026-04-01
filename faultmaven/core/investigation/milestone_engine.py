@@ -857,29 +857,42 @@ class MilestoneEngine:
         "generate summary",
     )
 
+    _RUNBOOK_CREATION_PATTERNS = (
+        "generate a runbook",
+        "generate runbook",
+        "create a runbook",
+        "create runbook",
+        "yes, generate",
+        "yes, create",
+    )
+
     async def _process_terminal_turn(
         self,
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        """Handle turns on terminal cases: Q&A and report regeneration.
+        """Handle turns on terminal cases: Q&A, report regeneration, runbook creation.
 
         Terminal cases are immutable — no evidence, milestones, or state changes.
-        Two scenarios:
-          1. User explicitly asks to regenerate the summary → comply directly.
-          2. User asks questions about the case → answer via TERMINAL_TEMPLATE.
+        Three scenarios:
+          1. User requests report regeneration → regenerate summary.
+          2. User accepts runbook suggestion → evaluate, create draft, direct to Dashboard.
+          3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
         msg_lower = user_message.lower()
 
-        # Scenario 1: User explicitly requests report regeneration
+        # Scenario 1: Report regeneration
         if any(p in msg_lower for p in self._REPORT_REGEN_PATTERNS):
             return await self._handle_report_regeneration(case, metadata)
 
-        # Scenario 2: Q&A — route through normal LLM pipeline with TERMINAL_TEMPLATE
-        # The existing prompt/schema selection (get_prompt_for_case + TerminalResponse)
-        # already handles this correctly. Delegate to the main pipeline starting from
-        # prompt building, skipping intent detection.
+        # Scenario 2: Runbook creation (RESOLVED cases only)
+        if case.status == CaseStatus.RESOLVED and any(
+            p in msg_lower for p in self._RUNBOOK_CREATION_PATTERNS
+        ):
+            return await self._handle_runbook_creation(case, metadata)
+
+        # Scenario 3: Q&A
         return await self._process_terminal_qa(case, user_message, metadata)
 
     async def _handle_report_regeneration(
@@ -933,6 +946,138 @@ class MilestoneEngine:
             "case_updated": case,
             "metadata": metadata,
         }
+
+    async def _handle_runbook_creation(
+        self,
+        case: "Case",
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Evaluate readiness + dedup, then create runbook draft (fire-and-forget).
+
+        Flow:
+        1. Check content readiness (assess_runbook_readiness)
+        2. Check deduplication (evaluate_runbook_suggestion)
+        3. If eligible: call ConversionService.convert_from_case() in background
+        4. Return immediately with a message directing user to Dashboard Drafts
+        """
+        from faultmaven.core.investigation.terminal_transitions import (
+            evaluate_runbook_suggestion,
+            RunbookSuggestion,
+        )
+
+        # Step 1+2: Evaluate readiness and deduplication
+        runbook_kb = None
+        if self.knowledge_service and hasattr(self.knowledge_service, "runbook_kb"):
+            runbook_kb = self.knowledge_service.runbook_kb
+
+        suggestion = await evaluate_runbook_suggestion(case, runbook_kb)
+
+        if suggestion.verdict == RunbookSuggestion.NOT_READY:
+            return {
+                "agent_response": suggestion.message,
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
+
+        if suggestion.verdict == RunbookSuggestion.EXISTING_COVERS:
+            return {
+                "agent_response": suggestion.message,
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
+
+        # Step 3: Create the runbook draft
+        conversion_service = getattr(self, "conversion_service", None)
+        if not conversion_service:
+            logger.warning(
+                f"Runbook creation requested for case {case.case_id} but "
+                f"conversion_service is not available"
+            )
+            return {
+                "agent_response": (
+                    "Runbook generation is not available at the moment. "
+                    "You can create one from the Dashboard instead."
+                ),
+                "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
+
+        # Fire-and-forget: kick off conversion in background
+        try:
+            from faultmaven.modules.knowledge.domain.models.conversion import (
+                CaseConversionRequest,
+            )
+
+            request = CaseConversionRequest.from_case(case, scope="global")
+            # Don't await the full pipeline — fire and forget
+            import asyncio
+
+            asyncio.create_task(
+                self._run_runbook_conversion(conversion_service, request, case.user_id)
+            )
+
+            agent_response = (
+                "Creating your runbook draft from this case. "
+                "You'll find it in the Dashboard under **Knowledge > Drafts** once it's ready."
+            )
+            logger.info(
+                f"Runbook creation initiated for case {case.case_id}",
+                extra={"case_id": case.case_id},
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to initiate runbook creation for case {case.case_id}: {e}",
+                extra={"case_id": case.case_id},
+            )
+            agent_response = (
+                "Failed to start runbook generation. "
+                "You can try again or create one from the Dashboard."
+            )
+
+        return {
+            "agent_response": agent_response,
+            "suggested_follow_ups": [],
+            "case_updated": case,
+            "metadata": metadata,
+        }
+
+    async def _run_runbook_conversion(
+        self,
+        conversion_service,
+        request,
+        user_id: str,
+    ) -> None:
+        """Background task for runbook conversion. Logs success/failure."""
+        try:
+            result = await conversion_service.convert_from_case(
+                request=request,
+                user_id=user_id,
+            )
+            if result.drafts:
+                draft = result.drafts[0]
+                logger.info(
+                    f"Runbook draft created: {draft.runbook_id} "
+                    f"(title='{draft.title}', quality={getattr(draft, 'quality_score', 'N/A')})",
+                    extra={
+                        "case_id": request.case_id,
+                        "runbook_id": draft.runbook_id,
+                    },
+                )
+            else:
+                logger.warning(
+                    f"Runbook conversion completed but no drafts produced "
+                    f"for case {request.case_id}",
+                    extra={"case_id": request.case_id},
+                )
+        except Exception as e:
+            logger.error(
+                f"Background runbook creation failed for case {request.case_id}: {e}",
+                extra={"case_id": request.case_id},
+                exc_info=True,
+            )
 
     async def _process_terminal_qa(
         self,
@@ -1321,38 +1466,7 @@ class MilestoneEngine:
                             f"transition for case {case.case_id}"
                         )
 
-                        # Build response with optional runbook suggestion
-                        response_parts = [
-                            "Case resolved. The issue has been marked as resolved."
-                        ]
-
-                        # Note: incident report is auto-generated after save (fire-and-forget)
-
-                        # Check runbook suggestion (content readiness + deduplication)
-                        from faultmaven.core.investigation.terminal_transitions import (
-                            evaluate_runbook_suggestion,
-                        )
-
-                        # Pass runbook_kb if available via knowledge_service
-                        runbook_kb = None
-                        if self.knowledge_service and hasattr(
-                            self.knowledge_service, "runbook_kb"
-                        ):
-                            runbook_kb = self.knowledge_service.runbook_kb
-
-                        rb_suggestion = await evaluate_runbook_suggestion(
-                            case, runbook_kb
-                        )
-                        if rb_suggestion.verdict in (
-                            rb_suggestion.SUGGEST,
-                            rb_suggestion.SUGGEST_WITH_CAVEATS,
-                        ):
-                            response_parts.append(f"\n{rb_suggestion.message}")
-                        elif rb_suggestion.verdict == rb_suggestion.EXISTING_COVERS:
-                            response_parts.append(f"\n{rb_suggestion.message}")
-
-                        # Save and return — transition is complete
-                        _resp = "\n".join(response_parts)
+                        _resp = "Case resolved. The issue has been marked as resolved."
                         self._record_deterministic_turn(case, user_message or "", _resp)
                         await self.repository.save(case)
 
@@ -1361,7 +1475,7 @@ class MilestoneEngine:
 
                         return {
                             "agent_response": _resp,
-                            "suggested_follow_ups": [],
+                            "suggested_follow_ups": _runbook_suggestion(),
                             "case_updated": case,
                             "metadata": {
                                 "turn_number": case.current_turn,
@@ -2230,31 +2344,14 @@ class MilestoneEngine:
                 )
                 follow_ups = _resolution_confirmation_suggestions()
 
-            # Append runbook suggestion when case just transitioned to RESOLVED
+            # Offer runbook suggestion when case just transitioned to RESOLVED.
+            # Evaluation (readiness + dedup) happens when user accepts,
+            # inside _process_terminal_turn → _handle_runbook_creation.
             if (
                 metadata.get("status_transitioned")
                 and case_updated.status == CaseStatus.RESOLVED
             ):
-                from faultmaven.core.investigation.terminal_transitions import (
-                    evaluate_runbook_suggestion,
-                )
-
-                runbook_kb = None
-                if self.knowledge_service and hasattr(
-                    self.knowledge_service, "runbook_kb"
-                ):
-                    runbook_kb = self.knowledge_service.runbook_kb
-
-                rb_suggestion = await evaluate_runbook_suggestion(
-                    case_updated, runbook_kb
-                )
-                if rb_suggestion.verdict in (
-                    rb_suggestion.SUGGEST,
-                    rb_suggestion.SUGGEST_WITH_CAVEATS,
-                ):
-                    agent_response_text += f"\n\n{rb_suggestion.message}"
-                elif rb_suggestion.verdict == rb_suggestion.EXISTING_COVERS:
-                    agent_response_text += f"\n\n{rb_suggestion.message}"
+                follow_ups = _runbook_suggestion()
 
             return {
                 "agent_response": agent_response_text,
