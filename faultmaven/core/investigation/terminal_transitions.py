@@ -148,7 +148,14 @@ def _execute_resolved_transition(case: Case, user_id: str, reason: str):
             extra={"case_id": case.case_id, "metric": "case.resolved_without_evidence"},
         )
 
-    # Set solution_verified since user confirmed
+    # Set solution milestones since user confirmed resolution.
+    # Must respect ordering: proposed → accepted → verified.
+    # The milestone pipeline may not have set these if the user resolved
+    # via dropdown/NLP before the LLM reached the TREATMENT stage.
+    if not case.progress.solution_proposed:
+        case.progress.solution_proposed = True
+    if not case.progress.solution_accepted:
+        case.progress.solution_accepted = True
     case.progress.solution_verified = True
 
     now = datetime.now(UTC)
