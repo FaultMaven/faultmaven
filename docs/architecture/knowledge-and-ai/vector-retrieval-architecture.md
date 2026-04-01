@@ -26,6 +26,12 @@ FaultMaven uses ChromaDB as its vector database with BGE-M3 embeddings across bo
 
 Both domains share the same embedding model and ChromaDB instance, but diverge on collection strategy, chunking parameters, lifecycle, and retrieval tooling. The separation is intentional — court evidence and the law both inform a judgment, but they are governed by entirely different rules.
 
+### Design Principle: Extension Context as Retrieval Advantage
+
+FaultMaven's browser extension provides rich implicit context that most RAG systems lack. When an SRE investigates a Kubernetes pod crash, they don't type "show me runbooks for namespace=production, service=payment-gateway." They paste the error and expect the system to figure it out. The extension knows the page, the service, the error class, the technology stack.
+
+**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose — wiring it from the extension through the copilot → API → tool path is the highest-leverage remaining integration.
+
 ```text
 ChromaDB Instance
 │
@@ -101,6 +107,23 @@ The `context_metadata` parameter carries domain and service from case context, e
 **Tiebreaking:** When two chunks produce the same weighted score, scope priority breaks the tie: personal > team > global. This ensures a user's own runbook surfaces above a generic global procedure when both are equally relevant.
 
 The `k` highest-scoring chunks are returned.
+
+### Dual Retrieval Paths (Planned)
+
+The latency budget differs by context. During an active incident, an SRE waiting 8 seconds will abandon the tool. During post-incident review or agent investigation loops, 30 seconds is acceptable.
+
+| Path | When | Strategy | Target Latency |
+|------|------|----------|----------------|
+| **Fast** | Interactive copilot queries | Metadata-filtered vector search → top-5 → generate. Skip keyword recall and reranking. Extension context metadata does the heavy lifting. | < 2s retrieval |
+| **Deep** | Agent investigation loops (DA mode) | Full hybrid search → rerank top-20 → top-5 → generate with reasoning chain. Latency amortized across OODA cycles. | < 5s retrieval |
+
+Currently only the deep path is implemented. The fast path would be a `search_mode="fast"` on `KBConfig` that bypasses Stage 2 reranking and relies on pre-retrieval metadata filtering for precision.
+
+### Dynamic Hybrid Weights (Planned)
+
+The current reranker weights (40/25/20/15) are fixed. SRE queries vary widely: pasting `CrashLoopBackOff` is a lexical match problem (text weight should dominate), while asking "why is my service slow after deploying the new cache layer" is a semantic problem. A fixed ratio underweights lexical match for the exact-identifier queries that are extremely common in SRE workflows.
+
+Planned approach: detect identifier-like tokens in the query (error codes matching `ERR-\d+`, CamelCase names, dotted names, status codes, file paths) via regex. When present, shift term overlap weight from 25% to 40% and reduce vector similarity from 40% to 25%. No ML needed — pattern detection is sufficient.
 
 ---
 
@@ -267,27 +290,40 @@ The system prompt for `CaseEvidenceConfig` is explicitly forensic — it instruc
 
 A strict rule governs what can be added as case evidence (`evidence_to_add`): only from user-submitted data. Evidence is never sourced from KB content, web searches, or LLM-generated inference. This boundary is enforced in the agent system prompt and is fundamental to the diagnosis/remediation separation.
 
+### Citation Confidence Tiers (Planned)
+
+Not all claims carry equal evidentiary weight. A future improvement is to distinguish three tiers in agent responses:
+
+1. **Direct evidence** — a retrieved chunk directly states the claim. High confidence, single source citation.
+2. **Correlated evidence** — multiple retrieved chunks together support an inference (e.g., "Logs show OOM events correlating with the deployment at 14:32, and metrics show memory climbing from 14:15"). Medium confidence, multiple citations, agent should show reasoning chain.
+3. **Speculative synthesis** — the agent connects dots not explicitly connected in any source. Low confidence, explicitly flagged as hypothesis.
+
+This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE → VALIDATED/REFUTED) where confidence scoring already distinguishes verified from speculative findings. Extending this to citation-level confidence would make the trust boundary explicit in the UX.
+
 ---
 
 ## 7. Implementation Status
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Hybrid search (Stage 1 + Stage 2) | Implemented | `KnowledgeVectorStore.hybrid_search()` |
-| Binary keyword search | Implemented | `$contains` via `where_document` — not BM25 |
-| Four-signal reranker | Implemented | Vector, term overlap, metadata match, freshness |
-| Scope tiebreaking (personal > team > global) | Implemented | Secondary sort key in `_rerank()` |
-| Structure-aware KB chunking | Implemented | Markdown header + horizontal rule splits |
-| Variable chunk sizes (200–3000 chars) | Implemented | Tiny section merging, oversized line-boundary splits |
-| Staleness-aware synthesis | Implemented | `UnifiedKBConfig._staleness_note()` + system prompt instruction |
-| Metadata enrichment (domain, service, status) | Implemented | Stored at ingestion, used in reranker |
-| Scope safety invariant | Implemented | `_enforce_scope_invariant()` raises `ValueError` |
-| Evidence 4-tier escalation | Implemented | See `data-preprocessing-design-specification.md` |
-| Proactive vectorization | Implemented | Background trigger at DA mode start for large files |
-| True BM25 hybrid search | Not implemented | ChromaDB does not expose BM25. Current keyword gate is binary `$contains`. |
-| Cross-encoder reranker | Not implemented | Would replace term overlap signal with a dedicated reranking model |
-| `context_metadata` wiring to KB tool | Partially implemented | Parameter exists in `hybrid_search()`. `KBToolAdapter` does not yet pass case domain/service from `ToolContext`. |
-| Citation grounding | Not implemented | No hallucination-check pass to verify that citations correspond to actual retrieved chunks |
+| Hybrid search (Stage 1 + Stage 2) | **Implemented** | `KnowledgeVectorStore.hybrid_search()` |
+| Binary keyword search | **Implemented** | `$contains` via `where_document` — not BM25 |
+| Four-signal reranker | **Implemented** | Vector, term overlap, metadata match, freshness |
+| Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
+| Structure-aware KB chunking | **Implemented** | Markdown header + horizontal rule splits, 200–3000 chars |
+| Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt warnings for stale/draft/deprecated |
+| Metadata enrichment | **Implemented** | domain, service, status stored at ingestion, used in reranker |
+| Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search, not post-filtering. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
+| Evidence 4-tier escalation | **Implemented** | See `data-preprocessing-design-specification.md` |
+| Proactive vectorization | **Implemented** | Background trigger at DA mode start for large files |
+| Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Wiring from copilot → API → `KBToolAdapter` incomplete. |
+| Dual retrieval paths (fast/deep) | **Planned** | Fast path: metadata-filtered vector, skip reranking. Deep path: current full pipeline. |
+| Dynamic hybrid weights | **Planned** | Shift term overlap weight for identifier-heavy queries via regex detection. |
+| True BM25 | **Not done** | ChromaDB does not expose BM25. Binary `$contains` is a partial substitute. Would need `rank_bm25` lib or separate index. |
+| Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Higher quality than heuristic reranker but adds model dependency + latency. |
+| Citation grounding | **Not done** | No post-generation verification that cited chunks support the claims attributed to them. |
+| Evidence-to-KB feedback loop | **Not done** | Track patterns where agent repeatedly solves same problem class via evidence analysis → surface as KB curation suggestions. Product-level feature. |
+| Chunk type discriminator | **Not done** | First-class `chunk_type` (runbook_section, log_window, metric_anomaly, config_block) for type-specific chunking and retrieval logic. |
 
 ---
 
