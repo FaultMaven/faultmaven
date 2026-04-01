@@ -961,8 +961,8 @@ class MilestoneEngine:
         4. Return immediately with a message directing user to Dashboard Drafts
         """
         from faultmaven.core.investigation.terminal_transitions import (
-            evaluate_runbook_suggestion,
             RunbookSuggestion,
+            evaluate_runbook_suggestion,
         )
 
         # Step 1+2: Evaluate readiness and deduplication
