@@ -173,19 +173,23 @@ Tools are registered conditionally — only available tools appear in the LLM's 
 
 **Additional DA system instruction elements:**
 
+* **Searchable evidence flag**: Evidence items in `<evidence_collected>` are tagged with `searchable="true"` when they have raw files on disk (`form=document` + valid `content_ref`). The instruction tells the LLM to only call `search_file` on evidence with this flag — other evidence items are investigation notes with no file to search.
 * **Entity-first search**: Extract specific entities (IPs, usernames, timestamps, error codes) from the user's question and search for those exact terms
 * **Keyword-first search mode**: Use `search_type: "keyword"` by default; fall back to regex only for pattern matching
 * **PII token warnings**: Explicit instruction that PII tokens (IPs, hostnames, usernames) in uploaded evidence are NOT real PII and must not be redacted from tool calls
-* **RESPONSE FORMAT**: Requires OBSERVATION section (cite specific data for case questions; state relevant facts for knowledge questions) followed by ANALYSIS section (explain significance with causal language for case questions; relate to investigation context for knowledge questions)
+* **RESPONSE FORMAT**: OBSERVATION section must cite filename and line numbers from search results (e.g., "In data_6-1.log, line 42: ..."). ANALYSIS section explains significance with causal language.
 
-**Dual-Path Evidence Resolution**: The `search_file` tool resolves evidence content through two paths:
+**Evidence Resolution** (3 paths, tried in order): The `search_file` tool resolves evidence content through:
 
-* **Path 1 (standalone)**: Query `evidence_artifacts` table by evidence ID → read raw content from `content_ref`
-* **Path 2 (case-embedded)**: Load case via `case_repo.get()` → find matching `Evidence` object → read content from `content_ref`
+1. **In-memory case**: Check `ToolContext.in_memory_case` for evidence not yet persisted to DB (fixes race condition on first-turn uploads)
+2. **Standalone table**: Query `evidence_artifacts` table by evidence ID → read raw content from `content_ref`
+3. **Case-embedded (DB)**: Load case via `case_repo.get()` → find matching `Evidence` object → read content from `content_ref`
 
 The `Evidence.original_filename` field (set during `_preprocess_attachment()`) provides the display filename in search results instead of the opaque evidence ID.
 
-**Stage-aware context**: `_build_tool_context()` injects the current investigation stage (`DIAGNOSIS`, `MITIGATION`, `TREATMENT`) into `ToolContext.metadata["stage"]`, enabling `web_search` to enrich queries with stage-appropriate terms (e.g., "root cause diagnosis" vs "workaround mitigation").
+**Tool result formatting**: `search_file` results append citation guidance ("In filename, line 42: ..."). `kb_qa` results are wrapped with relay instruction and source citation guidance.
+
+**Stage-aware context**: `_build_tool_context()` injects the current investigation stage and the in-memory `case` object into `ToolContext`, enabling stage-appropriate query enrichment and in-memory evidence access.
 
 **Evidence vs Knowledge rule** in the DA system instruction:
 

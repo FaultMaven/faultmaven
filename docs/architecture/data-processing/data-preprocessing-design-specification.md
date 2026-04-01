@@ -361,7 +361,8 @@ investigation_service.process_turn(payload: TurnPayload)
   │
   ├─ STEP 2: LLM INFERENCE
   │   Context includes structural indexes via Context Sliding Window
-  │   (Tier A: recent data evidence with full structural_index)
+  │   (Tier A: recent data with full structural_index, searchable="true")
+  │   Tools access raw files via ToolContext.in_memory_case
   │   → LLM responds with evidence_to_add (agent findings → SUBMITTED_DATA)
   │
   └─ Result: TurnResponse
