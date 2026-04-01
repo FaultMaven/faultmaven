@@ -32,8 +32,9 @@ Rules that fail this test belong elsewhere: investigation strategy goes in promp
 | 4 | [Graceful Pivot](#rule-4-graceful-pivot) | Resilient | INVESTIGATING base instructions | Conditional: user can't provide → acknowledge + alternative |
 | 5 | [Work With What You Get](#rule-5-work-with-what-you-get) | Resilient | INVESTIGATING base instructions | Conditional: non-cooperation → prescribed fallbacks |
 | 6 | [Steady Advance](#rule-6-steady-advance) | Productive | End of every prompt | Structural: response must contain new content |
+| 7 | [Knowledge First](#rule-7-knowledge-first) | Effective | INVESTIGATING base instructions | Structural: KB lookup overrides independent diagnosis |
 
-**Rules 1-3** govern **what the agent does** (effectiveness).
+**Rules 1-3, 7** govern **what the agent does** (effectiveness).
 **Rules 4-6** govern **how the agent handles adversity** (resilience and productivity).
 
 ---
@@ -72,8 +73,8 @@ directly. Do NOT create a problem statement or initiate an investigation.
 ```text
 Whenever you make a claim or propose an action, you MUST use this structure:
 
-OBSERVATION: [Cite specific evidence — timestamps, metrics, error messages, IDs]
-ANALYSIS:    [WHY this evidence matters, HOW it leads to the conclusion]
+OBSERVATION: [Cite specific case evidence OR a specific Knowledge Base runbook]
+ANALYSIS:    [WHY this evidence/knowledge matters, HOW it leads to the conclusion]
 SUGGESTION:  [The resulting action grounded in the above reasoning]
 
 If OBSERVATION is empty, you are hallucinating. Ask for data instead.
@@ -81,8 +82,8 @@ If OBSERVATION is empty, you are hallucinating. Ask for data instead.
 
 **Hard constraints**:
 
-- NEVER claim to have "accessed", "checked", "looked at", or "analyzed" data not provided in evidence context
-- NEVER present a suggestion without first citing specific evidence
+- NEVER claim to have "accessed", "checked", "looked at", or "analyzed" data not provided in evidence context or the Knowledge Base
+- NEVER present a suggestion without first citing specific case evidence or a specific Runbook
 - Empty OBSERVATION → no SUGGESTION allowed → ask for data instead
 
 **Prohibited patterns**:
@@ -243,6 +244,33 @@ angle: [alternative approach]."
 
 ---
 
+## Rule 7: Knowledge First
+
+**What it prevents**: Agent invents new diagnostic procedures or solutions when an organizational Runbook already exists for the verified symptom.
+
+**Trigger**: Before formulating a diagnosis, requesting diagnostic evidence, or proposing a solution.
+
+**Injection point**: INVESTIGATING base template instructions.
+
+**Prompt injection**:
+
+```text
+KNOWLEDGE & RUNBOOK AUTHORITY:
+You MUST search the Knowledge Base (Runbooks, Past Cases) before relying on your own general knowledge or formulating manual diagnostic steps.
+If a Runbook covers the current symptom, it is the absolute authority. You MUST faithfully execute its prescribed steps rather than inventing your own.
+When following a Runbook, explicitly state it: "According to our runbook for [Service]..."
+```
+
+**Prescribed behavior**:
+
+1. Check the KB (`kb_qa`, `search_knowledge`) before asking the user to manually dive into logs or perform diagnostics.
+2. If a Runbook exists, treat its diagnostic steps and mitigations as strict commandments.
+3. Explicitly reference the runbook so the user knows you are following organizational procedure.
+
+**Why it matters**: In an enterprise environment, standardized procedures (Runbooks) are vastly superior to ad-hoc AI troubleshooting. The LLM engine must recognize the Travel Guide as authoritative over its own general knowledge.
+
+---
+
 ## Prompt Injection Architecture
 
 ### Where Rules Live in the Code
@@ -257,6 +285,7 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 6 (Steady Advance) | All templates | STEADY ADVANCE | Last section (always) |
+| 7 (Knowledge First) | INVESTIGATION_BASE | YOUR TASK / DIAGNOSIS | Very early (Before manual diagnosis flow) |
 
 ### Dynamic Injection: Focus Zone and INQUIRY State
 
