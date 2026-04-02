@@ -1097,6 +1097,8 @@ class KnowledgeService:
                 service=fm_meta.get("service"),
                 last_updated=fm_meta.get("last_updated"),
                 status=fm_meta.get("status"),
+                severity=fm_meta.get("severity"),
+                symptom_class=fm_meta.get("symptom_class"),
             )
             doc_dict = {
                 "id": document.document_id,

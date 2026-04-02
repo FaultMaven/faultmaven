@@ -51,10 +51,17 @@ IDENTIFIER_PATTERNS = [
 SCOPE_PRIORITY = {"personal": 0, "team": 1, "global": 2}
 
 # Reranker weights — how much each signal contributes to final score
-RERANK_WEIGHT_VECTOR = 0.40  # Original cosine similarity
-RERANK_WEIGHT_TERM_OVERLAP = 0.25  # Query term presence in chunk
-RERANK_WEIGHT_METADATA = 0.20  # Domain/service/verification signals
-RERANK_WEIGHT_FRESHNESS = 0.15  # Staleness penalty
+# Default reranker weights (natural language queries)
+RERANK_WEIGHT_VECTOR = 0.40
+RERANK_WEIGHT_TERM_OVERLAP = 0.25
+RERANK_WEIGHT_METADATA = 0.20
+RERANK_WEIGHT_FRESHNESS = 0.15
+
+# Shifted weights for identifier-heavy queries (error codes, service names)
+RERANK_WEIGHT_VECTOR_ID = 0.25
+RERANK_WEIGHT_TERM_OVERLAP_ID = 0.40
+RERANK_WEIGHT_METADATA_ID = 0.20
+RERANK_WEIGHT_FRESHNESS_ID = 0.15
 
 # Staleness decay: score = 1 / (1 + days/HALF_LIFE)
 STALENESS_HALF_LIFE_DAYS = 365
@@ -306,6 +313,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         k: int = 5,
         where: Optional[Dict[str, Any]] = None,
         context_metadata: Optional[Dict[str, str]] = None,
+        filter_mode: str = "soft",
     ) -> List[Dict[str, Any]]:
         """Two-stage hybrid search: broad recall followed by reranking.
 
@@ -331,11 +339,20 @@ class KnowledgeVectorStore(BaseExternalClient):
             context_metadata: Optional case context (domain, service) for
                 metadata-aware reranking. When provided, chunks matching
                 the case's domain/service score higher.
+            filter_mode: How to apply context_metadata:
+                "soft" (default) — boost matching chunks in reranker only.
+                "hard" — add domain/service to the ChromaDB where clause
+                as a pre-filter, so non-matching chunks never enter Stage 1.
+                Use "hard" when extension context is high-confidence.
 
         Returns:
             Top-k results sorted by reranked score.
         """
         self._enforce_scope_invariant(collection_name, where)
+
+        # Hard filter mode: inject context_metadata into the where clause
+        if filter_mode == "hard" and context_metadata:
+            where = self._apply_hard_metadata_filter(where, context_metadata)
 
         # --- Stage 1: Recall ---
         # Cast a wide net: retrieve k*3 from vector, k*2 from keyword-constrained
@@ -371,6 +388,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         reranked = self._rerank(
             candidates=candidates,
             query_terms=query_terms,
+            query=query,
             context_metadata=context_metadata or {},
         )
 
@@ -390,6 +408,34 @@ class KnowledgeVectorStore(BaseExternalClient):
         return reranked[:k]
 
     # ---- Stage 1 helpers ----
+
+    @staticmethod
+    def _apply_hard_metadata_filter(
+        where: Optional[Dict[str, Any]],
+        context_metadata: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Inject context_metadata as hard pre-filters into the where clause.
+
+        Adds domain and/or service from case context as additional $and
+        conditions on the existing scope filter. This narrows the candidate
+        set before ANN search — irrelevant domains never enter Stage 1.
+        """
+        hard_conditions = []
+        if "domain" in context_metadata:
+            hard_conditions.append({"domain": context_metadata["domain"]})
+        if "service" in context_metadata:
+            hard_conditions.append({"service": context_metadata["service"]})
+
+        if not hard_conditions:
+            return where or {}
+
+        if where:
+            return {"$and": [where] + hard_conditions}
+        return (
+            {"$and": hard_conditions}
+            if len(hard_conditions) > 1
+            else hard_conditions[0]
+        )
 
     async def _keyword_constrained_search(
         self,
@@ -533,6 +579,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         candidates: List[Dict[str, Any]],
         query_terms: List[str],
         context_metadata: Dict[str, str],
+        query: str = "",
     ) -> List[Dict[str, Any]]:
         """Score and sort candidates using multiple retrieval signals.
 
@@ -542,9 +589,29 @@ class KnowledgeVectorStore(BaseExternalClient):
           3. Metadata match (domain/service alignment + verification level)
           4. Freshness (staleness penalty based on last_updated)
 
+        Dynamic weights: When the query contains identifier-like tokens
+        (error codes, CamelCase, dotted names), term overlap weight shifts
+        from 25% to 40% and vector similarity drops from 40% to 25%. This
+        makes lexical matches dominate for exact-identifier queries.
+
         Final score = weighted sum of all signals.
         Ties broken by scope priority: personal > team > global.
         """
+        # Select weights based on query characteristics
+        has_identifiers = (
+            any(p.search(query) for p in IDENTIFIER_PATTERNS) if query else False
+        )
+        if has_identifiers:
+            w_vector = RERANK_WEIGHT_VECTOR_ID
+            w_term = RERANK_WEIGHT_TERM_OVERLAP_ID
+            w_meta = RERANK_WEIGHT_METADATA_ID
+            w_fresh = RERANK_WEIGHT_FRESHNESS_ID
+        else:
+            w_vector = RERANK_WEIGHT_VECTOR
+            w_term = RERANK_WEIGHT_TERM_OVERLAP
+            w_meta = RERANK_WEIGHT_METADATA
+            w_fresh = RERANK_WEIGHT_FRESHNESS
+
         scored: List[tuple] = []
 
         for candidate in candidates:
@@ -565,10 +632,10 @@ class KnowledgeVectorStore(BaseExternalClient):
 
             # Weighted combination
             final_score = (
-                RERANK_WEIGHT_VECTOR * vector_score
-                + RERANK_WEIGHT_TERM_OVERLAP * term_overlap
-                + RERANK_WEIGHT_METADATA * metadata_score
-                + RERANK_WEIGHT_FRESHNESS * freshness_score
+                w_vector * vector_score
+                + w_term * term_overlap
+                + w_meta * metadata_score
+                + w_fresh * freshness_score
             )
 
             # Scope priority for tiebreaking (lower = better)

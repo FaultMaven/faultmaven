@@ -115,8 +115,11 @@ class KBConfig(ABC):
         """Search strategy for this KB type.
 
         Returns:
-            "vector" for pure vector similarity (default),
-            "hybrid" for vector + keyword with RRF merge.
+            "vector" for pure vector similarity (default).
+            "hybrid" for two-stage retrieval + reranking (vector + keyword
+                recall, then multi-signal reranking).
+            "fast" for metadata-filtered vector search without reranking
+                (low-latency path for interactive copilot queries).
         """
         return "vector"
 

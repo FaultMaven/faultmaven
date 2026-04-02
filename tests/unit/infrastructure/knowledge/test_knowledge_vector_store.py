@@ -4,9 +4,13 @@ import pytest
 
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     RERANK_WEIGHT_FRESHNESS,
+    RERANK_WEIGHT_FRESHNESS_ID,
     RERANK_WEIGHT_METADATA,
+    RERANK_WEIGHT_METADATA_ID,
     RERANK_WEIGHT_TERM_OVERLAP,
+    RERANK_WEIGHT_TERM_OVERLAP_ID,
     RERANK_WEIGHT_VECTOR,
+    RERANK_WEIGHT_VECTOR_ID,
     SCOPE_PRIORITY,
     KnowledgeVectorStore,
 )
@@ -303,7 +307,7 @@ class TestDeduplicateCandidates:
 class TestRerankWeights:
     """Verify reranker weight configuration."""
 
-    def test_weights_sum_to_one(self):
+    def test_default_weights_sum_to_one(self):
         total = (
             RERANK_WEIGHT_VECTOR
             + RERANK_WEIGHT_TERM_OVERLAP
@@ -312,10 +316,106 @@ class TestRerankWeights:
         )
         assert abs(total - 1.0) < 0.001
 
-    def test_vector_is_largest_weight(self):
+    def test_identifier_weights_sum_to_one(self):
+        total = (
+            RERANK_WEIGHT_VECTOR_ID
+            + RERANK_WEIGHT_TERM_OVERLAP_ID
+            + RERANK_WEIGHT_METADATA_ID
+            + RERANK_WEIGHT_FRESHNESS_ID
+        )
+        assert abs(total - 1.0) < 0.001
+
+    def test_default_vector_is_largest(self):
         assert RERANK_WEIGHT_VECTOR > RERANK_WEIGHT_TERM_OVERLAP
-        assert RERANK_WEIGHT_VECTOR > RERANK_WEIGHT_METADATA
-        assert RERANK_WEIGHT_VECTOR > RERANK_WEIGHT_FRESHNESS
+
+    def test_identifier_term_overlap_is_largest(self):
+        """For identifier queries, term overlap should dominate."""
+        assert RERANK_WEIGHT_TERM_OVERLAP_ID > RERANK_WEIGHT_VECTOR_ID
+
+
+class TestDynamicWeights:
+    """Tests for dynamic weight shifting based on query identifiers."""
+
+    def test_identifier_query_boosts_term_overlap(self):
+        """CrashLoopBackOff should make term overlap matter more."""
+        candidates = [
+            _make_result(
+                "semantic_match",
+                0.90,
+                content="container restart issues and pod scheduling",
+            ),
+            _make_result(
+                "exact_match", 0.80, content="CrashLoopBackOff error in kubernetes pod"
+            ),
+        ]
+        # With identifier query, term overlap (40%) beats vector (25%)
+        reranked = KnowledgeVectorStore._rerank(
+            candidates,
+            ["crashloopbackoff", "kubernetes", "pod"],
+            {},
+            query="CrashLoopBackOff in my kubernetes pod",
+        )
+        assert reranked[0]["id"] == "exact_match"
+
+    def test_natural_language_query_prefers_vector(self):
+        """Natural language queries should keep vector weight dominant.
+
+        When both candidates have similar term overlap, the higher vector
+        score should win because vector weight (40%) > term overlap (25%).
+        """
+        candidates = [
+            _make_result(
+                "high_vector", 0.92, content="diagnose memory leak in java service"
+            ),
+            _make_result(
+                "lower_vector", 0.75, content="fix memory leak in python service"
+            ),
+        ]
+        reranked = KnowledgeVectorStore._rerank(
+            candidates,
+            ["memory", "leak", "service"],
+            {},
+            query="how to fix memory leak in service",
+        )
+        # Both have 3/3 term overlap → tied. Vector score breaks it.
+        assert reranked[0]["id"] == "high_vector"
+
+    def test_no_query_uses_defaults(self):
+        """Empty query string should use default weights."""
+        candidates = [_make_result("a", 0.90, content="test content")]
+        result = KnowledgeVectorStore._rerank(candidates, ["test"], {}, query="")
+        assert len(result) == 1
+
+
+class TestHardMetadataFilter:
+    """Tests for _apply_hard_metadata_filter."""
+
+    def test_adds_domain_to_where(self):
+        where = {"scope": "global"}
+        result = KnowledgeVectorStore._apply_hard_metadata_filter(
+            where, {"domain": "database"}
+        )
+        assert "$and" in result
+
+    def test_adds_domain_and_service(self):
+        where = {"scope": "global"}
+        result = KnowledgeVectorStore._apply_hard_metadata_filter(
+            where, {"domain": "database", "service": "postgresql"}
+        )
+        assert "$and" in result
+        # Should have 3 conditions: original where + domain + service
+        assert len(result["$and"]) == 3
+
+    def test_no_context_returns_original(self):
+        where = {"scope": "global"}
+        result = KnowledgeVectorStore._apply_hard_metadata_filter(where, {})
+        assert result == where
+
+    def test_none_where_with_context(self):
+        result = KnowledgeVectorStore._apply_hard_metadata_filter(
+            None, {"domain": "compute"}
+        )
+        assert result == {"domain": "compute"}
 
 
 class TestScopePriority:

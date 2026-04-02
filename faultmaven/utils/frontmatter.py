@@ -1,18 +1,21 @@
 """Frontmatter extraction utilities for knowledge base documents.
 
-Extracts RAG-relevant metadata (domain, service, last_updated, status)
-from YAML frontmatter in markdown documents. Used by both ingestion
-paths (KnowledgeIngester and KnowledgeService) to enrich chunk metadata.
+Extracts RAG-relevant metadata from YAML frontmatter in markdown documents.
+Used by both ingestion paths (KnowledgeIngester and KnowledgeService) to
+enrich chunk metadata for hybrid search, reranking, and staleness-aware synthesis.
 """
 
 import logging
 import re
-from typing import Dict
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Fields to extract from frontmatter for RAG enrichment
-_RAG_FIELDS = ("domain", "service", "last_updated", "status")
+# Scalar fields: extracted as-is (str conversion)
+_SCALAR_FIELDS = ("domain", "service", "last_updated", "status", "severity")
+
+# List fields: joined to comma-separated string for ChromaDB metadata
+_LIST_FIELDS = ("symptom_class",)
 
 # Compiled pattern for frontmatter block
 _FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -21,9 +24,9 @@ _FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 def extract_frontmatter_metadata(content: str) -> Dict[str, str]:
     """Extract RAG-relevant metadata from YAML frontmatter.
 
-    Pulls domain, service, last_updated, and status from runbook
-    frontmatter so they can be stored in chunk metadata for
-    hybrid search filtering and staleness-aware synthesis.
+    Extracts domain, service, last_updated, status, severity, and
+    symptom_class from runbook frontmatter. List fields (symptom_class)
+    are joined to comma-separated strings.
 
     Args:
         content: Full document content (markdown with optional YAML frontmatter).
@@ -45,7 +48,19 @@ def extract_frontmatter_metadata(content: str) -> Dict[str, str]:
         return {}
 
     result: Dict[str, str] = {}
-    for key in _RAG_FIELDS:
+
+    for key in _SCALAR_FIELDS:
         if key in fm and fm[key] is not None:
             result[key] = str(fm[key])
+
+    for key in _LIST_FIELDS:
+        val = fm.get(key)
+        if val is not None:
+            if isinstance(val, list):
+                joined = ",".join(str(v) for v in val if v is not None)
+                if joined:
+                    result[key] = joined
+            elif isinstance(val, str) and val:
+                result[key] = val
+
     return result
