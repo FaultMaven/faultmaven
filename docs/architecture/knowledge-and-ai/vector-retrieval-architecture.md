@@ -224,18 +224,19 @@ Each case gets its own ChromaDB collection: `case_{case_id}`. Collections are ep
 
 ### Chunking Parameters
 
-Evidence uses token-based chunking optimized for heterogeneous content (logs, configs, CSVs, JSON):
+Evidence uses smaller chunks for retrieval precision, with context provided at query time rather than baked into the embedding:
 
-| Parameter | Value |
-|-----------|-------|
-| Chunk size | 4000 tokens |
-| Overlap | 200 tokens |
-| Split strategy | Section-aware: respects structural boundaries within files |
-| Implementation | `services/preprocessing/chunking_service.py` |
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Chunk size | 512 tokens | Small enough for precise semantic matching — an error event isn't diluted by surrounding mundane log lines |
+| Overlap | 50 tokens | Minimal overlap; evidence boundaries are structural (timestamps, blank lines), not semantic |
+| Context window | ±10 lines at retrieval time | Forensic context provided in tool results, not in the embedding. Same pattern as `search_file` keyword results. |
+| Split strategy | Type-aware via chunk type discriminator | Logs: temporal window boundaries. Configs: section/key boundaries. Metrics: anomaly window boundaries. |
+| Implementation | `services/preprocessing/chunking_service.py` | — |
 
-The larger chunks (versus KB's 200–3000 character structure-aware chunks) preserve context for forensic analysis. A log entry only makes sense alongside its neighboring entries; a config file section should not be split from its keys.
+**Design rationale:** Once evidence is vectorized (Tier 4), it becomes the primary search path for all subsequent semantic queries — follow-up questions, agent-initiated correlations, cross-file analysis. The embedding must be precise enough to surface the right 512-token window when the user asks "what happened at 14:32?" Forensic context (the surrounding log entries) is retrieved at query time by expanding the matched chunk's position in the original file, not by inflating the chunk size.
 
-**Tradeoff note:** 4000-token embeddings dilute semantic signal — an error buried in mundane log lines gets averaged out in the embedding vector. This is acceptable because evidence vectorization (Tier 4) is a last resort after keyword search (Tier 2) and LLM analysis (Tier 3) have already failed. The precision loss is mitigated by the escalation design. The planned chunk type discriminator (see §7) would allow type-specific sizing: smaller chunks for logs (~500-1000 tokens), section-based chunks for configs, preserving forensic context where it matters while improving retrieval precision where it doesn't.
+This follows the same principle as KB chunking: embed at the granularity of a single coherent unit (a runbook section, a log event window, a config block), not at the granularity of a page.
 
 ### 4-Tier Evidence Escalation
 
@@ -265,7 +266,7 @@ The `searchable="true"` attribute on evidence XML in the context builder signals
 
 | Aspect | KB (Runbooks) | Evidence (Logs, Configs, Metrics) |
 |--------|--------------|-----------------------------------|
-| Chunking | Structure-aware, 200–3000 chars | Token-based, 4000 tokens with 200-token overlap |
+| Chunking | Structure-aware, 200–3000 chars | Type-aware, 512 tokens with 50-token overlap + context window at retrieval |
 | Lifecycle | Permanent | Ephemeral (per-case) |
 | Collection | Single shared (`faultmaven_kb`) | Per-case (`case_{id}`) |
 | Scope enforcement | Mandatory scope filter (invariant) | Scoped by case ownership |
@@ -325,7 +326,8 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Higher quality than heuristic reranker but adds model dependency + latency. |
 | Citation grounding | **Not done** | No post-generation verification that cited chunks support the claims attributed to them. |
 | Evidence-to-KB feedback loop | **Not done** | Track patterns where agent repeatedly solves same problem class via evidence analysis → surface as KB curation suggestions. Product-level feature. |
-| Chunk type discriminator | **Not done** | First-class `chunk_type` (runbook_section, log_window, metric_anomaly, config_block) for type-specific chunking and retrieval logic. |
+| Chunk type discriminator | **Not done** | First-class `chunk_type` (runbook_section, log_window, metric_anomaly, config_block) for type-specific chunking logic. Core to the evidence chunking design (§5). |
+| Evidence 512-token chunking + context window | **Not done** | Replaces current 4000-token chunks. Embed small for precision, expand at retrieval for forensic context. |
 
 ---
 
