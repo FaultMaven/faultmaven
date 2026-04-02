@@ -72,7 +72,7 @@ class TestKnowledgeItemCreation:
             item_type=KnowledgeItemType.FAQ,
             category="networking",
             tags=["network", "connectivity"],
-            embedding_model="text-embedding-3-small",
+            embedding_model="bge-m3",
             embedding_vector=embedding,
             embedding_version=2,
             source_url="https://example.com/docs",
@@ -95,7 +95,7 @@ class TestKnowledgeItemCreation:
         assert item.item_type == KnowledgeItemType.FAQ
         assert item.category == "networking"
         assert item.tags == ["network", "connectivity"]
-        assert item.embedding_model == "text-embedding-3-small"
+        assert item.embedding_model == "bge-m3"
         assert item.embedding_vector == embedding
         assert item.embedding_version == 2
         assert item.source_url == "https://example.com/docs"
@@ -116,7 +116,7 @@ class TestKnowledgeItemCreation:
 
         assert item.category is None
         assert item.tags == []
-        assert item.embedding_model == "text-embedding-3-small"
+        assert item.embedding_model == "bge-m3"
         assert item.embedding_vector is None
         assert item.embedding_version == 1
         assert item.source_url is None

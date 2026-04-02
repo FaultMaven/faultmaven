@@ -126,10 +126,19 @@ class DocumentQATool(LangChainBaseTool):
         logger.debug(f"Querying collection: {collection}, k={k}")
 
         # Step 2: Retrieve chunks from vector store (same for all KBs)
+        # Use hybrid search (vector + keyword with RRF) when KB config requests it
         try:
-            chunks = await self._vector_store.search(
-                collection_name=collection, query=question, k=k, where=filters
-            )
+            use_hybrid = self._kb_config.search_mode == "hybrid"
+
+            if use_hybrid and hasattr(self._vector_store, "hybrid_search"):
+                logger.debug("Using hybrid search (vector + keyword + RRF)")
+                chunks = await self._vector_store.hybrid_search(
+                    collection_name=collection, query=question, k=k, where=filters
+                )
+            else:
+                chunks = await self._vector_store.search(
+                    collection_name=collection, query=question, k=k, where=filters
+                )
         except Exception as e:
             logger.error(f"Vector store search failed: {e}")
             return {

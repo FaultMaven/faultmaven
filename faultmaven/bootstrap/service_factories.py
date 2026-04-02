@@ -90,7 +90,7 @@ def register_services(redis_client=None) -> None:
         # Use settings to determine which provider/model
         return EmbeddingService(
             provider=getattr(settings, "embedding_provider", "openai"),
-            model=getattr(settings, "embedding_model", "text-embedding-3-small"),
+            model=getattr(settings, "embedding_model", "bge-m3"),
             api_key=getattr(settings, "openai_api_key", None),
         )
 

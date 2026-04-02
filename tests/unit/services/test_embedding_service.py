@@ -45,7 +45,7 @@ def embedding_service(mock_openai_client):
     """Create embedding service with mocked client."""
     service = EmbeddingService(
         api_key="test-api-key",
-        model="text-embedding-3-small",
+        model="bge-m3",
         dimensions=EMBEDDING_DIMENSIONS,
         max_retries=3,
         retry_delay=0.01,  # Fast retries for testing
@@ -537,7 +537,7 @@ class TestServiceStats:
         """Test getting service statistics."""
         stats = embedding_service.get_stats()
 
-        assert stats["model"] == "text-embedding-3-small"
+        assert stats["model"] == "bge-m3"
         assert stats["dimensions"] == EMBEDDING_DIMENSIONS
         assert stats["total_tokens"] == 0
         assert stats["max_retries"] == 3
@@ -576,7 +576,7 @@ class TestHealthCheck:
 
         assert health["status"] == "healthy"
         assert health["api_status"] == "healthy"
-        assert health["model"] == "text-embedding-3-small"
+        assert health["model"] == "bge-m3"
 
     @pytest.mark.asyncio
     async def test_health_check_unhealthy(self, embedding_service, mock_openai_client):

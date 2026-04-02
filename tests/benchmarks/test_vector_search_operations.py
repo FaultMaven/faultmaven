@@ -130,7 +130,7 @@ def temp_chroma_dir():
 def mock_embedding_service():
     """Create mock embedding service for benchmarking."""
     service = MagicMock(spec=EmbeddingService)
-    service.model = "text-embedding-3-small"
+    service.model = "bge-m3"
     service.dimensions = EMBEDDING_DIMENSIONS
 
     # Simulate realistic latency

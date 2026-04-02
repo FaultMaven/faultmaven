@@ -470,7 +470,7 @@ class TestItemUpdatePerformance:
 
         # Add embedding
         embedding = create_valid_embedding(0.5)
-        item.set_embedding(embedding, model="text-embedding-3-small", version=1)
+        item.set_embedding(embedding, model="bge-m3", version=1)
 
         start = time.perf_counter()
         result = await knowledge_item_repository.update(item)

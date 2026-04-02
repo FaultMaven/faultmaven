@@ -46,7 +46,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 def mock_embedding_service():
     """Create mock embedding service."""
     service = MagicMock(spec=EmbeddingService)
-    service.model = "text-embedding-3-small"
+    service.model = "bge-m3"
     service.dimensions = EMBEDDING_DIMENSIONS
     service.generate_embedding = AsyncMock(return_value=create_embedding())
     service.generate_embeddings_batch = AsyncMock(
@@ -463,7 +463,7 @@ class TestIndexItem:
         await search_service.index_item(item)
 
         updated = await knowledge_repo.get_by_id("model_test")
-        assert updated.embedding_model == "text-embedding-3-small"
+        assert updated.embedding_model == "bge-m3"
 
     @pytest.mark.asyncio
     async def test_index_item_includes_metadata(

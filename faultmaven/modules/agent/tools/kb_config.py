@@ -111,6 +111,16 @@ class KBConfig(ABC):
         pass
 
     @property
+    def search_mode(self) -> str:
+        """Search strategy for this KB type.
+
+        Returns:
+            "vector" for pure vector similarity (default),
+            "hybrid" for vector + keyword with RRF merge.
+        """
+        return "vector"
+
+    @property
     @abstractmethod
     def cache_ttl(self) -> int:
         """

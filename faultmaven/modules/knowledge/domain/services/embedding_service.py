@@ -1,7 +1,10 @@
-"""Embedding Service for generating text embeddings using OpenAI.
+"""Embedding Service for generating text embeddings.
 
-This service provides text embedding generation capabilities using OpenAI's
-text-embedding-3-small model for the RAG (Retrieval-Augmented Generation) system.
+This service provides text embedding generation capabilities for the
+RAG (Retrieval-Augmented Generation) system. The canonical model is BGE-M3
+(1024 dims) loaded via model_cache. This service is part of the
+KnowledgeSearchService path which is currently superseded — see
+vector-retrieval-architecture.md §7 for details.
 
 Features:
 - Single text embedding generation
@@ -54,8 +57,8 @@ class EmbeddingService:
 
     Attributes:
         client: AsyncOpenAI client for API calls
-        model: Embedding model name (default: text-embedding-3-small)
-        dimensions: Vector dimensions (default: 1536)
+        model: Embedding model name (default: bge-m3)
+        dimensions: Vector dimensions (default: 1024)
         max_retries: Maximum retry attempts
         retry_delay: Base delay between retries
         max_text_length: Maximum text length for embedding
@@ -65,7 +68,7 @@ class EmbeddingService:
     def __init__(
         self,
         api_key: str,
-        model: str = "text-embedding-3-small",
+        model: str = "bge-m3",
         dimensions: int = EMBEDDING_DIMENSIONS,
         max_retries: int = 3,
         retry_delay: float = 1.0,
@@ -77,7 +80,7 @@ class EmbeddingService:
         Args:
             api_key: OpenAI API key
             model: Embedding model name
-            dimensions: Vector dimensions (1536 for text-embedding-3-small)
+            dimensions: Vector dimensions (1024 for bge-m3)
             max_retries: Maximum retry attempts for API calls
             retry_delay: Base delay between retries (exponential backoff)
             timeout: Timeout for API calls in seconds

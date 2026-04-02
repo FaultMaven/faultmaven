@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from enum import Enum, IntEnum
 from typing import Any, Dict, List, Optional
 
-# OpenAI text-embedding-3-small produces 1536-dimensional vectors
-EMBEDDING_DIMENSIONS = 1536
+# BGE-M3 produces 1024-dimensional vectors (canonical embedding model).
+# Note: the legacy EmbeddingService/KnowledgeSearchService path referenced
+# text-embedding-3-small at 1536 dims — that path is superseded.
+EMBEDDING_DIMENSIONS = 1024
 
 
 class VerificationLevel(IntEnum):
@@ -93,7 +95,7 @@ class KnowledgeItem:
     tags: List[str] = field(default_factory=list)
 
     # Vector search
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "bge-m3"
     embedding_vector: Optional[List[float]] = None
     embedding_version: int = 1
 
@@ -294,7 +296,7 @@ class KnowledgeItem:
     def set_embedding(
         self,
         vector: List[float],
-        model: str = "text-embedding-3-small",
+        model: str = "bge-m3",
         version: int = 1,
     ) -> None:
         """Set the embedding vector for this item.

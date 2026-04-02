@@ -1712,9 +1712,7 @@ class KnowledgeItemModel(Base):
     tags = Column(Text, nullable=False, default="[]")  # JSON array
 
     # Vector search
-    embedding_model = Column(
-        String(128), nullable=False, default="text-embedding-3-small"
-    )
+    embedding_model = Column(String(128), nullable=False, default="bge-m3")
     embedding_vector = Column(
         Text, nullable=True
     )  # VECTOR(1536) for PostgreSQL+pgvector
