@@ -30,7 +30,7 @@ Both domains share the same embedding model and ChromaDB instance, but diverge o
 
 FaultMaven's browser extension provides rich implicit context that most RAG systems lack. When an SRE investigates a Kubernetes pod crash, they don't type "show me runbooks for namespace=production, service=payment-gateway." They paste the error and expect the system to figure it out. The extension knows the page, the service, the error class, the technology stack.
 
-**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose — wiring it from the extension through the copilot → API → tool path is the highest-leverage remaining integration.
+**Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose — but wiring it end-to-end requires cross-component integration: copilot page-comprehension → API request body → `ToolContext` fields → `KBToolAdapter` → `hybrid_search()`. This is the highest-leverage remaining integration.
 
 ```text
 ChromaDB Instance
@@ -58,7 +58,9 @@ ChromaDB Instance
 | Similarity metric | Cosine (HNSW index) |
 | Loading | Globally cached via `model_cache.get_bge_m3_model()` |
 
-BGE-M3 is used for both KB ingestion and evidence vectorization. The model is loaded once and cached for the process lifetime — loading at import time or on first request depending on the startup path. The 1024-dimensional space provides strong semantic resolution for technical text including error messages, log fragments, and procedure descriptions across multiple languages.
+BGE-M3 is the canonical embedding model for both KB ingestion and evidence vectorization. The model is loaded once and cached for the process lifetime. The 1024-dimensional space provides strong semantic resolution for technical text including error messages, log fragments, and procedure descriptions across multiple languages.
+
+> **Note:** The legacy `KnowledgeSearchService` references `text-embedding-3-small` (1536 dimensions) via `EmbeddingService`, and the `KnowledgeItem` model defines `EMBEDDING_DIMENSIONS = 1536`. These are from a deprecated code path (see §7 notes on `KnowledgeSearchService`). BGE-M3 at 1024 dimensions is the active implementation.
 
 ---
 
@@ -102,7 +104,7 @@ Each candidate chunk is scored across four weighted signals:
 | Status is `deprecated` | -0.30 |
 | Status is `draft` | -0.10 |
 
-**Context metadata: hard filter vs soft boost.** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The `context_metadata` parameter on `hybrid_search()` should support both modes: `filter_mode="hard"` adds to the `where` clause, `filter_mode="soft"` (default) applies as rerank boost only.
+**Context metadata: hard filter vs soft boost (not yet implemented).** When the extension provides high-confidence context (e.g., the user is on a PostgreSQL dashboard), domain/service should be applied as a **hard pre-filter** in the ChromaDB `where` clause — like scope filtering. Irrelevant chunks (Kubernetes runbooks for a PostgreSQL issue) should never enter Stage 1. When confidence is low or context is ambiguous, fall back to the soft rerank boost (+0.30) described above. The design calls for a `filter_mode` parameter on `hybrid_search()`: `"hard"` adds to the `where` clause, `"soft"` (default) applies as rerank boost only. Currently `context_metadata` only feeds the soft rerank path.
 
 **Tiebreaking:** When two chunks produce the same weighted score, scope priority breaks the tie: personal > team > global. This ensures a user's own runbook surfaces above a generic global procedure when both are equally relevant.
 
@@ -154,25 +156,29 @@ KB documents use structure-aware chunking distinct from the character-based chun
 - Tiny sections (below 200 characters) are merged with the adjacent section
 - Oversized sections are split at line boundaries
 
+YAML frontmatter is stripped before chunking — a runbook with 300 chars of frontmatter doesn't waste its first chunk on metadata that adds no retrieval value.
+
 This approach preserves the semantic coherence of runbook sections. A diagnostic step does not share a chunk with an unrelated prevention note because the markdown structure itself draws the boundary.
 
 ### Metadata Per Chunk
 
-| Field | Purpose |
-|-------|---------|
-| `document_id` | Unique runbook identifier |
-| `title` | Runbook title |
-| `domain` | Engineering vertical (database, networking, compute, etc.) |
-| `service` | Specific technology (postgresql, kubernetes, redis, etc.) |
-| `symptom_class` | Failure modes addressed |
-| `severity` | Severity level |
-| `status` | Lifecycle state: draft, in-review, verified, community, stale, deprecated |
-| `last_updated` | ISO date — used for staleness scoring in reranker and synthesis |
-| `chunk_index` | Position within the chunked document |
-| `total_chunks` | Total chunks for this document |
-| `scope` | Tier: global, team, or personal |
-| `owner_id` | Set for personal-scope chunks |
-| `team_id` | Set for team-scope chunks |
+| Field | Stored | Purpose |
+|-------|--------|---------|
+| `document_id` | Yes | Unique runbook identifier |
+| `title` | Yes | Runbook title |
+| `domain` | Yes | Engineering vertical (database, networking, compute, etc.) |
+| `service` | Yes | Specific technology (postgresql, kubernetes, redis, etc.) |
+| `status` | Yes | Lifecycle state: draft, in-review, verified, community, stale, deprecated |
+| `last_updated` | Yes | ISO date — used for staleness scoring in reranker and synthesis |
+| `chunk_index` | Yes | Position within the chunked document |
+| `total_chunks` | Yes | Total chunks for this document |
+| `scope` | Yes | Tier: global, team, or personal |
+| `owner_id` | Yes | Set for personal-scope chunks |
+| `team_id` | Yes | Set for team-scope chunks |
+| `document_type` | Yes | Content classification (e.g., troubleshooting_guide) |
+| `tags` | Yes | Comma-separated tags from frontmatter |
+| `symptom_class` | **Not stored** | Present in runbook frontmatter but not extracted into chunk metadata. Would improve retrieval for symptom-matching queries. |
+| `severity` | **Not stored** | Present in runbook frontmatter but not extracted into chunk metadata. |
 
 ### Staleness-Aware Synthesis
 
@@ -210,7 +216,7 @@ Agent calls: kb_qa(question)
         Returns answer with source citations
 ```
 
-**Relay instruction:** The synthesis prompt instructs the model to include detailed content from retrieved chunks and not merely summarize — the full procedure content should reach the user, not a compressed paraphrase of it.
+**Relay vs synthesis tension:** The design intent is that full procedure detail reaches the user — a compressed paraphrase of a runbook loses the actionable steps. However, the current `DocumentQATool` synthesis prompt instructs the LLM to "be concise and factual," which encourages compression. The relay instruction is applied later in `_format_tool_result()` which wraps the KB result with "Include the detailed content below — do NOT summarize into a single sentence." These two instructions can conflict. The synthesis prompt should be aligned with the relay intent — preserve procedural detail, cite sources accurately, compress only background context.
 
 ---
 
@@ -224,7 +230,9 @@ Each case gets its own ChromaDB collection: `case_{case_id}`. Collections are ep
 
 ### Chunking Parameters
 
-Evidence uses smaller chunks for retrieval precision, with context provided at query time rather than baked into the embedding:
+> **Implementation note:** The parameters below describe the target design. The current implementation uses 4000-token chunks with 200-token overlap (`ChunkingService`). See §7 for implementation status.
+
+Evidence should use smaller chunks for retrieval precision, with context provided at query time rather than baked into the embedding:
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
@@ -279,7 +287,7 @@ The `searchable="true"` attribute on evidence XML in the context builder signals
 
 ### KB Tool (`kb_qa`)
 
-The synthesis prompt includes a relay instruction to the LLM: include detailed content from retrieved chunks, do not summarize. This preserves the actionable detail of runbook procedures in the response.
+The design intent is relay — full procedure detail should reach the user. The `_format_tool_result()` wrapper appends "Include the detailed content below — do NOT summarize into a single sentence." However, the inner `DocumentQATool` synthesis prompt says "be concise and factual," creating a tension (see §7 open issues).
 
 Source citations use document titles: `Sources: Kubernetes CrashLoopBackOff, PostgreSQL Connection Pool Exhaustion`.
 
@@ -328,6 +336,18 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Evidence-to-KB feedback loop | **Not done** | Track patterns where agent repeatedly solves same problem class via evidence analysis → surface as KB curation suggestions. Product-level feature. |
 | Chunk type discriminator | **Not done** | First-class `chunk_type` (runbook_section, log_window, metric_anomaly, config_block) for type-specific chunking logic. Core to the evidence chunking design (§5). |
 | Evidence 512-token chunking + context window | **Not done** | Replaces current 4000-token chunks. Embed small for precision, expand at retrieval for forensic context. |
+| `symptom_class`/`severity` in chunk metadata | **Not done** | Present in runbook YAML frontmatter but not extracted into ChromaDB metadata. Would improve retrieval for symptom-matching queries. |
+| Synthesis prompt alignment | **Open issue** | `DocumentQATool` synthesis prompt says "be concise and factual" but design intent is relay (preserve procedural detail). `_format_tool_result` relay wrapper partially compensates. Prompt should be aligned. |
+
+### Superseded Code
+
+**`KnowledgeSearchService`** (`modules/knowledge/domain/services/search_service.py`) — a ~700-line service with `hybrid_search()` and `semantic_search()` methods that operates on `KnowledgeItem` objects (whole documents from SQL DB), not ChromaDB chunks. It was designed for a document-level retrieval architecture that doesn't match the chunk-based pipeline. The RAG revamp built retrieval capability directly in `KnowledgeVectorStore` instead. This service is dead code — `kb_qa` bypasses it entirely. It should be removed or clearly marked as deprecated.
+
+**`EmbeddingService`** references `text-embedding-3-small` (1536 dimensions) — this is from the `KnowledgeSearchService` path. The active pipeline uses BGE-M3 (1024 dimensions) via `model_cache`. The `KnowledgeItem.EMBEDDING_DIMENSIONS = 1536` constant is also from the deprecated path.
+
+### Deployment Note
+
+Existing runbooks must be reindexed after deploying structure-aware chunking and metadata enrichment. Run `python scripts/backfill_kb_metadata.py` (use `--dry-run` first to preview). This replaces old 1000-char fixed chunks with structure-aware variable chunks and adds domain/service/status metadata.
 
 ---
 
@@ -344,7 +364,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | KB and evidence tool adapters | `faultmaven/modules/agent/tools/kb_tool_adapter.py` |
 | KB ingestion pipeline | `faultmaven/core/knowledge/ingestion.py` |
 | Evidence chunking service | `faultmaven/services/preprocessing/chunking_service.py` |
-| Model cache (BGE-M3 global singleton) | `faultmaven/infrastructure/knowledge/model_cache.py` |
+| Model cache (BGE-M3 global singleton) | `faultmaven/infrastructure/model_cache.py` |
 
 ---
 
