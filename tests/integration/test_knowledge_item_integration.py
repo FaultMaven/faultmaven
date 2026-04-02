@@ -510,7 +510,7 @@ async def test_embedding_update_workflow(repository: DatabaseKnowledgeItemReposi
 
     # Generate and set embedding
     embedding = create_valid_embedding(0.5)
-    item.set_embedding(embedding, model="text-embedding-3-small", version=1)
+    item.set_embedding(embedding, model="bge-m3", version=1)
     await repository.update(item)
 
     # Verify no more items need embeddings

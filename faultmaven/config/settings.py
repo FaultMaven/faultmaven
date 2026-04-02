@@ -1150,12 +1150,12 @@ class EmbeddingSettings(BaseSettings):
 
     # OpenAI Embeddings
     embedding_model: str = Field(
-        default="text-embedding-3-small",
-        description="OpenAI embedding model to use",
+        default="bge-m3",
+        description="Embedding model for knowledge base and evidence vectorization",
     )
     embedding_dimensions: int = Field(
-        default=1536,
-        description="Embedding vector dimensions (1536 for text-embedding-3-small)",
+        default=1024,
+        description="Embedding vector dimensions (1024 for bge-m3)",
     )
 
     # Embedding API configuration

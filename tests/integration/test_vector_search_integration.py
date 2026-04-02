@@ -53,7 +53,7 @@ def temp_chroma_dir():
 def mock_embedding_service():
     """Create mock embedding service that returns deterministic embeddings."""
     service = MagicMock(spec=EmbeddingService)
-    service.model = "text-embedding-3-small"
+    service.model = "bge-m3"
     service.dimensions = EMBEDDING_DIMENSIONS
 
     def create_deterministic_embedding(text: str) -> List[float]:

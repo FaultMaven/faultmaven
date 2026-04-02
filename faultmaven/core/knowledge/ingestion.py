@@ -28,6 +28,7 @@ Core Design Principles:
 
 import logging
 import os
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -312,6 +313,9 @@ class KnowledgeIngester:
         Args:
             document: Document to process and store
         """
+        # Extract frontmatter metadata for RAG enrichment (domain, service, etc.)
+        frontmatter_meta = self._extract_frontmatter_metadata(document.content)
+
         # Split content into chunks
         chunks = self._split_content(document.content)
 
@@ -341,6 +345,16 @@ class KnowledgeIngester:
                 "created_at": document.created_at.isoformat(),
             }
 
+            # Enrich with frontmatter fields for hybrid search and staleness
+            if frontmatter_meta.get("domain"):
+                metadata["domain"] = frontmatter_meta["domain"]
+            if frontmatter_meta.get("service"):
+                metadata["service"] = frontmatter_meta["service"]
+            if frontmatter_meta.get("last_updated"):
+                metadata["last_updated"] = frontmatter_meta["last_updated"]
+            if frontmatter_meta.get("status"):
+                metadata["status"] = frontmatter_meta["status"]
+
             ids.append(chunk_id)
             metadatas.append(metadata)
 
@@ -353,46 +367,147 @@ class KnowledgeIngester:
             f"Stored {len(chunks)} chunks for document {document.document_id}"
         )
 
+    @staticmethod
+    def _extract_frontmatter_metadata(content: str) -> Dict[str, str]:
+        """Extract RAG-relevant metadata from YAML frontmatter."""
+        from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+
+        return extract_frontmatter_metadata(content)
+
+    # Maximum chunk size — sections exceeding this get split at sentence boundaries
+    MAX_CHUNK_CHARS = 3000
+    # Minimum chunk size — tiny sections get merged with the next section
+    MIN_CHUNK_CHARS = 100
+
     def _split_content(
         self, content: str, chunk_size: int = 1000, overlap: int = 200
     ) -> List[str]:
-        """
-        Split content into overlapping chunks
+        """Structure-aware content splitting for runbooks and documentation.
 
-        Args:
-            content: Content to split
-            chunk_size: Maximum size of each chunk
-            overlap: Overlap between chunks
+        Splits on document structure boundaries (markdown headers, numbered
+        steps, horizontal rules) rather than fixed character counts. This
+        preserves semantic units — a diagnostic step stays with its
+        conditional, a remediation procedure stays intact.
 
-        Returns:
-            List of content chunks
+        Fallback: If no structure is detected (plain text without headers),
+        falls back to sentence-boundary splitting at MAX_CHUNK_CHARS.
+
+        Variable chunk sizes are intentional — a 200-char config parameter
+        description is one chunk, a 2500-char procedure section is one chunk.
+        The embedding model handles this fine.
         """
-        if len(content) <= chunk_size:
+        # Strip frontmatter before chunking
+        stripped = re.sub(
+            r"^---\s*\n.*?\n---\s*\n", "", content, count=1, flags=re.DOTALL
+        )
+        stripped = stripped.strip()
+
+        if not stripped:
+            return [content.strip()] if content.strip() else []
+
+        # Try structure-aware splitting first
+        sections = self._split_by_structure(stripped)
+
+        if len(sections) <= 1 and len(stripped) > self.MAX_CHUNK_CHARS:
+            # No structure detected — fall back to sentence-boundary splitting
+            sections = self._split_by_sentences(stripped)
+
+        # Post-process: merge tiny sections, split oversized ones
+        return self._normalize_chunks(sections)
+
+    @staticmethod
+    def _split_by_structure(content: str) -> List[str]:
+        """Split content at markdown structural boundaries.
+
+        Recognizes:
+          - Markdown headers (# through ####)
+          - Numbered steps (1. 2. 3.)
+          - Horizontal rules (--- or ***)
+          - Blank-line-separated blocks of text
+        """
+        # Split on markdown headers (##, ###, ####) — keep the header with its section
+        # Pattern: one or more blank lines followed by a header line
+        header_pattern = re.compile(r"\n(?=#{1,4}\s+\S)")
+
+        parts = header_pattern.split(content)
+        sections = [p.strip() for p in parts if p.strip()]
+
+        # If we got meaningful splits, return them
+        if len(sections) > 1:
+            return sections
+
+        # No headers found — try splitting on horizontal rules
+        hr_pattern = re.compile(r"\n\s*(?:---+|\*\*\*+|___+)\s*\n")
+        parts = hr_pattern.split(content)
+        sections = [p.strip() for p in parts if p.strip()]
+        if len(sections) > 1:
+            return sections
+
+        # No rules either — return as single section
+        return [content.strip()]
+
+    @staticmethod
+    def _split_by_sentences(content: str, max_size: int = 3000) -> List[str]:
+        """Fallback: split at sentence boundaries with max size limit."""
+        if len(content) <= max_size:
             return [content]
 
         chunks = []
-        start = 0
+        current = []
+        current_len = 0
 
-        while start < len(content):
-            end = start + chunk_size
+        for line in content.split("\n"):
+            line_len = len(line) + 1  # +1 for newline
+            if current_len + line_len > max_size and current:
+                chunks.append("\n".join(current))
+                current = [line]
+                current_len = line_len
+            else:
+                current.append(line)
+                current_len += line_len
 
-            # Try to break at sentence boundary
-            if end < len(content):
-                # Look for sentence endings
-                for i in range(end, max(start + chunk_size - 100, start), -1):
-                    if content[i] in ".!?":
-                        end = i + 1
-                        break
-
-            chunk = content[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-
-            start = end - overlap
-            if start >= len(content):
-                break
+        if current:
+            chunks.append("\n".join(current))
 
         return chunks
+
+    def _normalize_chunks(self, sections: List[str]) -> List[str]:
+        """Merge tiny sections and split oversized ones."""
+        normalized = []
+        pending = ""
+
+        for section in sections:
+            if pending:
+                combined = pending + "\n\n" + section
+                if len(combined) <= self.MAX_CHUNK_CHARS:
+                    pending = combined
+                    continue
+                else:
+                    # Pending is big enough on its own
+                    normalized.append(pending.strip())
+                    pending = ""
+
+            if len(section) < self.MIN_CHUNK_CHARS:
+                pending = section
+            elif len(section) > self.MAX_CHUNK_CHARS:
+                # Oversized section — split at sentence boundaries
+                sub_chunks = self._split_by_sentences(section, self.MAX_CHUNK_CHARS)
+                normalized.extend(sub_chunks)
+            else:
+                normalized.append(section)
+
+        if pending:
+            if normalized:
+                # Merge trailing tiny chunk into last chunk
+                last = normalized[-1]
+                if len(last) + len(pending) + 2 <= self.MAX_CHUNK_CHARS:
+                    normalized[-1] = last + "\n\n" + pending
+                else:
+                    normalized.append(pending.strip())
+            else:
+                normalized.append(pending.strip())
+
+        return [c for c in normalized if c.strip()]
 
     @trace("knowledge_base_search")
     async def search(

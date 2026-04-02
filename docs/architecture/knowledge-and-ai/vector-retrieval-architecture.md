@@ -338,6 +338,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Evidence 512-token chunking + context window | **Not done** | Replaces current 4000-token chunks. Embed small for precision, expand at retrieval for forensic context. |
 | `symptom_class`/`severity` in chunk metadata | **Not done** | Present in runbook YAML frontmatter but not extracted into ChromaDB metadata. Would improve retrieval for symptom-matching queries. |
 | Synthesis prompt alignment | **Open issue** | `DocumentQATool` synthesis prompt says "be concise and factual" but design intent is relay (preserve procedural detail). `_format_tool_result` relay wrapper partially compensates. Prompt should be aligned. |
+| Result caching | **Not done** | `KBConfig.cache_ttl` (24h for KB) and `DocumentQATool.cache_ttl` property exist but nothing reads them — no caching layer wraps `hybrid_search()` or `answer_question()`. Every query re-runs both vector and keyword search, reranking, and LLM synthesis. For repeated questions this is wasted compute. A semantic content hash on (query + scope filter) → cached synthesis result would be the minimal implementation. |
 
 ### Superseded Code
 

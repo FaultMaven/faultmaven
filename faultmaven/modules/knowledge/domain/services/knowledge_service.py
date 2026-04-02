@@ -1059,6 +1059,13 @@ class KnowledgeService:
         if len(title) > 500:
             raise ValueError("Title cannot exceed 500 characters")
 
+    @staticmethod
+    def _extract_frontmatter_for_rag(content: str) -> Dict[str, str]:
+        """Extract RAG-relevant metadata from YAML frontmatter."""
+        from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+
+        return extract_frontmatter_metadata(content)
+
     async def _index_document_in_vector_store(
         self, document: KnowledgeBaseDocument
     ) -> None:
@@ -1072,6 +1079,9 @@ class KnowledgeService:
             return
 
         try:
+            # Extract RAG-enrichment fields from frontmatter if present
+            fm_meta = self._extract_frontmatter_for_rag(document.content)
+
             # Convert document to format expected by vector store
             meta = VectorMetadata(
                 title=document.title,
@@ -1083,6 +1093,10 @@ class KnowledgeService:
                 team_id=getattr(document, "team_id", None),
                 created_at=document.created_at,
                 updated_at=document.updated_at,
+                domain=fm_meta.get("domain"),
+                service=fm_meta.get("service"),
+                last_updated=fm_meta.get("last_updated"),
+                status=fm_meta.get("status"),
             )
             doc_dict = {
                 "id": document.document_id,

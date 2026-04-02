@@ -24,6 +24,11 @@ class VectorMetadata(BaseModel):
     team_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # RAG-enrichment fields: extracted from runbook frontmatter at ingestion
+    domain: Optional[str] = None
+    service: Optional[str] = None
+    last_updated: Optional[str] = None
+    status: Optional[str] = None
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -43,6 +48,10 @@ class VectorMetadata(BaseModel):
         "scope",
         "owner_id",
         "team_id",
+        "domain",
+        "service",
+        "last_updated",
+        "status",
         mode="before",
     )
     @classmethod
@@ -71,4 +80,12 @@ class VectorMetadata(BaseModel):
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:
             data["updated_at"] = to_json_compatible(self.updated_at)
+        if self.domain:
+            data["domain"] = self.domain
+        if self.service:
+            data["service"] = self.service
+        if self.last_updated:
+            data["last_updated"] = self.last_updated
+        if self.status:
+            data["status"] = self.status
         return data
