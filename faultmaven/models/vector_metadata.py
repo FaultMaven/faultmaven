@@ -29,6 +29,8 @@ class VectorMetadata(BaseModel):
     service: Optional[str] = None
     last_updated: Optional[str] = None
     status: Optional[str] = None
+    severity: Optional[str] = None
+    symptom_class: Optional[str] = None  # Comma-separated from frontmatter list
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -52,6 +54,8 @@ class VectorMetadata(BaseModel):
         "service",
         "last_updated",
         "status",
+        "severity",
+        "symptom_class",
         mode="before",
     )
     @classmethod
@@ -88,4 +92,8 @@ class VectorMetadata(BaseModel):
             data["last_updated"] = self.last_updated
         if self.status:
             data["status"] = self.status
+        if self.severity:
+            data["severity"] = self.severity
+        if self.symptom_class:
+            data["symptom_class"] = self.symptom_class
         return data

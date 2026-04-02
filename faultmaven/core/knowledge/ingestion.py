@@ -354,6 +354,10 @@ class KnowledgeIngester:
                 metadata["last_updated"] = frontmatter_meta["last_updated"]
             if frontmatter_meta.get("status"):
                 metadata["status"] = frontmatter_meta["status"]
+            if frontmatter_meta.get("severity"):
+                metadata["severity"] = frontmatter_meta["severity"]
+            if frontmatter_meta.get("symptom_class"):
+                metadata["symptom_class"] = frontmatter_meta["symptom_class"]
 
             ids.append(chunk_id)
             metadatas.append(metadata)

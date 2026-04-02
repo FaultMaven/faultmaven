@@ -16,6 +16,10 @@ domain: application
 service: java
 last_updated: "2026-03-26"
 status: verified
+severity: critical
+symptom_class:
+  - oom
+  - crash
 tags:
   - java
   - oom
@@ -29,6 +33,30 @@ Content here.
         assert result["service"] == "java"
         assert result["last_updated"] == "2026-03-26"
         assert result["status"] == "verified"
+        assert result["severity"] == "critical"
+        assert result["symptom_class"] == "oom,crash"
+
+    def test_symptom_class_single_string(self):
+        content = """---
+domain: compute
+symptom_class: oom
+---
+
+Content.
+"""
+        result = extract_frontmatter_metadata(content)
+        assert result["symptom_class"] == "oom"
+
+    def test_symptom_class_empty_list(self):
+        content = """---
+domain: compute
+symptom_class: []
+---
+
+Content.
+"""
+        result = extract_frontmatter_metadata(content)
+        assert "symptom_class" not in result
 
     def test_partial_frontmatter(self):
         content = """---

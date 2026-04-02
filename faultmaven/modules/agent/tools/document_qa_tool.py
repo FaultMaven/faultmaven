@@ -126,13 +126,18 @@ class DocumentQATool(LangChainBaseTool):
         logger.debug(f"Querying collection: {collection}, k={k}")
 
         # Step 2: Retrieve chunks from vector store (same for all KBs)
-        # Use hybrid search (vector + keyword with RRF) when KB config requests it
+        # Search mode from KB config: "hybrid" (full pipeline), "fast" (skip reranking), "vector" (pure cosine)
         try:
-            use_hybrid = self._kb_config.search_mode == "hybrid"
+            search_mode = self._kb_config.search_mode
 
-            if use_hybrid and hasattr(self._vector_store, "hybrid_search"):
-                logger.debug("Using hybrid search (vector + keyword + RRF)")
+            if search_mode == "hybrid" and hasattr(self._vector_store, "hybrid_search"):
+                logger.debug("Using hybrid search (vector + keyword + reranking)")
                 chunks = await self._vector_store.hybrid_search(
+                    collection_name=collection, query=question, k=k, where=filters
+                )
+            elif search_mode == "fast":
+                logger.debug("Using fast search (vector only, no reranking)")
+                chunks = await self._vector_store.search(
                     collection_name=collection, query=question, k=k, where=filters
                 )
             else:
@@ -183,9 +188,10 @@ Context from documents:
 
 Instructions:
 - Answer based strictly on the provided context
+- Preserve procedural detail — include full diagnostic steps, commands, and resolution procedures rather than summarizing them
 - Cite sources accurately with {self._kb_config.get_citation_format()}
 - If information is missing, state that clearly
-- Be concise and factual
+- Compress only background context, never actionable steps
 
 Answer:"""
 
