@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import chromadb
@@ -195,6 +196,7 @@ class KnowledgeIngester:
             sanitized_content = self.sanitizer.sanitize(content)
 
             # Create document object
+            now = datetime.now(timezone.utc).isoformat()
             document = KnowledgeBaseDocument(
                 document_id=document_id,
                 title=title,
@@ -205,6 +207,8 @@ class KnowledgeIngester:
                 scope=scope,
                 owner_id=owner_id,
                 team_id=team_id,
+                created_at=now,
+                updated_at=now,
             )
 
             # Process and store in chunks
@@ -342,7 +346,7 @@ class KnowledgeIngester:
                 "team_id": getattr(document, "team_id", None) or "",
                 "chunk_index": i,
                 "total_chunks": len(chunks),
-                "created_at": document.created_at.isoformat(),
+                "created_at": document.created_at,
             }
 
             # Enrich with frontmatter fields for hybrid search and staleness
