@@ -113,9 +113,18 @@ async def upload_document(
             "text/plain",
             "text/markdown",
         }
+        allowed_extensions = {".md", ".txt", ".markdown"}
 
-        if file.content_type not in allowed_types:
-            logger.warning(f"Invalid file type for runbook upload: {file.content_type}")
+        filename = file.filename or ""
+        file_ext = filename[filename.rfind(".") :].lower() if "." in filename else ""
+
+        if (
+            file.content_type not in allowed_types
+            and file_ext not in allowed_extensions
+        ):
+            logger.warning(
+                f"Invalid file type for runbook upload: {file.content_type} ({filename})"
+            )
             raise HTTPException(
                 status_code=415,
                 detail=(
