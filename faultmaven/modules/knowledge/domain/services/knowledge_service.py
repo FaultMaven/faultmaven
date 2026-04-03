@@ -1068,77 +1068,115 @@ class KnowledgeService:
 
     async def _index_document_in_vector_store(
         self, document: KnowledgeBaseDocument
-    ) -> None:
-        """
-        Index document in vector store for semantic search
+    ) -> int:
+        """Index document in vector store with structure-aware chunking.
 
-        Args:
-            document: Document to index
+        Splits the document into semantically meaningful chunks, generates
+        BGE-M3 embeddings for each, and stores them with enriched metadata.
+
+        Returns:
+            Number of chunks indexed (0 on failure).
         """
         if not self._vector_store:
-            return
+            return 0
 
         try:
-            # Extract RAG-enrichment fields from frontmatter if present
+            from faultmaven.infrastructure.model_cache import model_cache
+            from faultmaven.modules.knowledge.domain.services.content_chunker import (
+                ContentChunker,
+            )
+
+            # Remove old chunks for this document (safe for re-ingestion)
+            if hasattr(self._vector_store, "delete_documents_by_parent_id"):
+                await self._vector_store.delete_documents_by_parent_id(
+                    document.document_id
+                )
+
+            # Chunk the content
+            chunker = ContentChunker()
+            chunks = chunker.split(document.content)
+            if not chunks:
+                logger.warning(
+                    f"No chunks produced for document {document.document_id}"
+                )
+                return 0
+
+            # Generate BGE-M3 embeddings
+            bge_model = model_cache.get_bge_m3_model()
+            if bge_model is None:
+                logger.error("BGE-M3 model unavailable, skipping vector indexing")
+                return 0
+            embeddings = [bge_model.encode(chunk).tolist() for chunk in chunks]
+
+            # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
 
-            # Convert document to format expected by vector store
-            meta = VectorMetadata(
-                title=document.title,
-                document_type=document.document_type,
-                tags=document.tags or [],
-                source_url=document.source_url,
-                scope=getattr(document, "scope", "global"),
-                owner_id=getattr(document, "owner_id", None),
-                team_id=getattr(document, "team_id", None),
-                created_at=document.created_at,
-                updated_at=document.updated_at,
-                domain=fm_meta.get("domain"),
-                service=fm_meta.get("service"),
-                last_updated=fm_meta.get("last_updated"),
-                status=fm_meta.get("status"),
-                severity=fm_meta.get("severity"),
-                symptom_class=fm_meta.get("symptom_class"),
-            )
-            doc_dict = {
-                "id": document.document_id,
-                "title": document.title,
-                "content": document.content,
-                "document_type": document.document_type,
-                "tags": document.tags,
-                "metadata": meta.to_chroma_metadata(),
-            }
+            # Build per-chunk document dicts
+            doc_dicts = []
+            for i, chunk in enumerate(chunks):
+                meta = VectorMetadata(
+                    title=document.title,
+                    document_type=document.document_type,
+                    tags=document.tags or [],
+                    source_url=document.source_url,
+                    scope=getattr(document, "scope", "global"),
+                    owner_id=getattr(document, "owner_id", None),
+                    team_id=getattr(document, "team_id", None),
+                    created_at=document.created_at,
+                    updated_at=document.updated_at,
+                    domain=fm_meta.get("domain"),
+                    service=fm_meta.get("service"),
+                    last_updated=fm_meta.get("last_updated"),
+                    status=fm_meta.get("status"),
+                    severity=fm_meta.get("severity"),
+                    symptom_class=fm_meta.get("symptom_class"),
+                    chunk_index=i,
+                    total_chunks=len(chunks),
+                    parent_document_id=document.document_id,
+                )
+                doc_dicts.append(
+                    {
+                        "id": f"{document.document_id}_chunk_{i}",
+                        "content": chunk,
+                        "metadata": meta.to_chroma_metadata(),
+                    }
+                )
 
-            await self._vector_store.add_documents([doc_dict])
-            # INFO: file-level event + embedding count (1 per upload in current flow)
+            await self._vector_store.add_documents(doc_dicts, embeddings=embeddings)
+
             logger.info(
-                f"Indexed document into vector store",
+                "Indexed document into vector store",
                 extra={
                     "document_id": document.document_id,
                     "title": document.title,
-                    "embedding_count": 1,
+                    "chunk_count": len(chunks),
                 },
             )
-            # DEBUG: detailed indexing record
-            logger.debug(
-                f"Vector indexing details: id={document.document_id}, title={document.title[:120]}"
-            )
+            return len(chunks)
 
         except Exception as e:
             logger.error(f"Failed to index document in vector store: {e}")
-            # Don't raise exception here as indexing failure shouldn't block ingestion
+            return 0
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
-        """Remove document from vector store index."""
+        """Remove document and all its chunks from vector store."""
         if not self._vector_store:
             return
 
         try:
+            # Try chunk-aware deletion first (new chunked documents)
+            if hasattr(self._vector_store, "delete_documents_by_parent_id"):
+                count = await self._vector_store.delete_documents_by_parent_id(
+                    document_id
+                )
+                if count > 0:
+                    logger.info(f"Removed {count} chunks for document {document_id}")
+                    return
+
+            # Fallback: try exact ID match (legacy unchunked documents)
             if hasattr(self._vector_store, "delete_documents"):
                 await self._vector_store.delete_documents([document_id])
                 logger.info(f"Removed document {document_id} from vector store")
-            else:
-                logger.debug(f"Vector store does not support delete for {document_id}")
         except Exception as e:
             logger.error(f"Failed to remove document from vector store: {e}")
 
@@ -1207,32 +1245,8 @@ class KnowledgeService:
                 )
                 raise
 
-            # Create job record
-            job_data = {
-                "job_id": job_id,
-                "document_id": document_id,
-                "status": "completed",
-                "progress": 100,
-                "created_at": to_json_compatible(created_at),
-                "completed_at": to_json_compatible(created_at),
-                "processing_results": {
-                    "chunks_created": 1,
-                    "embeddings_generated": 1,
-                    "indexing_complete": True,
-                    "error_count": 0,
-                },
-            }
-
-            # Store job record in Redis
-            import json as _json
-
-            await self._redis.setex(
-                self._kb_job_key.format(job_id=job_id),
-                self._kb_job_ttl,
-                _json.dumps(job_data),
-            )
-
-            # Also index into vector store if available so retrieval can find it persistently
+            # Index into vector store with structure-aware chunking
+            chunks_created = 0
             try:
                 if self._vector_store:
                     doc_model = KnowledgeBaseDocument(
@@ -1248,10 +1262,36 @@ class KnowledgeService:
                         created_at=to_json_compatible(created_at),
                         updated_at=to_json_compatible(created_at),
                     )
-                    await self._index_document_in_vector_store(doc_model)
+                    chunks_created = await self._index_document_in_vector_store(
+                        doc_model
+                    )
             except Exception as e:
-                # Do not fail the upload if indexing fails; it will be retried later
                 logger.error(f"Failed to index uploaded document {document_id}: {e}")
+
+            # Create job record
+            job_data = {
+                "job_id": job_id,
+                "document_id": document_id,
+                "status": "completed",
+                "progress": 100,
+                "created_at": to_json_compatible(created_at),
+                "completed_at": to_json_compatible(created_at),
+                "processing_results": {
+                    "chunks_created": chunks_created,
+                    "embeddings_generated": chunks_created,
+                    "indexing_complete": chunks_created > 0,
+                    "error_count": 0,
+                },
+            }
+
+            # Store job record in Redis
+            import json as _json
+
+            await self._redis.setex(
+                self._kb_job_key.format(job_id=job_id),
+                self._kb_job_ttl,
+                _json.dumps(job_data),
+            )
 
             logger.info(f"Successfully stored document {document_id} in Redis store")
 

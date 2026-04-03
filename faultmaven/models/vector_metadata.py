@@ -31,6 +31,10 @@ class VectorMetadata(BaseModel):
     status: Optional[str] = None
     severity: Optional[str] = None
     symptom_class: Optional[str] = None  # Comma-separated from frontmatter list
+    # Chunk tracking fields: set when documents are split into multiple chunks
+    chunk_index: Optional[int] = None
+    total_chunks: Optional[int] = None
+    parent_document_id: Optional[str] = None
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -56,6 +60,7 @@ class VectorMetadata(BaseModel):
         "status",
         "severity",
         "symptom_class",
+        "parent_document_id",
         mode="before",
     )
     @classmethod
@@ -96,4 +101,10 @@ class VectorMetadata(BaseModel):
             data["severity"] = self.severity
         if self.symptom_class:
             data["symptom_class"] = self.symptom_class
+        if self.chunk_index is not None:
+            data["chunk_index"] = self.chunk_index
+        if self.total_chunks is not None:
+            data["total_chunks"] = self.total_chunks
+        if self.parent_document_id:
+            data["parent_document_id"] = self.parent_document_id
         return data

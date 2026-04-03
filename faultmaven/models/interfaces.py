@@ -408,41 +408,19 @@ class IVectorStore(ABC):
     """
 
     @abstractmethod
-    async def add_documents(self, documents: List[Dict]) -> None:
-        """Add documents to the vector store with automatic embedding generation.
-
-        This method processes documents by generating embeddings using the
-        configured embedding model and storing them in the vector database.
-        Documents are automatically chunked if they exceed size limits.
+    async def add_documents(
+        self,
+        documents: List[Dict],
+        embeddings: Optional[List[List[float]]] = None,
+    ) -> None:
+        """Add documents to the vector store.
 
         Args:
-            documents: List of document dictionaries to add. Each document must
-                      contain at minimum:
-                      - 'id': Unique document identifier (str)
-                      - 'content': Document text content (str)
-                      - 'metadata': Optional metadata dict with additional fields
-
-        Raises:
-            VectorStoreException: When document addition fails
-            ValidationException: When document format is invalid
-            EmbeddingException: When embedding generation fails
-
-        Example:
-            Basic document addition:
-
-            >>> docs = [
-                {
-                    "id": "doc_001",
-                    "content": "This is a troubleshooting guide for database issues.",
-                    "metadata": {"type": "troubleshooting", "category": "database"}
-                }
-            ]
-            >>> await vector_store.add_documents(docs)
-
-        Note:
-            Large documents are automatically chunked into smaller segments.
-            Embeddings are generated using the configured BGE-M3 model.
-            Duplicate document IDs will update existing documents.
+            documents: List of document dicts, each with 'id', 'content',
+                      and optional 'metadata'.
+            embeddings: Pre-computed embedding vectors, one per document.
+                       When provided, the store uses these instead of
+                       generating its own. Must match len(documents).
         """
         pass
 
@@ -528,6 +506,17 @@ class IVectorStore(ABC):
             For large collections, batch deletions are more efficient.
         """
         pass
+
+    async def delete_documents_by_parent_id(self, parent_document_id: str) -> int:
+        """Delete all chunks belonging to a parent document.
+
+        Args:
+            parent_document_id: The original document ID whose chunks to delete.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        return 0
 
 
 class ISessionStore(ABC):

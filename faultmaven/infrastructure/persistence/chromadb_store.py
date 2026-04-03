@@ -53,7 +53,11 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             self.logger.error(f"Failed to connect to ChromaDB: {e}")
             raise
 
-    async def add_documents(self, documents: List[Dict]) -> None:
+    async def add_documents(
+        self,
+        documents: List[Dict],
+        embeddings: Optional[List[List[float]]] = None,
+    ) -> None:
         """Add documents to the vector store."""
 
         async def _add_wrapper():
@@ -68,15 +72,11 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             for md in raw_metadatas:
                 try:
                     vm = VectorMetadata(
-                        title=md.get("title"),
-                        document_type=md.get("document_type"),
-                        tags=md.get("tags", []),
-                        source_url=md.get("source_url"),
-                        scope=md.get("scope"),
-                        owner_id=md.get("owner_id"),
-                        team_id=md.get("team_id"),
-                        created_at=md.get("created_at"),
-                        updated_at=md.get("updated_at"),
+                        **{
+                            k: md.get(k)
+                            for k in VectorMetadata.model_fields
+                            if k in md or md.get(k) is not None
+                        }
                     )
                     metadatas.append(vm.to_chroma_metadata())
                 except Exception:
@@ -93,7 +93,10 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                                 continue
                     metadatas.append(sanitized)
 
-            self.collection.add(ids=ids, documents=contents, metadatas=metadatas)
+            add_kwargs: Dict = dict(ids=ids, documents=contents, metadatas=metadatas)
+            if embeddings is not None:
+                add_kwargs["embeddings"] = embeddings
+            self.collection.add(**add_kwargs)
 
             self.logger.info(
                 f"Added documents to vector store",
@@ -285,3 +288,30 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             retries=2,
             retry_delay=1.0,
         )
+
+    async def delete_documents_by_parent_id(self, parent_document_id: str) -> int:
+        """Delete all chunks belonging to a parent document."""
+        deleted_count = 0
+
+        async def _delete_by_parent_wrapper():
+            nonlocal deleted_count
+            results = self.collection.get(
+                where={"parent_document_id": parent_document_id},
+                include=[],
+            )
+            chunk_ids = results.get("ids", [])
+            if chunk_ids:
+                self.collection.delete(ids=chunk_ids)
+                deleted_count = len(chunk_ids)
+                self.logger.info(
+                    f"Deleted {deleted_count} chunks for parent {parent_document_id}"
+                )
+
+        await self.call_external(
+            operation_name="delete_documents_by_parent_id",
+            call_func=_delete_by_parent_wrapper,
+            timeout=10.0,
+            retries=2,
+            retry_delay=1.0,
+        )
+        return deleted_count

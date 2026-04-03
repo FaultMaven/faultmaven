@@ -394,7 +394,6 @@ python scripts/test_rbac.py                # Test RBAC configuration
 python scripts/verify_vector_storage.py    # Verify ChromaDB
 python scripts/cleanup_corrupt_cases.py    # Database maintenance
 python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
-python scripts/backfill_kb_metadata.py           # Re-index KB with structure-aware chunks + enriched metadata (--dry-run first)
 
 # Architecture & Validation
 python scripts/check_import_violations.py  # Check architecture

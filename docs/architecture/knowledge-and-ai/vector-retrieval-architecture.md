@@ -348,7 +348,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 
 ### Deployment Note
 
-Existing runbooks must be reindexed after deploying structure-aware chunking and metadata enrichment. Run `python scripts/backfill_kb_metadata.py` (use `--dry-run` first to preview). This replaces old 1000-char fixed chunks with structure-aware variable chunks and adds domain/service/status metadata.
+Existing runbooks are reindexed automatically when the API server restarts — the startup auto-ingest discovers runbooks in `data/knowledge/` via `scan_for_runbooks()` and ingests them through the `verify_draft()` pipeline with the current chunking and metadata enrichment logic.
 
 ---
 

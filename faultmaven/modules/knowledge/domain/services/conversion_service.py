@@ -811,10 +811,14 @@ class ConversionService:
             return None
 
         async with self._db_session_factory() as session:
+            # Allow access if user owns the job OR it was created by system
             result = await session.execute(
                 select(ConversionJobModel).where(
                     ConversionJobModel.id == conversion_id,
-                    ConversionJobModel.user_id == user_id,
+                    (
+                        (ConversionJobModel.user_id == user_id)
+                        | (ConversionJobModel.user_id == "system")
+                    ),
                 )
             )
             job = result.scalar_one_or_none()
@@ -1079,11 +1083,14 @@ class ConversionService:
             return None
 
         async with self._db_session_factory() as session:
-            # Verify ownership
+            # Verify ownership (system-created jobs accessible to any user)
             job_result = await session.execute(
                 select(ConversionJobModel).where(
                     ConversionJobModel.id == conversion_id,
-                    ConversionJobModel.user_id == user_id,
+                    (
+                        (ConversionJobModel.user_id == user_id)
+                        | (ConversionJobModel.user_id == "system")
+                    ),
                 )
             )
             job = job_result.scalar_one_or_none()
