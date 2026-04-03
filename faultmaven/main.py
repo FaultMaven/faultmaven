@@ -711,22 +711,8 @@ async def lifespan(app: FastAPI):
     # Middleware must be added before the app starts. It is configured at import time.
     logger.info("✅ Middleware already configured")
 
-    # Scan for runbooks on disk (discovers new files, reverts orphaned drafts)
-    # Does NOT auto-ingest — user triggers "Ingest & Verify" from Dashboard
-    try:
-        conversion_svc = getattr(app.state, "conversion_service", None)
-        if conversion_svc:
-            scan_result = await conversion_svc.scan_for_runbooks(user_id="system")
-            discovered = len(scan_result.get("drafts", []))
-            reverted = scan_result.get("reverted", 0)
-            if discovered or reverted:
-                logger.info(
-                    f"📋 KB scan: {discovered} new runbooks discovered, "
-                    f"{reverted} reverted to draft. "
-                    f"Use Dashboard → Knowledge Base → Ingest & Verify to index."
-                )
-    except Exception as e:
-        logger.warning(f"KB scan failed (non-critical): {e}")
+    # KB scan moved to Dashboard mount — POST /api/v1/knowledge/scan
+    # Server startup stays fast; user triggers scan + ingestion from Dashboard
 
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"

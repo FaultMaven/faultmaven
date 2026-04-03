@@ -7,6 +7,7 @@ Endpoints:
 - GET    /knowledge/conversions/{id}                           Get conversion details
 - GET    /knowledge/conversions/by-case/{case_id}              Get conversion for a case
 - PUT    /knowledge/conversions/{id}/drafts/{draft_id}         Edit draft
+- POST   /knowledge/drafts/verify-batch                        Batch verify and ingest
 - POST   /knowledge/conversions/{id}/drafts/{draft_id}/verify  Verify and ingest
 - DELETE /knowledge/conversions/{id}/drafts/{draft_id}         Delete draft
 """
@@ -302,6 +303,35 @@ async def update_draft(
     if not result:
         raise HTTPException(status_code=404, detail="Draft not found")
     return result.model_dump()
+
+
+# =============================================================================
+# POST /knowledge/drafts/verify-batch
+# =============================================================================
+
+
+class BatchDraftRef(BaseModel):
+    conversion_id: str
+    draft_id: str
+
+
+class BatchVerifyRequest(BaseModel):
+    draft_ids: list[BatchDraftRef] = Field(min_length=1, max_length=100)
+
+
+@router.post("/drafts/verify-batch")
+async def verify_batch(
+    body: BatchVerifyRequest,
+    service: ConversionService = Depends(_get_conversion_service),
+    current_user: DevUser = Depends(_require_auth),
+):
+    """Verify and ingest multiple drafts sequentially."""
+    result = await service.verify_batch(
+        draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
+        user_id=current_user.user_id,
+        username=current_user.username,
+    )
+    return result
 
 
 # =============================================================================

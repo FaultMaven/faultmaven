@@ -1071,6 +1071,83 @@ class ConversionService:
                 quality_warning=quality_warning,
             )
 
+    async def verify_batch(
+        self,
+        draft_refs: list[tuple[str, str]],  # (conversion_id, draft_id)
+        user_id: str,
+        username: str,
+    ) -> dict:
+        """Verify multiple drafts sequentially. Returns summary with per-item status."""
+        results = []
+        verified = 0
+        failed = 0
+        skipped = 0
+
+        for conversion_id, draft_id in draft_refs:
+            try:
+                response = await self.verify_draft(
+                    conversion_id=conversion_id,
+                    draft_id=draft_id,
+                    user_id=user_id,
+                    username=username,
+                )
+                results.append(
+                    {
+                        "conversion_id": conversion_id,
+                        "draft_id": draft_id,
+                        "status": "verified",
+                        "error": None,
+                        "knowledge_item_id": (
+                            response.knowledge_item_id if response else None
+                        ),
+                    }
+                )
+                verified += 1
+            except ValueError as e:
+                error_msg = str(e)
+                if "already been verified" in error_msg:
+                    results.append(
+                        {
+                            "conversion_id": conversion_id,
+                            "draft_id": draft_id,
+                            "status": "skipped",
+                            "error": error_msg,
+                            "knowledge_item_id": None,
+                        }
+                    )
+                    skipped += 1
+                else:
+                    results.append(
+                        {
+                            "conversion_id": conversion_id,
+                            "draft_id": draft_id,
+                            "status": "failed",
+                            "error": error_msg,
+                            "knowledge_item_id": None,
+                        }
+                    )
+                    failed += 1
+            except Exception as e:
+                logger.error(f"Batch verify failed for {draft_id}: {e}")
+                results.append(
+                    {
+                        "conversion_id": conversion_id,
+                        "draft_id": draft_id,
+                        "status": "failed",
+                        "error": str(e),
+                        "knowledge_item_id": None,
+                    }
+                )
+                failed += 1
+
+        return {
+            "total": len(draft_refs),
+            "verified": verified,
+            "failed": failed,
+            "skipped": skipped,
+            "results": results,
+        }
+
     async def verify_draft(
         self,
         conversion_id: str,

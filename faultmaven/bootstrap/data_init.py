@@ -103,10 +103,19 @@ def seed_builtin_runbooks() -> int:
         logger.debug("No built-in runbooks directory found — skipping seed")
         return 0
 
-    # Check if target already has runbook files
-    existing = list(target_dir.rglob("*.md")) if target_dir.exists() else []
+    # Check all of data/knowledge/ for any .md files (not just global/)
+    # If personal runbooks exist but global is empty, user chose not to have global ones
+    knowledge_root = project_root / "data" / "knowledge"
+    sources_dir = knowledge_root / "sources"
+    existing = []
+    if knowledge_root.exists():
+        existing = [
+            p for p in knowledge_root.rglob("*.md") if not p.is_relative_to(sources_dir)
+        ]
     if existing:
-        logger.debug(f"Global KB already has {len(existing)} runbooks — skipping seed")
+        logger.debug(
+            f"Knowledge directory has {len(existing)} runbooks — skipping seed"
+        )
         return 0
 
     # Copy built-in runbooks preserving subdirectory structure
