@@ -556,6 +556,7 @@ class InMemoryCaseRepository(CaseRepository):
             if (
                 query_lower in case.title.lower()
                 or query_lower in case.description.lower()
+                or query_lower in case.case_id.lower()
             ):
 
                 # Apply user filter

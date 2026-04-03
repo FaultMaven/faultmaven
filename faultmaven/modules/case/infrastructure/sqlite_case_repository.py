@@ -513,7 +513,7 @@ class SQLiteCaseRepository(CaseRepository):
         """Search cases using SQLite LIKE pattern matching (no full-text search)."""
         try:
             where_clauses = [
-                "(title LIKE :search_pattern OR title LIKE :search_pattern2)"
+                "(title LIKE :search_pattern OR title LIKE :search_pattern2 OR case_id LIKE :search_pattern)"
             ]
             params = {
                 "search_pattern": f"%{query}%",

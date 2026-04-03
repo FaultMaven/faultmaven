@@ -1064,10 +1064,11 @@ SELECT * FROM evidence
 WHERE case_id = $1 AND category = 'observation'
 ORDER BY collected_at DESC;
 
--- Search cases (full-text)
--- Target: ~15ms (GIN index on tsvector)
+-- Search cases (full-text + case ID)
+-- Target: ~15ms (GIN index on tsvector, ILIKE fallback for case ID)
 SELECT * FROM cases
 WHERE to_tsvector('english', title || ' ' || description) @@ to_tsquery('api performance')
+   OR case_id ILIKE '%search_term%'
 ORDER BY last_activity_at DESC
 LIMIT 20;
 

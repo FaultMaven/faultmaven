@@ -640,7 +640,7 @@ including connectivity and performance metrics.
 
 Search cases by content
 
-Searches case titles, descriptions, and optionally message content
+Searches case titles, descriptions, case IDs, and optionally message content
 for the specified query terms.
 
 **Tags:** `cases`

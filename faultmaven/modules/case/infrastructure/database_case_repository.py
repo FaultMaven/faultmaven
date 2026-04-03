@@ -315,6 +315,7 @@ class DatabaseCaseRepository(CaseRepository):
             search_condition = or_(
                 CaseModel.title.ilike(search_pattern),
                 CaseModel.inquiry.ilike(search_pattern),
+                CaseModel.case_id.ilike(search_pattern),
             )
 
             conditions = [search_condition]

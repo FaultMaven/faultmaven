@@ -628,9 +628,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Note: Evidence search removed per Principle 3 (Database Boundaries)
             # Evidence full-text search should be done via IEvidenceQuery if needed
             where_clauses = [
-                "to_tsvector('english', c.title || ' ' || COALESCE(c.inquiry->>'proposed_problem_statement', '')) @@ plainto_tsquery('english', :query)"
+                "(to_tsvector('english', c.title || ' ' || COALESCE(c.inquiry->>'proposed_problem_statement', '')) @@ plainto_tsquery('english', :query) OR c.case_id ILIKE :case_id_pattern)"
             ]
-            params = {"query": query, "limit": limit}
+            params = {"query": query, "case_id_pattern": f"%{query}%", "limit": limit}
 
             if user_id:
                 where_clauses.append("c.user_id = :user_id")
