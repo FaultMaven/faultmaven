@@ -127,7 +127,7 @@ class KnowledgeService:
 
         # _document_counter removed — upload_document() now uses UUID-based IDs
 
-        # Redis key patterns (legacy — being phased out in favor of SQLite)
+        # Redis key patterns (retained for get_job_status compatibility)
         self._kb_doc_key = "kb:doc:{document_id}"
         self._kb_docs_set = "kb:docs"
         self._kb_index_type = "kb:index:type:{document_type}"
@@ -1224,110 +1224,103 @@ class KnowledgeService:
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload document - API-compatible wrapper that stores documents"""
+        """Upload document: create SQLite record + ingest into ChromaDB."""
         try:
-            # Generate unique document ID (UUID-based to survive server restarts)
             import uuid as _uuid
 
+            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+
             document_id = f"kb_{_uuid.uuid4().hex[:12]}"
-            job_id = f"job_{document_id}"
-
-            # Create document object
             created_at = datetime.now(timezone.utc)
-            document_data = {
-                "document_id": document_id,
-                "title": title,
-                "content": content,
-                "document_type": document_type,
-                "category": category or document_type,
-                "tags": tags or [],
-                "source_url": source_url,
-                "description": description,
-                "status": "completed",
-                "created_at": to_json_compatible(created_at),
-                "updated_at": to_json_compatible(created_at),
-                "metadata": {
-                    "author": "api-upload",
-                    "version": "1.0",
-                    "processing_status": "completed",
-                },
-            }
 
-            # Persist metadata
-            try:
-                pipe = self._redis.pipeline()
-                doc_key = self._kb_doc_key.format(document_id=document_id)
-                import json as _json
+            # Extract metadata from frontmatter
+            fm_meta = extract_frontmatter_metadata(content)
+            tags_str = ", ".join(tags) if tags else None
 
-                pipe.hset(doc_key, mapping={"data": _json.dumps(document_data)})
-                pipe.sadd(self._kb_docs_set, document_id)
-                pipe.sadd(
-                    self._kb_index_type.format(document_type=document_type),
-                    document_id,
+            # Create SQLite record (synthetic draft, immediately verified)
+            if self._db_session_factory:
+                from faultmaven.infrastructure.persistence.models import (
+                    ConversionDraftModel,
+                    ConversionJobModel,
                 )
-                for tag in tags or []:
-                    pipe.sadd(self._kb_index_tag.format(tag=tag), document_id)
-                await pipe.execute()
-                logger.info(f"Persisted KB metadata in Redis for {document_id}")
-            except Exception as e:
-                logger.error(
-                    f"Failed to persist KB metadata in Redis for {document_id}: {e}"
-                )
-                raise
 
-            # Index into vector store with structure-aware chunking
-            chunks_created = 0
-            try:
-                if self._vector_store:
-                    doc_model = KnowledgeBaseDocument(
-                        document_id=document_id,
-                        title=title,
-                        content=content,
-                        document_type=document_type,
-                        tags=tags or [],
-                        source_url=source_url,
+                conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
+                draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
+
+                # Write content to disk
+                from pathlib import Path
+
+                scope_dir = Path(f"data/knowledge/{scope}")
+                domain = fm_meta.get("domain", "general")
+                target_dir = scope_dir / domain
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                filename = (
+                    f"{title.lower().replace(' ', '-')[:60]}-{_uuid.uuid4().hex[:4]}.md"
+                )
+                file_path = target_dir / filename
+                file_path.write_text(content, encoding="utf-8")
+
+                async with self._db_session_factory() as session:
+                    job = ConversionJobModel(
+                        id=conversion_id,
+                        user_id=owner_id or "system",
                         scope=scope,
-                        owner_id=owner_id,
                         team_id=team_id,
-                        created_at=to_json_compatible(created_at),
-                        updated_at=to_json_compatible(created_at),
+                        status="completed",
+                        source_filename=filename,
+                        source_content_type="text/markdown",
+                        source_size_bytes=len(content.encode()),
+                        source_path=str(file_path),
+                        source_type="upload",
+                        failure_modes_detected=0,
+                        analysis_result={},
+                        created_at=created_at,
+                        completed_at=created_at,
                     )
-                    chunks_created = await self._index_document_in_vector_store(
-                        doc_model
+                    session.add(job)
+
+                    draft = ConversionDraftModel(
+                        id=draft_id,
+                        conversion_id=conversion_id,
+                        runbook_id=document_id,
+                        title=title,
+                        file_path=str(file_path),
+                        status="verified",
+                        source_type="upload",
+                        validation_passed=True,
+                        knowledge_item_id=document_id,
+                        domain=fm_meta.get("domain"),
+                        service=fm_meta.get("service"),
+                        severity=fm_meta.get("severity"),
+                        tags=tags_str,
+                        document_type=document_type,
+                        created_at=created_at,
+                        verified_at=created_at,
+                        verified_by=owner_id or "system",
                     )
-            except Exception as e:
-                logger.error(f"Failed to index uploaded document {document_id}: {e}")
+                    session.add(draft)
+                    await session.commit()
 
-            # Create job record
-            job_data = {
-                "job_id": job_id,
-                "document_id": document_id,
-                "status": "completed",
-                "progress": 100,
-                "created_at": to_json_compatible(created_at),
-                "completed_at": to_json_compatible(created_at),
-                "processing_results": {
-                    "chunks_created": chunks_created,
-                    "embeddings_generated": chunks_created,
-                    "indexing_complete": chunks_created > 0,
-                    "error_count": 0,
-                },
-            }
-
-            # Store job record in Redis
-            import json as _json
-
-            await self._redis.setex(
-                self._kb_job_key.format(job_id=job_id),
-                self._kb_job_ttl,
-                _json.dumps(job_data),
+            # Ingest into ChromaDB
+            chunks_created = await self.ingest_to_vector_store(
+                document_id=document_id,
+                title=title,
+                content=content,
+                document_type=document_type,
+                tags=tags,
+                source_url=source_url,
+                scope=scope,
+                owner_id=owner_id,
+                team_id=team_id,
             )
 
-            logger.info(f"Successfully stored document {document_id} in Redis store")
+            logger.info(
+                f"Uploaded document {document_id}: {chunks_created} chunks indexed"
+            )
 
             return {
                 "document_id": document_id,
-                "job_id": job_id,
                 "status": "completed",
                 "metadata": {
                     "title": title,

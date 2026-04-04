@@ -320,35 +320,47 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Hybrid search (Stage 1 + Stage 2) | **Implemented** | `KnowledgeVectorStore.hybrid_search()` |
 | Binary keyword search | **Implemented** | `$contains` via `where_document` — not BM25 |
 | Four-signal reranker | **Implemented** | Vector, term overlap, metadata match, freshness |
+| Dynamic hybrid weights | **Implemented** | Identifier-heavy queries shift term overlap to 40%, vector to 25% |
+| Hard pre-filter mode | **Implemented** | `filter_mode="hard"` injects domain/service into ChromaDB where clause |
+| Fast search mode | **Implemented** | `search_mode="fast"` skips Stage 2 reranking |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
-| Structure-aware KB chunking | **Implemented** | Markdown header + horizontal rule splits, 200–3000 chars |
-| Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt warnings for stale/draft/deprecated |
-| Metadata enrichment | **Implemented** | domain, service, status stored at ingestion, used in reranker |
-| Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search, not post-filtering. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
+| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 200–3000 chars. Wired into all ingestion paths via `_index_document_in_vector_store()`. |
+| Explicit BGE-M3 embeddings | **Implemented** | Embeddings generated per chunk via `model_cache`, passed to ChromaDB (not relying on default embedding function). |
+| Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "preserve procedural detail" |
+| Metadata enrichment | **Implemented** | domain, service, status, severity, symptom_class stored per chunk at ingestion, used in reranker. Also stored in SQLite (conversion_drafts) for dashboard filtering. |
+| Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
+| SQLite document inventory | **Implemented** | `list_documents()`, `get_document()`, `delete_document()` use SQLite (conversion_drafts), not ChromaDB. ChromaDB is for vector search only. |
+| Chunk-aware deletion | **Implemented** | `delete_documents_by_parent_id()` removes all chunks for a document. |
 | Evidence 4-tier escalation | **Implemented** | See `data-preprocessing-design-specification.md` |
 | Proactive vectorization | **Implemented** | Background trigger at DA mode start for large files |
-| Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Hard pre-filter mode (high confidence) and soft rerank boost (low confidence) designed but `filter_mode` parameter not yet implemented. Wiring from copilot → API → `KBToolAdapter` incomplete. |
-| Dual retrieval paths (fast/deep) | **Planned** | Fast path: metadata-filtered vector, skip reranking. Deep path: current full pipeline. |
-| Dynamic hybrid weights | **Planned** | Shift term overlap weight for identifier-heavy queries via regex detection. |
+| Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Wiring from copilot → API → `KBToolAdapter` incomplete. |
 | True BM25 | **Not done** | ChromaDB does not expose BM25. Binary `$contains` is a partial substitute. Would need `rank_bm25` lib or separate index. |
-| Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Higher quality than heuristic reranker but adds model dependency + latency. |
+| Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Adds model dependency + latency. |
 | Citation grounding | **Not done** | No post-generation verification that cited chunks support the claims attributed to them. |
-| Evidence-to-KB feedback loop | **Not done** | Track patterns where agent repeatedly solves same problem class via evidence analysis → surface as KB curation suggestions. Product-level feature. |
-| Chunk type discriminator | **Not done** | First-class `chunk_type` (runbook_section, log_window, metric_anomaly, config_block) for type-specific chunking logic. Core to the evidence chunking design (§5). |
+| Evidence-to-KB feedback loop | **Not done** | Product-level feature: surface KB curation suggestions from repeated evidence patterns. |
+| Chunk type discriminator | **Not done** | First-class `chunk_type` for type-specific chunking logic. Core to evidence chunking design (§5). |
 | Evidence 512-token chunking + context window | **Not done** | Replaces current 4000-token chunks. Embed small for precision, expand at retrieval for forensic context. |
-| `symptom_class`/`severity` in chunk metadata | **Not done** | Present in runbook YAML frontmatter but not extracted into ChromaDB metadata. Would improve retrieval for symptom-matching queries. |
-| Synthesis prompt alignment | **Open issue** | `DocumentQATool` synthesis prompt says "be concise and factual" but design intent is relay (preserve procedural detail). `_format_tool_result` relay wrapper partially compensates. Prompt should be aligned. |
-| Result caching | **Not done** | `KBConfig.cache_ttl` (24h for KB) and `DocumentQATool.cache_ttl` property exist but nothing reads them — no caching layer wraps `hybrid_search()` or `answer_question()`. Every query re-runs both vector and keyword search, reranking, and LLM synthesis. For repeated questions this is wasted compute. A semantic content hash on (query + scope filter) → cached synthesis result would be the minimal implementation. |
+| Result caching | **Not done** | `KBConfig.cache_ttl` exists but nothing reads it — no caching layer wraps `hybrid_search()` or `answer_question()`. |
+
+### Storage Architecture
+
+ChromaDB is used **only for vector search** during investigations. All document CRUD (list, get, delete, statistics) uses SQLite (`conversion_drafts` + `conversion_jobs` tables). Redis is not used for KB document storage.
+
+| Store | Purpose |
+|-------|---------|
+| SQLite | Document inventory, metadata, status, CRUD, dashboard filters |
+| ChromaDB | Chunked vector embeddings for RAG search |
+| Disk | Markdown source files in `data/knowledge/{scope}/` |
 
 ### Superseded Code
 
-**`KnowledgeSearchService`** (`modules/knowledge/domain/services/search_service.py`) — a ~700-line service with `hybrid_search()` and `semantic_search()` methods that operates on `KnowledgeItem` objects (whole documents from SQL DB), not ChromaDB chunks. It was designed for a document-level retrieval architecture that doesn't match the chunk-based pipeline. The RAG revamp built retrieval capability directly in `KnowledgeVectorStore` instead. This service is dead code — `kb_qa` bypasses it entirely. It should be removed or clearly marked as deprecated.
+**`KnowledgeSearchService`** (`modules/knowledge/domain/services/search_service.py`) — operates on `KnowledgeItem` objects (whole documents), not ChromaDB chunks. Only used by the background `KnowledgeIndexingJob`. The main search path uses `KnowledgeVectorStore` directly.
 
-**`EmbeddingService`** references `text-embedding-3-small` (1536 dimensions) — this is from the `KnowledgeSearchService` path. The active pipeline uses BGE-M3 (1024 dimensions) via `model_cache`. The `KnowledgeItem.EMBEDDING_DIMENSIONS = 1536` constant is also from the deprecated path.
+**`ChromaDBVectorStore.list_documents()` / `get_document()`** — removed. These methods fetched chunks and deduplicated in Python. Replaced by SQLite queries in `KnowledgeService`.
 
 ### Deployment Note
 
-Existing runbooks are reindexed automatically when the API server restarts — the startup auto-ingest discovers runbooks in `data/knowledge/` via `scan_for_runbooks()` and ingests them through the `verify_draft()` pipeline with the current chunking and metadata enrichment logic.
+On first startup, `seed_builtin_runbooks()` copies 59 runbooks from `resources/knowledge/builtin/` to `data/knowledge/global/`. The Dashboard triggers `POST /api/v1/knowledge/scan` on mount, which discovers new files and creates draft records. Users activate runbooks via "Activate" (single or batch) from the Dashboard, which chunks + embeds + stores in ChromaDB.
 
 ---
 
@@ -357,15 +369,19 @@ Existing runbooks are reindexed automatically when the API server restarts — t
 | Component | File |
 |-----------|------|
 | KB vector store (hybrid search, reranker, scope invariant) | `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` |
+| ChromaDB store (chunk add/delete, vector search) | `faultmaven/infrastructure/persistence/chromadb_store.py` |
+| Content chunker (structure-aware splitting) | `faultmaven/modules/knowledge/domain/services/content_chunker.py` |
+| Knowledge service (document CRUD, ingestion) | `faultmaven/modules/knowledge/domain/services/knowledge_service.py` |
+| Conversion service (scan, verify, batch) | `faultmaven/modules/knowledge/domain/services/conversion_service.py` |
 | KB-neutral Q&A tool (strategy pattern) | `faultmaven/modules/agent/tools/document_qa_tool.py` |
 | KBConfig interface | `faultmaven/modules/agent/tools/kb_config.py` |
 | Unified KB config (hybrid mode, staleness) | `faultmaven/modules/agent/tools/kb_configs/unified_kb_config.py` |
-| Case evidence config (forensic synthesis) | `faultmaven/modules/agent/tools/kb_configs/case_evidence_config.py` |
 | Unified KB tool (scope filter construction) | `faultmaven/modules/agent/tools/kb_qa.py` |
 | KB and evidence tool adapters | `faultmaven/modules/agent/tools/kb_tool_adapter.py` |
-| KB ingestion pipeline | `faultmaven/core/knowledge/ingestion.py` |
-| Evidence chunking service | `faultmaven/services/preprocessing/chunking_service.py` |
+| Frontmatter extraction | `faultmaven/utils/frontmatter.py` |
 | Model cache (BGE-M3 global singleton) | `faultmaven/infrastructure/model_cache.py` |
+| Vector metadata schema | `faultmaven/models/vector_metadata.py` |
+| Evidence chunking service | `faultmaven/services/preprocessing/chunking_service.py` |
 
 ---
 

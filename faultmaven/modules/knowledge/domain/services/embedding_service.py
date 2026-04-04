@@ -102,7 +102,7 @@ class EmbeddingService:
             text: Text to embed
 
         Returns:
-            Embedding vector (1536 dimensions by default)
+            Embedding vector (1024 dimensions, BGE-M3)
 
         Raises:
             EmbeddingInvalidInputError: If text is empty or too long
