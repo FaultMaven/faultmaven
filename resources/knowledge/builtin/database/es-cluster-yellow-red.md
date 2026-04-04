@@ -1,6 +1,6 @@
 ---
 id: es-cluster-yellow-red
-title: "Elasticsearch Cluster Yellow or Red Status — Unassigned Shards"
+title: "Elasticsearch Cluster Yellow or Red Status: Unassigned Shards"
 domain: database
 service: elasticsearch
 symptom_class:
@@ -21,7 +21,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Elasticsearch Cluster Yellow or Red Status — Unassigned Shards
+# Elasticsearch Cluster Yellow or Red Status: Unassigned Shards
 
 ## Problem Definition
 

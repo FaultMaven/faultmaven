@@ -1,6 +1,6 @@
 ---
 id: nodejs-event-loop-blocked
-title: "Node.js Event Loop Blocked — Diagnosis and Resolution"
+title: "Node.js Event Loop Blocked"
 domain: application
 service: nodejs
 symptom_class:

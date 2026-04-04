@@ -1,6 +1,6 @@
 ---
 id: linux-oom-killer
-title: "Linux OOM Killer Invocation: Diagnosis and Resolution"
+title: "Linux OOM Killer Invocation"
 domain: compute
 service: linux
 symptom_class:
@@ -23,7 +23,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Linux OOM Killer Invocation: Diagnosis and Resolution
+# Linux OOM Killer Invocation
 
 ## Problem Definition
 

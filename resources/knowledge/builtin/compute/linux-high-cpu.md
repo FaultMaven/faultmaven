@@ -1,6 +1,6 @@
 ---
 id: linux-high-cpu
-title: "Linux High CPU Utilization: Diagnosis and Resolution"
+title: "Linux High CPU Utilization"
 domain: compute
 service: linux
 symptom_class:
@@ -27,7 +27,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Linux High CPU Utilization: Diagnosis and Resolution
+# Linux High CPU Utilization
 
 ## Problem Definition
 

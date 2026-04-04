@@ -1,6 +1,6 @@
 ---
 id: terraform-plan-failures
-title: "Terraform Plan Failures — Diagnosis and Resolution"
+title: "Terraform Plan Failures"
 domain: application
 service: terraform
 symptom_class:

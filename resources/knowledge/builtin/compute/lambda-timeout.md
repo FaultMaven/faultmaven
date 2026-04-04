@@ -1,6 +1,6 @@
 ---
 id: lambda-timeout
-title: "AWS Lambda Function Timeout: Diagnosis and Resolution"
+title: "AWS Lambda Function Timeout"
 domain: compute
 service: aws-lambda
 symptom_class:
@@ -24,7 +24,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS Lambda Function Timeout: Diagnosis and Resolution
+# AWS Lambda Function Timeout
 
 ## Problem Definition
 

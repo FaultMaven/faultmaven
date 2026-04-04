@@ -1,6 +1,6 @@
 ---
 id: mysql-innodb-deadlocks
-title: "MySQL InnoDB Deadlocks — Detection, Diagnosis, and Resolution"
+title: "MySQL InnoDB Deadlocks"
 domain: database
 service: mysql
 symptom_class:
@@ -21,7 +21,7 @@ tags:
 difficulty: intermediate
 ---
 
-# MySQL InnoDB Deadlocks — Detection, Diagnosis, and Resolution
+# MySQL InnoDB Deadlocks
 
 ## Problem Definition
 

@@ -1,6 +1,6 @@
 ---
 id: k8s-pvc-pending
-title: "Kubernetes PVC Stuck in Pending — Diagnosis and Resolution"
+title: "Kubernetes PVC Stuck in Pending"
 domain: storage
 service: kubernetes
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes PVC Stuck in Pending — Diagnosis and Resolution
+# Kubernetes PVC Stuck in Pending
 
 ## Problem Definition
 

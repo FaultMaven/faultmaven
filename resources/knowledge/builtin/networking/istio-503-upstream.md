@@ -1,6 +1,6 @@
 ---
 id: istio-503-upstream
-title: "Istio 503 Upstream Connect Error — Sidecar Proxy Diagnosis and Resolution"
+title: "Istio 503 Upstream Connect Error: Sidecar Proxy Troubleshooting"
 domain: networking
 service: istio
 symptom_class:

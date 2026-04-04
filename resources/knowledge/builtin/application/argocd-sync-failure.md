@@ -1,6 +1,6 @@
 ---
 id: argocd-sync-failure
-title: "ArgoCD Application Sync Failure — Diagnosis and Resolution"
+title: "ArgoCD Application Sync Failure"
 domain: application
 service: argocd
 symptom_class:

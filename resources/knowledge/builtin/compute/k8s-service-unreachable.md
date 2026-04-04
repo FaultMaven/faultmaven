@@ -1,6 +1,6 @@
 ---
 id: k8s-service-unreachable
-title: "Kubernetes Service Unreachable: Diagnosis and Resolution"
+title: "Kubernetes Service Unreachable"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes Service Unreachable: Diagnosis and Resolution
+# Kubernetes Service Unreachable
 
 ## Problem Definition
 

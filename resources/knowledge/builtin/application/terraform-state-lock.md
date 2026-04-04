@@ -1,6 +1,6 @@
 ---
 id: terraform-state-lock
-title: "Terraform State Lock — Diagnosis and Recovery"
+title: "Terraform State Lock"
 domain: application
 service: terraform
 symptom_class:

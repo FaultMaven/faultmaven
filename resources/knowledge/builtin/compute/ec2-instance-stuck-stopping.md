@@ -1,6 +1,6 @@
 ---
 id: ec2-instance-stuck-stopping
-title: "AWS EC2 Instance Stuck in Stopping State: Diagnosis and Resolution"
+title: "AWS EC2 Instance Stuck in Stopping State"
 domain: compute
 service: aws-ec2
 symptom_class:
@@ -21,7 +21,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS EC2 Instance Stuck in Stopping State: Diagnosis and Resolution
+# AWS EC2 Instance Stuck in Stopping State
 
 ## Problem Definition
 

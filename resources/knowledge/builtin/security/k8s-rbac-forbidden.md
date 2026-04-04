@@ -1,6 +1,6 @@
 ---
 id: k8s-rbac-forbidden
-title: "Kubernetes RBAC 403 Forbidden — Diagnosis and Resolution"
+title: "Kubernetes RBAC 403 Forbidden"
 domain: security
 service: kubernetes
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes RBAC 403 Forbidden — Diagnosis and Resolution
+# Kubernetes RBAC 403 Forbidden
 
 ## Problem Definition
 

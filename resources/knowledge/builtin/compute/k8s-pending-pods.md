@@ -1,6 +1,6 @@
 ---
 id: k8s-pending-pods
-title: "Kubernetes Pods Stuck in Pending State: Diagnosis and Resolution"
+title: "Kubernetes Pods Stuck in Pending State"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes Pods Stuck in Pending State: Diagnosis and Resolution
+# Kubernetes Pods Stuck in Pending State
 
 ## Problem Definition
 

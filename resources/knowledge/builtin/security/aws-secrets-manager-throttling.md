@@ -1,6 +1,6 @@
 ---
 id: aws-secrets-manager-throttling
-title: "AWS Secrets Manager Throttling — Diagnosis and Resolution"
+title: "AWS Secrets Manager Throttling"
 domain: security
 service: aws-secrets-manager
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS Secrets Manager Throttling — Diagnosis and Resolution
+# AWS Secrets Manager Throttling
 
 ## Problem Definition
 

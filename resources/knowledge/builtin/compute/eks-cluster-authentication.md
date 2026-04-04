@@ -1,6 +1,6 @@
 ---
 id: eks-cluster-authentication
-title: "AWS EKS Cluster Authentication Failures: Diagnosis and Resolution"
+title: "AWS EKS Cluster Authentication Failures"
 domain: compute
 service: aws-eks
 symptom_class:
@@ -23,7 +23,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS EKS Cluster Authentication Failures: Diagnosis and Resolution
+# AWS EKS Cluster Authentication Failures
 
 ## Problem Definition
 

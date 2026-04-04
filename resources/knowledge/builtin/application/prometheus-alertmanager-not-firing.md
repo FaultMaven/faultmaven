@@ -1,6 +1,6 @@
 ---
 id: prometheus-alertmanager-not-firing
-title: "Prometheus Alerts Not Firing — Diagnosis and Resolution"
+title: "Prometheus Alerts Not Firing"
 domain: application
 service: prometheus
 symptom_class:

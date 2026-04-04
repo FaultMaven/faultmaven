@@ -1,6 +1,6 @@
 ---
 id: k8s-evicted-pods
-title: "Kubernetes Pod Eviction: Diagnosis and Resolution"
+title: "Kubernetes Pod Eviction"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -23,7 +23,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes Pod Eviction: Diagnosis and Resolution
+# Kubernetes Pod Eviction
 
 ## Problem Definition
 

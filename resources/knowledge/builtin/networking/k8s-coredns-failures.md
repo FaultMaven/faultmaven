@@ -1,6 +1,6 @@
 ---
 id: k8s-coredns-failures
-title: "Kubernetes CoreDNS Resolution Failures — Diagnosis and Resolution"
+title: "Kubernetes CoreDNS Resolution Failures"
 domain: networking
 service: kubernetes
 symptom_class:

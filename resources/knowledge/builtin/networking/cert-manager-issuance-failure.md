@@ -1,6 +1,6 @@
 ---
 id: cert-manager-issuance-failure
-title: "cert-manager Certificate Issuance Failure — ACME and Let's Encrypt Diagnosis"
+title: "cert-manager Certificate Issuance Failure: ACME and Let's Encrypt"
 domain: networking
 service: cert-manager
 symptom_class:

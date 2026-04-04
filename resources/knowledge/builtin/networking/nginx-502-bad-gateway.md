@@ -1,6 +1,6 @@
 ---
 id: nginx-502-bad-gateway
-title: "NGINX 502 Bad Gateway — Upstream Unreachable Diagnosis and Resolution"
+title: "NGINX 502 Bad Gateway: Upstream Unreachable"
 domain: networking
 service: nginx
 symptom_class:

@@ -1,6 +1,6 @@
 ---
 id: nginx-high-latency
-title: "NGINX Request Latency Spikes — Diagnosis and Resolution"
+title: "NGINX Request Latency Spikes"
 domain: networking
 service: nginx
 symptom_class:

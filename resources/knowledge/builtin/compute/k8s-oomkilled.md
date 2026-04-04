@@ -1,6 +1,6 @@
 ---
 id: k8s-oomkilled
-title: "Kubernetes OOMKilled: Diagnosis and Resolution"
+title: "Kubernetes OOMKilled"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -20,7 +20,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes OOMKilled: Diagnosis and Resolution
+# Kubernetes OOMKilled
 
 ## Problem Definition
 

@@ -1,6 +1,6 @@
 ---
 id: k8s-statefulset-stuck
-title: "Kubernetes StatefulSet Stuck During Rolling Update: Diagnosis and Resolution"
+title: "Kubernetes StatefulSet Stuck During Rolling Update"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -20,7 +20,7 @@ tags:
 difficulty: advanced
 ---
 
-# Kubernetes StatefulSet Stuck During Rolling Update: Diagnosis and Resolution
+# Kubernetes StatefulSet Stuck During Rolling Update
 
 ## Problem Definition
 

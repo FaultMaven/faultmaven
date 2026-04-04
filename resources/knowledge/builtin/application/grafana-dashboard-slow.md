@@ -1,6 +1,6 @@
 ---
 id: grafana-dashboard-slow
-title: "Grafana Dashboard Loading Slowly — Diagnosis and Resolution"
+title: "Grafana Dashboard Loading Slowly"
 domain: application
 service: grafana
 symptom_class:

@@ -1,6 +1,6 @@
 ---
 id: github-actions-workflow-failure
-title: "GitHub Actions Workflow Failures — Diagnosis and Resolution"
+title: "GitHub Actions Workflow Failures"
 domain: application
 service: github-actions
 symptom_class:

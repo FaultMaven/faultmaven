@@ -1,6 +1,6 @@
 ---
 id: linux-disk-io-saturation
-title: "Linux Disk I/O Saturation: Diagnosis and Resolution"
+title: "Linux Disk I/O Saturation"
 domain: compute
 service: linux
 symptom_class:
@@ -25,7 +25,7 @@ tags:
 difficulty: advanced
 ---
 
-# Linux Disk I/O Saturation: Diagnosis and Resolution
+# Linux Disk I/O Saturation
 
 ## Problem Definition
 

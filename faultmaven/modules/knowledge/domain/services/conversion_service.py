@@ -904,7 +904,10 @@ class ConversionService:
                 select(ConversionJobModel)
                 .where(
                     ConversionJobModel.case_id == case_id,
-                    ConversionJobModel.user_id == user_id,
+                    (
+                        (ConversionJobModel.user_id == user_id)
+                        | (ConversionJobModel.user_id == "system")
+                    ),
                 )
                 .order_by(ConversionJobModel.created_at.desc())
             )
@@ -925,7 +928,10 @@ class ConversionService:
         async with self._db_session_factory() as session:
             result = await session.execute(
                 select(ConversionJobModel)
-                .where(ConversionJobModel.user_id == user_id)
+                .where(
+                    (ConversionJobModel.user_id == user_id)
+                    | (ConversionJobModel.user_id == "system")
+                )
                 .order_by(ConversionJobModel.created_at.desc())
                 .limit(limit)
                 .offset(offset)
@@ -1013,11 +1019,14 @@ class ConversionService:
             return None
 
         async with self._db_session_factory() as session:
-            # Verify ownership
+            # Verify ownership (system-created jobs accessible to any user)
             job_result = await session.execute(
                 select(ConversionJobModel).where(
                     ConversionJobModel.id == conversion_id,
-                    ConversionJobModel.user_id == user_id,
+                    (
+                        (ConversionJobModel.user_id == user_id)
+                        | (ConversionJobModel.user_id == "system")
+                    ),
                 )
             )
             job = job_result.scalar_one_or_none()
@@ -1522,10 +1531,25 @@ status: draft
 
             file_path_str = str(md_file)
 
-            # Skip if already tracked in drafts DB
+            # Skip if already tracked in drafts DB (in-memory set from
+            # reconciliation) or discovered earlier in this scan run
             if file_path_str in tracked_paths:
                 skipped += 1
                 continue
+
+            # Double-check against DB to prevent duplicates from concurrent scans
+            if self._db_session_factory:
+                async with self._db_session_factory() as session:
+                    existing = await session.execute(
+                        select(ConversionDraftModel).where(
+                            ConversionDraftModel.file_path == file_path_str,
+                            ConversionDraftModel.status != DraftStatus.DELETED.value,
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        tracked_paths.add(file_path_str)
+                        skipped += 1
+                        continue
 
             # Read and validate
             try:
@@ -1619,6 +1643,7 @@ status: draft
                 created_at=datetime.now(timezone.utc),
             )
 
+            tracked_paths.add(file_path_str)
             discovered.append(
                 {
                     "conversion_id": conversion_id,
@@ -1651,11 +1676,14 @@ status: draft
             return False
 
         async with self._db_session_factory() as session:
-            # Verify ownership
+            # Verify ownership (system-created jobs accessible to any user)
             job_result = await session.execute(
                 select(ConversionJobModel).where(
                     ConversionJobModel.id == conversion_id,
-                    ConversionJobModel.user_id == user_id,
+                    (
+                        (ConversionJobModel.user_id == user_id)
+                        | (ConversionJobModel.user_id == "system")
+                    ),
                 )
             )
             if not job_result.scalar_one_or_none():

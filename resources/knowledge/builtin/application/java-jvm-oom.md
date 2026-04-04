@@ -1,6 +1,6 @@
 ---
 id: java-jvm-oom
-title: "Java JVM OutOfMemoryError — Diagnosis and Resolution"
+title: "Java JVM OutOfMemoryError"
 domain: application
 service: java
 symptom_class:

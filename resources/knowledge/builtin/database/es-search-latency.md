@@ -1,6 +1,6 @@
 ---
 id: es-search-latency
-title: "Elasticsearch Search Latency Spikes — Slow Queries, Heap Pressure, and Circuit Breakers"
+title: "Elasticsearch Search Latency Spikes: Slow Queries, Heap Pressure, and Circuit Breakers"
 domain: database
 service: elasticsearch
 symptom_class:
@@ -21,7 +21,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Elasticsearch Search Latency Spikes — Slow Queries, Heap Pressure, and Circuit Breakers
+# Elasticsearch Search Latency Spikes: Slow Queries, Heap Pressure, and Circuit Breakers
 
 ## Problem Definition
 

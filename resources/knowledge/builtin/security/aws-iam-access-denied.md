@@ -1,6 +1,6 @@
 ---
 id: aws-iam-access-denied
-title: "AWS IAM Access Denied Errors — Diagnosis and Resolution"
+title: "AWS IAM Access Denied Errors"
 domain: security
 service: aws-iam
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS IAM Access Denied Errors — Diagnosis and Resolution
+# AWS IAM Access Denied Errors
 
 ## Problem Definition
 

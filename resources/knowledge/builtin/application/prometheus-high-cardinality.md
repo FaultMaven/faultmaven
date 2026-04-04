@@ -1,6 +1,6 @@
 ---
 id: prometheus-high-cardinality
-title: "Prometheus High Cardinality — Diagnosis and Resolution"
+title: "Prometheus High Cardinality"
 domain: application
 service: prometheus
 symptom_class:

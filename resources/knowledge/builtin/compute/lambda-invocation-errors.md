@@ -1,6 +1,6 @@
 ---
 id: lambda-invocation-errors
-title: "AWS Lambda Invocation Errors: Diagnosis and Resolution"
+title: "AWS Lambda Invocation Errors"
 domain: compute
 service: aws-lambda
 symptom_class:
@@ -25,7 +25,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS Lambda Invocation Errors: Diagnosis and Resolution
+# AWS Lambda Invocation Errors
 
 ## Problem Definition
 

@@ -1,6 +1,6 @@
 ---
 id: tls-certificate-expiry
-title: "TLS Certificate Expiry — Diagnosis, Emergency Renewal, and Prevention"
+title: "TLS Certificate Expiry: Emergency Renewal and Prevention"
 domain: networking
 service: general
 symptom_class:

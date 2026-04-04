@@ -1,6 +1,6 @@
 ---
 id: k8s-node-notready
-title: "Kubernetes Node NotReady: Diagnosis and Resolution"
+title: "Kubernetes Node NotReady"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -20,7 +20,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes Node NotReady: Diagnosis and Resolution
+# Kubernetes Node NotReady
 
 ## Problem Definition
 

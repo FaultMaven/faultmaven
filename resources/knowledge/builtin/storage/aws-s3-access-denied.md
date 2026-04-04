@@ -1,6 +1,6 @@
 ---
 id: aws-s3-access-denied
-title: "AWS S3 403 Access Denied — Diagnosis and Resolution"
+title: "AWS S3 403 Access Denied"
 domain: storage
 service: aws-s3
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS S3 403 Access Denied — Diagnosis and Resolution
+# AWS S3 403 Access Denied
 
 ## Problem Definition
 

@@ -1,6 +1,6 @@
 ---
 id: k8s-imagepullbackoff
-title: "Kubernetes ImagePullBackOff: Diagnosis and Resolution"
+title: "Kubernetes ImagePullBackOff"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -20,7 +20,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes ImagePullBackOff: Diagnosis and Resolution
+# Kubernetes ImagePullBackOff
 
 ## Problem Definition
 

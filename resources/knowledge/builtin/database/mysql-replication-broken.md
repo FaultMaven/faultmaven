@@ -1,6 +1,6 @@
 ---
 id: mysql-replication-broken
-title: "MySQL Replication Broken — Replica Stops Replicating"
+title: "MySQL Replication Broken: Replica Stops Replicating"
 domain: database
 service: mysql
 symptom_class:
@@ -21,7 +21,7 @@ tags:
 difficulty: advanced
 ---
 
-# MySQL Replication Broken — Replica Stops Replicating
+# MySQL Replication Broken: Replica Stops Replicating
 
 ## Problem Definition
 

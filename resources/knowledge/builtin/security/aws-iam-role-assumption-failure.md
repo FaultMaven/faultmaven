@@ -1,6 +1,6 @@
 ---
 id: aws-iam-role-assumption-failure
-title: "AWS IAM Role Assumption Failures — Diagnosis and Resolution"
+title: "AWS IAM Role Assumption Failures"
 domain: security
 service: aws-iam
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS IAM Role Assumption Failures — Diagnosis and Resolution
+# AWS IAM Role Assumption Failures
 
 ## Problem Definition
 

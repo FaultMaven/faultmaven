@@ -1361,12 +1361,12 @@ class KnowledgeService:
                 where=where,
             )
 
-            # Deduplicate by document_id (chunked docs may have multiple entries)
+            # Deduplicate by document_id (chunked docs have multiple entries)
             seen_ids: set = set()
             all_documents: List[Dict[str, Any]] = []
             for raw in raw_docs:
                 meta = raw.get("metadata", {})
-                doc_id = raw.get("id", meta.get("document_id", ""))
+                doc_id = meta.get("document_id") or raw.get("id", "")
 
                 if doc_id in seen_ids:
                     continue

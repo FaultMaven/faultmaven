@@ -1,6 +1,6 @@
 ---
 id: aws-alb-504-timeout
-title: "AWS Application Load Balancer 504 Gateway Timeout — Diagnosis and Resolution"
+title: "AWS Application Load Balancer 504 Gateway Timeout"
 domain: networking
 service: aws-alb
 symptom_class:

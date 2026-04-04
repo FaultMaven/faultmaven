@@ -1,6 +1,6 @@
 ---
 id: aws-ebs-stuck-attaching
-title: "AWS EBS Volume Stuck Attaching/Detaching — Diagnosis and Resolution"
+title: "AWS EBS Volume Stuck Attaching/Detaching"
 domain: storage
 service: aws-ec2
 symptom_class:
@@ -22,7 +22,7 @@ tags:
 difficulty: intermediate
 ---
 
-# AWS EBS Volume Stuck Attaching/Detaching — Diagnosis and Resolution
+# AWS EBS Volume Stuck Attaching/Detaching
 
 ## Problem Definition
 

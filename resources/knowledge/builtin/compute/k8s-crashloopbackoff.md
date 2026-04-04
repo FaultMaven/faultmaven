@@ -1,6 +1,6 @@
 ---
 id: k8s-crashloopbackoff
-title: "Kubernetes CrashLoopBackOff: Diagnosis and Resolution"
+title: "Kubernetes CrashLoopBackOff"
 domain: compute
 service: kubernetes
 symptom_class:
@@ -20,7 +20,7 @@ tags:
 difficulty: intermediate
 ---
 
-# Kubernetes CrashLoopBackOff: Diagnosis and Resolution
+# Kubernetes CrashLoopBackOff
 
 ## Problem Definition
 
