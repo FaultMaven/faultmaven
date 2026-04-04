@@ -352,11 +352,24 @@ ChromaDB is used **only for vector search** during investigations. All document 
 | ChromaDB | Chunked vector embeddings for RAG search |
 | Disk | Markdown source files in `data/knowledge/{scope}/` |
 
+### Embedding Consistency
+
+All KB paths (indexing and querying) use explicit BGE-M3 embeddings (1024 dims) via `model_cache.get_bge_m3_model()`. No KB path relies on ChromaDB's default embedding function. This applies to:
+- `_index_document_in_vector_store()` — chunk embeddings at ingestion
+- `KnowledgeVectorStore.search()` — `query_embeddings` for vector recall
+- `KnowledgeVectorStore._single_keyword_search()` — `query_embeddings` for keyword-constrained search
+- `ChromaDBVectorStore.search()` — `query_embeddings` for direct search
+- `RunbookKB.index_runbook()` — explicit embeddings passed to `add_documents()`
+
+**Note:** Case evidence collections (`case_{id}`) currently use ChromaDB's default embedding (384 dims) for both add and query. This is internally consistent but architecturally inconsistent with KB collections. See `docs/working/WIP-evidence-embedding-consistency.md` for the planned fix.
+
 ### Superseded Code
 
 **`KnowledgeSearchService`** (`modules/knowledge/domain/services/search_service.py`) — operates on `KnowledgeItem` objects (whole documents), not ChromaDB chunks. Only used by the background `KnowledgeIndexingJob`. The main search path uses `KnowledgeVectorStore` directly.
 
 **`ChromaDBVectorStore.list_documents()` / `get_document()`** — removed. These methods fetched chunks and deduplicated in Python. Replaced by SQLite queries in `KnowledgeService`.
+
+**Redis KB key patterns** — removed. `upload_document()`, `get_document()`, `list_documents()`, `delete_document()` no longer read or write Redis. The `get_job_status()` method and `GET /knowledge/jobs/{job_id}` endpoint were also removed.
 
 ### Deployment Note
 
