@@ -315,6 +315,8 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 
 ## 7. Implementation Status
 
+### KB Retrieval Pipeline
+
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Hybrid search (Stage 1 + Stage 2) | **Implemented** | `KnowledgeVectorStore.hybrid_search()` |
@@ -324,23 +326,37 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Hard pre-filter mode | **Implemented** | `filter_mode="hard"` injects domain/service into ChromaDB where clause |
 | Fast search mode | **Implemented** | `search_mode="fast"` skips Stage 2 reranking |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |
-| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 200–3000 chars. Wired into all ingestion paths via `_index_document_in_vector_store()`. |
-| Explicit BGE-M3 embeddings | **Implemented** | Embeddings generated per chunk via `model_cache`, passed to ChromaDB (not relying on default embedding function). |
 | Staleness-aware synthesis | **Implemented** | `_staleness_note()` + system prompt: "preserve procedural detail" |
-| Metadata enrichment | **Implemented** | domain, service, status, severity, symptom_class stored per chunk at ingestion, used in reranker. Also stored in SQLite (conversion_drafts) for dashboard filtering. |
 | Scope safety (pre-filtering) | **Implemented** | ChromaDB `where` clause pre-filters before ANN search. `_enforce_scope_invariant()` raises `ValueError` on unscoped queries. |
-| SQLite document inventory | **Implemented** | `list_documents()`, `get_document()`, `delete_document()` use SQLite (conversion_drafts), not ChromaDB. ChromaDB is for vector search only. |
-| Chunk-aware deletion | **Implemented** | `delete_documents_by_parent_id()` removes all chunks for a document. |
-| Evidence 4-tier escalation | **Implemented** | See `data-preprocessing-design-specification.md` |
-| Proactive vectorization | **Implemented** | Background trigger at DA mode start for large files |
 | Extension context → KB metadata filters | **Partially done** | `hybrid_search()` accepts `context_metadata`. Wiring from copilot → API → `KBToolAdapter` incomplete. |
 | True BM25 | **Not done** | ChromaDB does not expose BM25. Binary `$contains` is a partial substitute. Would need `rank_bm25` lib or separate index. |
 | Cross-encoder reranker | **Not done** | Would add a dedicated reranking model (e.g., `ms-marco-MiniLM`) between retrieval and synthesis. Adds model dependency + latency. |
 | Citation grounding | **Not done** | No post-generation verification that cited chunks support the claims attributed to them. |
-| Evidence-to-KB feedback loop | **Not done** | Product-level feature: surface KB curation suggestions from repeated evidence patterns. |
+| Result caching | **Not done** | `KBConfig.cache_ttl` exists but nothing reads it — no caching layer wraps `hybrid_search()` or `answer_question()`. |
+
+### KB Ingestion & Storage
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 200–3000 chars. Wired into all ingestion paths via `_index_document_in_vector_store()`. |
+| Explicit BGE-M3 embeddings (KB) | **Implemented** | All KB index and query paths use `model_cache.get_bge_m3_model()` (1024 dims). No ChromaDB default embedding in KB paths. |
+| Metadata enrichment | **Implemented** | domain, service, status, severity, symptom_class stored per chunk at ingestion, used in reranker. Also stored in SQLite (`conversion_drafts`) for dashboard filtering. |
+| SQLite document inventory | **Implemented** | `list_documents()`, `get_document()`, `delete_document()` use SQLite, not ChromaDB. |
+| Redis removed from KB lifecycle | **Implemented** | No Redis reads or writes for KB documents. SQLite is the sole inventory. |
+| Chunk-aware deletion | **Implemented** | `delete_documents_by_parent_id()` removes all chunks for a document. |
+| Batch activation endpoint | **Implemented** | `POST /knowledge/drafts/verify-batch` — batch activate up to 100 drafts per request. |
+| Dashboard scan-on-mount | **Implemented** | Scan removed from server startup. Dashboard triggers `POST /knowledge/scan` on KB page mount. |
+
+### Evidence Retrieval
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Evidence 4-tier escalation | **Implemented** | See `data-preprocessing-design-specification.md` |
+| Proactive vectorization | **Implemented** | Background trigger at DA mode start for large files |
+| Evidence embedding consistency | **Not done** | Case evidence collections use ChromaDB default embedding (384 dims), not BGE-M3. Internally consistent but mismatched with KB. See `docs/working/WIP-evidence-embedding-consistency.md`. |
 | Chunk type discriminator | **Not done** | First-class `chunk_type` for type-specific chunking logic. Core to evidence chunking design (§5). |
 | Evidence 512-token chunking + context window | **Not done** | Replaces current 4000-token chunks. Embed small for precision, expand at retrieval for forensic context. |
-| Result caching | **Not done** | `KBConfig.cache_ttl` exists but nothing reads it — no caching layer wraps `hybrid_search()` or `answer_question()`. |
+| Evidence-to-KB feedback loop | **Not done** | Product-level feature: surface KB curation suggestions from repeated evidence patterns. |
 
 ### Storage Architecture
 
