@@ -607,26 +607,6 @@ class DIContainer(BaseDIContainer):
                     "results": results[:limit],
                 }
 
-            async def get_job_status(self, job_id):
-                # Extract document ID from job ID
-                if job_id.startswith("job_doc_"):
-                    document_id = job_id[4:]  # Remove "job_" prefix
-                    return {
-                        "job_id": job_id,
-                        "document_id": document_id,
-                        "status": "completed",
-                        "progress": 100,
-                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                        "completed_at": to_json_compatible(datetime.now(timezone.utc)),
-                        "processing_results": {
-                            "chunks_created": 1,
-                            "embeddings_generated": 1,
-                            "indexing_complete": True,
-                            "error_count": 0,
-                        },
-                    }
-                return None
-
             async def update_document(
                 self, document_id, title=None, content=None, tags=None
             ):

@@ -455,37 +455,6 @@ async def delete_document(
         )
 
 
-@router.get("/jobs/{job_id}")
-async def get_job_status(
-    job_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
-) -> dict:
-    """
-    Get the status of a knowledge base ingestion job
-
-    Args:
-        job_id: Job identifier
-
-    Returns:
-        Job status information
-    """
-    logger = logging.getLogger(__name__)
-
-    try:
-        job_status = await knowledge_service.get_job_status(job_id)
-        if not job_status:
-            raise HTTPException(status_code=404, detail="Job not found")
-
-        return job_status
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get job status {job_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get job status: {str(e)}"
-        )
-
-
 @router.post("/search")
 @trace("api_search_documents")
 async def search_documents(

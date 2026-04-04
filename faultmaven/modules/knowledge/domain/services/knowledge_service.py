@@ -125,16 +125,6 @@ class KnowledgeService:
         self._user_patterns: Dict[str, Dict[str, Any]] = {}  # User behavior patterns
         self._frequent_query_cache: Dict[str, Any] = {}  # High-frequency query cache
 
-        # _document_counter removed — upload_document() now uses UUID-based IDs
-
-        # Redis key patterns (retained for get_job_status compatibility)
-        self._kb_doc_key = "kb:doc:{document_id}"
-        self._kb_docs_set = "kb:docs"
-        self._kb_index_type = "kb:index:type:{document_type}"
-        self._kb_index_tag = "kb:index:tag:{tag}"
-        self._kb_job_key = "kb:job:{job_id}"
-        self._kb_job_ttl = 86400  # 24 hours
-
     async def ingest_document(
         self,
         title: str,
@@ -1679,21 +1669,6 @@ class KnowledgeService:
             logger.error(f"Failed to get semantic snippet for {document_id}: {e}")
             return None
 
-    async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Get processing job status from Redis."""
-        try:
-            import json as _json
-
-            raw = await self._redis.get(self._kb_job_key.format(job_id=job_id))
-            if raw:
-                return _json.loads(raw)
-
-            return None
-
-        except Exception as e:
-            logger.error(f"Failed to get job status {job_id}: {e}")
-            return None
-
     async def search_documents(
         self,
         query: str,
@@ -1849,18 +1824,6 @@ class KnowledgeService:
                     updated_at=document["updated_at"],
                 )
                 await self._index_document_in_vector_store(doc_model)
-
-            # Update Redis cache
-            try:
-                import json as _json
-
-                await self._redis.hset(
-                    self._kb_doc_key.format(document_id=document_id),
-                    "data",
-                    _json.dumps(document),
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update Redis cache for {document_id}: {e}")
 
             logger.info(f"Successfully updated document {document_id}")
 
@@ -2224,27 +2187,8 @@ class KnowledgeService:
         ) / count
 
     async def _get_document_by_id(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get document by ID from vector store or storage"""
-
-        if self._vector_store:
-            try:
-                # Try to get document from vector store
-                results = await self._vector_store.search(f"id:{document_id}", k=1)
-                if results:
-                    return results[0]
-            except Exception as e:
-                logger.warning(f"Failed to get document from vector store: {e}")
-
-        # Fallback to metadata storage (Redis)
-        try:
-            doc_key = self._kb_doc_key.format(document_id=document_id)
-            doc_data = await self._redis.get(doc_key)
-            if doc_data:
-                return json.loads(doc_data)
-        except Exception as e:
-            logger.warning(f"Failed to get document from metadata storage: {e}")
-
-        return None
+        """Get document by ID — delegates to the SQLite-based get_document."""
+        return await self.get_document(document_id)
 
     async def _extract_key_concepts(self, document: Dict[str, Any]) -> List[str]:
         """Extract key concepts from a document"""
