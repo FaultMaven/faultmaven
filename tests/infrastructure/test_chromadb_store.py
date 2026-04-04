@@ -127,7 +127,7 @@ class TestChromaDBVectorStore:
 
     @pytest.mark.asyncio
     async def test_search_success(self, vector_store):
-        """Test successful document search"""
+        """Test successful document search using explicit BGE-M3 embeddings"""
         store, client, collection = vector_store
 
         collection.query.return_value = {
@@ -137,10 +137,15 @@ class TestChromaDBVectorStore:
             "distances": [[0.1, 0.3]],
         }
 
-        results = await store.search("test query", k=2)
+        mock_model = MagicMock()
+        mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
+
+        with patch("faultmaven.infrastructure.model_cache.model_cache") as mock_cache:
+            mock_cache.get_bge_m3_model.return_value = mock_model
+            results = await store.search("test query", k=2)
 
         collection.query.assert_called_once_with(
-            query_texts=["test query"],
+            query_embeddings=[[0.1] * 1024],
             n_results=2,
             include=["documents", "metadatas", "distances"],
         )
@@ -153,7 +158,7 @@ class TestChromaDBVectorStore:
 
     @pytest.mark.asyncio
     async def test_search_with_filters(self, vector_store):
-        """Test search with metadata filters"""
+        """Test search with metadata filters using explicit BGE-M3 embeddings"""
         store, client, collection = vector_store
 
         collection.query.return_value = {
@@ -163,10 +168,15 @@ class TestChromaDBVectorStore:
             "distances": [[]],
         }
 
-        await store.search("query", filters={"type": "runbook"})
+        mock_model = MagicMock()
+        mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
+
+        with patch("faultmaven.infrastructure.model_cache.model_cache") as mock_cache:
+            mock_cache.get_bge_m3_model.return_value = mock_model
+            await store.search("query", filters={"type": "runbook"})
 
         collection.query.assert_called_once_with(
-            query_texts=["query"],
+            query_embeddings=[[0.1] * 1024],
             n_results=5,
             include=["documents", "metadatas", "distances"],
             where={"type": "runbook"},
