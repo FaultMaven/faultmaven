@@ -524,19 +524,21 @@ In the local (single-user) deployment, this is the only KB tier available. The u
 
 ### Storage Architecture
 
-**Write path**: `upload_document()` → Redis (metadata cache) + ChromaDB (persistent vector store with scope metadata)
+**Write path**: `upload_document()` → SQLite (`conversion_drafts` record) + ChromaDB (chunked vector embeddings via `ingest_to_vector_store()`)
 
-**Read path**: `list_documents()` and `get_document()` read from **ChromaDB** (source of truth), not Redis. This ensures documents persist across server restarts and FakeRedis resets.
+**Read path**: `list_documents()` and `get_document()` read from **SQLite** (`conversion_drafts` joined with `conversion_jobs`). Full content read from markdown file on disk. ChromaDB is not queried for listing or retrieval.
 
-**Delete path**: `archive_document()` removes from both Redis and ChromaDB via `delete_documents()`.
+**Delete path**: `delete_document()` sets SQLite status to `deactivated`, removes chunks from ChromaDB via `delete_documents_by_parent_id()`.
+
+**Search path**: `hybrid_search()` queries ChromaDB with explicit BGE-M3 embeddings (1024 dims). Two-stage: vector + keyword recall, then 4-signal reranker.
 
 ### API Endpoints
 
 Managed through the Knowledge module (`/api/v1/knowledge/`):
 
-- `POST /documents` — Upload document (with background embedding)
-- `GET /documents` — List with filtering (type, tags, scope) — reads from ChromaDB
-- `GET /documents/{id}` — Get specific document
+- `POST /documents` — Upload document (SQLite record + chunked vector indexing)
+- `GET /documents` — List with filtering (type, tags, scope, domain, service, severity) — reads from SQLite
+- `GET /documents/{id}` — Get specific document (SQLite + file from disk)
 - `PUT /documents/{id}` — Update document
 - `DELETE /documents/{id}` — Delete document and remove from ChromaDB
 - `POST /search` — Semantic search across user's KB

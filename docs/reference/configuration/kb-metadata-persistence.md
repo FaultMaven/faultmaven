@@ -1,132 +1,103 @@
 ### Knowledge Base (KB) Persistence Design
 
-This document describes how FaultMaven persists Knowledge Base (KB) data across restarts using Redis for fast metadata retrieval and ChromaDB for vector search. It details data structures, control flow, configuration, failure modes, and observability.
+This document describes how FaultMaven persists Knowledge Base (KB) data. SQLite is the document inventory, ChromaDB stores vector chunks for RAG search, and markdown files on disk hold the source content.
 
 ### Goals
 
-- Persist KB uploads across API restarts
-- Support fast list/get/filter operations via Redis
-- Support semantic retrieval via ChromaDB (vectors)
-- Avoid silent downgrades; fail fast on critical dependencies
+- Persist KB document metadata across API restarts
+- Support fast list/get/filter/delete operations via SQLite
+- Support semantic retrieval via ChromaDB (vector chunks)
+- Clear separation: SQLite for inventory, ChromaDB for search, disk for content
 
 ### Architecture Overview
 
-- Redis persists KB document records and indexes.
-- ChromaDB stores vector embeddings for semantic search.
-- API returns sources via the OpenAPI-compliant `Source` shape: `content` + `metadata` (e.g., `metadata.title`).
+- **SQLite** (`conversion_drafts` + `conversion_jobs` tables) — document inventory, metadata, status, CRUD
+- **ChromaDB** (`faultmaven_kb` collection) — chunked vector embeddings for RAG search only
+- **Disk** (`data/knowledge/{scope}/`) — markdown source files
+- **Redis** — not used for KB documents (used only for sessions, rate limiting)
 
-### Redis Data Model
+### SQLite Data Model
 
-- Keys
-  - `kb:doc:{document_id}` (Hash)
-    - Field: `data` (JSON-encoded document record)
-  - `kb:docs` (Set)
-    - All `document_id` members
-  - `kb:index:type:{document_type}` (Set)
-    - `document_id` members for this type
-  - `kb:index:tag:{tag}` (Set)
-    - `document_id` members for this tag
+Document metadata is stored in the `conversion_drafts` table:
 
-- Document record (stored in `kb:doc:{id}` → `data` JSON)
-  - `document_id`, `title`, `content`, `document_type`, `category`, `tags`, `source_url`, `description`, `status`, `created_at`, `updated_at`, `metadata`
-  - Note: At present, the full `content` is persisted alongside metadata to simplify get/search. This can be reduced later to minimize footprint and move content out of Redis if needed.
+| Column | Purpose |
+|--------|---------|
+| `id` | Draft ID (PK) |
+| `conversion_id` | FK to `conversion_jobs` |
+| `runbook_id` | Stable document identifier |
+| `title` | Display name |
+| `file_path` | Path to markdown on disk |
+| `status` | `draft`, `verified`, `deactivated`, `deleted` |
+| `knowledge_item_id` | ID used as `parent_document_id` in ChromaDB chunks |
+| `domain` | Dashboard filter (compute, database, networking, etc.) |
+| `service` | Dashboard filter (kubernetes, postgresql, redis, etc.) |
+| `severity` | Dashboard filter (high, medium, low) |
+| `tags` | Comma-separated tag list |
+| `document_type` | Default `runbook` |
+| `quality_score` | Quality rating from scorer |
+| `verified_at` | Activation timestamp |
+| `verified_by` | Who activated |
+
+Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user_id`, `team_id`).
 
 ### ChromaDB Storage Model
 
-- Collection: `faultmaven_knowledge` (configurable)
-- For each upload, 1 embedding is added with:
-  - `id`: `document_id`
-  - `documents`: raw text `content`
-  - `metadatas`: `{ title, document_type, tags, source_url, created_at, updated_at }` (nulls removed)
+- Collection: `faultmaven_kb`
+- Documents are split into structure-aware chunks (200-3000 chars, markdown header boundaries)
+- Each chunk has explicit BGE-M3 embedding (1024 dims) — not ChromaDB default
+- Chunk metadata includes: `parent_document_id`, `chunk_index`, `total_chunks`, `title`, `domain`, `service`, `severity`, `scope`, `owner_id`, `team_id`
 
 ### Request Flows
 
-- Upload (POST `/api/v1/knowledge/documents`)
+- **Upload** (POST `/api/v1/knowledge/documents`)
   1. Validate and read file
-  2. Persist KB record in Redis:
-     - `HSET kb:doc:{id} data=<JSON>`
-     - `SADD kb:docs {id}`
-     - `SADD kb:index:type:{type} {id}`
-     - `SADD kb:index:tag:{tag}` for each tag
-  3. Index content in ChromaDB (vector store)
-  4. Return `{ document_id, job_id, status, metadata }`
+  2. Create `ConversionDraftModel` + `ConversionJobModel` in SQLite (status=verified)
+  3. Write markdown to disk in `data/knowledge/{scope}/`
+  4. Chunk + embed (BGE-M3) + store in ChromaDB via `ingest_to_vector_store()`
+  5. Return `{ document_id, status, metadata }`
 
-- List (GET `/api/v1/knowledge/documents`)
-  1. Resolve candidate IDs from Redis sets
-  2. Apply optional `document_type` and `tags` filters using index sets
-  3. `HGET kb:doc:{id} data`, decode, paginate
-  4. Return `{ documents, total_count, limit, offset }`
+- **Activate** (POST `/api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify`)
+  1. Update SQLite: status=verified, populate domain/service/severity/tags from frontmatter
+  2. Chunk + embed + store in ChromaDB via `ingest_to_vector_store()`
+  3. Set `knowledge_item_id` on draft record
 
-- Get (GET `/api/v1/knowledge/documents/{id}`)
-  - `HGET kb:doc:{id} data`
+- **Batch Activate** (POST `/api/v1/knowledge/drafts/verify-batch`)
+  1. Process each draft sequentially via `verify_draft()`
+  2. Return per-item status (verified/failed/skipped)
 
-- Update Metadata (PUT `/api/v1/knowledge/documents/{id}`)
-  - Load doc → apply updates → `HSET kb:doc:{id} data=<JSON>`
-  - Maintain type/tag index sets (remove old, add new)
-  - Re-index vectors if `content` changed
+- **List** (GET `/api/v1/knowledge/documents`)
+  1. Query `conversion_drafts WHERE status='verified'` joined with `conversion_jobs`
+  2. Apply RBAC (personal → owner only, team → members only)
+  3. Apply optional scope/type/tag filters
+  4. Paginate and return with scope counts
 
-- Delete (DELETE `/api/v1/knowledge/documents/{id}`)
-  - `DEL kb:doc:{id}`; `SREM kb:docs {id}`; remove from type/tag indexes
-  - Optionally delete vectors (API exists in adapter; wiring pending)
+- **Get** (GET `/api/v1/knowledge/documents/{id}`)
+  1. Query `conversion_drafts` by `knowledge_item_id` or `runbook_id`
+  2. Read full markdown content from `file_path` on disk
+
+- **Delete** (DELETE `/api/v1/knowledge/documents/{id}`)
+  1. Update `conversion_drafts` status to `deactivated`
+  2. Remove chunks from ChromaDB (best-effort)
+
+- **Search** (RAG during investigations)
+  1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker
+  2. All queries use explicit BGE-M3 embeddings (`query_embeddings`), not ChromaDB defaults
 
 ### Configuration
 
-- Redis
-  - Preferred: `REDIS_URL=redis://:PASSWORD@HOST:PORT/0`
-  - Or: `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`
-  - Client created with `decode_responses=true` (string I/O)
+- SQLite: `data/faultmaven.db` (created by Alembic migrations)
+- ChromaDB: `data/chroma-kb/` (PersistentClient for local deployment)
+- Embedding model: BGE-M3 (1024 dims) via `model_cache`
 
-- ChromaDB
-  - `CHROMADB_URL` (NodePort/ingress for external, in-cluster `http://chromadb:8090`)
-  - `CHROMADB_API_KEY` optional; if set, client attempts token auth
-  - `CHROMADB_COLLECTION` (default: `faultmaven_knowledge`)
+### Failure Modes
 
-### Failure Modes & Degradation
-
-- App startup
-  - Redis: Session store init is fail-fast; app aborts if Redis is unreachable (prevents silent fallback to memory)
-  - ChromaDB: Client creation errors abort initialization (vectors required for RAG)
-
-- Runtime (KnowledgeService)
-  - Redis operations log warnings and may fall back to in-memory for listing/get in development scenarios. This path is logged and considered degraded; not intended for production.
-  - ChromaDB `add_documents` sanitizes metadata (drops nulls, coerces non-primitives to strings) to match server schema.
-
-### Observability
-
-- INFO logs
-  - `KB metadata persisted to Redis` (document count, type, tag count)
-  - `ChromaDB collection ready`
-  - `Added documents to vector store`
-
-- DEBUG logs
-  - Vector indexing details (ids)
-  - Retriever adapter summaries (e.g., `KBAdapter.search completed`)
-
-### API Contract Compliance
-
-- ResponseType: UPPERCASE (e.g., `ANSWER`)
-- Source objects: `content: string` (no `snippet/name`), with `metadata.title` as needed
-- PII artifacts: sanitized and placeholder tags (e.g., `<PERSON>`) removed before returning to client
-
-### Security & Data Handling
-
-- PII redaction occurs before external calls
-- Returned content is passed through sanitizer; placeholder tags are replaced with `[redacted]` for user display
-
-### Rationale for Redis + Chroma Split
-
-- Redis provides low-latency metadata listing and filtering (type/tag indexes)
-- ChromaDB provides persistent semantic search capabilities
-- This split avoids overloading the vector store for basic CRUD and supports horizontal scaling
-
-### Future Enhancements
-
-- Reduce Redis footprint by persisting a metadata-only record (omit full `content`) and using Chroma/secondary store for full text retrieval
-- Add vector delete integration for document removal
-- Redis SCAN-based pagination for very large collections
+- SQLite unavailable: document CRUD fails, search still works via ChromaDB
+- ChromaDB unavailable: search fails, document CRUD still works via SQLite
+- Embedding model unavailable: ingestion fails (chunks not stored), existing search works
 
 ### Testing
 
-- Upload → List → Restart API → List again (documents persist)
-- Tag/type filters return correct subsets
-- Retrieval for known connectivity queries returns sources populated from KB and vectors
+- Upload → List (document appears in SQLite) → Restart → List again (persists)
+- Activate draft → verify chunks in ChromaDB with correct embeddings and metadata
+- Delete → status changes to deactivated, chunks removed from ChromaDB
+- Search returns chunks with domain/service metadata for reranking

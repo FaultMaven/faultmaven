@@ -225,17 +225,19 @@ await vector_store.add_documents([doc_dict])  # ChromaDBVectorStore
 
 ### 3.2.1 Document Listing and Retrieval
 
-**Source of truth**: ChromaDB is the persistent store for KB documents. `KnowledgeService.list_documents()` queries ChromaDB via `ChromaDBVectorStore.list_documents()` — NOT Redis.
+**Source of truth**: SQLite (`conversion_drafts` table) is the document inventory. `KnowledgeService.list_documents()` and `get_document()` query SQLite, not ChromaDB. ChromaDB is used exclusively for vector similarity search during investigations.
 
 ```python
-# ChromaDBVectorStore methods for document management
-await vector_store.list_documents(limit=100, offset=0, where={"scope": "global"})
-await vector_store.get_document(document_id)
-await vector_store.count()
-await vector_store.delete_documents([document_id])
+# KnowledgeService methods (query SQLite)
+await knowledge_service.list_documents(scope="global", limit=50, offset=0)
+await knowledge_service.get_document(document_id)  # SQLite + file read from disk
+
+# ChromaDB methods (vector search only)
+await vector_store.search(query, k=5, filters={"scope": "global"})
+await vector_store.delete_documents_by_parent_id(document_id)
 ```
 
-Redis is used only as a write-through cache for upload metadata. If Redis is unavailable (FakeRedis restart), documents persist in ChromaDB and remain listable.
+Redis is not used for KB document storage. Document metadata persists in SQLite across restarts.
 
 ### 3.3 Global KB Administration
 

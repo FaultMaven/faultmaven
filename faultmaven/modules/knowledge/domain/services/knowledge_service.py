@@ -1350,7 +1350,8 @@ class KnowledgeService:
                     "offset": offset,
                 }
 
-            from sqlalchemy import func as sa_func, or_
+            from sqlalchemy import func as sa_func
+            from sqlalchemy import or_
             from sqlalchemy.future import select
 
             from faultmaven.infrastructure.persistence.models import (

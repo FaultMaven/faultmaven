@@ -68,12 +68,12 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 ### Relationship between knowledge/, evidence/, and the two ChromaDB instances
 
 ```
-knowledge/*.md  →  Dashboard scan → verify  →  chroma-kb/ (faultmaven_kb collection)
+knowledge/*.md  →  Dashboard scan → activate  →  chroma-kb/ (faultmaven_kb collection)
 
 evidence/<user_id>/case_*/file  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
-- `knowledge/` holds **source markdown files**. The canonical ingestion path is: copy files here, scan from the Dashboard (or `POST /api/v1/knowledge/scan`), then verify each draft. Verification triggers chunking, BGE-M3 embedding generation, and storage into the `faultmaven_kb` collection in `chroma-kb/`.
+- `knowledge/` holds **source markdown files**. The canonical ingestion path is: copy files here, open the Dashboard KB page (triggers automatic scan), then activate drafts. Activation triggers chunking, BGE-M3 embedding generation, and storage into the `faultmaven_kb` collection in `chroma-kb/`.
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
@@ -133,7 +133,7 @@ Open the Dashboard KB page (http://localhost:3333), go to the **Drafts** tab, an
 4. Infers scope from the directory name (`global/`, `team_*`, `personal_*`)
 5. Creates draft records so they appear in the Drafts tab
 
-From the Drafts tab you can then review, edit, verify, and ingest each draft into the vector database.
+From the Drafts tab you can then review, edit, and activate each draft into the vector database.
 
 **Step 2 (alternative): Scan via API**
 
@@ -174,10 +174,10 @@ rsync -av --delete \
   resources/knowledge/builtin/ \
   data/knowledge/global/
 
-# Then scan + verify from the Dashboard to re-ingest updated runbooks
+# Then open the Dashboard KB page and activate the updated runbooks
 ```
 
-Note: the bootstrap only copies built-in runbooks if `data/knowledge/global/` is empty. On subsequent startups, it does not overwrite user modifications. The rsync above is a manual step for when you want to pull in updated runbooks from a new release.
+Note: the bootstrap only copies built-in runbooks if `data/knowledge/` has no `.md` files anywhere (including personal/team scopes). On subsequent startups, it does not overwrite user modifications. The rsync above is a manual step for when you want to pull in updated runbooks from a new release.
 
 ### Important: do not ingest runbooks directly into ChromaDB
 
@@ -187,7 +187,7 @@ Copying runbook files into `data/knowledge/` is the correct way to add runbooks 
 - Verifying that draft to ingest the same content a second time — duplicate embeddings
 - No audit trail of who ingested the runbook or when
 
-Always use the scan → verify workflow to move runbooks from `data/knowledge/` into the vector database.
+Always use the Dashboard scan → activate workflow to move runbooks from `data/knowledge/` into the vector database.
 
 ### Removing a runbook
 
