@@ -759,12 +759,14 @@ class KnowledgeVectorStore(BaseExternalClient):
         self,
         collection_name: str,
         documents: List[Dict[str, Any]],
+        embeddings: Optional[List[List[float]]] = None,
     ) -> None:
         """Add documents to a KB collection.
 
         Args:
             collection_name: Exact ChromaDB collection name.
             documents: List of dicts with 'id', 'content', and optional 'metadata'.
+            embeddings: Pre-computed embedding vectors, one per document.
         """
 
         async def _add_wrapper():
@@ -786,7 +788,12 @@ class KnowledgeVectorStore(BaseExternalClient):
                         sanitized[k] = str(v)
                 sanitized_metadatas.append(sanitized)
 
-            collection.add(ids=ids, documents=contents, metadatas=sanitized_metadatas)
+            add_kwargs: Dict[str, Any] = dict(
+                ids=ids, documents=contents, metadatas=sanitized_metadatas
+            )
+            if embeddings is not None:
+                add_kwargs["embeddings"] = embeddings
+            collection.add(**add_kwargs)
 
             self.logger.info(
                 f"Added {len(documents)} documents to KB collection "
