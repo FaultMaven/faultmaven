@@ -267,12 +267,16 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         metadata_obj.original_document_id
                     )
 
-            # Create embedding for runbook content
-            # Note: Embedding generation should use same model as knowledge base (BGE-M3)
-            # For now, we rely on ChromaDB's built-in embedding (sentence-transformers)
-            # In production, should use explicit BGE-M3 model
+            # Generate BGE-M3 embedding explicitly to match collection dimensions
+            from faultmaven.infrastructure.model_cache import model_cache
 
-            # Add to vector store
+            bge_model = model_cache.get_bge_m3_model()
+            if bge_model is None:
+                logger.error("BGE-M3 model unavailable, skipping runbook indexing")
+                return
+
+            embedding = bge_model.encode(runbook.content).tolist()
+
             documents = [
                 {
                     "id": runbook.report_id,
@@ -281,7 +285,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 }
             ]
 
-            await self.vector_store.add_documents(documents)
+            await self.vector_store.add_documents(documents, embeddings=[embedding])
 
             logger.info(
                 f"Indexed runbook for similarity search",

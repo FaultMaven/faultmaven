@@ -114,11 +114,20 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def search(
         self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict]:
-        """Search for similar documents in the vector store."""
+        """Search for similar documents using explicit BGE-M3 embedding."""
 
         async def _search_wrapper():
+            from faultmaven.infrastructure.model_cache import model_cache
+
+            bge_model = model_cache.get_bge_m3_model()
+            if bge_model is None:
+                self.logger.error("BGE-M3 model unavailable for search")
+                return []
+
+            query_embedding = bge_model.encode(query).tolist()
+
             query_params = {
-                "query_texts": [query],
+                "query_embeddings": [query_embedding],
                 "n_results": k,
                 "include": ["documents", "metadatas", "distances"],
             }
