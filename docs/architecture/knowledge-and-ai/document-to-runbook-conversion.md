@@ -144,7 +144,7 @@ Both sources use the same downstream pipeline (LLM generation with canonical tem
 | **Analysis** | LLM identifies failure modes from text | Single failure mode from case root cause |
 | **Source material** | Extracted document text | Assembled from case title, description, root cause, solutions, hypotheses, evidence |
 | **Tracking** | `source_type = "document"` on ConversionJob | `source_type = "case"`, `case_id` populated |
-| **Dashboard** | Drafts tab on KB page | Runbook tab on case detail + Drafts tab on KB page |
+| **Dashboard** | Drafts tab on KB page | Drafts tab on KB page (case-sourced drafts shown with "from case" badge) |
 
 The `ConversionService.convert_from_case()` method constructs a `FailureModeAnalysis` from the case data and calls `_convert_single_failure_mode()` — the same method used for document-driven conversion. This ensures identical template compliance, validation, and quality scoring.
 
@@ -952,11 +952,11 @@ Note: The conversion is synchronous from the user's perspective (single API call
 |  +----------------------------------------------+ |
 |  | pg-connection-pool-exhaustion    Score: 73/C  | |
 |  | Validation: PASSED (2 warnings)               | |
-|  | [Edit] [Verify & Ingest] [Delete]             | |
+|  | [Edit] [Activate] [Delete]             | |
 |  +----------------------------------------------+ |
 |  | pg-replication-lag               Score: 68/D  | |
 |  | Validation: PASSED (1 warning)                | |
-|  | [Edit] [Verify & Ingest] [Delete]             | |
+|  | [Edit] [Activate] [Delete]             | |
 |  +----------------------------------------------+ |
 |  | pg-wal-disk-full                 Score: 45/F  | |
 |  | ! Quality below 50 -- source may lack detail  | |
@@ -979,7 +979,7 @@ Verify button is disabled when validation fails. User must edit to fix validatio
 |  Validation: PASSED                                |
 |  Quality: 73/C                                     |
 |                                                   |
-|  [Save Draft]  [Verify & Ingest]  [Cancel]         |
+|  [Save Draft]  [Activate]  [Cancel]         |
 +--------------------------------------------------+
 ```
 
@@ -989,7 +989,7 @@ On save, the API re-runs validation and quality scoring. The results update in r
 
 ```
 +--------------------------------------------------+
-|  Verify & Ingest Runbook?                          |
+|  Activate Runbook?                          |
 |                                                   |
 |  This will:                                        |
 |  - Set status to "verified"                        |

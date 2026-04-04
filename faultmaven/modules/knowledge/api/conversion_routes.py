@@ -7,8 +7,8 @@ Endpoints:
 - GET    /knowledge/conversions/{id}                           Get conversion details
 - GET    /knowledge/conversions/by-case/{case_id}              Get conversion for a case
 - PUT    /knowledge/conversions/{id}/drafts/{draft_id}         Edit draft
-- POST   /knowledge/drafts/verify-batch                        Batch verify and ingest
-- POST   /knowledge/conversions/{id}/drafts/{draft_id}/verify  Verify and ingest
+- POST   /knowledge/drafts/verify-batch                        Batch activate
+- POST   /knowledge/conversions/{id}/drafts/{draft_id}/verify  Activate (verify + ingest)
 - DELETE /knowledge/conversions/{id}/drafts/{draft_id}         Delete draft
 """
 
@@ -325,7 +325,7 @@ async def verify_batch(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Verify and ingest multiple drafts sequentially."""
+    """Activate multiple drafts sequentially (verify + ingest into KB)."""
     result = await service.verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
         user_id=current_user.user_id,

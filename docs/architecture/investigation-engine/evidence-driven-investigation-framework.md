@@ -606,7 +606,7 @@ RESOLVED case
 
 1. **Agent always offers** — On resolution, the agent presents a COOPERATIVE suggestion: "Would you like me to create a runbook?" No evaluation happens yet.
 2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Four outcomes: `SUCCESS` (draft created), `NOT_SUITABLE` (not enough data), `EXISTING_COVERS` (similar runbook exists), `GENERATION_FAILED`.
-3. **User requests** — Via Dashboard RunbookTab, same evaluation applies.
+3. **User requests** — Via copilot UI or Dashboard KB page, same evaluation applies.
 
 **Readiness + Deduplication** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
 

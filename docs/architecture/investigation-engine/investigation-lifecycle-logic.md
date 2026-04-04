@@ -1984,7 +1984,7 @@ User confirms resolution
 
 **Trigger flow (Dashboard)**:
 
-Users can also generate runbooks from the Dashboard RunbookTab on resolved cases. The same readiness + dedup evaluation applies when the user clicks "Generate Runbook".
+Users can also generate runbooks from the copilot UI on resolved cases. The generated draft appears in the Dashboard KB page Drafts tab. The same readiness + dedup evaluation applies.
 
 **Readiness assessment** (`assess_runbook_readiness()` in `terminal_transitions.py`):
 
@@ -2026,7 +2026,7 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 
 **Eligibility**: RESOLVED cases only. This is a separate workflow from runbook generation — it produces structured knowledge articles (Problem, Root Cause, Solution, Prevention) rather than step-by-step runbooks.
 
-**Trigger point**: Dashboard only (`KnowledgeTab` on CaseDetailPage).
+**Trigger point**: Backend extraction API (`POST /knowledge/suggestions/extract`). Previously had a dedicated KnowledgeTab on the Dashboard; now managed through the KB page workflow.
 
 **Workflow:**
 
