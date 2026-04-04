@@ -55,7 +55,7 @@ dependencies:
 | Redis | Session storage, state persistence, memory cache | ✅ Yes |
 | PostgreSQL | Investigation history, case records | ⚠️ Optional (fallback to Redis) |
 | ChromaDB | Vector storage for knowledge base | ✅ Yes |
-| Presidio | PII redaction | ✅ Yes |
+| Presidio | PII redaction (enterprise) | ⚠️ Optional |
 | Opik | LLM observability | ⚠️ Optional |
 
 ---

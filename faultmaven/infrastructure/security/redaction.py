@@ -85,16 +85,26 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             }
         )
 
-        # Determine whether to skip external checks (e.g., in tests)
+        # Determine whether to skip external checks
+        # Skip when: tests (skip_service_checks), or protection is disabled (local deployment)
         skip_checks = getattr(settings.server, "skip_service_checks", False)
+        protection_disabled = (
+            not settings.protection.protection_enabled
+            and not settings.protection.sanitize_pii
+        )
 
-        # Test service connectivity unless skipping checks
-        if skip_checks:
+        # Test service connectivity only when protection is enabled
+        if skip_checks or protection_disabled:
             self.analyzer_available = False
             self.anonymizer_available = False
-            self.logger.info(
-                "Skipping Presidio health checks (SKIP_SERVICE_CHECKS=True)"
-            )
+            if skip_checks:
+                self.logger.info(
+                    "Skipping Presidio health checks (SKIP_SERVICE_CHECKS=True)"
+                )
+            else:
+                self.logger.info(
+                    "Skipping Presidio health checks (protection disabled)"
+                )
         else:
             self.analyzer_available = self._test_service_health(self.analyzer_url)
             self.anonymizer_available = self._test_service_health(self.anonymizer_url)

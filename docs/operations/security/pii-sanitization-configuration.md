@@ -6,21 +6,30 @@ FaultMaven provides case-scoped PII redaction that protects sensitive data when 
 
 ## Configuration
 
-One setting controls PII redaction:
+Two settings control PII redaction:
 
 ```bash
 # .env
-SANITIZE_PII=true    # Enable PII redaction (default: false)
+PROTECTION_ENABLED=true  # Master toggle for protection features (default: false)
+SANITIZE_PII=true        # Enable PII redaction (default: false)
 ```
 
-That's it. When `SANITIZE_PII=true`:
+Both must be enabled for full PII protection. When `SANITIZE_PII=true`:
 
 - All prompts are redacted before LLM calls
 - Tool results (search_file, deep_analysis) are redacted before returning to the LLM
 - User-facing responses have placeholders reversed back to original values
 - The same PII value gets the same placeholder across all files in a case
 
-When `SANITIZE_PII=false` (default): no redaction at any layer.
+When both are `false` (default): no redaction at any layer, and **Presidio health checks are skipped at startup** — no connection attempts to external Presidio services.
+
+### Deployment Modes
+
+| Deployment | PROTECTION_ENABLED | SANITIZE_PII | Presidio | Behavior |
+| --- | --- | --- | --- | --- |
+| Local / Community | false (default) | false (default) | Not needed | Presidio health checks skipped, regex-only fallback available |
+| Cloud / Enterprise | true | true | Required | Full Presidio NLP detection + regex patterns |
+| Self-hosted with local LLM | false | false | Not needed | Data never leaves the network, no redaction needed |
 
 ## The Problem
 
@@ -113,6 +122,7 @@ To re-enable any of these, add them to `ENTITIES_TO_PROTECT` in your `.env`.
 
 ```bash
 # Best for: Multi-tenant SaaS with external LLM providers
+PROTECTION_ENABLED=true
 SANITIZE_PII=true
 ```
 
@@ -153,25 +163,43 @@ After expiry, a new registry starts and placeholders may renumber. This only aff
 
 ### Presidio Services
 
-Presidio NLP-based detection requires running Presidio Analyzer and Anonymizer services:
+Presidio NLP-based detection requires running Presidio Analyzer and Anonymizer services. These are only needed when protection is enabled — when both `PROTECTION_ENABLED` and `SANITIZE_PII` are `false` (the default), Presidio health checks are skipped entirely at startup and no connection attempts are made.
 
 ```bash
-# K8s Ingress-based (default)
+# K8s Ingress-based (cloud deployment)
 PRESIDIO_ANALYZER_URL=http://presidio-analyzer.faultmaven.local:30080
 PRESIDIO_ANONYMIZER_URL=http://presidio-anonymizer.faultmaven.local:30080
+
+# K8s in-cluster (production)
+PRESIDIO_ANALYZER_URL=http://presidio-analyzer.faultmaven.svc.cluster.local:3000
+PRESIDIO_ANONYMIZER_URL=http://presidio-anonymizer.faultmaven.svc.cluster.local:3001
 ```
 
 Without Presidio, only regex-based patterns are applied. Presidio adds NLP-based entity detection for the configured entity types.
 
 ## Verification
 
-Check logs for redaction status:
+Check logs for redaction status at startup:
 
 ```text
-# When enabled:
+# When protection is disabled (default / local deployment):
+Skipping Presidio health checks (protection disabled)
+
+# When protection is enabled and Presidio is reachable:
+✅ Connected to K8s Presidio services
+
+# When protection is enabled but Presidio is unreachable:
+⚠️ Limited Presidio connectivity - Analyzer: False, Anonymizer: False
+📝 Falling back to regex-only sanitization
+```
+
+During investigation turns:
+
+```text
+# When SANITIZE_PII=true:
 🔒 LLM Router: Applying PII sanitization
 
-# When disabled (default):
+# When SANITIZE_PII=false (default):
 🔓 LLM Router: Skipping PII sanitization
 ```
 

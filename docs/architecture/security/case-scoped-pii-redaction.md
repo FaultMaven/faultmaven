@@ -164,7 +164,12 @@ if redaction_ctx:
 
 ## Configuration
 
-One setting controls whether redaction is active: `SANITIZE_PII=true/false` (default: `false`).
+Two settings control whether redaction is active:
+
+- `PROTECTION_ENABLED=true/false` (default: `false`) — master toggle for protection features
+- `SANITIZE_PII=true/false` (default: `false`) — controls PII redaction before LLM calls
+
+Both must be enabled for full PII protection. When both are `false` (the default for local/community deployments), Presidio health checks are skipped entirely at startup — no connection attempts are made to Presidio services.
 
 Additional settings for detection tuning:
 
