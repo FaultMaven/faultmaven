@@ -907,7 +907,7 @@ class KnowledgeService:
             FileNotFoundError: If document not found
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            logger.info(f"Deactivating document {document_id}")
+            logger.info(f"Removing document {document_id} (reverting to draft)")
 
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -936,14 +936,17 @@ class KnowledgeService:
                                 "error": f"Document {document_id} not found",
                             }
 
-                        dm.status = "deactivated"
+                        dm.status = "draft"
+                        dm.knowledge_item_id = None
                         await session.commit()
 
                 # Remove chunks from ChromaDB (best-effort)
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 
-                logger.info(f"Successfully deactivated document {document_id}")
+                logger.info(
+                    f"Successfully removed document {document_id} (reverted to draft)"
+                )
                 return {"success": True, "document_id": document_id}
 
             except ValidationException:
@@ -951,8 +954,8 @@ class KnowledgeService:
             except FileNotFoundError:
                 raise
             except Exception as e:
-                logger.error(f"Failed to deactivate document {document_id}: {e}")
-                raise RuntimeError(f"Document deactivation failed: {str(e)}") from e
+                logger.error(f"Failed to remove document {document_id}: {e}")
+                raise RuntimeError(f"Document removal failed: {str(e)}") from e
 
     async def get_document_statistics(self) -> Dict[str, Any]:
         """Get knowledge base statistics from SQLite."""
