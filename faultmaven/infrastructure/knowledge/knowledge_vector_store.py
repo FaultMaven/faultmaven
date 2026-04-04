@@ -253,10 +253,20 @@ class KnowledgeVectorStore(BaseExternalClient):
         self._enforce_scope_invariant(collection_name, where)
 
         async def _search_wrapper():
+            from faultmaven.infrastructure.model_cache import model_cache
+
             collection = self._get_or_create_collection(collection_name)
 
+            # Use explicit BGE-M3 embedding (1024 dims) to match stored vectors
+            bge_model = model_cache.get_bge_m3_model()
+            if bge_model is None:
+                self.logger.error("BGE-M3 model unavailable for search")
+                return []
+
+            query_embedding = bge_model.encode(query).tolist()
+
             query_params = {
-                "query_texts": [query],
+                "query_embeddings": [query_embedding],
                 "n_results": k,
                 "include": ["documents", "metadatas", "distances"],
             }
@@ -484,10 +494,19 @@ class KnowledgeVectorStore(BaseExternalClient):
         """Vector search filtered to documents containing a specific keyword."""
 
         async def _search_wrapper():
+            from faultmaven.infrastructure.model_cache import model_cache
+
             collection = self._get_or_create_collection(collection_name)
 
+            bge_model = model_cache.get_bge_m3_model()
+            if bge_model is None:
+                self.logger.error("BGE-M3 model unavailable for keyword search")
+                return []
+
+            query_embedding = bge_model.encode(query).tolist()
+
             query_params = {
-                "query_texts": [query],
+                "query_embeddings": [query_embedding],
                 "n_results": k,
                 "include": ["documents", "metadatas", "distances"],
                 "where_document": {"$contains": keyword},
