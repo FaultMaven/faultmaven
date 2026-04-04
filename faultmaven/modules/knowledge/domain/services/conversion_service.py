@@ -213,6 +213,7 @@ class ConversionService:
         self._preprocessor = DocumentPreprocessor(llm_router, settings)
         self._validator = RunbookValidator()
         self._scorer = QualityScorer()
+        self._scan_lock = asyncio.Lock()
 
     @property
     def _data_dir(self) -> Path:
@@ -1229,31 +1230,58 @@ class ConversionService:
             dm.verified_at = now
             dm.verified_by = user_id
 
-            # Trigger ingestion into knowledge base
+            # Populate metadata from frontmatter
+            content = file_path.read_text(encoding="utf-8")
+            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+
+            fm_meta = extract_frontmatter_metadata(content)
+            dm.domain = fm_meta.get("domain")
+            dm.service = fm_meta.get("service")
+            dm.severity = fm_meta.get("severity")
+            dm.document_type = "runbook"
+
+            import re as _re
+            import yaml
+
+            fm_match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", content, _re.DOTALL)
+            if fm_match:
+                try:
+                    raw_fm = yaml.safe_load(fm_match.group(1)) or {}
+                    raw_tags = raw_fm.get("tags", [])
+                    if isinstance(raw_tags, list):
+                        dm.tags = ", ".join(str(t) for t in raw_tags)
+                    elif isinstance(raw_tags, str):
+                        dm.tags = raw_tags
+                except Exception:
+                    pass
+
+            # Ingest into ChromaDB (chunk + embed + store)
             knowledge_item_id = None
             chunks_created = 0
             collection = f"{job.scope}_kb"
 
             if self._knowledge_service:
                 try:
-                    content = file_path.read_text(encoding="utf-8")
-                    result = await self._knowledge_service.upload_document(
-                        content=content,
-                        title=dm.title,
-                        document_type="runbook",
-                        source_url=f"conversion:{conversion_id}",
-                        scope=job.scope,
-                        owner_id=user_id,
-                        team_id=job.team_id,
+                    import uuid as _uuid
+
+                    knowledge_item_id = f"kb_{_uuid.uuid4().hex[:12]}"
+                    chunks_created = (
+                        await self._knowledge_service.ingest_to_vector_store(
+                            document_id=knowledge_item_id,
+                            title=dm.title,
+                            content=content,
+                            document_type="runbook",
+                            source_url=f"conversion:{conversion_id}",
+                            scope=job.scope,
+                            owner_id=user_id,
+                            team_id=job.team_id,
+                        )
                     )
-                    if isinstance(result, str):
-                        knowledge_item_id = result
-                    elif isinstance(result, dict):
-                        knowledge_item_id = result.get("id", result.get("document_id"))
                 except Exception as e:
                     logger.error(f"Ingestion failed for draft {draft_id}: {e}")
+                    knowledge_item_id = None
 
-            if knowledge_item_id:
+            if knowledge_item_id and chunks_created > 0:
                 dm.knowledge_item_id = knowledge_item_id
 
             await session.commit()
@@ -1263,7 +1291,7 @@ class ConversionService:
                 runbook_id=dm.runbook_id,
                 status="verified",
                 knowledge_item_id=knowledge_item_id or "",
-                ingested=knowledge_item_id is not None,
+                ingested=knowledge_item_id is not None and chunks_created > 0,
                 ingested_at=now if knowledge_item_id else None,
                 collection=collection,
                 chunks_created=chunks_created,
@@ -1426,9 +1454,16 @@ status: draft
         Discovers runbooks created by the KB Toolkit or dropped on disk manually.
         Creates draft records so they appear in the Dashboard Drafts tab.
 
+        Uses an async lock to prevent concurrent scans from creating duplicate
+        drafts (e.g., React StrictMode fires the mount effect twice).
+
         Returns:
             {"discovered": N, "skipped": N, "errors": [...], "drafts": [...]}
         """
+        async with self._scan_lock:
+            return await self._scan_for_runbooks_impl(user_id)
+
+    async def _scan_for_runbooks_impl(self, user_id: str) -> dict:
         import re as _re
 
         import yaml
@@ -1440,25 +1475,10 @@ status: draft
 
         # Reconcile DB state before scanning disk
         tracked_paths: set[str] = set()
-        ingested_titles_for_reconcile: set[str] = set()
         if self._db_session_factory:
             async with self._db_session_factory() as session:
                 all_drafts_result = await session.execute(select(ConversionDraftModel))
                 all_draft_models = all_drafts_result.scalars().all()
-
-                # Need ingested titles to detect drafts that duplicate ChromaDB entries
-                ingested_titles_for_reconcile: set[str] = set()
-                if self._knowledge_service:
-                    try:
-                        kb_result = await self._knowledge_service.list_documents(
-                            limit=500
-                        )
-                        for doc in kb_result.get("documents", []):
-                            t = doc.get("title", "")
-                            if t:
-                                ingested_titles_for_reconcile.add(t.strip().lower())
-                    except Exception:
-                        pass
 
                 for draft_model in all_draft_models:
                     file_exists = Path(draft_model.file_path).exists()
@@ -1470,48 +1490,38 @@ status: draft
                         draft_model.status = "deleted"
                         continue
 
-                    # If this draft's runbook is already in ChromaDB (ingested
-                    # via auto-ingest or another path), remove the draft —
-                    # it's a duplicate
-                    if (
-                        draft_model.status == "draft"
-                        and draft_model.title
-                        and draft_model.title.strip().lower()
-                        in ingested_titles_for_reconcile
+                    # If this draft has already been activated (has a
+                    # knowledge_item_id linking it to a KB entry), it's a
+                    # verified draft that should not be shown as pending.
+                    # Do NOT delete drafts based on title matching against
+                    # ChromaDB — stale data from previous sessions causes
+                    # false positives that remove un-activated drafts.
+                    if draft_model.status == "draft" and getattr(
+                        draft_model, "knowledge_item_id", None
                     ):
                         draft_model.status = "deleted"
                         logger.info(
                             f"Removed duplicate draft {draft_model.id} "
-                            f"(already ingested in KB)"
+                            f"(already has knowledge_item_id)"
                         )
                         continue
 
                     if draft_model.status == "verified":
-                        still_ingested = False
-                        if self._knowledge_service:
-                            try:
-                                doc = await self._knowledge_service.get_document(
-                                    draft_model.runbook_id
-                                )
-                                still_ingested = doc is not None
-                            except Exception:
-                                pass
-                        if not still_ingested:
+                        # Trust SQLite: if knowledge_item_id is set, the
+                        # document was activated. Don't probe ChromaDB.
+                        if not getattr(draft_model, "knowledge_item_id", None):
+                            # Verified but no knowledge_item_id — likely from
+                            # a failed ingestion. Revert to draft.
                             draft_model.status = "draft"
                             reverted += 1
                             logger.info(
-                                f"Reverted orphaned draft {draft_model.id} "
-                                f"(runbook removed from KB)"
+                                f"Reverted draft {draft_model.id} "
+                                f"(verified but no knowledge_item_id)"
                             )
 
                     tracked_paths.add(draft_model.file_path)
 
                 await session.commit()
-
-        # Reuse ingested titles from reconciliation phase
-        ingested_titles = (
-            ingested_titles_for_reconcile if self._db_session_factory else set()
-        )
 
         # Walk all scope directories
         knowledge_dir = self._data_dir
@@ -1532,24 +1542,11 @@ status: draft
             file_path_str = str(md_file)
 
             # Skip if already tracked in drafts DB (in-memory set from
-            # reconciliation) or discovered earlier in this scan run
+            # reconciliation) or discovered earlier in this scan run.
+            # Concurrent scans are serialized by _scan_lock.
             if file_path_str in tracked_paths:
                 skipped += 1
                 continue
-
-            # Double-check against DB to prevent duplicates from concurrent scans
-            if self._db_session_factory:
-                async with self._db_session_factory() as session:
-                    existing = await session.execute(
-                        select(ConversionDraftModel).where(
-                            ConversionDraftModel.file_path == file_path_str,
-                            ConversionDraftModel.status != DraftStatus.DELETED.value,
-                        )
-                    )
-                    if existing.scalar_one_or_none():
-                        tracked_paths.add(file_path_str)
-                        skipped += 1
-                        continue
 
             # Read and validate
             try:
@@ -1573,11 +1570,6 @@ status: draft
 
             title = metadata.get("title", md_file.stem.replace("-", " ").title())
             runbook_id = metadata.get("id", md_file.stem)
-
-            # Skip if already ingested in ChromaDB (via auto-ingest or other path)
-            if title.strip().lower() in ingested_titles:
-                skipped += 1
-                continue
 
             # Infer scope from directory path
             scope = "global"
@@ -1615,6 +1607,17 @@ status: draft
                 quality_warning=quality_warning,
             )
 
+            # Extract metadata from frontmatter for dashboard filters
+            from faultmaven.utils.frontmatter import extract_frontmatter_metadata
+
+            fm_meta = extract_frontmatter_metadata(content)
+            raw_tags = metadata.get("tags", [])
+            tags_str = (
+                ", ".join(str(t) for t in raw_tags)
+                if isinstance(raw_tags, list)
+                else str(raw_tags) if raw_tags else None
+            )
+
             # Persist as a synthetic conversion job
             conversion_id = generate_conversion_id()
             await self._persist_job(
@@ -1642,6 +1645,23 @@ status: draft
                 drafts=[draft],
                 created_at=datetime.now(timezone.utc),
             )
+
+            # Set metadata columns on the draft record
+            if self._db_session_factory:
+                async with self._db_session_factory() as session:
+                    result = await session.execute(
+                        select(ConversionDraftModel).where(
+                            ConversionDraftModel.id == draft_id
+                        )
+                    )
+                    dm = result.scalar_one_or_none()
+                    if dm:
+                        dm.domain = fm_meta.get("domain")
+                        dm.service = fm_meta.get("service")
+                        dm.severity = fm_meta.get("severity")
+                        dm.tags = tags_str
+                        dm.document_type = "runbook"
+                        await session.commit()
 
             tracked_paths.add(file_path_str)
             discovered.append(

@@ -317,6 +317,7 @@ def create_knowledge_service(
     llm_provider: Any | None,
     redis_client: Any | None,
     settings: FaultMavenSettings,
+    db_session_factory: Any | None = None,
 ) -> Any:
     """Create knowledge service for knowledge base operations."""
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -331,6 +332,7 @@ def create_knowledge_service(
         redis_client=redis_client,
         settings=settings,
         llm_provider=llm_provider,
+        db_session_factory=db_session_factory,
     )
 
 

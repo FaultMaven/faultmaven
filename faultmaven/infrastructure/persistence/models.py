@@ -2065,6 +2065,12 @@ class ConversionDraftModel(Base):
     quality_score = Column(Numeric(5, 1), nullable=True)
     quality_details = Column(JSON, nullable=True)
     knowledge_item_id = Column(String(36), nullable=True)
+    # KB metadata — populated from frontmatter during scan/verify
+    domain = Column(String(50), nullable=True)
+    service = Column(String(100), nullable=True)
+    severity = Column(String(20), nullable=True)
+    tags = Column(Text, nullable=True)  # JSON array or comma-separated
+    document_type = Column(String(50), nullable=True, server_default="runbook")
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

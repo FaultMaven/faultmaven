@@ -77,6 +77,7 @@ class KnowledgeService:
         llm_provider: Optional[
             ILLMProvider
         ] = None,  # Enhanced: LLM for intelligent processing
+        db_session_factory: Optional[Any] = None,
     ):
         """
         Initialize with interface dependencies for better testability
@@ -90,6 +91,7 @@ class KnowledgeService:
             settings: Configuration settings for the service
             memory_service: Optional memory service for enhanced context-aware search
             llm_provider: Optional LLM for intelligent query processing
+            db_session_factory: Optional async session factory for SQLite access
         """
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
@@ -97,6 +99,7 @@ class KnowledgeService:
         self._vector_store = vector_store
         self._redis = redis_client
         self._settings = settings
+        self._db_session_factory = db_session_factory
 
         # Enhanced capabilities
         self._memory = memory_service
@@ -124,7 +127,7 @@ class KnowledgeService:
 
         # _document_counter removed — upload_document() now uses UUID-based IDs
 
-        # Redis key patterns for KB metadata and jobs
+        # Redis key patterns (legacy — being phased out in favor of SQLite)
         self._kb_doc_key = "kb:doc:{document_id}"
         self._kb_docs_set = "kb:docs"
         self._kb_index_type = "kb:index:type:{document_type}"
@@ -904,64 +907,43 @@ class KnowledgeService:
             FileNotFoundError: If document not found
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            logger.info(f"Archiving document {document_id}")
+            logger.info(f"Deactivating document {document_id}")
 
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
 
             try:
-                from datetime import datetime, timezone
+                # Look up in SQLite (authoritative)
+                if self._db_session_factory:
+                    from sqlalchemy.future import select
 
-                # Verify document exists in ChromaDB (source of truth)
-                doc_exists = False
+                    from faultmaven.infrastructure.persistence.models import (
+                        ConversionDraftModel,
+                    )
 
-                if self._vector_store and hasattr(self._vector_store, "get_document"):
-                    chroma_doc = await self._vector_store.get_document(document_id)
-                    if chroma_doc:
-                        doc_exists = True
+                    async with self._db_session_factory() as session:
+                        result = await session.execute(
+                            select(ConversionDraftModel).where(
+                                (ConversionDraftModel.knowledge_item_id == document_id)
+                                | (ConversionDraftModel.runbook_id == document_id)
+                            )
+                        )
+                        dm = result.scalar_one_or_none()
 
-                if not doc_exists:
-                    return {
-                        "success": False,
-                        "error": f"Document {document_id} not found",
-                    }
+                        if not dm:
+                            return {
+                                "success": False,
+                                "error": f"Document {document_id} not found",
+                            }
 
-                # Remove from ChromaDB (persistent store)
+                        dm.status = "deactivated"
+                        await session.commit()
+
+                # Remove chunks from ChromaDB (best-effort)
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
 
-                # Clean up Redis cache
-                try:
-                    import json as _json
-
-                    doc_key = self._kb_doc_key.format(document_id=document_id)
-                    raw = await self._redis.hget(doc_key, "data")
-                    if raw:
-                        doc = _json.loads(raw)
-                        archived_at = datetime.now(timezone.utc).isoformat()
-                        doc["archived_at"] = archived_at
-                        await self._redis.hset(doc_key, "data", _json.dumps(doc))
-
-                        pipe = self._redis.pipeline()
-                        pipe.srem(self._kb_docs_set, document_id)
-                        if doc.get("document_type"):
-                            pipe.srem(
-                                self._kb_index_type.format(
-                                    document_type=doc["document_type"]
-                                ),
-                                document_id,
-                            )
-                        for tag in doc.get("tags", []) or []:
-                            pipe.srem(self._kb_index_tag.format(tag=tag), document_id)
-                        await pipe.execute()
-                except Exception as e:
-                    logger.warning(f"Failed to clean up Redis for {document_id}: {e}")
-
-                # Remove associated job if exists
-                job_id = f"job_{document_id}"
-                await self._redis.delete(self._kb_job_key.format(job_id=job_id))
-
-                logger.info(f"Successfully archived document {document_id}")
+                logger.info(f"Successfully deactivated document {document_id}")
                 return {"success": True, "document_id": document_id}
 
             except ValidationException:
@@ -969,39 +951,52 @@ class KnowledgeService:
             except FileNotFoundError:
                 raise
             except Exception as e:
-                logger.error(f"Failed to archive document {document_id}: {e}")
-                raise RuntimeError(f"Document archive failed: {str(e)}") from e
+                logger.error(f"Failed to deactivate document {document_id}: {e}")
+                raise RuntimeError(f"Document deactivation failed: {str(e)}") from e
 
     async def get_document_statistics(self) -> Dict[str, Any]:
-        """Get knowledge base statistics from ChromaDB (source of truth)."""
+        """Get knowledge base statistics from SQLite."""
         with self._tracer.trace("knowledge_service_get_statistics"):
             try:
                 documents_by_type: Dict[str, int] = {}
                 tag_counts: Dict[str, int] = {}
                 total_documents = 0
 
-                if self._vector_store and hasattr(self._vector_store, "list_documents"):
-                    raw_docs = await self._vector_store.list_documents(limit=500)
+                if self._db_session_factory:
+                    from sqlalchemy import func as sa_func
+                    from sqlalchemy.future import select
 
-                    seen_ids: set = set()
-                    for raw in raw_docs:
-                        meta = raw.get("metadata", {})
-                        doc_id = raw.get("id", meta.get("document_id", ""))
-                        if doc_id in seen_ids:
-                            continue
-                        seen_ids.add(doc_id)
+                    from faultmaven.infrastructure.persistence.models import (
+                        ConversionDraftModel,
+                    )
 
-                        total_documents += 1
-                        dtype = meta.get("document_type", "unknown")
-                        documents_by_type[dtype] = documents_by_type.get(dtype, 0) + 1
-                        raw_tags = meta.get("tags", "")
-                        tag_list = (
-                            [t.strip() for t in raw_tags.split(",") if t.strip()]
-                            if isinstance(raw_tags, str)
-                            else raw_tags if isinstance(raw_tags, list) else []
+                    async with self._db_session_factory() as session:
+                        # Count by document_type
+                        result = await session.execute(
+                            select(
+                                ConversionDraftModel.document_type,
+                                sa_func.count(),
+                            )
+                            .where(ConversionDraftModel.status == "verified")
+                            .group_by(ConversionDraftModel.document_type)
                         )
-                        for tag in tag_list:
-                            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                        for dtype, count in result.all():
+                            documents_by_type[dtype or "runbook"] = count
+                            total_documents += count
+
+                        # Tags from verified drafts
+                        tag_result = await session.execute(
+                            select(ConversionDraftModel.tags).where(
+                                ConversionDraftModel.status == "verified",
+                                ConversionDraftModel.tags.isnot(None),
+                            )
+                        )
+                        for (raw_tags,) in tag_result.all():
+                            if isinstance(raw_tags, str):
+                                for t in raw_tags.split(","):
+                                    t = t.strip()
+                                    if t:
+                                        tag_counts[t] = tag_counts.get(t, 0) + 1
 
                 most_used_tags = sorted(
                     tag_counts.keys(), key=lambda t: tag_counts[t], reverse=True
@@ -1180,6 +1175,38 @@ class KnowledgeService:
         except Exception as e:
             logger.error(f"Failed to remove document from vector store: {e}")
 
+    async def ingest_to_vector_store(
+        self,
+        document_id: str,
+        title: str,
+        content: str,
+        document_type: str = "runbook",
+        tags: Optional[List[str]] = None,
+        source_url: Optional[str] = None,
+        scope: str = "global",
+        owner_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> int:
+        """Chunk, embed, and store a document in ChromaDB. No SQLite or Redis writes.
+
+        This is the public API for verify_draft and batch ingestion.
+        Returns the number of chunks indexed (0 on failure).
+        """
+        doc_model = KnowledgeBaseDocument(
+            document_id=document_id,
+            title=title,
+            content=content,
+            document_type=document_type,
+            tags=tags or [],
+            source_url=source_url,
+            scope=scope,
+            owner_id=owner_id,
+            team_id=team_id,
+            created_at=to_json_compatible(datetime.now(timezone.utc)),
+            updated_at=to_json_compatible(datetime.now(timezone.utc)),
+        )
+        return await self._index_document_in_vector_store(doc_model)
+
     # API-compatible methods that match the router expectations
     async def upload_document(
         self,
@@ -1322,21 +1349,14 @@ class KnowledgeService:
         user: Optional[Any] = None,
         team_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """List documents from ChromaDB (persistent) with RBAC filtering.
+        """List verified documents from SQLite with RBAC filtering.
 
-        ChromaDB is the source of truth for document listing. Redis is used
-        only as a write-through cache for upload metadata, not for listing.
-
-        Args:
-            scope: Optional scope filter (global, team, personal). When set,
-                   only documents matching this scope are returned (still
-                   subject to RBAC — personal only shows your own, etc.).
-            team_ids: List of team IDs the user belongs to (across all orgs).
-                      Used for team scope RBAC filtering.
+        SQLite (conversion_drafts) is the source of truth for document inventory.
+        ChromaDB is only used for vector search during investigations.
         """
         try:
-            if not self._vector_store:
-                logger.warning("No vector store available for list_documents")
+            if not self._db_session_factory:
+                logger.warning("No db_session_factory for list_documents")
                 return {
                     "documents": [],
                     "total_count": 0,
@@ -1344,100 +1364,105 @@ class KnowledgeService:
                     "offset": offset,
                 }
 
-            # Build ChromaDB where clause for scope-based pre-filtering
+            from sqlalchemy import func as sa_func, or_
+            from sqlalchemy.future import select
+
+            from faultmaven.infrastructure.persistence.models import (
+                ConversionDraftModel,
+                ConversionJobModel,
+            )
+
             user_id = getattr(user, "user_id", None) if user else None
             user_team_ids = set(team_ids) if team_ids else set()
 
-            # Query ChromaDB — fetch more than needed for post-filtering
-            # ChromaDB doesn't support OR across scope filters, so we fetch all
-            # and filter in Python (same as before, but from persistent store)
-            where = None
-            if document_type:
-                where = {"document_type": document_type}
-
-            raw_docs = await self._vector_store.list_documents(
-                limit=500,  # Fetch enough for filtering
-                offset=0,
-                where=where,
-            )
-
-            # Deduplicate by document_id (chunked docs have multiple entries)
-            seen_ids: set = set()
-            all_documents: List[Dict[str, Any]] = []
-            for raw in raw_docs:
-                meta = raw.get("metadata", {})
-                doc_id = meta.get("document_id") or raw.get("id", "")
-
-                if doc_id in seen_ids:
-                    continue
-                seen_ids.add(doc_id)
-
-                # Parse tags from comma-joined string back to list
-                raw_tags = meta.get("tags", "")
-                tag_list = (
-                    [t.strip() for t in raw_tags.split(",") if t.strip()]
-                    if isinstance(raw_tags, str)
-                    else raw_tags if isinstance(raw_tags, list) else []
+            async with self._db_session_factory() as session:
+                # Base query: verified drafts joined with jobs
+                base = (
+                    select(ConversionDraftModel, ConversionJobModel)
+                    .join(
+                        ConversionJobModel,
+                        ConversionDraftModel.conversion_id == ConversionJobModel.id,
+                    )
+                    .where(ConversionDraftModel.status == "verified")
                 )
 
-                doc = {
-                    "document_id": doc_id,
-                    "title": meta.get("title", "Untitled"),
-                    "content": raw.get("content", ""),
-                    "document_type": meta.get("document_type", "unknown"),
-                    "tags": tag_list,
-                    "scope": meta.get("scope", "global"),
-                    "owner_id": meta.get("owner_id"),
-                    "team_id": meta.get("team_id"),
-                    "source_url": meta.get("source_url"),
-                    "created_at": meta.get("created_at", ""),
-                    "updated_at": meta.get("updated_at", ""),
-                    "metadata": meta,
-                }
-                all_documents.append(doc)
+                if document_type:
+                    base = base.where(
+                        ConversionDraftModel.document_type == document_type
+                    )
 
-            # Apply RBAC first, then optional scope filter
-            accessible_docs = []
-            for doc in all_documents:
-                doc_scope = doc.get("scope", "global")
+                result = await session.execute(base)
+                rows = result.all()
 
-                # RBAC: personal/team docs visible only to owner/members
+            # RBAC + scope filtering in Python (small result set)
+            all_documents: List[Dict[str, Any]] = []
+            for dm, job in rows:
+                doc_scope = job.scope or "global"
+
+                # RBAC
                 if doc_scope == "personal":
-                    if not user_id or doc.get("owner_id") != user_id:
+                    if not user_id or job.user_id != user_id:
                         continue
                 elif doc_scope == "team":
-                    if not user_team_ids or doc.get("team_id") not in user_team_ids:
+                    if not user_team_ids or job.team_id not in user_team_ids:
                         continue
 
-                # Filter by tags
-                if tags:
-                    doc_tags = doc.get("tags", [])
-                    if not any(tag in doc_tags for tag in tags):
-                        continue
+                # Parse tags
+                raw_tags = dm.tags or ""
+                if isinstance(raw_tags, str):
+                    tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
+                else:
+                    tag_list = raw_tags if isinstance(raw_tags, list) else []
 
-                accessible_docs.append(doc)
+                # Tag filter
+                if tags and not any(t in tag_list for t in tags):
+                    continue
 
-            # Scope counts (from all accessible docs, before scope filter)
+                all_documents.append(
+                    {
+                        "document_id": dm.knowledge_item_id or dm.runbook_id,
+                        "title": dm.title,
+                        "document_type": dm.document_type or "runbook",
+                        "tags": tag_list,
+                        "scope": doc_scope,
+                        "owner_id": job.user_id,
+                        "team_id": job.team_id,
+                        "source_url": f"conversion:{dm.conversion_id}",
+                        "created_at": (
+                            dm.created_at.isoformat() if dm.created_at else ""
+                        ),
+                        "updated_at": (
+                            dm.verified_at.isoformat() if dm.verified_at else ""
+                        ),
+                        "metadata": {
+                            "domain": dm.domain,
+                            "service": dm.service,
+                            "severity": dm.severity,
+                            "quality_score": (
+                                float(dm.quality_score) if dm.quality_score else None
+                            ),
+                        },
+                    }
+                )
+
+            # Scope counts (before scope filter)
             scope_counts = {"global": 0, "team": 0, "personal": 0}
-            for doc in accessible_docs:
+            for doc in all_documents:
                 s = doc.get("scope", "global")
                 if s in scope_counts:
                     scope_counts[s] += 1
 
             # Apply explicit scope filter
             filtered_docs = (
-                [d for d in accessible_docs if d.get("scope") == scope]
+                [d for d in all_documents if d.get("scope") == scope]
                 if scope
-                else accessible_docs
+                else all_documents
             )
 
-            # Apply pagination
             total = len(filtered_docs)
             paginated_docs = filtered_docs[offset : offset + limit]
 
-            logger.info(
-                f"Listed {len(paginated_docs)} documents from ChromaDB (total: {total})"
-            )
+            logger.info(f"Listed {len(paginated_docs)} documents (total: {total})")
 
             return {
                 "documents": paginated_docs,
@@ -1453,7 +1478,7 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Failed to list documents from ChromaDB: {e}")
+            logger.error(f"Failed to list documents: {e}")
             return {
                 "documents": [],
                 "total_count": 0,
@@ -1463,53 +1488,80 @@ class KnowledgeService:
             }
 
     async def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific document by ID from ChromaDB (persistent store)."""
+        """Get a document by ID from SQLite + file content from disk."""
         try:
             if not document_id:
                 return None
 
-            # Try ChromaDB first (persistent, source of truth)
-            if self._vector_store and hasattr(self._vector_store, "get_document"):
-                raw = await self._vector_store.get_document(document_id)
-                if raw:
-                    meta = raw.get("metadata", {})
-                    raw_tags = meta.get("tags", "")
-                    tag_list = (
-                        [t.strip() for t in raw_tags.split(",") if t.strip()]
-                        if isinstance(raw_tags, str)
-                        else raw_tags if isinstance(raw_tags, list) else []
+            if not self._db_session_factory:
+                return None
+
+            from pathlib import Path
+
+            from sqlalchemy.future import select
+
+            from faultmaven.infrastructure.persistence.models import (
+                ConversionDraftModel,
+                ConversionJobModel,
+            )
+
+            async with self._db_session_factory() as session:
+                result = await session.execute(
+                    select(ConversionDraftModel, ConversionJobModel)
+                    .join(
+                        ConversionJobModel,
+                        ConversionDraftModel.conversion_id == ConversionJobModel.id,
                     )
-                    return {
-                        "document_id": document_id,
-                        "title": meta.get("title", "Untitled"),
-                        "content": raw.get("content", ""),
-                        "document_type": meta.get("document_type", "unknown"),
-                        "tags": tag_list,
-                        "scope": meta.get("scope", "global"),
-                        "owner_id": meta.get("owner_id"),
-                        "team_id": meta.get("team_id"),
-                        "source_url": meta.get("source_url"),
-                        "created_at": meta.get("created_at", ""),
-                        "updated_at": meta.get("updated_at", ""),
-                        "metadata": meta,
-                    }
-
-            # Fallback to Redis cache
-            if self._redis:
-                import json as _json
-
-                raw_data = await self._redis.hget(
-                    self._kb_doc_key.format(document_id=document_id), "data"
+                    .where(
+                        (ConversionDraftModel.knowledge_item_id == document_id)
+                        | (ConversionDraftModel.runbook_id == document_id)
+                    )
+                    .where(ConversionDraftModel.status == "verified")
                 )
-                if raw_data:
-                    document = _json.loads(raw_data)
-                    from faultmaven.api.v1.utils.parsing import normalize_tags_field
+                row = result.first()
 
-                    if "tags" in document:
-                        document["tags"] = normalize_tags_field(document["tags"])
-                    return document
+            if not row:
+                return None
 
-            return None
+            dm, job = row
+
+            # Read content from disk
+            content = ""
+            try:
+                content = Path(dm.file_path).read_text(encoding="utf-8")
+            except Exception:
+                logger.warning(
+                    f"Cannot read file for document {document_id}: {dm.file_path}"
+                )
+
+            raw_tags = dm.tags or ""
+            tag_list = (
+                [t.strip() for t in raw_tags.split(",") if t.strip()]
+                if isinstance(raw_tags, str)
+                else raw_tags if isinstance(raw_tags, list) else []
+            )
+
+            return {
+                "document_id": dm.knowledge_item_id or dm.runbook_id,
+                "title": dm.title,
+                "content": content,
+                "document_type": dm.document_type or "runbook",
+                "tags": tag_list,
+                "scope": job.scope or "global",
+                "owner_id": job.user_id,
+                "team_id": job.team_id,
+                "source_url": f"conversion:{dm.conversion_id}",
+                "created_at": dm.created_at.isoformat() if dm.created_at else "",
+                "updated_at": dm.verified_at.isoformat() if dm.verified_at else "",
+                "metadata": {
+                    "domain": dm.domain,
+                    "service": dm.service,
+                    "severity": dm.severity,
+                    "quality_score": (
+                        float(dm.quality_score) if dm.quality_score else None
+                    ),
+                },
+            }
 
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {e}")
