@@ -68,9 +68,19 @@ class CaseVectorStore(BaseExternalClient):
             raise
 
     async def add_documents(
-        self, case_id: str, documents: List[Dict[str, Any]]
+        self,
+        case_id: str,
+        documents: List[Dict[str, Any]],
+        embeddings: Optional[List[List[float]]] = None,
     ) -> None:
-        """Add documents to case-specific collection."""
+        """Add documents to case-specific collection.
+
+        Args:
+            case_id: Case identifier.
+            documents: List of dicts with 'id', 'content', and optional 'metadata'.
+            embeddings: Pre-computed BGE-M3 embedding vectors (1024 dims), one per
+                        document. When provided, bypasses ChromaDB's default embedding.
+        """
 
         async def _add_wrapper():
             collection = self._get_or_create_collection(case_id)
@@ -92,7 +102,12 @@ class CaseVectorStore(BaseExternalClient):
                         sanitized[k] = str(v)
                 sanitized_metadatas.append(sanitized)
 
-            collection.add(ids=ids, documents=contents, metadatas=sanitized_metadatas)
+            add_kwargs: Dict[str, Any] = dict(
+                ids=ids, documents=contents, metadatas=sanitized_metadatas
+            )
+            if embeddings is not None:
+                add_kwargs["embeddings"] = embeddings
+            collection.add(**add_kwargs)
 
             self.logger.info(
                 f"Added {len(documents)} documents to case {case_id}",
@@ -114,16 +129,37 @@ class CaseVectorStore(BaseExternalClient):
         k: int = 5,
         where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Search for similar documents in case-specific collection."""
+        """Search for similar documents in case-specific collection.
+
+        Uses explicit BGE-M3 embeddings (1024 dims) to match vectors stored
+        at indexing time. Falls back to ChromaDB default embedding if BGE-M3
+        is unavailable (graceful degradation for existing 384-dim collections).
+        """
 
         async def _search_wrapper():
+            from faultmaven.infrastructure.model_cache import model_cache
+
             collection = self._get_or_create_collection(case_id)
 
-            query_params = {
-                "query_texts": [query],
-                "n_results": k,
-                "include": ["documents", "metadatas", "distances"],
-            }
+            # Use explicit BGE-M3 embedding to match stored vectors
+            bge_model = model_cache.get_bge_m3_model()
+            if bge_model is not None:
+                query_embedding = bge_model.encode(query).tolist()
+                query_params = {
+                    "query_embeddings": [query_embedding],
+                    "n_results": k,
+                    "include": ["documents", "metadatas", "distances"],
+                }
+            else:
+                self.logger.warning(
+                    "BGE-M3 unavailable for case search, falling back to "
+                    "ChromaDB default embedding"
+                )
+                query_params = {
+                    "query_texts": [query],
+                    "n_results": k,
+                    "include": ["documents", "metadatas", "distances"],
+                }
 
             if where:
                 query_params["where"] = where

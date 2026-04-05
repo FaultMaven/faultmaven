@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
+from faultmaven.infrastructure.model_cache import model_cache
 
 logger = logging.getLogger(__name__)
 
@@ -195,10 +196,27 @@ async def store_in_vector_db_background(
                 }
             )
 
-        # 3. Store in vector DB
+        # 3. Generate BGE-M3 embeddings for all chunks
+        embeddings = None
+        bge_model = model_cache.get_bge_m3_model()
+        if bge_model is not None:
+            texts = [doc["content"] for doc in documents]
+            embeddings = bge_model.encode(texts).tolist()
+            logger.debug(
+                f"Generated BGE-M3 embeddings for {len(texts)} chunks "
+                f"({evidence_id})"
+            )
+        else:
+            logger.warning(
+                f"BGE-M3 unavailable for {evidence_id}, "
+                f"falling back to ChromaDB default embedding"
+            )
+
+        # 4. Store in vector DB
         await case_vector_store.add_documents(
             case_id=case_id,
             documents=documents,
+            embeddings=embeddings,
         )
 
         logger.info(

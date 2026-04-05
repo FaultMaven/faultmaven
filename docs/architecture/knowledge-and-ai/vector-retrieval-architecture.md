@@ -353,7 +353,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 |---------|--------|-------|
 | Evidence 4-tier escalation | **Implemented** | See `data-preprocessing-design-specification.md` |
 | Proactive vectorization | **Implemented** | Background trigger at DA mode start for large files |
-| Evidence embedding consistency | **Not done** | Case evidence collections use ChromaDB default embedding (384 dims), not BGE-M3. Internally consistent but mismatched with KB. See `docs/working/WIP-evidence-embedding-consistency.md`. |
+| Evidence embedding consistency | **Implemented** | Case evidence collections now use explicit BGE-M3 (1024 dims) for both indexing and querying, matching KB. Graceful fallback to ChromaDB default if BGE-M3 unavailable. |
 | Chunk type discriminator | **Not done** | First-class `chunk_type` for type-specific chunking logic. Core to evidence chunking design (§5). |
 | Evidence 512-token chunking + context window | **Not done** | Replaces current 4000-token chunks. Embed small for precision, expand at retrieval for forensic context. |
 | Evidence-to-KB feedback loop | **Not done** | Product-level feature: surface KB curation suggestions from repeated evidence patterns. |
@@ -370,14 +370,21 @@ ChromaDB is used **only for vector search** during investigations. All document 
 
 ### Embedding Consistency
 
-All KB paths (indexing and querying) use explicit BGE-M3 embeddings (1024 dims) via `model_cache.get_bge_m3_model()`. No KB path relies on ChromaDB's default embedding function. This applies to:
+All paths (KB and evidence) use explicit BGE-M3 embeddings (1024 dims) via `model_cache.get_bge_m3_model()`. No active code path relies on ChromaDB's default embedding function.
+
+**KB paths:**
 - `_index_document_in_vector_store()` — chunk embeddings at ingestion
 - `KnowledgeVectorStore.search()` — `query_embeddings` for vector recall
 - `KnowledgeVectorStore._single_keyword_search()` — `query_embeddings` for keyword-constrained search
 - `ChromaDBVectorStore.search()` — `query_embeddings` for direct search
 - `RunbookKB.index_runbook()` — explicit embeddings passed to `add_documents()`
 
-**Note:** Case evidence collections (`case_{id}`) currently use ChromaDB's default embedding (384 dims) for both add and query. This is internally consistent but architecturally inconsistent with KB collections. See `docs/working/WIP-evidence-embedding-consistency.md` for the planned fix.
+**Evidence paths:**
+
+- `store_in_vector_db_background()` — generates BGE-M3 embeddings, passes to `CaseVectorStore.add_documents(embeddings=...)`
+- `CaseVectorStore.search()` — encodes query with BGE-M3, uses `query_embeddings`
+
+Both paths fall back gracefully to ChromaDB's default embedding if BGE-M3 is unavailable (e.g., `sentence-transformers` not installed). Existing in-progress cases with 384-dim vectors will self-clean as they close — no migration needed.
 
 ### Superseded Code
 

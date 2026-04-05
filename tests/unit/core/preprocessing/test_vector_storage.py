@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
@@ -112,7 +113,13 @@ class TestChunkStructuralIndex:
 
 class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
-    async def test_successful_storage(self):
+    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    async def test_successful_storage_with_bge_m3(self, mock_model_cache):
+        # Mock BGE-M3 model that returns 1024-dim embeddings
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.random.rand(2, 1024)
+        mock_model_cache.get_bge_m3_model.return_value = mock_model
+
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
 
@@ -142,6 +149,36 @@ class TestStoreInVectorDbBackground:
         assert docs[0]["metadata"]["data_type"] == "logs"
         assert docs[0]["metadata"]["extraction_version"] == EXTRACTION_VERSION
 
+        # Verify BGE-M3 embeddings were generated and passed
+        embeddings = call_kwargs["embeddings"]
+        assert embeddings is not None
+        assert len(embeddings) == 2
+        assert len(embeddings[0]) == 1024
+        mock_model.encode.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    async def test_fallback_when_bge_m3_unavailable(self, mock_model_cache):
+        mock_model_cache.get_bge_m3_model.return_value = None
+
+        mock_store = AsyncMock()
+        mock_store.add_documents = AsyncMock()
+
+        text = "=== Errors ===\nError at line 5"
+
+        await store_in_vector_db_background(
+            case_id="case_123",
+            evidence_id="ev_456",
+            structural_index=text,
+            data_type=UnifiedDataType.LOGS,
+            metadata={},
+            case_vector_store=mock_store,
+        )
+
+        call_kwargs = mock_store.add_documents.call_args[1]
+        # embeddings should be None — falls back to ChromaDB default
+        assert call_kwargs["embeddings"] is None
+
     @pytest.mark.asyncio
     async def test_empty_index_skips_storage(self):
         mock_store = AsyncMock()
@@ -158,7 +195,12 @@ class TestStoreInVectorDbBackground:
         mock_store.add_documents.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_scalar_metadata_filtered(self):
+    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    async def test_scalar_metadata_filtered(self, mock_model_cache):
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.random.rand(1, 1024)
+        mock_model_cache.get_bge_m3_model.return_value = mock_model
+
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
 
@@ -190,7 +232,10 @@ class TestStoreInVectorDbBackground:
         assert "list_val" not in chunk_meta
 
     @pytest.mark.asyncio
-    async def test_error_handled_silently(self):
+    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    async def test_error_handled_silently(self, mock_model_cache):
+        mock_model_cache.get_bge_m3_model.return_value = None
+
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock(side_effect=RuntimeError("DB down"))
 
@@ -205,7 +250,12 @@ class TestStoreInVectorDbBackground:
         )
 
     @pytest.mark.asyncio
-    async def test_chunk_index_and_total_in_metadata(self):
+    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    async def test_chunk_index_and_total_in_metadata(self, mock_model_cache):
+        mock_model = MagicMock()
+        mock_model.encode.return_value = np.random.rand(2, 1024)
+        mock_model_cache.get_bge_m3_model.return_value = mock_model
+
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
 
