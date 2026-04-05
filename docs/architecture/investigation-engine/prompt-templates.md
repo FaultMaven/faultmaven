@@ -125,6 +125,9 @@ Follow this progression based on conversation state:
 
 ┌─────────────────────────────────────────────────────────┐
 │ Step 0: KNOWLEDGE PRE-CHECK (Before Asking Questions)  │
+│ Implementation: Agent calls kb_qa tool during the      │
+│ tool-augmented generation loop (Rule 7: Knowledge      │
+│ First). Scope filtering is automatic via ToolContext.   │
 ├─────────────────────────────────────────────────────────┤
 │ When user describes any symptom, FIRST search KB:      │
 │                                                         │

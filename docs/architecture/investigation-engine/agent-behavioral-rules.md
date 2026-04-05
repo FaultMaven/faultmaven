@@ -31,8 +31,8 @@ Rules that fail this test belong elsewhere: investigation strategy goes in promp
 | 3 | [Advisor Role](#rule-3-advisor-role) | Effective | All templates | Vocabulary constraint: banned/required phrases |
 | 4 | [Graceful Pivot](#rule-4-graceful-pivot) | Resilient | INVESTIGATING base instructions | Conditional: user can't provide → acknowledge + alternative |
 | 5 | [Work With What You Get](#rule-5-work-with-what-you-get) | Resilient | INVESTIGATING base instructions | Conditional: non-cooperation → prescribed fallbacks |
-| 6 | [Steady Advance](#rule-6-steady-advance) | Productive | End of every prompt | Structural: response must contain new content |
-| 7 | [Knowledge First](#rule-7-knowledge-first) | Effective | INVESTIGATING base instructions | Structural: KB lookup overrides independent diagnosis |
+| 6 | [Steady Advance](#rule-6-steady-advance) | Productive | INVESTIGATING base (end) | Structural: response must contain new content |
+| 7 | [Knowledge First](#rule-7-knowledge-first) | Effective | INQUIRY template + INVESTIGATING base + DA system instruction | Structural: KB lookup overrides independent diagnosis |
 
 **Rules 1-3, 7** govern **what the agent does** (effectiveness).
 **Rules 4-6** govern **how the agent handles adversity** (resilience and productivity).
@@ -246,13 +246,23 @@ angle: [alternative approach]."
 
 ## Rule 7: Knowledge First
 
-**What it prevents**: Agent invents new diagnostic procedures or solutions when an organizational Runbook already exists for the verified symptom.
+**What it prevents**: Agent invents new diagnostic procedures or solutions when an organizational Runbook already exists for the verified symptom, or answers general technical questions from LLM training data when the KB has documented guidance.
 
-**Trigger**: Before formulating a diagnosis, requesting diagnostic evidence, or proposing a solution.
+**Trigger**: Before formulating a diagnosis, requesting diagnostic evidence, proposing a solution, or answering a technical/domain knowledge question.
 
-**Injection point**: INVESTIGATING base template instructions.
+**Injection point**: INQUIRY template (YOUR TASK section) and INVESTIGATING base template (DIAGNOSIS instructions). Also enforced via the DA system instruction's TYPE B question routing (see [DA System Instruction](#da-system-instruction) below).
 
-**Prompt injection**:
+**Prompt injection (INQUIRY)**:
+
+```text
+KNOWLEDGE FIRST: When the user asks a technical question (troubleshooting,
+best practices, procedures, common causes, how-to), search the knowledge base
+(kb_qa) BEFORE answering from your own knowledge. If kb_qa returns relevant
+results, ground your answer in them and cite the source. If no relevant
+results, answer from your own knowledge without mentioning the search.
+```
+
+**Prompt injection (INVESTIGATING)**:
 
 ```text
 KNOWLEDGE & RUNBOOK AUTHORITY:
@@ -263,11 +273,12 @@ When following a Runbook, explicitly state it: "According to our runbook for [Se
 
 **Prescribed behavior**:
 
-1. Check the KB (`kb_qa`, `search_knowledge`) before asking the user to manually dive into logs or perform diagnostics.
+1. Check the KB (`kb_qa`) before answering technical questions from general knowledge or inventing diagnostic procedures.
 2. If a Runbook exists, treat its diagnostic steps and mitigations as strict commandments.
 3. Explicitly reference the runbook so the user knows you are following organizational procedure.
+4. If kb_qa returns no relevant results, proceed silently — do not mention the empty search.
 
-**Why it matters**: In an enterprise environment, standardized procedures (Runbooks) are vastly superior to ad-hoc AI troubleshooting. The LLM engine must recognize the Travel Guide as authoritative over its own general knowledge.
+**Why it matters**: In an enterprise environment, standardized procedures (Runbooks) are vastly superior to ad-hoc AI troubleshooting. The LLM engine must recognize the Knowledge Base as authoritative over its own general knowledge. This applies equally during INQUIRY (where the user may ask a domain question before any investigation starts) and during INVESTIGATING (where the agent must follow organizational procedures).
 
 ---
 
@@ -284,8 +295,8 @@ Rules are injected into template strings in `templates.py` and assembled at runt
 | 3 (Advisor Role) | All templates | ASSISTANT ROLE | Varies: early in INQUIRY/TERMINAL, mid in INVESTIGATING |
 | 4 (Graceful Pivot) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
 | 5 (Work With What You Get) | INVESTIGATION_BASE | KEY PRINCIPLES | After YOUR TASK |
-| 6 (Steady Advance) | All templates | STEADY ADVANCE | Last section (always) |
-| 7 (Knowledge First) | INVESTIGATION_BASE | YOUR TASK / DIAGNOSIS | Very early (Before manual diagnosis flow) |
+| 6 (Steady Advance) | INVESTIGATION_BASE | STEADY ADVANCE | Last section (recency effect) |
+| 7 (Knowledge First) | INQUIRY + INVESTIGATION_BASE + DA system instruction | YOUR TASK (INQUIRY), DIAGNOSIS (INVESTIGATING), TYPE B routing (DA instruction) | Early in each |
 
 ### Dynamic Injection: Focus Zone and INQUIRY State
 
@@ -296,6 +307,24 @@ Two pieces of rule-adjacent content are injected at runtime:
 2. **INQUIRY State** — an `<inquiry_state>` XML block injected into the INQUIRY template by `_build_context()` when a proposed problem statement exists but hasn't been confirmed. It tells the LLM to detect implicit confirmation (data uploads, engagement with the problem) rather than re-proposing the problem statement repeatedly. See [Context Engineering Analysis: INQUIRY State Injection](../../reference/deep-dives/context-engineering-analysis.md#inquiry-state-injection-dynamic-context).
 
 Neither is a behavioral rule; both are system-computed adaptive context that modifies what the LLM *sees* rather than constraining what it *does*.
+
+### DA System Instruction
+
+When investigation tools are available, the tool-augmented generation loop (`_tool_augmented_generate`) injects a **DA system instruction** as the system message. This instruction is a significant behavioral control surface that operates in parallel with the template-level rules. It is built dynamically by `_build_da_system_instruction()` in `milestone_engine.py`.
+
+**Key behavioral content — Question Routing:**
+
+The DA system instruction classifies user questions into three types and prescribes tool usage for each:
+
+| Type | Description | Tool Requirement | Rule Enforced |
+| ---- | ----------- | ---------------- | ------------- |
+| TYPE A — Case Question | About THIS case's evidence (IPs, errors, timestamps) | **MUST** search evidence (`search_file`, `deep_analysis`) | Rule 2 (Evidence-Grounded) |
+| TYPE B — Knowledge Question | General technical knowledge (best practices, common causes, how-to) | **MUST** search `kb_qa` first; answer from own knowledge only if no results | Rule 7 (Knowledge First) |
+| TYPE C — Hybrid | Needs both evidence AND external knowledge | Search evidence first, then KB/web for reference baseline | Rules 2 + 7 |
+
+**Why this matters for behavioral rules:** The DA system instruction applies to ALL turns with tools — including INQUIRY. Because `tool_choice=auto`, the LLM decides whether to comply. The "MUST" language for TYPE A and TYPE B is the primary enforcement mechanism for Rules 2 and 7 during the tool-augmented loop.
+
+**Location:** `milestone_engine.py:_build_da_system_instruction()` (~lines 2968-3095).
 
 ### INVESTIGATION_BASE Layout
 

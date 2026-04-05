@@ -8,7 +8,6 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from abc import ABC
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
@@ -24,11 +23,13 @@ if TYPE_CHECKING:
 
 
 class IKnowledgeService(Protocol):
-    """Service interface for Knowledge business logic."""
+    """Service interface for Knowledge business logic.
 
-    async def search(self, query: str, k: int = 5) -> List[dict]:
-        """Perform semantic search on knowledge base."""
-        ...
+    KB retrieval during investigation is handled by the kb_qa tool
+    (via the tool-augmented generation loop), not by this interface.
+    The tool path provides proper scope filtering via ToolContext.
+    See: modules/agent/tools/kb_qa.py, kb_tool_adapter.py.
+    """
 
     async def add_document(self, document: dict) -> str:
         """Add a document to the knowledge base."""
@@ -46,14 +47,6 @@ class IKnowledgeService(Protocol):
         self, document_id: str, query: str, max_lines: int = 5
     ) -> Optional[Dict[str, Any]]:
         """Get semantically relevant snippet from a document."""
-        ...
-
-
-class IKnowledgeQuery(Protocol):
-    """Read-only knowledge query interface."""
-
-    async def search(self, query: str, k: int = 5) -> List[dict]:
-        """Perform semantic search (read-only)."""
         ...
 
 

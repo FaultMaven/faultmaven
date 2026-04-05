@@ -1888,20 +1888,11 @@ class MilestoneEngine:
                         }
 
             # 1. Gather Context & Build Prompt
-            # Phase 3: Inquiry KB Search (Fast-track)
-            kb_results = None
-            if case.status == CaseStatus.INQUIRY and self.knowledge_service:
-                try:
-                    kb_results = await self.knowledge_service.search(user_message, k=3)
-                    logger.info(
-                        f"KB Search found {len(kb_results) if kb_results else 0} results"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"KB Search failed (non-critical, continuing without KB): {e}",
-                        exc_info=True,
-                        extra={"case_id": case.case_id, "turn": case.current_turn},
-                    )
+            # KB retrieval during turns is handled by the kb_qa tool in the
+            # tool-augmented generation loop. The agent decides when to call
+            # kb_qa based on prompt directives (Rule 7: Knowledge First).
+            # This ensures proper scope filtering via ToolContext (user_id,
+            # team_ids) which the engine doesn't have at this level.
 
             # Initialize case-scoped PII redaction context.
             # Created fresh each turn — the assembled prompt contains raw
@@ -1946,7 +1937,7 @@ class MilestoneEngine:
             prompt = get_prompt_for_case(
                 case,
                 user_message,
-                kb_results,
+                kb_results=None,
                 provider_name=provider_name,
                 model_name=model_name,
                 processing_mode=classification.mode.value,
@@ -3074,9 +3065,12 @@ class MilestoneEngine:
             "procedures that are NOT answerable from case evidence. Examples: "
             "'What is Opik?', 'How to set up Redis clustering?', "
             "'Common causes of OOM kills?'\n"
-            "→ Answer from your own knowledge. Optionally use web_search or "
-            "kb_qa for supplementary detail. Connect your answer to the "
-            f"case context when relevant, then call {schema_tool_name}.\n\n"
+            "→ You MUST search kb_qa first for documented solutions, runbooks, "
+            "or best practices. If kb_qa returns relevant results, ground your "
+            "answer in them and cite the source. If no relevant results, answer "
+            "from your own knowledge (do not mention the failed search). "
+            "Optionally use web_search for supplementary detail. Connect your "
+            f"answer to the case context when relevant, then call {schema_tool_name}.\n\n"
             "TYPE C — HYBRID (needs both evidence AND knowledge):\n"
             "Questions that bridge case data and external knowledge. Examples: "
             "'Is our Redis config following best practices?', "
