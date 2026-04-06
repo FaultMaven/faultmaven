@@ -119,8 +119,8 @@ faultmaven-dash-1    faultmaven-dash    Up 5 minutes
 
 HTTP Health Checks:
 -------------------
-API (port 8000)... ✓ OK
-Dashboard (port 3000)... ✓ OK
+API (port 8090)... ✓ OK
+Dashboard (port 3333)... ✓ OK
 
 ✓ All health checks passed!
 ```

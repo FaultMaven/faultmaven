@@ -1,37 +1,28 @@
 # FaultMaven Full-Stack - Quick Start Configuration
 #
 # This is the simplest way to run FaultMaven locally.
-# Uses in-memory storage (SQLite, in-memory sessions/vectors) - no external services required.
+# No external services required - local deployment uses SQLite, FakeRedis, and
+# embedded ChromaDB.
 #
 # Usage:
 #   1. Copy .env.example to .env and configure your LLM provider
-#   2. docker compose up
+#   2. ./faultmaven.sh start
 #   3. Open http://localhost:3333 (Dashboard)
 #   4. Install the Copilot browser extension
 #
 # Demo Mode (with sample data):
-#   docker compose --profile demo up
+#   ./faultmaven.sh start --demo
 #
-# For development with external services (Redis, ChromaDB), see docker-compose.dev.yml
+# For local development without Docker, use: ./scripts/faultmaven-dev.sh
 
 services:
   api:
-    # Use pre-built image from Docker Hub (recommended for users)
+    build: .
     image: faultmaven/faultmaven:latest
-
-    # Or build from source (for contributors/developers)
-    # build: .
     ports:
       - "8090:8090"
     environment:
-      - HOST=0.0.0.0
-      - PORT=8090
-      - DEBUG=false
-      - LOG_LEVEL=INFO
-      # Local deployment: FakeRedis for sessions, inmemory for vectors
-      - VECTOR_STORAGE_TYPE=inmemory
-      - CASE_STORAGE_TYPE=database
-      - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
+      - HOST=0.0.0.0  # Container must bind all interfaces for port mapping
     env_file:
       - .env
     volumes:

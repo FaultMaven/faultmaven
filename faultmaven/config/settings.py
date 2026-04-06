@@ -603,7 +603,7 @@ class DatabaseSettings(BaseSettings):
 
     # Storage adapter selection
     user_storage_type: str = Field(default="inmemory")
-    case_storage_type: str = Field(default="inmemory")
+    case_storage_type: str = Field(default="database")
 
     # PostgreSQL - Auth Database (for user data)
     auth_db_host: str = Field(default="postgres.faultmaven.local")

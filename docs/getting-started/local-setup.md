@@ -100,11 +100,12 @@ Configure the extension to use your local API: Extension icon → Settings → A
 
 ## Development with External Services
 
-For development scenarios requiring persistent storage across restarts, use the development Docker Compose configuration:
+For development scenarios requiring persistent storage across restarts, run Redis and ChromaDB separately:
 
 ```bash
 # Start Redis + ChromaDB
-docker compose -f docker-compose.dev.yml up -d redis chromadb
+docker run -d --name redis -p 6379:6379 redis:7-alpine
+docker run -d --name chromadb -p 8001:8000 chromadb/chroma:latest
 
 # Update .env to use external services
 SESSION_STORAGE_TYPE=redis

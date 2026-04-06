@@ -92,7 +92,7 @@ The community edition uses the following defaults:
 # Storage (no external dependencies)
 database_url = "sqlite:///./data/faultmaven.db"
 user_storage_type = "inmemory"
-case_storage_type = "inmemory"
+case_storage_type = "database"
 # Sessions: FakeRedis (in-process, no external server needed)
 vector_storage_type = "inmemory"
 
@@ -261,7 +261,7 @@ For Kubernetes deployments, see:
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///./data/faultmaven.db` | Database connection URL |
 | `USER_STORAGE_TYPE` | `inmemory` | User storage: `inmemory`, `postgresql` |
-| `CASE_STORAGE_TYPE` | `inmemory` | Case storage: `inmemory`, `postgresql` |
+| `CASE_STORAGE_TYPE` | `database` | Case storage: `database` (SQLite/PostgreSQL), `inmemory` (testing only) |
 | `REDIS_HOST` | _(unset)_ | Sessions: FakeRedis when unset, real Redis when set |
 | `VECTOR_STORAGE_TYPE` | `inmemory` | Vector storage: `inmemory`, `chromadb` |
 

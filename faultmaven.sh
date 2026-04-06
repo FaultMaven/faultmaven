@@ -11,7 +11,7 @@
 #   - dashboard: FaultMaven Dashboard frontend
 #
 # ChromaDB and Redis run as in-process services within the API container,
-# NOT as separate containers. For external services, use docker-compose.dev.yml separately.
+# NOT as separate containers.
 
 set -e
 
@@ -43,11 +43,12 @@ if [ ! -t 0 ]; then
     INTERACTIVE=false
 fi
 
-# Health check endpoints: "port:service_name"
+# Health check endpoints: "port:service_name:path"
 HEALTH_CHECK_SERVICES=(
-    "8000:API"
-    "3000:Dashboard"
+    "8090:API:/health"
+    "3333:Dashboard:/"
 )
+DEFAULT_PORT=8090
 
 #######################################
 # Utility Functions
@@ -218,15 +219,34 @@ check_env_file() {
 
     # Check for at least one LLM provider configured
     local has_llm=false
-    if [ -n "${OPENAI_API_KEY:-}" ] && [ "${OPENAI_API_KEY}" != "your-openai-api-key" ]; then
+    local provider_name=""
+
+    # Check each supported provider's API key
+    declare -A provider_keys=(
+        ["OpenAI"]="OPENAI_API_KEY"
+        ["Anthropic"]="ANTHROPIC_API_KEY"
+        ["Gemini"]="GEMINI_API_KEY"
+        ["Fireworks"]="FIREWORKS_API_KEY"
+        ["Groq"]="GROQ_API_KEY"
+        ["HuggingFace"]="HUGGINGFACE_API_KEY"
+        ["Cohere"]="COHERE_API_KEY"
+        ["OpenRouter"]="OPENROUTER_API_KEY"
+    )
+
+    for name in "${!provider_keys[@]}"; do
+        local key_var="${provider_keys[$name]}"
+        local key_val="${!key_var:-}"
+        if [ -n "$key_val" ] && [[ ! "$key_val" =~ ^your- ]]; then
+            has_llm=true
+            provider_name="$name"
+            break
+        fi
+    done
+
+    # Also check for local LLM (no API key needed)
+    if [ "$has_llm" = false ] && [ -n "${LOCAL_LLM_URL:-}" ]; then
         has_llm=true
-        print_info "LLM Provider: OpenAI"
-    elif [ -n "${ANTHROPIC_API_KEY:-}" ] && [ "${ANTHROPIC_API_KEY}" != "your-anthropic-api-key" ]; then
-        has_llm=true
-        print_info "LLM Provider: Anthropic"
-    elif [ -n "${GROQ_API_KEY:-}" ]; then
-        has_llm=true
-        print_info "LLM Provider: Groq"
+        provider_name="Local (Ollama/vLLM)"
     fi
 
     if [ "$has_llm" = false ]; then
@@ -235,10 +255,15 @@ check_env_file() {
         echo "Edit .env and configure AT LEAST ONE provider:"
         echo "  OPENAI_API_KEY=sk-...              # OpenAI GPT"
         echo "  ANTHROPIC_API_KEY=sk-ant-...       # Anthropic Claude"
-        echo "  GROQ_API_KEY=gsk-...               # Groq (FREE tier, ultra-fast!)"
+        echo "  GEMINI_API_KEY=...                  # Google Gemini"
+        echo "  FIREWORKS_API_KEY=...               # Fireworks AI"
+        echo "  GROQ_API_KEY=gsk-...               # Groq (ultra-fast)"
+        echo "  LOCAL_LLM_URL=http://localhost:11434 # Ollama (local, free)"
         echo ""
         exit 1
     fi
+
+    print_info "LLM Provider: $provider_name"
 
     print_success ".env file configured"
 }
@@ -249,7 +274,7 @@ check_env_file() {
 
 check_docker_ports() {
     # Check if required ports are available
-    local ports_to_check=(8000 3000)
+    local ports_to_check=(8090 3333)
     local ports_in_use=()
 
     for port in "${ports_to_check[@]}"; do
@@ -299,9 +324,11 @@ wait_for_containers_ready() {
 
         for service in "${HEALTH_CHECK_SERVICES[@]}"; do
             local port="${service%%:*}"
-            local name="${service#*:}"
+            local rest="${service#*:}"
+            local name="${rest%%:*}"
+            local path="${rest#*:}"
 
-            if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+            if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
                 ((healthy_count++))
             fi
         done
@@ -313,7 +340,9 @@ wait_for_containers_ready() {
             local still_healthy=0
             for service in "${HEALTH_CHECK_SERVICES[@]}"; do
                 local port="${service%%:*}"
-                if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+                local rest="${service#*:}"
+                local path="${rest#*:}"
+                if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
                     ((still_healthy++))
                 fi
             done
@@ -351,9 +380,9 @@ cmd_start() {
     print_info "Starting containers with Docker Compose..."
     echo ""
 
-    local compose_cmd="docker compose up -d"
+    local compose_cmd="docker compose up -d --build"
     if [ "$DEMO_MODE" = true ]; then
-        compose_cmd="docker compose --profile demo up -d"
+        compose_cmd="docker compose --profile demo up -d --build"
         print_info "Demo mode enabled: Will seed sample data"
     fi
 
@@ -484,10 +513,12 @@ cmd_health() {
 
     for service in "${HEALTH_CHECK_SERVICES[@]}"; do
         local port="${service%%:*}"
-        local name="${service#*:}"
+        local rest="${service#*:}"
+        local name="${rest%%:*}"
+        local path="${rest#*:}"
 
         echo -n "$name (port $port)... "
-        if curl -sf "http://localhost:$port/health" > /dev/null 2>&1; then
+        if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
             print_success "OK"
         else
             print_error "NOT RESPONDING"
@@ -572,6 +603,19 @@ cmd_restart() {
     print_header
     local service="$1"
 
+    # Check if containers are running — if not, delegate to start
+    local running_containers=0
+    if docker compose ps --format json 2>/dev/null | grep -q '"State":"running"'; then
+        running_containers=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || echo "0")
+    fi
+
+    if [ "$running_containers" -eq "0" ]; then
+        print_warning "No containers running — starting services instead"
+        echo ""
+        cmd_start
+        return
+    fi
+
     if [ -z "$service" ]; then
         echo "Restarting all FaultMaven services..."
         echo ""
@@ -609,12 +653,6 @@ cmd_kill() {
     # (e.g., chromadb, redis which should not exist in local version)
     docker compose kill 2>/dev/null || true
     docker compose rm -f --remove-orphans 2>/dev/null || true
-
-    # Also kill containers from dev compose file if it exists (for cleanup of old containers)
-    if [ -f docker-compose.dev.yml ]; then
-        docker compose -f docker-compose.dev.yml kill 2>/dev/null || true
-        docker compose -f docker-compose.dev.yml rm -f 2>/dev/null || true
-    fi
 
     # Kill any remaining containers with faultmaven prefix (catch-all for orphaned containers)
     # This handles containers from old compose file versions (e.g., chromadb, redis)
@@ -769,9 +807,7 @@ cmd_list_users() {
         exit 1
     fi
 
-    # Extract port from environment
-    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
-    port=${port:-$DEFAULT_PORT}
+    local port=$DEFAULT_PORT
 
     print_header
     print_info "Listing all user accounts..."
@@ -812,9 +848,7 @@ cmd_delete_user() {
         exit 1
     fi
 
-    # Extract port from environment
-    local port=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '"' | tr -d "'")
-    port=${port:-$DEFAULT_PORT}
+    local port=$DEFAULT_PORT
 
     print_header
 

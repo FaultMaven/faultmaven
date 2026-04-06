@@ -1238,6 +1238,29 @@ async def generate_case_title(
             },
         )
 
+        # Check content length threshold
+        if len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE:
+            logger.info(
+                f"Skipping title generation: insufficient content (case_id={case_id}, length={len(user_message_content)})",
+                extra={
+                    "case_id": case_id,
+                    "content_length": len(user_message_content),
+                    "threshold": MIN_CONTENT_LENGTH_FOR_TITLE,
+                },
+            )
+            error_response = ErrorResponse(
+                schema_version="3.1.0",
+                error=ErrorDetail(
+                    code="INSUFFICIENT_CONTEXT",
+                    message=f"Need at least {MIN_CONTENT_LENGTH_FOR_TITLE} characters of conversation content to generate a meaningful title (currently {len(user_message_content)} characters). Continue discussing your issue, then try again.",
+                ),
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=error_response.model_dump(),
+                headers={"x-correlation-id": correlation_id},
+            )
+
         # Generate title using LLM with fallback logic
         title_source = "unknown"
         llm_provider = getattr(request.app.state, "llm_provider", None)

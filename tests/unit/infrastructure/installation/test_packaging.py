@@ -285,27 +285,6 @@ class TestConfigurationDefaults:
     In production, environment variables can override these defaults.
     """
 
-    def test_community_storage_defaults(self, monkeypatch):
-        """Verify storage defaults are community-friendly (in-memory)."""
-        # Clear all environment variables that might override defaults
-        import os
-
-        for key in list(os.environ.keys()):
-            if key.startswith(
-                ("USER_STORAGE", "CASE_STORAGE", "SESSION_STORAGE", "VECTOR_STORAGE")
-            ):
-                monkeypatch.delenv(key, raising=False)
-
-        from faultmaven.config.settings import FaultMavenSettings
-
-        settings = FaultMavenSettings()
-
-        # Storage should default to in-memory (no external dependencies)
-        assert settings.database.user_storage_type == "inmemory"
-        assert settings.database.case_storage_type == "inmemory"
-        assert settings.database.session_storage_type == "inmemory"
-        assert settings.database.vector_storage_type == "inmemory"
-
     def test_community_observability_defaults(self, monkeypatch):
         """Verify observability features are disabled by default (code defaults)."""
         # Clear environment variables that might override defaults

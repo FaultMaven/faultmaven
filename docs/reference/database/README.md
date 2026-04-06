@@ -211,9 +211,9 @@ CASES_DB_MAX_OVERFLOW=20
 ```
 
 **Configuration Options**:
-- `CASE_STORAGE_TYPE=inmemory` - InMemory storage (development, data lost on restart)
-- `CASE_STORAGE_TYPE=postgres` - Legacy single-table JSONB (deprecated)
-- `CASE_STORAGE_TYPE=postgres_hybrid` - **Production-ready 10-table hybrid schema (recommended)**
+- `CASE_STORAGE_TYPE=database` - SQLite (local) or PostgreSQL (production) — **default**
+- `CASE_STORAGE_TYPE=inmemory` - InMemory storage (testing only, data lost on restart)
+- `CASE_STORAGE_TYPE=postgres_hybrid` - Production-ready 10-table hybrid schema (enterprise)
 
 ---
 

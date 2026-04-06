@@ -75,6 +75,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         }
 
         self._initialized = False
+        self._disabled = False
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch with deduplication"""
@@ -86,8 +87,8 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             if not self._initialized:
                 await self._initialize()
 
-            # Skip deduplication if disabled
-            if not self.settings.deduplication_enabled:
+            # Skip deduplication if disabled or no Redis available
+            if not self.settings.deduplication_enabled or self._disabled:
                 return await call_next(request)
 
             # Skip for certain request types
@@ -175,11 +176,11 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             return
 
         # No client injected — should not happen in normal startup.
-        # Log warning but mark as initialized to avoid retry loops.
+        # Disable dedup entirely so dispatch short-circuits.
         self.logger.warning(
-            "Deduplication middleware has no Redis client — "
-            "deduplication will be disabled"
+            "Deduplication middleware has no Redis client — " "deduplication disabled"
         )
+        self._disabled = True
         self._initialized = True
 
     def _should_skip(self, request: Request) -> bool:
