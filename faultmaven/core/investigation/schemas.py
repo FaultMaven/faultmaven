@@ -232,6 +232,8 @@ class ProblemVerificationUpdate(BaseModel):
     timeline_start: Optional[str] = None
     timeline_duration: Optional[str] = None
     changes_list: Optional[List[str]] = Field(default_factory=list)
+    rca_infeasible: Optional[bool] = None
+    rca_infeasible_rationale: Optional[str] = None
 
 
 class EvidenceToAdd(BaseModel):

@@ -152,8 +152,8 @@ where = {"$or": [
 KB documents use structure-aware chunking distinct from the character-based chunking described in older versions of knowledge-base-architecture.md. The current ingestion pipeline splits on markdown structural boundaries:
 
 - Primary split points: `##` and `###` headers, horizontal rules (`---`)
-- Chunk size bounds: 200–3000 characters (variable, not fixed)
-- Tiny sections (below 200 characters) are merged with the adjacent section
+- Chunk size bounds: 100–3000 characters (variable, not fixed)
+- Tiny sections (below 100 characters) are merged with the adjacent section
 - Oversized sections are split at line boundaries
 
 YAML frontmatter is stripped before chunking — a runbook with 300 chars of frontmatter doesn't waste its first chunk on metadata that adds no retrieval value.
@@ -274,7 +274,7 @@ The `searchable="true"` attribute on evidence XML in the context builder signals
 
 | Aspect | KB (Runbooks) | Evidence (Logs, Configs, Metrics) |
 |--------|--------------|-----------------------------------|
-| Chunking | Structure-aware, 200–3000 chars | Type-aware, 512 tokens with 50-token overlap + context window at retrieval |
+| Chunking | Structure-aware, 100–3000 chars | Type-aware, 512 tokens with 50-token overlap + context window at retrieval |
 | Lifecycle | Permanent | Ephemeral (per-case) |
 | Collection | Single shared (`faultmaven_kb`) | Per-case (`case_{id}`) |
 | Scope enforcement | Mandatory scope filter (invariant) | Scoped by case ownership |
@@ -338,7 +338,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 200–3000 chars. Wired into all ingestion paths via `_index_document_in_vector_store()`. |
+| Structure-aware KB chunking | **Implemented** | `ContentChunker` — markdown header splits, 100–3000 chars. Wired into all ingestion paths via `_index_document_in_vector_store()`. |
 | Explicit BGE-M3 embeddings (KB) | **Implemented** | All KB index and query paths use `model_cache.get_bge_m3_model()` (1024 dims). No ChromaDB default embedding in KB paths. |
 | Metadata enrichment | **Implemented** | domain, service, status, severity, symptom_class stored per chunk at ingestion, used in reranker. Also stored in SQLite (`conversion_drafts`) for dashboard filtering. |
 | SQLite document inventory | **Implemented** | `list_documents()`, `get_document()`, `delete_document()` use SQLite, not ChromaDB. |

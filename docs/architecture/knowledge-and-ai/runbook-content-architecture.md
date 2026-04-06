@@ -107,7 +107,7 @@ status: verified
 
 Atomic runbooks produce better retrieval because the entire document is relevant to the query, not just a buried section.
 
-**Fixed vocabulary for `domain` and `symptom_class`.** Free-text values drift over time. Maintain a controlled vocabulary so that metadata filtering works consistently. The lists above are starting points — extend them deliberately, not ad hoc.
+**Fixed vocabulary for `domain` and `symptom_class`.** Free-text values drift over time. Maintain a controlled vocabulary so that metadata filtering works consistently. The lists above are starting points — extend them deliberately, not ad hoc. For long-tail symptoms that don't fit the controlled vocabulary (e.g., `split_brain`, `clock_skew`, `certificate_expiry`, `cache_stampede`), use the `tags` field. Tags are free-text and indexed in ChromaDB metadata, providing an escape valve for specific failure modes without diluting the core vocabulary.
 
 **`service` is the technology, not the team.** Teams change; technologies are stable identifiers. Tag by what the runbook diagnoses, not who owns it.
 
@@ -119,18 +119,29 @@ Atomic runbooks produce better retrieval because the entire document is relevant
 
 ### Why Structure Matters for RAG
 
-FaultMaven's ingestion pipeline splits documents into chunks (1000-character chunks with 200-character overlap, split on sentence boundaries). Each chunk is embedded independently. During retrieval, the AI sees individual chunks, not the full document.
+FaultMaven's ingestion pipeline uses **structure-aware chunking** — it splits runbooks at markdown header boundaries (`##`, `###`), not at fixed character counts. Each `##` section becomes its own chunk, embedded independently. During retrieval, the AI sees individual chunks, not the full document.
+
+Chunking parameters (implemented in `core/knowledge/ingestion.py`):
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Split strategy | Markdown header boundaries (`##`, `###`, `####`) | Each template section becomes a semantic unit |
+| Max chunk size | 3000 characters | Oversized sections split at sentence boundaries |
+| Min chunk size | 100 characters | Tiny sections merged with adjacent section |
+| Fallback | Sentence-boundary splitting | For structureless text without headers |
+| Frontmatter | Stripped before chunking | Metadata stored separately in ChromaDB, not embedded |
 
 This means:
 
-- **Symptoms and related commands must be near each other** — if symptoms are in section 1 and the diagnostic command is in section 4, they land in different chunks and may not be co-retrieved
-- **Each section must be self-contained enough to be useful in isolation** — a chunk that says "as described above" provides no value
-- **Headers establish context windows** — the ChunkingService uses markdown headers to identify natural split points. Well-structured headers mean better chunk boundaries
+- **Each `##` section = one chunk.** Symptoms in Problem Definition and commands in Diagnostic Steps naturally land in separate chunks because they are separate sections. This is by design — the retrieval pipeline handles multi-chunk synthesis.
+- **Section size matters.** Aim for 400-900 characters per section (CONVERSION_SYSTEM_PROMPT Rule 4). A section under 100 chars gets merged with the next section, losing its header context. A section over 3000 chars gets split at sentence boundaries, which can break the co-location of a command and its interpretation.
+- **Each section must be self-contained enough to be useful in isolation** — a chunk that says "as described above" provides no value. The retrieved chunk may be the only chunk the agent sees for a given query.
+- **Headers establish chunk boundaries** — the chunker uses markdown headers to identify natural split points. Well-structured headers mean better chunk boundaries. Avoid deeply nested sub-headers within a section; `###` steps within a `##` section create additional split points.
 - **Only actionable content should be in the runbook body** — authoring guidelines, rationale, and commentary belong in this architecture doc, not in the runbook itself. Every sentence in the runbook gets embedded; non-actionable text dilutes the embedding and wastes retrieval signal.
 
 ### The Template
 
-This template mirrors FaultMaven's investigation stages (`SYMPTOM_VERIFICATION` → `HYPOTHESIS_FORMULATION` → `HYPOTHESIS_VALIDATION` → `SOLUTION`), allowing the AI to align runbook steps with the current case progress.
+This template mirrors FaultMaven's investigation stages (DIAGNOSIS → TREATMENT), allowing the AI to align runbook steps with the current case progress.
 
 **Design rule:** The template below contains ONLY what should appear in the final runbook. Authoring guidance (the "Why" explanations) is in the [Authoring Rationale](#authoring-rationale) section below the template — it is for the author's reference, not for the runbook content.
 
@@ -210,17 +221,17 @@ This section explains WHY each template section is structured the way it is. Thi
 | Section | RAG Purpose | What makes it effective |
 |---------|------------|------------------------|
 | **Problem Definition** | The AI matches user-reported symptoms against this section via vector similarity. This section also establishes scope (system, version, access requirements) so that every retrieved chunk carries its context. | **Co-location rule:** Keep all symptom indicators (alerts, error messages, metric patterns) AND the scope context (system, version, access) within a single tight block. Do not separate them with explanatory prose. If they split across chunks, retrieved symptoms lose their scoping context and vice versa. Generic descriptions ("database is slow") match too many runbooks. |
-| **Diagnostic Steps** | Used during HYPOTHESIS_VALIDATION. The AI proposes these commands to the user. | **Self-contained step rule:** Each diagnostic step must be usable in isolation — if it lands in a chunk alone, the LLM must know what it's checking, the command to run, what to look for in the output, and what the finding means. Do not write "as described in Step 1" — the chunk may not include Step 1. Vague steps ("check the database") force the AI to guess. |
+| **Diagnostic Steps** | Used during DIAGNOSIS stage. The AI proposes these commands to the user. | **Self-contained step rule:** Each diagnostic step must be usable in isolation — if it lands in a chunk alone, the LLM must know what it's checking, the command to run, what to look for in the output, and what the finding means. Do not write "as described in Step 1" — the chunk may not include Step 1. Vague steps ("check the database") force the AI to guess. |
 | **Mitigation** | FaultMaven supports MITIGATION_FIRST investigation. The AI can propose a quick fix early. | Must include risk assessment, the command, verification, and safe duration. Without risk, the AI can't warn the user about side effects. |
-| **Root Cause Resolution** | Linked to diagnostic findings. Structure as "If X, then Y" so the AI matches findings to fixes. | Each fix must be tied to a specific diagnostic outcome. Unlinked fixes force the AI to guess which one applies. |
+| **Root Cause Resolution** | Linked to diagnostic findings. Structure as "If X, then Y" so the AI matches findings to fixes. | Each resolution must be tied to a specific diagnostic outcome. Unlinked resolutions force the AI to guess which one applies. For mitigated cases (external dependency, deprecated system, known intractable condition), the diagnostic finding is the identified constraint and the resolution is the mitigation implementation — same "If X then Y" structure, same code block with the configuration or commands. |
 | **Verification** | Lets the AI confirm whether the fix worked. | Specific metrics, commands, and observation periods. Without this, the investigation can't reach RESOLVED status. |
 | **Prevention** | Used in post-resolution recommendations and report generation. **By design, Prevention chunks are rarely retrieved during active investigation** — they don't match symptom queries. They become relevant only after the problem is resolved, when the agent generates recommendations. This is intentional, not a retrieval gap. | Configuration changes, monitoring alerts, capacity thresholds — concrete actions, not general advice. |
 | **Sources** | Provides provenance for the knowledge. Enables verification and updates. | URL + brief description of what was used from each source. The AI can cite these when presenting the answer. |
 
 ### Template Compliance Rules
 
-1. **Every section is required.** A runbook without diagnostic steps is a description, not a procedure. A runbook without verification is an unconfirmed guess.
-2. **Code blocks are required in sections 2, 3, and 4.** A troubleshooting runbook without executable commands is not actionable.
+1. **Every section is required.** A runbook without diagnostic steps is a description, not a procedure. A runbook without verification is an unconfirmed guess. All 7 section headers must be present with non-empty content — enforced by `RunbookValidator` as a hard error.
+2. **Code blocks are expected in Diagnostic Steps, Mitigation, and Root Cause Resolution.** A troubleshooting runbook without executable commands is rarely actionable. The validator issues a **quality warning** (not a hard error) when code blocks are absent, because some resolutions are procedural rather than command-based (e.g., "contact vendor support", "failover to secondary region").
 3. **Section titles must match exactly.** The quality gate linter checks for these headers. Variant names (e.g., "Troubleshooting" instead of "Diagnostic Steps") will fail validation.
 
 ---
@@ -247,13 +258,18 @@ Validates YAML frontmatter completeness and correctness.
 
 Validates the markdown document contains required sections with actionable content.
 
-**Checks:**
+**Hard errors (block ingestion):**
 
-- Required H2 headers are present: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`, `Prevention`, `Sources`
-- At least one fenced code block exists in `Diagnostic Steps` and `Root Cause Resolution` sections
+- All 7 required H2 headers must be present: `Problem Definition`, `Diagnostic Steps`, `Mitigation`, `Root Cause Resolution`, `Verification`, `Prevention`, `Sources`
 - No section is empty (header with no content before the next header)
 
-**Implementation:** Structural validation during scan → verify workflow. Currently checks for: `Quick Reference Card`, `Diagnostic Steps`, `Solutions`, `Prevention`, `Related Issues`. These section names should be updated to match the canonical template defined in Section 3.
+**Quality warnings (do not block, flagged for author review):**
+
+- No fenced code blocks found in the document
+- Content length below 500 characters
+- No external references or links
+
+**Implementation:** `RunbookValidator` in `modules/knowledge/domain/services/runbook_validator.py`. Section presence is checked via regex pattern matching on H2 headers. Code block checks are global (not per-section) and issue warnings, not errors.
 
 ### Gate 3: Semantic Density Check (Planned)
 

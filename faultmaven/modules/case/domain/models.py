@@ -1091,6 +1091,30 @@ class ProblemVerification(BaseModel):
     )
 
     # ============================================================
+    # Diagnostic Feasibility (Advisory)
+    # ============================================================
+    rca_infeasible: bool = Field(
+        default=False,
+        description=(
+            "Advisory signal: root cause analysis is infeasible for this problem. "
+            "Set by the LLM during verification when the problem involves "
+            "uncontrollable external dependencies, deprecated/EOL systems, "
+            "or known intractable conditions where mitigation is the accepted "
+            "strategy. Does NOT affect path selection — influences post-mitigation "
+            "agent behavior only."
+        ),
+    )
+
+    rca_infeasible_rationale: Optional[str] = Field(
+        default=None,
+        description=(
+            "Why RCA is infeasible. Populated by the LLM when rca_infeasible=True. "
+            "E.g., 'Black-box 3rd-party API with no internal telemetry'."
+        ),
+        max_length=500,
+    )
+
+    # ============================================================
     # Metadata
     # ============================================================
     verified_at: Optional[datetime] = Field(

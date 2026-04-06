@@ -1567,7 +1567,7 @@ git push origin runbook/[technology]-[problem]
 | **ChromaDB** | Vector database for semantic search |
 | **BGE-M3** | Embedding model (BAAI General Embedding v3) |
 | **Embedding** | Vector representation of text for similarity search |
-| **Chunk** | Text segment (1000 chars) with overlap for context |
+| **Chunk** | Text segment split on markdown section headers (100-3000 chars) for vector search |
 | **Knowledge Curator** | Designated reviewer for runbook quality |
 | **Ingestion** | Process of adding runbooks to knowledge base |
 | **Frontmatter** | YAML metadata at top of markdown file |

@@ -823,6 +823,30 @@ class ProblemVerification(BaseModel):
     )
 
     # ============================================================
+    # Diagnostic Feasibility (Advisory)
+    # ============================================================
+    rca_infeasible: bool = Field(
+        default=False,
+        description=(
+            "Advisory signal: root cause analysis is infeasible for this problem. "
+            "Set by the LLM during verification when the problem involves "
+            "uncontrollable external dependencies, deprecated/EOL systems, "
+            "or known intractable conditions where mitigation is the accepted strategy. "
+            "Does NOT affect path selection — influences post-mitigation agent behavior only."
+        ),
+    )
+    rca_infeasible_rationale: Optional[str] = Field(
+        default=None,
+        description=(
+            "Why RCA is infeasible. Populated by the LLM when rca_infeasible=True. "
+            "Examples: 'Black-box 3rd-party API with no internal telemetry', "
+            "'System scheduled for decommission — user declined RCA', "
+            "'Known transient network jitter — retry loop is accepted strategy'."
+        ),
+        max_length=500,
+    )
+
+    # ============================================================
     # Metadata
     # ============================================================
     verified_at: Optional[datetime] = Field(
@@ -835,7 +859,26 @@ class ProblemVerification(BaseModel):
         le=1.0,
         description="Confidence in verification completeness"
     )
+```
 
+**Design Decision: `rca_infeasible` as Advisory Signal**
+
+Root cause analysis is sometimes infeasible — uncontrollable external dependencies (black-box 3rd-party APIs), deprecated systems scheduled for decommission, or known intractable conditions where a retry loop is the accepted permanent strategy.
+
+`rca_infeasible` is a **boolean + rationale** rather than a taxonomy enum (e.g., `UNCONTROLLABLE_EXTERNAL`, `DEPRECATED_LEGACY`). This avoids a growing taxonomy that requires prompt/test updates for each new category. The rationale string captures the "why" for context.
+
+**What it does:** After `mitigation_verified`, if `rca_infeasible=True`, the agent proposes closure instead of pushing RCA. The agent says: *"The mitigation is verified. Since [rationale], shall we close this as mitigated?"*
+
+**What it does NOT do:**
+
+- Does not affect path selection (urgency × temporal matrix is unchanged)
+- Does not force a path — user can still request RCA
+- Does not skip hypothesis formulation — lightweight hypotheses still have diagnostic value
+- Does not create a new terminal state — uses existing `CLOSED(mitigation_sufficient)`
+
+See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal) for behavioral specification.
+
+```python
 class Change(BaseModel):
     """Recent change that may be relevant to the problem"""
     description: str = Field(
