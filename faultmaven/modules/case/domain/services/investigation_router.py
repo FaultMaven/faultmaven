@@ -3,6 +3,10 @@
 This module is responsible for determining the optimal investigation path
 (MITIGATION_FIRST vs ROOT_CAUSE) based on urgency and temporal state.
 
+Note: The rca_infeasible advisory signal on ProblemVerification does NOT affect
+path selection. It influences post-mitigation agent behavior only (see §2.4 of
+investigation-lifecycle-logic.md). Path selection remains purely urgency × temporal.
+
 Design Reference:
 - docs/architecture/investigation-engine/investigation-lifecycle-logic.md
 """

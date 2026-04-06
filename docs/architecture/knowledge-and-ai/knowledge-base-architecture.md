@@ -181,7 +181,7 @@ Live (during investigation):
 | Aspect | Value |
 |--------|-------|
 | Embedding model | BGE-M3 via sentence-transformers (1024 dims, multilingual) |
-| Chunking | 1000-character chunks, 200-character overlap, sentence boundary splitting |
+| Chunking | Structure-aware splitting on markdown headers (3000-char max, 100-char min, sentence-boundary fallback) |
 | Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
 | Ingestion pipeline | `KnowledgeIngester` in `core/knowledge/ingestion.py` |
 | Ingestion workflow | Dashboard scan → verify (via `conversion_service.py`) |
@@ -192,13 +192,13 @@ Knowledge and evidence use different chunking strategies because they serve diff
 
 | Aspect | Knowledge (Runbooks) | Evidence (Logs, Configs, Metrics) |
 |--------|---------------------|----------------------------------|
-| **Strategy** | Character-based with sentence boundary splitting | Token-based with section-aware splitting |
-| **Chunk size** | 1000 characters, 200-char overlap | 4000 tokens (~16KB), section-aware |
-| **Implementation** | `core/knowledge/ingestion.py:350` | `services/preprocessing/chunking_service.py:33` |
-| **Rationale** | Runbooks are well-structured markdown with predictable sections. Smaller chunks ensure each chunk is topically focused — a diagnostic step doesn't share a chunk with an unrelated prevention tip. Character-based splitting is sufficient because markdown structure provides natural boundaries. | Evidence files are heterogeneous (logs, CSVs, JSON configs) with no predictable structure. Larger chunks preserve context — a log entry only makes sense with surrounding entries. Section-aware splitting respects structural boundaries within files (e.g., config file sections, log timestamp groups). |
-| **Impact on retrieval** | Small, focused chunks → high precision per chunk, multiple chunks needed for full answer | Large, context-rich chunks → each chunk provides enough context for forensic analysis |
+| **Strategy** | Structure-aware splitting on markdown headers | Token-based with section-aware splitting |
+| **Chunk size** | Variable per section (100-char min, 3000-char max); sentence-boundary fallback for structureless text | 4000 tokens (~16KB), section-aware |
+| **Implementation** | `core/knowledge/ingestion.py:390` | `services/preprocessing/chunking_service.py:33` |
+| **Rationale** | Runbooks are well-structured markdown with predictable `##` sections. Each section becomes one chunk (a diagnostic step doesn't share a chunk with an unrelated prevention tip). Variable chunk sizes are intentional — a 200-char config description is one chunk, a 2500-char procedure section is one chunk. | Evidence files are heterogeneous (logs, CSVs, JSON configs) with no predictable structure. Larger chunks preserve context — a log entry only makes sense with surrounding entries. Section-aware splitting respects structural boundaries within files (e.g., config file sections, log timestamp groups). |
+| **Impact on retrieval** | Focused, section-aligned chunks → high precision per chunk, multiple chunks needed for full answer | Large, context-rich chunks → each chunk provides enough context for forensic analysis |
 
-This difference is intentional and affects how content is authored. Runbook authors should keep related information (symptoms + error messages, diagnostic commands + expected output) within the same section to ensure they land in the same chunk. The [Runbook Content Architecture](./runbook-content-architecture.md) template is designed with this chunking strategy in mind.
+This difference is intentional and affects how content is authored. Each `##` section in a runbook becomes its own chunk. Authors should aim for 400-900 characters per section — sections under 100 chars get merged (losing header context), sections over 3000 chars get split at sentence boundaries (potentially breaking co-location). See [Runbook Content Architecture §3](./runbook-content-architecture.md#why-structure-matters-for-rag) for detailed guidance.
 
 ### Metadata Stored Per Chunk
 

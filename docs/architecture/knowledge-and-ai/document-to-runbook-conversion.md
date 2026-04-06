@@ -522,7 +522,7 @@ RULES:
 3. Root Cause Resolution MUST use "If X then Y" structure linking to findings
    from Diagnostic Steps.
 4. Section sizes: aim for 400-900 characters per section so each fits within
-   1-2 retrieval chunks (1000-char chunks with 200-char overlap).
+   1-2 retrieval chunks (structure-aware splitting on section headers).
 5. If the source material does not provide enough information for a section,
    write "[INSUFFICIENT SOURCE DATA -- manual completion required]" and
    continue. Do not fabricate commands or procedures.

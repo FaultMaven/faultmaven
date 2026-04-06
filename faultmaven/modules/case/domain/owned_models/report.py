@@ -32,7 +32,10 @@ class ReportType(str, Enum):
     CLOSURE_SUMMARY = "closure_summary"  # CLOSED cases
 
     # User-requested via ConversionService
-    RUNBOOK = "runbook"
+    RUNBOOK = "runbook"  # From RESOLVED cases (requires root cause)
+    MITIGATION_PLAYBOOK = (
+        "mitigation_playbook"  # From CLOSED(mitigation_sufficient) cases
+    )
 
 
 class ReportStatus(str, Enum):

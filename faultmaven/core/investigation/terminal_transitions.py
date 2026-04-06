@@ -587,6 +587,123 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
 
 
 # ============================================================
+# MITIGATION PLAYBOOK READINESS
+# ============================================================
+
+
+def assess_playbook_readiness(case: "Case") -> RunbookReadiness:
+    """Check whether a CLOSED(mitigation_sufficient) case has enough data for a
+    mitigation playbook.
+
+    Unlike runbook readiness, playbook readiness does NOT require root cause or
+    permanent solution. It requires evidence that a mitigation was executed and
+    verified.
+
+    Critical sections (required):
+    - Problem Definition: symptom_statement exists
+    - Mitigation Steps: action_attempts with MITIGATION type that were verified
+
+    Enrichment sections (improve quality, not required):
+    - Detection & Triage: evidence items (how the problem was identified)
+    - Verification: steps confirming mitigation effectiveness
+    - Constraint Statement: rca_infeasible_rationale populated
+    """
+    coverage = {}
+
+    # Problem Definition ← problem_verification.symptom_statement
+    has_problem_def = bool(
+        case.problem_verification
+        and getattr(case.problem_verification, "symptom_statement", None)
+    )
+    coverage["problem_definition"] = has_problem_def
+
+    # Mitigation Steps ← action_attempts with MITIGATION type
+    has_mitigation_actions = False
+    if case.action_attempts:
+        has_mitigation_actions = any(
+            getattr(a, "action_type", "").upper() == "MITIGATION"
+            for a in case.action_attempts
+        )
+    coverage["mitigation_steps"] = has_mitigation_actions
+
+    # Detection & Triage ← evidence items
+    evidence_count = len(case.evidence) if case.evidence else 0
+    coverage["detection_triage"] = evidence_count >= 1
+
+    # Verification ← evidence or solutions with verification_method
+    has_verification = False
+    if case.solutions:
+        has_verification = any(
+            getattr(s, "verification_method", None) for s in case.solutions
+        )
+    if not has_verification and evidence_count >= 2:
+        # Multiple evidence items suggest verification steps were taken
+        has_verification = True
+    coverage["verification"] = has_verification
+
+    # Constraint Statement ← rca_infeasible_rationale
+    has_constraint = bool(
+        case.problem_verification
+        and getattr(case.problem_verification, "rca_infeasible_rationale", None)
+    )
+    coverage["constraint_statement"] = has_constraint
+
+    # Recurrence Monitoring + Sources — always LLM-generated
+    coverage["recurrence_monitoring"] = True
+    coverage["sources"] = True
+
+    # Determine verdict
+    critical_sections = ["problem_definition", "mitigation_steps"]
+    critical_missing = [s for s in critical_sections if not coverage[s]]
+
+    enrichment_sections = ["detection_triage", "verification", "constraint_statement"]
+    enrichment_missing = [s for s in enrichment_sections if not coverage[s]]
+
+    if not critical_missing:
+        if len(enrichment_missing) <= 1:
+            return RunbookReadiness(
+                verdict=RunbookReadiness.READY,
+                message="",
+                section_coverage=coverage,
+            )
+        else:
+            missing_names = {
+                "detection_triage": "detection and triage steps (evidence or diagnostics)",
+                "verification": "verification steps for the mitigation",
+                "constraint_statement": "explanation of why RCA is infeasible",
+            }
+            missing_desc = [f"- {missing_names[s]}" for s in enrichment_missing]
+            return RunbookReadiness(
+                verdict=RunbookReadiness.NEEDS_ENRICHMENT,
+                message=(
+                    "I can generate a runbook, but some sections will be "
+                    "thin. The following information would improve quality:\n\n"
+                    + "\n".join(missing_desc)
+                    + "\n\nWould you like to proceed anyway?"
+                ),
+                section_coverage=coverage,
+            )
+
+    # Critical sections missing
+    missing_names = {
+        "problem_definition": "problem description (symptoms, error messages)",
+        "mitigation_steps": "verified mitigation actions (what was done to stabilize)",
+    }
+    missing_desc = [f"- {missing_names[s]}" for s in critical_missing]
+    return RunbookReadiness(
+        verdict=RunbookReadiness.NOT_SUITABLE,
+        message=(
+            "This case doesn't have enough data for a runbook. "
+            "Missing:\n\n"
+            + "\n".join(missing_desc)
+            + "\n\nThe closure summary should have already been generated — "
+            "you can view it in the Dashboard."
+        ),
+        section_coverage=coverage,
+    )
+
+
+# ============================================================
 # TERMINAL SUMMARY AUTO-GENERATION
 # ============================================================
 
@@ -674,7 +791,11 @@ async def evaluate_runbook_suggestion(
     case: "Case",
     runbook_kb: Any = None,
 ) -> RunbookSuggestion:
-    """Evaluate whether to suggest runbook generation for a resolved case.
+    """Evaluate whether to suggest runbook/playbook generation for a terminal case.
+
+    Supports two case types:
+    - RESOLVED cases → standard runbook (assess_runbook_readiness)
+    - CLOSED(mitigation_sufficient) → mitigation playbook (assess_playbook_readiness)
 
     Checks three factors in order (cheapest first):
     1. Content readiness — does the case have enough structured data?
@@ -682,12 +803,23 @@ async def evaluate_runbook_suggestion(
     3. User approval — NOT checked here; the caller presents the suggestion.
 
     Args:
-        case: Resolved case to evaluate
+        case: Terminal case to evaluate (RESOLVED or CLOSED with mitigation_sufficient)
         runbook_kb: Optional RunbookKnowledgeBase for similarity search.
             If None, deduplication check is skipped (suggestion still based on content).
     """
+    # Determine which readiness check to use based on case type.
+    # Both produce a "runbook" from the user's perspective — the backend
+    # uses different readiness criteria for mitigated vs resolved cases.
+    is_mitigated = (
+        case.status == CaseStatus.CLOSED
+        and getattr(case, "closure_reason", None) == "mitigation_sufficient"
+    )
+
     # Factor 1: Content readiness (cheap, no I/O)
-    readiness = assess_runbook_readiness(case)
+    if is_mitigated:
+        readiness = assess_playbook_readiness(case)
+    else:
+        readiness = assess_runbook_readiness(case)
 
     if readiness.verdict == RunbookReadiness.NOT_SUITABLE:
         return RunbookSuggestion(

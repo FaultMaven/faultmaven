@@ -214,9 +214,29 @@ def _apply_stage_gate_side_effects(
     if "mitigation_verified" in completed_gates:
         case.progress.mitigation_accepted = False
         case.progress.mitigation_verified = False
-        logger.info(
-            f"Reset mitigation flags for case {case.case_id} (return to DIAGNOSIS)"
+
+        # Check rca_infeasible advisory signal for post-mitigation behavior.
+        # When RCA is infeasible, propose closure instead of returning to DIAGNOSIS.
+        rca_infeasible = case.problem_verification and getattr(
+            case.problem_verification, "rca_infeasible", False
         )
+        if rca_infeasible:
+            rationale = (
+                getattr(case.problem_verification, "rca_infeasible_rationale", None)
+                or "root cause analysis is not feasible for this problem"
+            )
+            metadata["rca_infeasible_closure_proposed"] = True
+            metadata["rca_infeasible_rationale"] = rationale
+            logger.info(
+                f"Reset mitigation flags for case {case.case_id}. "
+                f"rca_infeasible=True — will propose closure instead of RCA "
+                f"(rationale: {rationale})"
+            )
+        else:
+            logger.info(
+                f"Reset mitigation flags for case {case.case_id} "
+                f"(return to DIAGNOSIS for RCA)"
+            )
 
     metadata["compliance_detected"] = True
     metadata["progress_made"] = True
@@ -877,7 +897,10 @@ class MilestoneEngine:
         Terminal cases are immutable — no evidence, milestones, or state changes.
         Three scenarios:
           1. User requests report regeneration → regenerate summary.
-          2. User accepts runbook suggestion → evaluate, create draft, direct to Dashboard.
+          2. User accepts runbook suggestion → evaluate, create draft.
+             Eligible: RESOLVED cases and CLOSED(mitigation_sufficient) cases.
+             The backend routes to the appropriate readiness check and template
+             based on case type (see evaluate_runbook_suggestion).
           3. User asks questions about the case → answer via TERMINAL_TEMPLATE.
         """
         msg_lower = user_message.lower()
@@ -886,8 +909,12 @@ class MilestoneEngine:
         if any(p in msg_lower for p in self._REPORT_REGEN_PATTERNS):
             return await self._handle_report_regeneration(case, metadata)
 
-        # Scenario 2: Runbook creation (RESOLVED cases only)
-        if case.status == CaseStatus.RESOLVED and any(
+        # Scenario 2: Runbook creation (RESOLVED or CLOSED mitigation_sufficient)
+        is_runbook_eligible = case.status == CaseStatus.RESOLVED or (
+            case.status == CaseStatus.CLOSED
+            and getattr(case, "closure_reason", None) == "mitigation_sufficient"
+        )
+        if is_runbook_eligible and any(
             p in msg_lower for p in self._RUNBOOK_CREATION_PATTERNS
         ):
             return await self._handle_runbook_creation(case, metadata)
@@ -954,9 +981,14 @@ class MilestoneEngine:
     ) -> dict[str, Any]:
         """Evaluate readiness + dedup, then create runbook draft (fire-and-forget).
 
+        Handles both RESOLVED cases and CLOSED(mitigation_sufficient) cases.
+        Both produce a "runbook" from the user's perspective. The backend
+        routes to the appropriate readiness check (assess_runbook_readiness
+        vs assess_playbook_readiness) and template based on case type.
+
         Flow:
-        1. Check content readiness (assess_runbook_readiness)
-        2. Check deduplication (evaluate_runbook_suggestion)
+        1. Check content readiness (routed by evaluate_runbook_suggestion)
+        2. Check deduplication
         3. If eligible: call ConversionService.convert_from_case() in background
         4. Return immediately with a message directing user to Dashboard Drafts
         """
@@ -988,7 +1020,7 @@ class MilestoneEngine:
                 "metadata": metadata,
             }
 
-        # Step 3: Create the runbook draft
+        # Step 3: Create the draft
         conversion_service = getattr(self, "conversion_service", None)
         if not conversion_service:
             logger.warning(

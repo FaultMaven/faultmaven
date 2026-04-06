@@ -225,7 +225,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 **Evidence types accepted**:
 - `mitigation_evidence` — data showing whether the temporary fix worked
 
-**Exit condition**: User verifies mitigation is effective → return to **DIAGNOSIS** for root cause analysis. The system always directs toward RCA after mitigation. The user can manually resolve or close the case via UI at any point, but the system does not offer a "mitigation-only resolution" flow path.
+**Exit condition**: User verifies mitigation is effective → post-mitigation behavior depends on `rca_infeasible` (see [Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal)). Default: return to **DIAGNOSIS** for root cause analysis. When `rca_infeasible=True`: agent proposes closure as mitigated (User-Agent Handshake). The user can always override in either direction.
 
 **Re-entry**: After returning to DIAGNOSIS, if a new urgent situation arises, the agent can propose another mitigation. When `mitigation_verified` is set, `_apply_stage_gate_side_effects()` in `milestone_engine.py` resets both `mitigation_accepted` and `mitigation_verified` to `False`, allowing a new MITIGATION detour. The completed mitigation attempt is preserved in the `action_attempts` list for history and audit.
 
@@ -565,7 +565,7 @@ The path determines **whether the agent offers mitigation** during DIAGNOSIS. Th
 
 **New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted evidence request → new hypothesis → corrective action.
 
-**Mitigation-only resolution**: After MITIGATION, user says "That's good enough, we'll investigate later." The system directs toward DIAGNOSIS for RCA, but the user can close the case via UI (→ CLOSED disposition with closure_reason = "mitigation_sufficient"). Note: CaseStatus.CLOSED formally means "closed without permanent solution," but when closure_reason is "mitigation_sufficient" the UI should render this distinctly (e.g., "Closed - Mitigated" rather than "Closed - Abandoned") to reflect that the user's problem was addressed, just not via root cause analysis.
+**Mitigation-only resolution**: After MITIGATION, the case can close without RCA in two ways: (1) When `rca_infeasible=True`, the agent proactively proposes closure after mitigation is verified — *"The mitigation is verified. Since [rationale], shall we close this as mitigated?"* (2) The user can always close via UI regardless of `rca_infeasible`. Both paths lead to CLOSED with `closure_reason="mitigation_sufficient"`. The UI renders this as "Closed - Mitigated" (distinct from "Closed - Abandoned"). The agent offers runbook generation to capture operational knowledge from these cases.
 
 ---
 
@@ -574,7 +574,7 @@ The path determines **whether the agent offers mitigation** during DIAGNOSIS. Th
 When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive until archived. The post-terminal lifecycle has two phases:
 
 1. **Terminal transition** — Investigation stops. Active sessions completed. Auto-generated summary created (Resolution Summary for RESOLVED, Closure Summary for CLOSED). Terminal metrics emitted.
-2. **Terminal mode** — Case state is immutable, but users can ask questions about the investigation (agent uses TERMINAL_TEMPLATE in review mode), regenerate the summary report, and — for RESOLVED cases only — extract runbooks. Users archive the case from Dashboard when done.
+2. **Terminal mode** — Case state is immutable, but users can ask questions about the investigation (agent uses TERMINAL_TEMPLATE in review mode), regenerate the summary report, or generate runbooks (RESOLVED and `CLOSED(mitigation_sufficient)` cases). Users archive the case from Dashboard when done.
 
 See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle) for full specification including interaction mode derivation, session cleanup, and auto-summary content.
 
@@ -1152,7 +1152,7 @@ All open questions from the initial draft have been resolved.
 
 1. **Old milestones retained as progress milestones.** The old flags (symptom_verified, scope_assessed, timeline_established, changes_identified, root_cause_identified, solution_proposed) are retained as non-stage-driving progress milestones on InvestigationProgress. They are used by the LLM to evaluate investigation progress and decide when/what to propose — but they do NOT drive stage transitions. The change is removing sub-stage boundaries, not the tracking data. These should be called "progress milestones" or "diagnostic flags" rather than "milestones" to avoid confusion with the gate milestones (solution_accepted, solution_verified, mitigation_accepted, mitigation_verified).
 
-2. **Mitigation always returns to DIAGNOSIS for RCA.** After mitigation is verified, the system directs the user back to root cause analysis. DIAGNOSIS resumes with hypothesis formulation and verification informed by what was learned during mitigation. The user can always manually resolve or close the case via UI at any point (this is a UI-level override, not a system flow path), but the system does not offer a "mitigation-only resolution" path. The app pushes toward RCA.
+2. **Mitigation returns to DIAGNOSIS for RCA by default; `rca_infeasible` overrides.** After mitigation is verified, the default behavior directs the user back to root cause analysis. However, when `rca_infeasible=True` on `ProblemVerification` (set by the LLM when the problem involves uncontrollable external dependencies, deprecated systems, or known intractable conditions), the agent proposes closure instead of pushing RCA. This is an advisory signal, not a forced path — the user can still request RCA. The terminal state for these cases is `CLOSED(mitigation_sufficient)`, and the agent offers Mitigation Playbook generation to capture operational knowledge. See [Investigation Lifecycle Logic §2.4](./investigation-lifecycle-logic.md#24-diagnostic-feasibility-advisory-signal).
 
 3. **Escalation via capability exhaustion, not a fixed counter.** The agent suggests escalation when it has no more viable options — not after a fixed number of cycles. The principle: do not repeat a task without new input. For genuine external blockers (limited data, hypothesis deadlock, external dependencies), the agent communicates limitations naturally in its responses and suggests escalation. Simple lack of progress (5+ turns) receives a gentle stagnation nudge — a prompt hint, not a mode change. FaultMaven is a copilot that patiently serves the user while keeping the diagnostic thread visible.
 

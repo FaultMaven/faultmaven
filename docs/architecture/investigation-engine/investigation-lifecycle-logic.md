@@ -1328,8 +1328,7 @@ MITIGATION is a **distinct stage** — a controlled detour to stabilize the situ
 - **MITIGATION** (stabilize)
   - Agent verifies whether the temp fix worked (asks for metrics/logs)
   - If mitigation insufficient → agent adjusts approach, iterates within MITIGATION
-  - Once user verifies mitigation is effective → **return to DIAGNOSIS** for root cause analysis
-  - The system always directs toward RCA. The user can manually close via UI (→ CLOSED with `closure_reason="mitigation_sufficient"`), but the system does not offer a "mitigation-only resolution" flow path.
+  - Once user verifies mitigation is effective → **post-mitigation behavior depends on `rca_infeasible`** (see §2.4)
 
 - **DIAGNOSIS** (resumed)
   - Agent resumes root cause analysis with reduced pressure (service stable)
@@ -1383,6 +1382,49 @@ Direct root cause analysis — no mitigation detour.
 | Stage transitions | Inference-based (user compliance) | Inference-based (user compliance) |
 | Pressure | Reduced early via MITIGATION detour | Full pressure until resolution |
 | Use case | ONGOING + HIGH/CRITICAL | HISTORICAL + LOW/MEDIUM/HIGH |
+
+### 2.4 Diagnostic Feasibility (Advisory Signal)
+
+Root cause analysis is sometimes infeasible — not because of urgency, but because of **boundary constraints**: the system is a black box, is being decommissioned, or has a known intractable condition where a workaround is the accepted permanent strategy.
+
+The `rca_infeasible` field on `ProblemVerification` captures this as an **advisory signal** — a boolean set by the LLM during verification, paired with a rationale string explaining why.
+
+#### 2.4.1 How It's Set
+
+The LLM evaluates diagnostic feasibility during INQUIRY/verification when it detects:
+
+- **Uncontrollable external dependencies**: 3rd-party SaaS APIs where internal telemetry is inaccessible
+- **Deprecated/EOL systems**: Systems scheduled for decommission where RCA engineering hours are wasted
+- **Known intractable conditions**: Transient jitters, flaky behaviors where retry/workaround is accepted policy
+- **User explicitly declines RCA**: User states "just need a workaround" or "don't want to debug this"
+
+The LLM sets `rca_infeasible=True` and populates `rca_infeasible_rationale` with the reason.
+
+#### 2.4.2 What It Does NOT Do
+
+- **Does not affect path selection.** The urgency × temporal matrix is unchanged. A case with `rca_infeasible=True` and `ONGOING + CRITICAL` still routes to `MITIGATION_FIRST`. A case with `rca_infeasible=True` and `HISTORICAL + LOW` still routes to `ROOT_CAUSE`.
+- **Does not force a path.** The user can always request RCA even when the signal is set.
+- **Does not skip hypothesis formulation.** Even for external dependencies, lightweight hypotheses have diagnostic value (e.g., "the 503s correlate with our request rate exceeding their undocumented limit" is testable).
+
+#### 2.4.3 What It Does: Post-Mitigation Behavior
+
+The signal's effect is narrow and specific — it changes what the agent does after `mitigation_verified`:
+
+| `rca_infeasible` | Post-mitigation agent behavior |
+| --- | --- |
+| `False` (default) | Agent pushes toward RCA: *"The mitigation is working. Now let's investigate the root cause to prevent recurrence."* |
+| `True` | Agent proposes closure: *"The mitigation is verified. Since [rationale], shall we close this as mitigated?"* Uses User-Agent Handshake — user must confirm. |
+
+If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the agent proceeds with RCA. The signal is advisory, not binding.
+
+#### 2.4.4 Terminal State
+
+Cases closed via this path use the existing terminal state:
+
+- `status = CLOSED`
+- `closure_reason = "mitigation_sufficient"`
+
+`RESOLVED` remains pristine — it always means a permanent fix with verified root cause. See §4.5.1 for runbook generation from mitigated cases.
 
 ---
 
@@ -1840,9 +1882,9 @@ This section outlines all possible case lifecycles and their associated mileston
 **User Goal**: Restore service availability immediately.
 **Trigger**: High Severity + Ongoing Outage (auto-selected or user-chosen path).
 
-After mitigation is verified, the system always directs toward root cause analysis.
-The user can manually close the case via UI at any point, but the system does not
-offer a "mitigation-only resolution" flow path.
+After mitigation is verified, the system's behavior depends on `rca_infeasible` (see §2.4).
+By default (`rca_infeasible=False`), the agent pushes toward RCA. When `rca_infeasible=True`,
+the agent proposes closure instead. The user can always close via UI at any point.
 
 #### Full Path (Mitigation + RCA → RESOLVED)
 **Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS → TREATMENT) → `RESOLVED`
@@ -1858,33 +1900,47 @@ offer a "mitigation-only resolution" flow path.
 *   `root_cause_identified`: Set when hypothesis validated with high confidence.
 *   `solution_proposed`: Set when ProposedAction with action_type=SOLUTION created.
 
-#### Mitigation-Only Closure (User Override → CLOSED)
-**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION → DIAGNOSIS) → `CLOSED`
+#### Mitigation-Only Closure (→ CLOSED)
 
-The user decides the mitigation is sufficient and does not want RCA. This is a
-**user-initiated closure**, not a system-offered path. The system always returns
-to DIAGNOSIS after mitigation; the user closes via UI.
+**Flow**: `INQUIRY` → `INVESTIGATING` (DIAGNOSIS → MITIGATION) → `CLOSED`
+
+The user decides the mitigation is sufficient and does not want RCA. Two paths
+lead here:
+
+1. **Agent-proposed** (when `rca_infeasible=True`): After `mitigation_verified`, the agent proposes closure via User-Agent Handshake instead of pushing RCA.
+2. **User-initiated** (any case): The user closes via UI at any time, regardless of `rca_infeasible`.
 
 **Gate milestones**:
+
 *   `mitigation_accepted`: User complied with proposed temp fix.
-*   `mitigation_verified`: Mitigation verified effective → return to DIAGNOSIS.
+*   `mitigation_verified`: Mitigation verified effective.
 *   `solution_accepted`: **Not set** (user closed before proposing permanent solution).
 *   `solution_verified`: **Not set** (no permanent fix).
 
 **Closure**: `CaseStatus.CLOSED` with `closure_reason="mitigation_sufficient"`.
 UI renders as "Closed - Mitigated" (distinct from "Closed - Abandoned").
 
+**Post-terminal**: Agent offers runbook generation (see §4.5.1).
+
 #### Agent Behavior After Mitigation
 
-After `mitigation_verified` is set, the system returns to DIAGNOSIS for root cause
-analysis. The agent resumes investigation:
+After `mitigation_verified` is set, the agent's behavior depends on `rca_infeasible`:
+
+**Default (`rca_infeasible=False`)**: Agent pushes toward RCA:
 
 > "The mitigation is working — [specific metric showing improvement]. Now let's
 > investigate the root cause to prevent recurrence. What additional data can you
 > share about what changed before this started?"
 
-The system pushes toward RCA. The user can always close via UI if they decide
-the mitigation is sufficient, but the agent does not offer closure as an option.
+The user can always close via UI if they decide the mitigation is sufficient.
+
+**When `rca_infeasible=True`**: Agent proposes closure instead of pushing RCA:
+
+> "The mitigation is verified and [specific metric] is stable. Since [rca_infeasible_rationale],
+> shall we close this case as mitigated?"
+
+This follows the User-Agent Handshake pattern — the agent proposes, the user confirms.
+If the user declines and wants RCA anyway, the agent proceeds with DIAGNOSIS as normal.
 
 #### MITIGATION Is Iterative
 
@@ -1916,17 +1972,24 @@ are both `False`. To determine whether mitigation occurred, query the
 | `root_cause_identified` | True | May be partial | True |
 | `CaseStatus` | RESOLVED | CLOSED | RESOLVED |
 | `closure_reason` | "resolved" | "mitigation_sufficient" | "resolved" |
+| `rca_infeasible` | False | True or False | False |
 | `action_attempts` has MITIGATION | Yes | Yes | No |
+| **Knowledge artifact** | **Runbook** | **Runbook** (mitigation-focused) | **Runbook** |
 
 The combination of `CaseStatus`, `closure_reason`, and `action_attempts` history
 provides the full classification. Analytics should query `action_attempts` to
 determine mitigation involvement, not the boolean flags.
 
+**Distinguishing mitigation-only scenarios**: The Mitigation-Only column covers two
+sub-cases: feasibility-driven (`rca_infeasible=True`) and decision-driven
+(`rca_infeasible=False`). Both share the same terminal state and playbook type.
+Query `rca_infeasible` for analytics; the playbook content is the same regardless.
+
 ---
 
 ### 4.5 Post-Terminal Operations
 
-After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal summary. For resolved cases, the user may also request runbook generation.
+After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal summary. For resolved cases and `CLOSED(mitigation_sufficient)` cases, the user may request runbook generation.
 
 #### 4.5.0 Auto-Generated Terminal Summary
 
@@ -1948,9 +2011,11 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 Summaries are built from case data fields (hypotheses, solutions, evidence, milestones, timestamps). Stored as `CaseReport` records with `auto_generated=True`. Duration is calculated from `created_at` to `resolved_at` or `closed_at`.
 
 **Report type enum** (`ReportType` in `case/domain/owned_models/report.py`):
+
 - `RESOLUTION_SUMMARY` — auto-generated for resolved cases
 - `CLOSURE_SUMMARY` — auto-generated for closed cases
 - `RUNBOOK` — user-requested via ConversionService (see §4.5.2)
+- `MITIGATION_PLAYBOOK` — user-requested from `CLOSED(mitigation_sufficient)` cases (see §4.5.1)
 
 **Dashboard**: `ReportTab` is view-only — displays auto-generated summaries with formatted markdown rendering and download. No manual generate button. If no summary was generated (trivial case), the tab explains why.
 
@@ -1960,9 +2025,85 @@ Summaries are built from case data fields (hypotheses, solutions, evidence, mile
 - `GET /api/v1/cases/{case_id}/reports/{report_id}/download` — Download report
 - `POST /api/v1/cases/{case_id}/reports` — Regenerate (requires terminal state)
 
+#### 4.5.1 Runbook Generation from Mitigated Cases
+
+**Eligibility**: `CLOSED(mitigation_sufficient)` cases only. Other CLOSED reasons (`abandoned`, `escalated`, `inquiry_only`, `duplicate`) are not eligible.
+
+**User-facing concept**: To the user, this is a "runbook" — same as what RESOLVED cases produce. The backend uses a different readiness check (`assess_playbook_readiness`) and a mitigation-focused template, but the user sees "runbook" throughout. Internally stored as `ReportType.MITIGATION_PLAYBOOK` for analytics distinction.
+
+**Purpose**: Capture operational knowledge from cases where mitigation was successful but no permanent root-cause fix was applied. This covers **two distinct scenarios** that share the same `closure_reason`:
+
+1. **Feasibility-driven** (`rca_infeasible=True`): RCA is infeasible — the system is a black box, deprecated, or has a known intractable condition. The mitigation *is* the permanent strategy.
+2. **Decision-driven** (`rca_infeasible=False`): RCA was feasible but the user chose not to pursue it — 2am during an outage, team bandwidth, or simply "good enough for now."
+
+Both produce the same runbook artifact. The reader doesn't need to know *why* the author stopped at mitigation — they need *what was done* and *how to verify it*. The only content difference is the Constraint Statement section: populated from `rca_infeasible_rationale` for scenario 1, or a generic "RCA deferred by user decision" for scenario 2. This is an enrichment section (not required), so it's handled naturally by the readiness check.
+
+**Analytics distinction**: Query `rca_infeasible` on the case to distinguish scenarios. The runbook itself does not carry this distinction. Query `ReportType` (`RUNBOOK` vs `MITIGATION_PLAYBOOK`) to distinguish runbook source.
+
+**Design**: Same suggest-first pattern as §4.5.2 runbook generation. The agent offers a COOPERATIVE suggestion at closure time for `mitigation_sufficient` cases. Readiness and deduplication are evaluated only when the user accepts.
+
+**Trigger flow (Copilot)**:
+
+```text
+User confirms closure (mitigation_sufficient)
+    → Agent offers COOPERATIVE suggestion: "Would you like me to create a runbook?"
+    → User accepts
+        → System evaluates readiness + deduplication
+        → Four possible outcomes:
+            SUCCESS           → Draft created, user redirected to Dashboard
+            NOT_SUITABLE      → "Not enough mitigation data for a runbook" (no draft)
+            EXISTING_COVERS   → "Similar runbook exists: {title} ({score}% match)"
+            GENERATION_FAILED → "Generation failed, try again later"
+    → User declines or ignores
+        → No evaluation, no side effects
+```
+
+**Readiness assessment** (`assess_playbook_readiness()` in `terminal_transitions.py`):
+
+Unlike standard runbook readiness (§4.5.2), mitigated-case readiness does **not** require root cause or permanent solution. It requires evidence that a mitigation was executed and verified.
+
+| Verdict | Condition | Outcome |
+| --- | --- | --- |
+| `READY` | Problem definition + verified mitigation actions in `action_attempts` + at most 1 enrichment gap | Draft generated |
+| `NEEDS_ENRICHMENT` | Critical sections OK, but 2+ enrichment sections thin | Draft generated with quality warning |
+| `NOT_SUITABLE` | Missing problem definition or no verified mitigation actions | `NOT_SUITABLE` outcome — no draft |
+
+**Critical sections** (required):
+
+- `problem_definition`: `problem_verification.symptom_statement` exists
+- `mitigation_steps`: `action_attempts` contains entries with `action_type=MITIGATION` AND at least one was verified (check `action_attempts` history, not boolean flags which reset)
+
+**Enrichment sections** (improve quality, not required):
+
+- `detection_triage`: evidence items with summaries (how the problem was identified)
+- `verification`: verification steps for the mitigation
+- `constraint_statement`: `rca_infeasible_rationale` is populated
+
+**Always LLM-generated**: recurrence monitoring, sources.
+
+**Same template, same structure.** Mitigated-case runbooks use the identical 7-section canonical template as standard runbooks (see [Runbook Content Architecture §3](../knowledge-and-ai/runbook-content-architecture.md#3-standardized-runbook-template)). The mitigation *is* the resolution — it fits the existing "If X then Y" + code block structure naturally:
+
+> **If** Stripe API returns intermittent 503s with no pattern in application logs (external dependency):
+> ```python
+> STRIPE_CIRCUIT_BREAKER = {
+>     "failure_threshold": 5,
+>     "recovery_timeout": 30,
+>     "fallback": "queue_for_retry"
+> }
+> ```
+> This is the accepted permanent resolution — the root cause is external to our control.
+
+The diagnostic finding is the identified constraint. The resolution is the mitigation implementation. No template change needed — the same structure that accommodates "change the config" also accommodates "implement the circuit breaker."
+
+**Deduplication**: Same vector similarity thresholds as standard runbooks (≥85% = existing covers, 70-84% = suggest with caveats). Both types share the same ChromaDB collection for cross-type dedup.
+
+**API**: Uses the same `POST /api/v1/knowledge/convert-from-case` endpoint. For mitigated cases, `CaseConversionRequest.is_mitigation_only=True` provides additional context (constraint rationale, mitigation actions) in the source material so the LLM can construct a proper Root Cause Resolution section where the mitigation is framed as the permanent strategy.
+
+---
+
 #### 4.5.2 Runbook Generation (Knowledge Flywheel)
 
-**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible — quality over quantity.
+**Eligibility**: RESOLVED cases only. CLOSED cases are not eligible — quality over quantity (see §4.5.1 for mitigated-case runbooks from `mitigation_sufficient` closures).
 
 **Design**: Suggest first, evaluate on acceptance. The agent always offers a COOPERATIVE suggestion at resolution time. Readiness assessment and deduplication happen only when the user accepts — not upfront. This avoids wasted computation and gives the user a clear accept/decline choice.
 
@@ -2047,7 +2188,7 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 - `POST /api/v1/knowledge/suggestions/{id}/reject` — Reject with reason
 - `POST /api/v1/knowledge/suggestions/{id}/remediate-pii` — Auto-remediate PII
 
-#### 4.5.3 Cross-Frontend Linking
+#### 4.5.4 Cross-Frontend Linking
 
 The copilot links to dashboard for operations that require richer UI:
 
@@ -2058,7 +2199,7 @@ The copilot links to dashboard for operations that require richer UI:
 
 Dashboard `CaseTabs` reads the `tab` query parameter to auto-select the correct tab on load.
 
-#### 4.5.4 Archival
+#### 4.5.5 Archival
 
 Independent of post-terminal operations. User can archive any terminal case via the Dashboard case detail page. Archived cases are hidden from the default list but remain accessible via "Include archived" filter.
 
