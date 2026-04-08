@@ -44,10 +44,8 @@ from faultmaven.core.investigation.schemas import (
     TerminalResponse,
     get_schema_for_stage,
 )
-from faultmaven.core.investigation.stagnation_detector import (
-    StagnationBreaker,
-    StagnationDetector,
-    StagnationType,
+from faultmaven.core.investigation.progress_monitor import (
+    ProgressMonitor,
 )
 from faultmaven.core.investigation.state_validator import (
     StateValidator,
@@ -808,8 +806,7 @@ class MilestoneEngine:
         self.report_service = report_service
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
-        self.stagnation_detector = StagnationDetector()
-        self.stagnation_breaker = StagnationBreaker()
+        self.progress_monitor = ProgressMonitor()
         self.llm_error_handler = LLMErrorHandler()
 
         # G10: Per-case asyncio locks to prevent concurrent process_turn
@@ -2232,42 +2229,35 @@ class MilestoneEngine:
             else:
                 case_updated.turns_without_progress += 1
 
-            # Step 5.9: Check for stagnation (before recording turn)
-            stagnation_type = self.stagnation_detector.detect_stagnation(case_updated)
+            # Step 5.9: Progress monitoring (before recording turn)
+            # Check if transparent mode should activate and/or repair
+            # patterns are detected. Replaces the old stagnation detector.
+            progress_result = self.progress_monitor.check_progress(case_updated)
             stagnation_str: str | None = None
-            if stagnation_type:
-                stagnation_str = stagnation_type.value
-                # Get breakout action and apply it
-                breakout_action = self.stagnation_breaker.break_stagnation(
-                    case_updated, stagnation_type
-                )
-                metadata["stagnation_type"] = stagnation_type.value
-                metadata["breakout_action"] = breakout_action.action
-                metadata["breakout_prompt_injection"] = breakout_action.prompt_injection
-                # G1: Store breakout prompt as system_feedback so it reaches
-                # the LLM in the next turn via build_investigation_context()
-                if breakout_action.prompt_injection:
+            if progress_result:
+                # Record repair pattern if detected
+                if progress_result.repair_type:
+                    stagnation_str = progress_result.repair_type.value
+                    metadata["stagnation_type"] = progress_result.repair_type.value
+                    metadata["breakout_action"] = progress_result.repair_action
+
+                metadata["progress_transparent"] = True
+                metadata["pending_milestone"] = progress_result.pending_milestone
+
+                # Store prompt injection in system_feedback for next turn
+                if progress_result.prompt_injection:
                     current_feedback = metadata.get("system_feedback", "") or ""
-                    # Gentle reminders don't need an alarming prefix
-                    if breakout_action.action == "gentle_reminder":
-                        breakout_msg = breakout_action.prompt_injection
-                    else:
-                        breakout_msg = (
-                            f"STAGNATION RECOVERY: {breakout_action.prompt_injection}"
-                        )
                     metadata["system_feedback"] = (
-                        f"{current_feedback}\n{breakout_msg}".strip()
+                        f"{current_feedback}\n{progress_result.prompt_injection}".strip()
                     )
-                log_level = (
-                    logging.DEBUG
-                    if breakout_action.action == "gentle_reminder"
-                    else logging.INFO
+
+                log_msg = (
+                    f"Progress transparency activated: pending milestone "
+                    f"'{progress_result.pending_milestone}'"
                 )
-                logger.log(
-                    log_level,
-                    f"Stagnation detected: {stagnation_type.value}. "
-                    f"Action: {breakout_action.action}",
-                )
+                if progress_result.repair_type:
+                    log_msg += f", repair: {progress_result.repair_type.value}"
+                logger.info(log_msg)
 
             # Step 5.9b: Wire validation errors into system_feedback (G9 + G11)
             # Diagnostic reasoning violations and reasoning validation errors
