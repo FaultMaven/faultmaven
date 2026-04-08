@@ -107,7 +107,6 @@ def create_turn(
         progress_made=bool(
             milestones_completed or evidence_added or hypotheses_validated
         ),
-        actions_taken=["analyzed"],
         outcome=TurnOutcome.CONVERSATION,
         user_message_summary="test",
         agent_response_summary="test",

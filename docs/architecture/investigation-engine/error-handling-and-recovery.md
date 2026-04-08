@@ -24,7 +24,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 2. [LLM Error Handling](#2-llm-error-handling)
 3. [Response Parsing Errors](#3-response-parsing-errors)
 4. [State Validation](#4-state-validation)
-5. [Stagnation Detection](#5-stagnation-detection)
+5. [Progress Transparency](#5-progress-transparency)
 6. [Recovery Strategies](#6-recovery-strategies)
 7. [Error Context Propagation](#7-error-context-propagation)
 
@@ -73,7 +73,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 - Evidence contradictions
 - Gate milestone dependencies violated
 
-**Strategy**: Detect and inject stagnation nudges (prompt hints) to guide alternative paths
+**Strategy**: Progress transparency surfaces milestone dependencies when stalled; agent state repair handles internal failures (see [Progress Transparency](./progress-transparency.md))
 
 ---
 
@@ -607,214 +607,33 @@ class StateValidator:
 
 ---
 
-## 5. Stagnation Detection
+## 5. Progress Transparency
 
-### 5.1 Progress Stall Detection
+> **Redesigned.** The `StagnationDetector` and `StagnationBreaker` have been replaced by `ProgressMonitor` (`core/investigation/progress_monitor.py`). See [Progress Transparency](./progress-transparency.md) for the full design.
 
-The system detects investigation stalls using **turn-based tracking**, not stage-based.
+### 5.1 Overview
 
-```python
-class StagnationDetector:
-    """Detects investigation stalls and anchoring patterns."""
+The progress monitor tracks investigation progress per stage and surfaces milestone dependencies when progress stalls. It operates in two modes: **silent** (default) and **transparent** (activated after N investigative turns without a milestone completing).
 
-    def __init__(
-        self,
-        no_progress_threshold: int = 5,
-        category_anchoring_threshold: int = 4,
-        action_loop_threshold: int = 5
-    ):
-        self.no_progress_threshold = no_progress_threshold
-        self.category_anchoring_threshold = category_anchoring_threshold
-        self.action_loop_threshold = action_loop_threshold
+Key design principles:
 
-    def detect_stagnation(self, case: Case) -> Optional[StagnationType]:
-        """
-        Detect if investigation is stagnating.
+- Only detect agent-internal failures, never judge user behavior
+- Influence through visibility (making the situation clear), not steering
+- Stage-scoped: counter resets on milestone completion or stage change
 
-        Returns StagnationType if stagnating, None otherwise.
-        """
+### 5.2 Agent State Repair Patterns
 
-        # Pattern 1: No milestones completed in N turns
-        if case.turns_without_progress >= self.no_progress_threshold:
-            return StagnationType.NO_PROGRESS
+| Pattern               | Stages               | Detection                              | Action              |
+|-----------------------|----------------------|----------------------------------------|----------------------|
+| HYPOTHESIS_ANCHORING  | DIAGNOSIS, TREATMENT | 4+ failed hypotheses in same category  | Ban category         |
+| HYPOTHESIS_DEADLOCK   | DIAGNOSIS, TREATMENT | 3+ hypotheses, all INCONCLUSIVE        | Retire hypotheses    |
+| EXHAUSTED             | DIAGNOSIS            | Broad coverage, no convergence         | Structured handoff   |
+| FIX_FAILURE_CYCLE     | MITIGATION, TREATMENT| 2+ accepted fixes unverified           | Summary of attempts  |
+| ACTION_LOOP           | All                  | Identical structural output 5+ turns   | Prompt break         |
 
-        # Pattern 2: Hypothesis category anchoring
-        if self._detect_category_anchoring(case):
-            return StagnationType.HYPOTHESIS_ANCHORING
+### 5.3 Integration
 
-        # Pattern 3: Repeated action sequences
-        if self._detect_action_loop(case):
-            return StagnationType.ACTION_LOOP
-
-        # Pattern 4: All hypotheses inconclusive
-        if self._detect_hypothesis_deadlock(case):
-            return StagnationType.HYPOTHESIS_DEADLOCK
-
-        return None
-
-    def _detect_category_anchoring(self, case: Case) -> bool:
-        """
-        Detect if agent is stuck testing same hypothesis category.
-
-        Triggers if 4+ hypotheses in same category are REFUTED or INCONCLUSIVE.
-        """
-        category_counts = {}
-
-        for hypothesis in case.hypotheses.values():
-            if hypothesis.status in (HypothesisStatus.REFUTED, HypothesisStatus.INCONCLUSIVE):
-                cat = hypothesis.category.value
-                category_counts[cat] = category_counts.get(cat, 0) + 1
-
-        for category, count in category_counts.items():
-            if count >= self.category_anchoring_threshold:
-                logger.warning(f"Category anchoring: {count} failed hypotheses in '{category}'")
-                return True
-
-        return False
-
-    def _detect_action_loop(self, case: Case) -> bool:
-        """
-        Detect if agent is repeating same actions.
-
-        Triggers if same action sequence appears 5+ times.
-        """
-        if len(case.turn_history) < self.action_loop_threshold:
-            return False
-
-        recent_turns = case.turn_history[-self.action_loop_threshold:]
-        action_sequences = [
-            tuple(t.actions_taken)
-            for t in recent_turns
-            if t.actions_taken
-        ]
-
-        if len(action_sequences) >= 3:
-            unique_sequences = set(action_sequences)
-            if len(unique_sequences) == 1:
-                logger.warning("Action loop: same actions repeated in recent turns")
-                return True
-
-        return False
-
-    def _detect_hypothesis_deadlock(self, case: Case) -> bool:
-        """
-        Detect if all hypotheses are inconclusive.
-        """
-        if not case.hypotheses:
-            return False
-
-        all_inconclusive = all(
-            h.status == HypothesisStatus.INCONCLUSIVE
-            for h in case.hypotheses.values()
-        )
-
-        return all_inconclusive and len(case.hypotheses) >= 3
-
-
-class StagnationType(str, Enum):
-    """Types of investigation stagnation."""
-    NO_PROGRESS = "no_progress"
-    HYPOTHESIS_ANCHORING = "hypothesis_anchoring"
-    ACTION_LOOP = "action_loop"
-    HYPOTHESIS_DEADLOCK = "hypothesis_deadlock"
-```
-
-### 5.2 Breaking Out of Stagnation
-
-When stagnation is detected, the breaker creates a `BreakoutAction` with a `prompt_injection` string. This injection is wired into the turn record's `system_feedback` field, which `build_investigation_context()` includes in the next turn's prompt. This ensures the LLM receives the corrective instruction.
-
-```python
-class StagnationBreaker:
-    """Strategies to break out of stagnation."""
-
-    def break_stagnation(
-        self,
-        case: Case,
-        stagnation_type: StagnationType
-    ) -> BreakoutAction:
-        """
-        Determine action to break out of stagnation.
-
-        Returns recommended action and updated case state.
-        The caller (MilestoneEngine) wires prompt_injection into
-        system_feedback for next-turn LLM consumption.
-        """
-
-        if stagnation_type == StagnationType.NO_PROGRESS:
-            return self._handle_no_progress(case)
-
-        elif stagnation_type == StagnationType.HYPOTHESIS_ANCHORING:
-            return self._handle_anchoring(case)
-
-        elif stagnation_type == StagnationType.ACTION_LOOP:
-            return self._handle_action_loop(case)
-
-        elif stagnation_type == StagnationType.HYPOTHESIS_DEADLOCK:
-            return self._handle_deadlock(case)
-
-        return BreakoutAction(action="none", message="No action needed")
-
-    def _handle_no_progress(self, case: Case) -> BreakoutAction:
-        """Handle no progress in 5+ turns.
-
-        NO_PROGRESS is based on turn count, which cannot distinguish
-        tangential conversation (user learning) from actual stagnation
-        (agent spinning). Instead of injecting prompt nudges, we surface
-        progress data to the user via the UI and let them decide.
-
-        The UI shows: completed/pending milestones, turns_without_progress,
-        evidence count, and hypothesis count — objective data, no urgency.
-        """
-
-        return BreakoutAction(
-            action="none",
-            message="No action — progress data surfaced to user via UI.",
-        )
-
-    def _handle_anchoring(self, case: Case) -> BreakoutAction:
-        """Handle hypothesis category anchoring."""
-
-        # Identify anchored category
-        anchored_category = self._find_anchored_category(case)
-
-        return BreakoutAction(
-            action="force_alternative_category",
-            message=f"Tested many '{anchored_category}' hypotheses. Exploring other categories.",
-            prompt_injection=f"Do NOT propose hypotheses in '{anchored_category}' category. "
-                           f"Try different categories like: {self._suggest_categories(anchored_category)}"
-        )
-
-    def _handle_action_loop(self, case: Case) -> BreakoutAction:
-        """Handle repeated action sequences."""
-
-        return BreakoutAction(
-            action="request_user_input",
-            message="Investigation appears stuck in a loop. Requesting user guidance.",
-            prompt_injection="Ask user for additional context or a different approach."
-        )
-
-    def _handle_deadlock(self, case: Case) -> BreakoutAction:
-        """Handle all hypotheses inconclusive."""
-
-        # Retire all inconclusive hypotheses
-        for hypothesis in case.hypotheses.values():
-            if hypothesis.status == HypothesisStatus.INCONCLUSIVE:
-                hypothesis.status = HypothesisStatus.RETIRED
-
-        return BreakoutAction(
-            action="reset_hypotheses",
-            message="All hypotheses inconclusive. Starting fresh hypothesis generation.",
-            prompt_injection="Generate completely new hypotheses based on available evidence."
-        )
-
-
-@dataclass
-class BreakoutAction:
-    """Action to break out of stagnation."""
-    action: str
-    message: str
-    prompt_injection: str = None
-```
+Called after each turn in `MilestoneEngine.process_turn()`. Prompt injection stored in `system_feedback` for next turn. `ProgressTransparencyInfo` returned in API response for frontend display.
 
 ---
 

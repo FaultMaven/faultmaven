@@ -100,7 +100,6 @@ def mock_case_summary():
         current_turn=1,
         milestones_completed=2,
         total_milestones=8,
-        is_stuck=False,
         is_terminal=False,
         description="Test Case Description",
         resolved_at=None,

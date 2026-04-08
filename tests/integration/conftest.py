@@ -360,7 +360,6 @@ def mock_investigation_service(mock_case_service):
             milestones_completed=[],
             case_status=CaseStatus.INVESTIGATING,
             progress_made=True,
-            is_stuck=False,
             attachments_processed=attachments_processed,
         )
 

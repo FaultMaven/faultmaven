@@ -147,53 +147,21 @@ Transparent Mode (progress stalled)
 
 ---
 
-## Implementation Plan
+## Implementation
 
-### Components to Create/Modify
+### Components
 
-**1. Progress Monitor** (new: `core/investigation/progress_monitor.py`)
+- **Progress Monitor** (`core/investigation/progress_monitor.py`): Tracks investigative turns, determines silent/transparent mode, checks repair patterns, builds prompt injection.
+- **Milestone Engine** (`core/investigation/milestone_engine.py`): Calls `ProgressMonitor.check_progress()` after each turn, stores injection in `system_feedback`.
+- **API Models** (`models/api_models.py`): `ProgressTransparencyInfo` model on `TurnResponse` and `CaseUIResponse_Investigating`.
+- **Case UI Adapter** (`services/adapters/case_ui_adapter.py`): Computes progress transparency from turn history for case page loads.
+- **Investigation Service** (`modules/agent/domain/services/investigation_service.py`): Populates `ProgressTransparencyInfo` from turn metadata.
 
-Replaces the stagnation detector. Responsibilities:
-- Track turns since last milestone completion per stage
-- Determine silent/transparent mode
-- Build the prompt injection text for transparent mode
-- Check for agent state repair patterns when in transparent mode
-- Determine the next pending milestone and its dependencies
+### Design Decisions
 
-**2. Milestone Engine** (modify: `core/investigation/milestone_engine.py`)
-
-- Replace `StagnationDetector` + `StagnationBreaker` with `ProgressMonitor`
-- On each turn, after processing: check progress monitor for mode transition
-- If transparent mode activates or a repair pattern fires:
-  - Store prompt injection in `system_feedback` for next turn
-  - Record transparent mode state on the case
-
-**3. Case Model** (modify: `modules/case/domain/models.py`)
-
-Add progress transparency state to the Case model:
-
-```python
-class ProgressTransparency(BaseModel):
-    """Tracks progress transparency mode for the current stage."""
-    active: bool = False
-    activated_at_turn: Optional[int] = None
-    stage: Optional[str] = None
-    pending_milestone: Optional[str] = None
-    repair_pattern: Optional[str] = None  # If a repair pattern was also detected
-```
-
-**4. Prompt Templates** (modify: `core/investigation/prompts/templates.py`)
-
-No template changes needed — the injection flows through `system_feedback`, which is already wired into all INVESTIGATING templates.
-
-**5. Context Builder** (modify: `core/investigation/prompts/context_builder.py`)
-
-No changes needed — `system_feedback` is already included in the context assembly.
-
-### Components NOT Changed
-
-- **UI/Dashboard**: The case header already shows milestone status. No UI changes in this iteration. The transparent mode guidance appears in the agent's response text, which the UI already renders.
-- **API response model**: No new fields needed. The agent's response carries the guidance. Future iteration could add a `progress_transparency` field to the API response for richer UI rendering.
+- **Stateless**: Progress transparency is fully computed from `case.turn_history` each turn. No persisted state, no schema changes.
+- **No separate system message**: The agent's response carries the case-specific guidance. The `ProgressTransparencyInfo` in the API response enables frontend UI indicators.
+- **Prompt injection via `system_feedback`**: Delivered to the LLM on the next turn (one-turn delay).
 
 ---
 

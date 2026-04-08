@@ -969,7 +969,6 @@ def sample_case_summary():
         current_turn=0,
         milestones_completed=0,
         total_milestones=8,
-        is_stuck=False,
         is_terminal=False,
     )
 

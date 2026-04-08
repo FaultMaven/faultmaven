@@ -54,7 +54,6 @@ def _make_turn_response(**overrides) -> TurnResponse:
         "milestones_completed": [],
         "case_status": CaseStatus.INQUIRY,
         "progress_made": False,
-        "is_stuck": False,
         "attachments_processed": [],
     }
     defaults.update(overrides)
@@ -263,12 +262,11 @@ class TestTurnResponseModel:
         assert response.case_status == CaseStatus.INVESTIGATING
         assert response.progress_made is True
 
-    def test_stuck_case_response(self):
-        """TurnResponse indicates stuck case."""
+    def test_progress_transparency_in_response(self):
+        """TurnResponse can carry progress transparency info."""
         response = _make_turn_response(
-            is_stuck=True,
             progress_made=False,
             turn_number=10,
         )
-        assert response.is_stuck is True
-        assert response.progress_made is False
+        # Default: no transparency info
+        assert response.progress_transparency is None
