@@ -1,7 +1,7 @@
 # Context Engineering Analysis: FaultMaven vs Anthropic Best Practices
 
 **Date:** 2025-10-05
-**Last Updated:** 2026-03-04 (Tool result compression added)
+**Last Updated:** 2026-04-08 (Stage-specific hypothesis condensing, configurable state summary, KB solution truncation)
 **Reference:** [Anthropic: Effective Context Engineering for AI Agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
 **Status:** ✅ Phase 1 Complete - Sub-agent Architecture Implemented
 
@@ -744,6 +744,59 @@ This works alongside a mechanical fallback in `milestone_engine.py` — a regex-
 | Context Sliding Window | Evidence indexes | Per-turn context assembly |
 | **Evidence filename attribution** | **Evidence XML tags** | **Per-turn context assembly** |
 | **INQUIRY state injection** | **INQUIRY template** | **When unconfirmed problem statement exists** |
+| **Stage-specific hypothesis condensing** | **`<working_hypotheses>` block** | **MITIGATION/TREATMENT stages + DIAGNOSIS with state summary** |
+| **KB solution truncation** | **`<knowledge_base_matches>` solutions** | **Per-turn context assembly (800 char cap)** |
+| **Configurable state summary** | **`<state_summary>` block** | **Conversations >15 turns (configurable via `STATE_SUMMARY_TURN_THRESHOLD`)** |
+
+---
+
+## Stage-Specific Hypothesis Condensing
+
+**Added**: 2026-04-08
+
+An application of Principle 2 ("Context as Precious Resource") — the `<working_hypotheses>` block is condensed based on the current investigation stage, freeing token budget for action-focused context during MITIGATION and TREATMENT.
+
+### The Problem
+
+During MITIGATION and TREATMENT, the full hypothesis list (including refuted, inconclusive, and captured hypotheses) consumes tokens without adding value. The diagnosis is done — the agent needs action-focused context (pending actions, evidence of fix results), not the full diagnostic trail.
+
+Additionally, during long DIAGNOSIS investigations (state summary mode, >15 turns), the hypotheses appear twice: once in the compact `<state_summary>` block and again in the full `<working_hypotheses>` block. This duplication wastes ~200-400 tokens.
+
+### The Solution
+
+`build_investigation_context()` in `context_builder.py` condenses the `hypothesis_str` variable in the stage-specific loading block (section 9), after the full hypothesis block is built in section 5:
+
+| Stage | State Summary Off | State Summary On (>15 turns) |
+| --- | --- | --- |
+| **DIAGNOSIS** | Full hypothesis list (all non-retired) | Top 3 by confidence (matches state summary) |
+| **MITIGATION** | Active + validated hypotheses only | Active + validated only |
+| **TREATMENT** | Best validated hypothesis only | Best validated only |
+
+Each stage branch queries `case.hypotheses.values()` directly rather than relying on the section 5 variable, making the code self-contained.
+
+---
+
+## KB Solution Truncation
+
+**Added**: 2026-04-08
+
+Knowledge base match solutions are capped at `KB_MAX_SOLUTION_CHARS` (800 characters). Verbose runbooks with multi-page solutions were consuming 2000+ characters per match — with 3 matches, that's 6000+ characters (~1500 tokens) of the token budget spent on KB results alone. The cap ensures KB results inform without dominating.
+
+---
+
+## Configurable State Summary
+
+**Added**: 2026-04-08
+
+The state summary system now uses named constants instead of hardcoded values:
+
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `STATE_SUMMARY_TURN_THRESHOLD` | 15 | Turns before graduated history → state summary |
+| `STATE_SUMMARY_MAX_EVIDENCE_DIGESTS` | 8 | Max evidence items in digest (was 5) |
+| `STATE_SUMMARY_DIGEST_CHARS` | 180 | Max chars per digest entry (was 120) |
+
+The state summary now includes top 3 hypotheses (was: best only) and includes config/code evidence types in the digest alongside logs/metrics/traces. Config and code evidence often contains root-cause clues that were previously lost when the conversation exceeded 15 turns.
 
 ---
 

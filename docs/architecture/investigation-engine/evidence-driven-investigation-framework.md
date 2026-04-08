@@ -1073,7 +1073,7 @@ The old STAGE_INSTRUCTIONS dictionary and prompt templates remain in the codebas
 6. **Update EvidenceCategory enum** — Add mitigation_evidence, rename resolution_evidence
 7. **Update evidence_processor.py** — Validation rules for new evidence categories
 8. **Update milestone_engine.py** — Stage dispatch, compliance detection (post-LLM), stagnation detection
-9. **Update context_builder.py** — Stage-specific context loading, ProposedAction in prompt context
+9. **Update context_builder.py** (DONE) — Stage-specific context loading (hypothesis condensing per stage), ProposedAction in prompt context. See [Context Engineering Analysis: Stage-Specific Hypothesis Condensing](../../reference/deep-dives/context-engineering-analysis.md#stage-specific-hypothesis-condensing)
 10. **Update LLM response schemas** — ProposedAction output, gate milestones, progress milestones
 11. **Update tests** — All test files referencing old milestones/stages
 
