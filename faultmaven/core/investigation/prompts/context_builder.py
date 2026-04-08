@@ -1105,7 +1105,7 @@ def build_investigation_context(
         conclusion_str = "<working_conclusion>\n"
         conclusion_str += f"STATEMENT: {wc.statement}\n"
         conclusion_str += f"CONFIDENCE: {wc.likelihood*100:.0f}%\n"
-        conclusion_str += f"REASONING: {wc.reasoning[:500]}\n"
+        conclusion_str += f"REASONING: {wc.reasoning[:1000]}\n"
         if wc.supporting_evidence_ids:
             conclusion_str += f"EVIDENCE: {', '.join(wc.supporting_evidence_ids)}\n"
         conclusion_str += "</working_conclusion>"

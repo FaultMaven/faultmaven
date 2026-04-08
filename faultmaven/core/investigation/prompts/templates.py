@@ -289,6 +289,13 @@ Example - Analysis reveals error pattern:
 Example - No new findings from analysis:
   evidence_to_add: []  # Empty - no new evidence discovered
 
+EVIDENCE SUMMARY QUALITY:
+Summaries are the long-term memory for evidence — they persist after the
+structural index is evicted from context. Be SPECIFIC:
+- BAD: "Log file showing errors from the service"
+- GOOD: "142 OOM errors from service-A between 14:02-16:45 UTC (chromadb 0.4.22)"
+Include: counts, entity names, time ranges, error codes, version numbers.
+
 MILESTONE ATTRIBUTION (Automatic):
 Do NOT specify advances_milestones in evidence_to_add (system infers from category automatically).
 Only specify if automatic inference would be wrong (rare edge case).
