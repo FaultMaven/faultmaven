@@ -22,7 +22,7 @@ Architecture:
 
 from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -3035,6 +3035,41 @@ class DocumentationData(BaseModel):
 
 
 # ============================================================
+# Investigation Journal (Durable Long-Term Memory)
+# ============================================================
+
+
+class JournalEntry(BaseModel):
+    """A single entry in the investigation journal.
+
+    Captures a distilled insight, decision, or context that the agent
+    needs to remember across the entire investigation. Entries are
+    append-only and always included in the LLM context.
+    """
+
+    turn: int = Field(description="Turn number when this entry was created")
+
+    entry_type: Literal[
+        "finding", "decision", "user_context", "ruled_out", "blocker", "milestone"
+    ] = Field(description="Type of journal entry")
+
+    content: str = Field(
+        description="The distilled insight (max 200 chars)",
+        max_length=200,
+    )
+
+    evidence_id: Optional[str] = Field(
+        default=None,
+        description="Evidence ID this entry relates to, if any",
+    )
+
+    hypothesis_id: Optional[str] = Field(
+        default=None,
+        description="Hypothesis ID this entry relates to, if any",
+    )
+
+
+# ============================================================
 # Core Case Model (Section 1)
 # ============================================================
 
@@ -3257,6 +3292,12 @@ class Case(BaseModel):
 
     root_cause_conclusion: Optional[RootCauseConclusion] = Field(
         default=None, description="Final root cause determination"
+    )
+
+    investigation_journal: List[JournalEntry] = Field(
+        default_factory=list,
+        description="Structured log of key findings, decisions, and context. "
+        "Append-only. Always included in full in LLM context.",
     )
 
     # ============================================================

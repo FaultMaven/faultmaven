@@ -1096,7 +1096,18 @@ def build_investigation_context(
             hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
         hypothesis_str += "</working_hypotheses>"
 
-    # 5a. Working Conclusion (durable case-level understanding)
+    # 5a. Investigation Journal (durable long-term memory)
+    # Compact, append-only record of key findings, decisions, and context.
+    # Always included in full — ~5 KB for a 50-turn investigation.
+    journal_str = ""
+    if case.investigation_journal:
+        journal_str = "<investigation_journal>\n"
+        for entry in case.investigation_journal:
+            tag = entry.entry_type.upper()
+            journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
+        journal_str += "</investigation_journal>"
+
+    # 5b. Working Conclusion (durable case-level understanding)
     # Persists across turns even after evidence structural indexes are evicted
     # from the Tier A window, ensuring the agent retains its accumulated findings.
     conclusion_str = ""
@@ -1110,7 +1121,7 @@ def build_investigation_context(
             conclusion_str += f"EVIDENCE: {', '.join(wc.supporting_evidence_ids)}\n"
         conclusion_str += "</working_conclusion>"
 
-    # 5b. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
+    # 5c. Pending ProposedAction (Framework §4.1: LLM needs this to detect compliance)
     pending_action_str = ""
     if case.proposed_actions:
         for action in reversed(case.proposed_actions):
@@ -1277,6 +1288,7 @@ def build_investigation_context(
         "milestones": budget.use(milestones_str),
         "evidence": budget.use(evidence_str),
         "hypotheses": budget.use(hypothesis_str),
+        "investigation_journal": budget.use(journal_str),
         "working_conclusion": budget.use(conclusion_str),
         "pending_action": budget.use(pending_action_str),
         "kb_results": budget.use(kb_str),

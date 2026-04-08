@@ -263,21 +263,21 @@ No model changes, no schema changes. Implemented in commit `a4b8924d`.
 | Evidence summary quality prompt | `templates.py` (INVESTIGATION_BASE) | Done |
 | Working conclusion reasoning cap 500→1000 | `context_builder.py` | Done |
 
-### Phase 2: Investigation Journal
+### Phase 2: Investigation Journal — DONE
 
-The core feature. Requires model change, schema change, context builder change, and prompt change.
+The core feature. Model change, schema change, context builder change, and prompt change.
 
-| Change | File | Effort |
+| Change | File | Status |
 |---|---|---|
-| `JournalEntry` model | `modules/case/domain/models.py` | Small |
-| `investigation_journal` field on Case | `modules/case/domain/models.py` | Small |
-| Export from contracts | `modules/case/contracts.py` | Trivial |
-| `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Small |
-| Journal extraction in milestone engine | `core/investigation/milestone_engine.py` | Medium |
-| Journal section in context builder | `core/investigation/prompts/context_builder.py` | Small |
-| Journal prompt instructions | `core/investigation/prompts/templates.py` | Small |
-| Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Medium |
-| Tests | `tests/unit/core/investigation/` | Medium |
+| `JournalEntry` model | `modules/case/domain/models.py` | Done |
+| `investigation_journal` field on Case | `modules/case/domain/models.py` | Done |
+| Export from contracts | `modules/case/contracts.py` | Done |
+| `JournalEntryOutput` in LLM schema | `core/investigation/schemas.py` | Done |
+| Journal extraction in milestone engine | `core/investigation/milestone_engine.py` | Done |
+| Journal section in context builder | `core/investigation/prompts/context_builder.py` | Done |
+| Journal prompt instructions | `core/investigation/prompts/templates.py` | Done |
+| Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Done |
+| Tests (24 tests) | `tests/unit/core/investigation/test_investigation_journal.py` | Done |
 
 ### Phase 3: Hypothesis Refutation Reason
 

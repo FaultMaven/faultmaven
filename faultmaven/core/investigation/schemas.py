@@ -412,6 +412,26 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
     )
 
 
+class JournalEntryOutput(BaseModel):
+    """A journal entry produced by the LLM for the investigation journal."""
+
+    entry_type: Literal[
+        "finding", "decision", "user_context", "ruled_out", "blocker", "milestone"
+    ] = Field(description="Type of journal entry")
+    content: str = Field(
+        max_length=200,
+        description="The distilled insight (max 200 chars)",
+    )
+    evidence_id: Optional[str] = Field(
+        default=None,
+        description="Evidence ID this entry relates to, if any",
+    )
+    hypothesis_id: Optional[str] = Field(
+        default=None,
+        description="Hypothesis ID this entry relates to, if any",
+    )
+
+
 class WorkingConclusionUpdate(BaseModel):
     """Current working theory of the case.
 
@@ -637,6 +657,11 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
+        journal_entries: Optional[List[JournalEntryOutput]] = Field(
+            default_factory=list,
+            description="Key findings or decisions to record in the investigation journal. "
+            "Only include entries for significant insights — not every turn needs one.",
+        )
         missing_critical_data: Optional[MissingCriticalData] = Field(
             None,
             description="Proactive blocker detection. Flags data quality issues via system feedback.",
@@ -663,6 +688,11 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         solution_feedback: Optional[str] = None
         working_conclusion: Optional[WorkingConclusionUpdate] = None
+        journal_entries: Optional[List[JournalEntryOutput]] = Field(
+            default_factory=list,
+            description="Key findings or decisions to record in the investigation journal. "
+            "Only include entries for significant insights — not every turn needs one.",
+        )
         missing_critical_data: Optional[MissingCriticalData] = Field(
             None,
             description="Proactive blocker detection. Flags data quality issues via system feedback.",
@@ -695,6 +725,11 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
         solution_feedback: Optional[str] = None
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
+        journal_entries: Optional[List[JournalEntryOutput]] = Field(
+            default_factory=list,
+            description="Key findings or decisions to record in the investigation journal. "
+            "Only include entries for significant insights — not every turn needs one.",
+        )
         proposed_transition: Optional[ProposedTransition] = Field(
             None,
             description=(
@@ -726,6 +761,11 @@ class InvestigationResponse_General(BaseInteractionResponse):
         solutions_to_add: Optional[List[SolutionToAdd]] = Field(default_factory=list)
         working_conclusion: Optional[WorkingConclusionUpdate] = None
         root_cause_conclusion: Optional[RootCauseConclusionUpdate] = None
+        journal_entries: Optional[List[JournalEntryOutput]] = Field(
+            default_factory=list,
+            description="Key findings or decisions to record in the investigation journal. "
+            "Only include entries for significant insights — not every turn needs one.",
+        )
         missing_critical_data: Optional[MissingCriticalData] = Field(
             None,
             description="Proactive blocker detection. Flags data quality issues via system feedback.",

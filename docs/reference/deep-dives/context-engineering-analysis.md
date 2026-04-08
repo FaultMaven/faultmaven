@@ -833,6 +833,38 @@ The working conclusion's `reasoning` field is truncated in the context builder t
 
 ---
 
+## Investigation Journal (Durable Long-Term Memory)
+
+**Added**: 2026-04-08
+
+The investigation journal is a new context section that provides the LLM with durable long-term memory across an entire investigation. It solves the lossy compression problem: as investigations grow long, the context builder evicts conversation turns and evidence structural indexes, losing important details the LLM previously saw.
+
+**Problem**: The Case object stores everything (evidence, hypotheses, turns), but the LLM only sees what fits in the prompt. After ~3 turns an evidence structural index is evicted from Tier A. After 15 turns, conversation history switches to state summary mode. Details that existed in the agent's persistent state don't make it into the LLM's prompt.
+
+**Solution**: An append-only list of `JournalEntry` records on the Case model, each max 200 characters. The LLM produces entries via `journal_entries` in its structured output. The context builder includes the full journal in every prompt as an `<investigation_journal>` XML block.
+
+Six entry types: `finding`, `decision`, `user_context`, `ruled_out`, `blocker`, `milestone`.
+
+**Context builder integration**: Section 5a (between hypotheses and working conclusion). Formatted as:
+
+```xml
+<investigation_journal>
+[T3] FINDING: 142 OOM errors from service-A, 14:02-16:45 UTC
+[T5] USER_CONTEXT: Deployed ChromaDB 0.4.22 on Feb 9; EU region only
+[T7] RULED_OUT: Network hypothesis — no packet loss in captures
+</investigation_journal>
+```
+
+**Prompt instruction**: Added to INVESTIGATION_BASE template. Tells the LLM to use the journal for continuity and only add entries for significant insights (not every turn).
+
+**Budget impact**: ~5 KB for a 50-turn investigation (25 entries × 200 chars). Less than a single Tier A evidence structural index (4 KB cap). The journal replaces information that was previously in evicted conversation history — it's a more efficient encoding of the same information.
+
+**Files changed**: `modules/case/domain/models.py` (JournalEntry + Case field), `core/investigation/schemas.py` (JournalEntryOutput), `milestone_engine.py` (extraction), `context_builder.py` (section 5a), `templates.py` (prompt + placeholder), `database_case_repository.py` (persistence in metadata blob).
+
+**Design reference**: [Investigation Journal](../../architecture/investigation-engine/investigation-journal.md)
+
+---
+
 ## Conclusion
 
 **FaultMaven is already implementing many Anthropic best practices**, particularly:

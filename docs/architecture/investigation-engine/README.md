@@ -14,6 +14,11 @@ Documentation for FaultMaven's core investigation framework and AI-driven proble
 
 - **[Prompt Templates](./prompt-templates.md)** - Implementation-ready prompt templates and three-template system
 
+### Agent Memory
+
+- **[Investigation Journal](./investigation-journal.md)** - Append-only structured log of key findings, decisions, and context for durable LLM long-term memory
+- **[Progress Transparency](./progress-transparency.md)** - Progress monitoring, repair patterns, and milestone dependency tracking
+
 ### Operations
 
 - **[Orchestration Capabilities](./orchestration-capabilities.md)** - State Checkpointing, Time Travel, HIL, Streaming, and DA Tool Loop
@@ -50,6 +55,7 @@ Evidence classification, flow, and preprocessing are documented in the [Data Pro
 | Knowledge Flywheel (Runbook Generation) | **Implemented** | RESOLVED-only, never automatic. Suggest first, evaluate on acceptance. Readiness + dedup checked when user accepts. See [Framework §7.5.1](./evidence-driven-investigation-framework.md#751-knowledge-flywheel-resolved-cases-only). |
 | Terminal Metrics & Analytics | **Design Complete** | Prometheus counters/histograms/gauges + structlog events. See [Orchestration §6](./orchestration-capabilities.md#6-terminal-metrics--analytics). |
 | Case Action Consequence Messaging | **Implemented** | Confirmation modals inform users of post-terminal effects, ambiguous close asks for clarification. See [Lifecycle Logic §1.5.4](./investigation-lifecycle-logic.md#154-case-action-confirmation-examples). |
+| Investigation Journal | **Implemented** | Append-only `JournalEntry` log on Case (6 entry types, 200-char max). LLM produces entries via `journal_entries` in structured output. Always included in full in context as `<investigation_journal>` XML. Persisted in metadata JSONB blob. See [Investigation Journal](./investigation-journal.md). |
 | Orchestration: Checkpointing/Time-Travel | Design Complete | `CaseCheckpoint` model defined, not instantiated |
 | Knowledge Fast-Track Resolution | Design Complete | Data model exists, milestone engine wiring deferred |
 | `solution_verified` Evidence Validation | Design Complete | User-Agent Handshake handles all terminal transitions (RESOLVED + CLOSED). CLOSED uses `assess_closure_readiness` for confirmation summary. |

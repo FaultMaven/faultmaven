@@ -76,6 +76,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationPath,
     InvestigationProgress,
     InvestigationStage,
+    JournalEntry,
     KnowledgeMatch,
     KnowledgeResolution,
     ProblemVerification,
@@ -4347,6 +4348,22 @@ class MilestoneEngine:
                 # 3F: Set solution_proposed programmatically when SOLUTION action created
                 if action_type == InvestigationActionType.SOLUTION:
                     case.progress.solution_proposed = True
+
+        # 6. Journal Entries (append-only investigation memory)
+        if hasattr(updates, "journal_entries") and updates.journal_entries:
+            for je_item in updates.journal_entries:
+                entry = JournalEntry(
+                    turn=case.current_turn,
+                    entry_type=je_item.entry_type,
+                    content=je_item.content[:200],
+                    evidence_id=je_item.evidence_id,
+                    hypothesis_id=je_item.hypothesis_id,
+                )
+                case.investigation_journal.append(entry)
+            logger.info(
+                f"Case {case.case_id}: added {len(updates.journal_entries)} journal entries "
+                f"(total: {len(case.investigation_journal)})"
+            )
 
         # Bug #4: Evidence-Milestone Linking (Moved here to ensure evidence exists)
         if metadata["milestones_completed"] and metadata["evidence_added"]:

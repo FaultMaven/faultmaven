@@ -175,6 +175,10 @@ STATUS: INVESTIGATING
 
 {hypotheses}
 
+{investigation_journal}
+
+{working_conclusion}
+
 {pending_action}
 
 CONVERSATION HISTORY:
@@ -295,6 +299,25 @@ structural index is evicted from context. Be SPECIFIC:
 - BAD: "Log file showing errors from the service"
 - GOOD: "142 OOM errors from service-A between 14:02-16:45 UTC (chromadb 0.4.22)"
 Include: counts, entity names, time ranges, error codes, version numbers.
+
+INVESTIGATION JOURNAL (journal_entries):
+The journal below records key findings, decisions, and context from this
+investigation. Use it to maintain continuity — do not re-discover what
+is already recorded, do not re-propose directions that were ruled out.
+
+If this turn produces a significant finding, decision, or context, add
+a journal entry via state_updates.journal_entries. Not every turn needs
+an entry — only record what future turns would need to know.
+
+Entry types:
+- finding: A specific discovery from evidence (counts, entity names, time ranges)
+- decision: An investigative direction chosen and why
+- user_context: Important context the user provided (not evidence itself)
+- ruled_out: A hypothesis or direction eliminated and why
+- blocker: Something blocking progress
+- milestone: A milestone reached with key supporting fact
+
+Each entry is max 200 characters — distill to the essential insight.
 
 MILESTONE ATTRIBUTION (Automatic):
 Do NOT specify advances_milestones in evidence_to_add (system infers from category automatically).

@@ -1012,6 +1012,7 @@ You MUST respond with valid JSON matching these fields:
   - uncertainties: What remains unclear.
 - **state_updates**:
   - progress_indicators: Map of progress milestone flags (set True where data allows).
+  - journal_entries: Optional list of `JournalEntryOutput` — key findings, decisions, or context to record in the investigation journal. Not every turn needs entries. Each entry: `entry_type` (finding/decision/user_context/ruled_out/blocker/milestone), `content` (max 200 chars), optional `evidence_id`/`hypothesis_id`.
   - outcome: milestone_completed | data_requested | hypothesis_validated | conversation | blocked
 
 **ONLY include fields that CHANGE this turn!**

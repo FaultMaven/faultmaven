@@ -538,6 +538,11 @@ class Case(BaseModel):
     # ============================================================
     working_conclusion: Optional[WorkingConclusion] = None
     root_cause_conclusion: Optional[RootCauseConclusion] = None
+    investigation_journal: List[JournalEntry] = Field(
+        default_factory=list,
+        description="Append-only log of key findings, decisions, and context. "
+        "Always included in full in LLM context."
+    )
 
     # ============================================================
     # Special States
@@ -1282,7 +1287,54 @@ class ConfidenceLevel(str, Enum):
             return ConfidenceLevel.VERIFIED
 ```
 
-### 1.12 EscalationState
+### 1.12 JournalEntry (Investigation Journal)
+
+```python
+class JournalEntry(BaseModel):
+    """A single entry in the investigation journal.
+
+    Captures a distilled insight, decision, or context that the agent
+    needs to remember across the entire investigation. Entries are
+    append-only and always included in the LLM context.
+    """
+
+    turn: int = Field(description="Turn number when this entry was created")
+
+    entry_type: Literal[
+        "finding", "decision", "user_context",
+        "ruled_out", "blocker", "milestone"
+    ] = Field(description="Type of journal entry")
+
+    content: str = Field(
+        description="The distilled insight (max 200 chars)",
+        max_length=200,
+    )
+
+    evidence_id: Optional[str] = Field(
+        default=None,
+        description="Evidence ID this entry relates to, if any",
+    )
+
+    hypothesis_id: Optional[str] = Field(
+        default=None,
+        description="Hypothesis ID this entry relates to, if any",
+    )
+```
+
+Entry types:
+
+| Type | What it captures | Example |
+|---|---|---|
+| `finding` | A specific, concrete discovery from evidence | "142 OOM errors from service-A, 14:02-16:45 UTC, correlating with ChromaDB upgrade" |
+| `decision` | An investigative direction chosen and why | "Focusing on ChromaDB connection pooling — memory growth matches upgrade timeline" |
+| `user_context` | Important context the user provided that isn't evidence | "User deployed ChromaDB 0.4.22 on Feb 9; only EU region affected" |
+| `ruled_out` | A hypothesis or direction that was eliminated and why | "Network hypothesis refuted: packet captures show no loss or latency anomalies" |
+| `blocker` | Something blocking progress | "Cannot verify connection pool settings — user doesn't have access to ChromaDB config" |
+| `milestone` | A milestone reached with key supporting fact | "Root cause identified: ChromaDB 0.4.22 connection pooling disabled by default" |
+
+The journal is stored on `Case.investigation_journal` (append-only list) and persisted in the metadata JSONB blob. It is always included in full in the LLM context as an `<investigation_journal>` XML block. See [Investigation Journal](./investigation-journal.md) for full design.
+
+### 1.13 EscalationState
 
 ```python
 class EscalationState(BaseModel):

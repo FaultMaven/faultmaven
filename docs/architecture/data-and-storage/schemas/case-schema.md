@@ -276,6 +276,7 @@ class Case(BaseModel):
     degraded_mode: Optional[DegradedMode]    # PostgreSQL: JSONB
     escalation_state: Optional[EscalationState]  # PostgreSQL: JSONB
     documentation: DocumentationData         # PostgreSQL: JSONB
+    investigation_journal: List[JournalEntry]  # Metadata JSONB blob (append-only)
 
     # ============================================================
     # Progress Tracking

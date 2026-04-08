@@ -929,6 +929,9 @@ class DatabaseCaseRepository(CaseRepository):
                 k: v.model_dump(mode="json") for k, v in case.hypotheses.items()
             },
             "solutions": [s.model_dump(mode="json") for s in case.solutions],
+            "investigation_journal": [
+                j.model_dump(mode="json") for j in case.investigation_journal
+            ],
             "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
             "closed_at": case.closed_at.isoformat() if case.closed_at else None,
             "last_activity_at": (
@@ -1010,6 +1013,9 @@ class DatabaseCaseRepository(CaseRepository):
         evidence = self._parse_evidence(metadata.get("evidence", []))
         hypotheses = self._parse_hypotheses(metadata.get("hypotheses", {}))
         solutions = self._parse_solutions(metadata.get("solutions", []))
+        investigation_journal = self._parse_investigation_journal(
+            metadata.get("investigation_journal", [])
+        )
 
         # Parse messages from relationship
         messages = []
@@ -1081,6 +1087,7 @@ class DatabaseCaseRepository(CaseRepository):
             evidence=evidence,
             hypotheses=hypotheses,
             solutions=solutions,
+            investigation_journal=investigation_journal,
             working_conclusion=working_conclusion,
             root_cause_conclusion=root_cause_conclusion,
             escalation_state=escalation_state,
@@ -1253,6 +1260,18 @@ class DatabaseCaseRepository(CaseRepository):
         for item in value:
             try:
                 result.append(Solution(**item))
+            except Exception:
+                pass
+        return result
+
+    def _parse_investigation_journal(self, value: List[dict]) -> List["JournalEntry"]:
+        """Parse JournalEntry list from JSON."""
+        from faultmaven.modules.case.contracts import JournalEntry
+
+        result = []
+        for item in value:
+            try:
+                result.append(JournalEntry(**item))
             except Exception:
                 pass
         return result
