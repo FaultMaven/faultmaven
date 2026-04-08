@@ -1207,26 +1207,30 @@ def build_investigation_context(
             )
 
         elif stage == InvestigationStage.MITIGATION:
-            logger.debug(
-                "Stage-specific loading: MITIGATION - condensing hypotheses"
-            )
+            logger.debug("Stage-specific loading: MITIGATION - condensing hypotheses")
             # During mitigation, condense to just active/validated hypotheses
             if active_h:
-                condensed = [h for h in active_h if h.status.value in ("active", "validated")]
+                condensed = [
+                    h for h in active_h if h.status.value in ("active", "validated")
+                ]
                 if condensed:
                     hypothesis_str = "<working_hypotheses>\n"
                     for h in condensed:
-                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%)\n"
+                        hypothesis_str += (
+                            f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%)\n"
+                        )
                     hypothesis_str += "</working_hypotheses>"
                 else:
                     hypothesis_str = ""
 
         elif stage == InvestigationStage.TREATMENT:
-            logger.debug(
-                "Stage-specific loading: TREATMENT - condensing hypotheses"
-            )
+            logger.debug("Stage-specific loading: TREATMENT - condensing hypotheses")
             # During treatment, only the validated hypothesis matters
-            validated = [h for h in active_h if h.status.value == "validated"] if active_h else []
+            validated = (
+                [h for h in active_h if h.status.value == "validated"]
+                if active_h
+                else []
+            )
             if validated:
                 best = max(validated, key=lambda h: h.likelihood)
                 hypothesis_str = f"<working_hypotheses>\n- {best.statement} (Confidence: {best.likelihood*100:.0f}%, VALIDATED)\n</working_hypotheses>"
