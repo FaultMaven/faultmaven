@@ -415,6 +415,7 @@ class TestTransformInvestigating:
 
     def test_progress_transparency_when_stalled(self):
         from datetime import datetime, timezone
+
         from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
 
         case = _make_investigating_case()

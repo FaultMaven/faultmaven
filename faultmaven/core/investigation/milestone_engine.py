@@ -37,15 +37,15 @@ logger = logging.getLogger(__name__)
 
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.llm_error_handler import ErrorAction, LLMErrorHandler
+from faultmaven.core.investigation.progress_monitor import (
+    ProgressMonitor,
+)
 from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
     TerminalResponse,
     get_schema_for_stage,
-)
-from faultmaven.core.investigation.progress_monitor import (
-    ProgressMonitor,
 )
 from faultmaven.core.investigation.state_validator import (
     StateValidator,
