@@ -335,7 +335,6 @@ class TurnProgress(BaseModel):
 
     # Progress assessment
     progress_made: bool
-    actions_taken: List[str] = Field(default_factory=list)
 
     # Outcome
     outcome: TurnOutcome
@@ -574,10 +573,8 @@ class Case(BaseModel):
             return None
         return self.progress.current_stage
 
-    @property
-    def is_stuck(self) -> bool:
-        """Detect if investigation is blocked"""
-        return self.turns_without_progress >= 5
+    # is_stuck removed — replaced by ProgressMonitor transparent mode
+    # See: docs/architecture/investigation-engine/progress-transparency.md
 
     @property
     def is_terminal(self) -> bool:

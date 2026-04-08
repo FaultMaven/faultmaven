@@ -1616,13 +1616,12 @@ async def record_turn(
     else:
         case.turns_without_progress += 1
 
-    # Stagnation detection (threshold: 5 turns)
-    # When turns_without_progress exceeds threshold, the stagnation breaker
-    # emits a gentle_reminder BreakoutAction — a patient prompt injection that
-    # nudges the LLM toward the next diagnostic step without lowering confidence
-    # or suggesting escalation. FaultMaven is a copilot; the user decides the pace.
-    # This is a prompt hint, not a mode change — the agent continues doing
-    # the same thing it always does (analyzing data, surfacing insights, guiding).
+    # Progress monitoring (replaces old stagnation detection)
+    # After N investigative turns without a milestone completing, the
+    # ProgressMonitor activates transparent mode — surfacing what milestone
+    # is pending and what evidence would advance it. Also checks for agent
+    # state repair patterns (hypothesis deadlock, anchoring, etc.).
+    # See: docs/architecture/investigation-engine/progress-transparency.md
 
     return turn
 

@@ -1762,7 +1762,12 @@ paths:
       tags:
       - cases
       summary: Generate Case Reports
-      description: Generate case documentation reports.
+      description: 'Regenerate reports for a terminal case.
+
+
+        Reports are auto-generated when a case reaches terminal state.
+
+        This endpoint allows regeneration if the original was missing or needs refresh.'
       operationId: generate_case_reports_api_v1_cases__case_id__reports_post
       parameters:
       - name: case_id
@@ -1805,8 +1810,8 @@ paths:
       description: "Retrieve generated reports for a case.\n\nArgs:\n    case_id:\
         \ Case identifier\n    include_history: If True, return all report versions;\
         \ if False, only current\n    report_type: Optional filter by report type\
-        \ (incident_report, runbook, post_mortem)\n\nReturns:\n    List of CaseReport\
-        \ objects"
+        \ (resolution_summary, closure_summary, runbook)\n\nReturns:\n    List of\
+        \ CaseReport objects"
       operationId: get_case_reports_api_v1_cases__case_id__reports_get
       parameters:
       - name: case_id
@@ -3102,8 +3107,9 @@ paths:
       summary: List Documents
       description: "List knowledge base documents with optional filtering\n\nArgs:\n\
         \    document_type: Filter by document type\n    tags: Filter by tags (comma-separated)\n\
-        \    limit: Maximum number of documents to return\n    offset: Number of documents\
-        \ to skip\n\nReturns:\n    List of documents"
+        \    scope: Filter by scope (global, team, personal)\n    limit: Maximum number\
+        \ of documents to return\n    offset: Number of documents to skip\n\nReturns:\n\
+        \    List of documents"
       operationId: list_documents_api_v1_knowledge_documents_get
       parameters:
       - name: document_type
@@ -3122,6 +3128,14 @@ paths:
           - type: string
           - type: 'null'
           title: Tags
+      - name: scope
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scope
       - name: limit
         in: query
         required: false
@@ -3332,35 +3346,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DocumentSnippetResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/knowledge/jobs/{job_id}:
-    get:
-      tags:
-      - knowledge_base
-      summary: Get Job Status
-      description: "Get the status of a knowledge base ingestion job\n\nArgs:\n  \
-        \  job_id: Job identifier\n\nReturns:\n    Job status information"
-      operationId: get_job_status_api_v1_knowledge_jobs__job_id__get
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Get Job Status Api V1 Knowledge Jobs  Job Id  Get
         '422':
           description: Validation Error
           content:
@@ -4117,6 +4102,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/drafts/verify-batch:
+    post:
+      tags:
+      - knowledge-conversion
+      summary: Verify Batch
+      description: Activate multiple drafts sequentially (verify + ingest into KB).
+      operationId: verify_batch_api_v1_knowledge_drafts_verify_batch_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchVerifyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify:
     post:
       tags:
@@ -4182,6 +4201,76 @@ paths:
               $ref: '#/components/schemas/RunbookCreateRequest'
       responses:
         '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/convert-from-case:
+    post:
+      tags:
+      - knowledge-conversion
+      summary: Convert From Case
+      description: "Generate a runbook draft from a resolved case using the canonical\
+        \ template.\n\nThe generated runbook enters the same draft workflow as document-driven\n\
+        conversions: edit \u2192 verify \u2192 ingest into KB."
+      operationId: convert_from_case_api_v1_knowledge_convert_from_case_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseConversionAPIRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/knowledge/conversions/by-case/{case_id}:
+    get:
+      tags:
+      - knowledge-conversion
+      summary: Get Conversion By Case
+      description: Get the conversion job and drafts for a specific case.
+      operationId: get_conversion_by_case_api_v1_knowledge_conversions_by_case__case_id__get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
           description: Successful Response
           content:
             application/json:
@@ -7257,6 +7346,32 @@ components:
           - admin
           user_id: 550e8400-e29b-41d4-a716-446655440000
           username: john.doe
+    BatchDraftRef:
+      properties:
+        conversion_id:
+          type: string
+          title: Conversion Id
+        draft_id:
+          type: string
+          title: Draft Id
+      type: object
+      required:
+      - conversion_id
+      - draft_id
+      title: BatchDraftRef
+    BatchVerifyRequest:
+      properties:
+        draft_ids:
+          items:
+            $ref: '#/components/schemas/BatchDraftRef'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Draft Ids
+      type: object
+      required:
+      - draft_ids
+      title: BatchVerifyRequest
     Body_complete_session_api_v1_cases__case_id__sessions__session_id__complete_post:
       properties:
         findings_summary:
@@ -7689,6 +7804,26 @@ components:
       description: 'Record of one case action (phase transition or disposition change).
 
         Provides audit trail for case lifecycle.'
+    CaseConversionAPIRequest:
+      properties:
+        case_id:
+          type: string
+          title: Case Id
+          description: ID of the resolved case
+        scope:
+          type: string
+          title: Scope
+          description: 'KB scope: global, team, personal'
+          default: global
+        team_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Id
+      type: object
+      required:
+      - case_id
+      title: CaseConversionAPIRequest
     CaseCreateRequest:
       properties:
         title:
@@ -7805,15 +7940,9 @@ components:
         solution_count:
           type: integer
           title: Solution Count
-        is_stuck:
-          type: boolean
-          title: Is Stuck
         is_terminal:
           type: boolean
           title: Is Terminal
-        degraded_mode_active:
-          type: boolean
-          title: Degraded Mode Active
         escalated:
           type: boolean
           title: Escalated
@@ -7846,9 +7975,7 @@ components:
       - evidence_count
       - hypothesis_count
       - solution_count
-      - is_stuck
       - is_terminal
-      - degraded_mode_active
       - escalated
       title: CaseDetail
       description: Detailed case information for single case view.
@@ -7988,6 +8115,12 @@ components:
           title: Linked To Closure
           description: Linked to case closure
           default: false
+        auto_generated:
+          type: boolean
+          title: Auto Generated
+          description: True for auto-generated terminal summaries, False for user-requested
+            reports
+          default: false
         metadata:
           anyOf:
           - $ref: '#/components/schemas/RunbookMetadata'
@@ -8124,9 +8257,6 @@ components:
           type: boolean
           title: Is Archived
           default: false
-        is_stuck:
-          type: boolean
-          title: Is Stuck
         is_terminal:
           type: boolean
           title: Is Terminal
@@ -8153,7 +8283,6 @@ components:
       - closure_reason
       - current_turn
       - milestones_completed
-      - is_stuck
       - is_terminal
       title: CaseSummary
       description: Minimal case information for list views.
@@ -8299,16 +8428,6 @@ components:
           maxLength: 500
           title: Agent Status
           description: What agent is currently doing
-        is_stuck:
-          type: boolean
-          title: Is Stuck
-          description: Whether investigation is stuck (no progress for 5+ turns)
-          default: false
-        degraded_mode:
-          type: boolean
-          title: Degraded Mode
-          description: 'Deprecated: always False. DegradedMode has been removed.'
-          default: false
         investigation_strategy:
           anyOf:
           - $ref: '#/components/schemas/InvestigationStrategyData'
@@ -8319,6 +8438,12 @@ components:
           - $ref: '#/components/schemas/ProblemVerificationData'
           - type: 'null'
           description: Problem verification details (urgency, severity, impact)
+        progress_transparency:
+          anyOf:
+          - $ref: '#/components/schemas/ProgressTransparencyInfo'
+          - type: 'null'
+          description: Progress transparency state. Present when investigation has
+            stalled and agent is surfacing milestone dependencies.
       type: object
       required:
       - case_id
@@ -8702,15 +8827,13 @@ components:
     DocumentType:
       type: string
       enum:
-      - incident_report
-      - post_mortem
       - runbook
       - chat_summary
       - timeline
       - evidence_bundle
       - other
       title: DocumentType
-      description: Type of generated document
+      description: Type of generated document.
     DocumentationData:
       properties:
         documents_generated:
@@ -8726,12 +8849,6 @@ components:
           - type: 'null'
           title: Runbook Entry
           description: Runbook entry created from this case
-        post_mortem_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Post Mortem Id
-          description: Link to post-mortem doc if created
         lessons_learned:
           items:
             type: string
@@ -9968,7 +10085,7 @@ components:
           - type: 'null'
           title: Root Cause Method
           description: 'How root cause was identified: direct_analysis | hypothesis_validation
-            | single_shot_validation | correlation | other'
+            | single_shot_validation | correlation | user_provided | other'
         verification_completed_at:
           anyOf:
           - type: string
@@ -11170,6 +11287,24 @@ components:
           type: array
           title: Urgency Factors
           description: Factors contributing to urgency assessment
+        rca_infeasible:
+          type: boolean
+          title: Rca Infeasible
+          description: "Advisory signal: root cause analysis is infeasible for this\
+            \ problem. Set by the LLM during verification when the problem involves\
+            \ uncontrollable external dependencies, deprecated/EOL systems, or known\
+            \ intractable conditions where mitigation is the accepted strategy. Does\
+            \ NOT affect path selection \u2014 influences post-mitigation agent behavior\
+            \ only."
+          default: false
+        rca_infeasible_rationale:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Rca Infeasible Rationale
+          description: Why RCA is infeasible. Populated by the LLM when rca_infeasible=True.
+            E.g., 'Black-box 3rd-party API with no internal telemetry'.
         verified_at:
           anyOf:
           - type: string
@@ -11239,6 +11374,48 @@ components:
       type: object
       title: ProblemVerificationData
       description: Problem verification details for INVESTIGATING phase.
+    ProgressTransparencyInfo:
+      properties:
+        active:
+          type: boolean
+          title: Active
+          description: Whether transparent mode is active this turn
+        pending_milestone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pending Milestone
+          description: Milestone that progress is stalled on (e.g., 'root_cause_identified')
+        milestone_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Milestone Description
+          description: Human-readable description of what the pending milestone requires
+        repair_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repair Type
+          description: 'Agent state repair pattern detected, if any: hypothesis_anchoring,
+            hypothesis_deadlock, exhausted, fix_failure_cycle, action_loop'
+      type: object
+      required:
+      - active
+      title: ProgressTransparencyInfo
+      description: 'Progress transparency state for the current turn.
+
+
+        When active, the investigation has stalled (N investigative turns
+
+        without milestone progress) and the agent is surfacing what evidence
+
+        is needed to advance. The frontend should visually highlight the
+
+        pending milestone.
+
+
+        See: docs/architecture/investigation-engine/progress-transparency.md'
     ProposedAction:
       properties:
         action_id:
@@ -11317,7 +11494,7 @@ components:
           type: string
           maxLength: 100
           title: Report Type
-          description: 'Type: incident_report | post_mortem | runbook | timeline'
+          description: 'Type: resolution_summary | closure_summary | runbook'
         status:
           type: string
           maxLength: 50
@@ -11486,9 +11663,10 @@ components:
     ReportType:
       type: string
       enum:
-      - incident_report
+      - resolution_summary
+      - closure_summary
       - runbook
-      - post_mortem
+      - mitigation_playbook
       title: ReportType
       description: Type of case documentation report
     ReportUpdateRequest:
@@ -12545,13 +12723,6 @@ components:
           type: boolean
           title: Progress Made
           description: Did investigation advance this turn?
-        actions_taken:
-          items:
-            type: string
-          type: array
-          title: Actions Taken
-          description: 'Agent actions: ''verified_symptom'', ''requested_logs'', ''generated_hypothesis'',
-            etc.'
         outcome:
           $ref: '#/components/schemas/TurnOutcome'
           description: Turn outcome classification
@@ -12594,13 +12765,13 @@ components:
           type: array
           title: Next Steps
           description: Suggested next steps for the investigation
-        stagnation_detected:
+        repair_pattern:
           anyOf:
           - type: string
           - type: 'null'
-          title: Stagnation Detected
-          description: 'Stagnation type detected this turn: no_progress, hypothesis_anchoring,
-            action_loop, hypothesis_deadlock'
+          title: Repair Pattern
+          description: 'Agent state repair pattern detected this turn: hypothesis_anchoring,
+            hypothesis_deadlock, exhausted, fix_failure_cycle, action_loop'
         validation_repairs:
           items:
             type: string
@@ -12635,9 +12806,6 @@ components:
         progress_made:
           type: boolean
           title: Progress Made
-        is_stuck:
-          type: boolean
-          title: Is Stuck
         attachments_processed:
           items:
             $ref: '#/components/schemas/AttachmentResult'
@@ -12648,6 +12816,12 @@ components:
             $ref: '#/components/schemas/SuggestedActionResponse'
           type: array
           title: Suggested Actions
+        progress_transparency:
+          anyOf:
+          - $ref: '#/components/schemas/ProgressTransparencyInfo'
+          - type: 'null'
+          description: Progress transparency state. Present when investigation has
+            stalled and agent is surfacing milestone dependencies.
       type: object
       required:
       - agent_response
@@ -12655,7 +12829,6 @@ components:
       - milestones_completed
       - case_status
       - progress_made
-      - is_stuck
       title: TurnResponse
       description: Response for POST /cases/{id}/turns.
     UploadedFile:

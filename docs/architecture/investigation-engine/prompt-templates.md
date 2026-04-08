@@ -965,13 +965,12 @@ verified actual pool metrics yet - that would increase confidence to 85%+."
 """
 
 
-<!-- DegradedMode removed (Agent Behavior Is Constant principle).
-    NO_PROGRESS stagnation no longer injects prompt nudges — progress data
-    is surfaced to the user via the UI instead. Content-based stagnation types
-    (HYPOTHESIS_ANCHORING, ACTION_LOOP, HYPOTHESIS_DEADLOCK) still inject
-    recovery nudges via system_feedback. Data quality blockers are surfaced via
-    missing_critical_data → system_feedback. The agent's analytical behavior
-    does not change based on state flags. -->
+<!-- Progress transparency replaces old stagnation detection.
+    ProgressMonitor activates transparent mode after N investigative turns
+    without milestone progress — injects case-specific guidance via system_feedback.
+    Agent state repair patterns (HYPOTHESIS_ANCHORING, HYPOTHESIS_DEADLOCK,
+    EXHAUSTED, FIX_FAILURE_CYCLE, ACTION_LOOP) inject targeted corrections.
+    See: docs/architecture/investigation-engine/progress-transparency.md -->
 
 
 def _build_output_format_section() -> str:
@@ -997,7 +996,7 @@ Choose outcome (what happened THIS turn):
 - "blocked": System determines this from patterns (not your call!)
 
 **If user didn't provide requested data**: Use `data_not_provided`
-System will detect blocking patterns automatically (stagnation nudges at 3+ turns)
+Progress transparency will surface milestone dependencies when investigative turns accumulate without progress.
 
 ═══════════════════════════════════════════════════════════
 OUTPUT FORMAT
@@ -1284,13 +1283,13 @@ IMPORTANT: Do NOT propose hypotheses in 'code' category. This category
 has been explored extensively without success. Try different categories
 like: config, environment, network
 
-Note: Only content-based stagnation types inject recovery nudges:
-- HYPOTHESIS_ANCHORING: forces alternative hypothesis categories
-- ACTION_LOOP: requests user input to break repetitive actions
+Note: Progress transparency and agent state repair patterns inject via system_feedback:
+- Progress transparency: surfaces pending milestone and case-specific guidance
+- HYPOTHESIS_ANCHORING: bans the anchored category, forces alternatives
 - HYPOTHESIS_DEADLOCK: retires inconclusive hypotheses, prompts fresh ones
-
-NO_PROGRESS does NOT inject — progress data is surfaced to the user
-via the UI instead (completed milestones, turns_without_progress, etc.).
+- EXHAUSTED: triggers structured handoff summary
+- FIX_FAILURE_CYCLE: summarizes failed fix attempts and options
+- ACTION_LOOP: breaks repetitive execution loop
 
 ═══════════════════════════════════════════════════════════
 YOUR TASK
