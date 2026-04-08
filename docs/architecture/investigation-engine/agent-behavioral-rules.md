@@ -344,6 +344,7 @@ YOUR TASK: {adaptive_instructions}                      Focus Zone prepended her
 KEY PRINCIPLES (Rules 4, 5)                             Graceful Pivot + Work With What You Get
 FOLLOW-UP SUGGESTIONS
 EVIDENCE FROM ATTACHMENTS / CLASSIFICATION / RECORDS
+EVIDENCE SUMMARY QUALITY                               Long-term memory for evidence artifacts
 MILESTONE ATTRIBUTION
 ASSISTANT ROLE (Rule 3)                                 Advisor Role vocabulary constraints
 CONCISENESS

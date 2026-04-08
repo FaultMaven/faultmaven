@@ -254,14 +254,14 @@ class HypothesisUpdate(BaseModel):
 
 ## Implementation Plan
 
-### Phase 1: Quick Wins (prompt + config changes only)
+### Phase 1: Quick Wins (prompt + config changes only) — DONE
 
-No model changes, no schema changes. Can be done immediately.
+No model changes, no schema changes. Implemented in commit `a4b8924d`.
 
-| Change | File | Effort |
+| Change | File | Status |
 |---|---|---|
-| Evidence summary quality prompt | `templates.py` (INVESTIGATION_BASE) | 10 min |
-| Working conclusion reasoning cap 500→1000 | `context_builder.py` | 1 min |
+| Evidence summary quality prompt | `templates.py` (INVESTIGATION_BASE) | Done |
+| Working conclusion reasoning cap 500→1000 | `context_builder.py` | Done |
 
 ### Phase 2: Investigation Journal
 
