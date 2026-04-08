@@ -54,6 +54,16 @@ HISTORY_SUMMARY_MAX_TURNS = 7
 # Agent response character count before smart-truncation kicks in
 HISTORY_AGENT_TRUNCATE_THRESHOLD = 600
 
+# =============================================================================
+# State Summary Configuration
+# =============================================================================
+# Turn threshold at which graduated history is replaced with compact state summary
+STATE_SUMMARY_TURN_THRESHOLD = 15
+# Max evidence digest items in state summary
+STATE_SUMMARY_MAX_EVIDENCE_DIGESTS = 8
+# Max chars per evidence digest entry
+STATE_SUMMARY_DIGEST_CHARS = 180
+
 logger = logging.getLogger(__name__)
 
 _TRUNCATION_MARKER = "[...analysis removed for brevity...]"
@@ -506,17 +516,22 @@ def _build_state_summary(case: Case) -> str:
 
     verified = ", ".join(verified_items) if verified_items else "none"
 
-    # Active hypothesis
+    # Active hypotheses — include top 3 so the agent retains awareness of
+    # competing theories when the full hypothesis block is absent.
     active_h = [
         h for h in case.hypotheses.values() if h.status.value in ["active", "validated"]
     ]
     if active_h:
-        best_h = max(active_h, key=lambda h: h.likelihood)
-        hypothesis_str = (
-            f"{best_h.statement[:80]} ({best_h.likelihood*100:.0f}% confidence)"
-        )
+        sorted_h = sorted(active_h, key=lambda h: h.likelihood, reverse=True)
+        hypothesis_lines = []
+        for h in sorted_h[:3]:
+            status_tag = " [VALIDATED]" if h.status.value == "validated" else ""
+            hypothesis_lines.append(
+                f"  - {h.statement[:100]} ({h.likelihood*100:.0f}%{status_tag})"
+            )
+        hypothesis_str = "\n".join(hypothesis_lines)
     else:
-        hypothesis_str = "None yet"
+        hypothesis_str = "  None yet"
 
     # Evidence count + digest of diagnostic findings
     evidence_count = len(case.evidence)
@@ -526,16 +541,28 @@ def _build_state_summary(case: Case) -> str:
         else "No evidence collected"
     )
 
-    # Compact digest: retain key findings from diagnostic evidence (logs, metrics)
-    # so the agent can still cite specifics after Tier A window eviction
+    # Compact digest: retain key findings from diagnostic evidence so the agent
+    # can still cite specifics after Tier A window eviction. Includes config/code
+    # evidence which often contains root-cause clues.
     evidence_digests = []
     for ev in case.evidence:
         dt = (ev.data_type or "").lower()
         if (
-            "log" in dt or "metric" in dt or "trace" in dt or "error_report" in dt
+            "log" in dt
+            or "metric" in dt
+            or "trace" in dt
+            or "error_report" in dt
+            or "config" in dt
+            or "code" in dt
         ) and ev.summary:
-            evidence_digests.append(f"[{ev.data_type}] {ev.summary[:120]}")
-    evidence_digest = "; ".join(evidence_digests[:5]) if evidence_digests else ""
+            evidence_digests.append(
+                f"[{ev.data_type}] {ev.summary[:STATE_SUMMARY_DIGEST_CHARS]}"
+            )
+    evidence_digest = (
+        "; ".join(evidence_digests[:STATE_SUMMARY_MAX_EVIDENCE_DIGESTS])
+        if evidence_digests
+        else ""
+    )
 
     # Turn metrics
     turns_total = case.current_turn
@@ -545,7 +572,8 @@ def _build_state_summary(case: Case) -> str:
 Investigation: {problem_desc}
 Stage: {stage}
 Verified: {verified}
-Active Hypothesis: {hypothesis_str}
+Active Hypotheses:
+{hypothesis_str}
 Evidence: {evidence_str}
 Turns: {turns_total} total, {turns_since_progress} since last progress
 </state_summary>"""
@@ -1113,7 +1141,7 @@ def build_investigation_context(
     # - State Summary (>15 turns): Minimal summary + last turn only
     # - Graduated History (≤15 turns): Recent turns verbatim, older summarized
     if use_state_summary is None:
-        use_state_summary = case.current_turn > 15
+        use_state_summary = case.current_turn > STATE_SUMMARY_TURN_THRESHOLD
 
     if use_state_summary:
         # State Summary + Last Turn pattern (~200 tokens vs ~2000)
@@ -1145,12 +1173,19 @@ def build_investigation_context(
         recent_history = _build_graduated_history(case)
 
     # 7. Knowledge Base Results
+    # Cap individual solution text to prevent a single verbose runbook from
+    # consuming the remaining token budget.
     kb_str = ""
     if kb_results:
         kb_str = "<knowledge_base_matches>\n"
+        kb_max_solution_chars = 800
         for i, res in enumerate(kb_results[:3]):  # Top 3
-            kb_str += f"MATCH {i+1} ({res.get('type')}): {res.get('summary')}\n"
-            kb_str += f"SOLUTION: {res.get('solution')}\n\n"
+            summary = res.get("summary", "")
+            solution = res.get("solution", "")
+            if len(solution) > kb_max_solution_chars:
+                solution = solution[:kb_max_solution_chars] + "... [truncated]"
+            kb_str += f"MATCH {i+1} ({res.get('type')}): {summary}\n"
+            kb_str += f"SOLUTION: {solution}\n\n"
         kb_str += "</knowledge_base_matches>"
 
     # 8. System Feedback (Validation errors from previous turn)
@@ -1161,30 +1196,42 @@ def build_investigation_context(
             feedback_str = f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{last_turn.system_feedback}\n\n"
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
-    # Optimize context by skipping irrelevant sections based on investigation stage
+    # Optimize context by condensing hypothesis details during stages where
+    # diagnosis is complete. Frees budget for action-focused context.
     if enable_stage_specific_loading and case.status == CaseStatus.INVESTIGATING:
         stage = case.current_stage or InvestigationStage.DIAGNOSIS
 
         if stage == InvestigationStage.DIAGNOSIS:
-            # DIAGNOSIS covers symptom verification, hypothesis work, and solution proposal
             logger.debug(
-                f"Stage-specific loading: DIAGNOSIS - full context for diagnosis"
+                "Stage-specific loading: DIAGNOSIS - full context for diagnosis"
             )
-            # All context sections are relevant during diagnosis
 
         elif stage == InvestigationStage.MITIGATION:
-            # MITIGATION: Focus on the proposed mitigation and verification
             logger.debug(
-                f"Stage-specific loading: MITIGATION - focusing on mitigation verification"
+                "Stage-specific loading: MITIGATION - condensing hypotheses"
             )
-            # Hypotheses are less important during mitigation
+            # During mitigation, condense to just active/validated hypotheses
+            if active_h:
+                condensed = [h for h in active_h if h.status.value in ("active", "validated")]
+                if condensed:
+                    hypothesis_str = "<working_hypotheses>\n"
+                    for h in condensed:
+                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%)\n"
+                    hypothesis_str += "</working_hypotheses>"
+                else:
+                    hypothesis_str = ""
 
         elif stage == InvestigationStage.TREATMENT:
-            # TREATMENT: Focus on solution verification, extended diagnosis if fix fails
             logger.debug(
-                f"Stage-specific loading: TREATMENT - focusing on solution verification"
+                "Stage-specific loading: TREATMENT - condensing hypotheses"
             )
-            # All context sections relevant (may need extended diagnosis)
+            # During treatment, only the validated hypothesis matters
+            validated = [h for h in active_h if h.status.value == "validated"] if active_h else []
+            if validated:
+                best = max(validated, key=lambda h: h.likelihood)
+                hypothesis_str = f"<working_hypotheses>\n- {best.statement} (Confidence: {best.likelihood*100:.0f}%, VALIDATED)\n</working_hypotheses>"
+            else:
+                hypothesis_str = ""
 
     # 10. INQUIRY State (prevents blind re-proposal of already-proposed problem statements)
     inquiry_state_str = ""
