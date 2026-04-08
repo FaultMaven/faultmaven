@@ -13,9 +13,9 @@ A structured, append-only log of key decisions and findings that gives the Fault
 
 ## The Problem
 
-The FaultMaven agent has no persistent memory. Every turn, it receives a fresh prompt assembled from the case state by the context builder. Its "memory" is entirely what fits in that prompt.
+The FaultMaven agent has persistent memory — the Case object stores all evidence, hypotheses, turn history, working conclusions, and milestones. This is why users can continue an investigation across sessions. However, the LLM that powers the agent is stateless. Every turn, it receives a fresh prompt assembled by the context builder from the agent's persistent state.
 
-As investigations grow long, critical information falls out of context:
+The context builder can only fit a fraction of the agent's memory into each LLM prompt. As investigations grow long, the compression becomes lossy — important details that exist in the agent's state don't make it into the prompt the LLM sees:
 
 | What's lost | When | Why it matters |
 |---|---|---|
@@ -30,7 +30,7 @@ The existing durable artifacts (evidence summaries, hypothesis status, working c
 
 ## The Solution: Investigation Journal
 
-An append-only list of short, structured entries that capture the key decisions, findings, user context, and ruled-out paths at each significant turn. The journal is always included in full in the LLM context — it's the agent's long-term memory.
+An append-only list of short, structured entries that capture the key decisions, findings, user context, and ruled-out paths at each significant turn. The journal is always included in full in the LLM prompt — it's a compact representation of the agent's accumulated knowledge that the LLM can access every turn without the context builder having to choose what to drop.
 
 ### Design Principles
 
@@ -320,7 +320,7 @@ The journal replaces information that was previously in conversation history tur
 | Turn 25: agent needs user context mentioned at turn 4 | Lost — "deployed last Tuesday" was in a conversation turn | Journal entry says "USER_CONTEXT: Deployed ChromaDB 0.4.22 on Feb 9" |
 | Turn 30: new team member takes over the investigation | Must read entire transcript to understand state | Journal provides a 25-line summary of everything significant |
 
-The journal is to the FaultMaven agent what notes are to a human investigator — you don't re-read the entire conversation, you check your notes.
+The journal is to the LLM what notes are to a human investigator — you don't re-read the entire conversation, you check your notes. The agent remembers everything; the journal ensures the LLM sees what matters.
 
 ---
 
