@@ -29,6 +29,7 @@ from faultmaven.models.api import DataType
 from faultmaven.models.api_models import (
     AttachmentResult,
     IntentType,
+    ProgressTransparencyInfo,
     SuggestedActionResponse,
     TurnResponse,
 )
@@ -323,11 +324,6 @@ class InvestigationService:
                 ),
                 case_status=updated_case.status,
                 progress_made=result.get("metadata", {}).get("progress_made", False),
-                is_stuck=(
-                    updated_case.is_stuck
-                    if hasattr(updated_case, "is_stuck")
-                    else False
-                ),
                 attachments_processed=[
                     AttachmentResult(
                         evidence_id=ev.evidence_id,
@@ -345,6 +341,9 @@ class InvestigationService:
                     for att, ev in zip(payload.attachments, evidence_created)
                 ],
                 suggested_actions=suggested_actions,
+                progress_transparency=self._build_progress_transparency(
+                    result.get("metadata", {})
+                ),
             )
 
             logger.info(
@@ -374,7 +373,7 @@ class InvestigationService:
             Progress summary with:
             - case_id, status, current_stage
             - milestones_completed, pending_milestones
-            - current_turn, is_stuck
+            - current_turn
 
         Raises:
             NotFoundError: If case not found
@@ -405,7 +404,6 @@ class InvestigationService:
                 "milestones_completed": case.progress.completed_milestones,
                 "pending_milestones": case.progress.pending_milestones,
                 "current_turn": case.current_turn,
-                "is_stuck": case.is_stuck if hasattr(case, "is_stuck") else False,
             }
 
         except (NotFoundError, PermissionDeniedException):
@@ -611,6 +609,23 @@ class InvestigationService:
         )
 
         return result
+
+    def _build_progress_transparency(
+        self, metadata: Dict[str, Any]
+    ) -> Optional[ProgressTransparencyInfo]:
+        """Build ProgressTransparencyInfo from turn metadata.
+
+        Returns None if progress transparency is not active (silent mode).
+        """
+        if not metadata.get("progress_transparent"):
+            return None
+
+        return ProgressTransparencyInfo(
+            active=True,
+            pending_milestone=metadata.get("pending_milestone"),
+            milestone_description=metadata.get("milestone_description"),
+            repair_type=metadata.get("stagnation_type"),
+        )
 
     async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:
         """Handle greeting intent without LLM.

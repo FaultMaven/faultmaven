@@ -413,14 +413,38 @@ class TestTransformInvestigating:
         assert result.investigation_strategy is not None
         assert "mitigation" in result.investigation_strategy.approach.lower()
 
-    def test_is_stuck_flag(self):
+    def test_progress_transparency_when_stalled(self):
+        from datetime import datetime, timezone
+        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+
         case = _make_investigating_case()
-        case.turns_without_progress = 6  # > 5 triggers stuck
+        # Add 5+ investigative turns without milestones to trigger transparency
+        case.turn_history = [
+            TurnProgress(
+                turn_number=i,
+                timestamp=datetime.now(timezone.utc),
+                milestones_completed=[],
+                evidence_added=[f"ev_{i}"] if i % 2 == 0 else [],
+                hypotheses_generated=[],
+                hypotheses_validated=[],
+                solutions_proposed=[],
+                progress_made=False,
+                outcome=(
+                    TurnOutcome.DATA_PROVIDED
+                    if i % 2 == 0
+                    else TurnOutcome.DATA_REQUESTED
+                ),
+                user_message_summary="test",
+                agent_response_summary="test",
+            )
+            for i in range(6)
+        ]
 
         result = transform_case_for_ui(case)
 
-        assert result.is_stuck is True
-        assert "stuck" in result.agent_status.lower()
+        assert result.progress_transparency is not None
+        assert result.progress_transparency.active is True
+        assert result.progress_transparency.pending_milestone is not None
 
 
 # ============================================================

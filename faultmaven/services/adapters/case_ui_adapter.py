@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
 
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
+from faultmaven.models.api_models import ProgressTransparencyInfo
 from faultmaven.models.case_ui import (
     CaseUIResponse,
     CaseUIResponse_Inquiry,
@@ -212,6 +213,82 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
 
 
 # ============================================================
+# Progress Transparency
+# ============================================================
+
+# Milestone dependency descriptions (static map, mirrors progress_monitor.py)
+_MILESTONE_DESCRIPTIONS = {
+    "symptom_verified": "Verify the reported symptoms with evidence",
+    "scope_assessed": "Determine which systems or services are affected",
+    "timeline_established": "Establish when the issue started or changed",
+    "changes_identified": "Identify recent changes that may relate to the issue",
+    "root_cause_identified": "Validate a hypothesis with supporting causal evidence",
+    "solution_proposed": "Propose a concrete fix based on identified root cause",
+    "mitigation_verified": "Verify that the temporary fix stabilized the situation",
+    "solution_verified": "Verify that the permanent fix resolved the issue",
+}
+
+# Threshold for transparent mode (must match ProgressMonitor default)
+_TRANSPARENCY_THRESHOLD = 5
+
+
+def _compute_progress_transparency(
+    case: Case,
+) -> Optional[ProgressTransparencyInfo]:
+    """Compute progress transparency state from case turn history.
+
+    Pure computation — no external dependencies. Mirrors the logic in
+    ProgressMonitor but simplified for the UI adapter context (no repair
+    pattern detection, just transparency state).
+    """
+    if not case.progress:
+        return None
+
+    # Count investigative turns since last milestone
+    investigative_count = 0
+    for turn in reversed(case.turn_history):
+        if turn.milestones_completed:
+            break
+        is_investigative = bool(turn.evidence_added) or (
+            turn.outcome and turn.outcome.value not in ("conversation", "other")
+        )
+        if is_investigative:
+            investigative_count += 1
+
+    if investigative_count < _TRANSPARENCY_THRESHOLD:
+        return None
+
+    # Find pending milestone for current stage
+    stage = case.current_stage
+    stage_name = stage.value.upper() if stage else "DIAGNOSIS"
+
+    # Map stages to their milestone sequences
+    stage_milestones = {
+        "DIAGNOSIS": [
+            "symptom_verified",
+            "scope_assessed",
+            "timeline_established",
+            "changes_identified",
+            "root_cause_identified",
+            "solution_proposed",
+        ],
+        "MITIGATION": ["mitigation_verified"],
+        "TREATMENT": ["solution_verified"],
+    }
+
+    milestones = stage_milestones.get(stage_name, [])
+    for milestone_name in milestones:
+        if not getattr(case.progress, milestone_name, False):
+            return ProgressTransparencyInfo(
+                active=True,
+                pending_milestone=milestone_name,
+                milestone_description=_MILESTONE_DESCRIPTIONS.get(milestone_name),
+            )
+
+    return None
+
+
+# ============================================================
 # Phase-Specific Transformation Functions
 # ============================================================
 
@@ -356,8 +433,6 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
 
     # Agent status message
     agent_status = f"Working on {case.progress.current_stage.value.replace('_', ' ')}"
-    if case.is_stuck:
-        agent_status = "Investigation appears stuck - reviewing alternative approaches"
 
     # Next actions (from pending milestones)
     next_actions = []
@@ -370,6 +445,9 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
     # Extract investigation strategy and problem verification
     investigation_strategy_data = _get_investigation_strategy_data(case)
     problem_verification_data = _extract_problem_verification(case)
+
+    # Progress transparency: compute from turn history (stateless)
+    transparency_info = _compute_progress_transparency(case)
 
     return CaseUIResponse_Investigating(
         case_id=case.case_id,
@@ -385,10 +463,9 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         latest_evidence=evidence_summaries,
         next_actions=next_actions,
         agent_status=agent_status,
-        is_stuck=case.is_stuck,
-        degraded_mode=False,
         investigation_strategy=investigation_strategy_data,
         problem_verification=problem_verification_data,
+        progress_transparency=transparency_info,
         valid_next_states=[
             status.value
             for status in CaseActionManager.get_allowed_transitions(case.status)

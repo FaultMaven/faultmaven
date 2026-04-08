@@ -102,7 +102,6 @@ class CaseSummary(BaseModel):
     is_archived: bool = False
 
     # Computed fields
-    is_stuck: bool
     is_terminal: bool
 
     # Status transitions
@@ -131,7 +130,6 @@ class CaseSummary(BaseModel):
             milestones_completed=len(case.progress.completed_milestones),
             total_milestones=8,
             is_archived=case.is_archived,
-            is_stuck=case.is_stuck,
             is_terminal=case.is_terminal,
             valid_next_states=[
                 status.value
@@ -172,9 +170,7 @@ class CaseDetail(BaseModel):
     solution_count: int
 
     # Flags
-    is_stuck: bool
     is_terminal: bool
-    degraded_mode_active: bool
     escalated: bool
 
     # Status transitions
@@ -207,9 +203,7 @@ class CaseDetail(BaseModel):
             evidence_count=len(case.evidence),
             hypothesis_count=len(case.hypotheses),
             solution_count=len(case.solutions),
-            is_stuck=case.is_stuck,
             is_terminal=case.is_terminal,
-            degraded_mode_active=False,
             escalated=(
                 case.escalation_state.is_active if case.escalation_state else False
             ),
@@ -235,8 +229,6 @@ class CaseListFilter(BaseModel):
     )
 
     status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
-
-    is_stuck: Optional[bool] = Field(default=None, description="Filter stuck cases")
 
     created_after: Optional[datetime] = Field(
         default=None, description="Cases created after this date"
@@ -438,6 +430,34 @@ class SuggestedActionResponse(BaseModel):
     hints: Optional[List[str]] = None  # FREE_SPEECH: short framework tags
 
 
+class ProgressTransparencyInfo(BaseModel):
+    """Progress transparency state for the current turn.
+
+    When active, the investigation has stalled (N investigative turns
+    without milestone progress) and the agent is surfacing what evidence
+    is needed to advance. The frontend should visually highlight the
+    pending milestone.
+
+    See: docs/architecture/investigation-engine/progress-transparency.md
+    """
+
+    active: bool = Field(description="Whether transparent mode is active this turn")
+    pending_milestone: Optional[str] = Field(
+        default=None,
+        description="Milestone that progress is stalled on (e.g., 'root_cause_identified')",
+    )
+    milestone_description: Optional[str] = Field(
+        default=None,
+        description="Human-readable description of what the pending milestone requires",
+    )
+    repair_type: Optional[str] = Field(
+        default=None,
+        description="Agent state repair pattern detected, if any: "
+        "hypothesis_anchoring, hypothesis_deadlock, exhausted, "
+        "fix_failure_cycle, action_loop",
+    )
+
+
 class TurnResponse(BaseModel):
     """Response for POST /cases/{id}/turns."""
 
@@ -446,9 +466,13 @@ class TurnResponse(BaseModel):
     milestones_completed: List[str]
     case_status: CaseStatus
     progress_made: bool
-    is_stuck: bool
     attachments_processed: List[AttachmentResult] = Field(default_factory=list)
     suggested_actions: List[SuggestedActionResponse] = Field(default_factory=list)
+    progress_transparency: Optional[ProgressTransparencyInfo] = Field(
+        default=None,
+        description="Progress transparency state. Present when investigation "
+        "has stalled and agent is surfacing milestone dependencies.",
+    )
 
 
 # ============================================================

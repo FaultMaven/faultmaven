@@ -73,7 +73,6 @@ def create_turn(
         hypotheses_validated=[],
         solutions_proposed=[],
         progress_made=progress_made,
-        actions_taken=[],
         outcome=outcome,
         user_message_summary="test",
         agent_response_summary="test",

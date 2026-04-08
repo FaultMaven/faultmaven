@@ -12,6 +12,7 @@ from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
+from faultmaven.models.api_models import ProgressTransparencyInfo
 from faultmaven.modules.case.domain.models import (
     CaseStatus,
     ConfidenceLevel,
@@ -454,16 +455,6 @@ class CaseUIResponse_Investigating(BaseModel):
         description="What agent is currently doing", max_length=500
     )
 
-    is_stuck: bool = Field(
-        default=False,
-        description="Whether investigation is stuck (no progress for 5+ turns)",
-    )
-
-    degraded_mode: bool = Field(
-        default=False,
-        description="Deprecated: always False. DegradedMode has been removed.",
-    )
-
     # ============================================================
     # Additional Investigation Data (from BACKEND_REMAINING_WORK)
     # ============================================================
@@ -474,6 +465,12 @@ class CaseUIResponse_Investigating(BaseModel):
     problem_verification: Optional[ProblemVerificationData] = Field(
         default=None,
         description="Problem verification details (urgency, severity, impact)",
+    )
+
+    progress_transparency: Optional[ProgressTransparencyInfo] = Field(
+        default=None,
+        description="Progress transparency state. Present when investigation "
+        "has stalled and agent is surfacing milestone dependencies.",
     )
 
 

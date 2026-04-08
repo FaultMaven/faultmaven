@@ -2243,6 +2243,9 @@ class MilestoneEngine:
 
                 metadata["progress_transparent"] = True
                 metadata["pending_milestone"] = progress_result.pending_milestone
+                metadata["milestone_description"] = (
+                    progress_result.milestone_description
+                )
 
                 # Store prompt injection in system_feedback for next turn
                 if progress_result.prompt_injection:
@@ -2298,7 +2301,7 @@ class MilestoneEngine:
                 momentum=progress_metrics.investigation_momentum,
                 blocked_reasons=progress_metrics.blocked_reasons,
                 next_steps=progress_metrics.next_steps,
-                stagnation_detected=stagnation_str,
+                repair_pattern=stagnation_str,
                 validation_repairs=validation_repairs,
             )
             case_updated.turn_history.append(turn_record)
@@ -4839,7 +4842,7 @@ class MilestoneEngine:
         momentum: InvestigationMomentum | None = None,
         blocked_reasons: list[str] | None = None,
         next_steps: list[str] | None = None,
-        stagnation_detected: str | None = None,
+        repair_pattern: str | None = None,
         validation_repairs: list[str] | None = None,
     ) -> TurnProgress:
         """Create turn progress record."""
@@ -4852,7 +4855,6 @@ class MilestoneEngine:
             hypotheses_validated=hypotheses_validated,
             solutions_proposed=solutions_proposed,
             progress_made=progress_made,
-            actions_taken=self._extract_actions(agent_response),
             outcome=outcome,
             user_message_summary=self._summarize_text(user_message, 200),
             agent_response_summary=self._summarize_text(agent_response, 500),
@@ -4860,7 +4862,7 @@ class MilestoneEngine:
             momentum=momentum,
             blocked_reasons=blocked_reasons or [],
             next_steps=next_steps or [],
-            stagnation_detected=stagnation_detected,
+            repair_pattern=repair_pattern,
             validation_repairs=validation_repairs or [],
         )
 
@@ -4887,31 +4889,11 @@ class MilestoneEngine:
                 hypotheses_validated=[],
                 solutions_proposed=[],
                 progress_made=False,
-                actions_taken=[],
                 outcome=TurnOutcome.CONVERSATION,
                 user_message_summary=self._summarize_text(user_message, 200),
                 agent_response_summary=self._summarize_text(agent_response, 500),
             )
         )
-
-    def _extract_actions(self, agent_response: str) -> list[str]:
-        """Extract action keywords from agent response."""
-        action_keywords = [
-            "verified",
-            "identified",
-            "proposed",
-            "tested",
-            "confirmed",
-            "analyzed",
-        ]
-        actions = []
-
-        response_lower = agent_response.lower()
-        for keyword in action_keywords:
-            if keyword in response_lower:
-                actions.append(keyword)
-
-        return actions[:5]  # Limit to 5
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
         """Check if any meaningful investigative activity occurred.

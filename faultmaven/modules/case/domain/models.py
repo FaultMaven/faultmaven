@@ -2414,11 +2414,6 @@ class TurnProgress(BaseModel):
     # ============================================================
     progress_made: bool = Field(description="Did investigation advance this turn?")
 
-    actions_taken: List[str] = Field(
-        default_factory=list,
-        description="Agent actions: 'verified_symptom', 'requested_logs', 'generated_hypothesis', etc.",
-    )
-
     # ============================================================
     # Outcome
     # ============================================================
@@ -2463,11 +2458,13 @@ class TurnProgress(BaseModel):
     )
 
     # ============================================================
-    # Observability Fields (for stagnation and validation tracking)
+    # Observability Fields (for progress monitoring and validation tracking)
     # ============================================================
-    stagnation_detected: Optional[str] = Field(
+    repair_pattern: Optional[str] = Field(
         default=None,
-        description="Stagnation type detected this turn: no_progress, hypothesis_anchoring, action_loop, hypothesis_deadlock",
+        description="Agent state repair pattern detected this turn: "
+        "hypothesis_anchoring, hypothesis_deadlock, exhausted, "
+        "fix_failure_cycle, action_loop",
     )
 
     validation_repairs: List[str] = Field(
@@ -3333,14 +3330,6 @@ class Case(BaseModel):
         return self.progress.current_stage
 
     @property
-    def is_stuck(self) -> bool:
-        """
-        Detect if investigation needs strategy adaptation.
-        Returns True if 5+ consecutive turns without investigative progress.
-        """
-        return self.turns_without_progress >= 5
-
-    @property
     def current_momentum(self) -> Optional[InvestigationMomentum]:
         """
         Get momentum from the most recent turn for real-time dashboard display.
@@ -3445,17 +3434,6 @@ class Case(BaseModel):
         Used by frontend to display alert banners.
         """
         warnings: List[Dict[str, Any]] = []
-
-        # Info: Investigation adapting strategy
-        if self.is_stuck:
-            warnings.append(
-                {
-                    "type": "stuck",
-                    "severity": "info",
-                    "message": f"Investigation adapting approach after {self.turns_without_progress} turns",
-                    "action": "The investigation is trying a different diagnostic angle. You can help by providing specific data if requested.",
-                }
-            )
 
         # Info: Escalation active
         if self.escalation_state and self.escalation_state.is_active:
