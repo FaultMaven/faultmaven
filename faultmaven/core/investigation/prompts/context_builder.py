@@ -63,6 +63,8 @@ STATE_SUMMARY_TURN_THRESHOLD = 15
 STATE_SUMMARY_MAX_EVIDENCE_DIGESTS = 8
 # Max chars per evidence digest entry
 STATE_SUMMARY_DIGEST_CHARS = 180
+# Max chars per KB solution in context (prevents verbose runbooks from consuming budget)
+KB_MAX_SOLUTION_CHARS = 800
 
 logger = logging.getLogger(__name__)
 
@@ -1178,12 +1180,11 @@ def build_investigation_context(
     kb_str = ""
     if kb_results:
         kb_str = "<knowledge_base_matches>\n"
-        kb_max_solution_chars = 800
         for i, res in enumerate(kb_results[:3]):  # Top 3
             summary = res.get("summary", "")
             solution = res.get("solution", "")
-            if len(solution) > kb_max_solution_chars:
-                solution = solution[:kb_max_solution_chars] + "... [truncated]"
+            if len(solution) > KB_MAX_SOLUTION_CHARS:
+                solution = solution[:KB_MAX_SOLUTION_CHARS] + "... [truncated]"
             kb_str += f"MATCH {i+1} ({res.get('type')}): {summary}\n"
             kb_str += f"SOLUTION: {solution}\n\n"
         kb_str += "</knowledge_base_matches>"
@@ -1198,39 +1199,51 @@ def build_investigation_context(
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by condensing hypothesis details during stages where
     # diagnosis is complete. Frees budget for action-focused context.
+    # Uses its own query against case.hypotheses rather than the active_h
+    # variable from section 5 (which contains all non-retired hypotheses).
     if enable_stage_specific_loading and case.status == CaseStatus.INVESTIGATING:
         stage = case.current_stage or InvestigationStage.DIAGNOSIS
 
         if stage == InvestigationStage.DIAGNOSIS:
-            logger.debug(
-                "Stage-specific loading: DIAGNOSIS - full context for diagnosis"
-            )
+            # During long DIAGNOSIS investigations (state summary mode), condense
+            # to top 3 hypotheses — the full block would duplicate the state summary.
+            if use_state_summary:
+                active_validated = [
+                    h
+                    for h in case.hypotheses.values()
+                    if h.status.value in ("active", "validated")
+                ]
+                if active_validated:
+                    top_3 = sorted(
+                        active_validated, key=lambda h: h.likelihood, reverse=True
+                    )[:3]
+                    hypothesis_str = "<working_hypotheses>\n"
+                    for h in top_3:
+                        hypothesis_str += f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%, Status: {h.status.value})\n"
+                    hypothesis_str += "</working_hypotheses>"
 
         elif stage == InvestigationStage.MITIGATION:
             logger.debug("Stage-specific loading: MITIGATION - condensing hypotheses")
-            # During mitigation, condense to just active/validated hypotheses
-            if active_h:
-                condensed = [
-                    h for h in active_h if h.status.value in ("active", "validated")
-                ]
-                if condensed:
-                    hypothesis_str = "<working_hypotheses>\n"
-                    for h in condensed:
-                        hypothesis_str += (
-                            f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%)\n"
-                        )
-                    hypothesis_str += "</working_hypotheses>"
-                else:
-                    hypothesis_str = ""
+            active_validated = [
+                h
+                for h in case.hypotheses.values()
+                if h.status.value in ("active", "validated")
+            ]
+            if active_validated:
+                hypothesis_str = "<working_hypotheses>\n"
+                for h in active_validated:
+                    hypothesis_str += (
+                        f"- {h.statement} (Confidence: {h.likelihood*100:.0f}%)\n"
+                    )
+                hypothesis_str += "</working_hypotheses>"
+            else:
+                hypothesis_str = ""
 
         elif stage == InvestigationStage.TREATMENT:
             logger.debug("Stage-specific loading: TREATMENT - condensing hypotheses")
-            # During treatment, only the validated hypothesis matters
-            validated = (
-                [h for h in active_h if h.status.value == "validated"]
-                if active_h
-                else []
-            )
+            validated = [
+                h for h in case.hypotheses.values() if h.status.value == "validated"
+            ]
             if validated:
                 best = max(validated, key=lambda h: h.likelihood)
                 hypothesis_str = f"<working_hypotheses>\n- {best.statement} (Confidence: {best.likelihood*100:.0f}%, VALIDATED)\n</working_hypotheses>"
