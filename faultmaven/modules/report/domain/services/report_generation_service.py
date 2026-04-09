@@ -465,7 +465,16 @@ class ReportGenerationService:
             parts.append("## Mitigation Status\n")
             for i, sol in enumerate(solutions, 1):
                 sol_title = getattr(sol, "title", f"Solution {i}")
-                sol_desc = getattr(sol, "description", "")
+                if "SolutionType." in sol_title:
+                    sol_type = getattr(sol, "solution_type", None)
+                    sol_title = (
+                        sol_type.value.replace("_", " ").title()
+                        if hasattr(sol_type, "value")
+                        else f"Solution {i}"
+                    )
+                sol_longterm = getattr(sol, "longterm_fix", None)
+                sol_immediate = getattr(sol, "immediate_action", None)
+                sol_desc = sol_longterm or sol_immediate or ""
                 parts.append(f"**{i}. {sol_title}**")
                 if sol_desc:
                     parts.append(f"{sol_desc}")
@@ -484,12 +493,14 @@ class ReportGenerationService:
             if hypotheses:
                 top_hyp = sorted(
                     hypotheses,
-                    key=lambda h: getattr(h, "confidence", 0),
+                    key=lambda h: getattr(h, "likelihood", 0),
                     reverse=True,
                 )[0]
-                top_title = getattr(top_hyp, "title", "Unknown")
+                top_statement = getattr(top_hyp, "statement", "") or getattr(
+                    top_hyp, "title", "Unknown"
+                )
                 parts.append(
-                    f"The most promising lead at time of closure was: **{top_title}**. "
+                    f"The most promising lead at time of closure was: **{top_statement}**. "
                     f"A follow-up investigation should start there.\n"
                 )
             else:

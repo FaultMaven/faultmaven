@@ -750,6 +750,19 @@ def _resolved_suggestions() -> list:
     ]
 
 
+def _closed_suggestions() -> list:
+    """Suggestions offered after a case is CLOSED (no solution)."""
+    return [
+        {
+            "label": "Review closure summary",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Show the closure summary report for this case",
+            "body": "Review the auto-generated report documenting investigation state and closure reason.",
+        },
+    ]
+
+
 # =============================================================================
 # Milestone Engine - Main Implementation
 # =============================================================================
@@ -1388,7 +1401,7 @@ class MilestoneEngine:
                         follow_ups = (
                             _resolved_suggestions()
                             if case.status == CaseStatus.RESOLVED
-                            else []
+                            else _closed_suggestions()
                         )
 
                         return {
