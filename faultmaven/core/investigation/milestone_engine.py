@@ -1394,8 +1394,61 @@ class MilestoneEngine:
                         )
 
                         cancel_pending_transition(case)
+
+                        agent_response = "Understood. The case remains open for further investigation."
+                        self._record_deterministic_turn(
+                            case, user_message or "", agent_response
+                        )
                         await self.repository.save(case)
-                        # Fall through to normal LLM processing
+
+                        return {
+                            "agent_response": agent_response,
+                            "suggested_follow_ups": [],
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
+                    else:
+                        # User said something that isn't a clear yes/no.
+                        # Re-present the confirmation — don't fall through
+                        # to the LLM tool loop, which crashes on short or
+                        # ambiguous messages (tool_choice=required fails).
+                        to_status = case.pending_transition.get("to_status", "resolved")
+                        summary = case.pending_transition.get("summary", "")
+
+                        if to_status == "resolved":
+                            agent_response = (
+                                "Please select one of the options above to continue."
+                                if not summary
+                                else f"{summary}\n\nPlease select one of the options above to continue."
+                            )
+                            follow_ups = _resolution_confirmation_suggestions()
+                        else:
+                            agent_response = (
+                                "Please select one of the options above to continue."
+                                if not summary
+                                else f"{summary}\n\nPlease select one of the options above to continue."
+                            )
+                            follow_ups = _close_confirmation_suggestions()
+
+                        self._record_deterministic_turn(
+                            case, user_message or "", agent_response
+                        )
+                        await self.repository.save(case)
+
+                        return {
+                            "agent_response": agent_response,
+                            "suggested_follow_ups": follow_ups,
+                            "case_updated": case,
+                            "metadata": {
+                                "turn_number": case.current_turn,
+                                "milestones_completed": [],
+                                "progress_made": False,
+                            },
+                        }
 
             # 0c. Detect explicit user intent to close/resolve case
             # This handles cases where user explicitly says "close this case" or "mark as resolved"
