@@ -587,6 +587,16 @@ class SuggestedFollowUp(BaseModel):
         description="Short framework tags guiding what aspects the user should address (e.g., 'symptoms', 'timeline', 'affected services')",
     )
 
+    # Optional intent metadata — when present, the frontend sends this as
+    # the QueryIntent alongside the payload. This bridges COOPERATIVE
+    # suggestions with the deterministic intent routing system, so clicks
+    # on transition confirmations flow through IntentType.CONFIRMATION
+    # instead of plain-text pattern matching.
+    intent: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="QueryIntent metadata to send with payload (e.g., {type: 'confirmation', confirmation_value: true})",
+    )
+
 
 class BaseInteractionResponse(BaseModel):
     """Base class for all agent responses."""

@@ -312,6 +312,7 @@ class InvestigationService:
                     body=f.get("body"),
                     cooperative_action=f.get("cooperative_action"),
                     hints=f.get("hints"),
+                    intent=f.get("intent"),
                 )
                 for f in raw_follow_ups
             ]

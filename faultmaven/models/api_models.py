@@ -428,6 +428,9 @@ class SuggestedActionResponse(BaseModel):
     body: Optional[str] = None
     cooperative_action: Optional[str] = None  # "query_submit" | "command_copy"
     hints: Optional[List[str]] = None  # FREE_SPEECH: short framework tags
+    intent: Optional[Dict[str, Any]] = (
+        None  # QueryIntent metadata for deterministic routing
+    )
 
 
 class ProgressTransparencyInfo(BaseModel):

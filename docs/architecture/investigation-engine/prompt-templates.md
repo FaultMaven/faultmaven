@@ -298,6 +298,8 @@ Generate 2-4 suggestions to guide the user's next action. The type follows from 
 • **COOPERATIVE**: Agent wants user to engage with analysis or steer the investigation.
   Payload is a pre-composed user request submitted as a message (e.g., "Find similar incidents in KB").
   Sub-types: `query_submit` (sends message) or `command_copy` (copies shell command).
+  Optional `intent` field: when present, frontend sends this as `QueryIntent` alongside the payload
+  for deterministic backend routing (e.g., transition confirmations use `IntentType.CONFIRMATION`).
 • **EVIDENCE**: Agent needs specific data from the user's environment to make progress.
   Tells the user what data to provide. User decides how to submit (upload, paste, capture).
 • **FREE_SPEECH**: Agent needs the user's own knowledge, judgment, or observations.
@@ -361,7 +363,7 @@ Return JSON matching InquiryResponse schema:
 {{
   "agent_response": "<your natural, conversational response to user>",
   "suggested_follow_ups": [
-    {{"label": "...", "action_type": "COOPERATIVE|EVIDENCE|FREE_SPEECH", "payload": "...", ...}}
+    {{"label": "...", "action_type": "COOPERATIVE|EVIDENCE|FREE_SPEECH", "payload": "...", "intent": {{}}, ...}}
   ],
   "state_updates": {{
     "problem_confirmation": {{

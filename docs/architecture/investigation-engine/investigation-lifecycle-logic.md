@@ -487,10 +487,16 @@ async def process_turn(case: Case, user_message: str) -> str:
     # pending until the user confirms in the next turn.
 
     # 1. Handle pending transition confirmation from previous turn
+    #    Two detection paths (checked in order):
+    #    a. Intent-based: COOPERATIVE suggestion clicks carry
+    #       intent_type="confirmation" + confirmation_value (deterministic)
+    #    b. Pattern-based: fallback for users who type instead of clicking
     if case.pending_transition:
-        if user_confirms_transition(user_message):
+        intent_confirms = (intent_type == "confirmation" and intent_data.get("value") is True)
+        intent_declines = (intent_type == "confirmation" and intent_data.get("value") is False)
+        if intent_confirms or user_confirms_transition(user_message):
             confirm_pending_transition(case, case.user_id)
-        elif user_declines_transition(user_message):
+        elif intent_declines or user_declines_transition(user_message):
             cancel_pending_transition(case)
 
     # 2. Handle ProposedTransition from LLM response
@@ -787,13 +793,25 @@ Let me start by verifying the scope and impact. What services are affected?"
 └─────────────────────────────────────────────────┘
 ```
 
-**Buttons are rendered by frontend** when agent message contains:
-- Confirmation question pattern
-- Binary choice indicators
+**Confirmation actions are rendered as COOPERATIVE suggestions** with `intent` metadata:
 
-**Button clicks generate system messages**:
-- `[✅ Yes]` → Sends `"Yes"` via POST `/queries`
-- `[❌ No]` → Sends `"No"` via POST `/queries`
+```python
+# Resolution confirmation suggestions carry intent for deterministic routing
+{
+    "label": "Yes, mark as resolved",
+    "action_type": "COOPERATIVE",
+    "cooperative_action": "query_submit",
+    "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
+    "intent": {"type": "confirmation", "confirmation_value": True},
+}
+```
+
+**Click flow**: Frontend sends `payload` as query text AND `intent` as `QueryIntent` metadata.
+This routes through `IntentType.CONFIRMATION` → deterministic `pending_transition` handling,
+bypassing the tool loop and pattern matching entirely.
+
+**Typed responses** (user types instead of clicking) fall back to `_user_confirms_transition()`
+pattern matching with a 100-char length guard.
 
 ---
 

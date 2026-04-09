@@ -596,6 +596,7 @@ def _investigation_confirmation_suggestions() -> list:
             "cooperative_action": "query_submit",
             "payload": "Yes, that's correct. Let's investigate.",
             "body": "Confirm the problem statement and start the investigation.",
+            "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
             "label": "Not quite, let me clarify",
@@ -603,6 +604,7 @@ def _investigation_confirmation_suggestions() -> list:
             "cooperative_action": "query_submit",
             "payload": "Not quite — let me clarify the problem before we investigate.",
             "body": "Refine the problem statement before starting the investigation.",
+            "intent": {"type": "confirmation", "confirmation_value": False},
         },
     ]
 
@@ -665,6 +667,11 @@ def _resolution_confirmation_suggestions() -> list:
 
     Mirrors the INQUIRY confirmation pattern: one positive (confirm resolution)
     and one mild negative (continue investigating).
+
+    Each suggestion carries an ``intent`` dict so the frontend can send the
+    click as IntentType.CONFIRMATION instead of plain text. This routes
+    through the deterministic _handle_confirmation() path, bypassing the
+    tool loop and pattern matching entirely.
     """
     return [
         {
@@ -673,6 +680,7 @@ def _resolution_confirmation_suggestions() -> list:
             "cooperative_action": "query_submit",
             "payload": "Yes, the issue is resolved. Please mark this case as resolved.",
             "body": "Confirm resolution and close the investigation.",
+            "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
             "label": "Not yet, continue investigating",
@@ -680,6 +688,7 @@ def _resolution_confirmation_suggestions() -> list:
             "cooperative_action": "query_submit",
             "payload": "Not yet — I'd like to continue investigating before resolving.",
             "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+            "intent": {"type": "confirmation", "confirmation_value": False},
         },
     ]
 
@@ -697,6 +706,7 @@ def _close_confirmation_suggestions() -> list:
             "cooperative_action": "query_submit",
             "payload": "Yes, close this case without resolution.",
             "body": "Confirm closing the case. A summary will be generated.",
+            "intent": {"type": "confirmation", "confirmation_value": True},
         },
         {
             "label": "Not yet, continue investigating",
@@ -704,6 +714,7 @@ def _close_confirmation_suggestions() -> list:
             "cooperative_action": "query_submit",
             "payload": "Not yet — I'd like to continue investigating.",
             "body": "Keep the investigation open and continue working toward a solution.",
+            "intent": {"type": "confirmation", "confirmation_value": False},
         },
     ]
 
@@ -1174,6 +1185,8 @@ class MilestoneEngine:
                     suggestion["cooperative_action"] = f.cooperative_action
                 if f.hints:
                     suggestion["hints"] = f.hints
+                if f.intent:
+                    suggestion["intent"] = f.intent
                 follow_ups.append(suggestion)
 
         return {
@@ -1302,10 +1315,30 @@ class MilestoneEngine:
             # the user is confirming or declining BEFORE calling the LLM. This
             # avoids unnecessary LLM calls and prevents schema validation errors
             # from blocking the confirmation.
+            #
+            # Two detection paths (checked in order):
+            # 1. Intent-based: COOPERATIVE suggestion clicks carry
+            #    intent_type="confirmation" + confirmation_value — deterministic
+            # 2. Pattern-based: fallback for users who type instead of clicking
             if hasattr(case, "pending_transition") and case.pending_transition:
                 if not case.pending_transition.get("needs_info"):
-                    # Standard confirmation (not awaiting info)
-                    if self._user_confirms_transition(user_message):
+                    # Resolve confirm/decline from intent or pattern matching
+                    intent_confirms = (
+                        intent_type == "confirmation"
+                        and (intent_data or {}).get("value") is True
+                    )
+                    intent_declines = (
+                        intent_type == "confirmation"
+                        and (intent_data or {}).get("value") is False
+                    )
+                    user_confirms = intent_confirms or self._user_confirms_transition(
+                        user_message
+                    )
+                    user_declines = intent_declines or self._user_declines_transition(
+                        user_message
+                    )
+
+                    if user_confirms:
                         from faultmaven.core.investigation.terminal_transitions import (
                             confirm_pending_transition,
                         )
@@ -1355,7 +1388,7 @@ class MilestoneEngine:
                                 "status_transitioned": True,
                             },
                         }
-                    elif self._user_declines_transition(user_message):
+                    elif user_declines:
                         from faultmaven.core.investigation.terminal_transitions import (
                             cancel_pending_transition,
                         )
@@ -2003,9 +2036,22 @@ class MilestoneEngine:
             # tool_choice varies by query mode:
             # - directed_analysis + evidence: "required" — LLM must search evidence
             # - all other turns: "auto" — LLM decides whether to use tools
+            #
+            # Safety net: when a pending_transition exists, the user is in a
+            # confirmation flow. Don't force tool_choice=required — the user's
+            # message is a confirmation/decline that may have fallen through
+            # pattern matching (typed instead of clicked). Forcing tools crashes
+            # the tool loop when the LLM has nothing to search for.
             query_mode = (intent_data or {}).get("query_mode")
+            has_pending = (
+                hasattr(case, "pending_transition") and case.pending_transition
+            )
             if self.investigation_tools:
-                force_tools = query_mode == "directed_analysis" and bool(case.evidence)
+                force_tools = (
+                    query_mode == "directed_analysis"
+                    and bool(case.evidence)
+                    and not has_pending
+                )
                 da_tools = self._build_da_tool_schemas()
                 da_context = self._build_tool_context(case, intent_data)
                 response_obj = await self._generate_structured_output(
@@ -2344,6 +2390,8 @@ class MilestoneEngine:
                         suggestion["cooperative_action"] = f.cooperative_action
                     if f.hints:
                         suggestion["hints"] = f.hints
+                    if f.intent:
+                        suggestion["intent"] = f.intent
                     follow_ups.append(suggestion)
 
             # Persist redaction registry for cross-turn consistency
@@ -4622,22 +4670,49 @@ class MilestoneEngine:
         return case
 
     def _user_confirms_transition(self, user_message: str) -> bool:
-        """Check if user message confirms a pending transition."""
+        """Fallback check for typed confirmations (not COOPERATIVE clicks).
+
+        COOPERATIVE suggestion clicks now carry intent metadata and route
+        through IntentType.CONFIRMATION deterministically. This matcher
+        is a safety net for users who type instead of clicking.
+
+        Uses a 100-char length guard: short messages are direct responses
+        to the confirmation prompt; longer messages likely contain context
+        that should go through normal LLM processing.
+        """
         if not user_message:
             return False
         msg = user_message.strip().lower()
+        if len(msg) > 100:
+            return False
         confirm_patterns = [
             "yes",
             "yeah",
             "yep",
+            "yup",
             "correct",
             "confirmed",
+            "confirm",
             "approve",
+            "approved",
+            "ok",
+            "okay",
+            "sure",
+            "absolutely",
+            "go ahead",
+            "go for it",
+            "do it",
+            "please do",
+            "proceed",
             "mark as resolved",
+            "mark it as resolved",
+            "resolve it",
             "close it",
             "that's right",
+            "that's correct",
             "sounds good",
             "looks good",
+            "lgtm",
         ]
         return any(msg.startswith(p) or msg == p for p in confirm_patterns)
 
