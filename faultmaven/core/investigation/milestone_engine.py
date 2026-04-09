@@ -1692,6 +1692,49 @@ class MilestoneEngine:
                     # Continue to normal LLM flow for investigation kickoff message
 
             # ============================================================
+            # HYPOTHESIS ACTION - Explicit Intent (Frontend/IntentResolver)
+            # ============================================================
+            # Applies the state change BEFORE LLM processing so the agent
+            # sees updated hypothesis state in its context and can acknowledge.
+            elif intent_type == "hypothesis_action" and intent_data:
+                hypothesis_id = intent_data.get("hypothesis_id")
+                action = intent_data.get("action")  # validate | refute | retire
+
+                if hypothesis_id and action and case.hypotheses:
+                    hypothesis = case.hypotheses.get(hypothesis_id)
+
+                    if hypothesis:
+                        if action == "refute":
+                            self.hypothesis_manager.refute_hypothesis(
+                                hypothesis=hypothesis,
+                                current_turn=case.current_turn,
+                                refuting_evidence_ids=[],
+                                reason=user_message or "User refuted",
+                            )
+                        elif action == "validate":
+                            hypothesis.status = HypothesisStatus.VALIDATED
+                            hypothesis.likelihood = 1.0
+                            hypothesis.last_updated_turn = case.current_turn
+                        elif action == "retire":
+                            hypothesis.status = HypothesisStatus.RETIRED
+                            hypothesis.retirement_reason = (
+                                user_message or "User retired"
+                            )
+                            hypothesis.last_updated_turn = case.current_turn
+
+                        metadata["hypothesis_action_applied"] = True
+                        logger.info(
+                            f"Hypothesis {hypothesis_id} {action}d via explicit intent "
+                            f"for case {case.case_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Hypothesis {hypothesis_id} not found in case {case.case_id}"
+                        )
+
+                # Fall through to normal LLM processing for acknowledgment
+
+            # ============================================================
             # USER INTENT DETECTION - PATTERN MATCHING (Natural Language)
             # ============================================================
             # Two complementary paths:
@@ -2399,15 +2442,18 @@ class MilestoneEngine:
 
             agent_response_text = response_obj.agent_response
 
-            # Override LLM response with deterministic confirmation when
-            # user provided missing info after a SUGGEST_CLOSE/NEEDS_INFO verdict.
-            # Shows what we have + enrichment hints, with confirmation suggestions.
+            # Post-LLM overrides for resolution readiness re-evaluation.
+            # After a needs_info turn, check whether requirements are now met.
             if metadata.get("resolution_ready_for_confirmation"):
                 agent_response_text = (
                     "Thanks for the additional details.\n\n"
                     + _build_resolution_confirmation(case_updated)
                 )
                 follow_ups = _resolution_confirmation_suggestions()
+            elif metadata.get("resolution_suggest_close"):
+                # User didn't provide required info — suggest Close instead.
+                agent_response_text = metadata["resolution_readiness_message"]
+                follow_ups = _close_confirmation_suggestions()
 
             # Offer runbook suggestion when case just transitioned to RESOLVED.
             # Evaluation (readiness + dedup) happens when user accepts,
@@ -4573,15 +4619,50 @@ class MilestoneEngine:
                 )
             elif case.pending_transition.get("needs_info"):
                 # User was told what's missing and has now responded.
-                # Don't re-evaluate readiness (it checks formal objects the LLM
-                # may not have populated yet). Trust the user — clear needs_info
-                # and present the confirmation prompt with enrichment hints.
-                case.pending_transition["needs_info"] = False
-                metadata["resolution_ready_for_confirmation"] = True
-                logger.info(
-                    f"Case {case.case_id}: needs_info turn received, "
-                    f"presenting confirmation prompt"
+                # Re-evaluate readiness: did the LLM actually capture root
+                # cause / solution from what the user provided?
+                from faultmaven.core.investigation.terminal_transitions import (
+                    assess_resolution_readiness,
+                    cancel_pending_transition,
                 )
+
+                readiness = assess_resolution_readiness(case)
+
+                if readiness.verdict == readiness.READY:
+                    # Requirements met — clear needs_info, show confirmation
+                    case.pending_transition["needs_info"] = False
+                    metadata["resolution_ready_for_confirmation"] = True
+                    logger.info(
+                        f"Case {case.case_id}: needs_info resolved, "
+                        f"requirements met — presenting confirmation"
+                    )
+                elif readiness.verdict == readiness.SUGGEST_CLOSE:
+                    # Still fundamentally lacking — suggest Close instead
+                    cancel_pending_transition(case)
+                    metadata["resolution_suggest_close"] = True
+                    metadata["resolution_readiness_message"] = readiness.message
+                    logger.info(
+                        f"Case {case.case_id}: needs_info not satisfied, "
+                        f"suggesting Close instead (missing: {readiness.missing})"
+                    )
+                else:
+                    # NEEDS_INFO still — user was already asked once and
+                    # didn't (or couldn't) provide the missing info.
+                    # Don't loop asking again. Pivot to suggest Close.
+                    cancel_pending_transition(case)
+                    metadata["resolution_suggest_close"] = True
+                    metadata["resolution_readiness_message"] = (
+                        "I understand you don't have additional details. "
+                        "Without a documented solution, I can't mark this "
+                        "as **resolved**.\n\n"
+                        "You can **close** the case instead — this preserves "
+                        "the root cause analysis and investigation history."
+                    )
+                    logger.info(
+                        f"Case {case.case_id}: needs_info not satisfied after "
+                        f"second ask, pivoting to suggest Close "
+                        f"(missing: {readiness.missing})"
+                    )
             else:
                 from faultmaven.core.investigation.terminal_transitions import (
                     cancel_pending_transition,

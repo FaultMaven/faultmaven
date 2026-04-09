@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
@@ -30,6 +31,7 @@ from faultmaven.models.api_models import (
     AttachmentResult,
     IntentType,
     ProgressTransparencyInfo,
+    QueryIntent,
     SuggestedActionResponse,
     TurnResponse,
 )
@@ -96,6 +98,7 @@ class InvestigationService:
         self.repository = case_repository
         self.preprocessing_service = preprocessing_service
         self.file_storage_service = file_storage_service
+        self.intent_resolver = IntentResolver(milestone_engine.llm_provider)
 
     @trace("investigation_service_process_turn")
     async def process_turn(
@@ -210,6 +213,35 @@ class InvestigationService:
                         f"Heuristic detected intent {intent_type.value} for message: '{query}'"
                     )
 
+            # Intent resolution: match typed text against last turn's suggestions.
+            # Only runs when no structured intent and the case has suggestions
+            # with intent metadata from the previous turn.
+            if (
+                intent_type == IntentType.CONVERSATION
+                and query
+                and not payload.has_attachments
+                and case.last_suggestions
+            ):
+                resolved_intent = await self.intent_resolver.resolve(
+                    user_message=query,
+                    last_suggestions=case.last_suggestions,
+                )
+                if resolved_intent:
+                    try:
+                        resolved_qi = QueryIntent(**resolved_intent)
+                        intent = resolved_qi
+                        intent_type = resolved_qi.type
+                        logger.info(
+                            f"Intent resolved from suggestions: {intent_type.value} "
+                            f"for message: '{query[:50]}...'"
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to parse resolved intent, "
+                            "falling back to conversation",
+                            exc_info=True,
+                        )
+
             if intent_type == IntentType.STATUS_TRANSITION:
                 result = await self._handle_status_transition(
                     case=case,
@@ -283,6 +315,13 @@ class InvestigationService:
             if redaction_ctx:
                 agent_response_text = redaction_ctx.reverse(agent_response_text)
 
+            # 3b. Store suggestions with intent metadata for next turn's
+            #      intent resolver (bounded choice matching).
+            raw_follow_ups = result.get("suggested_follow_ups", [])
+            updated_case.last_suggestions = [
+                s for s in raw_follow_ups if s.get("intent")
+            ] or None
+
             # 4. Save agent response AND user message atomically.
             #    The user message was appended in-memory at step 2 but not
             #    persisted.  This single save commits both messages together,
@@ -303,7 +342,6 @@ class InvestigationService:
             await self.repository.save(updated_case)
 
             # 5. Build TurnResponse
-            raw_follow_ups = result.get("suggested_follow_ups", [])
             suggested_actions = [
                 SuggestedActionResponse(
                     label=f["label"],
