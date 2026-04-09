@@ -13,19 +13,18 @@ from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
 from faultmaven.core.investigation.schemas import (
-    JournalEntryOutput,
     InvestigationResponse_Diagnosis,
+    InvestigationResponse_General,
     InvestigationResponse_Mitigation,
     InvestigationResponse_Treatment,
-    InvestigationResponse_General,
+    JournalEntryOutput,
 )
 from faultmaven.modules.case.contracts import (
+    Case,
     CaseStatus,
     InquiryData,
     JournalEntry,
 )
-from faultmaven.modules.case.domain.models import Case
-
 
 # ============================================================
 # Helpers
