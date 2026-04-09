@@ -128,6 +128,7 @@ class MockMilestoneEngine:
     """
 
     def __init__(self):
+        self.llm_provider = MagicMock()
         self.process_turn = AsyncMock(side_effect=self._process_turn)
 
     async def _process_turn(
