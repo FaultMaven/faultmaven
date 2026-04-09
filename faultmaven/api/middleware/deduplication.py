@@ -198,6 +198,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             return True
         if request.method == "POST" and request.url.path == "/api/v1/sessions":
             return True
+        # Title generation is designed to be retried across turns as content
+        # accumulates. The request body ({max_words: N}) is identical each time,
+        # so dedup would block retries after the first attempt (which may fail
+        # with 422 INSUFFICIENT_TURNS/CONTEXT before enough turns have occurred).
+        if request.method == "POST" and request.url.path.endswith("/title"):
+            return True
 
         content_type = request.headers.get("content-type", "")
         if "multipart/form-data" in content_type:
