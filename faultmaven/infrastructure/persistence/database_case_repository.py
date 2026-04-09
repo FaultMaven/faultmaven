@@ -54,6 +54,7 @@ from faultmaven.modules.case.domain.models import (
     Hypothesis,
     InquiryData,
     InvestigationProgress,
+    JournalEntry,
     InvestigationStrategy,
     PathSelection,
     ProblemVerification,
@@ -1264,10 +1265,8 @@ class DatabaseCaseRepository(CaseRepository):
                 pass
         return result
 
-    def _parse_investigation_journal(self, value: List[dict]) -> List["JournalEntry"]:
+    def _parse_investigation_journal(self, value: List[dict]) -> List[JournalEntry]:
         """Parse JournalEntry list from JSON."""
-        from faultmaven.modules.case.contracts import JournalEntry
-
         result = []
         for item in value:
             try:
