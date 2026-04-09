@@ -263,10 +263,13 @@ class ReportGenerationService:
             to_json_compatible(case.resolved_at) if case.resolved_at else "Unknown"
         )
         duration = context.get("duration", "Unknown")
-        closure = getattr(case, "closure_reason", None) or ""
-
         solutions = case.solutions if case.solutions else []
-        hypotheses = case.hypotheses if case.hypotheses else []
+        # case.hypotheses is Dict[str, Hypothesis] — iterate values, not keys
+        hypotheses = (
+            list(case.hypotheses.values())
+            if isinstance(case.hypotheses, dict)
+            else (case.hypotheses or [])
+        )
         evidence_items = case.evidence if case.evidence else []
         milestones = (
             case.progress.completed_milestones
@@ -280,33 +283,57 @@ class ReportGenerationService:
             f"{description}\n",
         ]
 
-        # Root Cause — from validated hypotheses
-        validated = [
-            h
-            for h in hypotheses
-            if hasattr(h, "status")
-            and hasattr(h.status, "value")
-            and h.status.value == "validated"
-        ]
-        if validated:
+        # Root Cause — from root_cause_conclusion, working_conclusion, or validated hypotheses
+        root_cause_text = None
+        if case.root_cause_conclusion and getattr(
+            case.root_cause_conclusion, "root_cause", None
+        ):
+            root_cause_text = case.root_cause_conclusion.root_cause
+        elif case.working_conclusion and getattr(
+            case.working_conclusion, "statement", None
+        ):
+            root_cause_text = case.working_conclusion.statement
+
+        if root_cause_text:
             parts.append("## Root Cause\n")
-            for h in validated:
-                h_title = getattr(h, "title", "")
-                h_desc = getattr(h, "description", "")
-                parts.append(f"**{h_title}**")
-                if h_desc:
-                    parts.append(f"{h_desc}")
-            parts.append("")
-        elif closure:
-            parts.append("## Root Cause\n")
-            parts.append(f"{closure}\n")
+            parts.append(f"{root_cause_text}\n")
+        else:
+            validated = [
+                h
+                for h in hypotheses
+                if hasattr(h, "status")
+                and hasattr(h.status, "value")
+                and h.status.value == "validated"
+            ]
+            if validated:
+                parts.append("## Root Cause\n")
+                for h in validated:
+                    h_statement = getattr(h, "statement", "") or getattr(h, "title", "")
+                    h_desc = getattr(h, "description", "") or getattr(
+                        h, "reasoning", ""
+                    )
+                    parts.append(f"**{h_statement}**")
+                    if h_desc:
+                        parts.append(f"{h_desc}")
+                parts.append("")
 
         # Solution Applied
         if solutions:
             parts.append("## Solution Applied\n")
             for i, sol in enumerate(solutions, 1):
                 sol_title = getattr(sol, "title", f"Solution {i}")
-                sol_desc = getattr(sol, "description", "")
+                # Skip titles containing raw enum references
+                if "SolutionType." in sol_title:
+                    sol_type = getattr(sol, "solution_type", None)
+                    type_label = (
+                        sol_type.value.replace("_", " ").title()
+                        if hasattr(sol_type, "value")
+                        else f"Solution {i}"
+                    )
+                    sol_title = type_label
+                sol_longterm = getattr(sol, "longterm_fix", None)
+                sol_immediate = getattr(sol, "immediate_action", None)
+                sol_desc = sol_longterm or sol_immediate or ""
                 parts.append(f"**{i}. {sol_title}**")
                 if sol_desc:
                     parts.append(f"{sol_desc}")
@@ -337,14 +364,16 @@ class ReportGenerationService:
         if hypotheses:
             parts.append("## Investigation Path\n")
             for h in hypotheses:
-                h_title = getattr(h, "title", "")
+                h_statement = getattr(h, "statement", "") or getattr(h, "title", "")
                 h_status = getattr(h, "status", "")
-                h_conf = getattr(h, "confidence", 0)
+                h_likelihood = getattr(h, "likelihood", 0) or getattr(
+                    h, "confidence", 0
+                )
                 status_str = (
                     h_status.value if hasattr(h_status, "value") else str(h_status)
                 )
                 parts.append(
-                    f"- **{h_title}** — {status_str} (confidence: {h_conf:.0%})"
+                    f"- **{h_statement}** — {status_str} (confidence: {h_likelihood:.0%})"
                 )
             parts.append("")
 
@@ -372,7 +401,12 @@ class ReportGenerationService:
         duration = context.get("duration", "Unknown")
         closure_reason = getattr(case, "closure_reason", None) or "Not specified"
 
-        hypotheses = case.hypotheses if case.hypotheses else []
+        # case.hypotheses is Dict[str, Hypothesis] — iterate values, not keys
+        hypotheses = (
+            list(case.hypotheses.values())
+            if isinstance(case.hypotheses, dict)
+            else (case.hypotheses or [])
+        )
         evidence_items = case.evidence if case.evidence else []
         solutions = case.solutions if case.solutions else []
         milestones = (
@@ -411,18 +445,18 @@ class ReportGenerationService:
             parts.append("## Leading Hypotheses\n")
             sorted_hyps = sorted(
                 hypotheses,
-                key=lambda h: getattr(h, "confidence", 0),
+                key=lambda h: getattr(h, "likelihood", 0),
                 reverse=True,
             )
             for h in sorted_hyps[:5]:  # Top 5
-                h_title = getattr(h, "title", "")
+                h_statement = getattr(h, "statement", "") or getattr(h, "title", "")
                 h_status = getattr(h, "status", "")
-                h_conf = getattr(h, "confidence", 0)
+                h_likelihood = getattr(h, "likelihood", 0)
                 status_str = (
                     h_status.value if hasattr(h_status, "value") else str(h_status)
                 )
                 parts.append(
-                    f"- **{h_title}** — {status_str} (confidence: {h_conf:.0%})"
+                    f"- **{h_statement}** — {status_str} (confidence: {h_likelihood:.0%})"
                 )
             parts.append("")
 
