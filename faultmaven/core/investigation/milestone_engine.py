@@ -571,15 +571,21 @@ def _get_solution_summary(case) -> str:
     """Extract a brief solution description from the case for confirmation prompts."""
     if case.solutions:
         sol = case.solutions[-1]  # Most recent solution
+        # Try fields in order of specificity. Skip titles that look like
+        # raw enum references (e.g., "Solution: SolutionType.CONFIG_CHANGE")
+        # which indicate the LLM wrote a placeholder instead of a description.
         title = getattr(sol, "title", None)
-        if title:
-            return title
+        if title and "SolutionType." not in title:
+            return title[:200] + "..." if len(title) > 200 else title
         longterm = getattr(sol, "longterm_fix", None)
         if longterm:
             return longterm[:200] + "..." if len(longterm) > 200 else longterm
         immediate = getattr(sol, "immediate_action", None)
         if immediate:
             return immediate[:200] + "..." if len(immediate) > 200 else immediate
+        # Last resort: return title even if it has enum reference
+        if title:
+            return title[:200] + "..." if len(title) > 200 else title
     return "Not yet documented"
 
 
@@ -719,13 +725,21 @@ def _close_confirmation_suggestions() -> list:
     ]
 
 
-def _runbook_suggestion() -> list:
-    """Generate COOPERATIVE suggestion for runbook generation.
+def _resolved_suggestions() -> list:
+    """Suggestions offered after a case is marked RESOLVED.
 
-    Always offered at resolution time. Evaluation (readiness, deduplication)
+    Two options: review the auto-generated resolution report, or generate
+    a reusable runbook. Runbook evaluation (readiness, deduplication)
     happens when the user accepts — not at suggestion time.
     """
     return [
+        {
+            "label": "Review resolution summary",
+            "action_type": "COOPERATIVE",
+            "cooperative_action": "query_submit",
+            "payload": "Show the resolution summary report for this case",
+            "body": "Review the auto-generated report documenting root cause, solution, and timeline.",
+        },
         {
             "label": "Generate runbook from this case",
             "action_type": "COOPERATIVE",
@@ -1372,7 +1386,7 @@ class MilestoneEngine:
                         await self._auto_generate_report(case)
 
                         follow_ups = (
-                            _runbook_suggestion()
+                            _resolved_suggestions()
                             if case.status == CaseStatus.RESOLVED
                             else []
                         )
@@ -1591,7 +1605,7 @@ class MilestoneEngine:
 
                         return {
                             "agent_response": _resp,
-                            "suggested_follow_ups": _runbook_suggestion(),
+                            "suggested_follow_ups": _resolved_suggestions(),
                             "case_updated": case,
                             "metadata": {
                                 "turn_number": case.current_turn,
@@ -2515,7 +2529,7 @@ class MilestoneEngine:
                 metadata.get("status_transitioned")
                 and case_updated.status == CaseStatus.RESOLVED
             ):
-                follow_ups = _runbook_suggestion()
+                follow_ups = _resolved_suggestions()
 
             return {
                 "agent_response": agent_response_text,
