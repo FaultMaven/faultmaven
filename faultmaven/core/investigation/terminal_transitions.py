@@ -568,12 +568,18 @@ def assess_runbook_readiness(case: "Case") -> RunbookReadiness:
                 section_coverage=coverage,
             )
 
-    # Critical sections missing
-    missing_names = {
-        "problem_definition": "problem description (symptoms, error messages)",
-        "root_cause_resolution": "root cause with actionable fix (commands or steps)",
-    }
-    missing_desc = [f"- {missing_names[s]}" for s in critical_missing]
+    # Critical sections missing — break root_cause_resolution into specifics
+    missing_desc = []
+    for section in critical_missing:
+        if section == "problem_definition":
+            missing_desc.append("- problem description (symptoms, error messages)")
+        elif section == "root_cause_resolution":
+            if not has_root_cause:
+                missing_desc.append("- identified root cause")
+            if not has_actionable_solution:
+                missing_desc.append(
+                    "- actionable fix details (commands, steps, or solution description)"
+                )
     return RunbookReadiness(
         verdict=RunbookReadiness.NOT_SUITABLE,
         message=(

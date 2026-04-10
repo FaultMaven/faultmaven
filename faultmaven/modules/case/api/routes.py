@@ -337,6 +337,12 @@ def is_title_valid(title: str, check_banned_words: bool = True) -> bool:
     if last_word in INCOMPLETE_ENDINGS:
         return False
 
+    # Catch titles truncated mid-token (e.g., "Database I/" from "I/O")
+    # A valid title should end with an alphanumeric character
+    last_char = title.rstrip()[-1]
+    if not last_char.isalnum() and last_char not in ")]}":
+        return False
+
     # Optional banned words check (English-centric, configurable)
     if check_banned_words:
         title_lower = title.lower().strip()
