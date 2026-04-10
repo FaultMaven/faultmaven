@@ -917,9 +917,12 @@ def register_services(container: BaseDIContainer) -> None:
             "report_generation_service", report_generation_service
         )
 
-    # Wire report service into milestone engine (created earlier in the registration order)
+    # Wire services into milestone engine (created earlier in the registration order)
     if report_generation_service and milestone_engine:
         milestone_engine.report_service = report_generation_service
+    if knowledge_service and milestone_engine:
+        milestone_engine.knowledge_service = knowledge_service
+        logger.info("✅ Knowledge service wired to MilestoneEngine")
 
     # Report Recommendation Service (optional - may not be implemented yet)
     # TODO: Implement create_report_recommendation_service if needed
