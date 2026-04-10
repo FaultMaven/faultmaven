@@ -136,6 +136,10 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
     if kb_adapter:
         registry.register(kb_adapter)
         tool_count += 1
+    else:
+        logger.warning(
+            "kb_adapter not available — KB runbook search disabled for investigations"
+        )
 
     vectorize_file_tool = getattr(container, "vectorize_file_tool", None)
     if vectorize_file_tool:
@@ -148,10 +152,11 @@ def _create_investigation_tools(container: "BaseDIContainer") -> Any | None:
         tool_count += 1
 
     if tool_count == 0:
-        logger.debug("Investigation tools: none available, skipping")
+        logger.warning("Investigation tools: none available, skipping")
         return None
 
-    logger.debug(f"DA tool registry created with {tool_count} tools")
+    tool_names = [t.name for t in registry.get_all_tools()]
+    logger.info(f"✅ DA tool registry: {tool_count} tools registered: {tool_names}")
     return registry
 
 
