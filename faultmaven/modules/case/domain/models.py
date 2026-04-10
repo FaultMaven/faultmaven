@@ -3168,6 +3168,16 @@ class Case(BaseModel):
         ),
     )
 
+    kb_context: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Deterministic KB pre-fetch results injected at key transitions. "
+            "Populated at INQUIRY→INVESTIGATING (symptom search) and when "
+            "root_cause_identified completes (remediation search). Included "
+            "in the LLM context as historical suggestions, not absolute truths."
+        ),
+    )
+
     # ============================================================
     # Investigation Progress (SECONDARY - Internal Detail)
     # ============================================================

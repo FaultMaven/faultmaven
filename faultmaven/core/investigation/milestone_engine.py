@@ -4308,6 +4308,23 @@ class MilestoneEngine:
                 if p.root_cause_likelihood == 0.0:
                     p.root_cause_likelihood = m.root_cause_likelihood or 0.8
 
+            # KB pre-fetch: when root_cause_identified is newly completed,
+            # search KB for remediation procedures matching the root cause.
+            if "root_cause_identified" in metadata.get("milestones_completed", []):
+                root_cause_query = None
+                if case.root_cause_conclusion and getattr(
+                    case.root_cause_conclusion, "root_cause", None
+                ):
+                    root_cause_query = case.root_cause_conclusion.root_cause
+                elif case.working_conclusion and getattr(
+                    case.working_conclusion, "statement", None
+                ):
+                    root_cause_query = case.working_conclusion.statement
+                if root_cause_query:
+                    await self._prefetch_kb_context(
+                        case, root_cause_query, "root_cause"
+                    )
+
             # Stage-gate side effects (Framework §4.1)
             # When the LLM sets a stage-gate milestone, apply corresponding
             # side effects: mark the pending ProposedAction as accepted and
@@ -4696,6 +4713,57 @@ class MilestoneEngine:
                             f"to INQUIRY evidence {ev.evidence_id} "
                             f"(category={ev.category.value})"
                         )
+
+        # KB pre-fetch: search for runbooks matching the confirmed problem.
+        # Deterministic, code-level — not an LLM tool call decision.
+        # Results are stored on the case and injected into context by
+        # context_builder so the LLM sees relevant runbooks from turn 1.
+        await self._prefetch_kb_context(case, case.description, "symptom")
+
+    async def _prefetch_kb_context(
+        self,
+        case: "Case",
+        query: str,
+        trigger: str,
+    ) -> None:
+        """Search KB for runbooks matching the query, store on case.
+
+        Args:
+            case: Case to update
+            query: Search query (problem statement or root cause)
+            trigger: What triggered this search ("symptom" or "root_cause")
+        """
+        if not self.knowledge_service:
+            return
+
+        try:
+            results = await self.knowledge_service.search_knowledge(
+                query=query, limit=3
+            )
+            if results:
+                case.kb_context = [
+                    {
+                        "title": r.title,
+                        "summary": r.snippet,
+                        "score": r.score,
+                        "type": getattr(r, "document_type", "runbook"),
+                        "trigger": trigger,
+                    }
+                    for r in results
+                    if r.score >= 0.3  # Minimum relevance threshold
+                ]
+                if case.kb_context:
+                    logger.info(
+                        f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "
+                        f"for case {case.case_id}"
+                    )
+                else:
+                    case.kb_context = None
+        except Exception:
+            logger.warning(
+                f"KB pre-fetch ({trigger}) failed for case {case.case_id}",
+                exc_info=True,
+            )
 
     async def _check_automatic_transitions(
         self, case: Case, metadata: dict[str, Any], user_message: str = ""

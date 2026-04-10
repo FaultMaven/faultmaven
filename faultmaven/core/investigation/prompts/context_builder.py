@@ -1222,17 +1222,35 @@ def build_investigation_context(
     # 7. Knowledge Base Results
     # Cap individual solution text to prevent a single verbose runbook from
     # consuming the remaining token budget.
+    # KB context: combine passed-in results with case-level pre-fetched context
+    all_kb_results = list(kb_results or [])
+    if case.kb_context:
+        all_kb_results.extend(case.kb_context)
+
     kb_str = ""
-    if kb_results:
-        kb_str = "<knowledge_base_matches>\n"
-        for i, res in enumerate(kb_results[:3]):  # Top 3
+    if all_kb_results:
+        kb_str = (
+            "<knowledge_context>\n"
+            "The following runbooks matched the investigation symptoms or root cause. "
+            "These are suggestions — do not force these solutions if the evidence "
+            "points to a different root cause.\n\n"
+        )
+        for i, res in enumerate(all_kb_results[:5]):  # Top 5
             summary = res.get("summary", "")
             solution = res.get("solution", "")
+            title = res.get("title", "")
+            trigger = res.get("trigger", "")
+            trigger_label = f" [matched on {trigger}]" if trigger else ""
             if len(solution) > KB_MAX_SOLUTION_CHARS:
                 solution = solution[:KB_MAX_SOLUTION_CHARS] + "... [truncated]"
-            kb_str += f"MATCH {i+1} ({res.get('type')}): {summary}\n"
-            kb_str += f"SOLUTION: {solution}\n\n"
-        kb_str += "</knowledge_base_matches>"
+            if title:
+                kb_str += f"MATCH {i+1}: {title}{trigger_label}\n"
+            if summary:
+                kb_str += f"  {summary}\n"
+            if solution:
+                kb_str += f"  SOLUTION: {solution}\n"
+            kb_str += "\n"
+        kb_str += "</knowledge_context>"
 
     # 8. System Feedback (Validation errors from previous turn)
     feedback_str = ""
