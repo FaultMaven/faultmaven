@@ -33,9 +33,9 @@ Applied to 23 list fields across all schemas (see git blame for specific changes
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
@@ -580,6 +580,77 @@ class SuggestedFollowUp(BaseModel):
         default=None,
         description="query_submit = auto-submit as user message; command_copy = copy to clipboard",
     )
+
+    # Shell command prefixes for auto-detection of command_copy
+    _COMMAND_PREFIXES: ClassVar[tuple] = (
+        "kubectl",
+        "redis-cli",
+        "docker",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "rsync",
+        "grep",
+        "awk",
+        "sed",
+        "cat",
+        "tail",
+        "head",
+        "journalctl",
+        "systemctl",
+        "service",
+        "sudo",
+        "apt",
+        "yum",
+        "dnf",
+        "pip",
+        "npm",
+        "yarn",
+        "helm",
+        "terraform",
+        "aws",
+        "gcloud",
+        "az",
+        "psql",
+        "mysql",
+        "mongo",
+        "etcdctl",
+        "crictl",
+        "ctr",
+        "nslookup",
+        "dig",
+        "ping",
+        "traceroute",
+        "netstat",
+        "ss",
+        "iptables",
+        "top",
+        "htop",
+        "free",
+        "df",
+        "du",
+        "lsof",
+        "strace",
+        "tcpdump",
+    )
+
+    @model_validator(mode="after")
+    def _infer_cooperative_action(self) -> "SuggestedFollowUp":
+        """Auto-detect command_copy when payload looks like a shell command.
+
+        When action_type is COOPERATIVE and cooperative_action is not set,
+        check if the payload starts with a known CLI tool prefix. If so,
+        set cooperative_action to "command_copy" so the frontend copies
+        to clipboard instead of submitting as a chat message.
+        """
+        if self.action_type == "COOPERATIVE" and not self.cooperative_action:
+            payload_first_word = self.payload.strip().split()[0] if self.payload else ""
+            if payload_first_word in self._COMMAND_PREFIXES:
+                self.cooperative_action = "command_copy"
+            else:
+                self.cooperative_action = "query_submit"
+        return self
 
     # FREE_SPEECH fields
     hints: Optional[List[str]] = Field(
