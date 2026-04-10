@@ -68,18 +68,18 @@ directly. Do NOT create a problem statement or initiate an investigation.
 
 ```text
 When you make a diagnostic claim, propose an action, or advance a hypothesis,
-you MUST ground it in evidence using this structure:
+you MUST ground it in evidence. Use this reasoning structure internally
+(do not include these labels in your response):
+1. Observation — What specific evidence supports this?
+2. Analysis — Why does this evidence matter and how does it lead to your conclusion?
+3. Conclusion — What is your answer, finding, or recommended next step?
 
-OBSERVATION: [Cite specific case evidence OR a specific Knowledge Base runbook]
-ANALYSIS:    [WHY this evidence/knowledge matters, HOW it leads to the conclusion]
-CONCLUSION:  [Your answer, finding, or recommended next step based on the above]
-
-Even only one sentence per section is sufficient when the evidence and
-reasoning are straightforward.
-
-When no evidence is available or relevant, respond in free form — ask for
-data, make relevant comment, suggest next steps.
+Write your response in natural conversational prose. Weave evidence references
+into your explanation — refer to evidence by its label (filename, description),
+never by internal IDs.
 ```
+
+The three-step framework is an internal reasoning scaffold, not an output format. The LLM thinks in Observation → Analysis → Conclusion but writes in natural prose.
 
 **When evidence is ambiguous**: If the evidence supports multiple conflicting explanations, or is insufficient to distinguish between them, present the competing possibilities with what supports each. Do not select one and present it as confirmed. State what specific data would resolve the ambiguity.
 
@@ -98,17 +98,18 @@ data, make relevant comment, suggest next steps.
 | Generic best practices: "Implement monitoring" | No connection to specific case |
 | Speculation: "It's probably a memory leak" | No evidence cited |
 
-**Why this is the strongest rule**: It relies on a forced output structure — the single most effective prompt engineering technique for constraining LLM behavior. The OBSERVATION → ANALYSIS → CONCLUSION chain makes hallucination structurally visible.
+**Why this is the strongest rule**: The internal reasoning scaffold forces the LLM to anchor every claim in evidence before reaching a conclusion, making hallucination structurally visible even when the output is conversational prose.
 
 **Mechanical enforcement via Diagnostic Reasoning Validator**: Rule 2 is enforced post-generation by `diagnostic_reasoning_validator.py`, which checks LLM responses for:
 
-1. **OBSERVATION section** — markers like "OBSERVATION:", "I NOTICE", "EVIDENCE SHOWS"
-2. **ANALYSIS section** — markers like "ANALYSIS:", "THIS SUGGESTS", "BECAUSE"
+1. **Evidence grounding** — markers like "THE LOG SHOWS", "BASED ON", "LOOKING AT", "I CAN SEE", "EVIDENCE SHOWS" (expanded to detect conversational evidence references, not just structured section headers)
+2. **Causal reasoning** — language like "causes", "leads to", "because", "therefore", "THIS SUGGESTS"
 3. **Specific evidence references** — at least 2 of 4 categories: timestamps (HH:MM, YYYY-MM-DD), metrics/percentages, specific IDs (commit hashes, deployment IDs), error messages/log excerpts
-4. **Causal reasoning** — language like "causes", "leads to", "because", "therefore"
-5. **Anti-patterns** — checklist engineering (5+ bullets, "try these N things"), generic best practices ("implement monitoring", "follow best practices")
+4. **Anti-patterns** — checklist engineering (5+ bullets, "try these N things"), generic best practices ("implement monitoring", "follow best practices")
 
 When violations are detected, a self-correction retry feeds the specific violations back to the LLM for one rewrite attempt. See [Error Handling §3.2](./error-handling-and-recovery.md#32-reasoning-validation-with-self-correction).
+
+**Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs are only for internal schema fields (`evidence_analyzed`, `milestone_justifications`).
 
 **DA turn exception**: For Directed Analysis turns answering factual lookups, causal reasoning is downgraded to a warning when it is the sole violation (factual answers like "these 3 usernames attempted login" are not causal chains).
 

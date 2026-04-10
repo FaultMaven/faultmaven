@@ -372,6 +372,35 @@ User requests "Resolved"
 
 ---
 
+## 9. Pending Transition — Deterministic Handling
+
+When a `pending_transition` exists (resolution or closure confirmation awaiting yes/no), all user inputs are handled deterministically — no message falls through to the LLM tool loop:
+
+| User input | Handler | Result |
+|---|---|---|
+| Clear yes (pattern or intent) | `confirm_pending_transition()` | Execute transition, return |
+| Clear no (pattern or intent) | `cancel_pending_transition()` | Cancel, acknowledge, return |
+| Anything else | Re-present confirmation | Show COOPERATIVE Yes/No suggestions, return |
+| Repeated dropdown click | `status_transition_confirms` | Treat as implicit confirmation |
+
+The "anything else" path prevents crashes from the LLM failing to produce tool calls on short/ambiguous messages with `tool_choice=required`.
+
+---
+
+## 10. Post-Terminal Suggestions
+
+After a case reaches terminal state, the agent offers appropriate actions:
+
+| Case status | Suggestions |
+|---|---|
+| RESOLVED | "Regenerate resolution summary" + "Generate runbook" |
+| CLOSED (mitigation_sufficient) | "Regenerate closure summary" + "Generate runbook" |
+| CLOSED (other reasons) | "Regenerate closure summary" only |
+
+Report viewing is via Dashboard link (in `ResolutionActionsCard`). Runbook generation is evaluated on click via `evaluate_runbook_suggestion` which checks readiness + deduplication.
+
+---
+
 ## Files Changed
 
 | File | Change |
@@ -379,4 +408,9 @@ User requests "Resolved"
 | `faultmaven/core/investigation/intent_resolver.py` | **New** — bounded choice classifier |
 | `faultmaven/modules/case/domain/models.py` | Add `last_suggestions` field to `Case` |
 | `faultmaven/modules/agent/domain/services/investigation_service.py` | Wire intent resolver; store last_suggestions after each turn |
-| `faultmaven/core/investigation/milestone_engine.py` | Add `hypothesis_action` handler; fix resolution readiness gate |
+| `faultmaven/core/investigation/milestone_engine.py` | Add `hypothesis_action` handler; fix resolution readiness gate; deterministic pending_transition handling; post-terminal suggestions |
+| `faultmaven/core/investigation/prompts/context_builder.py` | Add `label` attribute to evidence XML for user-facing references |
+| `faultmaven/core/investigation/prompts/templates.py` | Refine O/A/C as internal scaffold; evidence label referencing rules |
+| `faultmaven/modules/report/domain/services/report_generation_service.py` | Fix hypothesis dict iteration, field names, enum title leakage in reports |
+| `faultmaven-copilot/src/shared/ui/components/ChatInterface.tsx` | Allow text Q&A on terminal cases |
+| `faultmaven-copilot/src/shared/ui/components/UnifiedInputBar.tsx` | Add `disableAttachments` prop |

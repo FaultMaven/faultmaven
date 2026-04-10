@@ -574,13 +574,13 @@ The path determines **whether the agent offers mitigation** during DIAGNOSIS. Th
 When a case reaches a disposition (RESOLVED or CLOSED), the investigation engine stops but the case remains interactive until archived. The post-terminal lifecycle has two phases:
 
 1. **Terminal transition** — Investigation stops. Active sessions completed. Auto-generated summary created (Resolution Summary for RESOLVED, Closure Summary for CLOSED). Terminal metrics emitted.
-2. **Terminal mode** — Case state is immutable, but users can ask questions about the investigation (agent uses TERMINAL_TEMPLATE in review mode), regenerate the summary report, or generate runbooks (RESOLVED and `CLOSED(mitigation_sufficient)` cases). Users archive the case from Dashboard when done.
+2. **Terminal mode** — Case state is immutable, but users can interact via the copilot chat (text-only, attachments disabled). Three capabilities: ask questions about the investigation (TERMINAL_TEMPLATE), regenerate the summary report, or generate runbooks (RESOLVED and `CLOSED(mitigation_sufficient)` cases). Report viewing is via Dashboard. Users archive the case from Dashboard when done.
 
 See [Investigation Lifecycle Logic §1.7](./investigation-lifecycle-logic.md#17-post-terminal-lifecycle) for full specification including interaction mode derivation, session cleanup, and auto-summary content.
 
-### 7.5.1 Knowledge Flywheel (RESOLVED Cases Only)
+### 7.5.1 Knowledge Flywheel
 
-The knowledge flywheel converts successful investigations into reusable knowledge. Only RESOLVED cases are eligible — quality over quantity.
+The knowledge flywheel converts investigations into reusable knowledge. RESOLVED cases and `CLOSED(mitigation_sufficient)` cases are eligible — both have actionable procedures worth preserving.
 
 ```
 RESOLVED case
@@ -600,13 +600,13 @@ RESOLVED case
               PII scan → Admin review → Approve → KnowledgeItem
 ```
 
-**Why RESOLVED only**: CLOSED cases lack a verified root cause and confirmed solution. Extracting runbooks from abandoned or escalated cases would produce incomplete, unverified procedures. The auto-generated Closure Summary captures what was learned from CLOSED cases without risking low-quality knowledge base entries.
+**Why not all CLOSED cases**: Only `CLOSED(mitigation_sufficient)` cases have actionable procedures worth preserving. Abandoned or escalated cases lack verified solutions — the auto-generated Closure Summary captures what was learned without risking low-quality knowledge base entries.
 
 **Runbook generation is never automatic.** Design: suggest first, evaluate on acceptance.
 
-1. **Agent always offers** — On resolution, the agent presents a COOPERATIVE suggestion: "Would you like me to create a runbook?" No evaluation happens yet.
+1. **Agent offers at terminal transition** — COOPERATIVE suggestions: "Regenerate resolution/closure summary" and "Generate runbook from this case" (runbook only for RESOLVED and `CLOSED(mitigation_sufficient)`). Report viewing is via Dashboard link. No evaluation happens at suggestion time.
 2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Four outcomes: `SUCCESS` (draft created), `NOT_SUITABLE` (not enough data), `EXISTING_COVERS` (similar runbook exists), `GENERATION_FAILED`.
-3. **User requests** — Via copilot UI or Dashboard KB page, same evaluation applies.
+3. **User requests** — Via copilot chat or Dashboard KB page, same evaluation applies.
 
 **Readiness + Deduplication** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
 

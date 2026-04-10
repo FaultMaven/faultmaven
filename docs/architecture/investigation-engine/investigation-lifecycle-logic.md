@@ -284,8 +284,23 @@ chance to see what was accomplished before committing to an irreversible action.
 **needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO` or
 `SUGGEST_CLOSE`, the system stores the pending transition with `needs_info=True`.
 This remembers the user's intent to resolve. On subsequent turns, the system
-re-evaluates readiness automatically. When the case becomes READY, the system
-overrides the LLM response with a deterministic confirmation prompt.
+re-evaluates readiness via `assess_resolution_readiness()`:
+- **READY** → clears `needs_info`, overrides LLM response with confirmation prompt
+- **Still not ready** → cancels pending transition, suggests Close instead (no re-ask loop — the user was already asked once and couldn't provide the info)
+
+**Pending transition confirmation — all paths deterministic:** When a `pending_transition`
+exists (not `needs_info`), the user's response is handled without LLM involvement:
+- **Clear yes** (pattern match or intent metadata) → execute transition
+- **Clear no** (pattern match or intent metadata) → cancel transition, acknowledge
+- **Anything else** (ambiguous, long message, unrelated question) → re-present the
+  confirmation with COOPERATIVE suggestions (clickable Yes/No with intent metadata)
+
+No message falls through to the LLM tool loop when a `pending_transition` exists. This
+prevents crashes from the LLM failing to produce tool calls on short ambiguous messages.
+
+**Repeated status_transition intent:** If a user clicks the same dropdown option again
+after the agent already proposed the transition, this is treated as an implicit
+confirmation (the intent's `to_status` matches the pending transition's `to_status`).
 
 #### INVESTIGATING → CLOSED (Disposition)
 
