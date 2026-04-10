@@ -137,9 +137,10 @@ Generate 2-4 suggestions to guide the user's next action. For each, think about 
 want the user to do next — the type follows from your intent:
 
 COOPERATIVE — You want the user to engage with your analysis or steer the investigation.
-  Draft a question or direction for the user to ask you. The payload is submitted as the
-  user's message, so phrase it as the user speaking to you.
-  cooperative_action: "query_submit" (sends payload as message) or "command_copy" (copies shell command).
+  cooperative_action is REQUIRED and determines behavior:
+  - "query_submit": Payload is sent as the user's message to you. Phrase as the user speaking.
+  - "command_copy": Payload is a shell command copied to clipboard for the user to run externally.
+  Use "command_copy" when the payload is a command/script. Use "query_submit" for everything else.
   {{"label": "Find similar incidents in KB", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Search the knowledge base for similar incidents", "body": "Look for historical events to identify known regressions."}}
   {{"label": "Get pod logs", "action_type": "COOPERATIVE", "cooperative_action": "command_copy", "payload": "kubectl logs <pod-name> --tail=100", "body": "Inspect recent pod output for crash loops or OOM kill messages."}}
 
@@ -213,9 +214,10 @@ Tailor to current investigation stage (symptom verification, hypothesis testing,
 For each, think about what you want the user to do next — the type follows from your intent:
 
 COOPERATIVE — You want the user to engage with your analysis or steer the investigation.
-  Draft a question or direction for the user to ask you. The payload is submitted as the
-  user's message, so phrase it as the user speaking to you.
-  cooperative_action: "query_submit" (sends payload as message) or "command_copy" (copies shell command).
+  cooperative_action is REQUIRED and determines behavior:
+  - "query_submit": Payload is sent as the user's message to you. Phrase as the user speaking.
+  - "command_copy": Payload is a shell command copied to clipboard for the user to run externally.
+  Use "command_copy" when the payload is a command/script. Use "query_submit" for everything else.
   {{"label": "Validate the config hypothesis", "action_type": "COOPERATIVE", "cooperative_action": "query_submit", "payload": "Let's focus on validating the config change hypothesis", "body": "Test whether the recent config change correlates with the failure window."}}
   {{"label": "Get memory usage", "action_type": "COOPERATIVE", "cooperative_action": "command_copy", "payload": "kubectl top pods -n production", "body": "Compare current memory consumption against baseline."}}
 
