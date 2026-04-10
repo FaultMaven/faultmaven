@@ -728,17 +728,17 @@ def _close_confirmation_suggestions() -> list:
 def _resolved_suggestions() -> list:
     """Suggestions offered after a case is marked RESOLVED.
 
-    Two options: review the auto-generated resolution report, or generate
-    a reusable runbook. Runbook evaluation (readiness, deduplication)
-    happens when the user accepts — not at suggestion time.
+    Report viewing is via Dashboard (auto-generated at transition time).
+    These offer regeneration and runbook creation. Runbook evaluation
+    (readiness, deduplication) happens when the user accepts.
     """
     return [
         {
-            "label": "Review resolution summary",
+            "label": "Regenerate resolution summary",
             "action_type": "COOPERATIVE",
             "cooperative_action": "query_submit",
-            "payload": "Show the resolution summary report for this case",
-            "body": "Review the auto-generated report documenting root cause, solution, and timeline.",
+            "payload": "Regenerate the resolution summary report for this case",
+            "body": "Re-create the resolution report. View the current report in the Dashboard.",
         },
         {
             "label": "Generate runbook from this case",
@@ -750,17 +750,32 @@ def _resolved_suggestions() -> list:
     ]
 
 
-def _closed_suggestions() -> list:
-    """Suggestions offered after a case is CLOSED (no solution)."""
-    return [
+def _closed_suggestions(closure_reason: str = "") -> list:
+    """Suggestions offered after a case is CLOSED.
+
+    Report viewing is via Dashboard. Runbook generation is only available
+    for closure_reason=mitigation_sufficient.
+    """
+    suggestions = [
         {
-            "label": "Review closure summary",
+            "label": "Regenerate closure summary",
             "action_type": "COOPERATIVE",
             "cooperative_action": "query_submit",
-            "payload": "Show the closure summary report for this case",
-            "body": "Review the auto-generated report documenting investigation state and closure reason.",
+            "payload": "Regenerate the closure summary report for this case",
+            "body": "Re-create the closure report. View the current report in the Dashboard.",
         },
     ]
+    if closure_reason == "mitigation_sufficient":
+        suggestions.append(
+            {
+                "label": "Generate runbook from this case",
+                "action_type": "COOPERATIVE",
+                "cooperative_action": "query_submit",
+                "payload": "Generate a runbook from this resolved case",
+                "body": "Create a reusable troubleshooting runbook from the mitigation steps.",
+            }
+        )
+    return suggestions
 
 
 # =============================================================================
@@ -1411,7 +1426,9 @@ class MilestoneEngine:
                         follow_ups = (
                             _resolved_suggestions()
                             if case.status == CaseStatus.RESOLVED
-                            else _closed_suggestions()
+                            else _closed_suggestions(
+                                getattr(case, "closure_reason", "") or ""
+                            )
                         )
 
                         return {
@@ -2549,11 +2566,13 @@ class MilestoneEngine:
             # Offer runbook suggestion when case just transitioned to RESOLVED.
             # Evaluation (readiness + dedup) happens when user accepts,
             # inside _process_terminal_turn → _handle_runbook_creation.
-            if (
-                metadata.get("status_transitioned")
-                and case_updated.status == CaseStatus.RESOLVED
-            ):
-                follow_ups = _resolved_suggestions()
+            if metadata.get("status_transitioned"):
+                if case_updated.status == CaseStatus.RESOLVED:
+                    follow_ups = _resolved_suggestions()
+                elif case_updated.status == CaseStatus.CLOSED:
+                    follow_ups = _closed_suggestions(
+                        getattr(case_updated, "closure_reason", "") or ""
+                    )
 
             return {
                 "agent_response": agent_response_text,
