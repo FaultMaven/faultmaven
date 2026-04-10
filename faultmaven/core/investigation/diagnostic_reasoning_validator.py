@@ -54,9 +54,9 @@ def validate_diagnostic_reasoning(
 
     violations = []
 
-    # Check for required diagnostic reasoning pattern
-    has_observation = _has_observation_section(agent_response)
-    has_analysis = _has_analysis_section(agent_response)
+    # Check that response references case-specific data and includes causal
+    # reasoning. We do NOT check for specific section headers
+    # (OBSERVATION/ANALYSIS) — the prompt guides conversational style.
     has_specific_evidence = _references_specific_evidence(agent_response, case)
     has_causal_reasoning = _has_causal_reasoning(agent_response)
 
@@ -64,17 +64,6 @@ def validate_diagnostic_reasoning(
     has_checklist = _is_checklist_engineering(agent_response)
     has_generic_advice = _is_generic_best_practices(agent_response)
     lacks_specificity = _lacks_case_specificity(agent_response, case)
-
-    # Build violations list
-    if not has_observation:
-        violations.append(
-            "Missing OBSERVATION section - must state what specific evidence triggered this reasoning"
-        )
-
-    if not has_analysis:
-        violations.append(
-            "Missing ANALYSIS section - must explain WHY evidence points to this conclusion"
-        )
 
     if not has_specific_evidence:
         violations.append(
@@ -136,53 +125,6 @@ def _detect_suggestions(response: str) -> bool:
     ]
 
     return any(indicator in response_lower for indicator in suggestion_indicators)
-
-
-def _has_observation_section(response: str) -> bool:
-    """Check for evidence-grounding in response (structured or conversational)."""
-    response_upper = response.upper()
-
-    observation_markers = [
-        "OBSERVATION:",
-        "OBSERVED:",
-        "I NOTICE",
-        "EVIDENCE SHOWS",
-        "THE DATA SHOWS",
-        "THE LOG SHOWS",
-        "THE LOGS SHOW",
-        "THE ERROR",
-        "THE METRIC",
-        "LOOKING AT",
-        "BASED ON",
-        "ACCORDING TO",
-        "FROM THE",
-        "IN THE LOG",
-        "IN THE DATA",
-        "THE DUMP SHOWS",
-        "THE OUTPUT SHOWS",
-        "THE TRACE SHOWS",
-        "I CAN SEE",
-        "WE CAN SEE",
-        "SHOWS THAT",
-    ]
-
-    return any(marker in response_upper for marker in observation_markers)
-
-
-def _has_analysis_section(response: str) -> bool:
-    """Check for ANALYSIS section or similar."""
-    response_upper = response.upper()
-
-    analysis_markers = [
-        "ANALYSIS:",
-        "REASONING:",
-        "THIS SUGGESTS",
-        "THIS INDICATES",
-        "THIS MEANS",
-        "BECAUSE",
-    ]
-
-    return any(marker in response_upper for marker in analysis_markers)
 
 
 def _references_specific_evidence(response: str, case: Case) -> bool:
