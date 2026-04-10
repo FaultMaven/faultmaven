@@ -10,9 +10,7 @@ import pytest
 from faultmaven.core.investigation.diagnostic_reasoning_validator import (
     DiagnosticReasoningError,
     _detect_suggestions,
-    _has_analysis_section,
     _has_causal_reasoning,
-    _has_observation_section,
     _is_checklist_engineering,
     _is_generic_best_practices,
     _lacks_case_specificity,
@@ -147,108 +145,6 @@ class TestDetectSuggestions:
     def test_empty_response(self):
         """Empty response should not contain suggestions."""
         assert _detect_suggestions("") is False
-
-
-# ============================================================
-# Tests for _has_observation_section()
-# ============================================================
-
-
-class TestHasObservationSection:
-    """Test detection of OBSERVATION section markers."""
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "marker",
-        [
-            "OBSERVATION:",
-            "OBSERVED:",
-            "I NOTICE",
-            "EVIDENCE SHOWS",
-            "THE DATA SHOWS",
-        ],
-    )
-    def test_detects_each_observation_marker(self, marker):
-        """Each observation marker should be detected."""
-        response = f"{marker} the error rate is elevated."
-        assert _has_observation_section(response) is True
-
-    @pytest.mark.unit
-    def test_case_insensitive_matching(self):
-        """Observation markers should be matched case-insensitively."""
-        assert _has_observation_section("observation: CPU is at 95%") is True
-        assert _has_observation_section("i notice a pattern in the logs") is True
-        assert _has_observation_section("evidence shows a correlation") is True
-        assert _has_observation_section("the data shows an anomaly") is True
-        assert _has_observation_section("Observed: memory leak detected") is True
-
-    @pytest.mark.unit
-    def test_no_observation_marker(self):
-        """Response without observation markers should return False."""
-        response = "The service is experiencing high latency due to a memory leak."
-        assert _has_observation_section(response) is False
-
-    @pytest.mark.unit
-    def test_empty_response(self):
-        """Empty response has no observation section."""
-        assert _has_observation_section("") is False
-
-    @pytest.mark.unit
-    def test_marker_embedded_in_text(self):
-        """Marker embedded within normal text should still be detected."""
-        response = "After reviewing the metrics, OBSERVATION: the p99 latency spiked."
-        assert _has_observation_section(response) is True
-
-
-# ============================================================
-# Tests for _has_analysis_section()
-# ============================================================
-
-
-class TestHasAnalysisSection:
-    """Test detection of ANALYSIS section markers."""
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "marker",
-        [
-            "ANALYSIS:",
-            "REASONING:",
-            "THIS SUGGESTS",
-            "THIS INDICATES",
-            "THIS MEANS",
-            "BECAUSE",
-        ],
-    )
-    def test_detects_each_analysis_marker(self, marker):
-        """Each analysis marker should be detected."""
-        response = f"{marker} the root cause is likely a memory leak."
-        assert _has_analysis_section(response) is True
-
-    @pytest.mark.unit
-    def test_case_insensitive_matching(self):
-        """Analysis markers should be matched case-insensitively."""
-        assert (
-            _has_analysis_section("analysis: the connection pool is exhausted") is True
-        )
-        assert _has_analysis_section("reasoning: the timeline correlates") is True
-        assert _has_analysis_section("this suggests a configuration issue") is True
-        assert _has_analysis_section("this indicates resource exhaustion") is True
-        assert _has_analysis_section("this means the cache is stale") is True
-        assert (
-            _has_analysis_section("because the deployment changed the config") is True
-        )
-
-    @pytest.mark.unit
-    def test_no_analysis_marker(self):
-        """Response without analysis markers should return False."""
-        response = "The CPU usage is at 95% and memory is at 80%."
-        assert _has_analysis_section(response) is False
-
-    @pytest.mark.unit
-    def test_empty_response(self):
-        """Empty response has no analysis section."""
-        assert _has_analysis_section("") is False
 
 
 # ============================================================
@@ -714,12 +610,12 @@ class TestValidateDiagnosticReasoning:
         assert violations == []
 
     @pytest.mark.unit
-    def test_well_structured_response_passes(self, investigating_case):
-        """Response with OBSERVATION + ANALYSIS + evidence + causal reasoning passes."""
+    def test_well_grounded_response_passes(self, investigating_case):
+        """Response with evidence references + causal reasoning passes."""
         response = (
-            "OBSERVATION: At 14:30, the error rate spiked to 45% after commit abc1234def "
+            "At 14:30, the error rate spiked to 45% after commit abc1234def "
             "was deployed. The database connections are timing out. "
-            "ANALYSIS: This suggests that the new connection pooling logic "
+            "This suggests that the new connection pooling logic "
             "causes the pool to exhaust under load, because the max_connections "
             "parameter was reduced from 50 to 10 in the deployment. "
             "Therefore, I recommend reverting the connection pool configuration."
@@ -734,9 +630,8 @@ class TestValidateDiagnosticReasoning:
     def test_missing_causal_reasoning_fails(self, investigating_case):
         """Response with suggestions but no causal reasoning should fail."""
         response = (
-            "OBSERVATION: At 14:30, the error rate spiked to 45% after commit abc1234def. "
+            "At 14:30, the error rate spiked to 45% after commit abc1234def. "
             "The database connections are timing out. "
-            "ANALYSIS: This indicates a connection pool issue. "
             "I recommend restarting the service."
         )
         is_valid, violations = validate_diagnostic_reasoning(
@@ -749,8 +644,7 @@ class TestValidateDiagnosticReasoning:
     def test_not_grounded_in_evidence_fails(self, investigating_case):
         """Response lacking specific evidence references should fail."""
         response = (
-            "OBSERVATION: Something went wrong with the service. "
-            "ANALYSIS: This suggests a problem. "
+            "Something went wrong with the service. "
             "Because of the issue, I recommend checking the service."
         )
         is_valid, violations = validate_diagnostic_reasoning(
@@ -763,9 +657,8 @@ class TestValidateDiagnosticReasoning:
     def test_checklist_engineering_fails(self, investigating_case):
         """Response with checklist pattern should fail with PROHIBITED violation."""
         response = (
-            "OBSERVATION: At 14:30, the error rate spiked to 45% after commit abc1234def. "
-            "The database connections are timing out. "
-            "ANALYSIS: This indicates a connection pool issue because the config changed. "
+            "At 14:30, the error rate spiked to 45% after commit abc1234def. "
+            "The database connections are timing out because the config changed. "
             "Try these 10 things to fix it:\n"
             "- Check CPU\n"
             "- Check memory\n"
@@ -783,9 +676,9 @@ class TestValidateDiagnosticReasoning:
     def test_generic_best_practices_fails(self, investigating_case):
         """Response with generic best practices should fail with PROHIBITED violation."""
         response = (
-            "OBSERVATION: At 14:30, the error rate spiked to 45% after commit abc1234def. "
+            "At 14:30, the error rate spiked to 45% after commit abc1234def. "
             "The database connections are timing out. "
-            "ANALYSIS: Because the config changed, the pool is exhausted. "
+            "Because the config changed, the pool is exhausted. "
             "I suggest you implement monitoring and add logging for all services."
         )
         is_valid, violations = validate_diagnostic_reasoning(
@@ -795,32 +688,32 @@ class TestValidateDiagnosticReasoning:
         assert any("generic best practices" in v.lower() for v in violations)
 
     @pytest.mark.unit
-    def test_missing_observation_section_fails(self, investigating_case):
-        """Response with suggestions but no OBSERVATION section should fail."""
+    def test_no_evidence_grounding_fails(self, investigating_case):
+        """Response with suggestions but no case-specific data should fail."""
         response = (
-            "The error rate is at 45% and latency at 3.5s after commit abc1234def. "
-            "ANALYSIS: Because the deployment changed the config, this causes timeouts. "
-            "I recommend reverting the deployment."
+            "Something seems wrong with the service. "
+            "Because of the problem, I recommend checking the system."
         )
         is_valid, violations = validate_diagnostic_reasoning(
             investigating_case, response
         )
         assert is_valid is False
-        assert any("observation" in v.lower() for v in violations)
+        assert any("evidence" in v.lower() for v in violations)
 
     @pytest.mark.unit
-    def test_missing_analysis_section_fails(self, investigating_case):
-        """Response with suggestions but no ANALYSIS section should fail."""
+    def test_natural_evidence_grounding_passes(self, investigating_case):
+        """Response with case-specific data in natural prose passes."""
         response = (
-            "OBSERVATION: At 14:30, the error rate spiked to 45% after commit abc1234def. "
-            "The database connections are timing out. "
+            "The error rate is at 45% and the database connections are timing out "
+            "since commit abc1234def was deployed 30 minutes ago. "
+            "Because the new connection pooling config causes pool exhaustion, "
             "I recommend reverting the deployment."
         )
         is_valid, violations = validate_diagnostic_reasoning(
             investigating_case, response
         )
-        assert is_valid is False
-        assert any("analysis" in v.lower() for v in violations)
+        assert is_valid is True
+        assert violations == []
 
     @pytest.mark.unit
     def test_multiple_violations_reported(self, investigating_case):
@@ -830,8 +723,8 @@ class TestValidateDiagnosticReasoning:
             investigating_case, response
         )
         assert is_valid is False
-        # Should have at least: missing observation, analysis, evidence, causal reasoning
-        assert len(violations) >= 4
+        # Should have at least: missing evidence, causal reasoning, specificity
+        assert len(violations) >= 2
 
     @pytest.mark.unit
     def test_return_type_is_tuple(self, investigating_case):
@@ -848,8 +741,8 @@ class TestValidateDiagnosticReasoning:
     def test_lacks_case_specificity_violation(self, investigating_case):
         """Short generic suggestion without case-specific data should fail specificity check."""
         response = (
-            "OBSERVATION: There is an issue. "
-            "ANALYSIS: Because of the problem, things break. "
+            "There is an issue. "
+            "Because of the problem, things break. "
             "I suggest fixing it."
         )
         is_valid, violations = validate_diagnostic_reasoning(
