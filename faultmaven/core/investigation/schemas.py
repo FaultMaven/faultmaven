@@ -419,9 +419,17 @@ class JournalEntryOutput(BaseModel):
         "finding", "decision", "user_context", "ruled_out", "blocker", "milestone"
     ] = Field(description="Type of journal entry")
     content: str = Field(
-        max_length=200,
         description="The distilled insight (max 200 chars)",
     )
+
+    @field_validator("content")
+    @classmethod
+    def truncate_content(cls, v: str) -> str:
+        """Truncate instead of rejecting — LLMs often exceed the 200 char guideline."""
+        if len(v) > 200:
+            return v[:197] + "..."
+        return v
+
     evidence_id: Optional[str] = Field(
         default=None,
         description="Evidence ID this entry relates to, if any",
