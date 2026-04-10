@@ -638,6 +638,36 @@ def _score_evidence_for_tier_a(ev, case) -> float:
     return score
 
 
+def _evidence_label(ev, file_lookup: dict) -> str:
+    """Build a short user-facing label for evidence.
+
+    Used in the XML ``label`` attribute so the LLM can reference evidence
+    by a human-readable name (e.g., "nginx-error.log") instead of the
+    internal ``ev_`` ID.  The label is chosen from the best available
+    source in priority order: filename → original_filename → data_type
+    → form.
+    """
+    # 1. Filename from uploaded files lookup
+    if ev.source_file_id and str(ev.source_file_id) in file_lookup:
+        return file_lookup[str(ev.source_file_id)]
+    # 2. Original filename stored on evidence
+    orig = getattr(ev, "original_filename", None)
+    if orig:
+        return orig
+    # 3. Pasted content
+    if ev.form.value == "document":
+        fname = getattr(ev, "source_file_id", None) or ""
+        if "pasted" in str(fname).lower():
+            return "pasted content"
+    # 4. Data type as readable label
+    if ev.data_type:
+        return ev.data_type.replace("_", " ")
+    # 5. Form as fallback
+    if ev.form.value == "user_text":
+        return "user-provided information"
+    return "uploaded data"
+
+
 def _build_evidence_context(
     case: Case,
     processing_mode: Optional[str] = None,
@@ -732,6 +762,8 @@ def _build_evidence_context(
             continue
 
         data_type_attr = f' data_type="{ev.data_type}"' if ev.data_type else ""
+        label = _evidence_label(ev, file_lookup)
+        label_attr = f' label="{label}"'
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
@@ -742,7 +774,7 @@ def _build_evidence_context(
             and not str(ev.content_ref).startswith("ev_")
         )
         searchable_attr = ' searchable="true"' if is_searchable else ""
-        result += f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}>\n'
+        result += f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{data_type_attr}{filename_attr}{searchable_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if structural_index.strip():
             role_attr = (
@@ -763,6 +795,8 @@ def _build_evidence_context(
 
     # Tier B: Older data evidence (summary only)
     for ev in tier_b:
+        label = _evidence_label(ev, file_lookup)
+        label_attr = f' label="{label}"'
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
@@ -772,7 +806,7 @@ def _build_evidence_context(
             and not str(ev.content_ref).startswith("ev_")
         )
         searchable_attr = ' searchable="true"' if is_searchable else ""
-        entry = f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{filename_attr}{searchable_attr}>'
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}{searchable_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break
@@ -781,12 +815,12 @@ def _build_evidence_context(
 
     # Tier C: USER_TEXT evidence (summary only, always — never searchable)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent text items
+        label = _evidence_label(ev, file_lookup)
+        label_attr = f' label="{label}"'
         filename_attr = ""
         if ev.source_file_id and str(ev.source_file_id) in file_lookup:
             filename_attr = f' filename="{file_lookup[str(ev.source_file_id)]}"'
-        entry = (
-            f'  <evidence id="{ev.evidence_id}" form="{ev.form.value}"{filename_attr}>'
-        )
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr} form="{ev.form.value}"{filename_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         if total_chars + len(entry) > EVIDENCE_CONTEXT_MAX_TOTAL_CHARS:
             break

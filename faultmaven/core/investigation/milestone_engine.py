@@ -2288,8 +2288,8 @@ class MilestoneEngine:
                         "of data — timestamps like HH:MM, error messages, IPs/usernames, "
                         "or metrics/counts — directly from the search results above) and "
                         "explain WHY using causal language like 'because', 'therefore', "
-                        "'this indicates'. Use natural conversational prose, not rigid "
-                        "section headers. "
+                        "'this indicates'. Reference evidence by filename or description, "
+                        "never by ev_ IDs. "
                         "Keep all state_updates from your previous response unchanged."
                     )
                     corrected_prompt = prompt + correction_feedback
@@ -3323,7 +3323,7 @@ class MilestoneEngine:
             "explain the significance using causal language.\n"
             "- For knowledge questions, state the relevant facts and relate "
             "them to the user's investigation context when possible.\n"
-            "- Use natural conversational prose, not rigid section headers."
+            "- Reference evidence by filename or description, never by ev_ IDs."
         )
 
     def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:

@@ -349,13 +349,15 @@ Keep responses focused and actionable. Avoid excessive preamble or lengthy expla
 
 DIAGNOSTIC REASONING REQUIREMENTS (Anti-Hallucination):
 When you make a diagnostic claim, propose an action, or advance a hypothesis,
-you MUST ground it in evidence. Use this reasoning structure internally (do not include these labels in your response):
+you MUST ground it in evidence. Use this reasoning structure internally
+(do not include these labels in your response):
 1. Observation — What specific evidence supports this? (timestamps, metrics, error messages, IDs, runbook procedures)
 2. Analysis — Why does this evidence matter and how does it lead to your conclusion?
 3. Conclusion — What is your answer, finding, or recommended next step?
 
-Write your response in a natural conversational tone. Weave evidence references
-into your explanation naturally.
+Write your response in natural conversational prose. Weave evidence references
+into your explanation — refer to evidence by its label (filename, description),
+never by internal IDs.
 
 Even a single sentence of reasoning is sufficient when the evidence and reasoning
 are straightforward.
@@ -454,9 +456,9 @@ ABSOLUTELY FORBIDDEN:
   evidence context or retrieve via a tool call
 - NEVER infer specific system details not mentioned in any source above
 - If you need data not available from any source: ASK the user to provide it
-- NEVER cite raw evidence IDs (like "ev_a1b2c3d4e5f6") in your response to the user.
-  These are internal identifiers the user cannot see. Instead, reference evidence by
-  its filename, description, or content (e.g., "in the nginx error log" not "in ev_abc123").
+- NEVER cite evidence IDs (like "ev_a1b2c3d4e5f6") in agent_response — the user
+  cannot see these. Use the evidence label attribute instead (e.g., "in the nginx
+  error log", "in the pasted stack trace"). IDs are only for internal_reasoning fields.
 
 EXAMPLES:
 ❌ BAD: "I've taken a look at the service map and logs for frontend-api"
@@ -489,7 +491,7 @@ SCHEMA_INSTRUCTIONS = """
 You MUST respond with valid JSON matching these fields:
 - **agent_response**: Your natural conversational response to the user.
   * Ground diagnostic claims in evidence (see DIAGNOSTIC REASONING above)
-  * Use natural conversational prose, not rigid section headers
+  * Reference evidence by its label (filename, description) — NEVER by ev_ IDs
 - **suggested_follow_ups**: 2-4 suggestions guiding the user's next action.
   * COOPERATIVE: engage with analysis (label, payload as user request, cooperative_action, optional body)
   * EVIDENCE: provide external data (label, payload describing data needed, optional body)
