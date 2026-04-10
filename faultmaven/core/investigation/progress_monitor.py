@@ -677,7 +677,7 @@ class ProgressMonitor:
             prompt_injection=(
                 "All previous hypotheses were inconclusive and have been retired. "
                 "Generate new hypotheses grounded in specific evidence already "
-                "collected. Each new hypothesis must cite an OBSERVATION from "
+                "collected. Each new hypothesis must cite specific findings from "
                 "the evidence. Consider exploring different root cause categories."
             ),
         )

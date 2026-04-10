@@ -1354,6 +1354,16 @@ class MilestoneEngine:
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is True
                     )
+                    # A repeated status_transition intent matching the pending
+                    # transition's target is an implicit confirmation — the user
+                    # clicked the same dropdown/button again after the agent
+                    # proposed the transition.
+                    status_transition_confirms = (
+                        intent_type == "status_transition"
+                        and (intent_data or {}).get("to_status")
+                        == case.pending_transition.get("to_status")
+                    )
+                    intent_confirms = intent_confirms or status_transition_confirms
                     intent_declines = (
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is False
@@ -2274,11 +2284,12 @@ class MilestoneEngine:
                         + "\n\nHere is your previous response to rewrite:\n"
                         + response_obj.agent_response
                         + "\n\nRewrite the agent_response to address ALL violations above. "
-                        "Structure it as: OBSERVATION (cite specific data from at least 2 "
-                        "categories — timestamps like HH:MM, error messages, IPs/usernames, "
-                        "or metrics/counts — directly from the search results above) then "
-                        "ANALYSIS (explain WHY using causal language like 'because', "
-                        "'therefore', 'this indicates'). "
+                        "Ground your reasoning in specific evidence (cite at least 2 types "
+                        "of data — timestamps like HH:MM, error messages, IPs/usernames, "
+                        "or metrics/counts — directly from the search results above) and "
+                        "explain WHY using causal language like 'because', 'therefore', "
+                        "'this indicates'. Use natural conversational prose, not rigid "
+                        "section headers. "
                         "Keep all state_updates from your previous response unchanged."
                     )
                     corrected_prompt = prompt + correction_feedback
@@ -3306,14 +3317,13 @@ class MilestoneEngine:
             "or your own training data. Knowledge informs your analysis but is "
             "NEVER recorded as evidence. Do NOT create evidence_to_add entries "
             "from kb_qa results, web_search results, or your own knowledge.\n\n"
-            "RESPONSE FORMAT — Your agent_response MUST follow this structure:\n"
-            "1. OBSERVATION: For case questions, cite the filename and line "
-            "numbers from search results (e.g., 'In data_6-1.log, line 42: "
-            "...'). For knowledge questions, state the relevant facts.\n"
-            "2. ANALYSIS: Explain the significance. For case questions, use "
-            "causal language connecting findings to your diagnosis. For knowledge "
-            "questions, relate the information to the user's investigation context "
-            "when possible."
+            "RESPONSE FORMAT — Ground your response in evidence:\n"
+            "- For case questions, cite the filename and line numbers from "
+            "search results (e.g., 'In data_6-1.log, line 42: ...') and "
+            "explain the significance using causal language.\n"
+            "- For knowledge questions, state the relevant facts and relate "
+            "them to the user's investigation context when possible.\n"
+            "- Use natural conversational prose, not rigid section headers."
         )
 
     def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:

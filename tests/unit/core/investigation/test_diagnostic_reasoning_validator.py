@@ -796,17 +796,32 @@ class TestValidateDiagnosticReasoning:
 
     @pytest.mark.unit
     def test_missing_observation_section_fails(self, investigating_case):
-        """Response with suggestions but no OBSERVATION section should fail."""
+        """Response with suggestions but no evidence grounding should fail."""
         response = (
-            "The error rate is at 45% and latency at 3.5s after commit abc1234def. "
             "ANALYSIS: Because the deployment changed the config, this causes timeouts. "
-            "I recommend reverting the deployment."
+            "I recommend reverting the deployment and checking the configuration."
         )
         is_valid, violations = validate_diagnostic_reasoning(
             investigating_case, response
         )
         assert is_valid is False
-        assert any("observation" in v.lower() for v in violations)
+        assert any(
+            "observation" in v.lower() or "evidence" in v.lower() for v in violations
+        )
+
+    @pytest.mark.unit
+    def test_natural_evidence_grounding_passes_observation(self, investigating_case):
+        """Response with natural-language evidence grounding should pass observation check."""
+        response = (
+            "The error rate is at 45% and latency at 3.5s after commit abc1234def. "
+            "Because the deployment changed the config, this causes timeouts. "
+            "I recommend reverting the deployment."
+        )
+        is_valid, violations = validate_diagnostic_reasoning(
+            investigating_case, response
+        )
+        # Should not have observation violation (natural language evidence grounding is valid)
+        assert not any("observation" in v.lower() for v in violations)
 
     @pytest.mark.unit
     def test_missing_analysis_section_fails(self, investigating_case):

@@ -139,7 +139,7 @@ def _detect_suggestions(response: str) -> bool:
 
 
 def _has_observation_section(response: str) -> bool:
-    """Check for OBSERVATION section or similar."""
+    """Check for evidence-grounding in response (structured or conversational)."""
     response_upper = response.upper()
 
     observation_markers = [
@@ -148,6 +148,22 @@ def _has_observation_section(response: str) -> bool:
         "I NOTICE",
         "EVIDENCE SHOWS",
         "THE DATA SHOWS",
+        "THE LOG SHOWS",
+        "THE LOGS SHOW",
+        "THE ERROR",
+        "THE METRIC",
+        "LOOKING AT",
+        "BASED ON",
+        "ACCORDING TO",
+        "FROM THE",
+        "IN THE LOG",
+        "IN THE DATA",
+        "THE DUMP SHOWS",
+        "THE OUTPUT SHOWS",
+        "THE TRACE SHOWS",
+        "I CAN SEE",
+        "WE CAN SEE",
+        "SHOWS THAT",
     ]
 
     return any(marker in response_upper for marker in observation_markers)
