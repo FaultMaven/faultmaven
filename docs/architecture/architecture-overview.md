@@ -266,9 +266,9 @@ flowchart TB
 **Key Files**:
 - `faultmaven/core/investigation/` - Milestone-based investigation engine
 - `faultmaven/core/processing/` - Data analysis algorithms
-- `faultmaven/core/knowledge/` - Knowledge management
-- `faultmaven/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
-- `faultmaven/prompts/` - Prompt engineering (investigation/, phase prompts)
+- `faultmaven/modules/knowledge/domain/services/` - Knowledge management
+- `faultmaven/modules/agent/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
+- `faultmaven/core/investigation/prompts/` - Prompt engineering (templates, context builder)
 
 **Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for complete methodology.
 
@@ -1240,17 +1240,20 @@ This section provides a high-level mapping of architectural components to Python
 - `api/v1/dependencies.py` - DI configuration
 - `api/v1/auth_dependencies.py` - Authentication dependencies
 
-### Service Layer
-- `services/domain/case_service.py` - Case management
-- `services/domain/investigation_service.py` - Investigation orchestration
-- `services/domain/case_status_manager.py` - Status state machine
-- `services/domain/data_service.py` - File processing
-- `services/domain/knowledge_service.py` - Document management
-- `services/domain/session_service.py` - Session lifecycle
-- `services/domain/organization_service.py` - Organization and RBAC management
-- `services/domain/team_service.py` - Team collaboration management
-- `services/adapters/case_ui_adapter.py` - UI data transformation
-- `services/converters/case_converter.py` - Case data mapping
+### Service Layer (Module-Based)
+- `modules/case/domain/services/api_case_service.py` - Case management
+- `modules/agent/domain/services/investigation_service.py` - Investigation orchestration
+- `modules/case/domain/services/investigation_session_service.py` - Session lifecycle
+- `modules/knowledge/domain/services/knowledge_service.py` - Document management
+- `modules/auth/domain/services/organization_service.py` - Organization and RBAC management
+- `modules/auth/domain/services/team_service.py` - Team collaboration management
+- `modules/evidence/domain/services/evidence_artifact_service.py` - Evidence processing
+- `modules/evidence/domain/services/file_storage_service.py` - File storage
+- `modules/case/domain/services/case_ui_adapter.py` - UI data transformation
+- `modules/case/domain/services/case_converter.py` - Case data mapping
+- `services/base.py` - Abstract base class (shared)
+- `services/analytics/` - Analytics services (shared)
+- `services/preprocessing/` - Data preprocessing (shared)
 
 ### Core Investigation
 - `core/investigation/milestone_engine.py` - Main investigation engine
@@ -1268,9 +1271,9 @@ This section provides a high-level mapping of architectural components to Python
 ### Core Domain
 - `core/investigation/` - Milestone-based investigation (see above)
 - `core/processing/` - Data analysis
-- `core/knowledge/` - Knowledge base management
-- `tools/` - Agent capabilities (KB-neutral Q&A tools)
-- `prompts/` - Prompt engineering
+- `modules/knowledge/domain/services/` - Knowledge base management
+- `modules/agent/tools/` - Agent capabilities (KB-neutral Q&A tools)
+- `core/investigation/prompts/` - Prompt engineering
 
 ### Infrastructure
 - `infrastructure/llm/` - LLM providers (OpenAI, Anthropic, Fireworks, Groq)
@@ -1375,16 +1378,16 @@ Import-linter enforces three critical architectural contracts that define module
 - Clean service independence with interface-based composition
 
 **Monitored Services**:
-- `faultmaven.services.auth_service`
-- `faultmaven.services.case_service`
-- `faultmaven.services.investigation_session_service`
-- `faultmaven.services.knowledge_search_service`
-- `faultmaven.services.evidence_artifact_service`
-- `faultmaven.services.user_service`
-- `faultmaven.services.embedding_service`
-- `faultmaven.services.vector_store_service`
-- `faultmaven.services.file_storage_service`
-- `faultmaven.services.agent_orchestration_service`
+- `faultmaven.modules.auth.domain.services.auth_service`
+- `faultmaven.modules.case.domain.services.api_case_service`
+- `faultmaven.modules.case.domain.services.investigation_session_service`
+- `faultmaven.modules.knowledge.domain.services.search_service`
+- `faultmaven.modules.evidence.domain.services.evidence_artifact_service`
+- `faultmaven.modules.auth.domain.services.user_service`
+- `faultmaven.modules.knowledge.domain.services.embedding_service`
+- `faultmaven.modules.knowledge.domain.services.vector_store_service`
+- `faultmaven.modules.evidence.domain.services.file_storage_service`
+- `faultmaven.modules.agent.domain.services.agent_orchestration_service`
 
 #### 2. Services Cannot Import API Layer ✅ KEPT
 

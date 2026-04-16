@@ -1902,7 +1902,7 @@ This section documents how each architectural component maps to specific Python 
 
 **Service Utilities**
 - **Base Service**: `services/base.py` - Abstract base class with common service patterns
-- **Case Converter**: `services/converters/case_converter.py` - Case model transformations
+- **Case Converter**: `modules/case/domain/services/case_converter.py` - Case model transformations
 
 ### Agentic Framework Components
 
@@ -2020,7 +2020,7 @@ This section documents how each architectural component maps to specific Python 
 **Caching & Performance**
 - **Intelligent Caching**: `infrastructure/caching/intelligent_cache.py` - Multi-tier caching system
 - **Model Cache**: `infrastructure/model_cache.py` - ML model caching and optimization
-- **Telemetry**: `infrastructure/telemetry/decision_recorder.py` - Decision tracking and analysis
+- **Telemetry**: *(Removed)* `infrastructure/telemetry/` was deleted (never used). Observability handled by `infrastructure/observability/`.
 
 ### Agent Tools & Capabilities
 

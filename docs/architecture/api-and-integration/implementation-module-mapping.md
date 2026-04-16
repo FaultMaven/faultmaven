@@ -411,11 +411,7 @@ This document maps every module in the FaultMaven codebase to its architectural 
 
 ### Telemetry
 
-**Location**: `faultmaven/infrastructure/telemetry/`
-
-| File | Purpose |
-|------|---------|
-| `collector.py` | Telemetry data collection |
+> **Deleted**: `faultmaven/infrastructure/telemetry/` was removed (never used in production). Observability is handled by `infrastructure/observability/` (Opik tracing, Prometheus metrics).
 
 ---
 
@@ -517,37 +513,21 @@ This document maps every module in the FaultMaven codebase to its architectural 
 
 ## 10. Prompts
 
-**Location**: `faultmaven/prompts/`
-**Responsibility**: LLM prompt templates
+**Location**: `faultmaven/core/investigation/prompts/`
+**Responsibility**: LLM prompt templates for investigation engine
+
+> **Moved**: `faultmaven/prompts/` was deleted. Prompt engineering is now in `core/investigation/prompts/`.
 
 | File | Purpose |
 |------|---------|
-| `phase_prompts.py` | 7-phase investigation prompts with OODA profiles |
-| `response_prompts.py` | Response formatting prompts |
-| `few_shot_examples.py` | Few-shot learning examples |
-| `prompt_manager.py` | Dynamic prompt assembly |
-
-### Investigation Prompts
-
-**Location**: `faultmaven/prompts/investigation/`
-
-| File | Purpose |
-|------|---------|
-| `lead_investigator.py` | Lead Investigator mode prompts |
-| `consultant_mode.py` | Consultant mode prompts |
-| `ooda_guidance.py` | OODA step guidance prompts |
-| `strategy_prompts.py` | Investigation strategy prompts |
+| `templates.py` | INQUIRY/INVESTIGATING/TERMINAL prompt templates |
+| `context_builder.py` | Token-aware context assembly for LLM calls |
 
 ---
 
 ## 11. Scripts
 
-**Location**: `faultmaven/scripts/`
-**Responsibility**: Utility scripts
-
-| File | Purpose |
-|------|---------|
-| *(removed)* | Runbook ingestion now handled by scan → verify workflow in `conversion_service.py` |
+> **Deleted**: `faultmaven/scripts/` was removed (empty directory). Utility scripts live in the top-level `scripts/` directory. Runbook ingestion is handled by the scan → verify workflow in `modules/knowledge/domain/services/conversion_service.py`.
 
 ---
 

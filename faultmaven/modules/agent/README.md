@@ -132,7 +132,7 @@ The Agent module maintains **three separate services** with clear separation of 
 |--------------|-------|-------|
 | **core/investigation/** | Milestone engine, hypothesis manager | Shared infrastructure |
 | **infrastructure/llm/** | LLM provider abstractions | OpenAI, Anthropic, etc. |
-| **integrations/llm_client.py** | LLM client wrapper | LLM operations |
+| **modules/agent/domain/services/llm_client.py** | LLM client wrapper | LLM operations |
 | **modules/case/** | Case context for investigations | `Case` model, `CaseRepository` |
 | **modules/evidence/** | Evidence retrieval for tools | `EvidenceArtifactService` |
 | **modules/knowledge/** | Knowledge base access for tools | Knowledge search, vector search |
@@ -193,7 +193,7 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
 ### 4. ✅ Keep LLM Infrastructure as Shared (NO MOVE)
 
-**Decision**: LLM infrastructure remains in `infrastructure/llm/` and `integrations/llm_client.py`
+**Decision**: LLM infrastructure remains in `infrastructure/llm/`; `llm_client.py` moved to `modules/agent/domain/services/`
 
 **Rationale**:
 - Other modules may need LLM (Report for summaries, Knowledge for embeddings)
@@ -350,7 +350,7 @@ from faultmaven.services import AgentOrchestrationService
 **What Did NOT Move** (Shared Infrastructure):
 - `core/investigation/` - Milestone engine, hypothesis manager
 - `infrastructure/llm/` - LLM providers
-- `integrations/llm_client.py` - LLM client
+- `modules/agent/domain/services/llm_client.py` - LLM client (moved from `integrations/`)
 
 ---
 

@@ -13,14 +13,15 @@ root_package = faultmaven
 name = Service layer independence
 type = independence
 modules =
-    faultmaven.services.auth_service
-    faultmaven.services.case_service
-    faultmaven.services.investigation_session_service
-    faultmaven.services.evidence_artifact_service
-    faultmaven.services.user_service
-    faultmaven.services.file_storage_service
-    # agent_orchestration_service moved to modules/agent/domain/services/
-    # Knowledge services moved to vertical slice module
+    # Legacy services migrated to modules:
+    #   auth_service, user_service → modules/auth/domain/services/
+    #   case_service → modules/case/domain/services/api_case_service.py
+    #   investigation_session_service → modules/case/domain/services/
+    #   evidence_artifact_service, file_storage_service → modules/evidence/domain/services/
+    # Remaining shared services:
+    faultmaven.services.analytics
+    faultmaven.services.preprocessing
+    # Knowledge services (vertical slice module)
     faultmaven.modules.knowledge.domain.services.search_service
     faultmaven.modules.knowledge.domain.services.embedding_service
     faultmaven.modules.knowledge.domain.services.vector_store_service

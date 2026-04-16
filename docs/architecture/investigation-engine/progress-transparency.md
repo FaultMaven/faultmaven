@@ -154,7 +154,7 @@ Transparent Mode (progress stalled)
 - **Progress Monitor** (`core/investigation/progress_monitor.py`): Tracks investigative turns, determines silent/transparent mode, checks repair patterns, builds prompt injection.
 - **Milestone Engine** (`core/investigation/milestone_engine.py`): Calls `ProgressMonitor.check_progress()` after each turn, stores injection in `system_feedback`.
 - **API Models** (`models/api_models.py`): `ProgressTransparencyInfo` model on `TurnResponse` and `CaseUIResponse_Investigating`.
-- **Case UI Adapter** (`services/adapters/case_ui_adapter.py`): Computes progress transparency from turn history for case page loads.
+- **Case UI Adapter** (`modules/case/domain/services/case_ui_adapter.py`): Computes progress transparency from turn history for case page loads.
 - **Investigation Service** (`modules/agent/domain/services/investigation_service.py`): Populates `ProgressTransparencyInfo` from turn metadata.
 
 ### Design Decisions

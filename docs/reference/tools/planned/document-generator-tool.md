@@ -65,9 +65,7 @@ A runbook should include:
 The LLM will offer runbook creation and generate structured markdown when user accepts.
 
 **Files Modified**:
-- [standard.py](../../faultmaven/prompts/doctor_patient/standard.py) - Added case resolution guidance
-- [minimal.py](../../faultmaven/prompts/doctor_patient/minimal.py) - Added runbook offer
-- [detailed.py](../../faultmaven/prompts/doctor_patient/detailed.py) - Added detailed runbook instructions
+- *(Legacy paths removed)* — Prompt templates consolidated into `faultmaven/core/investigation/prompts/templates.py`
 - [doctor_patient.py](../../faultmaven/models/doctor_patient.py) - Added `CREATE_RUNBOOK` action type
 
 ### Phase 2: Runbook Storage & Retrieval

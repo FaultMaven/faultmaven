@@ -332,17 +332,9 @@ scrape_configs:
 
 ### Alert Rules
 
-Alert rules are defined in:
-- `faultmaven/infrastructure/monitoring/evidence_metrics.py`
+Alert rules are defined in the infrastructure monitoring layer.
 
-**Export to Prometheus:**
-```bash
-python -m faultmaven.infrastructure.monitoring.evidence_metrics export
-
-# Generates:
-# - evidence_alerts.yml (Prometheus alert rules)
-# - evidence_dashboard.json (Grafana dashboard)
-```
+> **Note**: `faultmaven/infrastructure/monitoring/evidence_metrics.py` was removed during codebase cleanup. Evidence metrics are now tracked via the general observability stack (`infrastructure/observability/`).
 
 **Copy to Prometheus:**
 ```bash

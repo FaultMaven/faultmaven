@@ -510,7 +510,7 @@ class IntakeAgent:
 **Why:** Better LLM performance with fewer tokens
 **Effort:** Low (2-3 days)
 **Files to Create:**
-- `faultmaven/prompts/doctor_patient/examples.py`
+- `faultmaven/core/investigation/prompts/` (prompt templates; legacy `faultmaven/prompts/` was removed)
 
 **Implementation:**
 ```python

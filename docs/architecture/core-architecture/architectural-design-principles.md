@@ -472,7 +472,7 @@ async def startup():
     app.state.case_service = case_service
 
 
-# services/case_service.py - NO container knowledge
+# modules/case/domain/services/api_case_service.py - NO container knowledge
 class CaseService:
     def __init__(self, auth: IAuthService, repo: ICaseRepository):
         self.auth = auth  # Injected, not resolved

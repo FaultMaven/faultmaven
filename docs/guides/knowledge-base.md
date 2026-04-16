@@ -860,7 +860,7 @@ git log --since="6 months ago" docs/runbooks/
 ```bash
 # Check ChromaDB collection stats
 python -c "
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.config.settings import get_settings
 
 ingester = KnowledgeIngester(settings=get_settings())
@@ -1041,7 +1041,7 @@ KNOWLEDGE BASE BASELINE QUALITY REPORT
 # Create test script: test_search.py
 import asyncio
 from faultmaven.config.settings import get_settings
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 
 async def main():
     settings = get_settings()
@@ -1072,7 +1072,7 @@ python test_search.py
 
 ```python
 # Get knowledge base stats
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.config.settings import get_settings
 
 ingester = KnowledgeIngester(settings=get_settings())
@@ -1201,7 +1201,7 @@ python -c "from faultmaven.infrastructure.model_cache import model_cache; print(
 ```bash
 # Check collection stats
 python -c "
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 from faultmaven.config.settings import get_settings
 ingester = KnowledgeIngester(settings=get_settings())
 print(ingester.get_collection_stats())
@@ -1548,7 +1548,7 @@ pytest tests/quality/test_baseline_quality.py::test_generate_baseline_report -v 
 python validate_runbook.py docs/runbooks/[technology]/[runbook].md
 
 # STATISTICS
-python -c "from faultmaven.core.knowledge.ingestion import KnowledgeIngester; from faultmaven.config.settings import get_settings; ingester = KnowledgeIngester(settings=get_settings()); print(ingester.get_collection_stats())"
+python -c "from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester; from faultmaven.config.settings import get_settings; ingester = KnowledgeIngester(settings=get_settings()); print(ingester.get_collection_stats())"
 
 # GIT WORKFLOW
 git checkout -b runbook/[technology]-[problem]
