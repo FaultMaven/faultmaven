@@ -12,9 +12,9 @@
 > - **Security**: PII redaction (Presidio) + RBAC authorization + guardrails
 >
 > **Key Design Documents**:
-> - [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) - Investigation engine design
-> - [Case Storage Design](data-and-storage/case-storage-design.md) - PostgreSQL schema (10 tables)
-> - [Prompt Engineering Guide](investigation-engine/prompt-engineering-guide.md) - Prompting system
+> - [Milestone-Based Investigation Framework](investigation-engine/evidence-driven-investigation-framework.md) - Investigation engine design
+> - [Case Storage Design](data-and-storage/schemas/case-schema.md) - PostgreSQL schema (10 tables)
+> - [Prompt Engineering Guide](investigation-engine/prompt-templates.md) - Prompting system
 > - [Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md) - RAG system (3 vector stores)
 
 ## Overview
@@ -23,7 +23,7 @@ FaultMaven implements a sophisticated clean architecture pattern with dependency
 
 **Key Architectural Principles:**
 - **PostgreSQL Hybrid Storage**: Normalized 10-table schema for persistent case data + Redis for ephemeral sessions/cache
-- **Milestone-Based Investigation**: Opportunistic task completion based on data availability, not rigid phases (see [Investigation Architecture](investigation-engine/milestone-based-investigation-framework.md))
+- **Milestone-Based Investigation**: Opportunistic task completion based on data availability, not rigid phases (see [Investigation Architecture](investigation-engine/evidence-driven-investigation-framework.md))
 - **User-Owned Cases**: Cases owned by users, not sessions - enables long-term tracking and multi-session continuity
 - **MilestoneEngine**: Core investigation orchestrator with opportunistic task completion
 - **Turn-Based Progress Tracking**: Milestone completions with workflow progression detection and loopback prevention
@@ -222,7 +222,7 @@ flowchart TB
 - `faultmaven/services/domain/knowledge_service.py` - KB operations
 - `faultmaven/services/domain/session_service.py` - Session lifecycle
 
-**Design Note**: Investigation Service orchestrates milestone-based workflows through MilestoneEngine. Cases are user-owned resources, independent of session lifecycle. See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for complete design.
+**Design Note**: Investigation Service orchestrates milestone-based workflows through MilestoneEngine. Cases are user-owned resources, independent of session lifecycle. See [Milestone-Based Investigation Framework](investigation-engine/evidence-driven-investigation-framework.md) for complete design.
 
 ### Core Investigation
 **Purpose**: Milestone-based investigation engine with opportunistic task completion
@@ -270,7 +270,7 @@ flowchart TB
 - `faultmaven/modules/agent/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
 - `faultmaven/core/investigation/prompts/` - Prompt engineering (templates, context builder)
 
-**Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for complete methodology.
+**Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (INQUIRY/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](investigation-engine/evidence-driven-investigation-framework.md) for complete methodology.
 
 **Knowledge Base Architecture**: FaultMaven implements a **3-tier knowledge base** system for curated remediation knowledge (runbooks, procedures, best practices):
 
@@ -532,7 +532,7 @@ sequenceDiagram
 - **Workflow Progression**: Loopback detection prevents circular conversations
 - **Case Status Transitions**: INQUIRY → INVESTIGATING → RESOLVED/CLOSED
 
-See [Milestone-Based Investigation Framework](investigation-engine/milestone-based-investigation-framework.md) for detailed investigation flow scenarios.
+See [Milestone-Based Investigation Framework](investigation-engine/evidence-driven-investigation-framework.md) for detailed investigation flow scenarios.
 
 ## v3.1.0 Schema Architecture
 
@@ -1558,26 +1558,18 @@ This section provides a complete navigation map to all FaultMaven design documen
 
 Core business services implementing case, data, knowledge, investigation, and session management:
 
-- [`Milestone-Based Investigation Framework v2.0`](investigation-engine/milestone-based-investigation-framework.md) - ✅ **IMPLEMENTED** - Authoritative investigation design (used by investigation_service.py, case_service.py): Opportunistic completion, milestone tracking, case status lifecycle, turn-based progress
-- [`Case Storage Design`](data-and-storage/case-storage-design.md) - ✅ **IMPLEMENTED** - PostgreSQL schema specification (10 tables): cases, messages, evidence, hypotheses, milestones, users, auth
-- [`Redis Usage Design`](./redis-usage-design.md) - ✅ **IMPLEMENTED** - Hybrid storage strategy: PostgreSQL (persistent) vs Redis (ephemeral), usage guidelines
-- [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, user-owned cases, Redis storage
-- [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, platform-specific extractors, LLM integration
-- [`Knowledge Base Architecture v7.0`](knowledge-and-ai/knowledge-base-architecture.md) - 3-tier KB system (Global, Team, Personal), storage and retrieval architecture, KB-neutral Strategy Pattern
-- [`Runbook Content Architecture v2.0`](knowledge-and-ai/runbook-content-architecture.md) - Content taxonomy, quality gates, lifecycle governance for KB runbooks
-- [`Prompt Engineering Guide`](investigation-engine/prompt-engineering-guide.md) - ✅ **IMPLEMENTED** - Current prompting system: Investigation prompts, engagement modes, OODA guidance, loopback detection
-
-#### Core Investigation (`core/investigation/`)
-
-Milestone-based investigation engine:
-
-- [`Milestone-Based Investigation Framework v2.0`](investigation-engine/milestone-based-investigation-framework.md) - Complete design document covering MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, and all investigation components
+- [`Evidence-Driven Investigation Framework`](investigation-engine/evidence-driven-investigation-framework.md) — Authoritative investigation design: milestone tracking, opportunistic completion, case status lifecycle
+- [`Investigation Lifecycle Logic`](investigation-engine/investigation-lifecycle-logic.md) — State transitions and stage routing
+- [`Agent Behavioral Rules`](investigation-engine/agent-behavioral-rules.md) — 7 prompt-injected rules constraining agent output
+- [`Prompt Templates`](investigation-engine/prompt-templates.md) — INQUIRY/INVESTIGATING/TERMINAL templates and assembly
+- [`Case Schema`](data-and-storage/schemas/case-schema.md) — Case domain schema
+- [`Data Preprocessing Design`](data-processing/data-preprocessing-design-specification.md) — Preprocessing pipeline, data types, extractors
+- [`Knowledge Base Architecture`](knowledge-and-ai/knowledge-base-architecture.md) — 3-tier KB system, storage and retrieval
+- [`Runbook Content Architecture`](knowledge-and-ai/runbook-content-architecture.md) — Content taxonomy, quality gates, lifecycle governance
 
 #### Supporting Services
 
-- [`Error Handling and Recovery`](investigation-engine/error-handling-and-recovery.md) - Error patterns: LLM errors, state corruption, infinite loops, recovery strategies
-- [`Analytics and Confidence Services`](./analytics-and-confidence-services.md) - 📝 *To create* - Analytics (analytics/): Confidence scoring, dashboard aggregation
-- [`Conversation Intelligence Design`](./conversation-intelligence-design.md) - 📝 *To create* - Dialogue management: Circular detection, progress measurement, dead-end prevention
+- [`Error Handling and Recovery`](investigation-engine/error-handling-and-recovery.md) — Error patterns: LLM errors, state corruption, recovery strategies
 
 ---
 
@@ -1606,7 +1598,7 @@ Milestone-based investigation engine:
 
 #### Investigation Engine
 
-- [`Milestone-Based Investigation Framework v2.0`](investigation-engine/milestone-based-investigation-framework.md) - Core investigation engine (core/investigation/): MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, opportunistic task completion
+- [`Milestone-Based Investigation Framework v2.0`](investigation-engine/evidence-driven-investigation-framework.md) - Core investigation engine (core/investigation/): MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, opportunistic task completion
 
 #### Data Processing and Analysis
 

@@ -42,7 +42,7 @@ FaultMaven maintains **71%+ test coverage** with a strong emphasis on test-first
 - **[Investigation Testing](./investigation.md)** - Testing investigation workflows and agents
   - Testing investigation milestones
   - Agent interaction testing
-  - OODA loop testing
+  - Milestone-based investigation testing
   - State machine testing
 
 - **[Performance Testing](./performance.md)** - Performance and load testing strategies

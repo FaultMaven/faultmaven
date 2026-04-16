@@ -1,5 +1,7 @@
 # Structured Output Capability System
 
+> **Developer guide:** [Structured Output Guide](../../development/structured-output-guide.md) — implementation gotchas, strict-mode requirements, common issues, migration.
+
 ## Overview
 
 The Structured Output Capability System provides a **provider-agnostic** approach to handling structured output across all LLM providers (OpenAI, Groq, Anthropic, Gemini, Cohere, local models, etc.).

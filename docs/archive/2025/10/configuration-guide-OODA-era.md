@@ -1,9 +1,7 @@
 # FaultMaven Operational Configuration Guide
 
-**Version**: 1.0
-**Last Updated**: 2025-10-11
-**Status**: Operational Guide
-**Source**: Created from investigation framework operational patterns
+> **For per-variable reference**, see [Environment Variables Guide](../development/environment-variables.md).
+> **This document** covers operational configuration patterns, deployment presets, and runtime requirements.
 
 ---
 

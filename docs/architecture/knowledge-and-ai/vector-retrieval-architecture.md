@@ -117,7 +117,7 @@ The latency budget differs by context. During an active incident, an SRE waiting
 | Path | When | Strategy | Target Latency |
 |------|------|----------|----------------|
 | **Fast** | Interactive copilot queries | Metadata-filtered vector search → top-5 → generate. Skip keyword recall and reranking. Extension context metadata does the heavy lifting. | < 2s retrieval |
-| **Deep** | Agent investigation loops (DA mode) | Full hybrid search → rerank top-20 → top-5 → generate with reasoning chain. Latency amortized across OODA cycles. | < 5s retrieval |
+| **Deep** | Agent investigation loops (DA mode) | Full hybrid search → rerank top-20 → top-5 → generate with reasoning chain. Latency amortized across investigation turns. | < 5s retrieval |
 
 Currently only the deep path is implemented. The fast path would be a `search_mode="fast"` on `KBConfig` that bypasses Stage 2 reranking and relies on pre-retrieval metadata filtering for precision.
 

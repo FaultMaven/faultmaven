@@ -1,5 +1,8 @@
 # Structured Output Guide: json_schema Mode
 
+> **Design reference:** [Structured Output Capability System](../architecture/core-architecture/structured-output-capability-system.md) — why this system exists, template method pattern, capability levels.
+> **This document:** implementation gotchas, strict-mode requirements, migration guidance.
+
 ## Overview
 
 FaultMaven uses **json_schema mode** (OpenAI Structured Outputs) to enforce strict schema adherence when requesting structured data from LLMs. This guide documents critical implementation requirements and gotchas.

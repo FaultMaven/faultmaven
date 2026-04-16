@@ -215,7 +215,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 - **Result**: FAIL
 
 **Criterion 2: Business Logic Implementation** ✅
-- Implements business rules: "Investigation workflows", "OODA loop orchestration", "Tool selection logic"
+- Implements business rules: "Investigation workflows", "Milestone orchestration", "Tool selection logic"
 - Contains complex domain workflows (LangGraph state machines)
 - **Result**: PASS
 
@@ -902,7 +902,7 @@ These modules implement **business logic** but **operate on data owned by other 
 **Note**: Consider merging Evidence domain logic into Case module since evidence is purely operational on Case-owned data.
 
 #### 2. **`modules/agent/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
-- **Business Logic**: AI agent orchestration via LangGraph, investigation workflows, OODA loops
+- **Business Logic**: AI agent orchestration via LangGraph, investigation workflows, milestone-based orchestration
 - **Data Ownership**: ❌ **NO** - No `agent_*` tables in schema
 - **Schema Verification**: `agent_tool_calls` table (if exists) stores case audit data, not agent state
 - **Reference**: See `case-storage-design.md` Section 4.1 (no agent tables listed in 10-table schema)

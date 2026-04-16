@@ -1,5 +1,8 @@
 # Environment Variables Guide
 
+> **For deployment mode / preset philosophy**, see [Principle 1: Deployment Agnostic Architecture](../architecture/core-architecture/architectural-design-principles.md#1-deployment-agnostic-architecture) in the canonical principles doc.
+> **This document** is the per-variable reference.
+
 ## Where are environment variables set?
 
 Environment variables are defined in **`.env` file** in the project root directory.
