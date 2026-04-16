@@ -33,7 +33,7 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import CaseSeverity
 
 # AgentExecutionRepository removed - APICaseService now uses case_repo
-from faultmaven.services.case_service import APICaseService
+from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 
 # ============================================================
 # Fixtures

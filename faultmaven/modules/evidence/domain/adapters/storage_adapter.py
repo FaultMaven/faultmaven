@@ -10,7 +10,9 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
-from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
+)
 
 logger = logging.getLogger(__name__)
 

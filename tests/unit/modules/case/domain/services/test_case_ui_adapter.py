@@ -41,7 +41,9 @@ from faultmaven.modules.case.domain.models import (
     SolutionType,
     UploadedFile,
 )
-from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
+from faultmaven.modules.case.domain.services.case_ui_adapter import (
+    transform_case_for_ui,
+)
 
 # ============================================================
 # Helpers

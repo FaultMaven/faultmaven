@@ -234,7 +234,9 @@ def create_evidence_service(
     try:
         from faultmaven.modules.evidence.domain.adapters import EvidenceStorageAdapter
         from faultmaven.modules.evidence.domain.services import EvidenceService
-        from faultmaven.services.file_storage_service import FileStorageService
+        from faultmaven.modules.evidence.domain.services.file_storage_service import (
+            FileStorageService,
+        )
 
         # Create file storage service
         file_storage = FileStorageService(
@@ -831,7 +833,9 @@ def register_services(container: BaseDIContainer) -> None:
     preprocessing_service = container.get_service("preprocessing_service")
     # File storage for raw evidence access (attachment storage)
     try:
-        from faultmaven.services.file_storage_service import FileStorageService
+        from faultmaven.modules.evidence.domain.services.file_storage_service import (
+            FileStorageService,
+        )
 
         file_storage_service = FileStorageService(
             storage_root=settings.evidence_storage_root,

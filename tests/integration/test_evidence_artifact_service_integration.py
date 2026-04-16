@@ -43,8 +43,12 @@ from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
+    APIEvidenceArtifactService,
+)
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
+)
 from tests.utils import generate_case_id, generate_evidence_id
 
 # ============================================================

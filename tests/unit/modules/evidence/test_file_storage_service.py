@@ -18,7 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.exceptions import NotFoundError, ServiceError, ValidationException
-from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
+)
 
 # ============================================================
 # Fixtures

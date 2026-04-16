@@ -62,7 +62,9 @@ def register_services(redis_client=None) -> None:
         VectorStoreService,
     )
     from faultmaven.modules.auth.domain.services.auth_service import AuthService
-    from faultmaven.services.file_storage_service import FileStorageService
+    from faultmaven.modules.evidence.domain.services.file_storage_service import (
+        FileStorageService,
+    )
 
     # AuthService - Used by UserService
     # Note: AuthService gets JWT settings internally from get_settings(),
@@ -140,7 +142,9 @@ def register_services(redis_client=None) -> None:
         get_evidence_artifact_repository,
         get_investigation_session_repository,
     )
-    from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+    from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
+        APIEvidenceArtifactService,
+    )
     from faultmaven.modules.case.domain.services.investigation_session_service import (
         APIInvestigationSessionService,
     )

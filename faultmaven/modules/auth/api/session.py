@@ -58,7 +58,7 @@ from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
-from faultmaven.services.converters import CaseConverter
+from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.utils.datetime import utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 

@@ -27,9 +27,13 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.services.case_service import APICaseService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.modules.case.domain.services.api_case_service import APICaseService
+from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
+    APIEvidenceArtifactService,
+)
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
+)
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )

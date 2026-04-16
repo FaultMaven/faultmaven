@@ -32,7 +32,7 @@ from faultmaven.modules.case.domain.models import (
     CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.services.case_service import APICaseService
+from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 
 # ============================================================
 # Fixtures
