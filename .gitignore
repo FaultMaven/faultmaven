@@ -243,3 +243,4 @@ service-account*.json
 keys/
 certs/
 private/
+coverage.json
