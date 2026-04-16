@@ -1,19 +1,17 @@
 # Core Architecture
 
-Foundational architecture patterns and system design principles for FaultMaven.
+Foundational patterns and system design for FaultMaven.
 
 ## Documents
 
-- **[Architectural Design Principles](./architectural-design-principles.md)** - Core design principles and patterns
-- **[Current Architecture](./current-architecture.md)** - Current system architecture overview
-- **[Dependency Injection System](./dependency-injection-system.md)** - DI container and service lifecycle management
-- **[Interface-Based Design](./interface-based-design.md)** - Interface segregation and dependency inversion patterns
-- **[Module Organization Design](./module-organization-design.md)** - Module structure and organization patterns
-- **[Service Patterns](./service-patterns.md)** - Service layer implementation patterns
-- **[Structured Output Capability System](./structured-output-capability-system.md)** - Provider-agnostic LLM structured output infrastructure
-- **[System Design Modules](./system-design-modules.md)** - High-level module architecture
-- **[Vertical vs Layer Structuring](./vertical-vs-layer-structuring-explained.md)** - Architectural structuring approaches
+- **[Architectural Design Principles](./architectural-design-principles.md)** — The 12 canonical principles (deployment-agnostic, vertical modules, composition root, interfaces, observability, etc.)
+- **[Module Organization Design](./module-organization-design.md)** — Vertical module vs horizontal layer classification criteria
+- **[Vertical vs Layer Structuring](./vertical-vs-layer-structuring-explained.md)** — When to slice by domain vs by technical layer
+- **[Structured Output Capability System](./structured-output-capability-system.md)** — Provider-agnostic LLM structured output design
+- **[Infrastructure Layer Guide](./infrastructure-layer-guide.md)** — Infrastructure layer conventions
 
-## Purpose
+## Where Did the Other Docs Go?
 
-This section covers the fundamental architectural patterns, dependency injection, interface design, and module organization that form the foundation of FaultMaven's codebase.
+- **Dependency injection design** is now covered by **Principle 5 (Composition Root)** in [architectural-design-principles.md](./architectural-design-principles.md). The container implementation is in `faultmaven/container/`.
+- **Interface-based design** is covered by **Principle 4** in the principles doc.
+- **Service patterns** are covered by **Principles 2, 5, 6** and [module-organization-design.md](./module-organization-design.md).

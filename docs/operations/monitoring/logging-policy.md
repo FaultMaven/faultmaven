@@ -46,15 +46,15 @@ except Exception as e:
 **Exception**: `exc_info=True` may be omitted for expected/handled errors where stack traces add no debugging value (e.g., validation errors, user input errors).
 
 ## Component guidance
-- Decision records: INFO (structured, sampled if needed; no PII)
-- Gateway: DEBUG (clarity), WARN (absurd), ERROR (exceptions)
-- Router: DEBUG (selection and scores), WARN (circuit/backoff), ERROR (selection failure)
-- Skills: DEBUG (start/finish, budget skips), WARN (partial results), ERROR (exceptions)
-- Confidence: DEBUG (final score/band), avoid full feature vectors in prod
-- LoopGuard: DEBUG (signals), WARN (recovery), INFO (escalation)
-- Retrieval: DEBUG (latency, count), WARN (adapter timeout), ERROR (adapter failure)
-- Policy: INFO (confirmation required), WARN (deny), ERROR (engine error)
-- Container/DI: INFO (wiring), WARN (degraded), ERROR (init failures)
+- API middleware: DEBUG (request/response trace), WARN (rate limit / dedup / circuit), ERROR (middleware failure)
+- Investigation (MilestoneEngine): DEBUG (milestone evaluation, turn context), INFO (stage transitions), WARN (stagnation/repair), ERROR (execution failure)
+- LLM Router: DEBUG (provider selection), WARN (fallback triggered, retry), ERROR (all providers exhausted)
+- LLM Providers: DEBUG (request/response sizes), WARN (rate limit, timeout), ERROR (API error)
+- Agent tools: DEBUG (tool start/finish, inputs), WARN (partial results, coverage gap), ERROR (tool failure)
+- Repositories: DEBUG (query), WARN (slow query), ERROR (persistence failure)
+- Knowledge retrieval (kb_qa, case_evidence_qa): DEBUG (search latency, chunk count), WARN (empty results on 2nd attempt), ERROR (vector store failure)
+- Auth / JWT: DEBUG (token issued), WARN (refresh/revoke), ERROR (verification failure)
+- Container/DI: INFO (wiring), WARN (degraded init), ERROR (init failure)
 
 ## Sampling
 - Decision records: target 5–10% sampling if volume high; otherwise 100% during hardening

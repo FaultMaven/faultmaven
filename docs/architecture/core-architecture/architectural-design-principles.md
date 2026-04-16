@@ -903,8 +903,6 @@ def check_exceptions():
 
 ### Supporting Documents
 
-- **[Dependency Injection System](dependency-injection-system.md)**
-- **[Interface-Based Design](interface-based-design.md)**
 - **[Testing Guide](../../development/testing/guide.md)**
 
 ---

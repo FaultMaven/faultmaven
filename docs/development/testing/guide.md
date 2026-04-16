@@ -173,32 +173,6 @@ pytest -m prompting
 pytest -m performance
 ```
 
-## Enhanced Interface-Based Testing Strategy
-
-### Intelligence Service Dependency Injection Testing
-
-FaultMaven's enhanced interface-based architecture enables comprehensive mocking of intelligence services:
-
-```python
-# Test with enhanced interface mocks
-@pytest.fixture
-def mock_memory_service():
-    """Mock memory service implementing IMemoryService interface"""
-    mock = MagicMock(spec=IMemoryService)
-    mock.retrieve_context.return_value = ConversationContext(
-        working_memory=["previous_query"],
-        semantic_context=[{"content": "relevant_info", "relevance": 0.9}],
-        user_profile=MockUserProfile(expertise_level="intermediate")
-    )
-    mock.consolidate_insights.return_value = True
-    mock.get_user_profile.return_value = MockUserProfile(expertise_level="intermediate")
-    return mock
-
-@pytest.fixture
-def mock_planning_service():
-    """Mock planning service implementing IPlanningService interface"""
-```
-
 ## Architecture Testing Best Practices
 
 ### Container State Management
