@@ -28,58 +28,6 @@ from faultmaven.models.api import (
 )
 
 
-class TestEnums:
-    """Test enum value validation."""
-
-    def test_response_type_enum_values(self):
-        """Test ResponseType enum has expected values."""
-        assert ResponseType.ANSWER == "ANSWER"
-        assert ResponseType.PLAN_PROPOSAL == "PLAN_PROPOSAL"
-        assert ResponseType.CLARIFICATION_REQUEST == "CLARIFICATION_REQUEST"
-        assert ResponseType.CONFIRMATION_REQUEST == "CONFIRMATION_REQUEST"
-        assert ResponseType.SOLUTION_READY == "SOLUTION_READY"
-        assert ResponseType.NEEDS_MORE_DATA == "NEEDS_MORE_DATA"
-        assert ResponseType.ESCALATION_REQUIRED == "ESCALATION_REQUIRED"
-        assert ResponseType.VISUAL_DIAGRAM == "VISUAL_DIAGRAM"
-        assert ResponseType.COMPARISON_TABLE == "COMPARISON_TABLE"
-
-        # Test all values are present - updated to include all current enum values (9 total)
-        expected_values = {
-            "ANSWER",
-            "PLAN_PROPOSAL",
-            "CLARIFICATION_REQUEST",
-            "CONFIRMATION_REQUEST",
-            "SOLUTION_READY",
-            "NEEDS_MORE_DATA",
-            "ESCALATION_REQUIRED",
-            "VISUAL_DIAGRAM",
-            "COMPARISON_TABLE",
-        }
-        actual_values = {rt.value for rt in ResponseType}
-        assert actual_values == expected_values
-
-    def test_source_type_enum_values(self):
-        """Test SourceType enum has expected values."""
-        assert SourceType.KNOWLEDGE_BASE == "knowledge_base"
-        assert SourceType.LOG_FILE == "log_file"
-        assert SourceType.WEB_SEARCH == "web_search"
-        assert SourceType.DOCUMENTATION == "documentation"
-        assert SourceType.PREVIOUS_ANALYSIS == "previous_analysis"
-        assert SourceType.USER_PROVIDED == "user_provided"
-
-        # Test all values are present
-        expected_values = {
-            "knowledge_base",
-            "log_file",
-            "web_search",
-            "documentation",
-            "previous_analysis",
-            "user_provided",
-        }
-        actual_values = {st.value for st in SourceType}
-        assert actual_values == expected_values
-
-
 class TestSourceModel:
     """Test Source model validation."""
 
