@@ -15,21 +15,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from faultmaven.modules.auth.domain.services.organization_api_service import (
-    ROLE_ADMIN,
-    ROLE_MEMBER,
-    ROLE_OWNER,
-    APIOrganizationService,
-)
 from faultmaven.exceptions import AuthorizationError, NotFoundError
 from faultmaven.main import app as main_app
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.interfaces_user import (
     Organization,
     OrganizationMember,
     OrgPlanTier,
 )
 from faultmaven.models.rbac import get_permissions_for_roles
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.services.organization_api_service import (
+    ROLE_ADMIN,
+    ROLE_MEMBER,
+    ROLE_OWNER,
+    APIOrganizationService,
+)
 
 # ============================================================
 # Test Fixtures

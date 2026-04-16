@@ -12,8 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from faultmaven.modules.agent.domain.events.execution_events import Tool
 from faultmaven.models.interfaces import BaseTool, ToolResult
+from faultmaven.modules.agent.domain.events.execution_events import Tool
 
 logger = logging.getLogger(__name__)
 

@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from faultmaven.api.v1.role_dependencies import require_admin
-from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     ConversionResponse,

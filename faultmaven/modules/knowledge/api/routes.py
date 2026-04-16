@@ -49,7 +49,7 @@ from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
-from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )

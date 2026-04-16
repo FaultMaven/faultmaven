@@ -21,21 +21,21 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     InvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.models import Base
-
-# EvidenceArtifactRepository removed - evidence now handled by ICaseRepository (TD-001)
-# AgentExecutionRepository removed - agent executions now handled by ICaseRepository (TD-001)
-from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    KnowledgeItemRepository,
-)
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
+from faultmaven.modules.case.domain.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
     APIEvidenceArtifactService,
 )
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
-from faultmaven.modules.case.domain.services.investigation_session_service import (
-    APIInvestigationSessionService,
+
+# EvidenceArtifactRepository removed - evidence now handled by ICaseRepository (TD-001)
+# AgentExecutionRepository removed - agent executions now handled by ICaseRepository (TD-001)
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    KnowledgeItemRepository,
 )
 from faultmaven.services.service_factory import ServiceFactory
 

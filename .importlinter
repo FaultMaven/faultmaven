@@ -155,6 +155,8 @@ ignore_imports =
     # This is a transitive dependency, not a direct layer violation.
     faultmaven.models -> faultmaven.modules.agent.domain.models.agentic
     faultmaven.models.api -> faultmaven.modules.agent.domain.models.agentic
+    # tools/base.py needs the Tool dataclass to convert AgentTool for LLM API
+    faultmaven.modules.agent.tools.base -> faultmaven.modules.agent.domain.events.execution_events
 
 # ============================================================================
 # CONTRACT 8: Evidence Module Layer Boundaries
@@ -205,7 +207,6 @@ forbidden_modules =
     faultmaven.modules.auth.api
 allow_indirect_imports = false
 ignore_imports =
-    faultmaven.models.auth -> faultmaven.modules.auth.domain.models
     faultmaven.models -> faultmaven.modules.auth.domain.models.session
     faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.auth
     faultmaven.modules.auth.contracts -> faultmaven.modules.auth.domain.models.user

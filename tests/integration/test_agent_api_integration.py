@@ -30,7 +30,6 @@ from faultmaven.exceptions import (
     ServiceError,
 )
 from faultmaven.main import app as main_app
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
@@ -42,6 +41,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 # ============================================================
 # Fixtures

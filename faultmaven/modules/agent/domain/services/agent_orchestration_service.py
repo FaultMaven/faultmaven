@@ -30,6 +30,15 @@ from typing import Any
 from uuid import uuid4
 
 from faultmaven.config.settings import get_settings
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    LLMException,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
+)
+from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     ExecutionEvent,
@@ -42,24 +51,15 @@ from faultmaven.modules.agent.domain.events.execution_events import (
 from faultmaven.modules.agent.domain.events.execution_events import (
     ToolResult as DomainToolResult,
 )
-from faultmaven.exceptions import (
-    AuthorizationError,
-    ConflictError,
-    LLMException,
-    NotFoundError,
-    ServiceError,
-    ValidationException,
-)
-from faultmaven.modules.agent.domain.services.llm_client import (
-    LLMClient,
-    create_llm_client,
-)
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
+)
+from faultmaven.modules.agent.domain.services.llm_client import (
+    LLMClient,
+    create_llm_client,
 )
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,

@@ -13,14 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.exceptions import LLMException
-from faultmaven.modules.agent.domain.services.llm_client import (
-    AnthropicClient,
-    BaseLLMClient,
-    LLMClient,
-    LLMProvider,
-    OpenAIClient,
-    create_llm_client,
-)
 from faultmaven.modules.agent.domain.events.execution_events import (
     LLMEvent,
     LLMEventType,
@@ -28,6 +20,14 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     MessageRole,
     Tool,
     ToolCall,
+)
+from faultmaven.modules.agent.domain.services.llm_client import (
+    AnthropicClient,
+    BaseLLMClient,
+    LLMClient,
+    LLMProvider,
+    OpenAIClient,
+    create_llm_client,
 )
 
 # =============================================================================

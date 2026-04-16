@@ -27,12 +27,12 @@ from faultmaven.models.interfaces_user import (
     OrganizationMember,
     OrgPlanTier,
 )
+from faultmaven.modules.auth.domain.services.auth_service import AuthService
 from faultmaven.modules.auth.domain.services.organization_service import (
     OrganizationService,
 )
-from faultmaven.modules.auth.domain.services.auth_service import AuthService
-from faultmaven.services.base import BaseService
 from faultmaven.modules.auth.domain.services.user_service import UserService
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 

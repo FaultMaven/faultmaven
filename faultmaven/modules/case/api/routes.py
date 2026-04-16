@@ -115,12 +115,12 @@ from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.modules.case.domain.models import CaseStatus
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.domain.services.api_case_service import APICaseService
+from faultmaven.modules.case.domain.services.case_converter import CaseConverter
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
-from faultmaven.modules.case.domain.services.case_converter import CaseConverter
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.serialization import to_json_compatible
 
 # Create router

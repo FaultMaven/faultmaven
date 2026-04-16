@@ -24,8 +24,8 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import SessionStatus
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 
 @pytest.fixture

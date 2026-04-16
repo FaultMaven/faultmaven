@@ -11,12 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.modules.auth.domain.services.organization_api_service import (
-    ROLE_ADMIN,
-    ROLE_MEMBER,
-    ROLE_OWNER,
-    APIOrganizationService,
-)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -27,6 +21,12 @@ from faultmaven.models.interfaces_user import (
     Organization,
     OrganizationMember,
     OrgPlanTier,
+)
+from faultmaven.modules.auth.domain.services.organization_api_service import (
+    ROLE_ADMIN,
+    ROLE_MEMBER,
+    ROLE_OWNER,
+    APIOrganizationService,
 )
 
 # ============================================================

@@ -23,13 +23,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.interfaces_user import (
     Organization,
     OrganizationMember,
     OrgPlanTier,
 )
 from faultmaven.models.rbac import get_permissions_for_roles
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 # ============================================================
 # Test Fixtures

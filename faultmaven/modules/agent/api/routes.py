@@ -27,7 +27,6 @@ from faultmaven.api.models import (
     AgentExecutionResponse,
     ExecutionEventSSE,
 )
-from faultmaven.modules.agent.domain.events.execution_events import ExecutionEventType
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -36,11 +35,12 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.modules.agent.domain.events.execution_events import ExecutionEventType
 from faultmaven.modules.agent.domain.models.agent_execution import AgentType
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AgentOrchestrationService,
 )
+from faultmaven.modules.auth.contracts import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
 

@@ -13,8 +13,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
 
+from faultmaven.modules.auth.domain.models.auth import (
+    AuthenticatedUser,
+    DevUser,
+    TokenPair,
+)
+
 if TYPE_CHECKING:
-    from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser, TokenPair
     from faultmaven.modules.auth.domain.models.user import User
 
 

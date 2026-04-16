@@ -55,15 +55,15 @@ def register_services(redis_client=None) -> None:
     # ============================================================
 
     # Import service classes
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+    from faultmaven.modules.evidence.domain.services.file_storage_service import (
+        FileStorageService,
+    )
     from faultmaven.modules.knowledge.domain.services.embedding_service import (
         EmbeddingService,
     )
     from faultmaven.modules.knowledge.domain.services.vector_store_service import (
         VectorStoreService,
-    )
-    from faultmaven.modules.auth.domain.services.auth_service import AuthService
-    from faultmaven.modules.evidence.domain.services.file_storage_service import (
-        FileStorageService,
     )
 
     # AuthService - Used by UserService
@@ -142,11 +142,11 @@ def register_services(redis_client=None) -> None:
         get_evidence_artifact_repository,
         get_investigation_session_repository,
     )
-    from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
-        APIEvidenceArtifactService,
-    )
     from faultmaven.modules.case.domain.services.investigation_session_service import (
         APIInvestigationSessionService,
+    )
+    from faultmaven.modules.evidence.domain.services.evidence_artifact_service import (
+        APIEvidenceArtifactService,
     )
 
     # APIInvestigationSessionService - Used by AgentOrchestrationService

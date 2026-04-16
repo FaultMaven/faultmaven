@@ -43,12 +43,12 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     ExecutionStatus,
 )
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
+from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.services.service_factory import ServiceFactory
 
 # ============================================================

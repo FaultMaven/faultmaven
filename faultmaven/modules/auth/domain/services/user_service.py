@@ -45,8 +45,8 @@ from faultmaven.infrastructure.persistence.user_repository import (
     UserRepository,
 )
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
-from faultmaven.modules.auth.domain.models.auth import TokenPair
 from faultmaven.models.rbac import Role, get_permissions_for_roles
+from faultmaven.modules.auth.domain.models.auth import TokenPair
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
