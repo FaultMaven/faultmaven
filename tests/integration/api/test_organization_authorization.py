@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from faultmaven.exceptions import AuthorizationError, ConflictError, NotFoundError
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.interfaces_user import (
     Organization,
     OrganizationMember,

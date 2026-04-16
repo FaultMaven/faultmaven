@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from faultmaven.models.auth import (
+from faultmaven.modules.auth.domain.models.auth import (
     AuthToken,
     DevUser,
     TokenStatus,

@@ -31,7 +31,7 @@ from faultmaven.api.models import (
     SessionUpdateRequest,
 )
 from faultmaven.exceptions import NotFoundError
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import SessionStatus
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,

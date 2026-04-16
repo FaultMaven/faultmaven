@@ -36,7 +36,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
 

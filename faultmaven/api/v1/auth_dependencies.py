@@ -32,7 +32,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.config.settings import get_settings
-from faultmaven.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.auth import DevUser
 
 # Initialize logger and security scheme
 logger = logging.getLogger(__name__)

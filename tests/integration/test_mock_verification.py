@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 
 @pytest.fixture

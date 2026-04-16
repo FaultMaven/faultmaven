@@ -19,7 +19,7 @@ from faultmaven.api.routes.admin_config import (
     get_llm_config,
     update_llm_config,
 )
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 SETTINGS_PATCH = "faultmaven.config.settings.get_settings"
 

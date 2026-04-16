@@ -31,7 +31,7 @@ from faultmaven.exceptions import (
     NotFoundError,
 )
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
     ExecutionEventType,

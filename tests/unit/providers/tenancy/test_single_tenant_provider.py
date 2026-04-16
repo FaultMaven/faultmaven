@@ -13,7 +13,7 @@ import pytest
 
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import Organization, OrgPlanTier
-from faultmaven.models.user import User
+from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 

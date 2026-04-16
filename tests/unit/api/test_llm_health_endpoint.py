@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from faultmaven.api.routes.admin import get_llm_routing_health
 from faultmaven.infrastructure.llm.providers.registry import ProviderHealth
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 
 @pytest.fixture

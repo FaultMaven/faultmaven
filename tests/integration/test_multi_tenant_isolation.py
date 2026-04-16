@@ -23,7 +23,7 @@ from faultmaven.modules.auth.domain.services.organization_api_service import (
 )
 from faultmaven.exceptions import AuthorizationError, NotFoundError
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.models.interfaces_user import (
     Organization,
     OrganizationMember,

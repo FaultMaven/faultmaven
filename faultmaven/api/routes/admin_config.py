@@ -27,7 +27,7 @@ from faultmaven.api.models import (
     LLMProviderDetail,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 logger = logging.getLogger(__name__)
 

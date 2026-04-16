@@ -28,7 +28,7 @@ from faultmaven.api.middleware.auth import (
     require_role,
     set_auth_service,
 )
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     TokenRevocationError,

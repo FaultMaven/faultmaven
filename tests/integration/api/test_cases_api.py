@@ -30,7 +30,7 @@ from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CaseSummary
-from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
 
 

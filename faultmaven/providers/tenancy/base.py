@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from faultmaven.models.interfaces_user import Organization
-from faultmaven.models.user import User
+from faultmaven.modules.auth.domain.models.user import User
 
 
 class TenantProvider(ABC):

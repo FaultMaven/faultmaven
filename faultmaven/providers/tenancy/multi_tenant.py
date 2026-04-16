@@ -10,7 +10,7 @@ from typing import Optional
 
 from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import IOrganizationRepository, Organization
-from faultmaven.models.user import User
+from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.base import TenantProvider
 
 

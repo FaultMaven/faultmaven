@@ -12,7 +12,7 @@ import pytest
 
 from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import Organization, OrgPlanTier
-from faultmaven.models.user import User
+from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 
 

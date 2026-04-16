@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
-from faultmaven.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.auth import DevUser
 
 if TYPE_CHECKING:
     from redis import Redis

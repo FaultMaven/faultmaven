@@ -24,7 +24,7 @@ from typing import List
 from fastapi import Depends, HTTPException
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.auth import DevUser
 
 # Initialize logger
 logger = logging.getLogger(__name__)

@@ -20,7 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 
-from faultmaven.models.auth import AuthenticatedUser, TokenClaims, TokenPair
+from faultmaven.modules.auth.domain.models.auth import (
+    AuthenticatedUser,
+    TokenClaims,
+    TokenPair,
+)
 from faultmaven.models.rbac import Permission, Role, get_permissions_for_roles
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,

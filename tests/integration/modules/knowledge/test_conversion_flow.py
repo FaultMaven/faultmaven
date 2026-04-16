@@ -26,7 +26,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from faultmaven.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.knowledge.api.conversion_routes import (
     _get_conversion_service,
     _require_auth,

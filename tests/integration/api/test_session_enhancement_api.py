@@ -18,7 +18,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import DevUser
+from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.models.common import SessionContext
 
 
